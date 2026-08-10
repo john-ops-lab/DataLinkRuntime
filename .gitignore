@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# Environment & secrets
+.env
+.env.*
+
+# IDE / local tooling
+.idea/
+.vscode/
+.qoder-cn/
+.qoder/specs/
+
+# OS
+.DS_Store
