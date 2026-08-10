@@ -1,0 +1,21 @@
+# Git
+.git/
+
+# Python
+backend/.venv/
+backend/**/__pycache__/
+**/*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Node
+web/node_modules/
+web/dist/
+
+# Local tooling
+.qoder/
+.qoder-cn/
+docs/
+README.md
+docker-compose.yml
