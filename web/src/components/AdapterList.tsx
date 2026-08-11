@@ -9,7 +9,9 @@ interface AdapterListProps {
   adapters: Adapter[];
   selectedId: number | null;
   onSelect: (adapter: Adapter) => void;
-  onCreate: (name: string, description: string) => Promise<void>;
+  // Returns true only when the adapter was actually created; the form is cleared
+  // and closed only on real success, so failures keep the user's input editable.
+  onCreate: (name: string, description: string) => Promise<boolean>;
 }
 
 export default function AdapterList({ adapters, selectedId, onSelect, onCreate }: AdapterListProps) {
@@ -26,10 +28,12 @@ export default function AdapterList({ adapters, selectedId, onSelect, onCreate }
     }
     setBusy(true);
     try {
-      await onCreate(trimmed, description);
-      setName("");
-      setDescription("");
-      setCreating(false);
+      const created = await onCreate(trimmed, description);
+      if (created) {
+        setName("");
+        setDescription("");
+        setCreating(false);
+      }
     } finally {
       setBusy(false);
     }

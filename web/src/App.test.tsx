@@ -31,7 +31,7 @@ interface RouteResponse {
 interface Route {
   method: string;
   match: string | RegExp;
-  respond: (body: string | null) => RouteResponse;
+  respond: (body: string | null) => RouteResponse | Promise<RouteResponse>;
 }
 
 function stubFetch(routes: Route[]) {
@@ -50,7 +50,7 @@ function stubFetch(routes: Route[]) {
     if (!route) {
       throw new Error(`Unexpected request: ${method} ${url}`);
     }
-    const { status = 200, body } = route.respond(requestBody);
+    const { status = 200, body } = await route.respond(requestBody);
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -521,4 +521,259 @@ it("shows the domain error code when creating a duplicate adapter", async () => 
 
   await screen.findByTestId("error-banner");
   expect(screen.getByTestId("error-banner").textContent).toContain("adapter_name_conflict");
+});
+
+// --- Review regressions: atomic content loading ------------------------------
+
+it("keeps Save disabled and never mixes content when switching to an adapter whose load fails", async () => {
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [makeAdapter(), makeAdapter({ id: 2, name: "adapter-b" })] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/2/versions",
+      respond: () => ({
+        status: 500,
+        body: { detail: { code: "boom", message: "version list exploded" } },
+      }),
+    },
+    {
+      // Any save attempt against a failed load must never reach the API.
+      method: "POST",
+      match: /\/versions$/,
+      respond: () => {
+        throw new Error("save must not be issued against content that failed to load");
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  expect(valueOf("code-editor")).toBe(STARTER_CODE);
+
+  fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
+  await screen.findByTestId("error-banner");
+
+  // adapter-b is selected, but adapter-a's content must not leak into it and
+  // Save must stay disabled because nothing loaded successfully for adapter-b.
+  expect(screen.getByRole("heading", { name: "adapter-b" })).toBeTruthy();
+  expect(valueOf("code-editor")).not.toBe(STARTER_CODE);
+  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByTestId("save-version"));
+});
+
+it("ignores out-of-order content loads when switching adapters rapidly", async () => {
+  // adapter-a's version list is deliberately held pending; adapter-b loads
+  // immediately. When the stale adapter-a response finally resolves, it must
+  // be discarded instead of overwriting adapter-b's content.
+  let resolveStale: ((value: VersionSummary[]) => void) | undefined;
+  const staleVersions = new Promise<VersionSummary[]>((resolve) => {
+    resolveStale = resolve;
+  });
+  let staleDelivered = false;
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({
+        body: [
+          makeAdapter({ latest_version_id: 10 }),
+          makeAdapter({ id: 2, name: "adapter-b" }),
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: async () => {
+        const list = await staleVersions;
+        staleDelivered = true;
+        return { body: list };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/10",
+      respond: () => ({ body: makeVersion({ id: 10, code: "code-a" }) }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/2/versions",
+      respond: () => ({ body: [] }),
+    },
+  ]);
+  render(<App />);
+  const items = await screen.findAllByTestId("adapter-item");
+
+  // Rapidly switch a -> b while adapter-a's load is still in flight.
+  fireEvent.click(items[0]);
+  fireEvent.click(items[1]);
+  await waitFor(() => {
+    expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false);
+  });
+  expect(screen.getByRole("heading", { name: "adapter-b" })).toBeTruthy();
+  expect(valueOf("code-editor")).toBe(STARTER_CODE);
+
+  // Now the stale adapter-a response resolves; it must not overwrite b's state.
+  resolveStale?.([{ id: 10, adapter_id: 1, seq: 1, created_at: "2026-08-11T00:00:00Z" }]);
+  await waitFor(() => {
+    expect(staleDelivered).toBe(true);
+  });
+  // Give any (broken) stale continuation a chance to commit before asserting.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(screen.getByRole("heading", { name: "adapter-b" })).toBeTruthy();
+  expect(valueOf("code-editor")).toBe(STARTER_CODE);
+  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false);
+  // The stale load never progressed to fetching adapter-a's version detail.
+  expect(
+    fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1/versions/10"),
+  ).toBe(false);
+});
+
+// --- Review regressions: Save acknowledgement --------------------------------
+
+it("acknowledges a successful Save locally even when the follow-up refresh fails", async () => {
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [makeAdapter()] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: (() => {
+        let calls = 0;
+        return () => {
+          calls += 1;
+          if (calls === 1) {
+            // First call: initial load of the adapter (no versions yet).
+            return { body: [] };
+          }
+          // The refresh after a successful Save fails.
+          throw new Error("refresh failed");
+        };
+      })(),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}") as { code: string };
+        return { status: 201, body: makeVersion({ code: payload.code }) };
+      },
+    },
+  ]);
+  render(<App />);
+
+  const [first] = await screen.findAllByTestId("adapter-item");
+  fireEvent.click(first);
+  // Wait until the starter snapshot actually loaded (Save becomes enabled).
+  await waitFor(() => {
+    expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "saved code" } });
+  fireEvent.click(screen.getByTestId("save-version"));
+
+  // The refresh failure is reported as a refresh problem, not a failed save.
+  await screen.findByTestId("error-banner");
+  expect(screen.getByTestId("error-banner").textContent).toContain("Version saved");
+
+  // The saved version is acknowledged: not dirty, selected, and marked latest,
+  // so the user is never encouraged to repeat an already-successful save.
+  expect(screen.queryByTestId("dirty-indicator")).toBeNull();
+  expect(screen.getByTestId("latest-badge")).toBeTruthy();
+  expect(valueOf("version-selector")).toBe("10");
+  expect(valueOf("code-editor")).toBe("saved code");
+});
+
+// --- Review regressions: create form only closes on real success -------------
+
+it("keeps the create form and its inputs when creation fails with a duplicate name", async () => {
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [makeAdapter()] }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters",
+      respond: () => ({
+        status: 409,
+        body: { detail: { code: "adapter_name_conflict", message: "Adapter name already exists" } },
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [] }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "adapter-a" } });
+  fireEvent.change(screen.getByTestId("new-adapter-description"), {
+    target: { value: "keep me" },
+  });
+  fireEvent.click(screen.getByTestId("create-adapter"));
+
+  await screen.findByTestId("error-banner");
+  // The form stays open with the user's input still editable.
+  expect(screen.getByTestId("new-adapter-name")).toBeTruthy();
+  expect(valueOf("new-adapter-name")).toBe("adapter-a");
+  expect(valueOf("new-adapter-description")).toBe("keep me");
+});
+
+it("keeps the create form open when creation is cancelled by the discard confirmation", async () => {
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [makeAdapter()] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [] }),
+    },
+    {
+      // Creation must never be attempted when the discard confirmation is denied.
+      method: "POST",
+      match: "/api/adapters",
+      respond: () => {
+        throw new Error("create must not be issued after a denied discard confirmation");
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited" } });
+  await screen.findByTestId("dirty-indicator");
+
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "new-one" } });
+  fireEvent.click(screen.getByTestId("create-adapter"));
+
+  expect(confirmSpy).toHaveBeenCalled();
+  // Form stays open with the typed name; nothing was created.
+  expect(valueOf("new-adapter-name")).toBe("new-one");
+  expect(screen.getByRole("heading", { name: "adapter-a" })).toBeTruthy();
+  expect(valueOf("code-editor")).toBe("edited");
 });

@@ -1,8 +1,13 @@
 """Tests for the M1 Adapter management API against real PostgreSQL."""
 
+import threading
 from typing import Any
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
+
+from dlr.control.schemas.adapter import VersionCreate
+from dlr.control.services.adapter import save_version as service_save_version
 
 STARTER_CODE = "def handle(context, input):\n    return input\n"
 
@@ -302,3 +307,54 @@ def test_publish_does_not_modify_version_content(api_client: TestClient) -> None
     detail = api_client.get(f"/api/adapters/{created['id']}/versions/{version['id']}").json()
     assert detail["code"] == "original"
     assert detail["seq"] == 1
+
+
+# --- Concurrency contract ---------------------------------------------------
+
+
+def test_concurrent_saves_keep_seq_unique_and_latest_correct(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Two independent sessions saving the same Adapter at the same moment.
+
+    Verifies the load-bearing row-lock contract of save_version: the commits
+    are serialized, so seq values are exactly {1, 2} (no duplicate and no
+    unique violation), and latest ends up pointing at the seq=2 version.
+    """
+    created = create_adapter(api_client, name="concurrent-save")
+    adapter_id = created["id"]
+
+    start = threading.Barrier(2)
+    saved: list[tuple[str, int, int]] = []  # (tag, version_id, seq)
+    errors: list[BaseException] = []
+
+    def worker(tag: str) -> None:
+        session = session_factory()
+        try:
+            start.wait(timeout=5)
+            version = service_save_version(
+                session,
+                adapter_id,
+                VersionCreate(code=f"# saved by {tag}\n"),
+            )
+            saved.append((tag, version.id, version.seq))
+        except BaseException as exc:  # noqa: BLE001 - collect to assert below
+            errors.append(exc)
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=worker, args=(tag,)) for tag in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert errors == []
+    assert sorted(seq for _, _, seq in saved) == [1, 2]
+
+    detail = api_client.get(f"/api/adapters/{adapter_id}").json()
+    seq_by_id = {version_id: seq for _, version_id, seq in saved}
+    assert seq_by_id[detail["latest_version_id"]] == 2
+
+    listed = api_client.get(f"/api/adapters/{adapter_id}/versions").json()
+    assert [version["seq"] for version in listed] == [2, 1]

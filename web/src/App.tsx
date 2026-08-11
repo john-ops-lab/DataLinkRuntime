@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 
 import { ApiError, api } from "./api";
@@ -97,6 +97,12 @@ export default function App() {
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // True only after the selected adapter's version list and content loaded successfully.
+  // Save/Publish are gated on it so stale or failed loads can never be persisted.
+  const [contentReady, setContentReady] = useState(false);
+  // Monotonic guard: only the newest content-loading request may commit state, so
+  // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
+  const requestGeneration = useRef(0);
 
   const dirty =
     snapshot.code !== baseline.code ||
@@ -167,22 +173,40 @@ export default function App() {
   }
 
   async function loadAdapterContent(adapter: Adapter) {
+    const generation = ++requestGeneration.current;
+    // Reset content state synchronously so the previous adapter's snapshot can never
+    // appear (or be saved) under the newly selected adapter.
     setSelected(adapter);
     setName(adapter.name);
     setDescription(adapter.description);
     setError(null);
+    setVersions([]);
+    setSelectedVersionId(null);
+    setContentReady(false);
+    applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
       const list = await api.listVersions(adapter.id);
+      if (generation !== requestGeneration.current) {
+        return;
+      }
       setVersions(list);
       if (adapter.latest_version_id === null) {
         setSelectedVersionId(null);
         applySnapshot({ code: STARTER_CODE, requirements: "", runtimeConfigText: "{}" });
+        setContentReady(true);
         return;
       }
       const detail = await api.getVersion(adapter.id, adapter.latest_version_id);
+      if (generation !== requestGeneration.current) {
+        return;
+      }
       setSelectedVersionId(detail.id);
       applySnapshot(versionSnapshot(detail));
+      setContentReady(true);
     } catch (err) {
+      if (generation !== requestGeneration.current) {
+        return;
+      }
       setError(errorMessage(err));
     }
   }
@@ -197,17 +221,19 @@ export default function App() {
     void loadAdapterContent(adapter);
   }
 
-  async function handleCreateAdapter(createdName: string, createdDescription: string) {
+  async function handleCreateAdapter(createdName: string, createdDescription: string): Promise<boolean> {
     if (!confirmDiscard()) {
-      return;
+      return false;
     }
     try {
       setError(null);
       const created = await api.createAdapter({ name: createdName, description: createdDescription });
       await refreshAdapters();
       await loadAdapterContent(created);
+      return true;
     } catch (err) {
       setError(errorMessage(err));
+      return false;
     }
   }
 
@@ -218,18 +244,27 @@ export default function App() {
     if (!confirmDiscard()) {
       return;
     }
+    const generation = ++requestGeneration.current;
+    setContentReady(false);
     try {
       setError(null);
       const detail = await api.getVersion(selected.id, versionId);
+      if (generation !== requestGeneration.current) {
+        return;
+      }
       setSelectedVersionId(detail.id);
       applySnapshot(versionSnapshot(detail));
+      setContentReady(true);
     } catch (err) {
+      if (generation !== requestGeneration.current) {
+        return;
+      }
       setError(errorMessage(err));
     }
   }
 
   async function handleSaveVersion() {
-    if (!selected || busy) {
+    if (!selected || busy || !contentReady) {
       return;
     }
     const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
@@ -249,15 +284,25 @@ export default function App() {
         requirements: snapshot.requirements,
         runtime_config: runtimeConfig,
       });
-      const [refreshed, versionList] = await Promise.all([
-        api.getAdapter(selected.id),
-        api.listVersions(selected.id),
-      ]);
+      // The immutable version exists as soon as POST succeeds: acknowledge it locally
+      // right away so a follow-up refresh failure cannot be mistaken for a failed save
+      // (which would invite retrying into a duplicate immutable version).
+      const refreshed: Adapter = {
+        ...selected,
+        latest_version_id: saved.id,
+        updated_at: saved.created_at,
+      };
       setSelected(refreshed);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-      setVersions(versionList);
+      setVersions((current) => [saved, ...current]);
       setSelectedVersionId(saved.id);
       applySnapshot(versionSnapshot(saved));
+      try {
+        const versionList = await api.listVersions(selected.id);
+        setVersions(versionList);
+      } catch (refreshErr) {
+        setError(`Version saved, but refreshing the version list failed: ${errorMessage(refreshErr)}`);
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -266,7 +311,7 @@ export default function App() {
   }
 
   async function handlePublish() {
-    if (!selected || selectedVersionId === null || busy) {
+    if (!selected || selectedVersionId === null || busy || !contentReady) {
       return;
     }
     setBusy(true);
@@ -313,9 +358,11 @@ export default function App() {
     try {
       setError(null);
       await api.deleteAdapter(selected.id);
+      requestGeneration.current += 1;
       setSelected(null);
       setSelectedVersionId(null);
       setVersions([]);
+      setContentReady(false);
       applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
       await refreshAdapters();
     } catch (err) {
@@ -416,7 +463,7 @@ export default function App() {
               <button
                 type="button"
                 data-testid="publish-version"
-                disabled={selectedVersionId === null || busy}
+                disabled={selectedVersionId === null || busy || !contentReady}
                 onClick={() => void handlePublish()}
               >
                 Publish
@@ -462,7 +509,7 @@ export default function App() {
             <button
               type="button"
               data-testid="save-version"
-              disabled={busy}
+              disabled={busy || !contentReady}
               onClick={() => void handleSaveVersion()}
             >
               Save new version
