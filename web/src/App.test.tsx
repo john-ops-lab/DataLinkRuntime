@@ -3,7 +3,13 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import App, { TOKEN_STORAGE_KEY } from "./App";
 import { setAuthToken } from "./api";
-import type { Adapter, VersionDetail, VersionSummary } from "./types";
+import type {
+  Adapter,
+  Execution,
+  ExecutionSummary,
+  VersionDetail,
+  VersionSummary,
+} from "./types";
 
 // The Monaco editor is replaced by a plain textarea so tests exercise the DLR
 // business integration (value / change / save) instead of the editor itself.
@@ -30,12 +36,14 @@ const STARTER_CODE = "def handle(context, input):\n    return input\n";
 interface RouteResponse {
   status?: number;
   body?: unknown;
+  /** SSE: raw event-stream text delivered as a single chunk. */
+  stream?: string;
 }
 
 interface Route {
   method: string;
   match: string | RegExp;
-  respond: (body: string | null) => RouteResponse | Promise<RouteResponse>;
+  respond: (body: string | null, url: string) => RouteResponse | Promise<RouteResponse>;
 }
 
 function stubFetch(routes: Route[]) {
@@ -54,7 +62,27 @@ function stubFetch(routes: Route[]) {
     if (!route) {
       throw new Error(`Unexpected request: ${method} ${url}`);
     }
-    const { status = 200, body } = await route.respond(requestBody);
+    const { status = 200, body, stream } = await route.respond(requestBody, url);
+    if (stream !== undefined) {
+      // Minimal ReadableStream-like body for the SSE reader: one chunk, then EOF.
+      let consumed = false;
+      const encoder = new TextEncoder();
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        body: {
+          getReader: () => ({
+            read: async () => {
+              if (consumed) {
+                return { done: true, value: undefined };
+              }
+              consumed = true;
+              return { done: false, value: encoder.encode(stream) };
+            },
+          }),
+        },
+      };
+    }
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -315,7 +343,7 @@ it("creates an adapter and selects it", async () => {
     },
   ]);
   render(<App />);
-  await screen.findByText("No adapters yet.");
+  await screen.findByText("暂无 Adapter");
 
   fireEvent.click(screen.getByTestId("show-create-form"));
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "cmdb-sync" } });
@@ -790,7 +818,7 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
 
   // The refresh failure is reported as a refresh problem, not a failed save.
   await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("error-banner").textContent).toContain("Version saved");
+  expect(screen.getByTestId("error-banner").textContent).toContain("版本已保存");
 
   // The saved version is acknowledged: not dirty, selected, and marked latest,
   // so the user is never encouraged to repeat an already-successful save.
@@ -1046,11 +1074,290 @@ it("never fabricates Adapter.updated_at from the saved version; adapter refresh 
   // Adapter refresh is reported separately; the server-owned updated_at is
   // never synthesized from the version's created_at.
   await screen.findByTestId("latest-badge");
-  expect(screen.getByTestId("error-banner").textContent).toContain("Version saved");
-  expect(screen.getByTestId("error-banner").textContent).toContain("refreshing the adapter");
+  expect(screen.getByTestId("error-banner").textContent).toContain("版本已保存");
+  expect(screen.getByTestId("error-banner").textContent).toContain("刷新 Adapter 失败");
   expect(screen.queryByTestId("dirty-indicator")).toBeNull();
   expect(valueOf("code-editor")).toBe("saved code");
   expect(
     fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1"),
   ).toBe(true);
+});
+
+// --- Test run and execution observability (M3) --------------------------------
+
+function makeExecution(overrides: Partial<Execution> = {}): Execution {
+  return {
+    id: 5,
+    adapter_id: 1,
+    version_id: 10,
+    worker_id: null,
+    trigger: "manual",
+    status: "pending",
+    input: {},
+    output: null,
+    output_size: null,
+    output_truncated: false,
+    output_preview: null,
+    stdout: "",
+    stdout_truncated: false,
+    stderr: "",
+    stderr_truncated: false,
+    error: null,
+    created_at: "2026-08-11T00:00:00Z",
+    started_at: null,
+    ended_at: null,
+    duration_ms: null,
+    ...overrides,
+  };
+}
+
+function makeSummary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
+  return {
+    id: 6,
+    adapter_id: 1,
+    version_id: 10,
+    version_seq: 1,
+    worker_id: null,
+    worker_name: null,
+    trigger: "manual",
+    status: "succeeded",
+    created_at: "2026-08-11T00:00:00Z",
+    started_at: null,
+    ended_at: null,
+    duration_ms: null,
+    ...overrides,
+  };
+}
+
+// Routes shared by M3 tests: healthy control plus one adapter whose latest
+// version (id 10) is already loaded into the editor.
+function consoleWithVersionRoutes(adapter: Adapter, version: VersionDetail): Route[] {
+  return [
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    {
+      method: "GET",
+      match: `/api/adapters/${adapter.id}/versions`,
+      respond: () => ({
+        body: [
+          {
+            id: version.id,
+            adapter_id: version.adapter_id,
+            seq: version.seq,
+            created_at: version.created_at,
+          } satisfies VersionSummary,
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: `/api/adapters/${adapter.id}/versions/${version.id}`,
+      respond: () => ({ body: version }),
+    },
+  ];
+}
+
+async function openTestRunTab() {
+  fireEvent.click(screen.getByText("测试运行"));
+  await screen.findByTestId("run-test");
+}
+
+it("runs a test bound to the selected version and follows the execution via SSE", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const running = makeExecution({ status: "running", worker_id: 3, stdout: "step 1\n" });
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 3,
+    output: { ok: true },
+    stdout: "done\n",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        // pending panel state first, then running, then the terminal status.
+        stream:
+          `event: execution\ndata: ${JSON.stringify(running)}\n\n` +
+          `event: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: succeeded }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.change(screen.getByTestId("test-input"), { target: { value: '{"k": 1}' } });
+  // Duplicate clicks must not create a second execution.
+  fireEvent.click(screen.getByTestId("run-test"));
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  // The stream ends in a terminal status, so the final detail is reloaded.
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+  expect(screen.getByTestId("execution-id").textContent).toBe("Execution #5");
+
+  // Explicit version binding: the create request carries the selected version.
+  const createCalls = fetchMock.mock.calls.filter(
+    ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+  );
+  expect(createCalls).toHaveLength(1);
+  expect(JSON.parse(String(createCalls[0][1]?.body))).toEqual({
+    input: { k: 1 },
+    version_id: 10,
+  });
+
+  // SSE auth contract: Bearer header only, the token never enters the URL.
+  const sseCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/executions/5/events");
+  expect(sseCall).toBeTruthy();
+  expect(String(sseCall?.[0])).not.toContain("test-admin-token");
+  const headers = sseCall?.[1]?.headers as Record<string, string>;
+  expect(headers.Authorization).toBe("Bearer test-admin-token");
+
+  // stdout tab shows the streamed log content.
+  fireEvent.click(screen.getByText("stdout"));
+  await waitFor(() => {
+    expect(screen.getByTestId("stdout-view").textContent).toContain("done");
+  });
+});
+
+it("shows size and preview instead of the full output when it was truncated", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const truncated = makeExecution({
+    status: "succeeded",
+    output: null,
+    output_size: 600_000,
+    output_truncated: true,
+    output_preview: "preview head...",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(truncated)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: truncated }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+  const notice = await screen.findByTestId("output-truncated");
+  expect(notice.textContent).toContain("600000");
+  expect(screen.getByTestId("output-preview").textContent).toContain("preview head...");
+  expect(screen.queryByTestId("output-content")).toBeNull();
+});
+
+it("blocks test runs while the editor has unsaved changes", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => {
+        throw new Error("execution must not be created while the editor is dirty");
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited" } });
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  await screen.findByTestId("error-banner");
+  expect(screen.getByTestId("error-banner").textContent).toContain("当前修改尚未保存");
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+    ),
+  ).toBe(false);
+});
+
+it("blocks test runs when the input is not valid JSON", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => {
+        throw new Error("execution must not be created for invalid input");
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.change(screen.getByTestId("test-input"), { target: { value: "{oops" } });
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  await screen.findByTestId("error-banner");
+  expect(screen.getByTestId("error-banner").textContent).toContain("Input 必须是合法 JSON");
+});
+
+it("lists execution history with cursor pagination and opens the detail drawer", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pageOne = { items: [makeSummary({ id: 6 })], next_before_id: 6 };
+  const pageTwo = { items: [makeSummary({ id: 4, status: "failed" })], next_before_id: null };
+  const detail = makeExecution({ id: 6, input: { k: 1 }, output: { ok: true } });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: (_body, url) => ({
+        body: url.includes("before_id=6") ? pageTwo : pageOne,
+      }),
+    },
+    { method: "GET", match: "/api/executions/6", respond: () => ({ body: detail }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  // History is only requested when the tab is activated.
+  fireEvent.click(screen.getByText("执行记录"));
+  expect(await screen.findAllByTestId("history-row")).toHaveLength(1);
+
+  fireEvent.click(screen.getByTestId("history-load-more"));
+  await waitFor(() => {
+    expect(screen.getAllByTestId("history-row")).toHaveLength(2);
+  });
+  expect(screen.queryByTestId("history-load-more")).toBeNull();
+
+  fireEvent.click(screen.getAllByTestId("history-row")[0]);
+  const detailInput = await screen.findByTestId("detail-input");
+  expect(detailInput.textContent).toContain('"k": 1');
 });

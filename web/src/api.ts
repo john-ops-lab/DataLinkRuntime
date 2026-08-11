@@ -1,6 +1,13 @@
 /** Minimal typed client for the Control API. */
 
-import type { Adapter, VersionDetail, VersionSummary } from "./types";
+import type {
+  Adapter,
+  Execution,
+  ExecutionHistoryPage,
+  VersionDetail,
+  VersionSummary,
+  Worker,
+} from "./types";
 
 // M2 minimal Token UX: the admin token lives only in memory plus the
 // browser's sessionStorage (managed by App). Every request automatically
@@ -13,8 +20,19 @@ export function setAuthToken(token: string | null): void {
   authToken = token;
 }
 
+/** Read-only access for non-request clients (e.g. the SSE stream reader). */
+export function getAuthToken(): string | null {
+  return authToken;
+}
+
 export function onUnauthorized(handler: () => void): void {
   unauthorizedHandler = handler;
+}
+
+/** Shared 401 handling for plain requests and the SSE stream reader. */
+export function handleUnauthorized(): void {
+  authToken = null;
+  unauthorizedHandler?.();
 }
 
 export class ApiError extends Error {
@@ -65,8 +83,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(0, "network_error", "Control is unreachable");
   }
   if (response.status === 401) {
-    authToken = null;
-    unauthorizedHandler?.();
+    handleUnauthorized();
   }
   if (!response.ok) {
     throw await parseError(response);
@@ -113,4 +130,32 @@ export const api = {
 
   publishVersion: (adapterId: number, versionId: number): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}/versions/${versionId}/publish`, { method: "POST" }),
+
+  // --- M3: executions, history and workers ---------------------------------
+
+  createExecution: (
+    adapterId: number,
+    payload: { input?: unknown; version_id: number },
+  ): Promise<Execution> =>
+    request(`/api/adapters/${adapterId}/executions`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  getExecution: (executionId: number): Promise<Execution> =>
+    request(`/api/executions/${executionId}`),
+
+  listExecutions: (
+    adapterId: number,
+    options: { limit?: number; before_id?: number } = {},
+  ): Promise<ExecutionHistoryPage> => {
+    const params = new URLSearchParams();
+    params.set("limit", String(options.limit ?? 50));
+    if (options.before_id !== undefined) {
+      params.set("before_id", String(options.before_id));
+    }
+    return request(`/api/adapters/${adapterId}/executions?${params.toString()}`);
+  },
+
+  listWorkers: (): Promise<Worker[]> => request("/api/workers"),
 };

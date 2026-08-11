@@ -9,9 +9,10 @@
 # PostgreSQL accepts connections (the worker healthcheck needs the M2 tables
 # to register), wait until every service is healthy, verify the web page,
 # the /api/health proxy path and 401 auth rejection, run the full M1 Adapter
-# management chain with the admin token, then run the M2 execution loop
-# (Manual Execution -> worker claim -> venv -> subprocess -> succeeded)
-# before tearing down only the smoke project.
+# management chain with the admin token, then run the M2/M3 execution loop
+# (Manual Execution -> worker claim -> venv -> subprocess -> live logs over
+# SSE -> succeeded -> history list/detail) before tearing down only the
+# smoke project.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -215,7 +216,7 @@ request("GET", f"/adapters/{adapter_id}", expected=404)
 print("M1 smoke chain passed")
 PY
 
-echo "==> running M2 execution loop (manual execution -> worker -> succeeded)"
+echo "==> running M2/M3 execution loop (manual execution -> worker -> SSE -> succeeded)"
 # The smoke adapter uses only the Python standard library so CI does not
 # depend on public PyPI availability. The secret is consumed as a SHA-256
 # digest: it is genuinely usable via context.secrets, but the raw value can
@@ -236,10 +237,14 @@ EXPECTED_DIGEST = hashlib.sha256(SMOKE_SECRET.encode()).hexdigest()
 
 ADAPTER_CODE = (
     "import hashlib\n"
+    "import time\n"
     "\n"
     "\n"
     "def handle(context, input):\n"
     "    secret = context.secrets.get('SMOKE') or ''\n"
+    "    print('smoke step 1: starting', flush=True)\n"
+    "    time.sleep(3)\n"
+    "    print('smoke step 2: finishing', flush=True)\n"
     "    context.logger.info('secret available, reporting digest only')\n"
     "    return {\n"
     "        'echo': input,\n"
@@ -293,8 +298,55 @@ execution_id = execution["id"]
 check(execution["status"] == "pending", "a new execution starts pending")
 check(execution["version_id"] == version_id, "execution pins the latest version")
 
+# M3: the SSE stream needs the admin token like every other admin API.
+sse_unauth = urllib.request.Request(BASE + f"/executions/{execution_id}/events")
+try:
+    urllib.request.urlopen(sse_unauth, timeout=10)
+    raise AssertionError("SSE without token must be rejected with 401")
+except urllib.error.HTTPError as error:
+    check(error.code == 401, f"SSE without token must return 401, got {error.code}")
+
+# M3: observe the execution over SSE until the server closes the stream at a
+# terminal status; live logs must be visible while the adapter is running.
+sse_req = urllib.request.Request(BASE + f"/executions/{execution_id}/events")
+sse_req.add_header("Authorization", f"Bearer {ADMIN_TOKEN}")
+sse_req.add_header("Accept", "text/event-stream")
+sse_events = []
+with urllib.request.urlopen(sse_req, timeout=180) as response:
+    buffer = b""
+    while True:
+        chunk = response.read(4096)
+        if not chunk:
+            break
+        buffer += chunk
+        while b"\n\n" in buffer:
+            raw_block, buffer = buffer.split(b"\n\n", 1)
+            event_name = "message"
+            data_lines = []
+            for line in raw_block.decode().split("\n"):
+                if line.startswith("event: "):
+                    event_name = line[len("event: "):]
+                elif line.startswith("data: "):
+                    data_lines.append(line[len("data: "):])
+            if data_lines:
+                sse_events.append((event_name, json.loads("\n".join(data_lines))))
+
+execution_events = [data for name, data in sse_events if name == "execution"]
+log_events = [data for name, data in sse_events if name == "log"]
+check(len(execution_events) >= 1, "SSE sends execution state events")
+check(
+    any(event["status"] == "running" for event in execution_events),
+    "SSE observes the running state",
+)
+check(len(log_events) >= 1, "SSE streams at least one live log event")
+check(
+    any("smoke step" in event["chunk"] for event in log_events),
+    "SSE log events carry the adapter's live output",
+)
+check(execution_events[-1]["status"] == "succeeded", "SSE ends with the terminal state")
+
 deadline = time.monotonic() + 180
-current = execution
+current = request("GET", f"/executions/{execution_id}")
 while current["status"] in ("pending", "running") and time.monotonic() < deadline:
     time.sleep(2)
     current = request("GET", f"/executions/{execution_id}")
@@ -313,6 +365,31 @@ check(
 )
 check("secret available" in current["stdout"], "context.logger output is collected")
 
+# M3: history lists this execution newest-first and the summary rows never
+# carry the large payload fields.
+history = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+history_ids = [item["id"] for item in history["items"]]
+check(execution_id in history_ids, "history lists this execution")
+check(
+    history_ids == sorted(history_ids, reverse=True),
+    "history is ordered newest first",
+)
+summary = next(item for item in history["items"] if item["id"] == execution_id)
+check(summary["status"] == "succeeded", "history row shows the terminal status")
+check(summary["version_seq"] == version["seq"], "history row enriches the version seq")
+check(
+    all(field not in summary for field in ("input", "output", "stdout", "stderr")),
+    "history summary carries no large fields",
+)
+
+# M3: the worker list admin API shows the registered smoke worker.
+workers = request("GET", "/workers")
+check(len(workers) >= 1, "worker list returns the registered worker")
+check(
+    any(worker["status"] == "online" for worker in workers),
+    "the smoke worker reports online",
+)
+
 # The raw secret value must never leak into any persisted field.
 blob = json.dumps(current)
 check(SMOKE_SECRET not in blob, "raw secret must not appear in execution responses")
@@ -325,7 +402,7 @@ check(
 
 print(f"SMOKE_EXEC_ADAPTER_ID={adapter_id}")
 print(f"SMOKE_EXEC_VERSION_ID={version_id}")
-print("M2 smoke chain passed")
+print("M2/M3 smoke chain passed")
 PY
 )
 echo "$m2_output"

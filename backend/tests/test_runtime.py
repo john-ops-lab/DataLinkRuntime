@@ -6,6 +6,7 @@ availability is required (except one deliberate dependency-failure test).
 """
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -341,3 +342,98 @@ def test_output_dict_keys_are_redacted(tmp_path: object, monkeypatch: pytest.Mon
     assert "[REDACTED]" in output, "the redacted key must be present"
     assert output["[REDACTED]"]["nested"] == "[REDACTED]"
     assert output["[REDACTED]"]["plain"] == "visible"
+
+
+# --- M3 live progress callback ---------------------------------------------------
+
+
+LIVE_LOG_CODE = (
+    "import time\n\n\n"
+    "def handle(context, input):\n"
+    "    print('phase-1', flush=True)\n"
+    "    time.sleep(0.7)\n"
+    "    print('phase-2', flush=True)\n"
+    "    return {}\n"
+)
+
+
+def test_executor_progress_callback_receives_live_chunks(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    chunks: list[tuple[str, str]] = []
+
+    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        chunks.append((stdout_chunk, stderr_chunk))
+
+    result = executor.run(
+        make_payload(code=LIVE_LOG_CODE),
+        runtime_settings(tmp_path),
+        progress_callback=callback,
+    )
+    assert result["status"] == "succeeded"
+    delivered = "".join(stdout for stdout, _ in chunks)
+    assert "phase-1" in delivered
+    assert "phase-2" in delivered
+    assert len(chunks) >= 2, "progress must arrive in multiple waves, not one final dump"
+    # Progress never changes the final report.
+    assert result["stdout"] == "phase-1\nphase-2\n"
+
+
+def test_executor_progress_chunks_are_redacted(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    monkeypatch.setenv("DLR_SECRET_SMOKE", "live-leak-secret")
+    code = (
+        "def handle(context, input):\n"
+        "    print('leak: ' + str(context.secrets.get('SMOKE')), flush=True)\n"
+        "    return {}\n"
+    )
+    chunks: list[str] = []
+
+    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        chunks.append(stdout_chunk)
+
+    result = executor.run(
+        make_payload(code=code), runtime_settings(tmp_path), progress_callback=callback
+    )
+    assert result["status"] == "succeeded"
+    delivered = "".join(chunks)
+    assert "live-leak-secret" not in delivered, "live chunks must be redacted before upload"
+    assert "[REDACTED]" in delivered
+
+
+def test_executor_progress_callback_failure_never_fails_run(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+
+    def broken_callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        raise RuntimeError("control unreachable")
+
+    result = executor.run(
+        make_payload(code=LIVE_LOG_CODE),
+        runtime_settings(tmp_path),
+        progress_callback=broken_callback,
+    )
+    assert result["status"] == "succeeded", "progress is best effort and must not fail the run"
+    assert result["stdout"] == "phase-1\nphase-2\n"
+
+
+def test_stream_tailer_keeps_split_utf8_boundaries(tmp_path: object) -> None:
+    path = Path(tmp_path) / "split.log"
+    path.write_bytes(b"")
+    tailer = executor._StreamTailer(path)
+    try:
+        encoded = "héllo".encode()
+        cut = 2  # split inside the two-byte sequence of "é"
+        with path.open("ab") as handle:
+            handle.write(encoded[:cut])
+        assert tailer.read_new() == "h"
+        with path.open("ab") as handle:
+            handle.write(encoded[cut:])
+        assert tailer.read_new() == "éllo"
+        assert tailer.read_new() == ""
+    finally:
+        tailer.close()

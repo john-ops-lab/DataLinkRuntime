@@ -6,7 +6,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from dlr.control import db
-from dlr.control.schemas.execution import ExecutionCreate, ExecutionResponse
+from dlr.control.schemas.execution import (
+    ExecutionCreate,
+    ExecutionHistoryPage,
+    ExecutionResponse,
+)
 from dlr.control.security import require_admin_token
 from dlr.control.services import execution as execution_service
 
@@ -32,3 +36,24 @@ def create_execution(
 @router.get("/api/executions/{execution_id}", response_model=ExecutionResponse)
 def get_execution(execution_id: int, session: DbSession) -> ExecutionResponse:
     return ExecutionResponse.model_validate(execution_service.get_execution(session, execution_id))
+
+
+@router.get(
+    "/api/adapters/{adapter_id}/executions",
+    response_model=ExecutionHistoryPage,
+)
+def list_executions(
+    adapter_id: int,
+    session: DbSession,
+    limit: int = execution_service.DEFAULT_HISTORY_LIMIT,
+    before_id: int | None = None,
+) -> ExecutionHistoryPage:
+    """Cursor-paged execution history of one Adapter, newest first.
+
+    Summaries only: the input/output/stdout/stderr big fields are never
+    included; ``GET /api/executions/{id}`` loads a full detail.
+    """
+    items, next_before_id = execution_service.list_adapter_executions(
+        session, adapter_id, limit=limit, before_id=before_id
+    )
+    return ExecutionHistoryPage(items=items, next_before_id=next_before_id)

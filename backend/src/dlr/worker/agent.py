@@ -193,8 +193,16 @@ class Agent:
             task["adapter_id"],
             task["version_id"],
         )
+
+        def progress_callback(stdout_chunk: str, stderr_chunk: str) -> None:
+            # Best effort: the executor swallows any exception raised here,
+            # and Control answers 204 no-op once the Execution is terminal.
+            self._client.report_progress(worker_id, execution_id, stdout_chunk, stderr_chunk)
+
         try:
-            result = executor.run(task, self._config.runtime_settings())
+            result = executor.run(
+                task, self._config.runtime_settings(), progress_callback=progress_callback
+            )
         except Exception:  # noqa: BLE001 - a worker must survive any task
             logger.exception("unexpected executor failure for execution %s", execution_id)
             result = {

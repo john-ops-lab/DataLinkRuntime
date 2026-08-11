@@ -7,13 +7,20 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from dlr.control import db
-from dlr.control.schemas.execution import ExecutionResponse, ExecutionResultReport
+from dlr.control.schemas.execution import (
+    ExecutionResponse,
+    ExecutionResultReport,
+    ProgressReport,
+)
 from dlr.control.schemas.worker import WorkerRegister, WorkerResponse
-from dlr.control.security import require_worker_token
+from dlr.control.security import require_admin_token, require_worker_token
 from dlr.control.services import execution as execution_service
 from dlr.control.services import worker as worker_service
 
 router = APIRouter(dependencies=[Depends(require_worker_token)])
+# M3: the read-only Worker list is an admin-facing observability API, so it
+# lives on its own router with the admin token requirement.
+admin_router = APIRouter(dependencies=[Depends(require_admin_token)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 
@@ -57,3 +64,27 @@ def report_result(
     return ExecutionResponse.model_validate(
         execution_service.apply_result(session, worker_id, execution_id, payload)
     )
+
+
+@router.post(
+    "/api/workers/{worker_id}/executions/{execution_id}/progress",
+    status_code=204,
+)
+def report_progress(
+    worker_id: int, execution_id: int, payload: ProgressReport, session: DbSession
+) -> Response:
+    """Append best-effort stdout/stderr chunks while the Execution runs.
+
+    204 no-op once the Execution reached a terminal state, so progress can
+    never overwrite the M2 final result; non-owning Workers still get 409.
+    """
+    execution_service.apply_progress(session, worker_id, execution_id, payload)
+    return Response(status_code=204)
+
+
+@admin_router.get("/api/workers", response_model=list[WorkerResponse])
+def list_workers(session: DbSession) -> list[WorkerResponse]:
+    """Minimal admin-facing Worker status list (M3 spec §10)."""
+    return [
+        WorkerResponse.model_validate(worker) for worker in worker_service.list_workers(session)
+    ]

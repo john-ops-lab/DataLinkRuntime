@@ -1,7 +1,8 @@
-/** Left panel: adapter list plus the create form. */
+/** Left panel: adapter search, list plus the create form. */
 
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { Button, Card, Input, Space } from "antd";
 
 import type { Adapter } from "../types";
 
@@ -19,6 +20,7 @@ interface AdapterListProps {
 
 export default function AdapterList({ adapters, selectedId, busy, onSelect, onCreate }: AdapterListProps) {
   const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -42,52 +44,71 @@ export default function AdapterList({ adapters, selectedId, busy, onSelect, onCr
     }
   }
 
+  const keyword = search.trim().toLowerCase();
+  const visible = keyword === "" ? adapters : adapters.filter((adapter) => adapter.name.toLowerCase().includes(keyword));
+
   return (
-    <aside className="adapter-list">
-      <div className="adapter-list-header">
-        <h2>Adapters</h2>
-        <button
-          type="button"
+    <Card
+      className="adapter-list"
+      size="small"
+      title="Adapter 列表"
+      extra={
+        <Button
+          size="small"
+          type="primary"
           data-testid="show-create-form"
           disabled={busy}
           onClick={() => setCreating(true)}
         >
-          + New Adapter
-        </button>
-      </div>
+          + 新建
+        </Button>
+      }
+    >
+      <Input.Search
+        data-testid="adapter-search"
+        placeholder="搜索 Adapter"
+        allowClear
+        size="small"
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+      />
 
       {creating && (
         <form className="create-form" onSubmit={(event) => void handleCreate(event)}>
-          <input
+          <Input
             data-testid="new-adapter-name"
-            placeholder="name"
+            placeholder="名称"
             value={name}
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
           />
-          <input
+          <Input
             data-testid="new-adapter-description"
-            placeholder="description (optional)"
+            placeholder="描述（可选）"
             value={description}
             disabled={busy}
             onChange={(event) => setDescription(event.target.value)}
           />
-          <div className="create-form-actions">
-            <button type="submit" data-testid="create-adapter" disabled={busy || submitting}>
-              Create
-            </button>
-            <button type="button" onClick={() => setCreating(false)}>
-              Cancel
-            </button>
-          </div>
+          <Space className="create-form-actions">
+            <Button
+              type="primary"
+              htmlType="submit"
+              data-testid="create-adapter"
+              loading={submitting}
+              disabled={busy}
+            >
+              创建
+            </Button>
+            <Button onClick={() => setCreating(false)}>取消</Button>
+          </Space>
         </form>
       )}
 
-      {adapters.length === 0 ? (
-        <p className="adapter-list-empty">No adapters yet.</p>
+      {visible.length === 0 ? (
+        <p className="adapter-list-empty">{adapters.length === 0 ? "暂无 Adapter" : "没有匹配的 Adapter"}</p>
       ) : (
         <ul>
-          {adapters.map((adapter) => (
+          {visible.map((adapter) => (
             <li key={adapter.id}>
               <button
                 type="button"
@@ -102,6 +123,6 @@ export default function AdapterList({ adapters, selectedId, busy, onSelect, onCr
           ))}
         </ul>
       )}
-    </aside>
+    </Card>
   );
 }

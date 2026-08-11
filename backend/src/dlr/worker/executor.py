@@ -5,6 +5,11 @@ files (never unbounded in-memory pipes) and are capped per the big-field
 contract before reporting. The adapter subprocess only inherits basic
 platform variables plus ``DLR_SECRET_*`` — never worker/admin tokens or
 ``DATABASE_URL``.
+
+M3 adds an optional progress callback: while the subprocess runs, newly
+appended stdout/stderr bytes are uploaded about once per second. Progress is
+best effort — failures are logged and never change the Execution outcome,
+and the final result report stays the authoritative source of truth.
 """
 
 import json
@@ -14,6 +19,8 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +34,12 @@ logger = logging.getLogger("dlr.worker.executor")
 
 HARNESS_PATH = Path(harness.__file__)
 REDACTED = "[REDACTED]"
+
+# Live-log upload rhythm while the subprocess runs (M3 spec §6.1).
+PROGRESS_POLL_SECONDS = 1.0
+
+# Receives already redacted (stdout_chunk, stderr_chunk); see run().
+ProgressCallback = Callable[[str, str], None]
 
 # Basic platform variables the adapter subprocess may inherit. Everything
 # else (DLR_WORKER_TOKEN, DLR_ADMIN_TOKEN, DATABASE_URL, Control settings)
@@ -95,8 +108,107 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
-def run(payload: dict[str, Any], config: RuntimeSettings) -> dict[str, Any]:
-    """Run one task payload to completion; always returns a report dict."""
+class _StreamTailer:
+    """Read newly appended bytes from a file the subprocess writes to.
+
+    Incomplete trailing UTF-8 sequences are kept for the next round so a
+    multi-byte character split across chunk boundaries is never corrupted.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._handle = path.open("rb")
+        self._pending = bytearray()
+
+    def read_new(self) -> str:
+        raw = self._handle.read()
+        if raw:
+            self._pending.extend(raw)
+        data = bytes(self._pending)
+        if not data:
+            return ""
+        try:
+            text = data.decode()
+            self._pending.clear()
+            return text
+        except UnicodeDecodeError:
+            # At most three trailing bytes can belong to an incomplete
+            # UTF-8 sequence.
+            for trim in range(1, 4):
+                try:
+                    text = data[:-trim].decode()
+                except UnicodeDecodeError:
+                    continue
+                self._pending = bytearray(data[-trim:])
+                return text
+            return ""
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+def _wait_with_progress(
+    process: subprocess.Popen[bytes],
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout: int,
+    progress_callback: ProgressCallback | None,
+) -> tuple[int, bool]:
+    """Wait for the adapter subprocess, uploading live log chunks.
+
+    Returns ``(returncode, timed_out)``. Without a callback this degrades to
+    the plain M2 blocking wait. Callback invocations receive redacted text;
+    any callback exception is logged and swallowed, because progress is best
+    effort and must never fail the Execution itself.
+    """
+    if progress_callback is None:
+        try:
+            return process.wait(timeout=timeout), False
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            return -1, True
+
+    deadline = time.monotonic() + timeout
+    stdout_tailer = _StreamTailer(stdout_path)
+    stderr_tailer = _StreamTailer(stderr_path)
+
+    def emit() -> None:
+        stdout_chunk = redact_secrets(stdout_tailer.read_new())
+        stderr_chunk = redact_secrets(stderr_tailer.read_new())
+        if not stdout_chunk and not stderr_chunk:
+            return
+        try:
+            progress_callback(stdout_chunk, stderr_chunk)
+        except Exception:  # noqa: BLE001 - progress must never fail a run
+            logger.warning("progress upload failed; continuing execution", exc_info=True)
+
+    try:
+        while True:
+            try:
+                returncode = process.wait(timeout=PROGRESS_POLL_SECONDS)
+                emit()  # final drain so the live view matches the end state
+                return returncode, False
+            except subprocess.TimeoutExpired:
+                pass
+            emit()
+            if time.monotonic() >= deadline:
+                _kill_process_group(process)
+                emit()
+                return -1, True
+    finally:
+        stdout_tailer.close()
+        stderr_tailer.close()
+
+
+def run(
+    payload: dict[str, Any],
+    config: RuntimeSettings,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Run one task payload to completion; always returns a report dict.
+
+    ``progress_callback`` receives redacted live stdout/stderr chunks while
+    the subprocess runs; it never influences the returned final report.
+    """
     execution_id = int(payload["execution_id"])
     adapter_id = int(payload["adapter_id"])
     version_id = int(payload["version_id"])
@@ -145,11 +257,9 @@ def run(payload: dict[str, Any], config: RuntimeSettings) -> dict[str, Any]:
                 env=child_env(),
                 cwd=str(workspace),
             )
-            try:
-                returncode = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                _kill_process_group(process)
-                timed_out = True
+            returncode, timed_out = _wait_with_progress(
+                process, stdout_path, stderr_path, timeout, progress_callback
+            )
 
         stdout_raw = stdout_path.read_bytes()
         stderr_raw = stderr_path.read_bytes()

@@ -37,5 +37,12 @@ class Settings(BaseSettings):
         default=300, validation_alias="DLR_EXECUTION_TIMEOUT_SECONDS"
     )
 
+    # M3 SSE: the simplest possible PostgreSQL polling implementation; see
+    # docs/specs/m3-observability-ux.md §7.
+    sse_poll_interval_seconds: float = Field(
+        default=0.75, validation_alias="DLR_SSE_POLL_INTERVAL_SECONDS"
+    )
+    sse_keepalive_seconds: float = Field(default=15.0, validation_alias="DLR_SSE_KEEPALIVE_SECONDS")
+
 
 settings = Settings()

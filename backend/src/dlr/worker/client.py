@@ -87,3 +87,16 @@ class ControlClient:
         )
         body: dict[str, Any] = json.loads(raw)
         return body
+
+    def report_progress(
+        self, worker_id: int, execution_id: int, stdout_chunk: str, stderr_chunk: str
+    ) -> None:
+        """Best-effort live-log upload (M3). Progress is never retried here;
+        callers swallow failures so an Execution can never fail because its
+        live logs could not be delivered."""
+        self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/executions/{execution_id}/progress",
+            {"stdout_chunk": stdout_chunk, "stderr_chunk": stderr_chunk},
+            expected=204,
+        )
