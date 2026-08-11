@@ -319,3 +319,25 @@ def test_dependency_install_log_redacts_sensitive_patterns(
     assert "user:pass@host" not in redacted
     assert "smoke-secret-value" not in redacted
     assert "[REDACTED]" in redacted
+
+
+# --- Review Round 2 regression tests ------------------------------------------
+
+
+def test_output_dict_keys_are_redacted(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round 2 Important 2: a Secret used as a JSON object key must be redacted."""
+    monkeypatch.setenv("DLR_SECRET_SMOKE", "top-secret-key")
+    # The adapter uses the Secret both as a dict key and as a nested value.
+    code = (
+        "def handle(context, input):\n"
+        "    secret = context.secrets.get('SMOKE')\n"
+        "    return {secret: {'nested': secret, 'plain': 'visible'}}\n"
+    )
+    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    assert result["status"] == "succeeded"
+    output = result["output"]
+    # The raw Secret must appear neither as a key nor as any value.
+    assert "top-secret-key" not in str(output)
+    assert "[REDACTED]" in output, "the redacted key must be present"
+    assert output["[REDACTED]"]["nested"] == "[REDACTED]"
+    assert output["[REDACTED]"]["plain"] == "visible"

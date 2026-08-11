@@ -485,6 +485,78 @@ def test_control_trusts_worker_output_truncated_flag(
     assert body["output_preview"] == "preview of truncated output"
 
 
+# --- Review Round 2: output truncation contract re-validation ------------------
+
+
+def test_result_rejects_output_truncated_with_non_null_output(
+    api_client: TestClient,
+) -> None:
+    """Round 2 Important 1: output_truncated=true with a complete output is a contract violation."""
+    worker, execution, _ = setup_claimed_execution(
+        api_client, adapter_name="worker-r2-contradict-a"
+    )
+    response = report(
+        api_client,
+        worker["id"],
+        execution["id"],
+        {
+            "status": "succeeded",
+            "output": {"actually": "complete"},
+            "output_truncated": True,
+            "output_size": 100,
+            "output_preview": "anything",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "output_contract_violation"
+
+
+def test_result_rejects_output_truncated_with_missing_size(
+    api_client: TestClient,
+) -> None:
+    """Round 2 Important 1: output_truncated=true without a size is invalid."""
+    worker, execution, _ = setup_claimed_execution(
+        api_client, adapter_name="worker-r2-contradict-b"
+    )
+    response = report(
+        api_client,
+        worker["id"],
+        execution["id"],
+        {
+            "status": "succeeded",
+            "output": None,
+            "output_truncated": True,
+            "output_size": None,
+            "output_preview": "preview",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "output_contract_violation"
+
+
+def test_result_rejects_output_truncated_with_zero_size(
+    api_client: TestClient,
+) -> None:
+    """Round 2 Important 1: output_truncated=true with size<=0 is invalid."""
+    worker, execution, _ = setup_claimed_execution(
+        api_client, adapter_name="worker-r2-contradict-c"
+    )
+    response = report(
+        api_client,
+        worker["id"],
+        execution["id"],
+        {
+            "status": "succeeded",
+            "output": None,
+            "output_truncated": True,
+            "output_size": 0,
+            "output_preview": "preview",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "output_contract_violation"
+
+
 # --- Important 5: reference counting for active versions -----------------------
 
 

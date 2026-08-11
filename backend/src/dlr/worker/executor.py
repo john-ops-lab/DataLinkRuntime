@@ -65,12 +65,17 @@ def _redact_json_value(value: Any) -> Any:
     """Recursively redact DLR_SECRET_* plaintext values from a JSON structure.
 
     Strings are scanned for each secret value and replaced with [REDACTED].
-    Dicts and lists are traversed recursively. Other types are returned as-is.
+    Dicts and lists are traversed recursively; dict string keys are redacted
+    too, so a Secret used as an object key cannot leak into Execution.output.
+    Other types are returned as-is.
     """
     if isinstance(value, str):
         return redact_secrets(value)
     if isinstance(value, dict):
-        return {k: _redact_json_value(v) for k, v in value.items()}
+        return {
+            redact_secrets(k) if isinstance(k, str) else k: _redact_json_value(v)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [_redact_json_value(item) for item in value]
     return value

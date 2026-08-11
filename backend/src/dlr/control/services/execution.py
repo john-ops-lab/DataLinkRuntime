@@ -72,13 +72,27 @@ def _normalize_output(
     """Re-validate the output big-field contract server-side.
 
     The Worker may already have truncated output (output_truncated=true,
-    output=null, output_size and output_preview set). In that case Control
-    must trust the truncation flag and not re-interpret the preview as a
-    complete value. When the Worker reports a complete output, Control
-    re-validates the size and truncates if necessary.
+    output=null, output_size and output_preview set). Control re-validates
+    the consistency of that truncation claim instead of blindly trusting it:
+    a truncated report must carry output=null and a positive output_size;
+    contradictory combinations are rejected, never silently rewritten into a
+    plausible-looking Execution result. When the Worker reports a complete
+    output, Control re-validates the size and truncates if necessary.
     """
-    # Worker-reported truncation: trust the flag, cap the preview defensively.
+    # Worker-reported truncation: re-validate the contract, cap the preview.
     if report.output_truncated:
+        if report.output is not None:
+            raise domain_error(
+                422,
+                "output_contract_violation",
+                "output_truncated=true requires output to be null",
+            )
+        if report.output_size is None or report.output_size <= 0:
+            raise domain_error(
+                422,
+                "output_contract_violation",
+                "output_truncated=true requires a positive output_size",
+            )
         preview_bytes = (report.output_preview or "").encode()
         capped = preview_bytes[: settings.execution_output_preview_max_bytes].decode(
             "utf-8", errors="ignore"
