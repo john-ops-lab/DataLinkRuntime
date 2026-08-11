@@ -5,13 +5,19 @@ production. Adapters only use the Python standard library, so no public PyPI
 availability is required (except one deliberate dependency-failure test).
 """
 
+import subprocess
+import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from dlr.common.config import settings
 from dlr.worker import executor
 from dlr.worker import venv as venv_manager
+from dlr.worker.client import ControlClient, ControlUnavailableError
 from dlr.worker.executor import RuntimeSettings
 
 ECHO_CODE = """
@@ -341,3 +347,308 @@ def test_output_dict_keys_are_redacted(tmp_path: object, monkeypatch: pytest.Mon
     assert "[REDACTED]" in output, "the redacted key must be present"
     assert output["[REDACTED]"]["nested"] == "[REDACTED]"
     assert output["[REDACTED]"]["plain"] == "visible"
+
+
+# --- M3 live progress callback ---------------------------------------------------
+
+
+LIVE_LOG_CODE = (
+    "import time\n\n\n"
+    "def handle(context, input):\n"
+    "    print('phase-1', flush=True)\n"
+    "    time.sleep(0.7)\n"
+    "    print('phase-2', flush=True)\n"
+    "    return {}\n"
+)
+
+
+def test_executor_progress_callback_receives_live_chunks(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    chunks: list[tuple[str, str]] = []
+
+    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        chunks.append((stdout_chunk, stderr_chunk))
+
+    result = executor.run(
+        make_payload(code=LIVE_LOG_CODE),
+        runtime_settings(tmp_path),
+        progress_callback=callback,
+    )
+    assert result["status"] == "succeeded"
+    delivered = "".join(stdout for stdout, _ in chunks)
+    assert "phase-1" in delivered
+    assert "phase-2" in delivered
+    assert len(chunks) >= 2, "progress must arrive in multiple waves, not one final dump"
+    # Progress never changes the final report.
+    assert result["stdout"] == "phase-1\nphase-2\n"
+
+
+def test_executor_progress_chunks_are_redacted(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    monkeypatch.setenv("DLR_SECRET_SMOKE", "live-leak-secret")
+    code = (
+        "def handle(context, input):\n"
+        "    print('leak: ' + str(context.secrets.get('SMOKE')), flush=True)\n"
+        "    return {}\n"
+    )
+    chunks: list[str] = []
+
+    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        chunks.append(stdout_chunk)
+
+    result = executor.run(
+        make_payload(code=code), runtime_settings(tmp_path), progress_callback=callback
+    )
+    assert result["status"] == "succeeded"
+    delivered = "".join(chunks)
+    assert "live-leak-secret" not in delivered, "live chunks must be redacted before upload"
+    assert "[REDACTED]" in delivered
+
+
+def test_executor_progress_callback_failure_never_fails_run(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+
+    def broken_callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        raise RuntimeError("control unreachable")
+
+    result = executor.run(
+        make_payload(code=LIVE_LOG_CODE),
+        runtime_settings(tmp_path),
+        progress_callback=broken_callback,
+    )
+    assert result["status"] == "succeeded", "progress is best effort and must not fail the run"
+    assert result["stdout"] == "phase-1\nphase-2\n"
+
+
+def test_stream_tailer_keeps_split_utf8_boundaries(tmp_path: object) -> None:
+    path = Path(tmp_path) / "split.log"
+    path.write_bytes(b"")
+    tailer = executor._StreamTailer(path)
+    try:
+        encoded = "héllo".encode()
+        cut = 2  # split inside the two-byte sequence of "é"
+        with path.open("ab") as handle:
+            handle.write(encoded[:cut])
+        assert tailer.read_new() == "h"
+        with path.open("ab") as handle:
+            handle.write(encoded[cut:])
+        assert tailer.read_new() == "éllo"
+        assert tailer.read_new() == ""
+    finally:
+        tailer.close()
+
+
+# --- M3 cross-chunk Secret redaction (Important 2) -------------------------------
+
+
+# Writes the Secret split across two flushes with at least one progress poll
+# between them; neither chunk alone contains the full Secret.
+SPLIT_SECRET_CODE = (
+    "import sys\n"
+    "import time\n\n\n"
+    "def handle(context, input):\n"
+    "    secret = str(context.secrets.get('SPLIT'))\n"
+    "    print('lead', flush=True)\n"
+    "    sys.stdout.write(secret[:6])\n"
+    "    sys.stdout.flush()\n"
+    "    time.sleep(0.7)\n"
+    "    sys.stdout.write(secret[6:] + '\\n')\n"
+    "    sys.stdout.flush()\n"
+    "    return {}\n"
+)
+
+
+def test_secret_holdback_redacts_across_chunk_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DLR_SECRET_SPLIT", "abcdef123456")
+    guard = executor._SecretHoldback()
+    delivered = "".join([guard.push("lead\nabcdef"), guard.push("123456 tail\n"), guard.flush()])
+    assert "abcdef123456" not in delivered, (
+        "a Secret split across pushes must never be reassemblable downstream"
+    )
+    assert "[REDACTED]" in delivered
+    assert "lead" in delivered and "tail" in delivered, "surrounding text must not be lost"
+
+
+def test_executor_progress_redacts_secret_split_across_polls(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    monkeypatch.setenv("DLR_SECRET_SPLIT", "abcdef123456")
+    chunks: list[str] = []
+
+    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        chunks.append(stdout_chunk)
+
+    result = executor.run(
+        make_payload(code=SPLIT_SECRET_CODE),
+        runtime_settings(tmp_path),
+        progress_callback=callback,
+    )
+    assert result["status"] == "succeeded"
+    delivered = "".join(chunks)
+    assert "abcdef123456" not in delivered, (
+        "a Secret written across two flushes must never reach progress payloads"
+    )
+    assert "[REDACTED]" in delivered
+    # The final M2 report stays fully redacted as well.
+    assert "abcdef123456" not in result["stdout"]
+
+
+# --- M3 progress deadline isolation (Important 3) --------------------------------
+
+
+class _StuckHandler(BaseHTTPRequestHandler):
+    """Accepts the connection but never answers, simulating a stuck Control."""
+
+    def do_POST(self) -> None:
+        time.sleep(60)
+
+    def log_message(self, *args: object) -> None:  # silence request logging
+        pass
+
+
+def _start_stuck_server() -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StuckHandler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_report_progress_fails_fast_on_a_stuck_control() -> None:
+    server = _start_stuck_server()
+    try:
+        client = ControlClient(f"http://127.0.0.1:{server.server_address[1]}", "test-worker-token")
+        started = time.monotonic()
+        with pytest.raises(ControlUnavailableError):
+            client.report_progress(1, 2, "x", "")
+        elapsed = time.monotonic() - started
+        assert elapsed < 15, "progress must use its own short timeout, not the 60s API budget"
+    finally:
+        server.shutdown()
+
+
+def test_stuck_progress_upload_does_not_stretch_execution_timeout(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    server = _start_stuck_server()
+    try:
+        client = ControlClient(f"http://127.0.0.1:{server.server_address[1]}", "test-worker-token")
+
+        def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+            client.report_progress(1, 2, stdout_chunk, stderr_chunk)
+
+        code = (
+            "import time\n\n\n"
+            "def handle(context, input):\n"
+            "    for _ in range(60):\n"
+            "        print('tick', flush=True)\n"
+            "        time.sleep(1)\n"
+            "    return {}\n"
+        )
+        started = time.monotonic()
+        result = executor.run(
+            make_payload(code=code, timeout=2),
+            runtime_settings(tmp_path),
+            progress_callback=callback,
+        )
+        elapsed = time.monotonic() - started
+        assert result["status"] == "timeout"
+        # Tight bound: uploads now run off-thread, so a stuck progress upload
+        # adds nothing to the adapter deadline — only small CI tolerance on
+        # top of the 2s timeout. A synchronous callback (even with the short
+        # 5s HTTP timeout) would visibly exceed this.
+        assert elapsed < 8, f"a stuck progress upload stretched a 2s timeout to {elapsed:.1f}s"
+    finally:
+        server.shutdown()
+
+
+def test_progress_uploader_never_blocks_and_merges_overlapping_chunks() -> None:
+    """submit() must return instantly and overlapping uploads must merge.
+
+    Regression for the M3 second review (I1): the executor may never wait
+    on a progress upload, and at most one upload may be in flight.
+    """
+    gate = threading.Event()
+    started_first = threading.Event()
+    uploads: list[tuple[str, str]] = []
+    lock = threading.Lock()
+
+    def slow_callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        started_first.set()
+        gate.wait(timeout=5)
+        with lock:
+            uploads.append((stdout_chunk, stderr_chunk))
+
+    uploader = executor._ProgressUploader(slow_callback)
+    started = time.monotonic()
+    uploader.submit("a", "")
+    assert started_first.wait(timeout=5), "the first upload should start"
+    uploader.submit("b", "")  # arrives while the first upload is stuck
+    uploader.submit("c", "")
+    assert time.monotonic() - started < 0.5, "submit() must never wait on uploads"
+
+    gate.set()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with lock:
+            if len(uploads) == 2:
+                break
+        time.sleep(0.01)
+    with lock:
+        assert len(uploads) == 2, "only one upload may be in flight at a time"
+        assert uploads[0][0] == "a"
+        assert uploads[1][0] == "bc", "chunks submitted during a stuck upload must merge"
+
+
+def test_blocking_progress_callback_cannot_delay_the_deadline(
+    tmp_path: object,
+) -> None:
+    """Even a callback that never returns cannot stretch the timeout.
+
+    Regression for the M3 second review (I1): with a synchronous callback
+    the executor would hang forever here; with the off-thread uploader the
+    kill must land within a small tolerance of the configured deadline.
+    """
+    stdout_path = Path(str(tmp_path)) / "stdout.log"
+    stdout_path.write_text("")
+    stderr_path = Path(str(tmp_path)) / "stderr.log"
+    stderr_path.write_text("")
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,  # own process group, as the executor does
+    )
+
+    def blocking_callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        threading.Event().wait()  # wedge forever like a stuck HTTP upload
+
+    started = time.monotonic()
+    try:
+        returncode, timed_out = executor._wait_with_progress(
+            process,
+            stdout_path,
+            stderr_path,
+            timeout=1.0,
+            progress_callback=blocking_callback,
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    elapsed = time.monotonic() - started
+
+    assert timed_out is True
+    assert returncode == -1
+    # 1s deadline plus the bounded final-drain wait (PROGRESS_DRAIN_SECONDS)
+    # plus small tolerance; a synchronous callback would hang forever.
+    assert elapsed < 3, f"a wedged callback delayed the 1s deadline to {elapsed:.1f}s"

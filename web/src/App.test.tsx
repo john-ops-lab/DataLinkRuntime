@@ -3,7 +3,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import App, { TOKEN_STORAGE_KEY } from "./App";
 import { setAuthToken } from "./api";
-import type { Adapter, VersionDetail, VersionSummary } from "./types";
+import { FALLBACK_POLICY } from "./fallback-policy";
+import type {
+  Adapter,
+  Execution,
+  ExecutionSummary,
+  VersionDetail,
+  VersionSummary,
+} from "./types";
 
 // The Monaco editor is replaced by a plain textarea so tests exercise the DLR
 // business integration (value / change / save) instead of the editor itself.
@@ -30,12 +37,16 @@ const STARTER_CODE = "def handle(context, input):\n    return input\n";
 interface RouteResponse {
   status?: number;
   body?: unknown;
+  /** SSE: raw event-stream text delivered as a single chunk. */
+  stream?: string;
+  /** SSE: raw event-stream text delivered chunk by chunk, then EOF. */
+  streamChunks?: string[];
 }
 
 interface Route {
   method: string;
   match: string | RegExp;
-  respond: (body: string | null) => RouteResponse | Promise<RouteResponse>;
+  respond: (body: string | null, url: string) => RouteResponse | Promise<RouteResponse>;
 }
 
 function stubFetch(routes: Route[]) {
@@ -54,7 +65,33 @@ function stubFetch(routes: Route[]) {
     if (!route) {
       throw new Error(`Unexpected request: ${method} ${url}`);
     }
-    const { status = 200, body } = await route.respond(requestBody);
+    const { status = 200, body, stream, streamChunks } = await route.respond(requestBody, url);
+    if (stream !== undefined || streamChunks !== undefined) {
+      // Minimal ReadableStream-like body for the SSE reader; chunks arrive
+      // with a small gap so intermediate renders are observable.
+      const chunks = streamChunks ?? [stream ?? ""];
+      let index = 0;
+      const encoder = new TextEncoder();
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        body: {
+          getReader: () => ({
+            read: async () => {
+              if (index >= chunks.length) {
+                return { done: true, value: undefined };
+              }
+              const chunk = chunks[index];
+              index += 1;
+              if (index > 1) {
+                await new Promise((resolve) => setTimeout(resolve, 150));
+              }
+              return { done: false, value: encoder.encode(chunk) };
+            },
+          }),
+        },
+      };
+    }
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -131,6 +168,9 @@ afterEach(() => {
   setAuthToken(null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  // Restore the production fallback pace for tests that tightened it.
+  FALLBACK_POLICY.pollIntervalMs = 3000;
+  FALLBACK_POLICY.maxPolls = 60;
 });
 
 // --- Admin token auth (M2) -----------------------------------------------------
@@ -226,7 +266,7 @@ it("shows ok when control health is ok", async () => {
   ]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("control-status").textContent).toBe("Control: ok");
+    expect(screen.getByTestId("control-status").textContent).toBe("Control 健康");
   });
 });
 
@@ -237,7 +277,7 @@ it("shows degraded when control returns 503 with a valid health payload", async 
   ]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("control-status").textContent).toBe("Control: degraded");
+    expect(screen.getByTestId("control-status").textContent).toBe("Control 降级");
   });
 });
 
@@ -254,7 +294,7 @@ it("shows unreachable when the health request fails", async () => {
   ]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("control-status").textContent).toBe("Control: unreachable");
+    expect(screen.getByTestId("control-status").textContent).toBe("Control 不可达");
   });
 });
 
@@ -262,7 +302,7 @@ it("does not show ok for the contradictory payload {status: ok, database: false}
   stubFetch([healthRoute({ status: "ok", database: false }), emptyAdaptersRoute]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("control-status").textContent).toBe("Control: unreachable");
+    expect(screen.getByTestId("control-status").textContent).toBe("Control 不可达");
   });
 });
 
@@ -315,7 +355,7 @@ it("creates an adapter and selects it", async () => {
     },
   ]);
   render(<App />);
-  await screen.findByText("No adapters yet.");
+  await screen.findByText("暂无 Adapter");
 
   fireEvent.click(screen.getByTestId("show-create-form"));
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "cmdb-sync" } });
@@ -790,7 +830,7 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
 
   // The refresh failure is reported as a refresh problem, not a failed save.
   await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("error-banner").textContent).toContain("Version saved");
+  expect(screen.getByTestId("error-banner").textContent).toContain("版本已保存");
 
   // The saved version is acknowledged: not dirty, selected, and marked latest,
   // so the user is never encouraged to repeat an already-successful save.
@@ -1046,11 +1086,685 @@ it("never fabricates Adapter.updated_at from the saved version; adapter refresh 
   // Adapter refresh is reported separately; the server-owned updated_at is
   // never synthesized from the version's created_at.
   await screen.findByTestId("latest-badge");
-  expect(screen.getByTestId("error-banner").textContent).toContain("Version saved");
-  expect(screen.getByTestId("error-banner").textContent).toContain("refreshing the adapter");
+  expect(screen.getByTestId("error-banner").textContent).toContain("版本已保存");
+  expect(screen.getByTestId("error-banner").textContent).toContain("刷新 Adapter 失败");
   expect(screen.queryByTestId("dirty-indicator")).toBeNull();
   expect(valueOf("code-editor")).toBe("saved code");
   expect(
     fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1"),
   ).toBe(true);
+});
+
+// --- Test run and execution observability (M3) --------------------------------
+
+function makeExecution(overrides: Partial<Execution> = {}): Execution {
+  return {
+    id: 5,
+    adapter_id: 1,
+    version_id: 10,
+    worker_id: null,
+    trigger: "manual",
+    status: "pending",
+    input: {},
+    output: null,
+    output_size: null,
+    output_truncated: false,
+    output_preview: null,
+    stdout: "",
+    stdout_truncated: false,
+    stderr: "",
+    stderr_truncated: false,
+    error: null,
+    created_at: "2026-08-11T00:00:00Z",
+    started_at: null,
+    ended_at: null,
+    duration_ms: null,
+    ...overrides,
+  };
+}
+
+function makeSummary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
+  return {
+    id: 6,
+    adapter_id: 1,
+    version_id: 10,
+    version_seq: 1,
+    worker_id: null,
+    worker_name: null,
+    trigger: "manual",
+    status: "succeeded",
+    created_at: "2026-08-11T00:00:00Z",
+    started_at: null,
+    ended_at: null,
+    duration_ms: null,
+    ...overrides,
+  };
+}
+
+// Routes shared by M3 tests: healthy control plus one adapter whose latest
+// version (id 10) is already loaded into the editor.
+function consoleWithVersionRoutes(adapter: Adapter, version: VersionDetail): Route[] {
+  return [
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    {
+      method: "GET",
+      match: `/api/adapters/${adapter.id}/versions`,
+      respond: () => ({
+        body: [
+          {
+            id: version.id,
+            adapter_id: version.adapter_id,
+            seq: version.seq,
+            created_at: version.created_at,
+          } satisfies VersionSummary,
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: `/api/adapters/${adapter.id}/versions/${version.id}`,
+      respond: () => ({ body: version }),
+    },
+  ];
+}
+
+async function openTestRunTab() {
+  fireEvent.click(screen.getByText("测试运行"));
+  await screen.findByTestId("run-test");
+}
+
+it("runs a test bound to the selected version and follows the execution via SSE", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const running = makeExecution({ status: "running", worker_id: 3, stdout: "step 1\n" });
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 3,
+    output: { ok: true },
+    stdout: "done\n",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        // pending panel state first, then running, then the terminal status.
+        stream:
+          `event: execution\ndata: ${JSON.stringify(running)}\n\n` +
+          `event: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: succeeded }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.change(screen.getByTestId("test-input"), { target: { value: '{"k": 1}' } });
+  // Duplicate clicks must not create a second execution.
+  fireEvent.click(screen.getByTestId("run-test"));
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  // The stream ends in a terminal status, so the final detail is reloaded.
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+  expect(screen.getByTestId("execution-id").textContent).toBe("Execution #5");
+
+  // Explicit version binding: the create request carries the selected version.
+  const createCalls = fetchMock.mock.calls.filter(
+    ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+  );
+  expect(createCalls).toHaveLength(1);
+  expect(JSON.parse(String(createCalls[0][1]?.body))).toEqual({
+    input: { k: 1 },
+    version_id: 10,
+  });
+
+  // SSE auth contract: Bearer header only, the token never enters the URL.
+  const sseCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/executions/5/events");
+  expect(sseCall).toBeTruthy();
+  expect(String(sseCall?.[0])).not.toContain("test-admin-token");
+  const headers = sseCall?.[1]?.headers as Record<string, string>;
+  expect(headers.Authorization).toBe("Bearer test-admin-token");
+
+  // stdout tab shows the streamed log content.
+  fireEvent.click(screen.getByText("stdout"));
+  await waitFor(() => {
+    expect(screen.getByTestId("stdout-view").textContent).toContain("done");
+  });
+});
+
+it("shows size and preview instead of the full output when it was truncated", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const truncated = makeExecution({
+    status: "succeeded",
+    output: null,
+    output_size: 600_000,
+    output_truncated: true,
+    output_preview: "preview head...",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(truncated)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: truncated }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+  const notice = await screen.findByTestId("output-truncated");
+  expect(notice.textContent).toContain("600000");
+  expect(screen.getByTestId("output-preview").textContent).toContain("preview head...");
+  expect(screen.queryByTestId("output-content")).toBeNull();
+});
+
+it("blocks test runs while the editor has unsaved changes", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => {
+        throw new Error("execution must not be created while the editor is dirty");
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited" } });
+
+  // The run button is disabled while dirty; even a forced click must not
+  // reach the API (the business guard stays as defense in depth).
+  const runButton = screen.getByTestId("run-test") as HTMLButtonElement;
+  expect(runButton.disabled).toBe(true);
+  fireEvent.click(runButton);
+
+  expect(screen.queryByTestId("error-banner")).toBeNull();
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+    ),
+  ).toBe(false);
+});
+
+it("blocks test runs when the input is not valid JSON", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => {
+        throw new Error("execution must not be created for invalid input");
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.change(screen.getByTestId("test-input"), { target: { value: "{oops" } });
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  await screen.findByTestId("error-banner");
+  expect(screen.getByTestId("error-banner").textContent).toContain("Input 必须是合法 JSON");
+});
+
+it("lists execution history with cursor pagination and opens the detail drawer", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pageOne = { items: [makeSummary({ id: 6 })], next_before_id: 6 };
+  const pageTwo = { items: [makeSummary({ id: 4, status: "failed" })], next_before_id: null };
+  const detail = makeExecution({ id: 6, input: { k: 1 }, output: { ok: true } });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: (_body, url) => ({
+        body: url.includes("before_id=6") ? pageTwo : pageOne,
+      }),
+    },
+    { method: "GET", match: "/api/executions/6", respond: () => ({ body: detail }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  // History is only requested when the tab is activated.
+  fireEvent.click(screen.getByText("执行记录"));
+  expect(await screen.findAllByTestId("history-row")).toHaveLength(1);
+
+  fireEvent.click(screen.getByTestId("history-load-more"));
+  await waitFor(() => {
+    expect(screen.getAllByTestId("history-row")).toHaveLength(2);
+  });
+  expect(screen.queryByTestId("history-load-more")).toBeNull();
+
+  fireEvent.click(screen.getAllByTestId("history-row")[0]);
+  const detailInput = await screen.findByTestId("detail-input");
+  expect(detailInput.textContent).toContain('"k": 1');
+});
+
+it("converges to the final result when SSE ends without a terminal event", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const running = makeExecution({ status: "running", worker_id: 3, stdout: "step 1\n" });
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 3,
+    output: { ok: true },
+    stdout: "done\n",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  let detailCalls = 0;
+  FALLBACK_POLICY.pollIntervalMs = 50;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      // Only a running event, then an unexpected EOF (Control restart, proxy
+      // drop, nginx read timeout): the UI must not stay stuck on running.
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(running)}\n\n`,
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5",
+      respond: () => {
+        detailCalls += 1;
+        // The first fallback GET still sees running; the next poll converges.
+        return { body: detailCalls === 1 ? running : succeeded };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  await screen.findByTestId("execution-status");
+  expect(screen.getByTestId("execution-status").textContent).toBe("运行中");
+
+  await waitFor(
+    () => {
+      expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+    },
+    { timeout: 5000 },
+  );
+  expect(detailCalls).toBeGreaterThanOrEqual(2);
+});
+
+it("falls back to the authoritative result when the SSE connection fails at start", async () => {
+  // M3 second review I2: an initial connect failure / non-2xx answer (e.g.
+  // 502 while Control restarts) must enter the same fallback path as a
+  // mid-stream EOF, and transient GET failures must keep retrying.
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const running = makeExecution({ status: "running", worker_id: 3 });
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 3,
+    output: { ok: true },
+    stdout: "done\n",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  let detailCalls = 0;
+  FALLBACK_POLICY.pollIntervalMs = 50;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      // Control restarts right as the stream connects: HTTP 502, no body.
+      respond: () => ({ status: 502 }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5",
+      respond: () => {
+        detailCalls += 1;
+        if (detailCalls === 1) {
+          throw new Error("Control still restarting");
+        }
+        return { body: detailCalls === 2 ? running : succeeded };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  // The transient GET failure must not stop the bounded retry loop.
+  await waitFor(
+    () => {
+      expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+    },
+    { timeout: 5000 },
+  );
+  expect(detailCalls).toBeGreaterThanOrEqual(3);
+});
+
+it("shows a stale-state notice when the fallback budget is exhausted", async () => {
+  // M3 second review I2: reaching the polling cap without a terminal status
+  // must never silently keep a seemingly live running state.
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const running = makeExecution({ status: "running", worker_id: 3 });
+  FALLBACK_POLICY.pollIntervalMs = 20;
+  FALLBACK_POLICY.maxPolls = 2;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(running)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: running }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  const notice = await screen.findByTestId("fallback-exhausted", {}, { timeout: 5000 });
+  expect(notice.textContent).toContain("实时连接已断开");
+  // The last known state stays visible, but clearly marked as possibly stale.
+  expect(screen.getByTestId("execution-status").textContent).toBe("运行中");
+});
+
+it("never lets a slow fallback GET of an old run overwrite a newer run", async () => {
+  // M3 second review I3: Execution A's fallback GET is still in flight when
+  // the user starts Execution B; A's late response must not clobber B.
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pendingA = makeExecution({ id: 5, status: "pending" });
+  const runningA = makeExecution({ id: 5, status: "running", worker_id: 3 });
+  const pendingB = makeExecution({ id: 6, status: "pending" });
+  const succeededB = makeExecution({
+    id: 6,
+    status: "succeeded",
+    worker_id: 3,
+    output: { ok: true },
+    stdout: "b done\n",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  let gateRelease: () => void = () => {};
+  const gateA = new Promise<void>((resolve) => {
+    gateRelease = resolve;
+  });
+  let aDetailCalls = 0;
+  let postCalls = 0;
+  FALLBACK_POLICY.pollIntervalMs = 50;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => {
+        postCalls += 1;
+        return { status: 202, body: postCalls === 1 ? pendingA : pendingB };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      // A dies with an unexpected EOF before any terminal event.
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(runningA)}\n\n`,
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/6/events",
+      // B finishes normally over SSE.
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(succeededB)}\n\n`,
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5",
+      respond: async () => {
+        aDetailCalls += 1;
+        await gateA; // A's fallback GET is very slow
+        return { body: runningA };
+      },
+    },
+    { method: "GET", match: "/api/executions/6", respond: () => ({ body: succeededB }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+  await screen.findByTestId("execution-id");
+  expect(screen.getByTestId("execution-id").textContent).toBe("Execution #5");
+
+  // Wait until A's fallback GET is actually in flight, then start B.
+  await waitFor(() => {
+    expect(aDetailCalls).toBe(1);
+  });
+  fireEvent.click(screen.getByTestId("run-test"));
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+  expect(screen.getByTestId("execution-id").textContent).toBe("Execution #6");
+
+  // A's slow response arrives last: it must be dropped, not committed.
+  gateRelease();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(screen.getByTestId("execution-id").textContent).toBe("Execution #6");
+  expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+});
+
+it("marks the live log as truncated as soon as a log_snapshot says so", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const running = makeExecution({ status: "running", worker_id: 3 });
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 3,
+    stdout: "head kept\n",
+    stdout_truncated: true,
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        // The snapshot arrives while the Execution is still running; the
+        // terminal event follows in a later chunk.
+        streamChunks: [
+          `event: execution\ndata: ${JSON.stringify(running)}\n\n` +
+            `event: log_snapshot\ndata: ${JSON.stringify({
+              stream: "stdout",
+              content: "head kept\n",
+              truncated: true,
+            })}\n\n`,
+          `event: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+        ],
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: succeeded }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+  await screen.findByTestId("execution-id");
+  fireEvent.click(screen.getByText("stdout"));
+
+  // While still running, the snapshot content and the truncation warning
+  // must both be visible already (not only after the terminal event).
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("运行中");
+    expect(screen.getByTestId("stdout-view").textContent).toContain("head kept");
+    expect(
+      screen.getByText("日志超过平台保存上限，部分内容已被截断"),
+    ).toBeTruthy();
+  });
+});
+
+it("never shows a stale detail when executions are clicked in quick succession", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const page = {
+    items: [makeSummary({ id: 6 }), makeSummary({ id: 4, status: "failed" })],
+    next_before_id: null,
+  };
+  const detailA = makeExecution({ id: 6, input: { who: "A" } });
+  const detailB = makeExecution({ id: 4, input: { who: "B" }, status: "failed" });
+  let releaseA: () => void = () => {};
+  const gateA = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: () => ({ body: page }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/6",
+      // A is slow: its response only resolves after B is already shown.
+      respond: async () => {
+        await gateA;
+        return { body: detailA };
+      },
+    },
+    { method: "GET", match: "/api/executions/4", respond: () => ({ body: detailB }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("执行记录"));
+  const rows = await screen.findAllByTestId("history-row");
+  expect(rows).toHaveLength(2);
+
+  // Click A (slow), then B (fast): B must win even though A resolves last.
+  fireEvent.click(rows[0]);
+  fireEvent.click(rows[1]);
+  await screen.findByText("Execution #4");
+  expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
+
+  releaseA();
+  // Let A's late response settle, then verify the drawer still shows B.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
+  expect(screen.getByText("Execution #4")).toBeTruthy();
+});
+
+it("shows the worker badge by online presence, not by registration count", async () => {
+  const offlineWorker = {
+    id: 1,
+    name: "worker-a",
+    status: "offline",
+    last_heartbeat: "2026-08-11T00:00:00Z",
+    capabilities: [],
+  };
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [offlineWorker] }) },
+  ]);
+  const { unmount } = render(<App />);
+  fireEvent.click(await screen.findByTestId("worker-status"));
+  await screen.findAllByTestId("worker-item");
+  expect(
+    screen.getByTestId("worker-status").querySelector(".ant-badge-status-error"),
+  ).toBeTruthy();
+  expect(
+    screen.getByTestId("worker-status").querySelector(".ant-badge-status-success"),
+  ).toBeNull();
+  unmount();
+
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [offlineWorker, { ...offlineWorker, id: 2, name: "worker-b", status: "online" }],
+      }),
+    },
+  ]);
+  render(<App />);
+  fireEvent.click(await screen.findByTestId("worker-status"));
+  await screen.findAllByTestId("worker-item");
+  expect(
+    screen.getByTestId("worker-status").querySelector(".ant-badge-status-success"),
+  ).toBeTruthy();
 });

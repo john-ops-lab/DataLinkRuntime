@@ -359,6 +359,31 @@ def test_control_caps_streams(
         assert len(row.stdout.encode()) <= 1024
 
 
+# --- M3 admin-facing worker list -------------------------------------------------
+
+
+def test_list_workers_requires_admin_token(api_client: TestClient) -> None:
+    register_worker(api_client, name="worker-list-auth")
+    assert api_client.get("/api/workers", headers={"Authorization": ""}).status_code == 401
+    assert api_client.get("/api/workers", headers=WORKER_HEADERS).status_code == 401
+
+
+def test_list_workers_returns_status_fields(api_client: TestClient) -> None:
+    register_worker(api_client, name="worker-a")
+    second = register_worker(api_client, name="worker-b")
+    api_client.post(f"/api/workers/{second['id']}/offline", headers=WORKER_HEADERS)
+
+    response = api_client.get("/api/workers")
+    assert response.status_code == 200
+    body = response.json()
+    assert [worker["name"] for worker in body] == ["worker-a", "worker-b"]
+    by_name = {worker["name"]: worker for worker in body}
+    assert by_name["worker-a"]["status"] == "online"
+    assert by_name["worker-b"]["status"] == "offline"
+    assert by_name["worker-a"]["last_heartbeat"] is not None
+    assert by_name["worker-a"]["capabilities"] == ["python"]
+
+
 # --- Review Round 1 regression tests ------------------------------------------
 
 

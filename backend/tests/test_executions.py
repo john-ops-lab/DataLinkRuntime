@@ -127,3 +127,105 @@ def test_delete_adapter_without_executions_still_allowed(api_client: TestClient)
     save_version(api_client, adapter["id"])
     assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
     assert api_client.get(f"/api/adapters/{adapter['id']}").status_code == 404
+
+
+# --- M3 execution history (cursor pagination) --------------------------------
+
+
+SUMMARY_FIELDS = {
+    "id",
+    "adapter_id",
+    "version_id",
+    "version_seq",
+    "worker_id",
+    "worker_name",
+    "trigger",
+    "status",
+    "created_at",
+    "started_at",
+    "ended_at",
+    "duration_ms",
+}
+
+
+def test_history_lists_newest_first_and_isolates_adapters(api_client: TestClient) -> None:
+    adapter = create_adapter(api_client, name="hist-main")
+    save_version(api_client, adapter["id"])
+    other = create_adapter(api_client, name="hist-other")
+    save_version(api_client, other["id"])
+    ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(3)]
+    create_execution(api_client, other["id"])
+
+    response = api_client.get(f"/api/adapters/{adapter['id']}/executions")
+    assert response.status_code == 200
+    page = response.json()
+    assert [item["id"] for item in page["items"]] == list(reversed(ids))
+    assert page["next_before_id"] is None
+    assert all(item["adapter_id"] == adapter["id"] for item in page["items"])
+
+
+def test_history_summaries_never_carry_big_fields(api_client: TestClient) -> None:
+    adapter = create_adapter(api_client, name="hist-summary")
+    save_version(api_client, adapter["id"])
+    create_execution(api_client, adapter["id"], {"input": {"secret": "payload"}})
+
+    page = api_client.get(f"/api/adapters/{adapter['id']}/executions").json()
+    item = page["items"][0]
+    assert set(item.keys()) == SUMMARY_FIELDS
+    for forbidden in ("input", "output", "stdout", "stderr", "output_preview"):
+        assert forbidden not in item
+    assert item["status"] == "pending"
+    assert item["trigger"] == "manual"
+    assert item["worker_id"] is None
+    assert item["worker_name"] is None
+
+
+def test_history_before_id_cursor_walks_all_pages(api_client: TestClient) -> None:
+    adapter = create_adapter(api_client, name="hist-cursor")
+    save_version(api_client, adapter["id"])
+    ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(5)]
+
+    first = api_client.get(f"/api/adapters/{adapter['id']}/executions", params={"limit": 2}).json()
+    assert [item["id"] for item in first["items"]] == [ids[4], ids[3]]
+    assert first["next_before_id"] == ids[3]
+
+    second = api_client.get(
+        f"/api/adapters/{adapter['id']}/executions",
+        params={"limit": 2, "before_id": first["next_before_id"]},
+    ).json()
+    assert [item["id"] for item in second["items"]] == [ids[2], ids[1]]
+    assert second["next_before_id"] == ids[1]
+
+    third = api_client.get(
+        f"/api/adapters/{adapter['id']}/executions",
+        params={"limit": 2, "before_id": second["next_before_id"]},
+    ).json()
+    assert [item["id"] for item in third["items"]] == [ids[0]]
+    assert third["next_before_id"] is None, "no cursor when the history ends"
+
+
+def test_history_limit_is_clamped(api_client: TestClient) -> None:
+    adapter = create_adapter(api_client, name="hist-limit")
+    save_version(api_client, adapter["id"])
+    ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(3)]
+
+    small = api_client.get(f"/api/adapters/{adapter['id']}/executions", params={"limit": 0}).json()
+    assert len(small["items"]) == 1, "limit clamps up to 1"
+    assert small["next_before_id"] == ids[2]
+
+    huge = api_client.get(
+        f"/api/adapters/{adapter['id']}/executions", params={"limit": 10_000}
+    ).json()
+    assert len(huge["items"]) == 3, "limit clamps down to the 100 cap"
+    assert huge["next_before_id"] is None
+
+
+def test_history_adapter_not_found(api_client: TestClient) -> None:
+    response = api_client.get("/api/adapters/999999/executions")
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "adapter_not_found"
+
+
+def test_history_requires_admin_token(api_client: TestClient) -> None:
+    response = api_client.get("/api/adapters/1/executions", headers={"Authorization": ""})
+    assert response.status_code == 401

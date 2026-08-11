@@ -5,6 +5,11 @@ files (never unbounded in-memory pipes) and are capped per the big-field
 contract before reporting. The adapter subprocess only inherits basic
 platform variables plus ``DLR_SECRET_*`` — never worker/admin tokens or
 ``DATABASE_URL``.
+
+M3 adds an optional progress callback: while the subprocess runs, newly
+appended stdout/stderr bytes are uploaded about once per second. Progress is
+best effort — failures are logged and never change the Execution outcome,
+and the final result report stays the authoritative source of truth.
 """
 
 import json
@@ -14,6 +19,9 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +35,16 @@ logger = logging.getLogger("dlr.worker.executor")
 
 HARNESS_PATH = Path(harness.__file__)
 REDACTED = "[REDACTED]"
+
+# Live-log upload rhythm while the subprocess runs (M3 spec §6.1).
+PROGRESS_POLL_SECONDS = 1.0
+# Bounded wait for the final progress upload after the subprocess ends, so
+# the persisted live log normally includes the tail; progress is best effort,
+# so a wedged upload must never delay the final result for longer than this.
+PROGRESS_DRAIN_SECONDS = 1.0
+
+# Receives already redacted (stdout_chunk, stderr_chunk); see run().
+ProgressCallback = Callable[[str, str], None]
 
 # Basic platform variables the adapter subprocess may inherit. Everything
 # else (DLR_WORKER_TOKEN, DLR_ADMIN_TOKEN, DATABASE_URL, Control settings)
@@ -59,6 +77,45 @@ def redact_secrets(text: str) -> str:
         if key.startswith("DLR_SECRET_") and value:
             text = text.replace(value, REDACTED)
     return text
+
+
+def _max_secret_length() -> int:
+    """Length of the longest configured DLR_SECRET_* value (0 when none)."""
+    return max(
+        (
+            len(value)
+            for key, value in os.environ.items()
+            if key.startswith("DLR_SECRET_") and value
+        ),
+        default=0,
+    )
+
+
+class _SecretHoldback:
+    """Rolling redaction buffer for live-log chunks.
+
+    Redacting each progress chunk independently is unsafe: a Secret written
+    across two flushes is complete in neither chunk, so both would pass
+    unredacted and reassemble downstream. Every push therefore prepends a
+    small held-back tail (at most ``max_secret_len - 1`` characters) before
+    redacting, and only emits the part that can no longer complete a split
+    Secret. The remainder is flushed once the subprocess exits.
+    """
+
+    def __init__(self) -> None:
+        self._held = ""
+        self._hold = max(_max_secret_length() - 1, 0)
+
+    def push(self, text: str) -> str:
+        redacted = redact_secrets(self._held + text)
+        keep = min(self._hold, len(redacted))
+        self._held = redacted[len(redacted) - keep :]
+        return redacted[: len(redacted) - keep]
+
+    def flush(self) -> str:
+        text = redact_secrets(self._held)
+        self._held = ""
+        return text
 
 
 def _redact_json_value(value: Any) -> Any:
@@ -95,8 +152,177 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
-def run(payload: dict[str, Any], config: RuntimeSettings) -> dict[str, Any]:
-    """Run one task payload to completion; always returns a report dict."""
+class _ProgressUploader:
+    """Best-effort live-log uploader running off the executor thread.
+
+    ``submit`` never blocks the executor: at most one upload is in flight,
+    and while one is running new chunks are merged into the pending payload.
+    Progress may therefore lag behind or coalesce; that is safe because the
+    final result carries the authoritative full logs. Uploading synchronously
+    instead would let a stuck HTTP call block the executor's deadline checks
+    and stretch the adapter timeout semantics.
+    """
+
+    def __init__(self, callback: ProgressCallback) -> None:
+        self._callback = callback
+        self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
+        self._pending: tuple[str, str] = ("", "")
+        self._in_flight = False
+
+    def submit(self, stdout_chunk: str, stderr_chunk: str) -> None:
+        """Non-blocking: merge into the pending payload, ensure one upload."""
+        if not stdout_chunk and not stderr_chunk:
+            return
+        with self._lock:
+            out, err = self._pending
+            self._pending = (out + stdout_chunk, err + stderr_chunk)
+            if self._in_flight:
+                return
+            self._in_flight = True
+        threading.Thread(target=self._run, name="dlr-progress-upload", daemon=True).start()
+
+    def drain(self, timeout: float) -> None:
+        """Best-effort wait for in-flight/pending uploads to finish.
+
+        Called once after the subprocess is gone so the persisted live log
+        normally contains the final chunk; bounded because the final result
+        carries the authoritative full logs anyway.
+        """
+        with self._idle:
+            end = time.monotonic() + timeout
+            while self._in_flight or self._pending != ("", ""):
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._idle.wait(remaining)
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                stdout_chunk, stderr_chunk = self._pending
+                self._pending = ("", "")
+            if stdout_chunk or stderr_chunk:
+                try:
+                    self._callback(stdout_chunk, stderr_chunk)
+                except Exception:  # noqa: BLE001 - progress never fails a run
+                    logger.warning("progress upload failed; continuing execution", exc_info=True)
+            with self._lock:
+                if self._pending == ("", ""):
+                    self._in_flight = False
+                    self._idle.notify_all()
+                    return
+
+
+class _StreamTailer:
+    """Read newly appended bytes from a file the subprocess writes to.
+
+    Incomplete trailing UTF-8 sequences are kept for the next round so a
+    multi-byte character split across chunk boundaries is never corrupted.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._handle = path.open("rb")
+        self._pending = bytearray()
+
+    def read_new(self) -> str:
+        raw = self._handle.read()
+        if raw:
+            self._pending.extend(raw)
+        data = bytes(self._pending)
+        if not data:
+            return ""
+        try:
+            text = data.decode()
+            self._pending.clear()
+            return text
+        except UnicodeDecodeError:
+            # At most three trailing bytes can belong to an incomplete
+            # UTF-8 sequence.
+            for trim in range(1, 4):
+                try:
+                    text = data[:-trim].decode()
+                except UnicodeDecodeError:
+                    continue
+                self._pending = bytearray(data[-trim:])
+                return text
+            return ""
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+def _wait_with_progress(
+    process: subprocess.Popen[bytes],
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout: int,
+    progress_callback: ProgressCallback | None,
+) -> tuple[int, bool]:
+    """Wait for the adapter subprocess, uploading live log chunks.
+
+    Returns ``(returncode, timed_out)``. Without a callback this degrades to
+    the plain M2 blocking wait. Callback invocations receive redacted text
+    and happen on a background uploader thread: a slow or failing upload can
+    never delay the deadline checks, and progress never fails the Execution.
+    """
+    if progress_callback is None:
+        try:
+            return process.wait(timeout=timeout), False
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            return -1, True
+
+    deadline = time.monotonic() + timeout
+    stdout_tailer = _StreamTailer(stdout_path)
+    stderr_tailer = _StreamTailer(stderr_path)
+    stdout_guard = _SecretHoldback()
+    stderr_guard = _SecretHoldback()
+    uploader = _ProgressUploader(progress_callback)
+
+    def emit(final: bool = False) -> None:
+        stdout_chunk = stdout_guard.push(stdout_tailer.read_new())
+        stderr_chunk = stderr_guard.push(stderr_tailer.read_new())
+        if final:
+            # Process is gone: release the hold-back tails as well.
+            stdout_chunk += stdout_guard.flush()
+            stderr_chunk += stderr_guard.flush()
+        uploader.submit(stdout_chunk, stderr_chunk)
+
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _kill_process_group(process)
+                emit(final=True)
+                uploader.drain(PROGRESS_DRAIN_SECONDS)
+                return -1, True
+            # Wait at most one poll slice, and never past the execution
+            # deadline; uploads run off-thread and can never delay this loop.
+            wait_slice = min(PROGRESS_POLL_SECONDS, remaining)
+            try:
+                returncode = process.wait(timeout=wait_slice)
+                emit(final=True)  # final drain so the live view matches the end state
+                uploader.drain(PROGRESS_DRAIN_SECONDS)
+                return returncode, False
+            except subprocess.TimeoutExpired:
+                pass
+            emit()
+    finally:
+        stdout_tailer.close()
+        stderr_tailer.close()
+
+
+def run(
+    payload: dict[str, Any],
+    config: RuntimeSettings,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Run one task payload to completion; always returns a report dict.
+
+    ``progress_callback`` receives redacted live stdout/stderr chunks while
+    the subprocess runs; it never influences the returned final report.
+    """
     execution_id = int(payload["execution_id"])
     adapter_id = int(payload["adapter_id"])
     version_id = int(payload["version_id"])
@@ -145,11 +371,9 @@ def run(payload: dict[str, Any], config: RuntimeSettings) -> dict[str, Any]:
                 env=child_env(),
                 cwd=str(workspace),
             )
-            try:
-                returncode = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                _kill_process_group(process)
-                timed_out = True
+            returncode, timed_out = _wait_with_progress(
+                process, stdout_path, stderr_path, timeout, progress_callback
+            )
 
         stdout_raw = stdout_path.read_bytes()
         stderr_raw = stderr_path.read_bytes()

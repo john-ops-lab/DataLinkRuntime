@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from dlr.common.config import settings
 from dlr.control import db
 from dlr.control.app import create_app
+from dlr.control.services import events as events_service
 
 TEST_DATABASE = "dlr_test"
 
@@ -90,7 +91,11 @@ def session_factory(test_engine: Engine) -> sessionmaker[Session]:
 
 
 @pytest.fixture()
-def api_client(test_engine: Engine, session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
+def api_client(
+    test_engine: Engine,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
     """API client wired to the test database via dependency override.
 
     Requests carry the admin bearer token by default, so the M1 suite keeps
@@ -105,6 +110,13 @@ def api_client(test_engine: Engine, session_factory: sessionmaker[Session]) -> I
             yield session
         finally:
             session.close()
+
+    # M3: the SSE event stream owns its own session (the response outlives
+    # the request handler), and the stream's 404 pre-check opens its own
+    # short-lived session; neither can go through the dependency override,
+    # so point both session factories at the test database.
+    monkeypatch.setattr(events_service, "SessionLocal", session_factory)
+    monkeypatch.setattr(db, "SessionLocal", session_factory)
 
     app = create_app()
     app.dependency_overrides[db.get_session] = override_get_session

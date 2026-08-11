@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from dlr.control.api import adapters, auth, executions, health, workers
+from dlr.control.api import adapters, auth, events, executions, health, workers
 
 
 def create_app() -> FastAPI:
@@ -13,4 +13,6 @@ def create_app() -> FastAPI:
     app.include_router(adapters.router)
     app.include_router(executions.router)
     app.include_router(workers.router)
+    app.include_router(workers.admin_router)
+    app.include_router(events.router)
     return app

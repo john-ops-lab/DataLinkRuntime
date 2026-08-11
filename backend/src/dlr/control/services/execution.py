@@ -1,22 +1,32 @@
 """Domain service for the Execution lifecycle (create / query / result).
 
-Owns version pinning, the input size gate and the server-side
-re-validation of every big-field contract reported by a Worker.
+Owns version pinning, the input size gate, the server-side re-validation of
+every big-field contract reported by a Worker, the M3 best-effort progress
+appends and the cursor-paged execution history.
 """
 
 import json
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dlr.common.bigfields import truncate_utf8
 from dlr.common.config import settings
-from dlr.control.models import Adapter, AdapterVersion, Execution
-from dlr.control.schemas.execution import ExecutionCreate, ExecutionResultReport
+from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
+from dlr.control.schemas.execution import (
+    ExecutionCreate,
+    ExecutionResultReport,
+    ExecutionSummary,
+    ProgressReport,
+)
 from dlr.control.services.adapter import domain_error
 
 # Statuses after which an Execution never changes again.
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
+
+# Execution history pagination contract (M3 spec §5).
+DEFAULT_HISTORY_LIMIT = 50
+MAX_HISTORY_LIMIT = 100
 
 
 def compact_json_bytes(value: object) -> bytes:
@@ -175,3 +185,120 @@ def apply_result(
     session.commit()
     session.refresh(execution)
     return execution
+
+
+def _append_stream(existing: str, already_truncated: bool, chunk: str) -> tuple[str, bool]:
+    """Append one progress chunk while honoring the 1 MiB stream cap.
+
+    Once a stream was truncated (by progress growth or by the final result)
+    it stays truncated; the stored text keeps the earliest content plus the
+    newest content so both the startup lines and the most recent lines stay
+    visible. Progress appends never touch output/error/status/timing.
+    """
+    if not chunk:
+        return existing, already_truncated
+    combined = existing + chunk
+    if len(combined.encode()) <= settings.execution_stream_max_bytes:
+        return combined, already_truncated
+    capped, _ = truncate_utf8(combined.encode(), settings.execution_stream_max_bytes)
+    return capped.decode("utf-8", errors="replace"), True
+
+
+def apply_progress(
+    session: Session, worker_id: int, execution_id: int, report: ProgressReport
+) -> None:
+    """Append best-effort stdout/stderr chunks from the owning Worker.
+
+    Progress never changes Execution status and never touches output, error,
+    ended_at or duration_ms. After the Execution reached a terminal state the
+    call is a 204 no-op, so the tail of the progress stream can never
+    overwrite the M2 final result; ownership is checked first, so a
+    non-owning Worker still gets 409 even for terminal Executions.
+    """
+    execution = (
+        session.query(Execution)
+        .filter(Execution.id == execution_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if execution is None:
+        raise domain_error(404, "execution_not_found", "Execution not found")
+    if execution.worker_id != worker_id:
+        raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
+    if execution.status != "running":
+        # Terminal: accept silently. The final result is authoritative.
+        return
+    stdout, stdout_truncated = _append_stream(
+        execution.stdout, execution.stdout_truncated, report.stdout_chunk
+    )
+    stderr, stderr_truncated = _append_stream(
+        execution.stderr, execution.stderr_truncated, report.stderr_chunk
+    )
+    execution.stdout = stdout
+    execution.stdout_truncated = stdout_truncated
+    execution.stderr = stderr
+    execution.stderr_truncated = stderr_truncated
+    session.commit()
+
+
+def list_adapter_executions(
+    session: Session,
+    adapter_id: int,
+    limit: int = DEFAULT_HISTORY_LIMIT,
+    before_id: int | None = None,
+) -> tuple[list[ExecutionSummary], int | None]:
+    """One cursor page of an Adapter's execution history, newest first.
+
+    Uses a ``before_id`` cursor (never offset) and returns lightweight
+    summaries without the input/output/stdout/stderr big fields. The second
+    return value is the cursor for the next page, or None when the history
+    ends here.
+    """
+    adapter = session.get(Adapter, adapter_id)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    limit = max(1, min(limit, MAX_HISTORY_LIMIT))
+    query = (
+        select(
+            Execution.id,
+            Execution.adapter_id,
+            Execution.version_id,
+            AdapterVersion.seq.label("version_seq"),
+            Execution.worker_id,
+            Worker.name.label("worker_name"),
+            Execution.trigger,
+            Execution.status,
+            Execution.created_at,
+            Execution.started_at,
+            Execution.ended_at,
+            Execution.duration_ms,
+        )
+        .join(AdapterVersion, AdapterVersion.id == Execution.version_id)
+        .outerjoin(Worker, Worker.id == Execution.worker_id)
+        .where(Execution.adapter_id == adapter_id)
+        .order_by(Execution.id.desc())
+        .limit(limit + 1)
+    )
+    if before_id is not None:
+        query = query.where(Execution.id < before_id)
+    rows = session.execute(query).mappings().all()
+    has_more = len(rows) > limit
+    items = [
+        ExecutionSummary(
+            id=row["id"],
+            adapter_id=row["adapter_id"],
+            version_id=row["version_id"],
+            version_seq=row["version_seq"],
+            worker_id=row["worker_id"],
+            worker_name=row["worker_name"],
+            trigger=row["trigger"],
+            status=row["status"],
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            duration_ms=row["duration_ms"],
+        )
+        for row in rows[:limit]
+    ]
+    next_before_id = items[-1].id if has_more and items else None
+    return items, next_before_id
