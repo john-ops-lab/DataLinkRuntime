@@ -68,6 +68,11 @@ export function parseSseBuffer(buffer: string): { events: SseEvent[]; rest: stri
  * The server closes the stream after a terminal status; the reader then
  * finishes naturally. ``close()`` aborts the fetch for early teardown
  * (adapter switch, unmount) and is idempotent.
+ *
+ * Every abnormal end except 401 (handled globally) and an explicit
+ * ``close()`` reports ``onUnexpectedClose`` — including an initial connect
+ * failure or a non-2xx answer — so the caller always falls back to the
+ * authoritative execution API instead of staying stuck on a stale state.
  */
 export function openExecutionEvents(
   executionId: number,
@@ -75,6 +80,12 @@ export function openExecutionEvents(
 ): ExecutionEventsHandle {
   const controller = new AbortController();
   let closed = false;
+
+  function fallbackUnlessClosed() {
+    if (!closed) {
+      handlers.onUnexpectedClose?.();
+    }
+  }
 
   async function run() {
     const token = getAuthToken();
@@ -91,6 +102,7 @@ export function openExecutionEvents(
     } catch (error) {
       if (!closed) {
         handlers.onError?.(error instanceof Error ? error.message : "实时事件连接失败");
+        fallbackUnlessClosed();
       }
       return;
     }
@@ -103,6 +115,7 @@ export function openExecutionEvents(
     }
     if (!response.ok || response.body === null) {
       handlers.onError?.(`实时事件连接失败（HTTP ${response.status}）`);
+      fallbackUnlessClosed();
       return;
     }
 
@@ -132,9 +145,7 @@ export function openExecutionEvents(
     // the stream (Control restart, proxy drop, nginx read timeout, read
     // error) is unexpected and must not leave the caller stuck on a stale
     // running state.
-    if (!closed) {
-      handlers.onUnexpectedClose?.();
-    }
+    fallbackUnlessClosed();
   }
 
   void run();

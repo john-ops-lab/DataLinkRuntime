@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Descriptions, Space, Tabs, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
+import { FALLBACK_POLICY } from "../fallback-policy";
 import { isTerminal, statusColor, statusLabel } from "../status";
 import { openExecutionEvents } from "../sse";
 import type { ExecutionEventsHandle } from "../sse";
@@ -22,10 +23,8 @@ interface TestRunPanelProps {
   onError: (message: string) => void;
 }
 
-// After an unexpected SSE end, converge on the authoritative M2 result with one
-// immediate GET plus bounded polling (no reconnect framework needed).
-const FALLBACK_POLL_INTERVAL_MS = 1000;
-const FALLBACK_MAX_POLLS = 10;
+// After any abnormal SSE end, converge on the authoritative M2 result with
+// bounded GET polling; the policy lives in fallback-policy.ts (testable).
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -40,8 +39,14 @@ export default function TestRunPanel(props: TestRunPanelProps) {
   const [execution, setExecution] = useState<Execution | null>(null);
   const [liveStdout, setLiveStdout] = useState("");
   const [liveStderr, setLiveStderr] = useState("");
+  const [fallbackExhausted, setFallbackExhausted] = useState(false);
   const streamRef = useRef<ExecutionEventsHandle | null>(null);
   const fallbackTimerRef = useRef<number | null>(null);
+  // Every run bumps the generation: only the newest run's async responses
+  // (SSE events, terminal detail GET, fallback polls) may commit UI state,
+  // so a slow response from an older Execution can never overwrite the
+  // Execution the user just started.
+  const runGenerationRef = useRef(0);
 
   function stopFallbackPolling() {
     if (fallbackTimerRef.current !== null) {
@@ -59,31 +64,64 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     [],
   );
 
-  // SSE is only the experience channel: when it dies before a terminal
-  // event, the M2 final result stays authoritative, so converge on it.
-  function convergeOnFinalResult(executionId: number, remainingPolls: number) {
+  function applyDetail(generation: number, detail: Execution) {
+    if (generation !== runGenerationRef.current) {
+      return; // a newer run owns the panel now
+    }
+    setExecution(detail);
+    setLiveStdout(detail.stdout);
+    setLiveStderr(detail.stderr);
+  }
+
+  // SSE is only the experience channel: after any abnormal end the M2 final
+  // result stays authoritative, so converge on it with bounded polling.
+  // Transient GET failures keep retrying inside the same budget.
+  function convergeOnFinalResult(generation: number, executionId: number, remainingPolls: number) {
     api
       .getExecution(executionId)
       .then((detail) => {
-        setExecution(detail);
-        setLiveStdout(detail.stdout);
-        setLiveStderr(detail.stderr);
-        if (isTerminal(detail.status) || remainingPolls <= 0) {
+        applyDetail(generation, detail);
+        if (generation !== runGenerationRef.current) {
+          return;
+        }
+        if (isTerminal(detail.status)) {
+          return;
+        }
+        if (remainingPolls <= 0) {
+          // Never silently keep a seemingly live running state: tell the
+          // user the realtime channel is gone and the status may be stale.
+          setFallbackExhausted(true);
           return;
         }
         fallbackTimerRef.current = window.setTimeout(
-          () => convergeOnFinalResult(executionId, remainingPolls - 1),
-          FALLBACK_POLL_INTERVAL_MS,
+          () => convergeOnFinalResult(generation, executionId, remainingPolls - 1),
+          FALLBACK_POLICY.pollIntervalMs,
         );
       })
-      .catch((error) => props.onError(errorMessage(error)));
+      .catch(() => {
+        // Transient GET failure: keep polling inside the bounded budget.
+        if (generation !== runGenerationRef.current) {
+          return;
+        }
+        if (remainingPolls <= 0) {
+          setFallbackExhausted(true);
+          return;
+        }
+        fallbackTimerRef.current = window.setTimeout(
+          () => convergeOnFinalResult(generation, executionId, remainingPolls - 1),
+          FALLBACK_POLICY.pollIntervalMs,
+        );
+      });
   }
 
-  function watch(executionId: number) {
+  function watch(generation: number, executionId: number) {
     streamRef.current?.close();
     stopFallbackPolling();
     streamRef.current = openExecutionEvents(executionId, {
       onExecution(next) {
+        if (generation !== runGenerationRef.current) {
+          return; // a newer run owns the panel now
+        }
         // Every execution event carries the stored streams at poll time; the
         // log events between polls are deltas on top of it, so replacing the
         // buffers here keeps the live view consistent without duplicates.
@@ -95,15 +133,19 @@ export default function TestRunPanel(props: TestRunPanelProps) {
           // M2 final result is authoritative: reload the full detail.
           api
             .getExecution(executionId)
-            .then((detail) => {
-              setExecution(detail);
-              setLiveStdout(detail.stdout);
-              setLiveStderr(detail.stderr);
-            })
-            .catch((error) => props.onError(errorMessage(error)));
+            .then((detail) => applyDetail(generation, detail))
+            .catch((error) => {
+              if (generation !== runGenerationRef.current) {
+                return;
+              }
+              props.onError(errorMessage(error));
+            });
         }
       },
       onLog(event) {
+        if (generation !== runGenerationRef.current) {
+          return;
+        }
         if (event.stream === "stdout") {
           setLiveStdout((current) => current + event.chunk);
         } else {
@@ -111,6 +153,9 @@ export default function TestRunPanel(props: TestRunPanelProps) {
         }
       },
       onLogSnapshot(event) {
+        if (generation !== runGenerationRef.current) {
+          return;
+        }
         if (event.stream === "stdout") {
           setLiveStdout(event.content);
         } else {
@@ -127,10 +172,16 @@ export default function TestRunPanel(props: TestRunPanelProps) {
         );
       },
       onUnexpectedClose() {
+        if (generation !== runGenerationRef.current) {
+          return;
+        }
         streamRef.current?.close();
-        convergeOnFinalResult(executionId, FALLBACK_MAX_POLLS);
+        convergeOnFinalResult(generation, executionId, FALLBACK_POLICY.maxPolls);
       },
       onError(message) {
+        if (generation !== runGenerationRef.current) {
+          return;
+        }
         props.onError(message);
       },
     });
@@ -163,10 +214,12 @@ export default function TestRunPanel(props: TestRunPanelProps) {
         input,
         version_id: props.selectedVersionId,
       });
+      runGenerationRef.current += 1; // invalidate the previous run's async work
+      setFallbackExhausted(false);
       setExecution(created);
       setLiveStdout(created.stdout);
       setLiveStderr(created.stderr);
-      watch(created.id);
+      watch(runGenerationRef.current, created.id);
     } catch (error) {
       props.onError(errorMessage(error));
     } finally {
@@ -237,6 +290,15 @@ export default function TestRunPanel(props: TestRunPanelProps) {
         <Alert type="info" showIcon message="尚未运行测试" description="输入 JSON 后点击“运行测试”，这里会显示执行状态与实时日志。" />
       ) : (
         <div className="execution-panel">
+          {fallbackExhausted && execution !== null && !isTerminal(execution.status) && (
+            <Alert
+              type="warning"
+              showIcon
+              data-testid="fallback-exhausted"
+              message="实时连接已断开，状态可能已过期"
+              description="已按权威结果轮询至上限仍未等到终态，请刷新页面或稍后重新查看该 Execution。"
+            />
+          )}
           <Space size={12} align="center" className="execution-overview" wrap>
             <span data-testid="execution-id">Execution #{execution.id}</span>
             <Tag color={statusColor(execution.status)} data-testid="execution-status">

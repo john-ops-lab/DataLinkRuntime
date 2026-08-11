@@ -5,6 +5,8 @@ production. Adapters only use the Python standard library, so no public PyPI
 availability is required (except one deliberate dependency-failure test).
 """
 
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -560,8 +562,93 @@ def test_stuck_progress_upload_does_not_stretch_execution_timeout(
         )
         elapsed = time.monotonic() - started
         assert result["status"] == "timeout"
-        # Without the dedicated short progress timeout the first stuck upload
-        # would block ~60s before the adapter deadline is checked again.
-        assert elapsed < 20, f"a stuck progress upload stretched a 2s timeout to {elapsed:.1f}s"
+        # Tight bound: uploads now run off-thread, so a stuck progress upload
+        # adds nothing to the adapter deadline — only small CI tolerance on
+        # top of the 2s timeout. A synchronous callback (even with the short
+        # 5s HTTP timeout) would visibly exceed this.
+        assert elapsed < 8, f"a stuck progress upload stretched a 2s timeout to {elapsed:.1f}s"
     finally:
         server.shutdown()
+
+
+def test_progress_uploader_never_blocks_and_merges_overlapping_chunks() -> None:
+    """submit() must return instantly and overlapping uploads must merge.
+
+    Regression for the M3 second review (I1): the executor may never wait
+    on a progress upload, and at most one upload may be in flight.
+    """
+    gate = threading.Event()
+    started_first = threading.Event()
+    uploads: list[tuple[str, str]] = []
+    lock = threading.Lock()
+
+    def slow_callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        started_first.set()
+        gate.wait(timeout=5)
+        with lock:
+            uploads.append((stdout_chunk, stderr_chunk))
+
+    uploader = executor._ProgressUploader(slow_callback)
+    started = time.monotonic()
+    uploader.submit("a", "")
+    assert started_first.wait(timeout=5), "the first upload should start"
+    uploader.submit("b", "")  # arrives while the first upload is stuck
+    uploader.submit("c", "")
+    assert time.monotonic() - started < 0.5, "submit() must never wait on uploads"
+
+    gate.set()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with lock:
+            if len(uploads) == 2:
+                break
+        time.sleep(0.01)
+    with lock:
+        assert len(uploads) == 2, "only one upload may be in flight at a time"
+        assert uploads[0][0] == "a"
+        assert uploads[1][0] == "bc", "chunks submitted during a stuck upload must merge"
+
+
+def test_blocking_progress_callback_cannot_delay_the_deadline(
+    tmp_path: object,
+) -> None:
+    """Even a callback that never returns cannot stretch the timeout.
+
+    Regression for the M3 second review (I1): with a synchronous callback
+    the executor would hang forever here; with the off-thread uploader the
+    kill must land within a small tolerance of the configured deadline.
+    """
+    stdout_path = Path(str(tmp_path)) / "stdout.log"
+    stdout_path.write_text("")
+    stderr_path = Path(str(tmp_path)) / "stderr.log"
+    stderr_path.write_text("")
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,  # own process group, as the executor does
+    )
+
+    def blocking_callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        threading.Event().wait()  # wedge forever like a stuck HTTP upload
+
+    started = time.monotonic()
+    try:
+        returncode, timed_out = executor._wait_with_progress(
+            process,
+            stdout_path,
+            stderr_path,
+            timeout=1.0,
+            progress_callback=blocking_callback,
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    elapsed = time.monotonic() - started
+
+    assert timed_out is True
+    assert returncode == -1
+    # 1s deadline plus the bounded final-drain wait (PROGRESS_DRAIN_SECONDS)
+    # plus small tolerance; a synchronous callback would hang forever.
+    assert elapsed < 3, f"a wedged callback delayed the 1s deadline to {elapsed:.1f}s"

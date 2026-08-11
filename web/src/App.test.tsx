@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import App, { TOKEN_STORAGE_KEY } from "./App";
 import { setAuthToken } from "./api";
+import { FALLBACK_POLICY } from "./fallback-policy";
 import type {
   Adapter,
   Execution,
@@ -167,6 +168,9 @@ afterEach(() => {
   setAuthToken(null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  // Restore the production fallback pace for tests that tightened it.
+  FALLBACK_POLICY.pollIntervalMs = 3000;
+  FALLBACK_POLICY.maxPolls = 60;
 });
 
 // --- Admin token auth (M2) -----------------------------------------------------
@@ -1388,6 +1392,7 @@ it("converges to the final result when SSE ends without a terminal event", async
     duration_ms: 42,
   });
   let detailCalls = 0;
+  FALLBACK_POLICY.pollIntervalMs = 50;
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
     {
@@ -1430,6 +1435,187 @@ it("converges to the final result when SSE ends without a terminal event", async
     { timeout: 5000 },
   );
   expect(detailCalls).toBeGreaterThanOrEqual(2);
+});
+
+it("falls back to the authoritative result when the SSE connection fails at start", async () => {
+  // M3 second review I2: an initial connect failure / non-2xx answer (e.g.
+  // 502 while Control restarts) must enter the same fallback path as a
+  // mid-stream EOF, and transient GET failures must keep retrying.
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const running = makeExecution({ status: "running", worker_id: 3 });
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 3,
+    output: { ok: true },
+    stdout: "done\n",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  let detailCalls = 0;
+  FALLBACK_POLICY.pollIntervalMs = 50;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      // Control restarts right as the stream connects: HTTP 502, no body.
+      respond: () => ({ status: 502 }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5",
+      respond: () => {
+        detailCalls += 1;
+        if (detailCalls === 1) {
+          throw new Error("Control still restarting");
+        }
+        return { body: detailCalls === 2 ? running : succeeded };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  // The transient GET failure must not stop the bounded retry loop.
+  await waitFor(
+    () => {
+      expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+    },
+    { timeout: 5000 },
+  );
+  expect(detailCalls).toBeGreaterThanOrEqual(3);
+});
+
+it("shows a stale-state notice when the fallback budget is exhausted", async () => {
+  // M3 second review I2: reaching the polling cap without a terminal status
+  // must never silently keep a seemingly live running state.
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const running = makeExecution({ status: "running", worker_id: 3 });
+  FALLBACK_POLICY.pollIntervalMs = 20;
+  FALLBACK_POLICY.maxPolls = 2;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(running)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: running }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  const notice = await screen.findByTestId("fallback-exhausted", {}, { timeout: 5000 });
+  expect(notice.textContent).toContain("实时连接已断开");
+  // The last known state stays visible, but clearly marked as possibly stale.
+  expect(screen.getByTestId("execution-status").textContent).toBe("运行中");
+});
+
+it("never lets a slow fallback GET of an old run overwrite a newer run", async () => {
+  // M3 second review I3: Execution A's fallback GET is still in flight when
+  // the user starts Execution B; A's late response must not clobber B.
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pendingA = makeExecution({ id: 5, status: "pending" });
+  const runningA = makeExecution({ id: 5, status: "running", worker_id: 3 });
+  const pendingB = makeExecution({ id: 6, status: "pending" });
+  const succeededB = makeExecution({
+    id: 6,
+    status: "succeeded",
+    worker_id: 3,
+    output: { ok: true },
+    stdout: "b done\n",
+    started_at: "2026-08-11T00:00:01Z",
+    ended_at: "2026-08-11T00:00:02Z",
+    duration_ms: 42,
+  });
+  let gateRelease: () => void = () => {};
+  const gateA = new Promise<void>((resolve) => {
+    gateRelease = resolve;
+  });
+  let aDetailCalls = 0;
+  let postCalls = 0;
+  FALLBACK_POLICY.pollIntervalMs = 50;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => {
+        postCalls += 1;
+        return { status: 202, body: postCalls === 1 ? pendingA : pendingB };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      // A dies with an unexpected EOF before any terminal event.
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(runningA)}\n\n`,
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/6/events",
+      // B finishes normally over SSE.
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(succeededB)}\n\n`,
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5",
+      respond: async () => {
+        aDetailCalls += 1;
+        await gateA; // A's fallback GET is very slow
+        return { body: runningA };
+      },
+    },
+    { method: "GET", match: "/api/executions/6", respond: () => ({ body: succeededB }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+  await screen.findByTestId("execution-id");
+  expect(screen.getByTestId("execution-id").textContent).toBe("Execution #5");
+
+  // Wait until A's fallback GET is actually in flight, then start B.
+  await waitFor(() => {
+    expect(aDetailCalls).toBe(1);
+  });
+  fireEvent.click(screen.getByTestId("run-test"));
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+  expect(screen.getByTestId("execution-id").textContent).toBe("Execution #6");
+
+  // A's slow response arrives last: it must be dropped, not committed.
+  gateRelease();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(screen.getByTestId("execution-id").textContent).toBe("Execution #6");
+  expect(screen.getByTestId("execution-status").textContent).toBe("成功");
 });
 
 it("marks the live log as truncated as soon as a log_snapshot says so", async () => {

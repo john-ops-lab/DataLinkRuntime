@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,6 +38,10 @@ REDACTED = "[REDACTED]"
 
 # Live-log upload rhythm while the subprocess runs (M3 spec §6.1).
 PROGRESS_POLL_SECONDS = 1.0
+# Bounded wait for the final progress upload after the subprocess ends, so
+# the persisted live log normally includes the tail; progress is best effort,
+# so a wedged upload must never delay the final result for longer than this.
+PROGRESS_DRAIN_SECONDS = 1.0
 
 # Receives already redacted (stdout_chunk, stderr_chunk); see run().
 ProgressCallback = Callable[[str, str], None]
@@ -147,6 +152,68 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
+class _ProgressUploader:
+    """Best-effort live-log uploader running off the executor thread.
+
+    ``submit`` never blocks the executor: at most one upload is in flight,
+    and while one is running new chunks are merged into the pending payload.
+    Progress may therefore lag behind or coalesce; that is safe because the
+    final result carries the authoritative full logs. Uploading synchronously
+    instead would let a stuck HTTP call block the executor's deadline checks
+    and stretch the adapter timeout semantics.
+    """
+
+    def __init__(self, callback: ProgressCallback) -> None:
+        self._callback = callback
+        self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
+        self._pending: tuple[str, str] = ("", "")
+        self._in_flight = False
+
+    def submit(self, stdout_chunk: str, stderr_chunk: str) -> None:
+        """Non-blocking: merge into the pending payload, ensure one upload."""
+        if not stdout_chunk and not stderr_chunk:
+            return
+        with self._lock:
+            out, err = self._pending
+            self._pending = (out + stdout_chunk, err + stderr_chunk)
+            if self._in_flight:
+                return
+            self._in_flight = True
+        threading.Thread(target=self._run, name="dlr-progress-upload", daemon=True).start()
+
+    def drain(self, timeout: float) -> None:
+        """Best-effort wait for in-flight/pending uploads to finish.
+
+        Called once after the subprocess is gone so the persisted live log
+        normally contains the final chunk; bounded because the final result
+        carries the authoritative full logs anyway.
+        """
+        with self._idle:
+            end = time.monotonic() + timeout
+            while self._in_flight or self._pending != ("", ""):
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._idle.wait(remaining)
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                stdout_chunk, stderr_chunk = self._pending
+                self._pending = ("", "")
+            if stdout_chunk or stderr_chunk:
+                try:
+                    self._callback(stdout_chunk, stderr_chunk)
+                except Exception:  # noqa: BLE001 - progress never fails a run
+                    logger.warning("progress upload failed; continuing execution", exc_info=True)
+            with self._lock:
+                if self._pending == ("", ""):
+                    self._in_flight = False
+                    self._idle.notify_all()
+                    return
+
+
 class _StreamTailer:
     """Read newly appended bytes from a file the subprocess writes to.
 
@@ -195,9 +262,9 @@ def _wait_with_progress(
     """Wait for the adapter subprocess, uploading live log chunks.
 
     Returns ``(returncode, timed_out)``. Without a callback this degrades to
-    the plain M2 blocking wait. Callback invocations receive redacted text;
-    any callback exception is logged and swallowed, because progress is best
-    effort and must never fail the Execution itself.
+    the plain M2 blocking wait. Callback invocations receive redacted text
+    and happen on a background uploader thread: a slow or failing upload can
+    never delay the deadline checks, and progress never fails the Execution.
     """
     if progress_callback is None:
         try:
@@ -211,6 +278,7 @@ def _wait_with_progress(
     stderr_tailer = _StreamTailer(stderr_path)
     stdout_guard = _SecretHoldback()
     stderr_guard = _SecretHoldback()
+    uploader = _ProgressUploader(progress_callback)
 
     def emit(final: bool = False) -> None:
         stdout_chunk = stdout_guard.push(stdout_tailer.read_new())
@@ -219,12 +287,7 @@ def _wait_with_progress(
             # Process is gone: release the hold-back tails as well.
             stdout_chunk += stdout_guard.flush()
             stderr_chunk += stderr_guard.flush()
-        if not stdout_chunk and not stderr_chunk:
-            return
-        try:
-            progress_callback(stdout_chunk, stderr_chunk)
-        except Exception:  # noqa: BLE001 - progress must never fail a run
-            logger.warning("progress upload failed; continuing execution", exc_info=True)
+        uploader.submit(stdout_chunk, stderr_chunk)
 
     try:
         while True:
@@ -232,14 +295,15 @@ def _wait_with_progress(
             if remaining <= 0:
                 _kill_process_group(process)
                 emit(final=True)
+                uploader.drain(PROGRESS_DRAIN_SECONDS)
                 return -1, True
             # Wait at most one poll slice, and never past the execution
-            # deadline, so the adapter timeout stays authoritative even if a
-            # progress upload (bounded by its own short timeout) is slow.
+            # deadline; uploads run off-thread and can never delay this loop.
             wait_slice = min(PROGRESS_POLL_SECONDS, remaining)
             try:
                 returncode = process.wait(timeout=wait_slice)
                 emit(final=True)  # final drain so the live view matches the end state
+                uploader.drain(PROGRESS_DRAIN_SECONDS)
                 return returncode, False
             except subprocess.TimeoutExpired:
                 pass
