@@ -1,0 +1,142 @@
+/* Minimal functional layout for the M1 admin page. No design system. */
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #f6f7f9;
+  color: #1f2430;
+}
+
+.layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.error-banner {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid #d93025;
+  background: #fdecea;
+  color: #a3271d;
+  border-radius: 4px;
+}
+
+.panels {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.adapter-list {
+  flex: 0 0 240px;
+  background: #ffffff;
+  border: 1px solid #d9dde3;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.adapter-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.adapter-list ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.adapter-list li button {
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+
+.adapter-list li button.selected {
+  background: #e8f0fe;
+  border-color: #b6cdf7;
+}
+
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.create-form-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.detail-empty {
+  color: #5f6672;
+}
+
+.detail {
+  flex: 1;
+  background: #ffffff;
+  border: 1px solid #d9dde3;
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.detail-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.metadata,
+.version-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.version-fields {
+  display: flex;
+  gap: 12px;
+}
+
+.version-fields label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.version-fields textarea {
+  font-family: ui-monospace, monospace;
+}
