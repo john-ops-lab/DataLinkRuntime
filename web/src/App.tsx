@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 
-import { ApiError, api } from "./api";
+import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
 import AdapterList from "./components/AdapterList";
 import type { Adapter, VersionDetail, VersionSummary } from "./types";
 
@@ -52,6 +52,11 @@ function versionSnapshot(detail: VersionDetail): EditorSnapshot {
   };
 }
 
+// M2 minimal Token UX: the admin token is kept in sessionStorage only
+// (never localStorage, never the database). The api client carries it as a
+// Bearer header; a 401 clears it and returns to the token input screen.
+export const TOKEN_STORAGE_KEY = "dlr-admin-token";
+
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     return `${error.message} (${error.code})`;
@@ -73,7 +78,7 @@ function parseRuntimeConfig(text: string): Record<string, unknown> | null {
   }
 }
 
-export default function App() {
+function AdapterConsole() {
   const [health, setHealth] = useState<HealthStatus>("loading");
 
   const [adapters, setAdapters] = useState<Adapter[]>([]);
@@ -551,4 +556,98 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+// Minimal admin token input shown while no valid token is present.
+function TokenLogin(props: { notice: string | null; onSubmit: (token: string) => Promise<void> }) {
+  const [token, setToken] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit() {
+    if (busy || !token.trim()) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await props.onSubmit(token.trim());
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="layout">
+      <header className="header">
+        <h1>DataLinkRuntime</h1>
+      </header>
+      <section className="detail-empty">
+        <h2>Admin token required</h2>
+        {props.notice && <p data-testid="auth-notice">{props.notice}</p>}
+        {error && (
+          <p className="error-banner" role="alert" data-testid="login-error">
+            {error}
+          </p>
+        )}
+        <input
+          data-testid="admin-token-input"
+          type="password"
+          placeholder="Admin token"
+          value={token}
+          disabled={busy}
+          onChange={(event) => setToken(event.target.value)}
+        />
+        <button
+          type="button"
+          data-testid="admin-token-submit"
+          disabled={busy || !token.trim()}
+          onClick={() => void handleSubmit()}
+        >
+          Sign in
+        </button>
+      </section>
+    </main>
+  );
+}
+
+export default function App() {
+  const [authed, setAuthed] = useState<boolean>(() => {
+    const stored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    if (stored !== null) {
+      setAuthToken(stored);
+      return true;
+    }
+    return false;
+  });
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    onUnauthorized(() => {
+      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+      setAuthToken(null);
+      setNotice("Session token rejected. Please sign in again.");
+      setAuthed(false);
+    });
+  }, []);
+
+  async function handleLogin(token: string) {
+    setAuthToken(token);
+    try {
+      await api.verifyAdminToken();
+    } catch (err) {
+      setAuthToken(null);
+      throw err;
+    }
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    setNotice(null);
+    setAuthed(true);
+  }
+
+  if (!authed) {
+    return <TokenLogin notice={notice} onSubmit={handleLogin} />;
+  }
+  return <AdapterConsole />;
 }

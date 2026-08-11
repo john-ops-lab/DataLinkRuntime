@@ -23,6 +23,14 @@ from dlr.control.app import create_app
 
 TEST_DATABASE = "dlr_test"
 
+# M2: fixed test tokens. conftest configures them on the settings singleton
+# so every protected endpoint is exercised with real authentication in place.
+ADMIN_TOKEN = "test-admin-token"
+WORKER_TOKEN = "test-worker-token"
+
+settings.admin_token = ADMIN_TOKEN
+settings.worker_token = WORKER_TOKEN
+
 
 def _base_url() -> URL:
     """Configured database URL without the database name component."""
@@ -68,7 +76,12 @@ def test_engine() -> Iterator[Engine]:
 
 def _truncate(engine: Engine) -> None:
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE TABLE adapters, adapter_versions RESTART IDENTITY CASCADE"))
+        conn.execute(
+            text(
+                "TRUNCATE TABLE adapters, adapter_versions, workers, executions "
+                "RESTART IDENTITY CASCADE"
+            )
+        )
 
 
 @pytest.fixture(scope="session")
@@ -78,7 +91,12 @@ def session_factory(test_engine: Engine) -> sessionmaker[Session]:
 
 @pytest.fixture()
 def api_client(test_engine: Engine, session_factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    """API client wired to the test database via dependency override."""
+    """API client wired to the test database via dependency override.
+
+    Requests carry the admin bearer token by default, so the M1 suite keeps
+    working with M2 authentication in place; worker endpoints are called
+    with an explicit Worker token header in their own tests.
+    """
     _truncate(test_engine)
 
     def override_get_session() -> Iterator[Session]:
@@ -90,6 +108,6 @@ def api_client(test_engine: Engine, session_factory: sessionmaker[Session]) -> I
 
     app = create_app()
     app.dependency_overrides[db.get_session] = override_get_session
-    yield TestClient(app)
+    yield TestClient(app, headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
     app.dependency_overrides.clear()
     _truncate(test_engine)
