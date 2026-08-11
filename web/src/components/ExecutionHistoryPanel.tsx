@@ -1,6 +1,6 @@
 /** 执行记录 Tab：游标分页历史列表 + 详情抽屉（M3 §5/§9）。 */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
@@ -41,6 +41,9 @@ export default function ExecutionHistoryPanel(props: { adapterId: number }) {
   const [detail, setDetail] = useState<Execution | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Only the newest detail request may commit UI state: rapid clicks (A slow,
+  // B fast) must never let a stale A response overwrite the B detail.
+  const detailRequestRef = useRef(0);
 
   const loadPage = useCallback(
     async (beforeId: number | null) => {
@@ -90,16 +93,26 @@ export default function ExecutionHistoryPanel(props: { adapterId: number }) {
   }, [props.adapterId]);
 
   async function openDetail(summary: ExecutionSummary) {
+    const requestId = ++detailRequestRef.current;
     setDrawerOpen(true);
     setDetail(null);
     setDetailLoading(true);
     try {
-      setDetail(await api.getExecution(summary.id));
+      const loaded = await api.getExecution(summary.id);
+      if (requestId !== detailRequestRef.current) {
+        return; // a newer click or a drawer close invalidated this load
+      }
+      setDetail(loaded);
     } catch (error) {
+      if (requestId !== detailRequestRef.current) {
+        return;
+      }
       setLoadError(errorMessage(error));
       setDrawerOpen(false);
     } finally {
-      setDetailLoading(false);
+      if (requestId === detailRequestRef.current) {
+        setDetailLoading(false);
+      }
     }
   }
 
@@ -166,7 +179,15 @@ export default function ExecutionHistoryPanel(props: { adapterId: number }) {
         </Button>
       )}
 
-      <Drawer title={detail !== null ? `Execution #${detail.id}` : "执行详情"} width={560} open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+      <Drawer
+        title={detail !== null ? `Execution #${detail.id}` : "执行详情"}
+        width={560}
+        open={drawerOpen}
+        onClose={() => {
+          detailRequestRef.current += 1; // invalidate any in-flight detail load
+          setDrawerOpen(false);
+        }}
+      >
         {detailLoading && <Spin />}
         {detail !== null && (
           <div className="execution-detail">

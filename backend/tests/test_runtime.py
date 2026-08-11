@@ -5,7 +5,9 @@ production. Adapters only use the Python standard library, so no public PyPI
 availability is required (except one deliberate dependency-failure test).
 """
 
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ import pytest
 from dlr.common.config import settings
 from dlr.worker import executor
 from dlr.worker import venv as venv_manager
+from dlr.worker.client import ControlClient, ControlUnavailableError
 from dlr.worker.executor import RuntimeSettings
 
 ECHO_CODE = """
@@ -437,3 +440,128 @@ def test_stream_tailer_keeps_split_utf8_boundaries(tmp_path: object) -> None:
         assert tailer.read_new() == ""
     finally:
         tailer.close()
+
+
+# --- M3 cross-chunk Secret redaction (Important 2) -------------------------------
+
+
+# Writes the Secret split across two flushes with at least one progress poll
+# between them; neither chunk alone contains the full Secret.
+SPLIT_SECRET_CODE = (
+    "import sys\n"
+    "import time\n\n\n"
+    "def handle(context, input):\n"
+    "    secret = str(context.secrets.get('SPLIT'))\n"
+    "    print('lead', flush=True)\n"
+    "    sys.stdout.write(secret[:6])\n"
+    "    sys.stdout.flush()\n"
+    "    time.sleep(0.7)\n"
+    "    sys.stdout.write(secret[6:] + '\\n')\n"
+    "    sys.stdout.flush()\n"
+    "    return {}\n"
+)
+
+
+def test_secret_holdback_redacts_across_chunk_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DLR_SECRET_SPLIT", "abcdef123456")
+    guard = executor._SecretHoldback()
+    delivered = "".join([guard.push("lead\nabcdef"), guard.push("123456 tail\n"), guard.flush()])
+    assert "abcdef123456" not in delivered, (
+        "a Secret split across pushes must never be reassemblable downstream"
+    )
+    assert "[REDACTED]" in delivered
+    assert "lead" in delivered and "tail" in delivered, "surrounding text must not be lost"
+
+
+def test_executor_progress_redacts_secret_split_across_polls(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    monkeypatch.setenv("DLR_SECRET_SPLIT", "abcdef123456")
+    chunks: list[str] = []
+
+    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        chunks.append(stdout_chunk)
+
+    result = executor.run(
+        make_payload(code=SPLIT_SECRET_CODE),
+        runtime_settings(tmp_path),
+        progress_callback=callback,
+    )
+    assert result["status"] == "succeeded"
+    delivered = "".join(chunks)
+    assert "abcdef123456" not in delivered, (
+        "a Secret written across two flushes must never reach progress payloads"
+    )
+    assert "[REDACTED]" in delivered
+    # The final M2 report stays fully redacted as well.
+    assert "abcdef123456" not in result["stdout"]
+
+
+# --- M3 progress deadline isolation (Important 3) --------------------------------
+
+
+class _StuckHandler(BaseHTTPRequestHandler):
+    """Accepts the connection but never answers, simulating a stuck Control."""
+
+    def do_POST(self) -> None:
+        time.sleep(60)
+
+    def log_message(self, *args: object) -> None:  # silence request logging
+        pass
+
+
+def _start_stuck_server() -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StuckHandler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_report_progress_fails_fast_on_a_stuck_control() -> None:
+    server = _start_stuck_server()
+    try:
+        client = ControlClient(f"http://127.0.0.1:{server.server_address[1]}", "test-worker-token")
+        started = time.monotonic()
+        with pytest.raises(ControlUnavailableError):
+            client.report_progress(1, 2, "x", "")
+        elapsed = time.monotonic() - started
+        assert elapsed < 15, "progress must use its own short timeout, not the 60s API budget"
+    finally:
+        server.shutdown()
+
+
+def test_stuck_progress_upload_does_not_stretch_execution_timeout(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    server = _start_stuck_server()
+    try:
+        client = ControlClient(f"http://127.0.0.1:{server.server_address[1]}", "test-worker-token")
+
+        def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+            client.report_progress(1, 2, stdout_chunk, stderr_chunk)
+
+        code = (
+            "import time\n\n\n"
+            "def handle(context, input):\n"
+            "    for _ in range(60):\n"
+            "        print('tick', flush=True)\n"
+            "        time.sleep(1)\n"
+            "    return {}\n"
+        )
+        started = time.monotonic()
+        result = executor.run(
+            make_payload(code=code, timeout=2),
+            runtime_settings(tmp_path),
+            progress_callback=callback,
+        )
+        elapsed = time.monotonic() - started
+        assert result["status"] == "timeout"
+        # Without the dedicated short progress timeout the first stuck upload
+        # would block ~60s before the adapter deadline is checked again.
+        assert elapsed < 20, f"a stuck progress upload stretched a 2s timeout to {elapsed:.1f}s"
+    finally:
+        server.shutdown()

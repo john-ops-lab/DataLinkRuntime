@@ -9,6 +9,7 @@ a plain PostgreSQL poll: immediate snapshot, log deltas, terminal close.
 import json
 import threading
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
@@ -17,9 +18,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
 from dlr.common.config import settings
+from dlr.control import db as control_db
 from dlr.control.models import Execution
+from dlr.control.services import events as events_service
+from dlr.worker import executor
 from test_adapters import create_adapter, save_version
 from test_executions import create_execution
+from test_runtime import SPLIT_SECRET_CODE, make_payload, runtime_settings
 from test_workers import register_worker, report, setup_claimed_execution
 
 WORKER_AUTH = {"Authorization": f"Bearer {WORKER_TOKEN}"}
@@ -311,6 +316,92 @@ def test_sse_sends_keepalive_while_idle(
     thread.join(timeout=5)
 
     assert ": keepalive" in raw, "idle streams must emit SSE comment keepalives"
+
+
+def test_sse_precheck_session_closes_before_streaming_starts(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Important 1: the 404 pre-check must use a short-lived session.
+
+    A request-scoped yield dependency would keep one useless DB connection
+    pinned for the whole lifetime of every long-lived SSE stream; the stream
+    generator polls with its own session and must never see the pre-check
+    session still open.
+    """
+    real_factory = control_db.SessionLocal
+    opened: list[Session] = []
+    closed: list[Session] = []
+
+    def recording_factory() -> Session:
+        session = real_factory()
+        opened.append(session)
+        native_close = session.close
+
+        def tracking_close() -> None:
+            closed.append(session)
+            native_close()
+
+        session.close = tracking_close  # type: ignore[method-assign]
+        return session
+
+    monkeypatch.setattr(control_db, "SessionLocal", recording_factory)
+
+    observed: dict[str, int] = {}
+
+    def observing_stream(execution_id: int) -> Iterator[str]:
+        observed["opened"] = len(opened)
+        observed["closed"] = len(closed)
+        yield ": placeholder\n\n"
+
+    worker, execution, _ = setup_claimed_execution(api_client, adapter_name="sse-precheck")
+    monkeypatch.setattr(events_service, "event_stream", observing_stream)
+
+    with api_client.stream("GET", f"/api/executions/{execution['id']}/events") as response:
+        assert response.status_code == 200
+        b"".join(response.iter_bytes())
+
+    assert observed["opened"] == 1, "the stream must not reuse the pre-check session factory path"
+    assert observed["closed"] == 1, "the pre-check session must be closed before streaming starts"
+
+
+def test_split_secret_never_reaches_persisted_live_logs(
+    api_client: TestClient, tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Important 2 (end-to-end): a Secret written across two flushes with one
+    progress poll in between must never reach Control as plaintext chunks.
+    The persisted live log is exactly what the SSE stream replays, so it
+    stays redacted as well."""
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    monkeypatch.setenv("DLR_SECRET_SPLIT", "abcdef123456")
+    worker, execution, _ = setup_claimed_execution(api_client, adapter_name="progress-split")
+    uploaded: list[str] = []
+
+    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        uploaded.append(stdout_chunk)
+        response = progress(
+            api_client,
+            worker["id"],
+            execution["id"],
+            stdout_chunk=stdout_chunk,
+            stderr_chunk=stderr_chunk,
+        )
+        assert response.status_code == 204
+
+    result = executor.run(
+        make_payload(code=SPLIT_SECRET_CODE),
+        runtime_settings(tmp_path),
+        progress_callback=callback,
+    )
+    assert result["status"] == "succeeded"
+    assert "abcdef123456" not in "".join(uploaded), (
+        "no combination of progress payloads may reassemble the Secret"
+    )
+
+    fetched = api_client.get(f"/api/executions/{execution['id']}").json()
+    assert "abcdef123456" not in fetched["stdout"], (
+        "the persisted live log (and thus the SSE replay) must stay redacted"
+    )
+    assert "[REDACTED]" in fetched["stdout"]
 
 
 # --- history enrichment -------------------------------------------------------------

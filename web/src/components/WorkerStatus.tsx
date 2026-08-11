@@ -74,6 +74,10 @@ export default function WorkerStatus() {
     </div>
   );
 
+  const hasOnlineWorker =
+    workers !== null && workers.some((worker) => worker.status === "online");
+  const allOffline = workers !== null && workers.length > 0 && !hasOnlineWorker;
+
   return (
     <Popover
       content={content}
@@ -83,7 +87,7 @@ export default function WorkerStatus() {
       onOpenChange={(nextOpen) => void handleOpenChange(nextOpen)}
     >
       <Button size="small" data-testid="worker-status">
-        <Badge status={workers !== null && workers.length > 0 ? "success" : "default"} />
+        <Badge status={hasOnlineWorker ? "success" : allOffline ? "error" : "default"} />
         Workers
       </Button>
     </Popover>

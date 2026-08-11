@@ -112,9 +112,11 @@ def api_client(
             session.close()
 
     # M3: the SSE event stream owns its own session (the response outlives
-    # the request handler), so it cannot go through the dependency override;
-    # point its session factory at the test database as well.
+    # the request handler), and the stream's 404 pre-check opens its own
+    # short-lived session; neither can go through the dependency override,
+    # so point both session factories at the test database.
     monkeypatch.setattr(events_service, "SessionLocal", session_factory)
+    monkeypatch.setattr(db, "SessionLocal", session_factory)
 
     app = create_app()
     app.dependency_overrides[db.get_session] = override_get_session

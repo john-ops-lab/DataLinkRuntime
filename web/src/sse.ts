@@ -23,6 +23,9 @@ export interface ExecutionEventsHandlers {
   onExecution?: (execution: Execution) => void;
   onLog?: (event: LogEvent) => void;
   onLogSnapshot?: (event: LogSnapshotEvent) => void;
+  /** Stream ended (EOF or read error) without a terminal event and without
+   * an explicit close(); callers must fall back to the authoritative API. */
+  onUnexpectedClose?: () => void;
   onError?: (message: string) => void;
 }
 
@@ -123,6 +126,14 @@ export function openExecutionEvents(
       if (!closed) {
         handlers.onError?.(error instanceof Error ? error.message : "实时事件读取失败");
       }
+    }
+    // The server only closes the stream after a terminal status, and a
+    // terminal event triggers close() on the caller side: any other end of
+    // the stream (Control restart, proxy drop, nginx read timeout, read
+    // error) is unexpected and must not leave the caller stuck on a stale
+    // running state.
+    if (!closed) {
+      handlers.onUnexpectedClose?.();
     }
   }
 

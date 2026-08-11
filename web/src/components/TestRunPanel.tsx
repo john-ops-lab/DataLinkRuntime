@@ -22,6 +22,11 @@ interface TestRunPanelProps {
   onError: (message: string) => void;
 }
 
+// After an unexpected SSE end, converge on the authoritative M2 result with one
+// immediate GET plus bounded polling (no reconnect framework needed).
+const FALLBACK_POLL_INTERVAL_MS = 1000;
+const FALLBACK_MAX_POLLS = 10;
+
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     return `${error.message} (${error.code})`;
@@ -36,12 +41,47 @@ export default function TestRunPanel(props: TestRunPanelProps) {
   const [liveStdout, setLiveStdout] = useState("");
   const [liveStderr, setLiveStderr] = useState("");
   const streamRef = useRef<ExecutionEventsHandle | null>(null);
+  const fallbackTimerRef = useRef<number | null>(null);
 
-  // Close the stream when the panel unmounts (adapter switch).
-  useEffect(() => () => streamRef.current?.close(), []);
+  function stopFallbackPolling() {
+    if (fallbackTimerRef.current !== null) {
+      window.clearTimeout(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
+  }
+
+  // Close the stream and pending fallback polls on unmount (adapter switch).
+  useEffect(
+    () => () => {
+      streamRef.current?.close();
+      stopFallbackPolling();
+    },
+    [],
+  );
+
+  // SSE is only the experience channel: when it dies before a terminal
+  // event, the M2 final result stays authoritative, so converge on it.
+  function convergeOnFinalResult(executionId: number, remainingPolls: number) {
+    api
+      .getExecution(executionId)
+      .then((detail) => {
+        setExecution(detail);
+        setLiveStdout(detail.stdout);
+        setLiveStderr(detail.stderr);
+        if (isTerminal(detail.status) || remainingPolls <= 0) {
+          return;
+        }
+        fallbackTimerRef.current = window.setTimeout(
+          () => convergeOnFinalResult(executionId, remainingPolls - 1),
+          FALLBACK_POLL_INTERVAL_MS,
+        );
+      })
+      .catch((error) => props.onError(errorMessage(error)));
+  }
 
   function watch(executionId: number) {
     streamRef.current?.close();
+    stopFallbackPolling();
     streamRef.current = openExecutionEvents(executionId, {
       onExecution(next) {
         // Every execution event carries the stored streams at poll time; the
@@ -76,6 +116,19 @@ export default function TestRunPanel(props: TestRunPanelProps) {
         } else {
           setLiveStderr(event.content);
         }
+        // Truncation just happened server-side: reflect it immediately
+        // instead of waiting for the next execution event or terminal.
+        setExecution((current) =>
+          current === null
+            ? current
+            : event.stream === "stdout"
+              ? { ...current, stdout_truncated: event.truncated }
+              : { ...current, stderr_truncated: event.truncated },
+        );
+      },
+      onUnexpectedClose() {
+        streamRef.current?.close();
+        convergeOnFinalResult(executionId, FALLBACK_MAX_POLLS);
       },
       onError(message) {
         props.onError(message);
@@ -122,7 +175,11 @@ export default function TestRunPanel(props: TestRunPanelProps) {
   }
 
   const runDisabled =
-    submitting || props.busy || !props.contentReady || props.selectedVersionId === null;
+    submitting ||
+    props.busy ||
+    props.dirty ||
+    !props.contentReady ||
+    props.selectedVersionId === null;
 
   return (
     <div className="test-run-panel">

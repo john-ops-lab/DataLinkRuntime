@@ -406,12 +406,12 @@ function AdapterConsole() {
 
   const healthText =
     health === "loading"
-      ? "Checking control health..."
+      ? "Control 检查中…"
       : health === "ok"
-        ? "Control: ok"
+        ? "Control 健康"
         : health === "degraded"
-          ? "Control: degraded"
-          : "Control: unreachable";
+          ? "Control 降级"
+          : "Control 不可达";
 
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
   const isLatest = selectedVersionId !== null && selected?.latest_version_id === selectedVersionId;

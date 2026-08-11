@@ -74,6 +74,45 @@ def redact_secrets(text: str) -> str:
     return text
 
 
+def _max_secret_length() -> int:
+    """Length of the longest configured DLR_SECRET_* value (0 when none)."""
+    return max(
+        (
+            len(value)
+            for key, value in os.environ.items()
+            if key.startswith("DLR_SECRET_") and value
+        ),
+        default=0,
+    )
+
+
+class _SecretHoldback:
+    """Rolling redaction buffer for live-log chunks.
+
+    Redacting each progress chunk independently is unsafe: a Secret written
+    across two flushes is complete in neither chunk, so both would pass
+    unredacted and reassemble downstream. Every push therefore prepends a
+    small held-back tail (at most ``max_secret_len - 1`` characters) before
+    redacting, and only emits the part that can no longer complete a split
+    Secret. The remainder is flushed once the subprocess exits.
+    """
+
+    def __init__(self) -> None:
+        self._held = ""
+        self._hold = max(_max_secret_length() - 1, 0)
+
+    def push(self, text: str) -> str:
+        redacted = redact_secrets(self._held + text)
+        keep = min(self._hold, len(redacted))
+        self._held = redacted[len(redacted) - keep :]
+        return redacted[: len(redacted) - keep]
+
+    def flush(self) -> str:
+        text = redact_secrets(self._held)
+        self._held = ""
+        return text
+
+
 def _redact_json_value(value: Any) -> Any:
     """Recursively redact DLR_SECRET_* plaintext values from a JSON structure.
 
@@ -170,10 +209,16 @@ def _wait_with_progress(
     deadline = time.monotonic() + timeout
     stdout_tailer = _StreamTailer(stdout_path)
     stderr_tailer = _StreamTailer(stderr_path)
+    stdout_guard = _SecretHoldback()
+    stderr_guard = _SecretHoldback()
 
-    def emit() -> None:
-        stdout_chunk = redact_secrets(stdout_tailer.read_new())
-        stderr_chunk = redact_secrets(stderr_tailer.read_new())
+    def emit(final: bool = False) -> None:
+        stdout_chunk = stdout_guard.push(stdout_tailer.read_new())
+        stderr_chunk = stderr_guard.push(stderr_tailer.read_new())
+        if final:
+            # Process is gone: release the hold-back tails as well.
+            stdout_chunk += stdout_guard.flush()
+            stderr_chunk += stderr_guard.flush()
         if not stdout_chunk and not stderr_chunk:
             return
         try:
@@ -183,17 +228,22 @@ def _wait_with_progress(
 
     try:
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _kill_process_group(process)
+                emit(final=True)
+                return -1, True
+            # Wait at most one poll slice, and never past the execution
+            # deadline, so the adapter timeout stays authoritative even if a
+            # progress upload (bounded by its own short timeout) is slow.
+            wait_slice = min(PROGRESS_POLL_SECONDS, remaining)
             try:
-                returncode = process.wait(timeout=PROGRESS_POLL_SECONDS)
-                emit()  # final drain so the live view matches the end state
+                returncode = process.wait(timeout=wait_slice)
+                emit(final=True)  # final drain so the live view matches the end state
                 return returncode, False
             except subprocess.TimeoutExpired:
                 pass
             emit()
-            if time.monotonic() >= deadline:
-                _kill_process_group(process)
-                emit()
-                return -1, True
     finally:
         stdout_tailer.close()
         stderr_tailer.close()
