@@ -11,6 +11,24 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      # M1 backend tests run against real PostgreSQL (never SQLite) so the
+      # Alembic migration chain, JSONB and FK behavior are exercised for real.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dlr
+          POSTGRES_PASSWORD: dlr
+          POSTGRES_DB: dlr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dlr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://dlr:dlr@localhost:5432/dlr
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
