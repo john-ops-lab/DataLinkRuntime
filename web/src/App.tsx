@@ -7,14 +7,23 @@ interface HealthPayload {
   database: boolean;
 }
 
-// A valid health payload is mapped by its status field (503 responses with a
-// legal payload count as "degraded"). Anything without a valid payload is
-// treated as unreachable.
+// Runtime contract check: only accept objects with a string status and a
+// boolean database flag; anything else is treated as an invalid payload.
+function isHealthPayload(value: unknown): value is HealthPayload {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.status === "string" && typeof candidate.database === "boolean";
+}
+
+// Only the two consistent combinations map to a real state; missing fields,
+// wrong types or contradictory combinations are treated as unreachable.
 function toHealthStatus(payload: HealthPayload): HealthStatus {
-  if (payload.status === "ok") {
+  if (payload.status === "ok" && payload.database === true) {
     return "ok";
   }
-  if (payload.status === "degraded") {
+  if (payload.status === "degraded" && payload.database === false) {
     return "degraded";
   }
   return "unreachable";
@@ -29,9 +38,9 @@ export default function App() {
     async function checkHealth() {
       try {
         const response = await fetch("/api/health");
-        const payload = (await response.json()) as HealthPayload;
+        const body: unknown = await response.json();
         if (!cancelled) {
-          setHealth(toHealthStatus(payload));
+          setHealth(isHealthPayload(body) ? toHealthStatus(body) : "unreachable");
         }
       } catch {
         if (!cancelled) {

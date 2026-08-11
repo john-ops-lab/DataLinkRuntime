@@ -54,4 +54,20 @@ describe("App", () => {
       expect(screen.getByTestId("control-status").textContent).toBe("Control: unreachable");
     });
   });
+
+  it("does not show ok for the contradictory payload {status: ok, database: false}", async () => {
+    vi.stubGlobal("fetch", mockFetchOnce({ status: "ok", database: false }));
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("control-status").textContent).toBe("Control: unreachable");
+    });
+  });
+
+  it("shows unreachable when payload fields are missing", async () => {
+    vi.stubGlobal("fetch", mockFetchOnce({ status: "ok" }));
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("control-status").textContent).toBe("Control: unreachable");
+    });
+  });
 });
