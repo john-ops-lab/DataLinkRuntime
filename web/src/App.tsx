@@ -212,6 +212,11 @@ export default function App() {
   }
 
   function handleSelectAdapter(adapter: Adapter) {
+    // Interaction lock: no navigation while a mutation is in flight, so a
+    // completing mutation can never commit state against a different adapter.
+    if (busy) {
+      return;
+    }
     if (selected?.id === adapter.id) {
       return;
     }
@@ -222,9 +227,13 @@ export default function App() {
   }
 
   async function handleCreateAdapter(createdName: string, createdDescription: string): Promise<boolean> {
+    if (busy) {
+      return false;
+    }
     if (!confirmDiscard()) {
       return false;
     }
+    setBusy(true);
     try {
       setError(null);
       const created = await api.createAdapter({ name: createdName, description: createdDescription });
@@ -234,10 +243,16 @@ export default function App() {
     } catch (err) {
       setError(errorMessage(err));
       return false;
+    } finally {
+      setBusy(false);
     }
   }
 
   async function handleSelectVersion(versionId: number) {
+    // Interaction lock: no version switching while a mutation is in flight.
+    if (busy) {
+      return;
+    }
     if (!selected || versionId === selectedVersionId) {
       return;
     }
@@ -286,14 +301,12 @@ export default function App() {
       });
       // The immutable version exists as soon as POST succeeds: acknowledge it locally
       // right away so a follow-up refresh failure cannot be mistaken for a failed save
-      // (which would invite retrying into a duplicate immutable version).
-      const refreshed: Adapter = {
-        ...selected,
-        latest_version_id: saved.id,
-        updated_at: saved.created_at,
-      };
-      setSelected(refreshed);
-      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+      // (which would invite retrying into a duplicate immutable version). Only
+      // latest_version_id is derived from the response; Adapter.updated_at stays
+      // the server-owned value until a real Adapter refresh succeeds.
+      const optimistic: Adapter = { ...selected, latest_version_id: saved.id };
+      setSelected(optimistic);
+      setAdapters((current) => current.map((item) => (item.id === optimistic.id ? optimistic : item)));
       setVersions((current) => [saved, ...current]);
       setSelectedVersionId(saved.id);
       applySnapshot(versionSnapshot(saved));
@@ -302,6 +315,15 @@ export default function App() {
         setVersions(versionList);
       } catch (refreshErr) {
         setError(`Version saved, but refreshing the version list failed: ${errorMessage(refreshErr)}`);
+      }
+      try {
+        // Best-effort refresh of the real Adapter (server-owned updated_at);
+        // failure is non-fatal because the save itself is already acknowledged.
+        const real = await api.getAdapter(selected.id);
+        setSelected(real);
+        setAdapters((current) => current.map((item) => (item.id === real.id ? real : item)));
+      } catch (refreshErr) {
+        setError(`Version saved, but refreshing the adapter failed: ${errorMessage(refreshErr)}`);
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -403,6 +425,7 @@ export default function App() {
         <AdapterList
           adapters={adapters}
           selectedId={selected?.id ?? null}
+          busy={busy}
           onSelect={handleSelectAdapter}
           onCreate={handleCreateAdapter}
         />
@@ -414,7 +437,12 @@ export default function App() {
             <div className="detail-header">
               <h2>{selected.name}</h2>
               {dirty && <span data-testid="dirty-indicator">Unsaved changes</span>}
-              <button type="button" data-testid="delete-adapter" onClick={() => void handleDelete()}>
+              <button
+                type="button"
+                data-testid="delete-adapter"
+                disabled={busy}
+                onClick={() => void handleDelete()}
+              >
                 Delete
               </button>
             </div>
@@ -423,18 +451,20 @@ export default function App() {
               <input
                 data-testid="adapter-name"
                 value={name}
+                disabled={busy}
                 onChange={(event) => setName(event.target.value)}
               />
               <input
                 data-testid="adapter-description"
                 placeholder="description"
                 value={description}
+                disabled={busy}
                 onChange={(event) => setDescription(event.target.value)}
               />
               <button
                 type="button"
                 data-testid="update-details"
-                disabled={busy}
+                disabled={busy || !contentReady}
                 onClick={() => void handleUpdateDetails()}
               >
                 Update details
@@ -447,7 +477,7 @@ export default function App() {
                 <select
                   data-testid="version-selector"
                   value={selectedVersionId ?? ""}
-                  disabled={versions.length === 0}
+                  disabled={busy || versions.length === 0}
                   onChange={(event) => void handleSelectVersion(Number(event.target.value))}
                 >
                   {versions.map((version) => (
@@ -475,7 +505,7 @@ export default function App() {
               defaultLanguage="python"
               value={snapshot.code}
               onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
-              options={{ minimap: { enabled: false } }}
+              options={{ minimap: { enabled: false }, readOnly: busy || !contentReady }}
             />
 
             <div className="version-fields">
@@ -485,6 +515,7 @@ export default function App() {
                   data-testid="requirements-input"
                   rows={4}
                   value={snapshot.requirements}
+                  disabled={busy || !contentReady}
                   onChange={(event) =>
                     setSnapshot((current) => ({ ...current, requirements: event.target.value }))
                   }
@@ -496,6 +527,7 @@ export default function App() {
                   data-testid="runtime-config-input"
                   rows={4}
                   value={snapshot.runtimeConfigText}
+                  disabled={busy || !contentReady}
                   onChange={(event) =>
                     setSnapshot((current) => ({
                       ...current,

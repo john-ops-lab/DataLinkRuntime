@@ -8,25 +8,28 @@ import type { Adapter } from "../types";
 interface AdapterListProps {
   adapters: Adapter[];
   selectedId: number | null;
+  // Interaction lock: while a mutation is in flight, switching adapters and
+  // starting a new create are disabled so state cannot be mixed across adapters.
+  busy: boolean;
   onSelect: (adapter: Adapter) => void;
   // Returns true only when the adapter was actually created; the form is cleared
   // and closed only on real success, so failures keep the user's input editable.
   onCreate: (name: string, description: string) => Promise<boolean>;
 }
 
-export default function AdapterList({ adapters, selectedId, onSelect, onCreate }: AdapterListProps) {
+export default function AdapterList({ adapters, selectedId, busy, onSelect, onCreate }: AdapterListProps) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
     const trimmed = name.trim();
-    if (!trimmed || busy) {
+    if (!trimmed || busy || submitting) {
       return;
     }
-    setBusy(true);
+    setSubmitting(true);
     try {
       const created = await onCreate(trimmed, description);
       if (created) {
@@ -35,7 +38,7 @@ export default function AdapterList({ adapters, selectedId, onSelect, onCreate }
         setCreating(false);
       }
     } finally {
-      setBusy(false);
+      setSubmitting(false);
     }
   }
 
@@ -43,7 +46,12 @@ export default function AdapterList({ adapters, selectedId, onSelect, onCreate }
     <aside className="adapter-list">
       <div className="adapter-list-header">
         <h2>Adapters</h2>
-        <button type="button" data-testid="show-create-form" onClick={() => setCreating(true)}>
+        <button
+          type="button"
+          data-testid="show-create-form"
+          disabled={busy}
+          onClick={() => setCreating(true)}
+        >
           + New Adapter
         </button>
       </div>
@@ -54,16 +62,18 @@ export default function AdapterList({ adapters, selectedId, onSelect, onCreate }
             data-testid="new-adapter-name"
             placeholder="name"
             value={name}
+            disabled={busy}
             onChange={(event) => setName(event.target.value)}
           />
           <input
             data-testid="new-adapter-description"
             placeholder="description (optional)"
             value={description}
+            disabled={busy}
             onChange={(event) => setDescription(event.target.value)}
           />
           <div className="create-form-actions">
-            <button type="submit" data-testid="create-adapter" disabled={busy}>
+            <button type="submit" data-testid="create-adapter" disabled={busy || submitting}>
               Create
             </button>
             <button type="button" onClick={() => setCreating(false)}>
@@ -83,6 +93,7 @@ export default function AdapterList({ adapters, selectedId, onSelect, onCreate }
                 type="button"
                 data-testid="adapter-item"
                 className={adapter.id === selectedId ? "selected" : ""}
+                disabled={busy}
                 onClick={() => onSelect(adapter)}
               >
                 {adapter.name}

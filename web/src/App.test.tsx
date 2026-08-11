@@ -6,15 +6,18 @@ import type { Adapter, VersionDetail, VersionSummary } from "./types";
 
 // The Monaco editor is replaced by a plain textarea so tests exercise the DLR
 // business integration (value / change / save) instead of the editor itself.
+// readOnly is honored so the mutation-time interaction lock is testable.
 vi.mock("@monaco-editor/react", () => ({
   default: function Editor(props: {
     value?: string;
     onChange?: (value: string | undefined) => void;
+    options?: { readOnly?: boolean };
   }) {
     return (
       <textarea
         data-testid="code-editor"
         value={props.value ?? ""}
+        disabled={props.options?.readOnly ?? false}
         onChange={(event) => props.onChange?.(event.target.value)}
       />
     );
@@ -673,6 +676,12 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
         return { status: 201, body: makeVersion({ code: payload.code }) };
       },
     },
+    {
+      // Best-effort Adapter refresh after Save succeeds.
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => ({ body: makeAdapter({ latest_version_id: 10 }) }),
+    },
   ]);
   render(<App />);
 
@@ -776,4 +785,179 @@ it("keeps the create form open when creation is cancelled by the discard confirm
   expect(valueOf("new-adapter-name")).toBe("new-one");
   expect(screen.getByRole("heading", { name: "adapter-a" })).toBeTruthy();
   expect(valueOf("code-editor")).toBe("edited");
+});
+
+// --- Review round 2 regressions: interaction lock during mutations ----------
+
+it("locks navigation while Publish is in flight so a late response cannot mix adapters", async () => {
+  let resolvePublish: ((value: Adapter) => void) | undefined;
+  const publishResponse = new Promise<Adapter>((resolve) => {
+    resolvePublish = resolve;
+  });
+  const adapterA = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [adapterA, makeAdapter({ id: 2, name: "adapter-b" })] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [{ id: 10, adapter_id: 1, seq: 1, created_at: "" }] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/10",
+      respond: () => ({ body: makeVersion({ id: 10, code: "code-a" }) }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions/10/publish",
+      respond: async () => ({ body: await publishResponse }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  expect(valueOf("code-editor")).toBe("code-a");
+
+  // Publish(A) starts and stays pending.
+  fireEvent.click(screen.getByTestId("publish-version"));
+  await waitFor(() => {
+    expect((screen.getByTestId("publish-version") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // Attempted switch to adapter-b while the mutation is in flight: the list
+  // item is disabled and the handler rejects navigation, so B never loads.
+  const itemB = screen.getAllByTestId("adapter-item")[1];
+  expect((itemB as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(itemB);
+  expect(screen.getByRole("heading", { name: "adapter-a" })).toBeTruthy();
+  expect(
+    fetchMock.mock.calls.some(([url]) => String(url).startsWith("/api/adapters/2")),
+  ).toBe(false);
+
+  // The late Publish(A) response commits against adapter-a only.
+  resolvePublish?.({ ...adapterA, published_version_id: 10 });
+  await screen.findByTestId("published-badge");
+  expect(screen.getByRole("heading", { name: "adapter-a" })).toBeTruthy();
+  expect(valueOf("code-editor")).toBe("code-a");
+});
+
+it("locks editing while Save is in flight so the saved snapshot stays consistent", async () => {
+  let resolveSave: ((value: VersionDetail) => void) | undefined;
+  const saveResponse = new Promise<VersionDetail>((resolve) => {
+    resolveSave = resolve;
+  });
+  const versions: VersionSummary[] = [];
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [makeAdapter()] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: versions }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions",
+      respond: async (body) => {
+        const payload = JSON.parse(body ?? "{}") as {
+          code: string;
+          requirements: string;
+          runtime_config: Record<string, unknown>;
+        };
+        const saved = makeVersion({ ...payload });
+        return { status: 201, body: await saveResponse.then(() => saved) };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => ({ body: makeAdapter({ latest_version_id: 10 }) }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited code" } });
+  fireEvent.click(screen.getByTestId("save-version"));
+
+  // While Save is pending, every editing/navigation surface is locked.
+  await waitFor(() => {
+    expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true);
+  });
+  expect((screen.getByTestId("requirements-input") as HTMLTextAreaElement).disabled).toBe(true);
+  expect((screen.getByTestId("runtime-config-input") as HTMLTextAreaElement).disabled).toBe(true);
+  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getAllByTestId("adapter-item")[0] as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByTestId("version-selector") as HTMLSelectElement).disabled).toBe(true);
+
+  // Save completes with exactly the snapshot that existed when it started.
+  const savedVersion = makeVersion({ code: "edited code", requirements: "", runtime_config: {} });
+  versions.push(savedVersion);
+  resolveSave?.(savedVersion);
+  await screen.findByTestId("latest-badge");
+
+  const saveCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url).endsWith("/versions") && init?.method === "POST",
+  );
+  const sentPayload = JSON.parse(String(saveCall?.[1]?.body)) as { code: string };
+  expect(sentPayload.code).toBe("edited code");
+  expect(valueOf("code-editor")).toBe("edited code");
+  expect(screen.queryByTestId("dirty-indicator")).toBeNull();
+});
+
+it("never fabricates Adapter.updated_at from the saved version; adapter refresh failure is non-fatal", async () => {
+  const adapterBefore = makeAdapter();
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [adapterBefore] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [] }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}") as { code: string };
+        return { status: 201, body: makeVersion({ code: payload.code }) };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => {
+        throw new Error("adapter refresh failed");
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "saved code" } });
+  fireEvent.click(screen.getByTestId("save-version"));
+
+  // The save is still acknowledged (latest badge, not dirty) while the failed
+  // Adapter refresh is reported separately; the server-owned updated_at is
+  // never synthesized from the version's created_at.
+  await screen.findByTestId("latest-badge");
+  expect(screen.getByTestId("error-banner").textContent).toContain("Version saved");
+  expect(screen.getByTestId("error-banner").textContent).toContain("refreshing the adapter");
+  expect(screen.queryByTestId("dirty-indicator")).toBeNull();
+  expect(valueOf("code-editor")).toBe("saved code");
+  expect(
+    fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1"),
+  ).toBe(true);
 });
