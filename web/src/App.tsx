@@ -1,10 +1,23 @@
 import { useEffect, useState } from "react";
 
-type HealthStatus = "loading" | "ok" | "unreachable";
+type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
 
 interface HealthPayload {
   status: string;
   database: boolean;
+}
+
+// A valid health payload is mapped by its status field (503 responses with a
+// legal payload count as "degraded"). Anything without a valid payload is
+// treated as unreachable.
+function toHealthStatus(payload: HealthPayload): HealthStatus {
+  if (payload.status === "ok") {
+    return "ok";
+  }
+  if (payload.status === "degraded") {
+    return "degraded";
+  }
+  return "unreachable";
 }
 
 export default function App() {
@@ -16,12 +29,9 @@ export default function App() {
     async function checkHealth() {
       try {
         const response = await fetch("/api/health");
-        if (!response.ok) {
-          throw new Error(`unexpected status ${response.status}`);
-        }
         const payload = (await response.json()) as HealthPayload;
         if (!cancelled) {
-          setHealth(payload.status === "ok" && payload.database ? "ok" : "unreachable");
+          setHealth(toHealthStatus(payload));
         }
       } catch {
         if (!cancelled) {
@@ -41,7 +51,9 @@ export default function App() {
       ? "Checking control health..."
       : health === "ok"
         ? "Control: ok"
-        : "Control: unreachable";
+        : health === "degraded"
+          ? "Control: degraded"
+          : "Control: unreachable";
 
   return (
     <main>

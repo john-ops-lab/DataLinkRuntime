@@ -1,5 +1,6 @@
 """Tests for the Control Node health endpoint."""
 
+import logging
 from collections.abc import Iterator
 
 import pytest
@@ -34,3 +35,16 @@ def test_health_degraded_when_database_unreachable(
     body = response.json()
     assert body["status"] == "degraded"
     assert body["database"] is False
+
+
+def test_check_database_logs_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def connect_failed() -> None:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(db.engine, "connect", connect_failed)
+    with caplog.at_level(logging.ERROR, logger="dlr.control.db"):
+        assert db.check_database() is False
+    assert "database health check failed" in caplog.text
+    assert "connection refused" in caplog.text

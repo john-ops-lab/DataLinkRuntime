@@ -30,4 +30,28 @@ describe("App", () => {
       expect(screen.getByTestId("control-status").textContent).toBe("Control: unreachable");
     });
   });
+
+  it("shows degraded when control returns 503 with a valid health payload", async () => {
+    vi.stubGlobal("fetch", mockFetchOnce({ status: "degraded", database: false }, false));
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("control-status").textContent).toBe("Control: degraded");
+    });
+  });
+
+  it("shows unreachable when the response is not a valid health payload", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => {
+          throw new Error("not json");
+        },
+      }),
+    );
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("control-status").textContent).toBe("Control: unreachable");
+    });
+  });
 });
