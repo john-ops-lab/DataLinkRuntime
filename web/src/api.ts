@@ -2,6 +2,21 @@
 
 import type { Adapter, VersionDetail, VersionSummary } from "./types";
 
+// M2 minimal Token UX: the admin token lives only in memory plus the
+// browser's sessionStorage (managed by App). Every request automatically
+// carries it as a Bearer header; a 401 clears the session and notifies the
+// UI so it can return to the token input screen.
+let authToken: string | null = null;
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+}
+
+export function onUnauthorized(handler: () => void): void {
+  unauthorizedHandler = handler;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -39,14 +54,19 @@ async function parseError(response: Response): Promise<ApiError> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authToken !== null) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
   let response: Response;
   try {
-    response = await fetch(path, {
-      headers: { "Content-Type": "application/json" },
-      ...init,
-    });
+    response = await fetch(path, { headers, ...init });
   } catch {
     throw new ApiError(0, "network_error", "Control is unreachable");
+  }
+  if (response.status === 401) {
+    authToken = null;
+    unauthorizedHandler?.();
   }
   if (!response.ok) {
     throw await parseError(response);
@@ -58,6 +78,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  verifyAdminToken: (): Promise<{ status: string }> => request("/api/auth/admin/verify"),
+
   listAdapters: (): Promise<Adapter[]> => request("/api/adapters"),
 
   createAdapter: (payload: { name: string; description: string }): Promise<Adapter> =>

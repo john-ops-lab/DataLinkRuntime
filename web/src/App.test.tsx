@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import App from "./App";
+import App, { TOKEN_STORAGE_KEY } from "./App";
+import { setAuthToken } from "./api";
 import type { Adapter, VersionDetail, VersionSummary } from "./types";
 
 // The Monaco editor is replaced by a plain textarea so tests exercise the DLR
@@ -119,9 +120,101 @@ function valueOf(testId: string): string {
   return (screen.getByTestId(testId) as HTMLInputElement).value;
 }
 
+// Most tests exercise the authenticated console: seed the sessionStorage token
+// the App reads on mount. Auth-specific tests clear it explicitly.
+beforeEach(() => {
+  sessionStorage.setItem(TOKEN_STORAGE_KEY, "test-admin-token");
+});
+
 afterEach(() => {
+  sessionStorage.clear();
+  setAuthToken(null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+// --- Admin token auth (M2) -----------------------------------------------------
+
+it("shows the admin token input when no token is stored", async () => {
+  sessionStorage.clear();
+  // No routes registered: the login screen must not call any API.
+  stubFetch([]);
+  render(<App />);
+  await screen.findByTestId("admin-token-input");
+  expect(screen.getByTestId("admin-token-submit")).toBeDefined();
+});
+
+it("enters the console after a valid token is verified", async () => {
+  sessionStorage.clear();
+  stubFetch([
+    {
+      method: "GET",
+      match: "/api/auth/admin/verify",
+      respond: () => ({ body: { status: "ok" } }),
+    },
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+  ]);
+  render(<App />);
+  fireEvent.change(screen.getByTestId("admin-token-input"), {
+    target: { value: "correct-token" },
+  });
+  fireEvent.click(screen.getByTestId("admin-token-submit"));
+  await screen.findByTestId("control-status");
+  expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBe("correct-token");
+});
+
+it("rejects a wrong token and stays on the login screen", async () => {
+  sessionStorage.clear();
+  stubFetch([
+    {
+      method: "GET",
+      match: "/api/auth/admin/verify",
+      respond: () => ({
+        status: 401,
+        body: { detail: { code: "unauthorized", message: "Invalid credentials" } },
+      }),
+    },
+  ]);
+  render(<App />);
+  fireEvent.change(screen.getByTestId("admin-token-input"), { target: { value: "wrong" } });
+  fireEvent.click(screen.getByTestId("admin-token-submit"));
+  await screen.findByTestId("login-error");
+  expect(screen.getByTestId("admin-token-input")).toBeDefined();
+  expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
+});
+
+it("sends the stored token as a Bearer header on API requests", async () => {
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+  ]);
+  render(<App />);
+  await waitFor(() => {
+    const call = fetchMock.mock.calls.find(([input]) => input === "/api/adapters");
+    expect(call).toBeDefined();
+  });
+  const call = fetchMock.mock.calls.find(([input]) => input === "/api/adapters");
+  const headers = call?.[1]?.headers as Record<string, string>;
+  expect(headers.Authorization).toBe("Bearer test-admin-token");
+});
+
+it("clears the session token and returns to login after a 401", async () => {
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({
+        status: 401,
+        body: { detail: { code: "unauthorized", message: "Invalid credentials" } },
+      }),
+    },
+  ]);
+  render(<App />);
+  await screen.findByTestId("admin-token-input");
+  expect(screen.getByTestId("auth-notice")).toBeDefined();
+  expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
 });
 
 // --- Control health indicator (kept from M0) --------------------------------

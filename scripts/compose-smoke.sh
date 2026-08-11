@@ -5,11 +5,13 @@
 # port, so it never shares containers or volumes with the normal development
 # stack and cleanup can only touch the smoke project.
 #
-# Steps: build & start all services, wait until healthy, run the Alembic
-# migration against the real PostgreSQL, verify the web page and the
-# /api/health proxy path, run the full M1 Adapter management chain
-# (create / patch / save v1+v2 / publish historical / list / detail / delete),
-# then tear down only the smoke project.
+# Steps: build & start all services, run the Alembic migration as soon as
+# PostgreSQL accepts connections (the worker healthcheck needs the M2 tables
+# to register), wait until every service is healthy, verify the web page,
+# the /api/health proxy path and 401 auth rejection, run the full M1 Adapter
+# management chain with the admin token, then run the M2 execution loop
+# (Manual Execution -> worker claim -> venv -> subprocess -> succeeded)
+# before tearing down only the smoke project.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -22,6 +24,12 @@ export COMPOSE_PROJECT_NAME=${COMPOSE_SMOKE_PROJECT:-dlr-smoke-${GITHUB_RUN_ID:-
 # Dedicated host port for the smoke web service, so a running dev stack
 # (default 8080) cannot conflict with the smoke run.
 export DLR_WEB_HOST_PORT=${COMPOSE_SMOKE_WEB_PORT:-8880}
+
+# Smoke credentials: generated per run unless the caller provides them, so the
+# compose file never needs hardcoded production-usable tokens.
+export DLR_ADMIN_TOKEN=${DLR_ADMIN_TOKEN:-smoke-admin-token-$$}
+export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
+export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-secret-$$}
 
 cleanup() {
   # Only touch the smoke project; never the default development project.
@@ -36,6 +44,32 @@ docker compose build
 
 echo "==> docker compose up -d"
 docker compose up -d
+
+echo "==> waiting for postgres to accept connections"
+elapsed=0
+while true; do
+  pg_container=$(docker compose ps -q postgres)
+  pg_health=""
+  if [ -n "$pg_container" ]; then
+    pg_health=$(docker inspect --format '{{.State.Health.Status}}' "$pg_container" 2>/dev/null || echo "")
+  fi
+  if [ "$pg_health" = "healthy" ]; then
+    break
+  fi
+  if [ "$elapsed" -ge "$TIMEOUT_SECONDS" ]; then
+    echo "ERROR: postgres not healthy within ${TIMEOUT_SECONDS}s" >&2
+    docker compose ps
+    docker compose logs --tail 30 postgres
+    exit 1
+  fi
+  sleep 5
+  elapsed=$((elapsed + 5))
+done
+
+echo "==> running alembic upgrade head against the smoke PostgreSQL"
+# Must run before the healthy-wait: the worker's healthcheck needs a
+# successful registration, which requires the M2 tables to exist.
+docker compose run --rm control alembic upgrade head
 
 echo "==> waiting for all services to become healthy (timeout ${TIMEOUT_SECONDS}s)"
 elapsed=0
@@ -68,9 +102,6 @@ while true; do
 done
 echo "all services healthy"
 
-echo "==> running alembic upgrade head against the smoke PostgreSQL"
-docker compose run --rm control alembic upgrade head
-
 echo "==> checking web page"
 curl -fsS "http://localhost:${DLR_WEB_HOST_PORT}/" | grep -q "DataLinkRuntime"
 echo "web page ok"
@@ -82,20 +113,31 @@ echo "$health_response" | grep -q '"status":"ok"'
 echo "$health_response" | grep -q '"database":true'
 echo "control + database ok"
 
+echo "==> checking protected APIs reject missing and wrong tokens with 401"
+no_token_status=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${DLR_WEB_HOST_PORT}/api/adapters")
+[ "$no_token_status" = "401" ] || { echo "ERROR: expected 401 without token, got $no_token_status" >&2; exit 1; }
+wrong_token_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer ${DLR_WORKER_TOKEN}" "http://localhost:${DLR_WEB_HOST_PORT}/api/adapters")
+[ "$wrong_token_status" = "401" ] || { echo "ERROR: worker token must not access admin API, got $wrong_token_status" >&2; exit 1; }
+echo "auth 401 checks ok"
+
 echo "==> running M1 adapter management chain (via web/nginx, real PostgreSQL)"
 # Uses the Python standard library inside the control container, so the host
 # needs no extra tooling (no jq, no extra python packages).
-docker compose exec -T control python - <<'PY'
+docker compose exec -T -e DLR_ADMIN_TOKEN control python - <<'PY'
 import json
+import os
 import urllib.error
 import urllib.request
 
 BASE = "http://web/api"
+ADMIN_TOKEN = os.environ["DLR_ADMIN_TOKEN"]
 
 
-def request(method, path, payload=None, expected=200):
+def request(method, path, payload=None, expected=200, token=ADMIN_TOKEN):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -172,5 +214,132 @@ request("GET", f"/adapters/{adapter_id}", expected=404)
 
 print("M1 smoke chain passed")
 PY
+
+echo "==> running M2 execution loop (manual execution -> worker -> succeeded)"
+# The smoke adapter uses only the Python standard library so CI does not
+# depend on public PyPI availability. The secret is consumed as a SHA-256
+# digest: it is genuinely usable via context.secrets, but the raw value can
+# never appear in responses or logs.
+m2_output=$(docker compose exec -T \
+  -e DLR_ADMIN_TOKEN -e DLR_SECRET_SMOKE control python - <<'PY'
+import hashlib
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+BASE = "http://web/api"
+ADMIN_TOKEN = os.environ["DLR_ADMIN_TOKEN"]
+SMOKE_SECRET = os.environ["DLR_SECRET_SMOKE"]
+EXPECTED_DIGEST = hashlib.sha256(SMOKE_SECRET.encode()).hexdigest()
+
+ADAPTER_CODE = (
+    "import hashlib\n"
+    "\n"
+    "\n"
+    "def handle(context, input):\n"
+    "    secret = context.secrets.get('SMOKE') or ''\n"
+    "    context.logger.info('secret available, reporting digest only')\n"
+    "    return {\n"
+    "        'echo': input,\n"
+    "        'stage': context.config.get('stage'),\n"
+    "        'secret_digest': hashlib.sha256(secret.encode()).hexdigest(),\n"
+    "    }\n"
+)
+
+
+def request(method, path, payload=None, expected=200):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {ADMIN_TOKEN}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status = response.status
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        status = error.code
+        raw = error.read()
+    body = json.loads(raw) if raw else None
+    assert status == expected, f"{method} {path}: expected {expected}, got {status}: {body}"
+    return body
+
+
+def check(condition, message):
+    assert condition, message
+
+
+adapter = request(
+    "POST", "/adapters", {"name": "smoke-exec-adapter", "description": "m2"}, expected=201
+)
+adapter_id = adapter["id"]
+version = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {"code": ADAPTER_CODE, "requirements": "", "runtime_config": {"stage": "m2-smoke"}},
+    expected=201,
+)
+version_id = version["id"]
+
+execution = request(
+    "POST",
+    f"/adapters/{adapter_id}/executions",
+    {"input": {"n": 7}},
+    expected=202,
+)
+execution_id = execution["id"]
+check(execution["status"] == "pending", "a new execution starts pending")
+check(execution["version_id"] == version_id, "execution pins the latest version")
+
+deadline = time.monotonic() + 180
+current = execution
+while current["status"] in ("pending", "running") and time.monotonic() < deadline:
+    time.sleep(2)
+    current = request("GET", f"/executions/{execution_id}")
+check(
+    current["status"] == "succeeded",
+    f"execution must succeed, got {current['status']}: {current['error']} / {current['stderr']}",
+)
+check(current["version_id"] == version_id, "version stays pinned through execution")
+check(current["input"] == {"n": 7}, "input round-trips unchanged")
+check(current["worker_id"] is not None, "a worker claimed the execution")
+check(current["duration_ms"] is not None and current["duration_ms"] >= 0, "duration recorded")
+check(
+    current["output"]
+    == {"echo": {"n": 7}, "stage": "m2-smoke", "secret_digest": EXPECTED_DIGEST},
+    "output carries input echo, runtime_config and a usable secret digest",
+)
+check("secret available" in current["stdout"], "context.logger output is collected")
+
+# The raw secret value must never leak into any persisted field.
+blob = json.dumps(current)
+check(SMOKE_SECRET not in blob, "raw secret must not appear in execution responses")
+
+deleted = request("DELETE", f"/adapters/{adapter_id}", expected=409)
+check(
+    deleted["detail"]["code"] == "adapter_has_executions",
+    "adapters with execution history cannot be deleted",
+)
+
+print(f"SMOKE_EXEC_ADAPTER_ID={adapter_id}")
+print(f"SMOKE_EXEC_VERSION_ID={version_id}")
+print("M2 smoke chain passed")
+PY
+)
+echo "$m2_output"
+
+smoke_adapter_id=$(echo "$m2_output" | sed -n 's/^SMOKE_EXEC_ADAPTER_ID=//p')
+smoke_version_id=$(echo "$m2_output" | sed -n 's/^SMOKE_EXEC_VERSION_ID=//p')
+[ -n "$smoke_adapter_id" ] && [ -n "$smoke_version_id" ] \
+  || { echo "ERROR: could not parse smoke execution ids" >&2; exit 1; }
+
+echo "==> checking the worker built a version-scoped venv (.venv/.ready)"
+docker compose exec -T worker \
+  test -d "/var/lib/dlr/runtime/adapters/${smoke_adapter_id}/versions/${smoke_version_id}/.venv"
+docker compose exec -T worker \
+  test -f "/var/lib/dlr/runtime/adapters/${smoke_adapter_id}/versions/${smoke_version_id}/.ready"
+echo "worker runtime venv ok"
 
 echo "==> compose smoke test passed"

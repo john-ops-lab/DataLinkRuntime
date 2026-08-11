@@ -5,21 +5,28 @@
 - 产品定义：[docs/product.md](docs/product.md)
 - 总体架构：[docs/architecture.md](docs/architecture.md)
 
-当前处于 M1（Adapter 管理）阶段：四容器可运行 + Health Check + Adapter/版本管理（创建、编辑、不可变版本、发布）；Adapter 执行能力在 M2 实现。
+当前处于 M2（执行闭环）阶段：四容器可运行 + Health Check + Adapter/版本管理 + Admin/Worker Token 认证 + Manual Execution 由 Worker 在 version-scoped venv 子进程中真实执行。
 
 ## 快速开始
 
 前置条件：Docker（含 Compose v2）。
 
+M2 起 Control / Worker 需要静态 Token，Compose 不再内置任何可用凭据：
+
 ```bash
+cp .env.example .env   # 修改其中的 DLR_ADMIN_TOKEN / DLR_WORKER_TOKEN 等占位值
 docker compose up --build
 ```
 
 服务健康后：
 
-- Web UI：http://localhost:8080（Adapter 列表 / 新建 / Monaco 编辑 / 版本与发布）
+- Web UI：http://localhost:8080（首次进入需输入 `DLR_ADMIN_TOKEN`，仅存于浏览器 sessionStorage）
 - Control Health（经 web/nginx）：http://localhost:8080/api/health
-- Worker：无对外端口（M0 为常驻 agent 存根，healthcheck 基于 ready 文件）
+- Worker：无对外端口（出站长轮询 Control，healthcheck 基于 ready 文件）
+
+管理员 API 需 `Authorization: Bearer <DLR_ADMIN_TOKEN>`；Worker API 需
+`DLR_WORKER_TOKEN`。Runtime Secret 以 `DLR_SECRET_*` 形式只注入 Worker，
+Adapter 通过 `context.secrets.get(...)` 读取。
 
 清理环境（含数据库卷）：
 
@@ -34,7 +41,7 @@ docker compose down --volumes
 | web | React + TypeScript + Vite SPA，由 Nginx 托管并反代 `/api` |
 | control | FastAPI 控制节点（Python 3.13） |
 | postgres | PostgreSQL 16 |
-| worker | Worker Agent 存根（M2 起承接 Adapter 执行） |
+| worker | Worker Agent：注册/心跳/长轮询领取任务，在 version-scoped venv 子进程中执行 Adapter |
 
 ## 本地开发
 
@@ -80,10 +87,13 @@ npm run build
 
 ## 冒烟测试
 
-构建并启动全部容器（隔离的 compose project 与独立端口），验证健康状态与
-`/api/health` 链路，并在真实 PostgreSQL 上执行 Alembic 迁移与 M1 Adapter
-管理完整链路（创建 → 修改 → 保存 v1/v2 → 发布历史版本 → 版本列表/详情 →
-删除 → 404）后自动清理：
+构建并启动全部容器（隔离的 compose project 与独立端口），在真实 PostgreSQL
+上执行 Alembic 迁移后等待全部服务健康，验证 `/api/health` 链路与 401 认证拒绝，
+带 Admin Token 执行 M1 Adapter 管理完整链路（创建 → 修改 → 保存 v1/v2 →
+发布历史版本 → 版本列表/详情 → 删除 → 404），再执行 M2 执行闭环（创建
+Manual Execution → Worker 领取 → 建 venv → 子进程执行 → 轮询至 succeeded →
+校验 input/runtime_config/output 与 Secret 可用性 → 校验有执行记录的 Adapter
+不可删除 → 校验 Worker runtime 卷中的 .venv/.ready）后自动清理：
 
 ```bash
 ./scripts/compose-smoke.sh

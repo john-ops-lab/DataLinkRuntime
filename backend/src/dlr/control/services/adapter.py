@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dlr.control.models import Adapter, AdapterVersion
+from dlr.control.models import Adapter, AdapterVersion, Execution
 from dlr.control.schemas.adapter import AdapterCreate, AdapterUpdate, VersionCreate
 
 
@@ -72,6 +72,17 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
 
 def delete_adapter(session: Session, adapter_id: int) -> None:
     adapter = get_adapter(session, adapter_id)
+    # M2: execution history must survive, so an Adapter with any Execution
+    # can no longer be physically deleted.
+    if (
+        session.scalar(select(Execution.id).where(Execution.adapter_id == adapter_id).limit(1))
+        is not None
+    ):
+        raise domain_error(
+            409,
+            "adapter_has_executions",
+            "Adapter has execution history and cannot be deleted",
+        )
     # Clear the version pointers first so the FK checks never block deletion;
     # versions themselves are removed by adapter_versions ON DELETE CASCADE.
     adapter.latest_version_id = None

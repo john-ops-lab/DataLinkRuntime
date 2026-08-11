@@ -14,6 +14,7 @@ dist/
 # Environment & secrets
 .env
 .env.*
+!.env.example
 
 # IDE / local tooling
 .idea/
