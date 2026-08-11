@@ -15,10 +15,24 @@ M2 起 Control / Worker 需要静态 Token，Compose 不再内置任何可用凭
 
 ```bash
 cp .env.example .env   # 修改其中的 DLR_ADMIN_TOKEN / DLR_WORKER_TOKEN 等占位值
-docker compose up --build
+docker compose up -d --build
 ```
 
-服务健康后：
+首次启动时 Worker 需要 `workers` 表才能注册，因此必须先运行数据库迁移：
+
+```bash
+# 等待 PostgreSQL 启动
+docker compose ps postgres
+docker compose run --rm control alembic upgrade head
+```
+
+迁移完成后等待全部服务健康：
+
+```bash
+docker compose ps
+```
+
+所有服务状态为 `healthy` 后：
 
 - Web UI：http://localhost:8080（首次进入需输入 `DLR_ADMIN_TOKEN`，仅存于浏览器 sessionStorage）
 - Control Health（经 web/nginx）：http://localhost:8080/api/health

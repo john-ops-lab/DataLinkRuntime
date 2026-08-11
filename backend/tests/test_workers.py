@@ -1,6 +1,7 @@
 """Tests for the M2 worker-internal API against real PostgreSQL."""
 
 import threading
+from pathlib import Path
 
 import pytest
 from fastapi import Response
@@ -12,6 +13,9 @@ from conftest import WORKER_TOKEN
 from dlr.common.config import settings
 from dlr.control.models import Execution, Worker
 from dlr.control.services import worker as worker_service
+from dlr.worker import venv as venv_manager
+from dlr.worker.agent import Agent, WorkerConfig
+from dlr.worker.client import ControlClient
 from test_adapters import create_adapter, save_version
 from test_executions import create_execution
 
@@ -353,3 +357,209 @@ def test_control_caps_streams(
     with session_factory() as session:
         row = session.scalars(select(Execution)).all()[0]
         assert len(row.stdout.encode()) <= 1024
+
+
+# --- Review Round 1 regression tests ------------------------------------------
+
+
+def test_result_non_owning_worker_rejected_after_terminal(
+    api_client: TestClient,
+) -> None:
+    """Important 1: ownership check must happen before terminal idempotency."""
+    worker, execution, _ = setup_claimed_execution(api_client, adapter_name="worker-terminal-owner")
+    intruder = register_worker(api_client, name="worker-terminal-intruder")
+
+    # Owner finishes the execution.
+    first = report(
+        api_client,
+        worker["id"],
+        execution["id"],
+        {"status": "succeeded", "output": {"done": True}},
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "succeeded"
+
+    # A non-owning Worker re-reporting must still get 409, not 200.
+    retry = report(
+        api_client,
+        intruder["id"],
+        execution["id"],
+        {"status": "failed", "output": {"hijacked": True}},
+    )
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["code"] == "execution_not_owned"
+
+    # The original terminal state is unchanged.
+    fetched = api_client.get(f"/api/executions/{execution['id']}").json()
+    assert fetched["status"] == "succeeded"
+    assert fetched["output"] == {"done": True}
+
+
+def test_result_concurrent_reports_only_first_wins(
+    api_client: TestClient,
+) -> None:
+    """Important 1: two concurrent result reports must not race."""
+    worker, execution, _ = setup_claimed_execution(
+        api_client, adapter_name="worker-concurrent-result"
+    )
+
+    results = []
+    errors = []
+
+    def report_result(status: str, output: dict) -> None:
+        try:
+            response = report(
+                api_client,
+                worker["id"],
+                execution["id"],
+                {"status": status, "output": output},
+            )
+            results.append(response.json())
+        except Exception as e:
+            errors.append(e)
+
+    thread1 = threading.Thread(target=report_result, args=("succeeded", {"winner": 1}))
+    thread2 = threading.Thread(target=report_result, args=("failed", {"winner": 2}))
+    thread1.start()
+    thread2.start()
+    thread1.join()
+    thread2.join()
+
+    assert not errors, f"unexpected errors: {errors}"
+    assert len(results) == 2
+    # Both reports must see the same terminal state (the first one to commit).
+    assert results[0]["status"] == results[1]["status"]
+    assert results[0]["output"] == results[1]["output"]
+    assert results[0]["ended_at"] == results[1]["ended_at"]
+
+
+def test_control_preserves_worker_truncated_flag(
+    api_client: TestClient,
+) -> None:
+    """Important 2: Worker-reported truncated=true must not be overwritten to false."""
+    worker, execution, _ = setup_claimed_execution(api_client, adapter_name="worker-truncated-flag")
+    # Worker already truncated stdout/stderr to under the Control limit, but flagged it.
+    response = report(
+        api_client,
+        worker["id"],
+        execution["id"],
+        {
+            "status": "succeeded",
+            "stdout": "short stdout",
+            "stdout_truncated": True,
+            "stderr": "short stderr",
+            "stderr_truncated": True,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # The persisted truncated flags must reflect the Worker's report, not the Control-side cap.
+    assert body["stdout_truncated"] is True
+    assert body["stderr_truncated"] is True
+
+
+def test_control_trusts_worker_output_truncated_flag(
+    api_client: TestClient,
+) -> None:
+    """Important 2: output_truncated=true must be trusted even if output is None."""
+    worker, execution, _ = setup_claimed_execution(
+        api_client, adapter_name="worker-output-truncated"
+    )
+    response = report(
+        api_client,
+        worker["id"],
+        execution["id"],
+        {
+            "status": "succeeded",
+            "output": None,
+            "output_truncated": True,
+            "output_size": 999999,
+            "output_preview": "preview of truncated output",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["output"] is None
+    assert body["output_truncated"] is True
+    assert body["output_size"] == 999999
+    assert body["output_preview"] == "preview of truncated output"
+
+
+# --- Important 5: reference counting for active versions -----------------------
+
+
+def test_active_versions_reference_counting_prevents_premature_cleanup(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+) -> None:
+    """Important 5: two concurrent Executions on the same version must keep the venv alive."""
+    adapter = create_adapter(api_client, name="worker-refcount")
+    v1 = save_version(api_client, adapter["id"])
+    v2 = save_version(api_client, adapter["id"])
+
+    config = WorkerConfig()
+    monkeypatch.setattr(config, "runtime_root", Path(tmp_path))
+    monkeypatch.setattr(config, "max_concurrency", 4)
+    agent = Agent(config, ControlClient("http://fake:8000", "fake"))
+
+    task_v1_a = {"adapter_id": adapter["id"], "version_id": v1["id"], "execution_id": 1}
+    task_v1_b = {"adapter_id": adapter["id"], "version_id": v1["id"], "execution_id": 2}
+    task_v2 = {"adapter_id": adapter["id"], "version_id": v2["id"], "execution_id": 3}
+
+    # Two Executions start on v1.
+    agent._track_start(task_v1_a)
+    agent._track_start(task_v1_b)
+    assert agent._active_versions[(adapter["id"], v1["id"])] == 2
+
+    # First v1 finishes; refcount drops to 1.
+    agent._track_end(task_v1_a)
+    assert agent._active_versions[(adapter["id"], v1["id"])] == 1
+
+    # v2 starts and finishes; cleanup must keep v1 because its count > 0.
+    agent._track_start(task_v2)
+    agent._track_end(task_v2)
+
+    # Build the keep set the same way _cleanup_venvs does.
+    keep: set[int] = {v2["id"]}
+    with agent._state_lock:
+        for (aid, vid), count in agent._active_versions.items():
+            if aid == adapter["id"] and count > 0:
+                keep.add(vid)
+    assert v1["id"] in keep, "v1 must be kept while a second Execution is still running"
+
+    # Second v1 finishes; refcount drops to 0 and the key is removed.
+    agent._track_end(task_v1_b)
+    assert (adapter["id"], v1["id"]) not in agent._active_versions
+
+
+def test_cleanup_preserves_versions_in_keep_set(
+    tmp_path: object,
+) -> None:
+    """Important 5: cleanup_stale_venvs only removes versions NOT in the keep set.
+
+    The Agent's _cleanup_venvs() builds the keep set from active version refcounts;
+    this test verifies the filesystem-level contract: kept versions survive, others don't.
+    """
+    runtime_root = Path(tmp_path)
+    # Create venv directories with .ready markers for v1 and v2.
+    for vid in (1, 2):
+        d = venv_manager.version_dir(runtime_root, 1, vid)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ".ready").write_text("ready", encoding="utf-8")
+
+    # Both v1 and v2 are in the keep set (as the Agent would do when v1 is active).
+    venv_manager.cleanup_stale_venvs(runtime_root, 1, keep_version_ids={1, 2})
+
+    assert (venv_manager.version_dir(runtime_root, 1, 1) / ".ready").exists()
+    assert (venv_manager.version_dir(runtime_root, 1, 2) / ".ready").exists()
+
+    # A version NOT in the keep set is removed.
+    v3_dir = venv_manager.version_dir(runtime_root, 1, 3)
+    v3_dir.mkdir(parents=True, exist_ok=True)
+    (v3_dir / ".ready").write_text("ready", encoding="utf-8")
+
+    venv_manager.cleanup_stale_venvs(runtime_root, 1, keep_version_ids={1, 2})
+
+    assert (venv_manager.version_dir(runtime_root, 1, 1) / ".ready").exists()
+    assert not (venv_manager.version_dir(runtime_root, 1, 3) / ".ready").exists()

@@ -43,6 +43,10 @@ services:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
+    # The Worker long-polls claim for up to 20s; Docker's default 10s grace
+    # would kill it before _graceful_offline() can run. 30s covers the worst
+    # case claim wait plus a buffer for the offline notification.
+    stop_grace_period: 30s
     environment:
       DLR_WORKER_READY_FILE: /tmp/dlr-worker.ready
       DLR_CONTROL_URL: http://control:8000

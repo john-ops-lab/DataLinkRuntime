@@ -63,8 +63,12 @@ class Agent:
         self._stop = threading.Event()
         self._state_lock = threading.Lock()
         self._in_flight = 0
-        # adapter_id -> version ids currently executing (kept during cleanup)
-        self._active_versions: dict[int, set[int]] = {}
+        # (adapter_id, version_id) -> number of Executions currently running
+        # against that version. Reference counting prevents a concurrent
+        # cleanup from deleting a venv while a second Execution is still
+        # using it (a plain set would discard the version as soon as the
+        # first Execution finishes).
+        self._active_versions: dict[tuple[int, int], int] = {}
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -168,16 +172,18 @@ class Agent:
     def _track_start(self, task: dict[str, Any]) -> None:
         with self._state_lock:
             self._in_flight += 1
-            self._active_versions.setdefault(int(task["adapter_id"]), set()).add(
-                int(task["version_id"])
-            )
+            key = (int(task["adapter_id"]), int(task["version_id"]))
+            self._active_versions[key] = self._active_versions.get(key, 0) + 1
 
     def _track_end(self, task: dict[str, Any]) -> None:
         with self._state_lock:
             self._in_flight -= 1
-            versions = self._active_versions.get(int(task["adapter_id"]))
-            if versions is not None:
-                versions.discard(int(task["version_id"]))
+            key = (int(task["adapter_id"]), int(task["version_id"]))
+            count = self._active_versions.get(key, 0)
+            if count <= 1:
+                self._active_versions.pop(key, None)
+            else:
+                self._active_versions[key] = count - 1
 
     def _execute_task(self, worker_id: int, task: dict[str, Any]) -> None:
         execution_id = int(task["execution_id"])
@@ -225,7 +231,10 @@ class Agent:
             if task.get(pointer) is not None:
                 keep.add(int(task[pointer]))
         with self._state_lock:
-            keep |= set(self._active_versions.get(adapter_id, ()))
+            # Any version with an active count > 0 must be kept.
+            for (active_adapter_id, active_version_id), count in self._active_versions.items():
+                if active_adapter_id == adapter_id and count > 0:
+                    keep.add(active_version_id)
         try:
             venv_manager.cleanup_stale_venvs(self._config.runtime_root, adapter_id, keep)
         except Exception:  # noqa: BLE001 - cleanup must never affect outcomes

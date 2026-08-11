@@ -69,7 +69,22 @@ def get_execution(session: Session, execution_id: int) -> Execution:
 def _normalize_output(
     report: ExecutionResultReport,
 ) -> tuple[object | None, int | None, bool, str | None]:
-    """Re-validate the output big-field contract server-side."""
+    """Re-validate the output big-field contract server-side.
+
+    The Worker may already have truncated output (output_truncated=true,
+    output=null, output_size and output_preview set). In that case Control
+    must trust the truncation flag and not re-interpret the preview as a
+    complete value. When the Worker reports a complete output, Control
+    re-validates the size and truncates if necessary.
+    """
+    # Worker-reported truncation: trust the flag, cap the preview defensively.
+    if report.output_truncated:
+        preview_bytes = (report.output_preview or "").encode()
+        capped = preview_bytes[: settings.execution_output_preview_max_bytes].decode(
+            "utf-8", errors="ignore"
+        )
+        return None, report.output_size, True, capped
+    # Complete output from Worker: re-validate size server-side.
     if report.output is not None:
         raw = compact_json_bytes(report.output)
         if len(raw) <= settings.execution_output_max_bytes:
@@ -79,12 +94,6 @@ def _normalize_output(
             "utf-8", errors="ignore"
         )
         return None, len(raw), True, preview
-    if report.output_truncated:
-        preview_bytes = (report.output_preview or "").encode()
-        capped = preview_bytes[: settings.execution_output_preview_max_bytes].decode(
-            "utf-8", errors="ignore"
-        )
-        return None, report.output_size, True, capped
     return None, report.output_size, False, None
 
 
@@ -100,17 +109,38 @@ def apply_result(
     """Persist a terminal result reported by the owning Worker.
 
     Idempotent: re-reporting an already terminal Execution succeeds without
-    changing it, supporting retries after a lost response.
+    changing it, supporting retries after a lost response. The Execution row
+    is locked for the duration of the transaction so two concurrent result
+    reports from the same Worker cannot race to write different terminal
+    states; ownership is checked before the terminal-idempotent shortcut so
+    a non-owning Worker always gets 409, even after the Execution finished.
     """
-    execution = get_execution(session, execution_id)
-    if execution.status in TERMINAL_STATUSES:
-        return execution
-    if execution.worker_id != worker_id or execution.status != "running":
+    execution = (
+        session.query(Execution)
+        .filter(Execution.id == execution_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if execution is None:
+        raise domain_error(404, "execution_not_found", "Execution not found")
+    # Ownership first: a non-owning Worker must always see 409, even when the
+    # Execution has already reached a terminal state.
+    if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
+    if execution.status != "running":
+        # Already terminal: idempotent return. The row lock above guarantees a
+        # concurrent second report from the same Worker observes the same
+        # terminal state and cannot overwrite it.
+        return execution
 
     output, output_size, output_truncated, output_preview = _normalize_output(report)
-    stdout, stdout_truncated = _cap_stream(report.stdout)
-    stderr, stderr_truncated = _cap_stream(report.stderr)
+    # The Worker may already have truncated streams; the Control-side cap is
+    # an additional safety net, but the persisted truncated flag must be true
+    # if either side actually truncated.
+    stdout, stdout_capped = _cap_stream(report.stdout)
+    stderr, stderr_capped = _cap_stream(report.stderr)
+    stdout_truncated = report.stdout_truncated or stdout_capped
+    stderr_truncated = report.stderr_truncated or stderr_capped
 
     execution.status = report.status
     execution.output = output

@@ -61,6 +61,21 @@ def redact_secrets(text: str) -> str:
     return text
 
 
+def _redact_json_value(value: Any) -> Any:
+    """Recursively redact DLR_SECRET_* plaintext values from a JSON structure.
+
+    Strings are scanned for each secret value and replaced with [REDACTED].
+    Dicts and lists are traversed recursively. Other types are returned as-is.
+    """
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, dict):
+        return {k: _redact_json_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_json_value(item) for item in value]
+    return value
+
+
 def _cap_stream(raw: bytes) -> tuple[str, bool]:
     capped, truncated = truncate_utf8(raw, settings.execution_stream_max_bytes)
     return capped.decode("utf-8", errors="replace"), truncated
@@ -95,7 +110,7 @@ def run(payload: dict[str, Any], config: RuntimeSettings) -> dict[str, Any]:
         stderr, stderr_truncated = _cap_stream(error.install_log.encode())
         return {
             "status": "failed",
-            "error": f"dependency preparation failed: {error}",
+            "error": redact_secrets(f"dependency preparation failed: {error}"),
             "stdout": "",
             "stderr": redact_secrets(stderr),
             "stderr_truncated": stderr_truncated,
@@ -149,11 +164,14 @@ def run(payload: dict[str, Any], config: RuntimeSettings) -> dict[str, Any]:
     }
 
     if timed_out:
-        return base | {"status": "timeout", "error": f"execution timed out after {timeout}s"}
+        return base | {
+            "status": "timeout",
+            "error": redact_secrets(f"execution timed out after {timeout}s"),
+        }
     if returncode != 0:
         return base | {
             "status": "failed",
-            "error": f"adapter process exited with code {returncode}",
+            "error": redact_secrets(f"adapter process exited with code {returncode}"),
         }
     if output_raw is None:
         return base | {"status": "failed", "error": "adapter produced no output.json"}
@@ -161,7 +179,11 @@ def run(payload: dict[str, Any], config: RuntimeSettings) -> dict[str, Any]:
     try:
         output_value = json.loads(output_raw)
     except ValueError as error:
-        return base | {"status": "failed", "error": f"invalid output.json: {error}"}
+        return base | {"status": "failed", "error": redact_secrets(f"invalid output.json: {error}")}
+
+    # Redact secrets from the output structure before size calculation so the
+    # stored size/preview semantics stay consistent with the redacted form.
+    output_value = _redact_json_value(output_value)
 
     serialized = json.dumps(output_value, separators=(",", ":"), ensure_ascii=False).encode()
     if len(serialized) <= settings.execution_output_max_bytes:
@@ -178,5 +200,5 @@ def run(payload: dict[str, Any], config: RuntimeSettings) -> dict[str, Any]:
         "status": "succeeded",
         "output_truncated": True,
         "output_size": len(serialized),
-        "output_preview": preview,
+        "output_preview": redact_secrets(preview),
     }

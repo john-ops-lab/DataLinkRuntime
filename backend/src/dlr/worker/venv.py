@@ -8,6 +8,7 @@ share a lightweight in-process lock.
 """
 
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -17,6 +18,79 @@ logger = logging.getLogger("dlr.worker.venv")
 
 _build_locks: dict[tuple[int, int], threading.Lock] = {}
 _build_locks_guard = threading.Lock()
+
+# Environment variables the dependency subprocess is allowed to inherit.
+# Everything else (platform tokens, database URL, runtime secrets) is
+# explicitly excluded so third-party build code cannot read them.
+_INHERITED_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TZ",
+    "USER",
+    # Proxy / certificate / index configuration may be needed by uv pip.
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
+
+
+def _dependency_env() -> dict[str, str]:
+    """Build a minimal environment for dependency installation.
+
+    Only whitelisted keys are inherited; platform tokens, database URL and
+    runtime secrets are never passed to the subprocess.
+    """
+    env: dict[str, str] = {}
+    for key in _INHERITED_ENV_KEYS:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    return env
+
+
+def _redact_sensitive(text: str) -> str:
+    """Defensively redact platform credentials from dependency logs.
+
+    Scans for common sensitive patterns (tokens, database URLs, secrets) and
+    replaces them with [REDACTED]. This is a safety net on top of the minimal
+    environment; even if a build script somehow echoes a sensitive value, it
+    will not be persisted to Execution.stderr.
+    """
+    import re
+
+    redacted = text
+    # Bearer tokens and common token patterns.
+    redacted = re.sub(
+        r"Bearer\s+[A-Za-z0-9._-]+", "Bearer [REDACTED]", redacted, flags=re.IGNORECASE
+    )
+    redacted = re.sub(
+        r"(?i)(token|secret|password|api_key)\s*[:=]\s*\S+", r"\1=[REDACTED]", redacted
+    )
+    # Database URLs.
+    redacted = re.sub(
+        r"postgresql\+psycopg://[^\s]+",
+        "postgresql+psycopg://[REDACTED]",
+        redacted,
+        flags=re.IGNORECASE,
+    )
+    redacted = re.sub(
+        r"postgresql://[^\s]+", "postgresql://[REDACTED]", redacted, flags=re.IGNORECASE
+    )
+    # DLR_SECRET_* values.
+    for key, value in os.environ.items():
+        if key.startswith("DLR_SECRET_") and value:
+            redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
 
 
 class DependencyPreparationError(Exception):
@@ -56,16 +130,23 @@ def _partial_log(error: subprocess.TimeoutExpired) -> str:
 
 
 def _run_logged(command: list[str], timeout_seconds: int) -> str:
-    """Run a command, returning its combined output; raise on failure."""
+    """Run a command with a minimal environment, returning its redacted combined output."""
+    env = _dependency_env()
     try:
         completed = subprocess.run(  # noqa: S603 - fixed uv command list
-            command, capture_output=True, text=True, timeout=timeout_seconds, check=False
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired as error:
         raise DependencyPreparationError(
-            f"{' '.join(command[:3])} timed out after {timeout_seconds}s", _partial_log(error)
+            f"{' '.join(command[:3])} timed out after {timeout_seconds}s",
+            _redact_sensitive(_partial_log(error)),
         ) from error
-    log = completed.stdout + completed.stderr
+    log = _redact_sensitive(completed.stdout + completed.stderr)
     if completed.returncode != 0:
         raise DependencyPreparationError(f"{' '.join(command[:3])} failed", log)
     return log

@@ -131,9 +131,10 @@ def test_executor_passes_input_and_runtime_config(tmp_path: object) -> None:
     assert result["output_size"] == len(b'{"echo":{"n":1},"stage":"s1"}')
 
 
-def test_executor_secrets_read_from_worker_env(
+def test_executor_secrets_are_redacted_in_output(
     tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Important 4: secrets returned by adapter must be redacted from output."""
     monkeypatch.setenv("DLR_SECRET_SMOKE", "s3cret-value")
     code = (
         "def handle(context, input):\n"
@@ -142,7 +143,9 @@ def test_executor_secrets_read_from_worker_env(
     )
     result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
-    assert result["output"] == {"value": "s3cret-value", "missing": None}
+    # The plaintext secret must never appear in the output; the redaction marker takes its place.
+    assert result["output"] == {"value": "[REDACTED]", "missing": None}
+    assert "s3cret-value" not in str(result["output"])
 
 
 def test_executor_collects_logger_output(tmp_path: object) -> None:
@@ -271,3 +274,48 @@ def test_reported_streams_redact_secret_values(
     assert result["status"] == "succeeded"
     assert "hunter2-secret" not in result["stdout"]
     assert "[REDACTED]" in result["stdout"]
+
+
+# --- Review Round 1 regression tests ------------------------------------------
+
+
+def test_dependency_env_excludes_sensitive_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Important 3: _dependency_env() must only return whitelisted keys."""
+    monkeypatch.setenv("DLR_WORKER_TOKEN", "worker-secret")
+    monkeypatch.setenv("DLR_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://secret/dlr")
+    monkeypatch.setenv("DLR_SECRET_SMOKE", "smoke-secret")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("HOME", "/home/test")
+
+    env = venv_manager._dependency_env()
+    assert "DLR_WORKER_TOKEN" not in env
+    assert "DLR_ADMIN_TOKEN" not in env
+    assert "DATABASE_URL" not in env
+    assert "DLR_SECRET_SMOKE" not in env
+    assert env["PATH"] == "/usr/bin"
+    assert env["HOME"] == "/home/test"
+
+
+def test_dependency_install_log_redacts_sensitive_patterns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Important 3: install logs must not leak tokens or secrets."""
+    monkeypatch.setenv("DLR_SECRET_SMOKE", "smoke-secret-value")
+    # _redact_sensitive is a defensive safety net on top of the minimal env.
+    text = (
+        "pip install failed\n"
+        "Bearer abc123token was rejected\n"
+        "token=should-be-hidden\n"
+        "postgresql+psycopg://user:pass@host/db leaked\n"
+        "secret value: smoke-secret-value\n"
+    )
+    redacted = venv_manager._redact_sensitive(text)
+    assert "abc123token" not in redacted
+    assert "Bearer [REDACTED]" in redacted
+    assert "should-be-hidden" not in redacted
+    assert "user:pass@host" not in redacted
+    assert "smoke-secret-value" not in redacted
+    assert "[REDACTED]" in redacted
