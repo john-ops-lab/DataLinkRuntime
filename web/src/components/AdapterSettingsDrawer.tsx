@@ -2,6 +2,7 @@
 
 import { Alert, Button, Divider, Drawer, Input, Select, Space, Tag } from "antd";
 
+import { LANGUAGE_LABELS } from "../languages";
 import { isProductionStopping } from "../status";
 import type { Adapter, Worker } from "../types";
 
@@ -41,6 +42,10 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
   const selectedWorker = props.workers.find(
     (worker) => worker.id === props.productionWorkerId,
   );
+  const selectedWorkerCompatible =
+    selectedWorker === undefined ||
+    adapter === null ||
+    selectedWorker.capabilities.includes(adapter.language);
   return (
     <Drawer
       title="Adapter 设置"
@@ -58,6 +63,14 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
               value={props.name}
               disabled={props.busy}
               onChange={(event) => props.onNameChange(event.target.value)}
+            />
+          </label>
+          <label className="settings-field">
+            <span className="settings-field-label">开发语言</span>
+            <Input
+              data-testid="adapter-language"
+              value={LANGUAGE_LABELS[props.adapter.language]}
+              disabled
             />
           </label>
           <label className="settings-field">
@@ -97,7 +110,11 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
               }
               options={props.workers.map((worker) => ({
                 value: worker.id,
-                label: `${worker.name}（${worker.status === "online" ? "在线" : "离线"}）`,
+                label: `${worker.name}（${worker.capabilities
+                  .map((capability) => LANGUAGE_LABELS[capability as keyof typeof LANGUAGE_LABELS])
+                  .filter(Boolean)
+                  .join(" / ")}）`,
+                disabled: !worker.capabilities.includes(props.adapter?.language ?? "python"),
                 worker,
               }))}
               optionRender={(option) => {
@@ -108,6 +125,17 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
                     <Tag color={worker.status === "online" ? "green" : "red"}>
                       {worker.status === "online" ? "在线" : "离线"}
                     </Tag>
+                    <span>
+                      {worker.capabilities
+                        .map(
+                          (capability) =>
+                            LANGUAGE_LABELS[capability as keyof typeof LANGUAGE_LABELS] ?? capability,
+                        )
+                        .join(" / ")}
+                    </span>
+                    {!worker.capabilities.includes(props.adapter?.language ?? "python") && (
+                      <Tag color="orange">不支持 {LANGUAGE_LABELS[props.adapter?.language ?? "python"]}</Tag>
+                    )}
                   </Space>
                 );
               }}
@@ -134,6 +162,15 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
               description="离线 Worker 不能运行测试或启动生产。"
             />
           )}
+          {!selectedWorkerCompatible && selectedWorker !== undefined && adapter !== null && (
+            <Alert
+              type="error"
+              showIcon
+              data-testid="production-worker-incompatible"
+              message={`Worker ${selectedWorker.name} 不支持 ${LANGUAGE_LABELS[adapter.language]}`}
+              description="请选择具备对应 Runtime capability 的 Worker。"
+            />
+          )}
           {(workerChanged || props.productionWorkerRetestRequired) && (
             <Alert
               type="warning"
@@ -149,7 +186,13 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
           <Button
             type="primary"
             data-testid="update-production-worker"
-            disabled={props.busy || props.workersLoading || archived || !workerChanged}
+            disabled={
+              props.busy ||
+              props.workersLoading ||
+              archived ||
+              !workerChanged ||
+              !selectedWorkerCompatible
+            }
             onClick={props.onProductionWorkerUpdate}
           >
             保存生产 Worker

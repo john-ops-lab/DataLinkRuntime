@@ -16,7 +16,7 @@
                                                │ Worker 主动外连（HTTP 长轮询）
                                                │ 共享 DLR_WORKER_TOKEN 认证
                                 ┌──────────────▼───────────────┐
-                                │  worker (Python agent)        │
+                                │  worker (multi-runtime agent) │
                                 │  ├─ 领任务 → 按版本准备 venv   │
                                 │  ├─ 子进程执行 Adapter         │
                                 │  └─ 上报结果/日志/状态         │
@@ -72,7 +72,7 @@
 | 字段 | 说明 |
 |------|------|
 | id / name / description | 基本信息 |
-| language | v1 固定 `python`，为多语言预留 |
+| language | `python / javascript / java`；创建后不可修改，数据库 CHECK 约束 |
 | latest_version_id | 每次保存代码产生新版本后更新 |
 | published_version_id | 发布时设置 |
 | production_worker_id | 生产 Worker（FK workers，可空，ON DELETE SET NULL）；测试运行默认以此为目标 |
@@ -89,8 +89,8 @@ Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `publish
 | 字段 | 说明 |
 |------|------|
 | id / adapter_id / seq | 归属与序号 |
-| code | Python 源码（text），入口约定见 §4 |
-| requirements | Python 依赖声明（text） |
+| code | Adapter 对应语言源码（text），入口约定见 §4 |
+| requirements | 按 Adapter.language 解释的依赖声明文本 |
 | runtime_config | 非敏感运行时配置（JSON） |
 | created_at | 时间戳 |
 
@@ -122,7 +122,7 @@ Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `publish
 | id / name | 身份与名称 |
 | status | `online / offline` |
 | last_heartbeat | 心跳时间 |
-| capabilities | v1 固定 `python` |
+| capabilities | Worker 启动时检测并上报 `python / javascript / java` 子集 |
 | created_at / updated_at | 时间戳 |
 
 **不保存 token / token_hash**：共享 Worker Token 属于平台部署配置，不是领域数据。
@@ -141,15 +141,15 @@ AdapterInstance：长期领域概念，v1 不建表。
 
 不引入对象存储或独立日志系统。
 
-### 3.6 平台表（M3.2）
+### 3.6 平台表（M3.2–M3.3）
 
 | 表 | 说明 |
 |------|------|
 | credentials | 凭据：name 唯一、type ∈ `password/token/access_key/secret`（字段 schema 按类型固定）、Fernet 密文、时间戳 |
 | adapter_credential_bindings | Adapter 绑定：env_key → credential.field，unique(adapter_id, env_key)；全量替换语义 |
-| package_sources | Python 包源：name 唯一、index_url、is_default（部分唯一索引保证至多一个默认）、可绑定凭据（basic auth） |
+| package_sources | 依赖源：kind ∈ `pypi/npm/maven`、name 唯一、index_url；每种 kind 至多一个 default，可绑定密码凭据，npm 也可绑定 Token |
 
-## 4. Adapter Runtime（第一阶段：Python）
+## 4. Adapter Runtime（M3.3：Python / JavaScript / Java）
 
 ### 4.1 Runtime Contract
 
@@ -169,20 +169,29 @@ def handle(context, input):
 | `context.secrets.get(key)` | 凭据读取（v1 来自 Worker 环境变量，见 §2.3） |
 | `context.logger` | 日志输出，写入 stdout 由平台采集 |
 
-v1 不做 input/output schema 校验。多语言扩展方式：Worker 侧增加对应语言 runner + Version 声明 `language`，契约语义不变；v1 不建 runner 抽象层。
+JavaScript 使用 ESM `export async function handle(context, input)`（同步返回与 Promise
+均支持）；Java 使用单文件固定类 `Adapter` 和
+`public Object handle(Context context, Object input) throws Exception`。三种语言共享
+`context.config / context.secrets.get / context.logger` 与 JSON input/output 语义。
 
 ### 4.2 执行模型
 
-- 每次 Execution = Worker 上一个**全新子进程**：harness 读取 input 文件 → import `adapter.py` → 调用 `handle` → 写出 output 文件；stdout/stderr 独立采集。
+- 每次 Execution = Worker 上一个**全新子进程**：Python 启动 Python harness，
+  JavaScript 启动 Node.js，Java 启动 JVM；三者都通过文件交换 JSON input/output，
+  stdout/stderr 使用相同的增量采集、SSE、截断、timeout、cancel 与进程组终止实现。
 - **超时**：默认 300s（可配置），超时杀进程，状态记 `timeout`。
 - **并发**：Worker 最大并发执行数可配置（默认 4），超过排队。
 
-### 4.3 依赖与 venv 策略
+### 4.3 Version-scoped 依赖环境
 
-- **version-scoped venv**：Worker 上每个 AdapterVersion 独立 venv 目录，与版本 requirements 严格一致，首次执行该版本时惰性构建，不被其他版本覆盖。
-- 磁盘控制采用最简策略：清理该 Adapter 过期版本的 venv，保留 published + latest；不做跨 Adapter 依赖共享与复杂缓存。
-- **依赖安装策略（M3.2，offline-first）**：`.ready` 已就绪 → 直接通过不联网；否则先尝试本地 cache 离线安装 → 失败且平台配置了默认包源 → 用包源安装 → 失败且无包源（含 Worker 环境变量 `DLR_PYPI_INDEX_URL` 兼容源）→ 明确失败并提示管理员。测试与生产走同一策略。
-- 包源由平台统一管理（CRUD + 可达性探测），claim 时把默认包源 index URL（如绑定凭据则内嵌 basic auth）放入 TaskPayload。Worker 在持久化依赖安装输出前显式脱敏 URI userinfo 及包源凭据，确保 `install_log` / Execution stderr 不含明文用户名或密码。
+- Python 使用 `.venv/`，JavaScript 使用 `node_modules/` 与生成的最小
+  `package.json`，Java 使用 `deps/`、`classes/` 与生成的最小 `pom.xml`。Java 首次执行
+  同时编译不可变源码；`.ready` 只在依赖和编译全部成功后写入。
+- 依赖格式分别为 requirements.txt 行、`package@version` 行（支持 scoped package）、
+  `groupId:artifactId:version` 行；不接受任意 package.json、pom.xml、Gradle 或脚本。
+- 三种语言统一 offline-first：ready 直接复用，否则先本地 cache/repository，缺失时再用
+  对应 kind 的平台默认源；测试和生产走同一路径。依赖源认证与 URI userinfo 在持久化
+  stderr 前统一脱敏。
 
 ## 5. 部署架构
 
@@ -222,7 +231,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 
 技术选型：Python 3.13、uv、FastAPI、SQLAlchemy 2.x、Alembic、pytest、ruff、mypy；前端 React（不固定版本，实现时选与当前工具链兼容的稳定版）+ TypeScript + Vite，Monaco Editor 于 M1 引入。**各阶段只安装该阶段真正需要的依赖。**
 
-## 7. 里程碑（M0–M3.2）
+## 7. 里程碑（M0–M3.3）
 
 | 里程碑 | 内容 | 验收口径 |
 |--------|------|----------|
@@ -232,6 +241,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 | M3 可观测与体验 | 测试输入面板、Output 查看（对象/数组渲染）、实时日志（SSE）、执行历史 | 第一阶段闭环完整可用 |
 | M3.1 Console 视觉收敛 | 不改后端与业务合同，仅收敛 Web UI：Console Shell（App Header + 左侧 Adapter Catalog + Developer Workbench）、Monaco 作为编辑页主视觉、测试运行 Input + Execution 双栏、高密度执行记录表格与详情抽屉、登录页品牌区 | 四个核心页面（登录 / 编辑 / 测试运行 / 执行记录）对照 docs/ui/m3/ 视觉基线收敛；1440/1680/1920 宽度布局正常；全部既有业务测试保持通过 |
 | M3.2 Adapter 生产生命周期与运行配置闭环 | 生产 Worker / Publish 门禁 / Start / Stop(wait-terminate) / Execution 取消、target Worker 调度、归档与 Clone、Secret Store（Fernet + 凭据绑定，§2.3）、Python 包源（offline-first）、前端四层状态 / 发布确认 Diff / 系统设置 | 测试→门禁→发布→启动→实时日志→停止→cancelled/succeeded 全链通；绑定凭据只以摘要出现在 output；M1–M3.1 测试保持通过 |
+| M3.3 多语言 Runtime | Python / JavaScript / Java 合同、version-scoped venv/node_modules/classes、PyPI/npm/Maven 依赖源、Worker capability 硬调度、Web 语言体验 | 三语言分别真实完成 Save→Test→Publish→Start→succeeded，M3.2 生命周期零回归 |
 
 下一阶段：**M4 AI Editor**（AI 辅助生成 / 修改 / 调试 Adapter 代码）。M3.1 建立的 Console Shell 为 M4 预留了结构能力：中间 Workbench 为 flex 布局，右侧可直接挂载 360–420px 的 AI/Context Panel，无需推翻现有布局。
 
@@ -241,7 +251,6 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 - Schedule Trigger（届时引入调度库）。
 - Webhook 统一入口（异步 202 语义）；如需同步调用另设 invoke API。
 - 常驻 Adapter（AdapterInstance 落库与进程生命周期管理）。
-- JavaScript / Java Runtime。
 - Worker 独立凭据认证。
 
 ## 9. 过度设计检查清单（v1 明确不做）

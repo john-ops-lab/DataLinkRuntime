@@ -14,9 +14,17 @@ import TestRunPanel from "./components/TestRunPanel";
 import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
 import WorkerStatus from "./components/WorkerStatus";
 import WorkbenchHeader from "./components/WorkbenchHeader";
+import { DEPENDENCY_UI, STARTER_CODE } from "./languages";
 import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
 import { statusLabel } from "./status";
-import type { Adapter, PublishGate, VersionDetail, VersionSummary, Worker } from "./types";
+import type {
+  Adapter,
+  AdapterLanguage,
+  PublishGate,
+  VersionDetail,
+  VersionSummary,
+  Worker,
+} from "./types";
 
 type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
 
@@ -46,10 +54,6 @@ function toHealthStatus(payload: HealthPayload): HealthStatus {
   }
   return "unreachable";
 }
-
-// Browser-only starter shown while an Adapter still has no saved version.
-// It is never written to the database before an explicit Save new version.
-const STARTER_CODE = "def handle(context, input):\n    return input\n";
 
 interface EditorSnapshot {
   code: string;
@@ -416,7 +420,11 @@ function AdapterConsole() {
       recordVersionSeqs(list);
       if (adapter.latest_version_id === null) {
         setSelectedVersionId(null);
-        applySnapshot({ code: STARTER_CODE, requirements: "", runtimeConfigText: "{}" });
+        applySnapshot({
+          code: STARTER_CODE[adapter.language],
+          requirements: "",
+          runtimeConfigText: "{}",
+        });
         setContentReady(true);
         return;
       }
@@ -450,7 +458,11 @@ function AdapterConsole() {
     void loadAdapterContent(adapter);
   }
 
-  async function handleCreateAdapter(createdName: string, createdDescription: string): Promise<boolean> {
+  async function handleCreateAdapter(
+    createdName: string,
+    createdDescription: string,
+    language: AdapterLanguage,
+  ): Promise<boolean> {
     if (busy) {
       return false;
     }
@@ -460,7 +472,11 @@ function AdapterConsole() {
     setBusy(true);
     try {
       setError(null);
-      const created = await api.createAdapter({ name: createdName, description: createdDescription });
+      const created = await api.createAdapter({
+        name: createdName,
+        description: createdDescription,
+        language,
+      });
       await refreshAdapters();
       await loadAdapterContent(created);
       return true;
@@ -1066,7 +1082,7 @@ function AdapterConsole() {
                           <Editor
                             height="100%"
                             theme={editorTheme}
-                            defaultLanguage="python"
+                            language={selected.language}
                             value={snapshot.code}
                             onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
                             options={{ minimap: { enabled: false }, readOnly: busy || !contentReady }}
@@ -1082,14 +1098,14 @@ function AdapterConsole() {
                             items={[
                               {
                                 key: "requirements",
-                                label: "Python 依赖",
+                                label: DEPENDENCY_UI[selected.language].label,
                                 children: (
                                   <textarea
                                     data-testid="requirements-input"
                                     rows={4}
                                     value={snapshot.requirements}
                                     disabled={busy || !contentReady}
-                                    placeholder="如 requests==2.32.0（每行一个依赖）"
+                                    placeholder={DEPENDENCY_UI[selected.language].placeholder}
                                     onChange={(event) =>
                                       setSnapshot((current) => ({
                                         ...current,
@@ -1141,6 +1157,10 @@ function AdapterConsole() {
                       <TestRunPanel
                         key={selected.id}
                         adapter={selected}
+                        productionWorker={
+                          workers.find((worker) => worker.id === selected.production_worker_id) ??
+                          null
+                        }
                         selectedVersionId={selectedVersionId}
                         selectedVersionSeq={selectedVersion?.seq ?? null}
                         isLatest={isLatest}

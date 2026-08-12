@@ -680,4 +680,96 @@ check(
 print("M3.2 smoke chain passed")
 PY
 
+echo "==> running M3.3 Python + JavaScript + Java lifecycle smoke"
+docker compose exec -T -e DLR_ADMIN_TOKEN control python - <<'PY'
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+BASE = "http://web/api"
+TOKEN = os.environ["DLR_ADMIN_TOKEN"]
+
+
+def request(method, path, payload=None, expected=200):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {TOKEN}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read()
+    body = json.loads(raw) if raw else None
+    assert status == expected, f"{method} {path}: expected {expected}, got {status}: {body}"
+    return body
+
+
+def wait_succeeded(execution_id):
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        execution = request("GET", f"/executions/{execution_id}")
+        if execution["status"] not in ("pending", "running"):
+            assert execution["status"] == "succeeded", execution
+            return execution
+        time.sleep(1)
+    raise AssertionError(f"execution {execution_id} did not finish")
+
+
+codes = {
+    "python": "def handle(context, input):\n    return {'language': 'python'}\n",
+    "javascript": (
+        "export async function handle(context, input) {\n"
+        "  return { language: 'javascript' };\n"
+        "}\n"
+    ),
+    "java": (
+        "import java.util.Map;\n"
+        "public class Adapter {\n"
+        "  public Object handle(Context context, Object input) {\n"
+        "    return Map.of(\"language\", \"java\");\n"
+        "  }\n"
+        "}\n"
+    ),
+}
+
+workers = request("GET", "/workers")
+worker = next(item for item in workers if item["status"] == "online")
+assert set(codes) <= set(worker["capabilities"]), worker
+
+for language, code in codes.items():
+    adapter = request(
+        "POST",
+        "/adapters",
+        {"name": f"smoke-m33-{language}", "language": language},
+        expected=201,
+    )
+    adapter_id = adapter["id"]
+    version = request(
+        "POST",
+        f"/adapters/{adapter_id}/versions",
+        {"code": code, "requirements": "", "runtime_config": {}},
+        expected=201,
+    )
+    request("PATCH", f"/adapters/{adapter_id}", {"production_worker_id": worker["id"]})
+    tested = request(
+        "POST",
+        f"/adapters/{adapter_id}/executions",
+        {"version_id": version["id"], "input": {"smoke": True}},
+        expected=202,
+    )
+    tested = wait_succeeded(tested["id"])
+    assert tested["output"] == {"language": language}, tested
+    request("POST", f"/adapters/{adapter_id}/versions/{version['id']}/publish")
+    started = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
+    started = wait_succeeded(started["id"])
+    assert started["output"] == {"language": language}, started
+    request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
+
+print("M3.3 three-language lifecycle smoke passed")
+PY
+
 echo "==> compose smoke test passed"

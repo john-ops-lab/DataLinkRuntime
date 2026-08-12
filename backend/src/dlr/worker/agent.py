@@ -10,6 +10,7 @@ heartbeating / claiming with simple capped backoff instead of crashing.
 
 import logging
 import os
+import shutil
 import signal
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -46,6 +47,18 @@ class WorkerConfig:
             os.environ.get("DLR_DEP_INSTALL_TIMEOUT_SECONDS", "300")
         )
         self.pypi_index_url = os.environ.get("DLR_PYPI_INDEX_URL") or None
+        self.npm_registry_url = os.environ.get("DLR_NPM_REGISTRY_URL") or None
+        self.maven_repository_url = os.environ.get("DLR_MAVEN_REPOSITORY_URL") or None
+
+    def capabilities(self) -> list[str]:
+        capabilities: list[str] = []
+        if shutil.which("python") and shutil.which("uv"):
+            capabilities.append("python")
+        if shutil.which("node") and shutil.which("npm"):
+            capabilities.append("javascript")
+        if shutil.which("java") and shutil.which("javac") and shutil.which("mvn"):
+            capabilities.append("java")
+        return capabilities
 
     def runtime_settings(self) -> executor.RuntimeSettings:
         return executor.RuntimeSettings(
@@ -53,6 +66,8 @@ class WorkerConfig:
             execution_timeout_seconds=self.execution_timeout_seconds,
             dep_install_timeout_seconds=self.dep_install_timeout_seconds,
             pypi_index_url=self.pypi_index_url,
+            npm_registry_url=self.npm_registry_url,
+            maven_repository_url=self.maven_repository_url,
         )
 
 
@@ -98,7 +113,10 @@ class Agent:
         backoff = 1.0
         while not self._stop.is_set():
             try:
-                info = self._client.register(self._config.name, ["python"])
+                capabilities = self._config.capabilities()
+                if not capabilities:
+                    raise RuntimeError("no supported Runtime is installed")
+                info = self._client.register(self._config.name, capabilities)
                 return int(info["id"])
             except ControlUnavailableError as error:
                 logger.warning(
@@ -213,7 +231,7 @@ class Agent:
                 "stderr": "",
             }
         self._report_with_retry(worker_id, execution_id, result)
-        self._cleanup_venvs(task)
+        self._cleanup_version_environments(task)
 
     def _report_with_retry(self, worker_id: int, execution_id: int, result: dict[str, Any]) -> None:
         """Limited transport-level retries; not a business re-run."""
@@ -233,7 +251,7 @@ class Agent:
             "gave up reporting execution %s after %s attempts", execution_id, REPORT_ATTEMPTS
         )
 
-    def _cleanup_venvs(self, task: dict[str, Any]) -> None:
+    def _cleanup_version_environments(self, task: dict[str, Any]) -> None:
         adapter_id = int(task["adapter_id"])
         keep = {int(task["version_id"])}
         for pointer in ("latest_version_id", "published_version_id"):
@@ -247,7 +265,11 @@ class Agent:
         try:
             venv_manager.cleanup_stale_venvs(self._config.runtime_root, adapter_id, keep)
         except Exception:  # noqa: BLE001 - cleanup must never affect outcomes
-            logger.warning("venv cleanup failed for adapter %s", adapter_id, exc_info=True)
+            logger.warning(
+                "version environment cleanup failed for adapter %s",
+                adapter_id,
+                exc_info=True,
+            )
 
 
 def main() -> None:

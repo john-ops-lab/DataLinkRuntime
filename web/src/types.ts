@@ -1,10 +1,12 @@
 /** API shapes shared across the web UI (mirrors the Control API schemas). */
 
+export type AdapterLanguage = "python" | "javascript" | "java";
+
 export interface Adapter {
   id: number;
   name: string;
   description: string;
-  language: string;
+  language: AdapterLanguage;
   latest_version_id: number | null;
   published_version_id: number | null;
   /** Server-derived display fields used by the Catalog without per-row requests. */
@@ -119,7 +121,7 @@ export interface PublishGate {
   last_test: PublishGateLastTest | null;
 }
 
-// --- M3.2: Secret Store credentials and package sources --------------------
+// --- M3.2/M3.3: Secret Store credentials and dependency sources -----------
 
 export type CredentialType = "password" | "token" | "access_key" | "secret";
 
@@ -145,6 +147,7 @@ export interface CredentialBinding {
 export interface PackageSource {
   id: number;
   name: string;
+  kind: "pypi" | "npm" | "maven";
   index_url: string;
   is_default: boolean;
   credential_id: number | null;

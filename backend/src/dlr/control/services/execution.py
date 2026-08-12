@@ -49,8 +49,21 @@ def _resolve_test_target(session: Session, adapter: Adapter) -> int | None:
         if worker is not None:
             if worker.status != "online":
                 raise domain_error(409, "worker_offline", "The production Worker is offline")
+            if adapter.language not in worker.capabilities:
+                raise domain_error(
+                    409,
+                    "worker_capability_missing",
+                    f"The production Worker does not support {adapter.language}",
+                )
             return worker.id
-    online = list(session.scalars(select(Worker).where(Worker.status == "online")).all())
+    online = list(
+        session.scalars(
+            select(Worker).where(
+                Worker.status == "online",
+                Worker.capabilities.contains([adapter.language]),
+            )
+        ).all()
+    )
     if len(online) == 1:
         adapter.production_worker_id = online[0].id
         return online[0].id
@@ -59,6 +72,13 @@ def _resolve_test_target(session: Session, adapter: Adapter) -> int | None:
             409,
             "production_worker_required",
             "Multiple online Workers exist; configure a production Worker first",
+        )
+    any_online = session.scalar(select(Worker.id).where(Worker.status == "online").limit(1))
+    if any_online is not None:
+        raise domain_error(
+            409,
+            "worker_capability_missing",
+            f"No online Worker supports {adapter.language}",
         )
     return None
 

@@ -1,6 +1,7 @@
-"""Pydantic schemas for the M3.2 platform-managed Python package sources."""
+"""Pydantic schemas for platform-managed dependency sources."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -23,6 +24,7 @@ class PackageSourceCreate(BaseModel):
     """Request body for POST /api/package-sources."""
 
     name: str
+    kind: Literal["pypi", "npm", "maven"] = "pypi"
     index_url: str
     is_default: bool = False
     credential_id: int | None = None
@@ -41,6 +43,7 @@ class PackageSourceUpdate(BaseModel):
     """
 
     name: str | None = None
+    kind: Literal["pypi", "npm", "maven"] | None = None
     index_url: str | None = None
     is_default: bool | None = None
     credential_id: int | None = None
@@ -58,6 +61,7 @@ class PackageSourceResponse(BaseModel):
 
     id: int
     name: str
+    kind: str
     index_url: str
     is_default: bool
     credential_id: int | None

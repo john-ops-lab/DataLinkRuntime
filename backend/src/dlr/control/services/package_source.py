@@ -1,4 +1,4 @@
-"""M3.2 platform-managed Python package sources (pip index configuration).
+"""Platform-managed PyPI, npm and Maven dependency sources.
 
 Workers prepare version dependencies offline-first; when the local cache is
 not enough they install from the platform default source. The default
@@ -34,9 +34,22 @@ def _get_credential(session: Session, credential_id: int) -> Credential:
     return credential
 
 
-def _clear_other_defaults(session: Session, keep_id: int | None = None) -> None:
-    """Keep at most one default source: the caller's candidate wins."""
-    statement = update(PackageSource).where(PackageSource.is_default.is_(True))
+def _validate_credential_kind(kind: str, credential: Credential) -> None:
+    allowed = {"password", "token"} if kind == "npm" else {"password"}
+    if credential.type not in allowed:
+        raise domain_error(
+            422,
+            "package_source_credential_incompatible",
+            f"{kind} sources require {'password or token' if kind == 'npm' else 'password'} "
+            "credentials",
+        )
+
+
+def _clear_other_defaults(session: Session, kind: str, keep_id: int | None = None) -> None:
+    """Keep at most one default source of a kind: the candidate wins."""
+    statement = update(PackageSource).where(
+        PackageSource.kind == kind, PackageSource.is_default.is_(True)
+    )
     if keep_id is not None:
         statement = statement.where(PackageSource.id != keep_id)
     session.execute(statement.values(is_default=False))
@@ -57,6 +70,7 @@ def package_source_response(session: Session, source: PackageSource) -> PackageS
     return PackageSourceResponse(
         id=source.id,
         name=source.name,
+        kind=source.kind,
         index_url=source.index_url,
         is_default=source.is_default,
         credential_id=source.credential_id,
@@ -73,13 +87,14 @@ def create_package_source(session: Session, data: PackageSourceCreate) -> Packag
             409, "package_source_name_conflict", "Package source name already exists"
         )
     if data.credential_id is not None:
-        _get_credential(session, data.credential_id)
+        _validate_credential_kind(data.kind, _get_credential(session, data.credential_id))
     # Clear any previous default before inserting so the partial unique index
     # never sees two defaults, even transiently.
     if data.is_default:
-        _clear_other_defaults(session)
+        _clear_other_defaults(session, data.kind)
     source = PackageSource(
         name=data.name,
+        kind=data.kind,
         index_url=data.index_url,
         is_default=data.is_default,
         credential_id=data.credential_id,
@@ -117,15 +132,22 @@ def update_package_source(
         source.name = data.name
     if data.index_url is not None:
         source.index_url = data.index_url
+    next_kind = data.kind if data.kind is not None else source.kind
+    next_credential_id = (
+        data.credential_id if "credential_id" in data.model_fields_set else source.credential_id
+    )
+    if next_credential_id is not None:
+        _validate_credential_kind(next_kind, _get_credential(session, next_credential_id))
+    if data.kind is not None:
+        source.kind = data.kind
     if "credential_id" in data.model_fields_set:
-        if data.credential_id is not None:
-            _get_credential(session, data.credential_id)
         source.credential_id = data.credential_id
     if data.is_default is not None:
         if data.is_default:
-            # Same ordering guarantee as create: no two defaults, ever.
-            _clear_other_defaults(session, keep_id=source.id)
+            _clear_other_defaults(session, next_kind, keep_id=source.id)
         source.is_default = data.is_default
+    elif data.kind is not None and source.is_default:
+        _clear_other_defaults(session, next_kind, keep_id=source.id)
     try:
         session.commit()
     except IntegrityError:
@@ -146,16 +168,21 @@ def delete_package_source(session: Session, package_source_id: int) -> None:
 # --- claim-time index resolution -------------------------------------------------
 
 
-def _embed_basic_auth(index_url: str, credential: Credential) -> str:
-    """Inline username/password into an http(s) index URL when possible."""
+def _embed_auth(index_url: str, credential: Credential) -> str:
+    """Inline password or token auth into an http(s) repository URL."""
     parts = url_parse.urlsplit(index_url)
-    if credential.type != "password" or parts.scheme not in ("http", "https") or not parts.netloc:
+    if parts.scheme not in ("http", "https") or not parts.netloc:
         return index_url
     fields = secrets_service.decrypt_fields(credential.ciphertext)
-    userinfo = "{}:{}".format(
-        url_parse.quote(fields.get("username", ""), safe=""),
-        url_parse.quote(fields.get("password", ""), safe=""),
-    )
+    if credential.type == "password":
+        username = fields.get("username", "")
+        password = fields.get("password", "")
+    elif credential.type == "token":
+        username = fields.get("token", "")
+        password = ""
+    else:
+        return index_url
+    userinfo = f"{url_parse.quote(username, safe='')}:{url_parse.quote(password, safe='')}"
     return url_parse.urlunsplit(
         (parts.scheme, f"{userinfo}@{parts.netloc}", parts.path, parts.query, parts.fragment)
     )
@@ -171,13 +198,18 @@ def resolve_source_url(session: Session, source: PackageSource) -> str:
     if source.credential_id is not None:
         credential = session.get(Credential, source.credential_id)
         if credential is not None:
-            return _embed_basic_auth(source.index_url, credential)
+            return _embed_auth(source.index_url, credential)
     return source.index_url
 
 
-def resolve_default_index_url(session: Session) -> str | None:
-    """The default package source index URL for TaskPayloads (None if unset)."""
-    source = session.scalar(select(PackageSource).where(PackageSource.is_default.is_(True)))
+def resolve_default_index_url(session: Session, kind: str = "pypi") -> str | None:
+    """The default source URL for one dependency kind (None if unset)."""
+    source = session.scalar(
+        select(PackageSource).where(
+            PackageSource.kind == kind,
+            PackageSource.is_default.is_(True),
+        )
+    )
     if source is None:
         return None
     return resolve_source_url(session, source)

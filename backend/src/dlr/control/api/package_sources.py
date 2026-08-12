@@ -1,4 +1,4 @@
-"""Python package source management endpoints of the Control Node."""
+"""PyPI, npm and Maven dependency-source endpoints of the Control Node."""
 
 from typing import Annotated
 

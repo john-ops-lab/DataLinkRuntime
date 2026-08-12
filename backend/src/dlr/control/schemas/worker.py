@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MAX_WORKER_NAME_LENGTH = 128
+SUPPORTED_CAPABILITIES = frozenset({"python", "javascript", "java"})
 
 
 def _validate_name(value: object) -> str:
@@ -24,7 +25,7 @@ class WorkerRegister(BaseModel):
     """Request body for POST /api/workers/register."""
 
     name: str
-    # M2 workers only offer the Python runtime.
+    # Defaults to Python for compatibility with M2 Worker clients.
     capabilities: list[str] = Field(default_factory=lambda: ["python"])
 
     @field_validator("name", mode="before")
@@ -37,7 +38,11 @@ class WorkerRegister(BaseModel):
     def validate_capabilities(cls, value: list[str]) -> list[str]:
         if not value:
             raise ValueError("capabilities must not be empty")
-        return value
+        normalized = list(dict.fromkeys(value))
+        unknown = set(normalized) - SUPPORTED_CAPABILITIES
+        if unknown:
+            raise ValueError(f"unsupported capabilities: {', '.join(sorted(unknown))}")
+        return normalized
 
 
 class WorkerResponse(BaseModel):
@@ -66,6 +71,7 @@ class TaskPayload(BaseModel):
     execution_id: int
     adapter_id: int
     version_id: int
+    language: str
     code: str
     requirements: str
     runtime_config: dict[str, Any]
@@ -74,7 +80,6 @@ class TaskPayload(BaseModel):
     published_version_id: int | None
     execution_timeout_seconds: int
     secrets: dict[str, str] = Field(default_factory=dict)
-    # M3.2: default package source index URL resolved at claim time (basic
-    # auth embedded); None means the Worker falls back to its own
-    # DLR_PYPI_INDEX_URL compatibility configuration.
+    # Default source URL resolved by Adapter language at claim time (auth may
+    # be embedded); None means the Worker uses its language-specific fallback.
     index_url: str | None = None

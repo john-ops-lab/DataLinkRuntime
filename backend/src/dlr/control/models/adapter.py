@@ -44,6 +44,10 @@ class Adapter(Base):
     __tablename__ = "adapters"
     __table_args__ = (
         CheckConstraint(
+            "language IN ('python', 'javascript', 'java')",
+            name="ck_adapters_language",
+        ),
+        CheckConstraint(
             "production_state IN ('idle', 'running', 'stopped')",
             name="ck_adapters_production_state",
         ),
@@ -54,7 +58,7 @@ class Adapter(Base):
     description: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=text("''")
     )
-    # Reserved for future multi-language support; M1 only accepts "python".
+    # Fixed when the Adapter is created; all immutable Versions inherit it.
     language: Mapped[str] = mapped_column(String(16), nullable=False)
     # Circular reference with adapter_versions: these foreign keys use
     # use_alter so DDL is emitted after both tables exist.

@@ -25,8 +25,7 @@ class AdapterCreate(BaseModel):
 
     name: str
     description: str = ""
-    # M1 only supports Python adapters; any other value yields a 422.
-    language: Literal["python"] = "python"
+    language: Literal["python", "javascript", "java"] = "python"
 
     @field_validator("name", mode="before")
     @classmethod

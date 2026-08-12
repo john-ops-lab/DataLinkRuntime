@@ -26,11 +26,13 @@ vi.mock("@monaco-editor/react", () => ({
     onChange?: (value: string | undefined) => void;
     options?: { readOnly?: boolean };
     theme?: string;
+    language?: string;
   }) {
     return (
       <textarea
         data-testid="code-editor"
         data-monaco-theme={props.theme ?? ""}
+        data-monaco-language={props.language ?? ""}
         value={props.value ?? ""}
         disabled={props.options?.readOnly ?? false}
         onChange={(event) => props.onChange?.(event.target.value)}
@@ -375,10 +377,15 @@ it("creates an adapter and selects it", async () => {
       method: "POST",
       match: "/api/adapters",
       respond: (body) => {
-        const payload = JSON.parse(body ?? "{}") as { name: string; description: string };
+        const payload = JSON.parse(body ?? "{}") as {
+          name: string;
+          description: string;
+          language: Adapter["language"];
+        };
         const created = makeAdapter({
           name: payload.name,
           description: payload.description,
+          language: payload.language,
         });
         adapters.push(created);
         return { status: 201, body: created };
@@ -413,7 +420,50 @@ it("creates an adapter and selects it", async () => {
   expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
     name: "cmdb-sync",
     description: "sync cmdb",
+    language: "python",
   });
+});
+
+it("creates a JavaScript adapter with the language starter and Monaco mode", async () => {
+  const adapters: Adapter[] = [];
+  let createBody = "";
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: adapters }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters",
+      respond: (body) => {
+        createBody = body ?? "";
+        const created = makeAdapter({ name: "node-adapter", language: "javascript" });
+        adapters.push(created);
+        return { status: 201, body: created };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [] }),
+    },
+  ]);
+  render(<App />);
+  await screen.findByText("暂无 Adapter");
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  fireEvent.change(screen.getByTestId("new-adapter-name"), {
+    target: { value: "node-adapter" },
+  });
+  fireEvent.click(screen.getByText("JavaScript"));
+  fireEvent.click(screen.getByTestId("create-adapter"));
+
+  const editor = await screen.findByTestId("code-editor");
+  expect(JSON.parse(createBody).language).toBe("javascript");
+  expect((editor as HTMLTextAreaElement).value).toContain("export async function handle");
+  expect(editor.getAttribute("data-monaco-language")).toBe("javascript");
+  expect(screen.getByText("npm 依赖")).toBeTruthy();
 });
 
 // --- Version editing ---------------------------------------------------------
@@ -1790,7 +1840,7 @@ it("shows the worker badge by online presence, not by registration count", async
     name: "worker-a",
     status: "offline",
     last_heartbeat: "2026-08-11T00:00:00Z",
-    capabilities: [],
+    capabilities: ["python"],
   };
   stubFetch([
     healthRoute({ status: "ok", database: true }),
@@ -2057,26 +2107,26 @@ it("keeps catalog production summaries stable across adapter switches without ex
   await screen.findAllByTestId("adapter-item");
 
   // 未加载版本明细：列表响应直接提供真实生产 vN，不伪造 seq。
-  expect(subOf(0)).toBe("待启动 · 生产 v1 待启动 · Worker 未配置");
-  expect(subOf(1)).toBe("未发布 · Worker 未配置");
+  expect(subOf(0)).toBe("Python · 待启动 · 生产 v1 待启动 · Worker 未配置");
+  expect(subOf(1)).toBe("Python · 未发布 · Worker 未配置");
 
   fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
   await screen.findByTestId("code-editor");
   await waitFor(() => {
-    expect(subOf(0)).toBe("待启动 · 生产 v1 待启动 · Worker 未配置");
+    expect(subOf(0)).toBe("Python · 待启动 · 生产 v1 待启动 · Worker 未配置");
   });
 
   // 切到 B：A 的已知摘要不得退化；B 展示真实的未发布状态。
   fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
   await waitFor(() => {
-    expect(subOf(1)).toBe("未发布 · Worker 未配置");
+    expect(subOf(1)).toBe("Python · 未发布 · Worker 未配置");
   });
-  expect(subOf(0)).toBe("待启动 · 生产 v1 待启动 · Worker 未配置");
+  expect(subOf(0)).toBe("Python · 待启动 · 生产 v1 待启动 · Worker 未配置");
 
   // 切回 A：缓存仍然生效。
   fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
   await screen.findByTestId("code-editor");
-  expect(subOf(0)).toBe("待启动 · 生产 v1 待启动 · Worker 未配置");
+  expect(subOf(0)).toBe("Python · 待启动 · 生产 v1 待启动 · Worker 未配置");
 
   // 不为展示 seq 增加额外请求：版本列表只在选中对应 Adapter 时加载。
   const bListCalls = fetchMock.mock.calls.filter(([url]) => String(url) === "/api/adapters/2/versions");
@@ -2208,7 +2258,7 @@ it("publishes v3 while v2 keeps running and explains the manual Stop then Start 
             name: "worker-01",
             status: "online",
             last_heartbeat: "2026-08-12T00:00:00Z",
-            capabilities: [],
+            capabilities: ["python"],
           },
         ],
       }),
@@ -2256,7 +2306,7 @@ it("publishes v3 while v2 keeps running and explains the manual Stop then Start 
   expect(screen.getByTestId("published-running-mismatch").textContent).toContain("生产运行版本（v2）");
   expect(
     screen.getByTestId("adapter-item").querySelector(".catalog-item-sub")?.textContent,
-  ).toBe("已启动 · 运行 v2 · 生产 v3 待启动 · worker-01");
+  ).toBe("Python · 已启动 · 运行 v2 · 生产 v3 待启动 · worker-01");
   expect(
     fetchMock.mock.calls.some(
       ([url, init]) =>
@@ -2357,21 +2407,21 @@ it("selects an explicit production Worker and keeps the retest gate visible afte
       name: "worker-a",
       status: "online",
       last_heartbeat: "2026-08-12T00:00:00Z",
-      capabilities: [],
+      capabilities: ["python"],
     },
     {
       id: 2,
       name: "worker-b",
       status: "online",
       last_heartbeat: "2026-08-12T00:00:00Z",
-      capabilities: [],
+      capabilities: ["python"],
     },
     {
       id: 3,
       name: "worker-c",
       status: "offline",
       last_heartbeat: "2026-08-12T00:00:00Z",
-      capabilities: [],
+      capabilities: ["python"],
     },
   ];
   let patchBody: string | null = null;
@@ -2509,7 +2559,7 @@ it("shows an unvisited started-and-idle Adapter with the server-derived last run
             name: "worker-01",
             status: "online",
             last_heartbeat: "2026-08-12T00:00:00Z",
-            capabilities: [],
+            capabilities: ["python"],
           },
         ],
       }),
@@ -2519,7 +2569,7 @@ it("shows an unvisited started-and-idle Adapter with the server-derived last run
   render(<App />);
   const [row] = await screen.findAllByTestId("adapter-item");
   expect(row.querySelector(".catalog-item-sub")?.textContent).toBe(
-    "已启动/空闲 · 运行 v1 · 生产 v2 待启动 · worker-01",
+    "Python · 已启动/空闲 · 运行 v1 · 生产 v2 待启动 · worker-01",
   );
 });
 
@@ -2616,7 +2666,7 @@ it("labels a stopped Catalog row with the last run instead of claiming it is run
             name: "worker-01",
             status: "online",
             last_heartbeat: "2026-08-12T00:00:00Z",
-            capabilities: [],
+            capabilities: ["python"],
           },
         ],
       }),
@@ -2626,7 +2676,7 @@ it("labels a stopped Catalog row with the last run instead of claiming it is run
   render(<App />);
   const [row] = await screen.findAllByTestId("adapter-item");
   const subtitle = row.querySelector(".catalog-item-sub")?.textContent ?? "";
-  expect(subtitle).toBe("已停止 · 上次运行 v1 · 生产 v2 待启动 · worker-01");
+  expect(subtitle).toBe("Python · 已停止 · 上次运行 v1 · 生产 v2 待启动 · worker-01");
   expect(subtitle).not.toContain("· 运行 v1");
 });
 
@@ -2818,6 +2868,7 @@ it("manages credentials and package sources from the system settings drawer", as
           {
             id: 1,
             name: "internal-pypi",
+            kind: "pypi",
             index_url: "https://pypi.example.com/simple/",
             is_default: true,
             credential_id: null,
@@ -2842,8 +2893,8 @@ it("manages credentials and package sources from the system settings drawer", as
   await screen.findByTestId("credential-row");
   expect(screen.getByTestId("credential-row").textContent).toBe("db-password");
 
-  // Python 包源页签：默认包源标记 + 可达性测试。
-  fireEvent.click(screen.getByText("Python 包源"));
+  // 依赖源页签：默认源标记 + 可达性测试。
+  fireEvent.click(screen.getByText("依赖源"));
   await screen.findByTestId("package-source-row");
   expect(screen.getByTestId("default-source-badge")).toBeTruthy();
 

@@ -1,4 +1,4 @@
-"""M3.2 platform configuration entities: credentials, bindings, sources.
+"""Platform configuration entities: credentials, bindings and dependency sources.
 
 Secret Store contract:
 
@@ -6,8 +6,8 @@ Secret Store contract:
   values are never persisted and never returned by the API after creation.
 - ``AdapterCredentialBinding`` maps one Adapter environment key
   (``context.secrets.get(env_key)``) to one field of one credential.
-- ``PackageSource`` is the platform-managed pip index configuration used by
-  Workers when preparing version dependencies.
+- ``PackageSource`` is the platform-managed PyPI, npm or Maven configuration
+  used by Workers when preparing version dependencies.
 """
 
 from datetime import datetime
@@ -89,14 +89,18 @@ class AdapterCredentialBinding(Base):
 
 
 class PackageSource(Base):
-    """One platform-managed Python package index (pip source)."""
+    """One platform-managed PyPI, npm or Maven dependency source."""
 
     __tablename__ = "package_sources"
     __table_args__ = (
-        # At most one default source.
+        CheckConstraint(
+            "kind IN ('pypi', 'npm', 'maven')",
+            name="ck_package_sources_kind",
+        ),
+        # At most one default source for each kind.
         Index(
             "uq_package_sources_default",
-            "is_default",
+            "kind",
             unique=True,
             postgresql_where=text("is_default"),
         ),
@@ -104,6 +108,9 @@ class PackageSource(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pypi", server_default=text("'pypi'")
+    )
     index_url: Mapped[str] = mapped_column(Text, nullable=False)
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
