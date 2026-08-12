@@ -7,9 +7,9 @@
 ## 1. 组件总览
 
 ```
-┌─────────────┐   HTTP/JSON    ┌──────────────────────────────┐
-│  web (React) │ ─────────────► │  control (FastAPI)            │
-└─────────────┘                 │  ├─ Adapter/版本/执行 API     │
+┌─────────────┐   HTTP/JSON    ┌──────────────────────────────┐   HTTP(S)
+│  web (React) │ ─────────────► │  control (FastAPI)            │ ─────────► 管理员配置的 AI Provider
+└─────────────┘                 │  ├─ Adapter/版本/执行/AI API  │
                                 │  ├─ Worker 注册/心跳/任务通道  │
                                 │  └─ PostgreSQL                │
                                 └──────────────┬───────────────┘
@@ -26,7 +26,7 @@
 | 组件 | 职责 | 是否运行用户代码 |
 |------|------|------------------|
 | web | React SPA：Adapter 管理、在线编辑、执行与日志查看 | 否 |
-| control | FastAPI：API、版本管理、任务下发、执行记录、日志转发 | **否** |
+| control | FastAPI：API、版本管理、任务下发、执行记录、日志转发、AI Provider 薄适配 | **否** |
 | postgres | 持久化：Adapter、版本、执行记录、Worker 运行信息 | 否 |
 | worker | 领任务、准备 version-scoped venv、子进程执行 Adapter、上报 | **是** |
 
@@ -35,6 +35,8 @@
 - **通信方向**：Worker 主动外连 Control（HTTP 长轮询拉任务），Control 不主动连 Worker。多机部署时 Worker 可位于 NAT/防火墙后。
 - **Manual Test 也下发 Worker 执行**，保证测试与运行环境一致，且 Control 不碰用户代码。
 - **日志**：执行期间 Worker 增量上报 stdout/stderr，Control 通过 SSE 转发给前端实现实时查看；执行结束后日志随 Execution 持久化（受大字段策略约束）。不引入日志系统组件。
+- **AI 只产生 Candidate**：Control 将当前 Working Copy 与最小上下文发送到管理员配置的
+  Provider，严格校验最终回答后返回浏览器；不创建 Version / Execution，不触发任何生产动作。
 
 ## 2. 认证与安全边界（v1）
 
@@ -63,9 +65,22 @@
 - **Secret Store 路径（M3.2）**：凭据以 Fernet（认证对称加密）密文存入 `credentials` 表，Fernet 密钥由部署级 Master Key（`DLR_MASTER_KEY`）经 HKDF-SHA256 派生，Master Key 只存在于部署环境、从不落库。Adapter 绑定 `env_key → credential.field`；Control 在 Worker claim 时只解密该 Execution 绑定的字段并注入 TaskPayload；Worker 以 `DLR_SECRET_{env_key}` 注入子进程并纳入日志脱敏集合。未配置 Master Key 时凭据 API 返回 503（不回退明文存储）。
 - **安全边界变化（明确声明）**：v1“Secret 不经过 Control”的表述演进为“密文经 Control 解密后在内网传输给 Worker”；解密只发生在 claim 时刻，明文不落库、不进任何响应与日志。
 
+### 2.4 外部 AI 数据边界（M4）
+
+- Provider / Base URL 由管理员明确配置，它决定 Working Copy、requirements、
+  runtime_config、基准 Version 元数据、Secret `env_key` 名称及有限最近对话发送到哪里。
+- AI API Key 复用 `token` Credential；Control 仅在请求时于内存解密并以 Bearer Token
+  使用。浏览器只得到 `credential_id / credential_name` 等元数据。
+- Credential 真值、密文、`DLR_MASTER_KEY`、管理员/Worker Token 永不进入 Prompt。
+- Prompt、完整 Working Copy、Provider 原始 Response 与 reasoning 不落库、不进入普通日志；
+  若记录调用元数据，只允许 provider、model、耗时与成功/失败等不敏感字段。
+- Provider 返回值先隔离 reasoning，再对最终 JSON 做本地 Candidate Schema 校验。无法明确
+  分离或校验失败均返回稳定错误，不猜测截取代码。
+
 ## 3. 领域模型与持久化
 
-持久化全部在 PostgreSQL（SQLAlchemy 2.x + Alembic）。v1 共四张核心表（M3.2 另增三张平台表，见 §3.6）：
+持久化全部在 PostgreSQL（SQLAlchemy 2.x + Alembic）。v1 共四张核心表（M3.2–M4
+另增平台表，见 §3.6–§3.7）：
 
 ### 3.1 Adapter
 
@@ -149,6 +164,12 @@ AdapterInstance：长期领域概念，v1 不建表。
 | adapter_credential_bindings | Adapter 绑定：env_key → credential.field，unique(adapter_id, env_key)；全量替换语义 |
 | package_sources | 依赖源：kind ∈ `pypi/npm/maven`、name 唯一、index_url；每种 kind 至多一个 default，可绑定密码凭据，npm 也可绑定 Token |
 
+### 3.7 AI 模型设置（M4）
+
+M4 只持久化一条全局活动 `AiModelSetting`，包含 provider、base_url、明确选定的
+model id、可空的 token Credential 引用、reasoning 策略与可选强度、时间戳。API Key
+不存入该表；模型列表刷新结果、Prompt、Response、Candidate 与对话历史均不持久化。
+
 ## 4. Adapter Runtime（M3.3：Python / JavaScript / Java）
 
 ### 4.1 Runtime Contract
@@ -193,7 +214,36 @@ JavaScript 使用 ESM `export async function handle(context, input)`（同步返
   对应 kind 的平台默认源；测试和生产走同一路径。依赖源认证与 URI userinfo 在持久化
   stderr 前统一脱敏。
 
-## 5. 部署架构
+## 5. AI Assistant（M4）
+
+### 5.1 请求与结果
+
+浏览器每轮显式提交当前 Working Copy（code / requirements / runtime_config）、用户指令
+和最多 8 条最近可见对话。Control 根据持久化的 `adapter_id` 补充 Adapter.language、
+基准 Version、已绑定 Secret 的 `env_key` 以及对应 Python / JavaScript / Java Runtime
+Contract。浏览器不能覆盖这些服务端事实。
+
+Provider 的 final answer 必须是 `{message, candidate}`。`candidate` 可空；非空时必须包含
+完整 code、requirements、runtime_config、summary 与 required_secret_keys。Candidate
+不包含 language、Version / Execution 指针或生产状态。前端用 Monaco Diff 展示完整快照，
+Apply 只更新浏览器 Working Copy。
+
+请求发出时前端保存 base snapshot；响应回来后若 Working Copy 已改变，Candidate 标为
+stale，只有管理员明确选择“仍然应用”才可覆盖当前编辑。Adapter 切换使用 request
+generation 防护，旧响应不得进入新 Adapter；已归档 Adapter 不允许 Apply。
+
+### 5.2 Provider 薄适配
+
+M4 支持 `openai / deepseek / kimi / minimax / custom_openai_compatible`，共同主协议为
+`POST /v1/chat/completions`，模型发现为 `GET /v1/models`。模型刷新失败不阻止手工输入
+Model ID，已保存 ID 不会自动跟随厂商更新。
+
+`reasoning_mode=default` 时不发送 override；显式开启/关闭或设置 effort 只在 Provider
+明确支持时映射，否则返回 `ai_reasoning_unsupported`。Provider Adapter 只输出
+`final_text`，不把 `reasoning_content`、`reasoning_details` 或明确 thinking 容器传给
+浏览器。无 LangChain / LlamaIndex / Agent Framework、tool calling、模型路由或 fallback。
+
+## 6. 部署架构
 
 Docker Compose 四容器（单机最小部署）：
 
@@ -204,9 +254,12 @@ Docker Compose 四容器（单机最小部署）：
 | worker | backend 代码构建 | 注入 DLR_WORKER_TOKEN、control 地址、DLR_SECRET_* |
 | web | 前端构建产物 + Nginx | 托管 SPA，反代 `/api` 到 control |
 
+AI Provider 是部署外部依赖，不加入正式 Compose 拓扑。`compose-smoke` 仅在隔离测试网络中
+临时启动本地 fake Provider，测试结束后随 smoke 资源清理，且不访问公网模型 API。
+
 多机演进：worker 容器拆到其它服务器，指向 Control 地址即可，架构与协议不变（得益于 Worker 主动外连模型）。
 
-## 6. 仓库结构
+## 7. 仓库结构
 
 ```
 DataLinkRuntime/
@@ -219,7 +272,7 @@ DataLinkRuntime/
 │   ├── alembic.ini + alembic/
 │   ├── src/dlr/
 │   │   ├── common/              # 共享：协议 DTO、枚举、常量、配置
-│   │   ├── control/             # FastAPI：api / services / db models
+│   │   ├── control/             # FastAPI：api / services / db models / AI Provider 适配
 │   │   ├── worker/              # agent：领任务 / venv 管理 / 上报
 │   │   └── runtime/             # Contract 与 Python harness
 │   └── tests/
@@ -231,7 +284,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 
 技术选型：Python 3.13、uv、FastAPI、SQLAlchemy 2.x、Alembic、pytest、ruff、mypy；前端 React（不固定版本，实现时选与当前工具链兼容的稳定版）+ TypeScript + Vite，Monaco Editor 于 M1 引入。**各阶段只安装该阶段真正需要的依赖。**
 
-## 7. 里程碑（M0–M3.3）
+## 8. 里程碑（M0–M4）
 
 | 里程碑 | 内容 | 验收口径 |
 |--------|------|----------|
@@ -242,17 +295,16 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 | M3.1 Console 视觉收敛 | 不改后端与业务合同，仅收敛 Web UI：Console Shell（App Header + 左侧 Adapter Catalog + Developer Workbench）、Monaco 作为编辑页主视觉、测试运行 Input + Execution 双栏、高密度执行记录表格与详情抽屉、登录页品牌区 | 四个核心页面（登录 / 编辑 / 测试运行 / 执行记录）对照 docs/ui/m3/ 视觉基线收敛；1440/1680/1920 宽度布局正常；全部既有业务测试保持通过 |
 | M3.2 Adapter 生产生命周期与运行配置闭环 | 生产 Worker / Publish 门禁 / Start / Stop(wait-terminate) / Execution 取消、target Worker 调度、归档与 Clone、Secret Store（Fernet + 凭据绑定，§2.3）、Python 包源（offline-first）、前端四层状态 / 发布确认 Diff / 系统设置 | 测试→门禁→发布→启动→实时日志→停止→cancelled/succeeded 全链通；绑定凭据只以摘要出现在 output；M1–M3.1 测试保持通过 |
 | M3.3 多语言 Runtime | Python / JavaScript / Java 合同、version-scoped venv/node_modules/classes、PyPI/npm/Maven 依赖源、Worker capability 硬调度、Web 语言体验 | 三语言分别真实完成 Save→Test→Publish→Start→succeeded，M3.2 生命周期零回归 |
+| M4 AI Editor | 单一全局模型配置、OpenAI-compatible Provider 薄适配、三语言上下文、完整 Candidate、Diff / Apply、stale 与 Adapter 切换防护 | 本地 fake Provider 完成设置→模型刷新→连接测试→三语言 Assist，且 Version / Execution / published / production 事实不变 |
 
-下一阶段：**M4 AI Editor**（AI 辅助生成 / 修改 / 调试 Adapter 代码）。M3.1 建立的 Console Shell 为 M4 预留了结构能力：中间 Workbench 为 flex 布局，右侧可直接挂载 360–420px 的 AI/Context Panel，无需推翻现有布局。
+## 9. 未来演进（不在第一阶段）
 
-## 8. 未来演进（不在第一阶段）
-
-- M4 AI Editor：AI 辅助生成 / 修改 / 调试 Adapter 代码（下一阶段）。
+- AI 自动调试循环 / Agent Loop（需单独设计执行权限与审计边界）。
 - Schedule Trigger（届时引入调度库）。
 - Webhook 统一入口（异步 202 语义）；如需同步调用另设 invoke API。
 - 常驻 Adapter（AdapterInstance 落库与进程生命周期管理）。
 - Worker 独立凭据认证。
 
-## 9. 过度设计检查清单（v1 明确不做）
+## 10. 过度设计检查清单（v1 明确不做）
 
-Draft 实体；join token / enrollment；APScheduler 与前端状态框架预装；同步 Webhook 转发通道；Adapter 级覆盖式全局 venv；AdapterInstance 表；runner 抽象层；Sink / Connector 框架；MQ / 长连接网关；镜像构建与跨 Adapter 依赖共享；日志系统组件；RBAC；schema 校验；重试与优先级队列。
+Draft 实体；join token / enrollment；APScheduler 与前端状态框架预装；同步 Webhook 转发通道；Adapter 级覆盖式全局 venv；AdapterInstance 表；runner 抽象层；Sink / Connector 框架；MQ / 长连接网关；镜像构建与跨 Adapter 依赖共享；日志系统组件；RBAC；通用 Adapter I/O schema 校验；AI Provider Plugin/SPI；RAG / Embedding / Vector DB；多模型路由与 fallback；重试与优先级队列。

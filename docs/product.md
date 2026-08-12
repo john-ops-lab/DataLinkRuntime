@@ -14,7 +14,7 @@ DLR 是一个**轻量的数据适配运行平台**，主要用于 CMDB 等系统
 - 部署简单：一台服务器 + Docker Compose 即可运行完整平台。
 - 运维简单：组件少、依赖少、可观测性内建。
 - 用户可在线编辑 Adapter 代码（Web IDE 体验，Monaco Editor）。
-- 后续支持 AI 生成、修改和调试 Adapter 代码。
+- 支持 AI 理解当前 Working Copy、生成或修改候选代码，并由管理员查看 Diff 后人工应用。
 - 支持查看测试输入、输出和运行日志。
 - 支持多种触发方式（第一阶段仅 Manual）。
 - 保持轻量：**不发展成工作流平台**。
@@ -82,10 +82,13 @@ Webhook 的未来设计约定（已裁决）：
 
 最终目标是类似轻量 Web IDE 的体验：
 
-创建 Adapter → 选择语言 → 在线编辑代码 →（AI 生成/修改代码）→ 保存 → 测试 → 查看 Input / Output / 实时 Log → 发布 → 查看执行历史。
+创建 Adapter → 选择语言 → 在线编辑代码 →（AI 生成/修改 Candidate → 人工 Apply）→ 保存 → 测试 → 查看 Input / Output / 实时 Log → 发布 → 查看执行历史。
 
 - 代码编辑器：Monaco Editor。
-- 当前不实现：AI 能力、Schedule、Webhook。Python、JavaScript、Java 已支持。
+- Python、JavaScript、Java 均支持 AI Assistant；Candidate 采用完整快照，不做模糊 patch apply。
+- AI Apply 只写浏览器 Working Copy 并进入 dirty；Save、Test、Publish、Start、Stop 等生命周期动作仍须管理员人工执行。
+- AI 会话仅存在于当前浏览器与当前 Adapter；切换 Adapter 或刷新页面后允许消失。
+- 当前不实现：Schedule、Webhook、AI Agent 自动执行循环。
 
 ## 7. Runtime Contract（产品级约定）
 
@@ -105,6 +108,11 @@ Input → Adapter → Output
 - Adapter 通过 Runtime Contract 的 `context.secrets.get(key)` 获取凭据。
 - Secret 可来自 Worker 的 `DLR_SECRET_*` 环境变量或平台 Secret Store；平台只持久化
   Fernet 密文，claim 时按 Adapter 绑定解密并注入 Worker。
+- AI Prompt / 上下文只携带已绑定业务 Secret 的 `env_key` 名称，不携带其真值、密文或
+  平台 Token。模型 API Key 仅作为 Provider HTTP Authorization 使用，不进入 Prompt。
+  管理员配置的 Provider / Base URL 是 Working Copy 与非敏感运行参数的外部数据边界。
+- AI reasoning 不返回浏览器、不持久化、不进入下一轮对话，也不写普通应用日志；无法可靠
+  分离最终回答时整次请求失败。
 - v1 为内网、单管理员、可信代码模型，详见 architecture.md 安全边界章节。
 
 ## 9. 部署原则
@@ -123,14 +131,14 @@ Input → Adapter → Output
 
 DLR 不是：n8n / Windmill / Kestra / DAG Engine / Workflow Engine / Kubernetes 平台 / 通用低代码平台。
 
-当前不引入：Kubernetes、Service Mesh、Kafka、RabbitMQ、Event Bus、微服务拆分、分布式一致性方案、复杂插件系统、Adapter-to-Adapter Workflow、统一 Sink / Connector Framework、RBAC / 账号体系。
+当前不引入：Kubernetes、Service Mesh、Kafka、RabbitMQ、Event Bus、微服务拆分、分布式一致性方案、复杂插件系统、Adapter-to-Adapter Workflow、统一 Sink / Connector Framework、RBAC / 账号体系、AI Agent Framework、RAG / Embedding / Vector DB、多模型自动路由。
 
 ## 12. 第一阶段目标与里程碑
 
 第一阶段打通最小闭环：
 
 ```
-创建 Adapter → 选择 Python / JavaScript / Java → 在线编辑 → 保存 → Manual Test
+创建 Adapter → 选择 Python / JavaScript / Java → 在线编辑 / AI Candidate 人工 Apply → 保存 → Manual Test
 → 兼容 Worker 执行 → 查看 Log / Output → Publish → Start / Stop
 ```
 
@@ -143,5 +151,6 @@ DLR 不是：n8n / Windmill / Kestra / DAG Engine / Workflow Engine / Kubernetes
 | M3.1 Console 视觉收敛 | Catalog / Workbench / Monaco / Test / History 控制台体验 |
 | M3.2 生产生命周期 | 生产 Worker、发布门禁、Start/Stop、Secret Store、依赖源 |
 | M3.3 多语言 Runtime | Python / JavaScript / Java、三语言依赖环境与 capability 调度 |
+| M4 AI Editor | 单一全局模型配置、三语言 AI Assist、完整 Candidate、Diff、人工 Apply、stale 防覆盖 |
 
 M0 不实现 Adapter CRUD 与 Adapter Runtime。

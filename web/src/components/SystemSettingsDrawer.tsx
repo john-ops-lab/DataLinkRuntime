@@ -20,6 +20,7 @@ import type { ColumnsType } from "antd/es/table";
 import { ApiError, api } from "../api";
 import { CREDENTIAL_TYPE_FIELDS, CREDENTIAL_TYPE_LABELS, credentialFields } from "../credential-fields";
 import type { Credential, CredentialType, PackageSource } from "../types";
+import AiModelSettingsPanel from "./AiModelSettingsPanel";
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -595,6 +596,11 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
             key: "package-sources",
             label: "依赖源",
             children: <PackageSourcesPanel onError={props.onError} />,
+          },
+          {
+            key: "ai-model",
+            label: "AI 模型",
+            children: <AiModelSettingsPanel onError={props.onError} />,
           },
         ]}
       />

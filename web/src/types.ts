@@ -162,3 +162,57 @@ export interface ReachabilityResult {
   status_code: number | null;
   error: string | null;
 }
+
+// --- M4: AI Editor ----------------------------------------------------------
+
+export type AiProvider =
+  | "openai"
+  | "deepseek"
+  | "kimi"
+  | "minimax"
+  | "custom_openai_compatible";
+
+export type AiReasoningMode = "default" | "enabled" | "disabled";
+export type AiReasoningEffort = "low" | "medium" | "high" | "max";
+
+/** Metadata-only global setting. The referenced Credential value never reaches the browser. */
+export interface AiModelSettingDraft {
+  provider: AiProvider;
+  base_url: string;
+  model: string;
+  credential_id: number | null;
+  reasoning_mode: AiReasoningMode;
+  reasoning_effort: AiReasoningEffort | null;
+}
+
+export interface AiModelSetting extends AiModelSettingDraft {
+  id: number;
+  credential_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AiCandidate {
+  summary: string;
+  code: string;
+  requirements: string;
+  runtime_config: Record<string, unknown>;
+  required_secret_keys: string[];
+}
+
+export interface AiConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AiAssistResponse {
+  message: string;
+  candidate: AiCandidate | null;
+  provider: AiProvider;
+  model: string;
+}
+
+export interface AiConnectionTestResult {
+  ok: boolean;
+  message: string;
+}

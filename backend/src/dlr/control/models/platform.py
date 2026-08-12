@@ -1,4 +1,4 @@
-"""Platform configuration entities: credentials, bindings and dependency sources.
+"""Platform configuration entities: secrets, dependency sources and AI settings.
 
 Secret Store contract:
 
@@ -20,6 +20,7 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -121,6 +122,54 @@ class PackageSource(Base):
         ForeignKey("credentials.id", ondelete="SET NULL"),
         nullable=True,
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AiModelSetting(Base):
+    """The single global active AI provider configuration (M4).
+
+    API key plaintext never lives here. ``credential_id`` may only reference
+    a token Credential and is resolved in memory immediately before a provider
+    call.
+    """
+
+    __tablename__ = "ai_model_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_ai_model_settings_singleton"),
+        CheckConstraint(
+            "provider IN ('openai', 'deepseek', 'kimi', 'minimax', 'custom_openai_compatible')",
+            name="ck_ai_model_settings_provider",
+        ),
+        CheckConstraint(
+            "reasoning_mode IN ('default', 'enabled', 'disabled')",
+            name="ck_ai_model_settings_reasoning_mode",
+        ),
+        CheckConstraint(
+            "reasoning_effort IS NULL OR reasoning_effort IN ('low', 'medium', 'high', 'max')",
+            name="ck_ai_model_settings_reasoning_effort",
+        ),
+    )
+
+    # A fixed primary key plus a database check makes the singleton invariant
+    # explicit and race-safe when the service performs an ON CONFLICT upsert.
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(String(256), nullable=False)
+    credential_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("credentials.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reasoning_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="default", server_default=text("'default'")
+    )
+    reasoning_effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

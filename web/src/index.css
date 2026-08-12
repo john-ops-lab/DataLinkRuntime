@@ -434,6 +434,196 @@ body {
   font-size: 0.8rem;
 }
 
+/* --- M4 AI Assistant（右侧可折叠、浏览器会话） -------------------------- */
+
+.ai-assistant {
+  flex: 0 0 auto;
+  min-height: 0;
+  border-left: 1px solid var(--dlr-border);
+  background: var(--dlr-workspace-bg);
+}
+
+.ai-assistant-collapsed {
+  width: 44px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12px;
+}
+
+.ai-assistant-open {
+  font-weight: 700;
+  color: #0958d9;
+}
+
+.ai-assistant-expanded {
+  width: 390px;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-assistant-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--dlr-border);
+}
+
+.ai-assistant-header p {
+  margin: 3px 0 0;
+  color: var(--dlr-text-weak);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.ai-assistant-context {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--dlr-border);
+  background: #fafbfc;
+  font-size: 0.78rem;
+}
+
+.ai-assistant-context span {
+  color: var(--dlr-text-weak);
+}
+
+.ai-conversation {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.ai-conversation-empty {
+  margin: auto 8px;
+  color: var(--dlr-text-weak);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.ai-message {
+  max-width: 94%;
+  padding: 8px 10px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.ai-message-user {
+  align-self: flex-end;
+  background: #e6f4ff;
+  border-color: #bae0ff;
+}
+
+.ai-message-assistant {
+  align-self: flex-start;
+}
+
+.ai-message-role {
+  color: var(--dlr-text-weak);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.ai-message > p {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.ai-candidate {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dlr-border);
+  font-size: 0.78rem;
+}
+
+.ai-candidate > p {
+  margin: 5px 0 0;
+}
+
+.ai-secret-suggestion {
+  color: var(--dlr-text-secondary);
+}
+
+.ai-secret-check-unavailable {
+  color: var(--dlr-text-weak);
+}
+
+.ai-secret-warning,
+.ai-panel-error {
+  color: #cf1322;
+}
+
+.ai-candidate-applied {
+  color: #237804;
+}
+
+.ai-stale-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 7px;
+  padding: 7px 8px;
+  border: 1px solid #ffe58f;
+  border-radius: 4px;
+  background: #fffbe6;
+  color: #874d00;
+}
+
+.ai-candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ai-loading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--dlr-text-secondary);
+  font-size: 0.78rem;
+}
+
+.ai-composer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--dlr-border);
+}
+
+.ai-composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid var(--dlr-border-strong);
+  border-radius: 5px;
+  font: inherit;
+}
+
+.ai-panel-error {
+  align-self: stretch;
+  margin: 0;
+  font-size: 0.75rem;
+}
+
 /* M3.2：次级配置区 textarea 关闭 resize，避免破坏工作台布局。 */
 .version-fields textarea {
   resize: none;
@@ -789,6 +979,12 @@ body {
   font-size: 0.8rem;
 }
 
+.settings-panel-success {
+  margin: 0;
+  color: #237804;
+  font-size: 0.8rem;
+}
+
 .settings-inline-form {
   width: 100%;
   display: flex;
@@ -799,6 +995,18 @@ body {
   border: 1px solid var(--dlr-border);
   border-radius: 6px;
   background: #fafbfc;
+}
+
+.ai-model-settings {
+  align-items: stretch;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--dlr-text-secondary);
+  font-size: 0.8rem;
 }
 
 /* --- M3.2 版本差异弹窗 --------------------------------------------------- */
@@ -960,6 +1168,10 @@ body {
 
 /* 窄屏（非验收重点）：仅做最小堆叠，不引入响应式框架。 */
 @media (max-width: 1100px) {
+  .ai-assistant-expanded {
+    width: 360px;
+  }
+
   .test-run-panel {
     flex-direction: column;
   }

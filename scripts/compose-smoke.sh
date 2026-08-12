@@ -15,7 +15,10 @@
 # lifecycle chain (credentials/package sources -> production worker ->
 # publish gate -> publish -> start -> stop(terminate) -> cancelled ->
 # start again -> succeeded with a bound secret -> archive/restore) before
-# tearing down only the smoke project.
+# the M3.3 three-language lifecycle. Finally, it starts a temporary local
+# OpenAI-compatible fake Provider outside the production Compose topology and
+# proves the M4 settings/models/assist chain cannot change lifecycle facts,
+# before tearing down only the smoke project.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -38,7 +41,14 @@ export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-secret-$$}
 # (HKDF-SHA256); without it the credential APIs answer 503.
 export DLR_MASTER_KEY=${DLR_MASTER_KEY:-smoke-master-key-$$}
 
+# Filled only if the M4 one-off fake Provider starts. Keeping its exact ID lets
+# cleanup remove only the container created by this smoke run.
+AI_FAKE_CONTAINER_ID=""
+
 cleanup() {
+  if [ -n "$AI_FAKE_CONTAINER_ID" ]; then
+    docker rm -f "$AI_FAKE_CONTAINER_ID" >/dev/null 2>&1 || true
+  fi
   # Only touch the smoke project; never the default development project.
   docker compose -p "$COMPOSE_PROJECT_NAME" down --volumes --remove-orphans
 }
@@ -770,6 +780,201 @@ for language, code in codes.items():
     request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
 
 print("M3.3 three-language lifecycle smoke passed")
+PY
+
+echo "==> starting temporary local OpenAI-compatible fake Provider"
+AI_FAKE_CONTAINER_NAME="${COMPOSE_PROJECT_NAME}-ai-fake"
+export AI_FAKE_BASE_URL="http://${AI_FAKE_CONTAINER_NAME}:18080"
+# Reuse the already-built Control image only for its Python runtime. The fake
+# is an external Provider boundary and must not inherit Control's database or
+# platform credentials, even when the smoke caller supplied real-looking values.
+AI_FAKE_CONTAINER_ID=$(docker compose run -d --no-deps \
+  --name "$AI_FAKE_CONTAINER_NAME" \
+  --env DATABASE_URL= \
+  --env DLR_ADMIN_TOKEN= \
+  --env DLR_WORKER_TOKEN= \
+  --env DLR_MASTER_KEY= \
+  --volume "$PWD/scripts/ai-fake-provider.py:/tmp/dlr-ai-fake-provider.py:ro" \
+  --entrypoint python \
+  control /tmp/dlr-ai-fake-provider.py --port 18080)
+
+echo "==> waiting for local fake Provider"
+elapsed=0
+while ! docker compose exec -T -e AI_FAKE_BASE_URL control python -c \
+  'import os, urllib.request; urllib.request.urlopen(os.environ["AI_FAKE_BASE_URL"] + "/healthz", timeout=2).read()' \
+  >/dev/null 2>&1; do
+  if [ "$elapsed" -ge 60 ]; then
+    echo "ERROR: local fake Provider not ready within 60s" >&2
+    docker logs --tail 30 "$AI_FAKE_CONTAINER_ID"
+    exit 1
+  fi
+  sleep 2
+  elapsed=$((elapsed + 2))
+done
+
+echo "==> running M4 AI settings + models + three-language assist smoke"
+docker compose exec -T -e DLR_ADMIN_TOKEN -e AI_FAKE_BASE_URL control python - <<'PY'
+import json
+import os
+import urllib.error
+import urllib.request
+
+BASE = "http://web/api"
+TOKEN = os.environ["DLR_ADMIN_TOKEN"]
+FAKE_BASE_URL = os.environ["AI_FAKE_BASE_URL"]
+MODEL_ID = "dlr-smoke-model"
+REASONING_SENTINEL = "SMOKE_REASONING_MUST_NOT_REACH_BROWSER"
+
+
+def request(method, path, payload=None, expected=200):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {TOKEN}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read()
+    body = json.loads(raw) if raw else None
+    assert status == expected, f"{method} {path}: expected {expected}, got {status}: {body}"
+    return body
+
+
+setting_payload = {
+    "provider": "custom_openai_compatible",
+    "base_url": FAKE_BASE_URL,
+    "model": MODEL_ID,
+    "credential_id": None,
+    "reasoning_mode": "default",
+    "reasoning_effort": None,
+}
+saved_setting = request("PUT", "/ai/settings", setting_payload)
+assert saved_setting["provider"] == setting_payload["provider"], saved_setting
+assert saved_setting["base_url"] == FAKE_BASE_URL, saved_setting
+assert saved_setting["model"] == MODEL_ID, saved_setting
+assert saved_setting["credential_id"] is None, saved_setting
+assert saved_setting["reasoning_mode"] == "default", saved_setting
+assert "api_key" not in json.dumps(saved_setting).lower(), saved_setting
+
+refetched_setting = request("GET", "/ai/settings")
+assert refetched_setting["model"] == MODEL_ID, refetched_setting
+assert "api_key" not in json.dumps(refetched_setting).lower(), refetched_setting
+
+models = request(
+    "POST",
+    "/ai/models/refresh",
+    {
+        "provider": "custom_openai_compatible",
+        "base_url": FAKE_BASE_URL,
+        "credential_id": None,
+    },
+)
+assert MODEL_ID in models["models"], models
+
+connection = request("POST", "/ai/settings/test", setting_payload)
+assert connection["ok"] is True, connection
+
+working_copies = {
+    "python": {
+        "code": "def handle(context, input):\n    return input\n",
+        "requirements": "",
+        "runtime_config": {"before_ai": "python"},
+    },
+    "javascript": {
+        "code": (
+            "export async function handle(context, input) {\n"
+            "  return input;\n"
+            "}\n"
+        ),
+        "requirements": "",
+        "runtime_config": {"before_ai": "javascript"},
+    },
+    "java": {
+        "code": (
+            "public class Adapter {\n"
+            "  public Object handle(Context context, Object input) throws Exception {\n"
+            "    return input;\n"
+            "  }\n"
+            "}\n"
+        ),
+        "requirements": "",
+        "runtime_config": {"before_ai": "java"},
+    },
+}
+
+for language, working_copy in working_copies.items():
+    adapter = request(
+        "POST",
+        "/adapters",
+        {"name": f"smoke-m4-{language}", "language": language},
+        expected=201,
+    )
+    adapter_id = adapter["id"]
+    version = request(
+        "POST",
+        f"/adapters/{adapter_id}/versions",
+        working_copy,
+        expected=201,
+    )
+
+    before_adapter = request("GET", f"/adapters/{adapter_id}")
+    before_versions = request("GET", f"/adapters/{adapter_id}/versions")
+    before_executions = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+    lifecycle_before = {
+        "latest_version_id": before_adapter["latest_version_id"],
+        "published_version_id": before_adapter["published_version_id"],
+        "production_state": before_adapter["production_state"],
+    }
+
+    assisted = request(
+        "POST",
+        f"/adapters/{adapter_id}/ai/assist",
+        {
+            "message": f"Generate the deterministic {language} smoke Candidate.",
+            "working_copy": working_copy,
+            "recent_messages": [
+                {"role": "user", "content": "Explain the current Adapter briefly."},
+                {"role": "assistant", "content": "Ready for the requested change."},
+            ],
+            "base_version_id": version["id"],
+        },
+    )
+    candidate = assisted["candidate"]
+    assert candidate is not None, assisted
+    assert candidate["runtime_config"] == {"ai_smoke": language}, candidate
+    assert candidate["required_secret_keys"] == [], candidate
+    assert language in candidate["summary"], candidate
+    if language == "python":
+        assert "def handle(context, input)" in candidate["code"], candidate
+    elif language == "javascript":
+        assert "export async function handle(context, input)" in candidate["code"], candidate
+    else:
+        assert "public Object handle" in candidate["code"], candidate
+    assert REASONING_SENTINEL not in json.dumps(assisted), assisted
+
+    after_adapter = request("GET", f"/adapters/{adapter_id}")
+    after_versions = request("GET", f"/adapters/{adapter_id}/versions")
+    after_executions = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+    lifecycle_after = {
+        "latest_version_id": after_adapter["latest_version_id"],
+        "published_version_id": after_adapter["published_version_id"],
+        "production_state": after_adapter["production_state"],
+    }
+    assert len(after_versions) == len(before_versions), (before_versions, after_versions)
+    assert len(after_executions["items"]) == len(before_executions["items"]), (
+        before_executions,
+        after_executions,
+    )
+    assert lifecycle_after == lifecycle_before, (lifecycle_before, lifecycle_after)
+
+with urllib.request.urlopen(FAKE_BASE_URL + "/_smoke/metrics", timeout=5) as response:
+    metrics = json.load(response)
+assert metrics["models"] >= 1, metrics
+assert metrics["chat_completions"] >= 4, metrics
+
+print("M4 local-provider three-language AI assist smoke passed")
 PY
 
 echo "==> compose smoke test passed"
