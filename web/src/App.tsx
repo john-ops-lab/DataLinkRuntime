@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor from "@monaco-editor/react";
-import { ConfigProvider, Tabs } from "antd";
+import { ConfigProvider, Segmented, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -65,6 +65,48 @@ function versionSnapshot(detail: VersionDetail): EditorSnapshot {
 // Bearer header; a 401 clears it and returns to the token input screen.
 export const TOKEN_STORAGE_KEY = "dlr-admin-token";
 
+// M3.1 Monaco 主题：用户偏好只存浏览器本地（localStorage），默认深色；
+// “跟随系统”直接用浏览器 prefers-color-scheme，不引入主题框架，也不落库。
+type EditorThemePreference = "dark" | "light" | "system";
+
+export const EDITOR_THEME_STORAGE_KEY = "dlr-editor-theme";
+
+function readEditorThemePreference(): EditorThemePreference {
+  const stored = window.localStorage.getItem(EDITOR_THEME_STORAGE_KEY);
+  return stored === "light" || stored === "system" ? stored : "dark";
+}
+
+function subscribeToSystemDark(callback: () => void): () => void {
+  const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+  if (!media) {
+    return () => {};
+  }
+  media.addEventListener("change", callback);
+  return () => media.removeEventListener("change", callback);
+}
+
+function getSystemDarkSnapshot(): boolean {
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+}
+
+function useMonacoTheme(): {
+  preference: EditorThemePreference;
+  resolvedTheme: "vs-dark" | "light";
+  setPreference: (preference: EditorThemePreference) => void;
+} {
+  const [preference, setPreferenceState] = useState<EditorThemePreference>(readEditorThemePreference);
+  // 跟随系统：直接订阅浏览器 prefers-color-scheme，不引入主题框架。
+  const systemDark = useSyncExternalStore(subscribeToSystemDark, getSystemDarkSnapshot);
+
+  function setPreference(next: EditorThemePreference) {
+    window.localStorage.setItem(EDITOR_THEME_STORAGE_KEY, next);
+    setPreferenceState(next);
+  }
+
+  const resolvedTheme = preference === "light" ? "light" : preference === "dark" ? "vs-dark" : systemDark ? "vs-dark" : "light";
+  return { preference, resolvedTheme, setPreference };
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     return `${error.message} (${error.code})`;
@@ -115,6 +157,12 @@ function AdapterConsole() {
   const [contentReady, setContentReady] = useState(false);
   // Low-frequency Adapter settings live in a drawer, outside the main work area.
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Known version seq per adapter, cached once a version list has loaded (and
+  // kept up to date on save/publish). The cache survives adapter switches, so
+  // catalog summaries never degrade back to a stateless placeholder.
+  const [latestSeqById, setLatestSeqById] = useState<Map<number, number>>(new Map());
+  const [publishedSeqById, setPublishedSeqById] = useState<Map<number, number>>(new Map());
+  const { preference: themePreference, resolvedTheme: editorTheme, setPreference: setThemePreference } = useMonacoTheme();
   // Monotonic guard: only the newest content-loading request may commit state, so
   // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
   const requestGeneration = useRef(0);
@@ -180,6 +228,23 @@ function AdapterConsole() {
     setBaseline(next);
   }
 
+  // Cache the version_id -> seq knowledge for one adapter so catalog rows keep
+  // showing real summaries after the user switches to another adapter.
+  function recordVersionSeqs(adapterId: number, list: VersionSummary[], pointer: Adapter) {
+    const nextLatest = new Map(latestSeqById);
+    const nextPublished = new Map(publishedSeqById);
+    for (const version of list) {
+      if (version.id === pointer.latest_version_id) {
+        nextLatest.set(adapterId, version.seq);
+      }
+      if (version.id === pointer.published_version_id) {
+        nextPublished.set(adapterId, version.seq);
+      }
+    }
+    setLatestSeqById(nextLatest);
+    setPublishedSeqById(nextPublished);
+  }
+
   function confirmDiscard(): boolean {
     if (!dirty) {
       return true;
@@ -206,6 +271,7 @@ function AdapterConsole() {
         return;
       }
       setVersions(list);
+      recordVersionSeqs(adapter.id, list, adapter);
       if (adapter.latest_version_id === null) {
         setSelectedVersionId(null);
         applySnapshot({ code: STARTER_CODE, requirements: "", runtimeConfigText: "{}" });
@@ -324,6 +390,9 @@ function AdapterConsole() {
       setSelected(optimistic);
       setAdapters((current) => current.map((item) => (item.id === optimistic.id ? optimistic : item)));
       setVersions((current) => [saved, ...current]);
+      // The new immutable version is the latest one: keep the cached catalog
+      // summary in sync without waiting for the best-effort list refresh.
+      setLatestSeqById((current) => new Map(current).set(selected.id, saved.seq));
       setSelectedVersionId(saved.id);
       applySnapshot(versionSnapshot(saved));
       try {
@@ -356,6 +425,11 @@ function AdapterConsole() {
     try {
       setError(null);
       const refreshed = await api.publishVersion(selected.id, selectedVersionId);
+      // Keep the cached catalog summary in sync with the new published pointer.
+      const publishedSeq = versions.find((version) => version.id === selectedVersionId)?.seq;
+      if (publishedSeq !== undefined) {
+        setPublishedSeqById((current) => new Map(current).set(selected.id, publishedSeq));
+      }
       setSelected(refreshed);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
     } catch (err) {
@@ -389,7 +463,13 @@ function AdapterConsole() {
       return;
     }
     const warning = dirty ? "该 Adapter 存在未保存的编辑器修改。" : "";
-    if (!window.confirm(`确定删除 Adapter “${selected.name}” 及其全部版本吗？${warning}`)) {
+    // M2 真实规则：已有 Execution 的 Adapter 后端会拒绝删除（409 adapter_has_executions）。
+    if (
+      !window.confirm(
+        `确定删除 Adapter “${selected.name}” 吗？无执行记录时将移除该 Adapter 及其全部版本；` +
+          `已有 Execution 的 Adapter 为保留执行历史不可删除。${warning}`,
+      )
+    ) {
       return;
     }
     setBusy(true);
@@ -424,21 +504,6 @@ function AdapterConsole() {
   const isLatest = selectedVersionId !== null && selected?.latest_version_id === selectedVersionId;
   const isPublished =
     selectedVersionId !== null && selected?.published_version_id === selectedVersionId;
-
-  // Catalog rows may only show seq values we actually know (the loaded version
-  // list of the selected adapter); other adapters degrade to neutral text.
-  const latestSeqById = new Map<number, number>();
-  const publishedSeqById = new Map<number, number>();
-  if (selected !== null) {
-    for (const version of versions) {
-      if (version.id === selected.latest_version_id) {
-        latestSeqById.set(selected.id, version.seq);
-      }
-      if (version.id === selected.published_version_id) {
-        publishedSeqById.set(selected.id, version.seq);
-      }
-    }
-  }
 
   const healthDotClass =
     health === "ok"
@@ -512,9 +577,24 @@ function AdapterConsole() {
                     label: "编辑",
                     children: (
                       <div className="editor-pane">
-                        <div className="editor-main">
+                        <div className="editor-toolbar">
+                          <span className="editor-toolbar-label">编辑器主题</span>
+                          <Segmented
+                            size="small"
+                            data-testid="editor-theme-picker"
+                            value={themePreference}
+                            options={[
+                              { label: "深色", value: "dark" },
+                              { label: "浅色", value: "light" },
+                              { label: "跟随系统", value: "system" },
+                            ]}
+                            onChange={(value) => setThemePreference(value as EditorThemePreference)}
+                          />
+                        </div>
+                        <div className="editor-main" data-testid="editor-main" data-monaco-theme={editorTheme}>
                           <Editor
                             height="100%"
+                            theme={editorTheme}
                             defaultLanguage="python"
                             value={snapshot.code}
                             onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}

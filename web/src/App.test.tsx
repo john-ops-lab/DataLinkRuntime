@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import App, { TOKEN_STORAGE_KEY } from "./App";
+import App, { EDITOR_THEME_STORAGE_KEY, TOKEN_STORAGE_KEY } from "./App";
 import { setAuthToken } from "./api";
 import { FALLBACK_POLICY } from "./fallback-policy";
 import type {
@@ -14,16 +14,19 @@ import type {
 
 // The Monaco editor is replaced by a plain textarea so tests exercise the DLR
 // business integration (value / change / save) instead of the editor itself.
-// readOnly is honored so the mutation-time interaction lock is testable.
+// readOnly is honored so the mutation-time interaction lock is testable; the
+// theme prop is mirrored so theme switching stays assertable.
 vi.mock("@monaco-editor/react", () => ({
   default: function Editor(props: {
     value?: string;
     onChange?: (value: string | undefined) => void;
     options?: { readOnly?: boolean };
+    theme?: string;
   }) {
     return (
       <textarea
         data-testid="code-editor"
+        data-monaco-theme={props.theme ?? ""}
         value={props.value ?? ""}
         disabled={props.options?.readOnly ?? false}
         onChange={(event) => props.onChange?.(event.target.value)}
@@ -165,6 +168,7 @@ beforeEach(() => {
 
 afterEach(() => {
   sessionStorage.clear();
+  localStorage.clear();
   setAuthToken(null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -1791,6 +1795,15 @@ it("shows the brand area and the token card on the login page", async () => {
   expect(screen.getByText("DataLinkRuntime")).toBeTruthy();
   expect(screen.getByText("欢迎登录 DLR 控制台")).toBeTruthy();
   expect(screen.getByText("轻量数据适配运行平台")).toBeTruthy();
+  // 长期产品定位直接展示（Issue #8 产品视觉决策补充），“AI 辅助”仅为定位文案。
+  expect(screen.getByText("轻量易用")).toBeTruthy();
+  expect(screen.getByText("核心精简，快速部署")).toBeTruthy();
+  expect(screen.getByText("多元适配")).toBeTruthy();
+  expect(screen.getByText("代码驱动，灵活接入")).toBeTruthy();
+  expect(screen.getByText("在线开发")).toBeTruthy();
+  expect(screen.getByText("编辑、测试、运行、日志一体")).toBeTruthy();
+  expect(screen.getByText("AI 辅助")).toBeTruthy();
+  expect(screen.getByText("生成、修改、调试更高效")).toBeTruthy();
 });
 
 it("renders the console shell with catalog, workbench header and the three main tabs", async () => {
@@ -1882,4 +1895,176 @@ it("edits metadata and deletes the adapter from the settings drawer", async () =
     expect(screen.queryAllByTestId("adapter-item")).toHaveLength(0);
   });
   expect(screen.getByText("请选择一个 Adapter 进行管理。")).toBeTruthy();
+});
+
+// --- M3.1 Review round 1：Monaco 主题 / Catalog 稳定性 / vN 一致性 ----------
+
+function monacoTheme(): string {
+  return screen.getByTestId("editor-main").getAttribute("data-monaco-theme") ?? "";
+}
+
+it("defaults the Monaco theme to dark and persists switches in localStorage", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  render(<App />);
+  await selectFirstAdapter();
+
+  // 默认深色，且主题确实传给了编辑器。
+  expect(monacoTheme()).toBe("vs-dark");
+  expect(screen.getByTestId("code-editor").getAttribute("data-monaco-theme")).toBe("vs-dark");
+  expect(localStorage.getItem(EDITOR_THEME_STORAGE_KEY)).toBeNull();
+
+  fireEvent.click(screen.getByText("浅色"));
+  await waitFor(() => {
+    expect(monacoTheme()).toBe("light");
+  });
+  expect(localStorage.getItem(EDITOR_THEME_STORAGE_KEY)).toBe("light");
+
+  fireEvent.click(screen.getByText("跟随系统"));
+  await waitFor(() => {
+    expect(localStorage.getItem(EDITOR_THEME_STORAGE_KEY)).toBe("system");
+  });
+});
+
+it("restores the persisted Monaco theme preference after remount", async () => {
+  localStorage.setItem(EDITOR_THEME_STORAGE_KEY, "light");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  render(<App />);
+  await selectFirstAdapter();
+  expect(monacoTheme()).toBe("light");
+});
+
+it("follows the browser color scheme when the Monaco theme preference is 跟随系统", async () => {
+  // jsdom has no matchMedia: stub it with a controllable media query list.
+  const listeners = new Set<() => void>();
+  const media = { matches: false };
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      get matches() {
+        return media.matches;
+      },
+      addEventListener: (_: string, listener: () => void) => {
+        listeners.add(listener);
+      },
+      removeEventListener: (_: string, listener: () => void) => {
+        listeners.delete(listener);
+      },
+    })),
+  );
+  localStorage.setItem(EDITOR_THEME_STORAGE_KEY, "system");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  render(<App />);
+  await selectFirstAdapter();
+
+  // 系统浅色 → Monaco 浅色；系统切深色后立即跟随。
+  expect(monacoTheme()).toBe("light");
+  act(() => {
+    media.matches = true;
+    for (const listener of [...listeners]) {
+      listener();
+    }
+  });
+  await waitFor(() => {
+    expect(monacoTheme()).toBe("vs-dark");
+  });
+});
+
+it("keeps catalog version summaries stable across adapter switches without extra requests", async () => {
+  const adapterA = makeAdapter({ id: 1, name: "adapter-a", latest_version_id: 10, published_version_id: 10 });
+  const adapterB = makeAdapter({ id: 2, name: "adapter-b", latest_version_id: 20 });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapterA, adapterB] }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({
+        body: [{ id: 10, adapter_id: 1, seq: 1, created_at: "2026-08-11T00:00:00Z" } satisfies VersionSummary],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "GET",
+      match: "/api/adapters/2/versions",
+      respond: () => ({
+        body: [{ id: 20, adapter_id: 2, seq: 2, created_at: "2026-08-11T00:00:00Z" } satisfies VersionSummary],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/2/versions/20",
+      respond: () => ({ body: makeVersion({ id: 20, adapter_id: 2, seq: 2 }) }),
+    },
+  ]);
+
+  function subOf(index: number): string {
+    return screen.getAllByTestId("adapter-item")[index].querySelector(".catalog-item-sub")?.textContent ?? "";
+  }
+
+  render(<App />);
+  await screen.findAllByTestId("adapter-item");
+
+  // 未加载版本明细：利用 latest/published 指针展示真实状态，已发布不被隐藏。
+  expect(subOf(0)).toBe("已保存 · 已发布");
+  expect(subOf(1)).toBe("已保存 · 未发布");
+
+  fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
+  await screen.findByTestId("code-editor");
+  await waitFor(() => {
+    expect(subOf(0)).toBe("v1 · Published v1");
+  });
+
+  // 切到 B：A 的已知摘要不得退化；B 展示真实的未发布状态。
+  fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
+  await waitFor(() => {
+    expect(subOf(1)).toBe("v2 · 未发布");
+  });
+  expect(subOf(0)).toBe("v1 · Published v1");
+
+  // 切回 A：缓存仍然生效。
+  fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
+  await screen.findByTestId("code-editor");
+  expect(subOf(0)).toBe("v1 · Published v1");
+
+  // 不为展示 seq 增加额外请求：版本列表只在选中对应 Adapter 时加载。
+  const bListCalls = fetchMock.mock.calls.filter(([url]) => String(url) === "/api/adapters/2/versions");
+  expect(bListCalls).toHaveLength(1);
+});
+
+it("labels the current execution with the user-facing vN instead of the internal version id", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const pending = makeExecution({ status: "pending" });
+  const succeeded = makeExecution({ status: "succeeded", duration_ms: 42 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: pending }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: succeeded }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+  // 主版本标识为 vN（与左栏测试版本一致）；内部 id 仅作次级调试信息。
+  const versionCell = screen.getByTestId("execution-version");
+  expect(versionCell.textContent).toContain("v1");
+  expect(versionCell.querySelector(".execution-version-debug")?.textContent).toBe("#10");
 });

@@ -361,6 +361,19 @@ body {
   background: var(--dlr-workspace-bg);
 }
 
+/* Monaco 主题选择工具条：轻量一行，不挤压编辑器主视觉区域。 */
+.editor-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-toolbar-label {
+  font-size: 0.8rem;
+  color: var(--dlr-text-weak);
+}
+
 /* Requirements / Runtime Config 降为次级配置区。 */
 .version-fields {
   flex: 0 0 auto;
@@ -488,6 +501,12 @@ body {
 
 .execution-summary-label {
   margin-right: 4px;
+  color: var(--dlr-text-weak);
+}
+
+/* 内部 version_id 只作为次级调试信息，不作主版本标识。 */
+.execution-version-debug {
+  margin-left: 4px;
   color: var(--dlr-text-weak);
 }
 

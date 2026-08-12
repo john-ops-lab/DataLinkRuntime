@@ -17,12 +17,13 @@ function errorMessage(error: unknown): string {
   return "请求失败";
 }
 
-// 品牌区特性卡片只做产品定位说明（来自 docs/product.md），不代表新功能入口。
+// 品牌区特性卡片是长期产品定位（Issue #8 产品视觉决策补充），不代表新功能入口；
+// “AI 辅助”仅为定位展示，M3.1 不实现任何 AI 功能。
 const BRAND_FEATURES = [
-  { title: "轻量高效", text: "轻量内核，快速集成" },
-  { title: "多源适配", text: "丰富连接，灵活适配" },
-  { title: "安全可控", text: "Token 认证，权限可控" },
-  { title: "稳定可靠", text: "组件精简，可观测内建" },
+  { title: "轻量易用", text: "核心精简，快速部署" },
+  { title: "多元适配", text: "代码驱动，灵活接入" },
+  { title: "在线开发", text: "编辑、测试、运行、日志一体" },
+  { title: "AI 辅助", text: "生成、修改、调试更高效" },
 ];
 
 export default function LoginPage(props: LoginPageProps) {

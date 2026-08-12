@@ -16,9 +16,11 @@ interface AdapterCatalogProps {
   // Returns true only when the adapter was actually created; the form is cleared
   // and closed only on real success, so failures keep the user's input editable.
   onCreate: (name: string, description: string) => Promise<boolean>;
-  // The list API only exposes latest/published version ids, no seq; the seq is
-  // known once the selected adapter's version list has loaded. Catalog rows
-  // degrade to a neutral text instead of inventing numbers (M3.1 §7.3).
+  // The list API only exposes latest/published version ids, no seq. Once an
+  // adapter's version list has been loaded, its known seq values are cached
+  // in App state and keep showing across adapter switches; adapters that were
+  // never loaded still expose their real saved/published state via the
+  // version pointers, never hiding a published status (Issue #8 补充).
   latestSeqById: Map<number, number>;
   publishedSeqById: Map<number, number>;
 }
@@ -32,11 +34,16 @@ function catalogSubtitle(
     return "暂无版本";
   }
   const latestSeq = latestSeqById.get(adapter.id);
-  if (latestSeq === undefined) {
-    return "已有保存版本";
-  }
   const publishedSeq = publishedSeqById.get(adapter.id);
-  return publishedSeq === undefined ? `v${latestSeq}` : `v${latestSeq} · Published v${publishedSeq}`;
+  if (latestSeq === undefined) {
+    // Versions not loaded yet: no seq is invented, but the real published
+    // state stays visible instead of degrading to a neutral placeholder.
+    return adapter.published_version_id === null ? "已保存 · 未发布" : "已保存 · 已发布";
+  }
+  if (publishedSeq !== undefined) {
+    return `v${latestSeq} · Published v${publishedSeq}`;
+  }
+  return adapter.published_version_id === null ? `v${latestSeq} · 未发布` : `v${latestSeq} · 已发布`;
 }
 
 export default function AdapterCatalog({

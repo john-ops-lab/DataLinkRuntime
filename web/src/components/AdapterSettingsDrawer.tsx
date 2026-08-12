@@ -60,7 +60,8 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
           <Divider />
 
           <p className="settings-danger-hint">
-            删除将移除该 Adapter 及其全部版本，操作不可恢复。
+            无执行记录时可删除，将移除该 Adapter 及其全部版本，操作不可恢复；已有
+            Execution 的 Adapter 为保留执行历史不可删除。
           </p>
           <Button danger data-testid="delete-adapter" disabled={props.busy} onClick={props.onDelete}>
             删除 Adapter

@@ -54,6 +54,11 @@ export default function TestRunPanel(props: TestRunPanelProps) {
   // so a slow response from an older Execution can never overwrite the
   // Execution the user just started.
   const runGenerationRef = useRef(0);
+  // version_id -> seq resolved locally at run time: the summary must keep
+  // showing the version that was actually executed even after the user
+  // switches to another version (Review round 1 Minor 1). No extra request;
+  // the internal version_id stays as secondary debug info only.
+  const runSeqByVersionId = useRef(new Map<number, number>());
 
   function stopFallbackPolling() {
     if (fallbackTimerRef.current !== null) {
@@ -217,6 +222,9 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     }
     setSubmitting(true);
     try {
+      if (props.selectedVersionSeq !== null) {
+        runSeqByVersionId.current.set(props.selectedVersionId, props.selectedVersionSeq);
+      }
       const created = await api.createExecution(props.adapter.id, {
         input,
         version_id: props.selectedVersionId,
@@ -240,6 +248,11 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     props.dirty ||
     !props.contentReady ||
     props.selectedVersionId === null;
+
+  // User-facing primary version label is vN; fall back to the internal id
+  // only when the seq is genuinely unknown.
+  const executionVersionSeq =
+    execution === null ? null : (runSeqByVersionId.current.get(execution.version_id) ?? null);
 
   return (
     // M3.1 双栏工作台：左栏测试输入，右栏 Execution 状态与实时日志。
@@ -311,8 +324,10 @@ export default function TestRunPanel(props: TestRunPanelProps) {
                   {execution.error}
                 </Typography.Text>
               )}
-              <span>
-                <span className="execution-summary-label">Version</span>#{execution.version_id}
+              <span data-testid="execution-version">
+                <span className="execution-summary-label">Version</span>
+                {executionVersionSeq !== null ? `v${executionVersionSeq}` : `#${execution.version_id}`}
+                <span className="execution-version-debug">#{execution.version_id}</span>
               </span>
               <span>
                 <span className="execution-summary-label">Worker</span>
