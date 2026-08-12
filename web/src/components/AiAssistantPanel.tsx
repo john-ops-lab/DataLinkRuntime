@@ -1,6 +1,6 @@
 /** Browser-only AI conversation and Candidate review surface (M4). */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Spin } from "antd";
 
 import { ApiError, api } from "../api";
@@ -10,6 +10,7 @@ import type {
   AiCandidate,
   AiConversationMessage,
 } from "../types";
+import ActionWithReason from "./ActionWithReason";
 
 export interface AiWorkingCopy {
   code: string;
@@ -101,6 +102,22 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const requestGeneration = useRef(0);
   const bindingsGeneration = useRef(0);
   const nextMessageId = useRef(1);
+  const conversationRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
+  const previousOpenRef = useRef(props.open);
+
+  useLayoutEffect(() => {
+    if (props.open && !previousOpenRef.current) {
+      // The conversation DOM is recreated on reopen, so an old scrolled-up
+      // position cannot be restored meaningfully. Reopen at the latest item.
+      followLatestRef.current = true;
+    }
+    previousOpenRef.current = props.open;
+    const conversation = conversationRef.current;
+    if (conversation !== null && followLatestRef.current) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+  }, [messages, props.open, sending]);
 
   useEffect(
     () => () => {
@@ -165,6 +182,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       content: message,
       candidate: null,
     };
+    // Sending explicitly returns to the current exchange. A later manual
+    // upward scroll can still pause following before the response arrives.
+    followLatestRef.current = true;
     setMessages((current) => [...current, userMessage]);
     setDraft("");
     setPanelError(null);
@@ -304,7 +324,16 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         )}
       </div>
 
-      <div className="ai-conversation" data-testid="ai-conversation">
+      <div
+        ref={conversationRef}
+        className="ai-conversation"
+        data-testid="ai-conversation"
+        onScroll={(event) => {
+          const target = event.currentTarget;
+          followLatestRef.current =
+            target.scrollHeight - target.clientHeight - target.scrollTop <= 32;
+        }}
+      >
         {messages.length === 0 ? (
           <p className="ai-conversation-empty">
             描述你希望解释或修改的内容。每次请求都以当前 Working Copy 为唯一代码快照。
@@ -322,6 +351,15 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                 : [...new Set(candidateState.value.required_secret_keys)].filter(
                     (key) => !boundSecretKeys.has(key),
                   );
+            const applyBlockedReason = props.adapter?.archived_at
+              ? "Adapter 已归档，请先在设置中恢复"
+              : !props.contentReady
+                ? "Working Copy 尚未加载完成，请稍后重试"
+                : props.busy
+                  ? "其他操作正在进行，请等待完成"
+                  : candidateState?.applied
+                    ? "该 Candidate 已应用到当前 Working Copy"
+                    : null;
             return (
               <article
                 key={message.id}
@@ -341,28 +379,28 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                       </p>
                     )}
                     {!bindingsLoading && bindingsVerified && missingKeys.length > 0 && (
-                      <p className="ai-secret-warning" data-testid="ai-missing-secret-keys">
+                      <p className="ai-secret-warning" role="alert" data-testid="ai-missing-secret-keys">
                         ⚠ 缺少凭据绑定：{missingKeys.join(", ")}
                       </p>
                     )}
                     {!bindingsLoading && !bindingsVerified && (
-                      <p className="ai-secret-check-unavailable">
+                      <p className="ai-secret-check-unavailable" role="alert">
                         暂时无法核对当前凭据绑定。
                       </p>
                     )}
                     {stale && (
-                      <div className="ai-stale-warning" data-testid="ai-candidate-stale">
+                      <div className="ai-stale-warning" role="alert" data-testid="ai-candidate-stale">
                         <strong>⚠ AI 生成期间 Working Copy 已发生修改。</strong>
                         <span>该 Candidate 基于较早的编辑内容生成。</span>
                       </div>
                     )}
                     {props.adapter?.archived_at && (
-                      <p className="ai-secret-warning" data-testid="ai-archived-apply-blocked">
+                      <p className="ai-secret-warning" role="alert" data-testid="ai-archived-apply-blocked">
                         已归档 Adapter 为只读，不能应用 Candidate。
                       </p>
                     )}
                     {candidateState.applied && (
-                      <p className="ai-candidate-applied" data-testid="ai-candidate-applied">
+                      <p className="ai-candidate-applied" role="status" data-testid="ai-candidate-applied">
                         已应用到浏览器 Working Copy；请继续人工保存、测试与发布。
                       </p>
                     )}
@@ -373,24 +411,22 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                         disabled={!props.contentReady || props.busy}
                         onClick={() => props.onOpenDiff(candidateState.value)}
                       >
-                        {stale ? "查看与当前 Working Copy 的 Diff" : "查看 Diff"}
+                        {stale ? "查看与当前 Working Copy 的修改" : "查看修改"}
                       </Button>
+                      <ActionWithReason label="应用 AI Candidate" reason={applyBlockedReason}>
+                        <Button
+                          size="small"
+                          type="primary"
+                          data-testid="ai-apply-candidate"
+                          disabled={applyBlockedReason !== null}
+                          onClick={() => applyCandidate(message.id, candidateState.value)}
+                        >
+                          {candidateState.applied ? "已应用" : stale ? "仍然应用" : "应用"}
+                        </Button>
+                      </ActionWithReason>
                       <Button
                         size="small"
-                        type="primary"
-                        data-testid="ai-apply-candidate"
-                        disabled={
-                          !!props.adapter?.archived_at ||
-                          !props.contentReady ||
-                          props.busy ||
-                          candidateState.applied
-                        }
-                        onClick={() => applyCandidate(message.id, candidateState.value)}
-                      >
-                        {candidateState.applied ? "已应用" : stale ? "仍然应用" : "应用修改"}
-                      </Button>
-                      <Button
-                        size="small"
+                        type="text"
                         data-testid="ai-discard-candidate"
                         onClick={() => discardCandidate(message.id)}
                       >

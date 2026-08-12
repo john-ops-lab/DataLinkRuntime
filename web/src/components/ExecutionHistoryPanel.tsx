@@ -56,6 +56,8 @@ export default function ExecutionHistoryPanel(props: {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [requestedExecutionId, setRequestedExecutionId] = useState<number | null>(null);
+  const [selectedSummary, setSelectedSummary] = useState<ExecutionSummary | null>(null);
   // Only the newest detail request may commit UI state: rapid clicks (A slow,
   // B fast) must never let a stale A response overwrite the B detail.
   const detailRequestRef = useRef(0);
@@ -110,9 +112,12 @@ export default function ExecutionHistoryPanel(props: {
     };
   }, [props.adapterId]);
 
-  async function openExecution(executionId: number) {
+  async function openExecution(executionId: number, summary: ExecutionSummary | null = null) {
     const requestId = ++detailRequestRef.current;
     watcher.stop(); // invalidate any previous drawer's stream/polls
+    setLoadError(null);
+    setRequestedExecutionId(executionId);
+    setSelectedSummary(summary);
     setDrawerOpen(true);
     setDetailLoading(true);
     try {
@@ -129,6 +134,8 @@ export default function ExecutionHistoryPanel(props: {
       }
       setLoadError(errorMessage(error));
       setDrawerOpen(false);
+      setRequestedExecutionId(null);
+      setSelectedSummary(null);
     } finally {
       if (requestId === detailRequestRef.current) {
         setDetailLoading(false);
@@ -172,7 +179,8 @@ export default function ExecutionHistoryPanel(props: {
       title: "Worker",
       dataIndex: "worker_name",
       width: 130,
-      render: (name: string | null) => name ?? "—",
+      ellipsis: true,
+      render: (name: string | null) => <span title={name ?? undefined}>{name ?? "—"}</span>,
     },
     {
       title: "触发",
@@ -189,9 +197,15 @@ export default function ExecutionHistoryPanel(props: {
     {
       title: "创建时间",
       dataIndex: "created_at",
+      width: 160,
       render: (value: string) => formatTime(value),
     },
   ];
+  const activeSummary =
+    selectedSummary?.id === requestedExecutionId
+      ? selectedSummary
+      : (items.find((item) => item.id === requestedExecutionId) ?? null);
+  const visibleDetail = detail?.id === requestedExecutionId ? detail : null;
 
   return (
     <div className="history-panel">
@@ -199,7 +213,7 @@ export default function ExecutionHistoryPanel(props: {
         <Button data-testid="history-refresh" loading={loading} onClick={() => void loadPage(null)}>
           刷新
         </Button>
-        {loadError && <span className="history-error">{loadError}</span>}
+        {loadError && <span className="history-error" role="alert">{loadError}</span>}
       </Space>
       <div className="history-scroll">
         <Table<ExecutionSummary>
@@ -208,9 +222,19 @@ export default function ExecutionHistoryPanel(props: {
           columns={columns}
           dataSource={items}
           pagination={false}
+          scroll={{ x: 776 }}
           locale={{ emptyText: <Empty description="暂无执行记录" /> }}
           onRow={(summary) => ({
-            onClick: () => void openExecution(summary.id),
+            onClick: () => void openExecution(summary.id, summary),
+            onKeyDown: (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void openExecution(summary.id, summary);
+              }
+            },
+            tabIndex: 0,
+            "aria-haspopup": "dialog",
+            "aria-label": `打开 Execution #${summary.id} 详情，版本 v${summary.version_seq}，Worker ${summary.worker_name ?? "未知"}`,
             "data-testid": "history-row",
           })}
         />
@@ -226,19 +250,21 @@ export default function ExecutionHistoryPanel(props: {
       )}
 
       <Drawer
-        title={detail !== null ? `Execution #${detail.id}` : "执行详情"}
+        title={requestedExecutionId !== null ? `Execution #${requestedExecutionId}` : "执行详情"}
         width={560}
         open={drawerOpen}
         onClose={() => {
           detailRequestRef.current += 1; // invalidate any in-flight detail load
           watcher.stop();
           setDrawerOpen(false);
+          setRequestedExecutionId(null);
+          setSelectedSummary(null);
         }}
       >
         {detailLoading && <Spin />}
-        {detail !== null && (
+        {visibleDetail !== null && !detailLoading && (
           <div className="execution-detail">
-            {watcher.fallbackExhausted && !isTerminal(detail.status) && (
+            {watcher.fallbackExhausted && !isTerminal(visibleDetail.status) && (
               <Alert
                 type="warning"
                 showIcon
@@ -250,17 +276,43 @@ export default function ExecutionHistoryPanel(props: {
               size="small"
               column={2}
               items={[
-                { key: "status", label: "状态", children: <Tag color={statusColor(detail.status)}>{statusLabel(detail.status)}</Tag> },
-                { key: "version", label: "Version ID", children: detail.version_id },
-                { key: "worker", label: "Worker", children: detail.worker_id ?? "—" },
-                { key: "trigger", label: "触发方式", children: triggerLabel(detail.trigger) },
-                { key: "created", label: "创建时间", children: formatTime(detail.created_at) },
-                { key: "started", label: "开始时间", children: formatTime(detail.started_at) },
-                { key: "ended", label: "结束时间", children: formatTime(detail.ended_at) },
-                { key: "duration", label: "耗时", children: formatDuration(detail.duration_ms) },
+                { key: "status", label: "状态", children: <Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag> },
+                {
+                  key: "version",
+                  label: "版本",
+                  children: activeSummary !== null ? (
+                    <>
+                      v{activeSummary.version_seq}
+                      <span className="execution-version-debug">#{visibleDetail.version_id}</span>
+                    </>
+                  ) : (
+                    `#${visibleDetail.version_id}`
+                  ),
+                },
+                {
+                  key: "worker",
+                  label: "Worker",
+                  children: activeSummary?.worker_name ? (
+                    <>
+                      {activeSummary.worker_name}
+                      {visibleDetail.worker_id !== null && (
+                        <span className="execution-version-debug">#{visibleDetail.worker_id}</span>
+                      )}
+                    </>
+                  ) : visibleDetail.worker_id === null ? (
+                    "—"
+                  ) : (
+                    `#${visibleDetail.worker_id}`
+                  ),
+                },
+                { key: "trigger", label: "触发方式", children: triggerLabel(visibleDetail.trigger) },
+                { key: "created", label: "创建时间", children: formatTime(visibleDetail.created_at) },
+                { key: "started", label: "开始时间", children: formatTime(visibleDetail.started_at) },
+                { key: "ended", label: "结束时间", children: formatTime(visibleDetail.ended_at) },
+                { key: "duration", label: "耗时", children: formatDuration(visibleDetail.duration_ms) },
               ]}
             />
-            {detail.error && <pre className="terminal-view error-text">{detail.error}</pre>}
+            {visibleDetail.error && <pre className="terminal-view error-text" role="alert">{visibleDetail.error}</pre>}
             <Tabs
               size="small"
               items={[
@@ -269,20 +321,20 @@ export default function ExecutionHistoryPanel(props: {
                   label: "Input",
                   children: (
                     <pre className="output-view" data-testid="detail-input">
-                      {JSON.stringify(detail.input, null, 2)}
+                      {JSON.stringify(visibleDetail.input, null, 2)}
                     </pre>
                   ),
                 },
-                { key: "output", label: "Output", children: <OutputView execution={detail} /> },
+                { key: "output", label: "Output", children: <OutputView execution={visibleDetail} /> },
                 {
                   key: "stdout",
                   label: "stdout",
-                  children: <LogView testId="detail-stdout" content={watcher.liveStdout} truncated={detail.stdout_truncated} />,
+                  children: <LogView testId="detail-stdout" content={watcher.liveStdout} truncated={visibleDetail.stdout_truncated} />,
                 },
                 {
                   key: "stderr",
                   label: "stderr",
-                  children: <LogView testId="detail-stderr" content={watcher.liveStderr} truncated={detail.stderr_truncated} />,
+                  children: <LogView testId="detail-stderr" content={watcher.liveStderr} truncated={visibleDetail.stderr_truncated} />,
                 },
               ]}
             />

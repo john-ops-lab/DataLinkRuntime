@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor from "@monaco-editor/react";
-import { Button, ConfigProvider, Modal, Segmented, Space, Tabs } from "antd";
+import { Button, ConfigProvider, message, Modal, Segmented, Space, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -177,6 +177,7 @@ function parseRuntimeConfig(text: string): Record<string, unknown> | null {
 }
 
 function AdapterConsole() {
+  const [messageApi, messageContextHolder] = message.useMessage();
   const [health, setHealth] = useState<HealthStatus>("loading");
 
   const [adapters, setAdapters] = useState<Adapter[]>([]);
@@ -556,11 +557,12 @@ function AdapterConsole() {
       setVersionSeqById((current) => new Map(current).set(saved.id, saved.seq));
       setSelectedVersionId(saved.id);
       applySnapshot(versionSnapshot(saved));
+      const refreshFailures: string[] = [];
       try {
         const versionList = await api.listVersions(selected.id);
         setVersions(versionList);
       } catch (refreshErr) {
-        setError(`版本已保存，但刷新版本列表失败：${errorMessage(refreshErr)}`);
+        refreshFailures.push(`刷新版本列表失败：${errorMessage(refreshErr)}`);
       }
       try {
         // Best-effort refresh of the real Adapter (server-owned updated_at);
@@ -569,7 +571,12 @@ function AdapterConsole() {
         setSelected(real);
         setAdapters((current) => current.map((item) => (item.id === real.id ? real : item)));
       } catch (refreshErr) {
-        setError(`版本已保存，但刷新 Adapter 失败：${errorMessage(refreshErr)}`);
+        refreshFailures.push(`刷新 Adapter 失败：${errorMessage(refreshErr)}`);
+      }
+      if (refreshFailures.length === 0) {
+        messageApi.success(`已保存为 v${saved.seq}`);
+      } else {
+        setError(`版本已保存（v${saved.seq}），但${refreshFailures.join("；")}`);
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -623,6 +630,9 @@ function AdapterConsole() {
       setSelected(refreshed);
       setProductionWorkerId(refreshed.production_worker_id ?? productionWorkerId);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+      messageApi.success(
+        `已发布${publishedSeq === undefined ? `版本 #${targetVersionId}` : ` v${publishedSeq}`}；生产运行状态未自动改变`,
+      );
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -657,6 +667,7 @@ function AdapterConsole() {
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
       setAutoOpenExecutionId(execution.id);
       setActiveTabKey("history");
+      messageApi.success(`生产已启动：Execution #${execution.id}`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -674,6 +685,11 @@ function AdapterConsole() {
       const refreshed = await api.stopProduction(selected.id, mode);
       setSelected(refreshed);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+      if (refreshed.running_execution_id !== null && refreshed.running_execution_id !== undefined) {
+        messageApi.info(`生产入口已关闭，等待 Execution #${refreshed.running_execution_id} 完成`);
+      } else {
+        messageApi.success("生产已停止");
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -927,7 +943,15 @@ function AdapterConsole() {
       setSelected(refreshed);
       setName(refreshed.name);
       setDescription(refreshed.description);
-      await refreshAdapters();
+      try {
+        await refreshAdapters();
+        messageApi.success("Adapter 信息已保存");
+      } catch {
+        setAdapters((current) =>
+          current.map((item) => (item.id === refreshed.id ? refreshed : item)),
+        );
+        setError("Adapter 信息已保存，但列表刷新失败；请手动刷新确认。");
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -958,6 +982,7 @@ function AdapterConsole() {
       if ((refreshed.production_worker_id ?? null) !== previousWorkerId) {
         setWorkerRetestAdapterIds((current) => new Set(current).add(refreshed.id));
       }
+      messageApi.success("production Worker 已保存；切换后请重新测试已发布版本");
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -1035,6 +1060,7 @@ function AdapterConsole() {
 
   return (
     <div className="app-shell">
+      {messageContextHolder}
       <header className="app-header">
         <div className="app-header-brand">
           <h1 className="app-header-logo">DLR</h1>
@@ -1088,6 +1114,13 @@ function AdapterConsole() {
                 dirty={dirty}
                 busy={busy}
                 contentReady={contentReady}
+                productionWorker={
+                  workers.find((worker) => worker.id === selected.production_worker_id) ?? null
+                }
+                workers={workers}
+                workersLoading={workersLoading}
+                workersError={workersError}
+                productionWorkerRetestRequired={workerRetestAdapterIds.has(selected.id)}
                 onSelectVersion={(versionId) => void handleSelectVersion(versionId)}
                 onSave={() => void handleSaveVersion()}
                 onPublishRequest={handlePublishRequest}
@@ -1221,6 +1254,11 @@ function AdapterConsole() {
                         dirty={dirty}
                         contentReady={contentReady}
                         busy={busy}
+                        workers={workers}
+                        workersLoading={workersLoading}
+                        workersError={workersError}
+                        onEdit={() => setActiveTabKey("edit")}
+                        onOpenSettings={() => setSettingsOpen(true)}
                         onError={setError}
                         onPublishedVersionTestSucceeded={handlePublishedVersionTestSucceeded}
                       />
@@ -1359,7 +1397,6 @@ function AdapterConsole() {
       <SystemSettingsDrawer
         open={systemSettingsOpen}
         onClose={() => setSystemSettingsOpen(false)}
-        onError={setError}
       />
 
       <VersionDiffModal

@@ -8,6 +8,7 @@ import { LANGUAGE_LABELS } from "../languages";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { Adapter, Worker } from "../types";
+import ActionWithReason from "./ActionWithReason";
 import { LogView, OutputView } from "./OutputView";
 
 interface TestRunPanelProps {
@@ -20,7 +21,12 @@ interface TestRunPanelProps {
   dirty: boolean;
   contentReady: boolean;
   busy: boolean;
-  onError: (message: string) => void;
+  workers: Worker[];
+  workersLoading: boolean;
+  workersError: string | null;
+  onEdit: () => void;
+  onOpenSettings: () => void;
+  onError: (message: string | null) => void;
   onPublishedVersionTestSucceeded: (adapterId: number) => void;
 }
 
@@ -63,7 +69,9 @@ export default function TestRunPanel(props: TestRunPanelProps) {
       execution?.status !== "succeeded" ||
       execution.id === reportedQualificationExecutionId.current ||
       execution.version_id !== adapter.published_version_id ||
-      execution.worker_id !== adapter.production_worker_id
+      (adapter.production_worker_id !== null &&
+        adapter.production_worker_id !== undefined &&
+        execution.worker_id !== adapter.production_worker_id)
     ) {
       return;
     }
@@ -91,7 +99,11 @@ export default function TestRunPanel(props: TestRunPanelProps) {
       props.onError("当前修改尚未保存，请先保存为新版本后再运行测试");
       return;
     }
-    if (props.selectedVersionId === null || !props.contentReady) {
+    if (!props.contentReady) {
+      props.onError("版本内容尚未就绪，请等待加载完成或刷新后重试");
+      return;
+    }
+    if (props.selectedVersionId === null) {
       props.onError("当前 Adapter 还没有已保存的版本，请先在编辑页保存版本");
       return;
     }
@@ -102,6 +114,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
       props.onError("Input 必须是合法 JSON");
       return;
     }
+    props.onError(null);
     setSubmitting(true);
     try {
       if (props.selectedVersionSeq !== null) {
@@ -121,51 +134,120 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     }
   }
 
-  const runDisabled =
-    submitting ||
-    props.busy ||
-    props.dirty ||
-    !props.contentReady ||
-    !!props.adapter.archived_at ||
-    props.selectedVersionId === null;
+  const runBlockedReason = props.adapter.archived_at
+    ? "Adapter 已归档，请先在设置中恢复"
+    : props.dirty
+      ? "存在未保存修改，请先使用顶部“保存新版本”"
+      : !props.contentReady
+        ? "版本内容尚未就绪，请等待加载完成或刷新后重试"
+        : props.selectedVersionId === null
+          ? "当前没有已保存版本，请先在编辑页保存为新版本"
+          : props.busy || submitting
+            ? "其他操作正在进行，请等待完成"
+            : null;
+  const runDisabled = runBlockedReason !== null;
 
   // User-facing primary version label is vN; fall back to the internal id
   // only when the seq is genuinely unknown.
   const executionVersionSeq =
     execution === null ? null : (runSeqByVersionId.get(execution.version_id) ?? null);
+  const configuredWorkerId = props.adapter.production_worker_id;
+  const compatibleOnlineWorkers = props.workers.filter(
+    (worker) => worker.status === "online" && worker.capabilities.includes(adapter.language),
+  );
+  const automaticWorker =
+    configuredWorkerId === null || configuredWorkerId === undefined
+      ? compatibleOnlineWorkers.length === 1
+        ? compatibleOnlineWorkers[0]
+        : null
+      : null;
+  const workerContextLabel =
+    props.productionWorker?.name ??
+    (configuredWorkerId === null || configuredWorkerId === undefined
+      ? props.workersLoading
+        ? "Worker 状态载入中"
+        : props.workersError !== null
+          ? "Worker 状态暂不可用"
+          : automaticWorker !== null
+            ? `${automaticWorker.name}（自动）`
+            : "未配置 production Worker"
+      : `Worker #${configuredWorkerId}（状态暂不可用）`);
+  const workerContextTitle =
+    props.productionWorker !== null
+      ? `${props.productionWorker.name} · ${props.productionWorker.capabilities.join(" / ")}`
+      : configuredWorkerId === null || configuredWorkerId === undefined
+        ? automaticWorker !== null
+          ? `未固定 production Worker；后端可自动采用唯一可用 Worker ${automaticWorker.name}`
+          : "未固定 production Worker；只有恰好一个有效在线且兼容的 Worker 时后端才能自动采用"
+        : `已配置 Worker #${configuredWorkerId}，当前状态暂不可用`;
+  const executionWorker =
+    execution?.worker_id === null || execution?.worker_id === undefined
+      ? null
+      : (props.workers.find((worker) => worker.id === execution.worker_id) ?? null);
 
   return (
     // M3.1 双栏工作台：左栏测试输入，右栏 Execution 状态与实时日志。
     <div className="test-run-panel">
       <section className="test-input-col" data-testid="test-input-col">
         <h3 className="test-run-col-title">测试输入</h3>
-        <div className="test-version-row" data-testid="test-runtime-info">
-          <span className="execution-summary-label">语言</span>
+        <div
+          className="test-version-row"
+          data-testid="test-runtime-info"
+          title={workerContextTitle}
+        >
+          <strong data-testid="test-run-version">
+            {props.selectedVersionSeq !== null ? `v${props.selectedVersionSeq}` : "未保存版本"}
+          </strong>
+          <span aria-hidden="true">·</span>
           <span>{LANGUAGE_LABELS[adapter.language]}</span>
-          <span className="execution-summary-label">生产 Worker</span>
-          <span>{props.productionWorker?.name ?? "未配置"}</span>
-          {props.productionWorker !== null && (
-            <Tag>
-              {props.productionWorker.capabilities
-                .map(
-                  (capability) =>
-                    LANGUAGE_LABELS[capability as keyof typeof LANGUAGE_LABELS] ?? capability,
-                )
-                .join(" / ")}
-            </Tag>
+          <span aria-hidden="true">·</span>
+          <span
+            className="test-version-worker"
+            title={workerContextLabel}
+          >
+            {workerContextLabel}
+          </span>
+          {!props.isLatest && props.selectedVersionId !== null && <Tag>历史版本</Tag>}
+          {props.isPublished && <Tag color="green">生产目标</Tag>}
+        </div>
+        {props.productionWorker !== null && props.productionWorker.status !== "online" && (
+          <Typography.Text type="warning" role="status" data-testid="test-worker-offline-warning">
+            production Worker {props.productionWorker.name} 最近状态为离线；可在设置中更换。
+            运行时仍由后端按最新心跳复核。
+          </Typography.Text>
+        )}
+        {(configuredWorkerId === null || configuredWorkerId === undefined) &&
+          !props.workersLoading &&
+          props.workersError === null &&
+          automaticWorker === null && (
+            <div className="test-blocked-guidance" role="status" data-testid="test-worker-selection-warning">
+              <Typography.Text type="warning">
+                {compatibleOnlineWorkers.length === 0 ? (
+                  <>
+                    当前没有有效在线且支持 {LANGUAGE_LABELS[adapter.language]} 的 Worker。
+                    请先恢复、启动或注册一个兼容 Worker；运行时仍由后端按最新心跳复核。
+                  </>
+                ) : (
+                  <>
+                    当前有 {compatibleOnlineWorkers.length} 个有效在线且兼容的 Worker，无法自动确定。
+                    请在设置中指定 production Worker；运行时仍由后端按最新心跳复核。
+                  </>
+                )}
+              </Typography.Text>
+              {compatibleOnlineWorkers.length > 0 && (
+                <Button type="link" size="small" onClick={props.onOpenSettings}>
+                  打开设置
+                </Button>
+              )}
+            </div>
           )}
-        </div>
-        <div className="test-version-row" data-testid="test-run-version">
-          <span className="execution-summary-label">测试版本</span>
-          <span>{props.selectedVersionSeq !== null ? `v${props.selectedVersionSeq}` : "—"}</span>
-          {props.isLatest && <Tag color="blue">Latest</Tag>}
-          {props.isPublished && <Tag color="green">Published</Tag>}
-        </div>
-        <Typography.Text type="secondary">运行将显式绑定上方选中的已保存版本</Typography.Text>
         <div className="test-input-block">
+          <label className="test-input-label" htmlFor="test-input-json">Input JSON</label>
           <textarea
+            id="test-input-json"
             data-testid="test-input"
             className="code-textarea"
+            aria-label="测试输入 JSON"
             placeholder="Input（任意合法 JSON）"
             value={inputText}
             disabled={submitting}
@@ -173,17 +255,26 @@ export default function TestRunPanel(props: TestRunPanelProps) {
           />
         </div>
         <div className="test-run-actions">
-          <Button
-            type="primary"
-            data-testid="run-test"
-            loading={submitting}
-            disabled={runDisabled}
-            onClick={() => void handleRun()}
-          >
-            运行测试
-          </Button>
+          <ActionWithReason label="运行测试" reason={runBlockedReason}>
+            <Button
+              type="primary"
+              data-testid="run-test"
+              loading={submitting}
+              disabled={runDisabled}
+              onClick={() => void handleRun()}
+            >
+              运行测试
+            </Button>
+          </ActionWithReason>
           {props.dirty && (
-            <Typography.Text type="warning">存在未保存修改，请先保存为新版本</Typography.Text>
+            <span className="test-blocked-guidance" role="status">
+              <Typography.Text type="warning">
+                存在未保存修改，请先使用顶部“保存新版本”。
+              </Typography.Text>
+              <Button type="link" size="small" data-testid="return-to-edit" onClick={props.onEdit}>
+                返回编辑
+              </Button>
+            </span>
           )}
         </div>
       </section>
@@ -216,18 +307,39 @@ export default function TestRunPanel(props: TestRunPanelProps) {
                 {statusLabel(execution.status)}
               </Tag>
               {execution.error && (
-                <Typography.Text type="danger" data-testid="execution-error">
+                <Typography.Text type="danger" role="alert" data-testid="execution-error">
                   {execution.error}
                 </Typography.Text>
               )}
               <span data-testid="execution-version">
                 <span className="execution-summary-label">Version</span>
-                {executionVersionSeq !== null ? `v${executionVersionSeq}` : `#${execution.version_id}`}
-                <span className="execution-version-debug">#{execution.version_id}</span>
+                {executionVersionSeq !== null ? (
+                  <>
+                    v{executionVersionSeq}
+                    <span className="execution-version-debug">#{execution.version_id}</span>
+                  </>
+                ) : (
+                  `#${execution.version_id}`
+                )}
               </span>
-              <span>
+              <span
+                className="execution-worker-summary"
+                data-testid="execution-worker"
+                title={
+                  execution.worker_id === null
+                    ? undefined
+                    : (executionWorker?.name ?? `Worker #${execution.worker_id}`)
+                }
+              >
                 <span className="execution-summary-label">Worker</span>
-                {execution.worker_id ?? "—"}
+                <span className="execution-worker-name">
+                  {execution.worker_id === null
+                    ? "—"
+                    : (executionWorker?.name ?? `#${execution.worker_id}`)}
+                </span>
+                {execution.worker_id !== null && executionWorker !== null && (
+                  <span className="execution-version-debug">#{execution.worker_id}</span>
+                )}
               </span>
               <span>
                 <span className="execution-summary-label">耗时</span>

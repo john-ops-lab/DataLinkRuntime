@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { api } from "../api";
@@ -67,6 +67,35 @@ function clickOption(dropdown: HTMLElement, label: string): void {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("locks the AI model form while a request is in flight so stale responses cannot overwrite edits", async () => {
+  mockLoad(modelSetting({ reasoning_mode: "enabled", reasoning_effort: "high" }));
+  let resolveSave: ((setting: AiModelSetting) => void) | undefined;
+  const pendingSave = new Promise<AiModelSetting>((resolve) => {
+    resolveSave = resolve;
+  });
+  vi.spyOn(api, "updateAiSetting").mockReturnValue(pendingSave);
+
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.click(screen.getByTestId("ai-save-settings"));
+  await waitFor(() => {
+    expect((screen.getByTestId("ai-model-input") as HTMLInputElement).disabled).toBe(true);
+  });
+  expect(screen.getByTestId("ai-provider").classList.contains("ant-select-disabled")).toBe(true);
+  expect(screen.getByTestId("ai-reasoning-mode").classList.contains("ant-select-disabled")).toBe(
+    true,
+  );
+  expect(screen.getByText(/高级：推理策略/).closest(".ant-collapse-item")?.className).toContain(
+    "ant-collapse-item-disabled",
+  );
+
+  await act(async () => {
+    resolveSave?.(modelSetting({ reasoning_mode: "enabled", reasoning_effort: "high" }));
+    await pendingSave;
+  });
+  expect((screen.getByTestId("ai-model-input") as HTMLInputElement).disabled).toBe(false);
 });
 
 it("shows Provider-specific effort options and clears stale values on Provider or mode changes", async () => {
@@ -158,6 +187,7 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
   fireEvent.change(screen.getByTestId("ai-model-input"), {
     target: { value: "reasoning-model" },
   });
+  fireEvent.click(screen.getByText("高级：推理策略（跟随模型默认）"));
   await chooseOption("ai-reasoning-mode", "开启推理");
 
   fireEvent.click(screen.getByTestId("ai-save-settings"));
@@ -203,4 +233,9 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
     reasoning_mode: "default",
     reasoning_effort: null,
   });
+  await screen.findByTestId("ai-settings-notice");
+  fireEvent.change(screen.getByTestId("ai-model-input"), {
+    target: { value: "edited-after-save" },
+  });
+  expect(screen.queryByTestId("ai-settings-notice")).toBeNull();
 });
