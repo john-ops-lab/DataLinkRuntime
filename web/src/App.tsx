@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor from "@monaco-editor/react";
-import { Button, Card, ConfigProvider, Input, Space, Tabs, Tag, Typography } from "antd";
+import { ConfigProvider, Segmented, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
-import AdapterList from "./components/AdapterList";
+import AdapterCatalog from "./components/AdapterCatalog";
+import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
 import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
+import LoginPage from "./components/LoginPage";
 import TestRunPanel from "./components/TestRunPanel";
 import WorkerStatus from "./components/WorkerStatus";
+import WorkbenchHeader from "./components/WorkbenchHeader";
 import type { Adapter, VersionDetail, VersionSummary } from "./types";
 
 type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
@@ -62,6 +65,48 @@ function versionSnapshot(detail: VersionDetail): EditorSnapshot {
 // Bearer header; a 401 clears it and returns to the token input screen.
 export const TOKEN_STORAGE_KEY = "dlr-admin-token";
 
+// M3.1 Monaco 主题：用户偏好只存浏览器本地（localStorage），默认深色；
+// “跟随系统”直接用浏览器 prefers-color-scheme，不引入主题框架，也不落库。
+type EditorThemePreference = "dark" | "light" | "system";
+
+export const EDITOR_THEME_STORAGE_KEY = "dlr-editor-theme";
+
+function readEditorThemePreference(): EditorThemePreference {
+  const stored = window.localStorage.getItem(EDITOR_THEME_STORAGE_KEY);
+  return stored === "light" || stored === "system" ? stored : "dark";
+}
+
+function subscribeToSystemDark(callback: () => void): () => void {
+  const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+  if (!media) {
+    return () => {};
+  }
+  media.addEventListener("change", callback);
+  return () => media.removeEventListener("change", callback);
+}
+
+function getSystemDarkSnapshot(): boolean {
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+}
+
+function useMonacoTheme(): {
+  preference: EditorThemePreference;
+  resolvedTheme: "vs-dark" | "light";
+  setPreference: (preference: EditorThemePreference) => void;
+} {
+  const [preference, setPreferenceState] = useState<EditorThemePreference>(readEditorThemePreference);
+  // 跟随系统：直接订阅浏览器 prefers-color-scheme，不引入主题框架。
+  const systemDark = useSyncExternalStore(subscribeToSystemDark, getSystemDarkSnapshot);
+
+  function setPreference(next: EditorThemePreference) {
+    window.localStorage.setItem(EDITOR_THEME_STORAGE_KEY, next);
+    setPreferenceState(next);
+  }
+
+  const resolvedTheme = preference === "light" ? "light" : preference === "dark" ? "vs-dark" : systemDark ? "vs-dark" : "light";
+  return { preference, resolvedTheme, setPreference };
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     return `${error.message} (${error.code})`;
@@ -110,6 +155,14 @@ function AdapterConsole() {
   // True only after the selected adapter's version list and content loaded successfully.
   // Save/Publish are gated on it so stale or failed loads can never be persisted.
   const [contentReady, setContentReady] = useState(false);
+  // Low-frequency Adapter settings live in a drawer, outside the main work area.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Known version seq per adapter, cached once a version list has loaded (and
+  // kept up to date on save/publish). The cache survives adapter switches, so
+  // catalog summaries never degrade back to a stateless placeholder.
+  const [latestSeqById, setLatestSeqById] = useState<Map<number, number>>(new Map());
+  const [publishedSeqById, setPublishedSeqById] = useState<Map<number, number>>(new Map());
+  const { preference: themePreference, resolvedTheme: editorTheme, setPreference: setThemePreference } = useMonacoTheme();
   // Monotonic guard: only the newest content-loading request may commit state, so
   // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
   const requestGeneration = useRef(0);
@@ -175,6 +228,23 @@ function AdapterConsole() {
     setBaseline(next);
   }
 
+  // Cache the version_id -> seq knowledge for one adapter so catalog rows keep
+  // showing real summaries after the user switches to another adapter.
+  function recordVersionSeqs(adapterId: number, list: VersionSummary[], pointer: Adapter) {
+    const nextLatest = new Map(latestSeqById);
+    const nextPublished = new Map(publishedSeqById);
+    for (const version of list) {
+      if (version.id === pointer.latest_version_id) {
+        nextLatest.set(adapterId, version.seq);
+      }
+      if (version.id === pointer.published_version_id) {
+        nextPublished.set(adapterId, version.seq);
+      }
+    }
+    setLatestSeqById(nextLatest);
+    setPublishedSeqById(nextPublished);
+  }
+
   function confirmDiscard(): boolean {
     if (!dirty) {
       return true;
@@ -193,6 +263,7 @@ function AdapterConsole() {
     setVersions([]);
     setSelectedVersionId(null);
     setContentReady(false);
+    setSettingsOpen(false);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
       const list = await api.listVersions(adapter.id);
@@ -200,6 +271,7 @@ function AdapterConsole() {
         return;
       }
       setVersions(list);
+      recordVersionSeqs(adapter.id, list, adapter);
       if (adapter.latest_version_id === null) {
         setSelectedVersionId(null);
         applySnapshot({ code: STARTER_CODE, requirements: "", runtimeConfigText: "{}" });
@@ -318,6 +390,9 @@ function AdapterConsole() {
       setSelected(optimistic);
       setAdapters((current) => current.map((item) => (item.id === optimistic.id ? optimistic : item)));
       setVersions((current) => [saved, ...current]);
+      // The new immutable version is the latest one: keep the cached catalog
+      // summary in sync without waiting for the best-effort list refresh.
+      setLatestSeqById((current) => new Map(current).set(selected.id, saved.seq));
       setSelectedVersionId(saved.id);
       applySnapshot(versionSnapshot(saved));
       try {
@@ -350,6 +425,11 @@ function AdapterConsole() {
     try {
       setError(null);
       const refreshed = await api.publishVersion(selected.id, selectedVersionId);
+      // Keep the cached catalog summary in sync with the new published pointer.
+      const publishedSeq = versions.find((version) => version.id === selectedVersionId)?.seq;
+      if (publishedSeq !== undefined) {
+        setPublishedSeqById((current) => new Map(current).set(selected.id, publishedSeq));
+      }
       setSelected(refreshed);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
     } catch (err) {
@@ -383,7 +463,13 @@ function AdapterConsole() {
       return;
     }
     const warning = dirty ? "该 Adapter 存在未保存的编辑器修改。" : "";
-    if (!window.confirm(`确定删除 Adapter “${selected.name}” 及其全部版本吗？${warning}`)) {
+    // M2 真实规则：已有 Execution 的 Adapter 后端会拒绝删除（409 adapter_has_executions）。
+    if (
+      !window.confirm(
+        `确定删除 Adapter “${selected.name}” 吗？无执行记录时将移除该 Adapter 及其全部版本；` +
+          `已有 Execution 的 Adapter 为保留执行历史不可删除。${warning}`,
+      )
+    ) {
       return;
     }
     setBusy(true);
@@ -395,6 +481,7 @@ function AdapterConsole() {
       setSelectedVersionId(null);
       setVersions([]);
       setContentReady(false);
+      setSettingsOpen(false);
       applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
       await refreshAdapters();
     } catch (err) {
@@ -418,14 +505,29 @@ function AdapterConsole() {
   const isPublished =
     selectedVersionId !== null && selected?.published_version_id === selectedVersionId;
 
+  const healthDotClass =
+    health === "ok"
+      ? "health-dot-ok"
+      : health === "degraded"
+        ? "health-dot-degraded"
+        : health === "unreachable"
+          ? "health-dot-unreachable"
+          : "";
+
   return (
-    <main className="layout">
-      <header className="header">
-        <h1>DataLinkRuntime</h1>
-        <Space size={12} align="center">
-          <span data-testid="control-status">{healthText}</span>
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="app-header-brand">
+          <h1 className="app-header-logo">DLR</h1>
+          <span className="app-header-product">DataLinkRuntime · 轻量数据适配运行平台</span>
+        </div>
+        <div className="app-header-status">
+          <span className="health-status">
+            <span className={`health-dot ${healthDotClass}`.trim()} />
+            <span data-testid="control-status">{healthText}</span>
+          </span>
           <WorkerStatus />
-        </Space>
+        </div>
       </header>
 
       {error && (
@@ -434,230 +536,155 @@ function AdapterConsole() {
         </p>
       )}
 
-      <div className="panels">
-        <AdapterList
+      <div className="console-body">
+        <AdapterCatalog
           adapters={adapters}
           selectedId={selected?.id ?? null}
           busy={busy}
           onSelect={handleSelectAdapter}
           onCreate={handleCreateAdapter}
+          latestSeqById={latestSeqById}
+          publishedSeqById={publishedSeqById}
         />
 
-        {selected === null ? (
-          <section className="detail-empty">请选择一个 Adapter 进行管理。</section>
-        ) : (
-          <section className="detail">
-            <div className="detail-header">
-              <h2>{selected.name}</h2>
-              {dirty && (
-                <Tag color="warning" data-testid="dirty-indicator">
-                  未保存修改
-                </Tag>
-              )}
-              <Button danger data-testid="delete-adapter" disabled={busy} onClick={() => void handleDelete()}>
-                删除
-              </Button>
-            </div>
-
-            <div className="metadata">
-              <Input
-                data-testid="adapter-name"
-                value={name}
-                disabled={busy}
-                onChange={(event) => setName(event.target.value)}
+        <main className="workbench">
+          {selected === null ? (
+            <div className="workbench-empty">请选择一个 Adapter 进行管理。</div>
+          ) : (
+            <section className="detail">
+              <WorkbenchHeader
+                adapter={selected}
+                versions={versions}
+                selectedVersionId={selectedVersionId}
+                selectedVersion={selectedVersion}
+                isLatest={isLatest}
+                isPublished={isPublished}
+                dirty={dirty}
+                busy={busy}
+                contentReady={contentReady}
+                onSelectVersion={(versionId) => void handleSelectVersion(versionId)}
+                onSave={() => void handleSaveVersion()}
+                onPublish={() => void handlePublish()}
+                onOpenSettings={() => setSettingsOpen(true)}
               />
-              <Input
-                data-testid="adapter-description"
-                placeholder="描述"
-                value={description}
-                disabled={busy}
-                onChange={(event) => setDescription(event.target.value)}
-              />
-              <Button
-                data-testid="update-details"
-                disabled={busy || !contentReady}
-                onClick={() => void handleUpdateDetails()}
-              >
-                更新信息
-              </Button>
-            </div>
 
-            <div className="version-controls">
-              <label>
-                版本{" "}
-                <select
-                  data-testid="version-selector"
-                  value={selectedVersionId ?? ""}
-                  disabled={busy || versions.length === 0}
-                  onChange={(event) => void handleSelectVersion(Number(event.target.value))}
-                >
-                  {versions.map((version) => (
-                    <option key={version.id} value={version.id}>
-                      v{version.seq}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {selectedVersion && <span data-testid="version-seq">v{selectedVersion.seq}</span>}
-              {isLatest && <Tag color="blue" data-testid="latest-badge">Latest</Tag>}
-              {isPublished && <Tag color="green" data-testid="published-badge">Published</Tag>}
-              <Button
-                data-testid="publish-version"
-                disabled={selectedVersionId === null || busy || !contentReady}
-                onClick={() => void handlePublish()}
-              >
-                发布
-              </Button>
-            </div>
-
-            <Tabs
-              className="workspace-tabs"
-              defaultActiveKey="edit"
-              items={[
-                {
-                  key: "edit",
-                  label: "编辑",
-                  children: (
-                    <div className="editor-pane">
-                      <Editor
-                        height="320px"
-                        defaultLanguage="python"
-                        value={snapshot.code}
-                        onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
-                        options={{ minimap: { enabled: false }, readOnly: busy || !contentReady }}
-                      />
-
-                      <div className="version-fields">
-                        <label>
-                          Requirements
-                          <textarea
-                            data-testid="requirements-input"
-                            rows={4}
-                            value={snapshot.requirements}
-                            disabled={busy || !contentReady}
-                            onChange={(event) =>
-                              setSnapshot((current) => ({ ...current, requirements: event.target.value }))
-                            }
+              <Tabs
+                className="workbench-tabs"
+                defaultActiveKey="edit"
+                items={[
+                  {
+                    key: "edit",
+                    label: "编辑",
+                    children: (
+                      <div className="editor-pane">
+                        <div className="editor-toolbar">
+                          <span className="editor-toolbar-label">编辑器主题</span>
+                          <Segmented
+                            size="small"
+                            data-testid="editor-theme-picker"
+                            value={themePreference}
+                            options={[
+                              { label: "深色", value: "dark" },
+                              { label: "浅色", value: "light" },
+                              { label: "跟随系统", value: "system" },
+                            ]}
+                            onChange={(value) => setThemePreference(value as EditorThemePreference)}
                           />
-                        </label>
-                        <label>
-                          Runtime config（JSON 对象）
-                          <textarea
-                            data-testid="runtime-config-input"
-                            rows={4}
-                            value={snapshot.runtimeConfigText}
-                            disabled={busy || !contentReady}
-                            onChange={(event) =>
-                              setSnapshot((current) => ({
-                                ...current,
-                                runtimeConfigText: event.target.value,
-                              }))
-                            }
+                        </div>
+                        <div className="editor-main" data-testid="editor-main" data-monaco-theme={editorTheme}>
+                          <Editor
+                            height="100%"
+                            theme={editorTheme}
+                            defaultLanguage="python"
+                            value={snapshot.code}
+                            onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
+                            options={{ minimap: { enabled: false }, readOnly: busy || !contentReady }}
                           />
-                        </label>
+                        </div>
+
+                        <div className="version-fields">
+                          <label>
+                            Requirements
+                            <textarea
+                              data-testid="requirements-input"
+                              rows={3}
+                              value={snapshot.requirements}
+                              disabled={busy || !contentReady}
+                              onChange={(event) =>
+                                setSnapshot((current) => ({ ...current, requirements: event.target.value }))
+                              }
+                            />
+                          </label>
+                          <label>
+                            Runtime config（JSON 对象）
+                            <textarea
+                              data-testid="runtime-config-input"
+                              rows={3}
+                              value={snapshot.runtimeConfigText}
+                              disabled={busy || !contentReady}
+                              onChange={(event) =>
+                                setSnapshot((current) => ({
+                                  ...current,
+                                  runtimeConfigText: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                        </div>
                       </div>
-
-                      <Button
-                        type="primary"
-                        data-testid="save-version"
-                        disabled={busy || !contentReady}
-                        onClick={() => void handleSaveVersion()}
-                      >
-                        保存新版本
-                      </Button>
-                    </div>
-                  ),
-                },
-                {
-                  key: "test",
-                  label: "测试运行",
-                  children: (
-                    <TestRunPanel
-                      key={selected.id}
-                      adapter={selected}
-                      selectedVersionId={selectedVersionId}
-                      selectedVersionSeq={selectedVersion?.seq ?? null}
-                      isLatest={isLatest}
-                      isPublished={isPublished}
-                      dirty={dirty}
-                      contentReady={contentReady}
-                      busy={busy}
-                      onError={setError}
-                    />
-                  ),
-                },
-                {
-                  key: "history",
-                  label: "执行记录",
-                  // antd Tabs render lazily: the history API is only called
-                  // after this tab is activated for the first time.
-                  children: <ExecutionHistoryPanel key={selected.id} adapterId={selected.id} />,
-                },
-              ]}
-            />
-          </section>
-        )}
+                    ),
+                  },
+                  {
+                    key: "test",
+                    label: "测试运行",
+                    children: (
+                      <TestRunPanel
+                        key={selected.id}
+                        adapter={selected}
+                        selectedVersionId={selectedVersionId}
+                        selectedVersionSeq={selectedVersion?.seq ?? null}
+                        isLatest={isLatest}
+                        isPublished={isPublished}
+                        dirty={dirty}
+                        contentReady={contentReady}
+                        busy={busy}
+                        onError={setError}
+                      />
+                    ),
+                  },
+                  {
+                    key: "history",
+                    label: "执行记录",
+                    // antd Tabs render lazily: the history API is only called
+                    // after this tab is activated for the first time.
+                    children: <ExecutionHistoryPanel key={selected.id} adapterId={selected.id} />,
+                  },
+                ]}
+              />
+            </section>
+          )}
+        </main>
       </div>
-    </main>
+
+      <AdapterSettingsDrawer
+        open={settingsOpen}
+        adapter={selected}
+        name={name}
+        description={description}
+        busy={busy}
+        contentReady={contentReady}
+        onClose={() => setSettingsOpen(false)}
+        onNameChange={setName}
+        onDescriptionChange={setDescription}
+        onUpdate={() => void handleUpdateDetails()}
+        onDelete={() => void handleDelete()}
+      />
+    </div>
   );
 }
 
-// Minimal admin token input shown while no valid token is present.
-function TokenLogin(props: { notice: string | null; onSubmit: (token: string) => Promise<void> }) {
-  const [token, setToken] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function handleSubmit() {
-    if (busy || !token.trim()) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await props.onSubmit(token.trim());
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main className="layout login-layout">
-      <header className="header">
-        <h1>DataLinkRuntime</h1>
-      </header>
-      <Card className="login-card" title="需要 Admin Token">
-        <Typography.Paragraph type="secondary">
-          请输入管理 Token 后进入控制台。Token 仅保存在当前浏览器会话中。
-        </Typography.Paragraph>
-        {props.notice && <p data-testid="auth-notice">{props.notice}</p>}
-        {error && (
-          <p className="error-banner" role="alert" data-testid="login-error">
-            {error}
-          </p>
-        )}
-        <Input.Password
-          data-testid="admin-token-input"
-          placeholder="Admin token"
-          value={token}
-          disabled={busy}
-          onChange={(event) => setToken(event.target.value)}
-        />
-        <Button
-          type="primary"
-          data-testid="admin-token-submit"
-          loading={busy}
-          disabled={busy || !token.trim()}
-          onClick={() => void handleSubmit()}
-        >
-          登录
-        </Button>
-      </Card>
-    </main>
-  );
-}
+// Minimal admin token input shown while no valid token is present;
+// the M3.1 login page keeps the M2 auth contract unchanged.
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(() => {
@@ -693,8 +720,8 @@ export default function App() {
   }
 
   return (
-    <ConfigProvider locale={zhCN}>
-      {authed ? <AdapterConsole /> : <TokenLogin notice={notice} onSubmit={handleLogin} />}
+    <ConfigProvider locale={zhCN} theme={{ token: { colorBgLayout: "#f5f6f8", borderRadius: 4 } }}>
+      {authed ? <AdapterConsole /> : <LoginPage notice={notice} onSubmit={handleLogin} />}
     </ConfigProvider>
   );
 }

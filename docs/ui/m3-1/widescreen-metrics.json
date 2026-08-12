@@ -1,0 +1,162 @@
+{
+  "login-1440": {
+    "innerWidth": 1440,
+    "innerHeight": 900,
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "header": null,
+    "catalog": null,
+    "workbench": null,
+    "monaco": null
+  },
+  "editor-1440": {
+    "innerWidth": 1440,
+    "innerHeight": 900,
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "header": {
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 49
+    },
+    "catalog": {
+      "x": 0,
+      "y": 49,
+      "w": 261,
+      "h": 851
+    },
+    "workbench": {
+      "x": 261,
+      "y": 49,
+      "w": 1179,
+      "h": 851
+    },
+    "monaco": {
+      "x": 278,
+      "y": 217,
+      "w": 1145,
+      "h": 572
+    }
+  },
+  "editor-1680": {
+    "innerWidth": 1680,
+    "innerHeight": 1050,
+    "scrollWidth": 1680,
+    "clientWidth": 1680,
+    "header": {
+      "x": 0,
+      "y": 0,
+      "w": 1680,
+      "h": 49
+    },
+    "catalog": {
+      "x": 0,
+      "y": 49,
+      "w": 261,
+      "h": 1001
+    },
+    "workbench": {
+      "x": 261,
+      "y": 49,
+      "w": 1419,
+      "h": 1001
+    },
+    "monaco": {
+      "x": 278,
+      "y": 217,
+      "w": 1385,
+      "h": 722
+    }
+  },
+  "editor-1920": {
+    "innerWidth": 1920,
+    "innerHeight": 1080,
+    "scrollWidth": 1920,
+    "clientWidth": 1920,
+    "header": {
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 49
+    },
+    "catalog": {
+      "x": 0,
+      "y": 49,
+      "w": 261,
+      "h": 1031
+    },
+    "workbench": {
+      "x": 261,
+      "y": 49,
+      "w": 1659,
+      "h": 1031
+    },
+    "monaco": {
+      "x": 278,
+      "y": 217,
+      "w": 1625,
+      "h": 752
+    }
+  },
+  "testrun-1440": {
+    "innerWidth": 1440,
+    "innerHeight": 900,
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "header": {
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 49
+    },
+    "catalog": {
+      "x": 0,
+      "y": 49,
+      "w": 261,
+      "h": 851
+    },
+    "workbench": {
+      "x": 261,
+      "y": 49,
+      "w": 1179,
+      "h": 851
+    },
+    "monaco": {
+      "x": 0,
+      "y": 0,
+      "w": 0,
+      "h": 0
+    }
+  },
+  "history-1440": {
+    "innerWidth": 1440,
+    "innerHeight": 900,
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "header": {
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 49
+    },
+    "catalog": {
+      "x": 0,
+      "y": 49,
+      "w": 261,
+      "h": 851
+    },
+    "workbench": {
+      "x": 261,
+      "y": 49,
+      "w": 1179,
+      "h": 851
+    },
+    "monaco": {
+      "x": 0,
+      "y": 0,
+      "w": 0,
+      "h": 0
+    }
+  }
+}

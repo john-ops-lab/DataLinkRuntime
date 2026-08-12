@@ -21,6 +21,7 @@ dist/
 .vscode/
 .qoder-cn/
 .qoder/specs/
+.wide-shots/
 
 # OS
 .DS_Store
