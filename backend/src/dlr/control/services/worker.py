@@ -29,12 +29,7 @@ def get_worker(session: Session, worker_id: int) -> Worker:
 
 
 def list_workers(session: Session) -> list[Worker]:
-    """All registered Workers, oldest registration first (M3 spec §10).
-
-    Status stays the raw stored value: M2 has no heartbeat-timeout
-    scheduler, so callers must combine it with ``last_heartbeat`` instead of
-    trusting ``online`` blindly.
-    """
+    """All registered Workers with stored state, oldest registration first."""
     return list(session.scalars(select(Worker).order_by(Worker.id.asc())).all())
 
 

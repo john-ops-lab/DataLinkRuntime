@@ -131,8 +131,8 @@ def test_progress_requires_owning_worker(api_client: TestClient) -> None:
 def test_progress_unclaimed_execution_conflicts(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="progress-unclaimed")
     save_version(api_client, adapter["id"])
-    execution = create_execution(api_client, adapter["id"])
     worker = register_worker(api_client, name="progress-unclaimed-worker")
+    execution = create_execution(api_client, adapter["id"])
 
     response = progress(api_client, worker["id"], execution["id"], stdout_chunk="early\n")
     assert response.status_code == 409, "a pending Execution has no owner yet"

@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     admin_token: str | None = Field(default=None, validation_alias="DLR_ADMIN_TOKEN")
     worker_token: str | None = Field(default=None, validation_alias="DLR_WORKER_TOKEN")
 
+    # M4.1 effective-online lease window. Worker rows keep their last
+    # self-reported stored status; Control derives current availability from
+    # that status plus heartbeat freshness instead of rewriting the row.
+    worker_heartbeat_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        allow_inf_nan=False,
+        validation_alias="DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS",
+    )
+
     # M3.2 Secret Store: deployment-level Master Key used to derive the
     # Fernet encryption key for credentials. Never persisted, never logged.
     # When unset, the credential APIs answer 503 instead of storing

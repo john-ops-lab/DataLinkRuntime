@@ -1859,7 +1859,12 @@ it("shows the worker badge by online presence, not by registration count", async
   ]);
   const { unmount } = render(<App />);
   fireEvent.click(await screen.findByTestId("worker-status"));
-  await screen.findAllByTestId("worker-item");
+  const [offlineItem] = await screen.findAllByTestId("worker-item");
+  expect(within(offlineItem).getByText("offline")).toBeTruthy();
+  expect(
+    screen.getByText("在线状态已结合最近心跳和超时阈值判定；最近心跳时间用于排障。"),
+  ).toBeTruthy();
+  expect(screen.queryByText(/平台不做心跳超时判定/)).toBeNull();
   expect(
     screen.getByTestId("worker-status").querySelector(".ant-badge-status-error"),
   ).toBeTruthy();
@@ -2474,7 +2479,17 @@ it("selects an explicit production Worker and keeps the retest gate visible afte
   fireEvent.mouseDown(selector.querySelector(".ant-select-selector") ?? selector);
   expect(await screen.findAllByText("在线")).toHaveLength(2);
   await screen.findByText("离线");
+  fireEvent.click(screen.getByText("worker-c"));
+  expect(screen.getByTestId("production-worker-offline").textContent).toContain(
+    "Worker worker-c 当前离线",
+  );
+  expect((screen.getByTestId("update-production-worker") as HTMLButtonElement).disabled).toBe(
+    false,
+  );
+
+  fireEvent.mouseDown(selector.querySelector(".ant-select-selector") ?? selector);
   fireEvent.click(screen.getByText("worker-b"));
+  expect(screen.queryByTestId("production-worker-offline")).toBeNull();
 
   expect(screen.getByTestId("production-worker-retest").textContent).toContain("需重新测试");
   fireEvent.click(screen.getByTestId("update-production-worker"));

@@ -51,11 +51,11 @@ def report(client: TestClient, worker_id: int, execution_id: int, payload: dict)
 def setup_claimed_execution(
     api_client: TestClient, adapter_name: str = "worker-basic"
 ) -> tuple[dict, dict, dict]:
-    """Create adapter + version + execution, register a worker and claim it."""
+    """Create an adapter/version, register its target Worker and claim the run."""
     adapter = create_adapter(api_client, name=adapter_name)
     save_version(api_client, adapter["id"], runtime_config={"stage": "s1"})
-    execution = create_execution(api_client, adapter["id"], {"input": {"n": 7}})
     worker = register_worker(api_client)
+    execution = create_execution(api_client, adapter["id"], {"input": {"n": 7}})
     response = claim(api_client, worker["id"])
     assert response.status_code == 200, response.text
     return worker, execution, response.json()
@@ -142,9 +142,9 @@ def test_claim_without_pending_task_returns_204(api_client: TestClient) -> None:
 def test_claim_serves_oldest_first(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="worker-order")
     save_version(api_client, adapter["id"])
+    worker = register_worker(api_client)
     first = create_execution(api_client, adapter["id"], {"input": 1})
     second = create_execution(api_client, adapter["id"], {"input": 2})
-    worker = register_worker(api_client)
 
     payload = claim(api_client, worker["id"]).json()
     assert payload["execution_id"] == first["id"]
@@ -158,9 +158,16 @@ def test_concurrent_claims_never_claim_same_execution_twice(
 ) -> None:
     adapter = create_adapter(api_client, name="worker-race")
     save_version(api_client, adapter["id"])
-    execution = create_execution(api_client, adapter["id"])
     w1 = register_worker(api_client, name="racer-1")
+    execution = create_execution(api_client, adapter["id"])
     w2 = register_worker(api_client, name="racer-2")
+    # New M4.1 Manual Tests always have a live target.  Clear it explicitly
+    # to model a historical NULL-target row and retain the any-Worker
+    # concurrent-claim regression coverage.
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        row.target_worker_id = None
 
     start = threading.Barrier(2)
     claimed: list[object] = []

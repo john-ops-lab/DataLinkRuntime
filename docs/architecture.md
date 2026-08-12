@@ -135,10 +135,30 @@ Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `publish
 | 字段 | 说明 |
 |------|------|
 | id / name | 身份与名称 |
-| status | `online / offline` |
+| status | Stored Status：Worker 在 register / heartbeat / graceful offline 时主动写入的 `online / offline` |
 | last_heartbeat | 心跳时间 |
 | capabilities | Worker 启动时检测并上报 `python / javascript / java` 子集 |
 | created_at / updated_at | 时间戳 |
+
+Control 不通过后台调度器把心跳过期记录的 Stored Status 改写为 `offline`。所有需要判断
+Worker 当前是否可用的 Control 路径共用一套派生语义：
+
+```text
+effective_online =
+    status == "online"
+    AND
+    now - last_heartbeat <= DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS
+```
+
+Worker 默认心跳间隔为 10 秒（`DLR_WORKER_HEARTBEAT_SECONDS`），Control 默认有效在线
+超时为 30 秒。超时值必须为正数且严格大于心跳间隔；部署方调整间隔时应同步调整超时，
+建议不少于间隔的约 3 倍。同一 HTTP 请求或业务操作使用一致的当前时间基准，恰好位于
+超时边界（`age <= timeout`）仍视为在线。
+
+Admin Worker API 的 `status` 返回 Effective Status，`last_heartbeat` 保持原值供排障；
+Test / Start 只选择有效在线且 capability 兼容的 Worker，Web 直接展示 API 状态而不使用
+浏览器时间重复计算。过期 Worker 后续 heartbeat 会更新 `last_heartbeat` 并自动恢复有效
+在线，不需要 Restore API、Worker lease 或后台 heartbeat scheduler。
 
 **不保存 token / token_hash**：共享 Worker Token 属于平台部署配置，不是领域数据。
 
@@ -250,8 +270,8 @@ Docker Compose 四容器（单机最小部署）：
 | 服务 | 镜像/构建 | 说明 |
 |------|-----------|------|
 | postgres | postgres:16-alpine | healthcheck：pg_isready |
-| control | backend 代码构建 | 依赖 postgres 健康；注入数据库连接串、DLR_ADMIN_TOKEN、DLR_WORKER_TOKEN、DLR_MASTER_KEY（M3.2 Secret Store，Compose 无默认值，必须显式配置） |
-| worker | backend 代码构建 | 注入 DLR_WORKER_TOKEN、control 地址、DLR_SECRET_* |
+| control | backend 代码构建 | 依赖 postgres 健康；注入数据库连接串、DLR_ADMIN_TOKEN、DLR_WORKER_TOKEN、DLR_MASTER_KEY（M3.2 Secret Store，Compose 无默认值，必须显式配置）、DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS（默认 30） |
+| worker | backend 代码构建 | 注入 DLR_WORKER_TOKEN、control 地址、DLR_WORKER_HEARTBEAT_SECONDS（默认 10）、DLR_SECRET_* |
 | web | 前端构建产物 + Nginx | 托管 SPA，反代 `/api` 到 control |
 
 AI Provider 是部署外部依赖，不加入正式 Compose 拓扑。`compose-smoke` 仅在隔离测试网络中
@@ -284,7 +304,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 
 技术选型：Python 3.13、uv、FastAPI、SQLAlchemy 2.x、Alembic、pytest、ruff、mypy；前端 React（不固定版本，实现时选与当前工具链兼容的稳定版）+ TypeScript + Vite，Monaco Editor 于 M1 引入。**各阶段只安装该阶段真正需要的依赖。**
 
-## 8. 里程碑（M0–M4）
+## 8. 里程碑（M0–M4.1）
 
 | 里程碑 | 内容 | 验收口径 |
 |--------|------|----------|
@@ -296,6 +316,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 | M3.2 Adapter 生产生命周期与运行配置闭环 | 生产 Worker / Publish 门禁 / Start / Stop(wait-terminate) / Execution 取消、target Worker 调度、归档与 Clone、Secret Store（Fernet + 凭据绑定，§2.3）、Python 包源（offline-first）、前端四层状态 / 发布确认 Diff / 系统设置 | 测试→门禁→发布→启动→实时日志→停止→cancelled/succeeded 全链通；绑定凭据只以摘要出现在 output；M1–M3.1 测试保持通过 |
 | M3.3 多语言 Runtime | Python / JavaScript / Java 合同、version-scoped venv/node_modules/classes、PyPI/npm/Maven 依赖源、Worker capability 硬调度、Web 语言体验 | 三语言分别真实完成 Save→Test→Publish→Start→succeeded，M3.2 生命周期零回归 |
 | M4 AI Editor | 单一全局模型配置、OpenAI-compatible Provider 薄适配、三语言上下文、完整 Candidate、Diff / Apply、stale 与 Adapter 切换防护 | 本地 fake Provider 完成设置→模型刷新→连接测试→三语言 Assist，且 Version / Execution / published / production 事实不变 |
+| M4.1 Worker 有效在线判定 | Stored Status 与基于心跳超时的 Effective Status 分离；API / Test / Start 共用有效在线语义 | 心跳新鲜时可用；超时后不创建 Test / Production Execution；恢复心跳后自动恢复在线 |
 
 ## 9. 未来演进（不在第一阶段）
 

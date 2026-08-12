@@ -138,6 +138,132 @@ wrong_token_status=$(curl -s -o /dev/null -w '%{http_code}' \
 [ "$wrong_token_status" = "401" ] || { echo "ERROR: worker token must not access admin API, got $wrong_token_status" >&2; exit 1; }
 echo "auth 401 checks ok"
 
+echo "==> running M4.1 stale Worker effective-online smoke"
+# Register a synthetic Worker with no backing Agent, then backdate its heartbeat
+# directly in PostgreSQL. This proves the timeout contract without shortening the
+# deployment timeout or sleeping through a real heartbeat interval.
+docker compose exec -T -e DLR_ADMIN_TOKEN -e DLR_WORKER_TOKEN control python - <<'PY'
+import json
+import os
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
+
+from dlr.common.config import settings
+from dlr.control.db import SessionLocal
+from dlr.control.models import Execution, Worker
+
+BASE = "http://web/api"
+ADMIN_TOKEN = os.environ["DLR_ADMIN_TOKEN"]
+WORKER_TOKEN = os.environ["DLR_WORKER_TOKEN"]
+
+
+def request(method, path, payload=None, expected=200, token=ADMIN_TOKEN):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status = response.status
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        status = error.code
+        raw = error.read()
+    body = json.loads(raw) if raw else None
+    assert status == expected, f"{method} {path}: expected {expected}, got {status}: {body}"
+    return body
+
+
+def check(condition, message):
+    assert condition, message
+
+
+worker = request(
+    "POST",
+    "/workers/register",
+    {"name": "smoke-m41-stale-worker", "capabilities": ["python"]},
+    token=WORKER_TOKEN,
+)
+worker_id = worker["id"]
+
+with SessionLocal.begin() as session:
+    stored_worker = session.get(Worker, worker_id)
+    check(stored_worker is not None, "synthetic Worker must be persisted")
+    database_now = session.scalar(select(func.clock_timestamp()))
+    check(isinstance(database_now, datetime), "database must return a current timestamp")
+    stored_worker.status = "online"
+    stored_worker.last_heartbeat = database_now - timedelta(
+        seconds=settings.worker_heartbeat_timeout_seconds + 1
+    )
+
+workers = request("GET", "/workers")
+effective_worker = next(item for item in workers if item["id"] == worker_id)
+check(
+    effective_worker["status"] == "offline",
+    f"stale stored-online Worker must be exposed as offline, got {effective_worker}",
+)
+
+with SessionLocal() as session:
+    stored_worker = session.get(Worker, worker_id)
+    check(stored_worker is not None, "synthetic Worker must still exist")
+    check(
+        stored_worker.status == "online",
+        "effective status serialization must not rewrite the stored Worker status",
+    )
+
+adapter = request(
+    "POST",
+    "/adapters",
+    {"name": "smoke-m41-stale-adapter", "language": "python"},
+    expected=201,
+)
+adapter_id = adapter["id"]
+version = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {
+        "code": "def handle(context, input):\n    return input\n",
+        "requirements": "",
+        "runtime_config": {"stage": "m4.1-smoke"},
+    },
+    expected=201,
+)
+configured = request(
+    "PATCH",
+    f"/adapters/{adapter_id}",
+    {"production_worker_id": worker_id},
+)
+check(
+    configured["production_worker_id"] == worker_id,
+    "an effective-offline compatible Worker must remain configurable",
+)
+
+blocked = request(
+    "POST",
+    f"/adapters/{adapter_id}/executions",
+    {"version_id": version["id"], "input": {"smoke": "m4.1"}},
+    expected=409,
+)
+check(
+    blocked["detail"]["code"] == "worker_offline",
+    f"stale configured Worker must block Manual Test with worker_offline, got {blocked}",
+)
+history = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+check(history["items"] == [], "blocked Manual Test must not create execution history")
+
+with SessionLocal() as session:
+    execution_count = session.scalar(
+        select(func.count(Execution.id)).where(Execution.adapter_id == adapter_id)
+    )
+    check(execution_count == 0, "blocked Manual Test must not persist an Execution")
+
+print("M4.1 stale Worker effective-online smoke passed")
+PY
+
 echo "==> running M1 adapter management chain (via web/nginx, real PostgreSQL)"
 # Uses the Python standard library inside the control container, so the host
 # needs no extra tooling (no jq, no extra python packages).

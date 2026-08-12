@@ -5,9 +5,22 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import WORKER_TOKEN
 from dlr.common.config import settings
 from dlr.control.models import Execution
 from test_adapters import create_adapter, save_version
+
+WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
+
+
+def register_worker(client: TestClient, name: str = "execution-worker") -> dict:
+    response = client.post(
+        "/api/workers/register",
+        json={"name": name, "capabilities": ["python"]},
+        headers=WORKER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def create_execution(client: TestClient, adapter_id: int, payload: dict | None = None) -> dict:
@@ -20,6 +33,7 @@ def test_create_execution_binds_latest_version(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="exec-latest")
     v1 = save_version(api_client, adapter["id"], code="# v1\n")
     v2 = save_version(api_client, adapter["id"], code="# v2\n")
+    worker = register_worker(api_client)
 
     execution = create_execution(api_client, adapter["id"], {"input": {"k": 1}})
     assert execution["status"] == "pending"
@@ -27,6 +41,7 @@ def test_create_execution_binds_latest_version(api_client: TestClient) -> None:
     assert execution["version_id"] == v2["id"], "manual execution defaults to latest"
     assert execution["adapter_id"] == adapter["id"]
     assert execution["input"] == {"k": 1}
+    assert execution["target_worker_id"] == worker["id"]
     assert execution["worker_id"] is None
     assert execution["started_at"] is None
     assert execution["ended_at"] is None
@@ -42,6 +57,7 @@ def test_create_execution_explicit_historical_version(api_client: TestClient) ->
     adapter = create_adapter(api_client, name="exec-history")
     v1 = save_version(api_client, adapter["id"], code="# v1\n")
     save_version(api_client, adapter["id"], code="# v2\n")
+    register_worker(api_client)
 
     execution = create_execution(api_client, adapter["id"], {"version_id": v1["id"], "input": None})
     assert execution["version_id"] == v1["id"]
@@ -95,6 +111,7 @@ def test_create_execution_input_too_large_not_persisted(
         assert rows == [], "oversized input must never be persisted"
 
     # A fitting input still works after the rejection.
+    register_worker(api_client)
     ok = create_execution(api_client, adapter["id"], {"input": "small"})
     assert ok["input"] == "small"
 
@@ -110,6 +127,7 @@ def test_delete_adapter_with_executions_conflicts(
 ) -> None:
     adapter = create_adapter(api_client, name="exec-protected")
     save_version(api_client, adapter["id"])
+    register_worker(api_client)
     create_execution(api_client, adapter["id"])
 
     response = api_client.delete(f"/api/adapters/{adapter['id']}")
@@ -153,6 +171,7 @@ def test_history_lists_newest_first_and_isolates_adapters(api_client: TestClient
     save_version(api_client, adapter["id"])
     other = create_adapter(api_client, name="hist-other")
     save_version(api_client, other["id"])
+    register_worker(api_client)
     ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(3)]
     create_execution(api_client, other["id"])
 
@@ -167,6 +186,7 @@ def test_history_lists_newest_first_and_isolates_adapters(api_client: TestClient
 def test_history_summaries_never_carry_big_fields(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="hist-summary")
     save_version(api_client, adapter["id"])
+    register_worker(api_client)
     create_execution(api_client, adapter["id"], {"input": {"secret": "payload"}})
 
     page = api_client.get(f"/api/adapters/{adapter['id']}/executions").json()
@@ -183,6 +203,7 @@ def test_history_summaries_never_carry_big_fields(api_client: TestClient) -> Non
 def test_history_before_id_cursor_walks_all_pages(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="hist-cursor")
     save_version(api_client, adapter["id"])
+    register_worker(api_client)
     ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(5)]
 
     first = api_client.get(f"/api/adapters/{adapter['id']}/executions", params={"limit": 2}).json()
@@ -207,6 +228,7 @@ def test_history_before_id_cursor_walks_all_pages(api_client: TestClient) -> Non
 def test_history_limit_is_clamped(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="hist-limit")
     save_version(api_client, adapter["id"])
+    register_worker(api_client)
     ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(3)]
 
     small = api_client.get(f"/api/adapters/{adapter['id']}/executions", params={"limit": 0}).json()

@@ -49,8 +49,9 @@ def _set_fields(
 def test_cancel_pending_is_immediate_and_idempotent(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="cancel-pending")
     save_version(api_client, adapter["id"])
+    worker = register_worker(api_client)
     execution = create_execution(api_client, adapter["id"])
-    assert execution["target_worker_id"] is None
+    assert execution["target_worker_id"] == worker["id"]
     assert execution["cancel_requested"] is False
 
     response = cancel(api_client, execution["id"])
@@ -66,7 +67,6 @@ def test_cancel_pending_is_immediate_and_idempotent(api_client: TestClient) -> N
     assert again.json()["ended_at"] == body["ended_at"], "terminal state never changes"
 
     # A cancelled Execution can never be claimed again.
-    worker = register_worker(api_client)
     assert claim(api_client, worker["id"]).status_code == 204
 
 
@@ -133,10 +133,10 @@ def test_claim_respects_target_worker(
 ) -> None:
     adapter = create_adapter(api_client, name="claim-target")
     save_version(api_client, adapter["id"])
-    execution = create_execution(api_client, adapter["id"])
     target = register_worker(api_client, name="claim-target-worker")
+    execution = create_execution(api_client, adapter["id"])
     other = register_worker(api_client, name="claim-other-worker")
-    _set_fields(session_factory, execution["id"], target_worker_id=target["id"])
+    assert execution["target_worker_id"] == target["id"]
 
     assert claim(api_client, other["id"]).status_code == 204, (
         "a non-target Worker must never claim a targeted Execution"
@@ -151,11 +151,11 @@ def test_claim_skips_cancel_requested_pending(
 ) -> None:
     adapter = create_adapter(api_client, name="claim-cancel-skip")
     save_version(api_client, adapter["id"])
+    worker = register_worker(api_client)
     first = create_execution(api_client, adapter["id"])
     second = create_execution(api_client, adapter["id"])
     _set_fields(session_factory, first["id"], cancel_requested=True)
 
-    worker = register_worker(api_client)
     payload = claim(api_client, worker["id"]).json()
     assert payload["execution_id"] == second["id"], (
         "Executions flagged for cancellation are never claimed"
