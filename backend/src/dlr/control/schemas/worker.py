@@ -74,3 +74,7 @@ class TaskPayload(BaseModel):
     published_version_id: int | None
     execution_timeout_seconds: int
     secrets: dict[str, str] = Field(default_factory=dict)
+    # M3.2: default package source index URL resolved at claim time (basic
+    # auth embedded); None means the Worker falls back to its own
+    # DLR_PYPI_INDEX_URL compatibility configuration.
+    index_url: str | None = None

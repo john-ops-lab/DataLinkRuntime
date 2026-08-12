@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from dlr.common.config import settings
 from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
 from dlr.control.schemas.worker import TaskPayload, WorkerRegister
+from dlr.control.services import package_source as package_source_service
 from dlr.control.services import secrets as secrets_service
 from dlr.control.services.adapter import domain_error
 
@@ -75,7 +76,8 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
 
     M3.2: bound credential fields are decrypted here at claim time and travel
     inside the payload as ``secrets`` — an Execution only ever receives the
-    secrets its own Adapter bound.
+    secrets its own Adapter bound. The platform default package source index
+    URL travels as ``index_url``.
     """
     version = session.get(AdapterVersion, execution.version_id)
     adapter = session.get(Adapter, execution.adapter_id)
@@ -95,6 +97,7 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
         published_version_id=adapter.published_version_id,
         execution_timeout_seconds=settings.execution_timeout_seconds,
         secrets=secrets_service.resolve_adapter_secrets(session, execution.adapter_id),
+        index_url=package_source_service.resolve_default_index_url(session),
     )
 
 

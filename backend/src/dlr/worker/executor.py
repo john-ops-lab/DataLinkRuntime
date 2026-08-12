@@ -376,6 +376,11 @@ def run(
     }
     secret_values = _env_secret_values() + [value for value in payload_secrets.values() if value]
 
+    # M3.2: the platform default package source (resolved by Control at claim
+    # time) wins; the Worker's DLR_PYPI_INDEX_URL stays the compatibility
+    # fallback. Test runs and production runs share this exact strategy.
+    index_url = payload.get("index_url") or config.pypi_index_url
+
     try:
         python_path = venv_manager.prepare_version_venv(
             config.runtime_root,
@@ -383,7 +388,7 @@ def run(
             version_id,
             str(payload.get("requirements") or ""),
             timeout_seconds=config.dep_install_timeout_seconds,
-            index_url=config.pypi_index_url,
+            index_url=index_url,
         )
     except venv_manager.DependencyPreparationError as error:
         stderr, stderr_truncated = _cap_stream(error.install_log.encode())

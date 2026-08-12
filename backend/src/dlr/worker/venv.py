@@ -5,6 +5,12 @@ with ``uv venv`` + ``uv pip install``. A ``.ready`` marker is written only
 after dependencies are fully prepared; an incomplete directory is removed
 and rebuilt. Within one Worker, concurrent first runs of the same Version
 share a lightweight in-process lock.
+
+M3.2 dependency strategy (identical for test runs and production runs):
+a ``.ready`` venv passes without any network; otherwise installation tries
+the local ``uv`` cache offline first, falls back to the configured package
+source index URL, and fails with an explicit operator-facing message when
+neither is available.
 """
 
 import logging
@@ -177,7 +183,7 @@ def prepare_version_venv(
         try:
             install_log += _run_logged(["uv", "venv", str(directory / ".venv")], timeout_seconds)
             if requirements.strip():
-                command = [
+                base_command = [
                     "uv",
                     "pip",
                     "install",
@@ -186,9 +192,26 @@ def prepare_version_venv(
                     "-r",
                     str(directory / "requirements.txt"),
                 ]
-                if index_url:
-                    command.extend(["--index-url", index_url])
-                install_log += _run_logged(command, timeout_seconds)
+                # Offline-first: a warm local cache must not need any network.
+                try:
+                    install_log += _run_logged(base_command + ["--offline"], timeout_seconds)
+                except DependencyPreparationError as offline_error:
+                    if not index_url:
+                        raise DependencyPreparationError(
+                            "dependencies are not available from the local cache and no "
+                            "package source is configured; ask the platform admin to add "
+                            "a package source in System Settings (or set DLR_PYPI_INDEX_URL "
+                            "on the Worker)",
+                            offline_error.install_log,
+                        ) from offline_error
+                    install_log += offline_error.install_log
+                    install_log += (
+                        "\n[offline cache insufficient; retrying with the configured "
+                        "package source]\n"
+                    )
+                    install_log += _run_logged(
+                        base_command + ["--index-url", index_url], timeout_seconds
+                    )
         except DependencyPreparationError:
             # Leave no half-built venv behind; next attempt rebuilds cleanly.
             shutil.rmtree(directory, ignore_errors=True)
