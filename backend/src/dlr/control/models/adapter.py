@@ -6,6 +6,15 @@ M1 contracts kept by these models:
 - AdapterVersion rows are immutable snapshots; no Draft entity exists.
 - ``latest_version_id`` / ``published_version_id`` must only be changed by the
   domain service, never by public API input.
+
+M3.2 lifecycle fields:
+
+- ``production_worker_id`` is deployment configuration, never part of a
+  Version; changing it does not create a new Version.
+- ``production_state`` models the production entry (open/closed), not the
+  existence of a running subprocess.
+- ``archived_at`` is the minimal archive marker; archived Adapters keep all
+  Versions and Executions.
 """
 
 from datetime import datetime
@@ -33,6 +42,12 @@ class Adapter(Base):
     """Logical management object of an Adapter."""
 
     __tablename__ = "adapters"
+    __table_args__ = (
+        CheckConstraint(
+            "production_state IN ('idle', 'running', 'stopped')",
+            name="ck_adapters_production_state",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
@@ -53,6 +68,19 @@ class Adapter(Base):
         ForeignKey("adapter_versions.id", use_alter=True, name="fk_adapters_published_version_id"),
         nullable=True,
     )
+    # The Worker that runs tests and production executions of this Adapter.
+    production_worker_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("workers.id", ondelete="SET NULL", name="fk_adapters_production_worker_id"),
+        nullable=True,
+    )
+    # Production entry state: idle (never started / entry closed with no
+    # history), running (entry open), stopped (explicitly stopped).
+    production_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="idle", server_default=text("'idle'")
+    )
+    # Archive marker; NULL means the Adapter is active.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

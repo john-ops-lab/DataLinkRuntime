@@ -194,10 +194,11 @@ class Agent:
             task["version_id"],
         )
 
-        def progress_callback(stdout_chunk: str, stderr_chunk: str) -> None:
-            # Best effort: the executor swallows any exception raised here,
-            # and Control answers 204 no-op once the Execution is terminal.
-            self._client.report_progress(worker_id, execution_id, stdout_chunk, stderr_chunk)
+        def progress_callback(stdout_chunk: str, stderr_chunk: str) -> bool:
+            # Best effort: the executor swallows any exception raised here.
+            # Control answers the cancel flag on every upload (M3.2), and
+            # empty uploads double as the cancel poll.
+            return self._client.report_progress(worker_id, execution_id, stdout_chunk, stderr_chunk)
 
         try:
             result = executor.run(

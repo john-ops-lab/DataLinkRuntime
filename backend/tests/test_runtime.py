@@ -316,6 +316,7 @@ def test_dependency_install_log_redacts_sensitive_patterns(
         "Bearer abc123token was rejected\n"
         "token=should-be-hidden\n"
         "postgresql+psycopg://user:pass@host/db leaked\n"
+        "https://uri-user:uri-password@mirror.example.com/simple/ failed\n"
         "secret value: smoke-secret-value\n"
     )
     redacted = venv_manager._redact_sensitive(text)
@@ -323,6 +324,9 @@ def test_dependency_install_log_redacts_sensitive_patterns(
     assert "Bearer [REDACTED]" in redacted
     assert "should-be-hidden" not in redacted
     assert "user:pass@host" not in redacted
+    assert "uri-user" not in redacted
+    assert "uri-password" not in redacted
+    assert "https://[REDACTED]@mirror.example.com/simple/" in redacted
     assert "smoke-secret-value" not in redacted
     assert "[REDACTED]" in redacted
 
@@ -475,6 +479,32 @@ def test_secret_holdback_redacts_across_chunk_boundaries(
     )
     assert "[REDACTED]" in delivered
     assert "lead" in delivered and "tail" in delivered, "surrounding text must not be lost"
+
+
+def test_secret_holdback_releases_stale_tail_after_grace_period() -> None:
+    guard = executor._SecretHoldback(["supersecretvalue"])
+    guard.HOLD_MAX_SECONDS = 0.05
+    first = guard.push("production step 1: starting\n")
+    assert guard.push("") == "", "inside the grace window the tail stays held"
+    time.sleep(0.06)
+    released = guard.push("")
+    assert first + released == "production step 1: starting\n", (
+        "a silent subprocess must not stall the live log behind the held tail"
+    )
+    assert guard.flush() == ""
+
+
+def test_secret_holdback_keeps_secret_prefix_tail_past_grace_period() -> None:
+    guard = executor._SecretHoldback(["abcdef123456"])
+    guard.HOLD_MAX_SECONDS = 0.05
+    guard.push("lead\nabcdef")  # held tail ends with a Secret prefix
+    time.sleep(0.06)
+    assert guard.push("") == "", (
+        "a tail that could still complete a split Secret stays held to the end"
+    )
+    delivered = guard.push("123456 tail\n") + guard.flush()
+    assert "abcdef123456" not in delivered
+    assert "[REDACTED]" in delivered and "tail" in delivered
 
 
 def test_executor_progress_redacts_secret_split_across_polls(
@@ -634,7 +664,7 @@ def test_blocking_progress_callback_cannot_delay_the_deadline(
 
     started = time.monotonic()
     try:
-        returncode, timed_out = executor._wait_with_progress(
+        returncode, timed_out, cancelled = executor._wait_with_progress(
             process,
             stdout_path,
             stderr_path,
@@ -648,6 +678,7 @@ def test_blocking_progress_callback_cannot_delay_the_deadline(
     elapsed = time.monotonic() - started
 
     assert timed_out is True
+    assert cancelled is False
     assert returncode == -1
     # 1s deadline plus the bounded final-drain wait (PROGRESS_DRAIN_SECONDS)
     # plus small tolerance; a synchronous callback would hang forever.

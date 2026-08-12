@@ -29,8 +29,13 @@ TEST_DATABASE = "dlr_test"
 ADMIN_TOKEN = "test-admin-token"
 WORKER_TOKEN = "test-worker-token"
 
+# M3.2: a test Master Key keeps the Secret Store available by default;
+# individual tests monkeypatch it to None to exercise the 503 contract.
+TEST_MASTER_KEY = "test-master-key"
+
 settings.admin_token = ADMIN_TOKEN
 settings.worker_token = WORKER_TOKEN
+settings.master_key = TEST_MASTER_KEY
 
 
 def _base_url() -> URL:
@@ -79,7 +84,8 @@ def _truncate(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE adapters, adapter_versions, workers, executions "
+                "TRUNCATE TABLE adapters, adapter_versions, workers, executions, "
+                "credentials, adapter_credential_bindings, package_sources "
                 "RESTART IDENTITY CASCADE"
             )
         )

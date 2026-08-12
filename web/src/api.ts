@@ -2,8 +2,14 @@
 
 import type {
   Adapter,
+  Credential,
+  CredentialBinding,
+  CredentialType,
   Execution,
   ExecutionHistoryPage,
+  PackageSource,
+  PublishGate,
+  ReachabilityResult,
   VersionDetail,
   VersionSummary,
   Worker,
@@ -106,7 +112,7 @@ export const api = {
 
   updateAdapter: (
     adapterId: number,
-    payload: { name?: string; description?: string },
+    payload: { name?: string; description?: string; production_worker_id?: number | null },
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}`, { method: "PATCH", body: JSON.stringify(payload) }),
 
@@ -130,6 +136,40 @@ export const api = {
 
   publishVersion: (adapterId: number, versionId: number): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}/versions/${versionId}/publish`, { method: "POST" }),
+
+  // --- M3.2: production lifecycle -------------------------------------------
+
+  /** Read-only publish gate evaluation for the Publish confirmation dialog. */
+  getPublishGate: (adapterId: number, versionId: number): Promise<PublishGate> =>
+    request(`/api/adapters/${adapterId}/versions/${versionId}/publish-gate`),
+
+  /** Open the production entry; returns the created pending Execution. */
+  startProduction: (adapterId: number): Promise<Execution> =>
+    request(`/api/adapters/${adapterId}/production/start`, { method: "POST" }),
+
+  /** Close the production entry; ``terminate`` also cancels the active run. */
+  stopProduction: (adapterId: number, mode: "wait" | "terminate"): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/production/stop`, {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    }),
+
+  /** Clear the published pointer; requires production to be stopped. */
+  unpublishAdapter: (adapterId: number): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/unpublish`, { method: "POST" }),
+
+  archiveAdapter: (adapterId: number): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/archive`, { method: "POST" }),
+
+  restoreAdapter: (adapterId: number): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/restore`, { method: "POST" }),
+
+  /** Copy the Adapter: working copy becomes v1, unpublished and not running. */
+  cloneAdapter: (
+    adapterId: number,
+    payload: { name: string; description?: string },
+  ): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/clone`, { method: "POST", body: JSON.stringify(payload) }),
 
   // --- M3: executions, history and workers ---------------------------------
 
@@ -158,4 +198,67 @@ export const api = {
   },
 
   listWorkers: (): Promise<Worker[]> => request("/api/workers"),
+
+  // --- M3.2: Secret Store credentials and bindings ---------------------------
+
+  listCredentials: (): Promise<Credential[]> => request("/api/credentials"),
+
+  createCredential: (payload: {
+    name: string;
+    type: CredentialType;
+    fields: Record<string, string>;
+  }): Promise<Credential> =>
+    request("/api/credentials", { method: "POST", body: JSON.stringify(payload) }),
+
+  updateCredential: (
+    credentialId: number,
+    payload: { name?: string; fields?: Record<string, string> },
+  ): Promise<Credential> =>
+    request(`/api/credentials/${credentialId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+
+  deleteCredential: (credentialId: number): Promise<void> =>
+    request(`/api/credentials/${credentialId}`, { method: "DELETE" }),
+
+  listAdapterBindings: (adapterId: number): Promise<CredentialBinding[]> =>
+    request(`/api/adapters/${adapterId}/credential-bindings`),
+
+  /** Full replacement: the submitted list becomes the complete binding set. */
+  setAdapterBindings: (
+    adapterId: number,
+    bindings: { env_key: string; credential_id: number; field: string }[],
+  ): Promise<CredentialBinding[]> =>
+    request(`/api/adapters/${adapterId}/credential-bindings`, {
+      method: "PUT",
+      body: JSON.stringify({ bindings }),
+    }),
+
+  // --- M3.2: Python package sources -------------------------------------------
+
+  listPackageSources: (): Promise<PackageSource[]> => request("/api/package-sources"),
+
+  createPackageSource: (payload: {
+    name: string;
+    index_url: string;
+    is_default: boolean;
+    credential_id: number | null;
+  }): Promise<PackageSource> =>
+    request("/api/package-sources", { method: "POST", body: JSON.stringify(payload) }),
+
+  updatePackageSource: (
+    sourceId: number,
+    payload: {
+      name?: string;
+      index_url?: string;
+      is_default?: boolean;
+      credential_id?: number | null;
+    },
+  ): Promise<PackageSource> =>
+    request(`/api/package-sources/${sourceId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+
+  deletePackageSource: (sourceId: number): Promise<void> =>
+    request(`/api/package-sources/${sourceId}`, { method: "DELETE" }),
+
+  /** Control-side reachability probe against the saved source's index URL. */
+  testPackageSource: (sourceId: number): Promise<ReachabilityResult> =>
+    request(`/api/package-sources/${sourceId}/test`, { method: "POST" }),
 };

@@ -1,0 +1,122 @@
+"""M3.2 platform configuration entities: credentials, bindings, sources.
+
+Secret Store contract:
+
+- ``Credential.ciphertext`` holds only Fernet ciphertext; plaintext secret
+  values are never persisted and never returned by the API after creation.
+- ``AdapterCredentialBinding`` maps one Adapter environment key
+  (``context.secrets.get(env_key)``) to one field of one credential.
+- ``PackageSource`` is the platform-managed pip index configuration used by
+  Workers when preparing version dependencies.
+"""
+
+from datetime import datetime
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Identity,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from dlr.control.db import Base
+
+# Fields each credential type exposes to bindings.
+CREDENTIAL_FIELDS: dict[str, tuple[str, ...]] = {
+    "password": ("username", "password"),
+    "token": ("token",),
+    "access_key": ("access_key", "secret_key"),
+    "secret": ("value",),
+}
+
+
+class Credential(Base):
+    """One named business secret (encrypted at rest with the Master Key)."""
+
+    __tablename__ = "credentials"
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('password', 'token', 'access_key', 'secret')",
+            name="ck_credentials_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AdapterCredentialBinding(Base):
+    """Maps ``env_key`` on one Adapter to one field of one Credential."""
+
+    __tablename__ = "adapter_credential_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "adapter_id", "env_key", name="uq_adapter_credential_bindings_adapter_env_key"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    adapter_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("adapters.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    env_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    credential_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("credentials.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    field: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class PackageSource(Base):
+    """One platform-managed Python package index (pip source)."""
+
+    __tablename__ = "package_sources"
+    __table_args__ = (
+        # At most one default source.
+        Index(
+            "uq_package_sources_default",
+            "is_default",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    index_url: Mapped[str] = mapped_column(Text, nullable=False)
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Optional credential reference for authenticated indexes.
+    credential_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("credentials.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

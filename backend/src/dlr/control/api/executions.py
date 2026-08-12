@@ -38,6 +38,19 @@ def get_execution(execution_id: int, session: DbSession) -> ExecutionResponse:
     return ExecutionResponse.model_validate(execution_service.get_execution(session, execution_id))
 
 
+@router.post("/api/executions/{execution_id}/cancel", response_model=ExecutionResponse)
+def cancel_execution(execution_id: int, session: DbSession) -> ExecutionResponse:
+    """Request cancellation (M3.2).
+
+    Idempotent: pending becomes cancelled immediately, running gets the
+    cancel flag the owning Worker picks up on its next progress upload,
+    and terminal Executions are returned unchanged.
+    """
+    return ExecutionResponse.model_validate(
+        execution_service.cancel_execution(session, execution_id)
+    )
+
+
 @router.get(
     "/api/adapters/{adapter_id}/executions",
     response_model=ExecutionHistoryPage,

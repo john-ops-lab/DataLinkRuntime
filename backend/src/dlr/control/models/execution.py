@@ -9,6 +9,16 @@ M2 contracts kept by these models:
   answers 409 ``adapter_has_executions`` instead of deleting.
 - Workers carry no credentials; the platform-wide Worker token lives only
   in the Control configuration.
+
+M3.2 scheduling and lifecycle fields:
+
+- ``target_worker_id`` is the desired Worker; ``worker_id`` stays the
+  Worker that actually claimed and runs the Execution.
+- ``trigger`` distinguishes test runs (``manual``; the documented
+  compatibility reading of historical rows) from production runs
+  (``production``).
+- The partial unique index guarantees at most one active Production
+  Execution per Adapter at the database level.
 """
 
 from datetime import datetime
@@ -64,10 +74,17 @@ class Execution(Base):
             "status IN ('pending', 'running', 'succeeded', 'failed', 'timeout', 'cancelled')",
             name="ck_executions_status",
         ),
-        # M2 only creates manual executions; the value space stays open.
-        CheckConstraint("trigger IN ('manual')", name="ck_executions_trigger"),
+        # manual = test run (and historical rows); production = Start.
+        CheckConstraint("trigger IN ('manual', 'production')", name="ck_executions_trigger"),
         # Supports the claim query: pending rows ordered by (created_at, id).
         Index("ix_executions_claim", "status", "created_at", "id"),
+        # One active Production Execution per Adapter, enforced by the DB.
+        Index(
+            "uq_executions_active_production",
+            "adapter_id",
+            unique=True,
+            postgresql_where=text("trigger = 'production' AND status IN ('pending', 'running')"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -89,9 +106,22 @@ class Execution(Base):
         ForeignKey("workers.id", ondelete="RESTRICT"),
         nullable=True,
     )
+    # Desired Worker; only this Worker may claim the Execution. NULL keeps
+    # the legacy compatibility path where any Worker may claim.
+    target_worker_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("workers.id", ondelete="SET NULL", name="fk_executions_target_worker_id"),
+        nullable=True,
+        index=True,
+    )
     trigger: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    # Set by an admin cancel request; the Worker observes it through the
+    # progress response and terminates the subprocess.
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
     )
     # Any JSON value is valid input, including JSON null.
     input: Mapped[object] = mapped_column(JSONB, nullable=False)

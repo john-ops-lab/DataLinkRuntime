@@ -23,6 +23,11 @@ services:
       # never hardcoded here (see .env.example).
       DLR_ADMIN_TOKEN: ${DLR_ADMIN_TOKEN:?set DLR_ADMIN_TOKEN (see .env.example)}
       DLR_WORKER_TOKEN: ${DLR_WORKER_TOKEN:?set DLR_WORKER_TOKEN (see .env.example)}
+      # M3.2 Secret Store master key: derives the Fernet key for credential
+      # encryption. Only Control decrypts (at claim time); never persisted.
+      # Empty by default: credential APIs stay disabled (503) until the
+      # operator explicitly configures a deployment-specific key.
+      DLR_MASTER_KEY: ${DLR_MASTER_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

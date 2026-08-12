@@ -11,10 +11,11 @@
 
 前置条件：Docker（含 Compose v2）。
 
-M2 起 Control / Worker 需要静态 Token，Compose 不再内置任何可用凭据：
+M2 起 Control / Worker 需要静态 Token；M3.2 的 Secret Store 还需要部署级
+`DLR_MASTER_KEY`。Compose 不为这些值内置任何可用默认值：
 
 ```bash
-cp .env.example .env   # 修改其中的 DLR_ADMIN_TOKEN / DLR_WORKER_TOKEN 等占位值
+cp .env.example .env   # 修改 DLR_ADMIN_TOKEN / DLR_WORKER_TOKEN / DLR_MASTER_KEY 等占位值
 docker compose up -d --build
 ```
 

@@ -4,11 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Tabs, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
-import { FALLBACK_POLICY } from "../fallback-policy";
+import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
-import { openExecutionEvents } from "../sse";
-import type { ExecutionEventsHandle } from "../sse";
-import type { Adapter, Execution } from "../types";
+import type { Adapter } from "../types";
 import { LogView, OutputView } from "./OutputView";
 
 interface TestRunPanelProps {
@@ -21,10 +19,11 @@ interface TestRunPanelProps {
   contentReady: boolean;
   busy: boolean;
   onError: (message: string) => void;
+  onPublishedVersionTestSucceeded: (adapterId: number) => void;
 }
 
 // After any abnormal SSE end, converge on the authoritative M2 result with
-// bounded GET polling; the policy lives in fallback-policy.ts (testable).
+// bounded GET polling; the shared behavior lives in useExecutionWatcher.
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -41,168 +40,49 @@ function formatDuration(durationMs: number | null): string {
 }
 
 export default function TestRunPanel(props: TestRunPanelProps) {
+  const {
+    adapter,
+    onPublishedVersionTestSucceeded,
+  } = props;
   const [inputText, setInputText] = useState("{}");
   const [submitting, setSubmitting] = useState(false);
-  const [execution, setExecution] = useState<Execution | null>(null);
-  const [liveStdout, setLiveStdout] = useState("");
-  const [liveStderr, setLiveStderr] = useState("");
-  const [fallbackExhausted, setFallbackExhausted] = useState(false);
-  const streamRef = useRef<ExecutionEventsHandle | null>(null);
-  const fallbackTimerRef = useRef<number | null>(null);
-  // Every run bumps the generation: only the newest run's async responses
-  // (SSE events, terminal detail GET, fallback polls) may commit UI state,
-  // so a slow response from an older Execution can never overwrite the
-  // Execution the user just started.
-  const runGenerationRef = useRef(0);
+  const watcher = useExecutionWatcher(props.onError);
+  const execution = watcher.execution;
+  const reportedQualificationExecutionId = useRef<number | null>(null);
   // version_id -> seq resolved locally at run time: the summary must keep
   // showing the version that was actually executed even after the user
   // switches to another version (Review round 1 Minor 1). No extra request;
-  // the internal version_id stays as secondary debug info only.
-  const runSeqByVersionId = useRef(new Map<number, number>());
+  // the internal version_id stays as secondary debug info only. Kept as
+  // state (not a ref) because it is read during render.
+  const [runSeqByVersionId, setRunSeqByVersionId] = useState<Map<number, number>>(new Map());
 
-  function stopFallbackPolling() {
-    if (fallbackTimerRef.current !== null) {
-      window.clearTimeout(fallbackTimerRef.current);
-      fallbackTimerRef.current = null;
+  useEffect(() => {
+    if (
+      execution?.status !== "succeeded" ||
+      execution.id === reportedQualificationExecutionId.current ||
+      execution.version_id !== adapter.published_version_id ||
+      execution.worker_id !== adapter.production_worker_id
+    ) {
+      return;
     }
-  }
-
-  // Close the stream and pending fallback polls on unmount (adapter switch).
-  useEffect(
-    () => () => {
-      streamRef.current?.close();
-      stopFallbackPolling();
-    },
-    [],
-  );
-
-  function applyDetail(generation: number, detail: Execution) {
-    if (generation !== runGenerationRef.current) {
-      return; // a newer run owns the panel now
-    }
-    setExecution(detail);
-    setLiveStdout(detail.stdout);
-    setLiveStderr(detail.stderr);
-  }
-
-  // SSE is only the experience channel: after any abnormal end the M2 final
-  // result stays authoritative, so converge on it with bounded polling.
-  // Transient GET failures keep retrying inside the same budget.
-  function convergeOnFinalResult(generation: number, executionId: number, remainingPolls: number) {
-    api
-      .getExecution(executionId)
-      .then((detail) => {
-        applyDetail(generation, detail);
-        if (generation !== runGenerationRef.current) {
-          return;
-        }
-        if (isTerminal(detail.status)) {
-          return;
-        }
-        if (remainingPolls <= 0) {
-          // Never silently keep a seemingly live running state: tell the
-          // user the realtime channel is gone and the status may be stale.
-          setFallbackExhausted(true);
-          return;
-        }
-        fallbackTimerRef.current = window.setTimeout(
-          () => convergeOnFinalResult(generation, executionId, remainingPolls - 1),
-          FALLBACK_POLICY.pollIntervalMs,
-        );
-      })
-      .catch(() => {
-        // Transient GET failure: keep polling inside the bounded budget.
-        if (generation !== runGenerationRef.current) {
-          return;
-        }
-        if (remainingPolls <= 0) {
-          setFallbackExhausted(true);
-          return;
-        }
-        fallbackTimerRef.current = window.setTimeout(
-          () => convergeOnFinalResult(generation, executionId, remainingPolls - 1),
-          FALLBACK_POLICY.pollIntervalMs,
-        );
-      });
-  }
-
-  function watch(generation: number, executionId: number) {
-    streamRef.current?.close();
-    stopFallbackPolling();
-    streamRef.current = openExecutionEvents(executionId, {
-      onExecution(next) {
-        if (generation !== runGenerationRef.current) {
-          return; // a newer run owns the panel now
-        }
-        // Every execution event carries the stored streams at poll time; the
-        // log events between polls are deltas on top of it, so replacing the
-        // buffers here keeps the live view consistent without duplicates.
-        setExecution(next);
-        setLiveStdout(next.stdout);
-        setLiveStderr(next.stderr);
-        if (isTerminal(next.status)) {
-          streamRef.current?.close();
-          // M2 final result is authoritative: reload the full detail.
-          api
-            .getExecution(executionId)
-            .then((detail) => applyDetail(generation, detail))
-            .catch((error) => {
-              if (generation !== runGenerationRef.current) {
-                return;
-              }
-              props.onError(errorMessage(error));
-            });
-        }
-      },
-      onLog(event) {
-        if (generation !== runGenerationRef.current) {
-          return;
-        }
-        if (event.stream === "stdout") {
-          setLiveStdout((current) => current + event.chunk);
-        } else {
-          setLiveStderr((current) => current + event.chunk);
-        }
-      },
-      onLogSnapshot(event) {
-        if (generation !== runGenerationRef.current) {
-          return;
-        }
-        if (event.stream === "stdout") {
-          setLiveStdout(event.content);
-        } else {
-          setLiveStderr(event.content);
-        }
-        // Truncation just happened server-side: reflect it immediately
-        // instead of waiting for the next execution event or terminal.
-        setExecution((current) =>
-          current === null
-            ? current
-            : event.stream === "stdout"
-              ? { ...current, stdout_truncated: event.truncated }
-              : { ...current, stderr_truncated: event.truncated },
-        );
-      },
-      onUnexpectedClose() {
-        if (generation !== runGenerationRef.current) {
-          return;
-        }
-        streamRef.current?.close();
-        convergeOnFinalResult(generation, executionId, FALLBACK_POLICY.maxPolls);
-      },
-      onError(message) {
-        if (generation !== runGenerationRef.current) {
-          return;
-        }
-        props.onError(message);
-      },
-    });
-  }
+    reportedQualificationExecutionId.current = execution.id;
+    onPublishedVersionTestSucceeded(adapter.id);
+  }, [
+    adapter.id,
+    adapter.production_worker_id,
+    adapter.published_version_id,
+    execution,
+    onPublishedVersionTestSucceeded,
+  ]);
 
   async function handleRun() {
     // Interaction guards: explicit version binding, no dirty runs, valid
     // JSON input and no duplicate submissions (M3 spec §2.1/§4.2/§4.3).
     if (submitting || props.busy) {
+      return;
+    }
+    if (props.adapter.archived_at) {
+      props.onError("该 Adapter 已归档，禁止测试运行，请先在设置中恢复");
       return;
     }
     if (props.dirty) {
@@ -223,18 +103,15 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     setSubmitting(true);
     try {
       if (props.selectedVersionSeq !== null) {
-        runSeqByVersionId.current.set(props.selectedVersionId, props.selectedVersionSeq);
+        const seq = props.selectedVersionSeq;
+        const versionId = props.selectedVersionId;
+        setRunSeqByVersionId((current) => new Map(current).set(versionId, seq));
       }
       const created = await api.createExecution(props.adapter.id, {
         input,
         version_id: props.selectedVersionId,
       });
-      runGenerationRef.current += 1; // invalidate the previous run's async work
-      setFallbackExhausted(false);
-      setExecution(created);
-      setLiveStdout(created.stdout);
-      setLiveStderr(created.stderr);
-      watch(runGenerationRef.current, created.id);
+      watcher.watch(created);
     } catch (error) {
       props.onError(errorMessage(error));
     } finally {
@@ -247,12 +124,13 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     props.busy ||
     props.dirty ||
     !props.contentReady ||
+    !!props.adapter.archived_at ||
     props.selectedVersionId === null;
 
   // User-facing primary version label is vN; fall back to the internal id
   // only when the seq is genuinely unknown.
   const executionVersionSeq =
-    execution === null ? null : (runSeqByVersionId.current.get(execution.version_id) ?? null);
+    execution === null ? null : (runSeqByVersionId.get(execution.version_id) ?? null);
 
   return (
     // M3.1 双栏工作台：左栏测试输入，右栏 Execution 状态与实时日志。
@@ -305,7 +183,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
           </div>
         ) : (
           <div className="execution-body">
-            {fallbackExhausted && !isTerminal(execution.status) && (
+            {watcher.fallbackExhausted && !isTerminal(execution.status) && (
               <Alert
                 type="warning"
                 showIcon
@@ -353,7 +231,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
                   children: (
                     <LogView
                       testId="stdout-view"
-                      content={liveStdout}
+                      content={watcher.liveStdout}
                       truncated={execution.stdout_truncated}
                     />
                   ),
@@ -364,7 +242,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
                   children: (
                     <LogView
                       testId="stderr-view"
-                      content={liveStderr}
+                      content={watcher.liveStderr}
                       truncated={execution.stderr_truncated}
                     />
                   ),

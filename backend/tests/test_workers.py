@@ -301,7 +301,7 @@ def test_result_is_idempotent_for_terminal_executions(api_client: TestClient) ->
 def test_result_rejects_non_terminal_status(api_client: TestClient) -> None:
     worker, execution, _ = setup_claimed_execution(api_client, adapter_name="worker-status")
     response = report(api_client, worker["id"], execution["id"], {"status": "running"})
-    assert response.status_code == 422, "only succeeded/failed/timeout are accepted"
+    assert response.status_code == 422, "only succeeded/failed/timeout/cancelled are accepted"
 
 
 # --- Control re-validates big-field contracts ---------------------------------

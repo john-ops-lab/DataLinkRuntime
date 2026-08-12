@@ -7,12 +7,14 @@ parallel. Long polling simply retries the atomic claim until the deadline.
 
 import time
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
 from dlr.control.schemas.worker import TaskPayload, WorkerRegister
+from dlr.control.services import package_source as package_source_service
+from dlr.control.services import secrets as secrets_service
 from dlr.control.services.adapter import domain_error
 
 MAX_CLAIM_WAIT_SECONDS = 30
@@ -70,7 +72,13 @@ def mark_offline(session: Session, worker_id: int) -> None:
 
 
 def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
-    """Assemble the task payload from the immutable version snapshot."""
+    """Assemble the task payload from the immutable version snapshot.
+
+    M3.2: bound credential fields are decrypted here at claim time and travel
+    inside the payload as ``secrets`` — an Execution only ever receives the
+    secrets its own Adapter bound. The platform default package source index
+    URL travels as ``index_url``.
+    """
     version = session.get(AdapterVersion, execution.version_id)
     adapter = session.get(Adapter, execution.adapter_id)
     # Guaranteed by the restrict-delete foreign keys; a missing row here is
@@ -88,15 +96,30 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
         latest_version_id=adapter.latest_version_id,
         published_version_id=adapter.published_version_id,
         execution_timeout_seconds=settings.execution_timeout_seconds,
+        secrets=secrets_service.resolve_adapter_secrets(session, execution.adapter_id),
+        index_url=package_source_service.resolve_default_index_url(session),
     )
 
 
 def try_claim(session: Session, worker_id: int) -> TaskPayload | None:
-    """One atomic claim attempt; None when no pending Execution is free."""
+    """One atomic claim attempt; None when no pending Execution is free.
+
+    M3.2 scheduling rules: Executions flagged for cancellation are never
+    claimed, and an Execution with a scheduling target may only be claimed
+    by that Worker (a NULL target stays claimable by any Worker, which keeps
+    historical rows working).
+    """
     get_worker(session, worker_id)
     execution = session.scalar(
         select(Execution)
-        .where(Execution.status == "pending")
+        .where(
+            Execution.status == "pending",
+            Execution.cancel_requested.is_(False),
+            or_(
+                Execution.target_worker_id.is_(None),
+                Execution.target_worker_id == worker_id,
+            ),
+        )
         .order_by(Execution.created_at.asc(), Execution.id.asc())
         .with_for_update(skip_locked=True)
         .limit(1)

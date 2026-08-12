@@ -10,6 +10,7 @@ from dlr.control import db
 from dlr.control.schemas.execution import (
     ExecutionResponse,
     ExecutionResultReport,
+    ProgressAck,
     ProgressReport,
 )
 from dlr.control.schemas.worker import WorkerRegister, WorkerResponse
@@ -68,18 +69,20 @@ def report_result(
 
 @router.post(
     "/api/workers/{worker_id}/executions/{execution_id}/progress",
-    status_code=204,
+    response_model=ProgressAck,
 )
 def report_progress(
     worker_id: int, execution_id: int, payload: ProgressReport, session: DbSession
-) -> Response:
+) -> ProgressAck:
     """Append best-effort stdout/stderr chunks while the Execution runs.
 
-    204 no-op once the Execution reached a terminal state, so progress can
-    never overwrite the M2 final result; non-owning Workers still get 409.
+    The 200 acknowledgement carries the cancel flag (M3.2) so the owning
+    Worker can kill the subprocess on its next upload. Once the Execution
+    reached a terminal state the chunks are dropped but the flag is still
+    answered; non-owning Workers still get 409.
     """
-    execution_service.apply_progress(session, worker_id, execution_id, payload)
-    return Response(status_code=204)
+    cancel_requested = execution_service.apply_progress(session, worker_id, execution_id, payload)
+    return ProgressAck(cancel_requested=cancel_requested)
 
 
 @admin_router.get("/api/workers", response_model=list[WorkerResponse])

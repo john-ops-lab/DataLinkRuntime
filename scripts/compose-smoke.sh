@@ -11,8 +11,11 @@
 # the /api/health proxy path and 401 auth rejection, run the full M1 Adapter
 # management chain with the admin token, then run the M2/M3 execution loop
 # (Manual Execution -> worker claim -> venv -> subprocess -> live logs over
-# SSE -> succeeded -> history list/detail) before tearing down only the
-# smoke project.
+# SSE -> succeeded -> history list/detail), then run the M3.2 production
+# lifecycle chain (credentials/package sources -> production worker ->
+# publish gate -> publish -> start -> stop(terminate) -> cancelled ->
+# start again -> succeeded with a bound secret -> archive/restore) before
+# tearing down only the smoke project.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -31,6 +34,9 @@ export DLR_WEB_HOST_PORT=${COMPOSE_SMOKE_WEB_PORT:-8880}
 export DLR_ADMIN_TOKEN=${DLR_ADMIN_TOKEN:-smoke-admin-token-$$}
 export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
 export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-secret-$$}
+# M3.2 Secret Store master key: Control derives the Fernet key from it
+# (HKDF-SHA256); without it the credential APIs answer 503.
+export DLR_MASTER_KEY=${DLR_MASTER_KEY:-smoke-master-key-$$}
 
 cleanup() {
   # Only touch the smoke project; never the default development project.
@@ -197,9 +203,18 @@ check(v1["seq"] == 1 and v2["seq"] == 2, "version seq increments from 1")
 adapter = request("GET", f"/adapters/{adapter_id}")
 check(adapter["latest_version_id"] == v2["id"], "latest points to the newest version")
 
-published = request("POST", f"/adapters/{adapter_id}/versions/{v1['id']}/publish")
-check(published["published_version_id"] == v1["id"], "publish v1 sets the published pointer")
-check(published["latest_version_id"] == v2["id"], "publish must not change latest")
+# M3.2 contract change: publish is now gate-enforced server-side. Without a
+# production worker the gate locks, which is exactly what M1 asserts here; the
+# full gate -> publish chain is exercised by the M3.2 smoke chain below.
+gated = request("POST", f"/adapters/{adapter_id}/versions/{v1['id']}/publish", expected=409)
+check(
+    gated["detail"]["code"] == "publish_gate_locked",
+    f"publish without a production worker must be gated, got {gated}",
+)
+check(
+    request("GET", f"/adapters/{adapter_id}")["published_version_id"] is None,
+    "a rejected publish must not move the published pointer",
+)
 
 versions = request("GET", f"/adapters/{adapter_id}/versions")
 check([version["seq"] for version in versions] == [2, 1], "version list sorted by seq desc")
@@ -418,5 +433,251 @@ docker compose exec -T worker \
 docker compose exec -T worker \
   test -f "/var/lib/dlr/runtime/adapters/${smoke_adapter_id}/versions/${smoke_version_id}/.ready"
 echo "worker runtime venv ok"
+
+echo "==> running M3.2 production lifecycle chain (credentials -> gate -> publish -> start/stop -> secrets)"
+# Bound secrets travel as SHA-256 digests for the same reason as DLR_SECRET_*:
+# usable end-to-end, but the raw value can never surface in responses/logs.
+docker compose exec -T -e DLR_ADMIN_TOKEN -e DLR_SECRET_SMOKE control python - <<'PY'
+import hashlib
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+BASE = "http://web/api"
+ADMIN_TOKEN = os.environ["DLR_ADMIN_TOKEN"]
+SMOKE_SECRET = os.environ["DLR_SECRET_SMOKE"]
+EXPECTED_DIGEST = hashlib.sha256(SMOKE_SECRET.encode()).hexdigest()
+
+PROD_CODE = (
+    "import hashlib\n"
+    "import time\n"
+    "\n"
+    "\n"
+    "def handle(context, input):\n"
+    "    secret = context.secrets.get('SMOKE_CRED') or ''\n"
+    "    print('prod step 1: starting', flush=True)\n"
+    "    time.sleep(6)\n"
+    "    print('prod step 2: finishing', flush=True)\n"
+    "    return {\n"
+    "        'stage': context.config.get('stage'),\n"
+    "        'secret_digest': hashlib.sha256(secret.encode()).hexdigest(),\n"
+    "    }\n"
+)
+
+
+def request(method, path, payload=None, expected=200):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {ADMIN_TOKEN}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status = response.status
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        status = error.code
+        raw = error.read()
+    body = json.loads(raw) if raw else None
+    assert status == expected, f"{method} {path}: expected {expected}, got {status}: {body}"
+    return body
+
+
+def check(condition, message):
+    assert condition, message
+
+
+def wait_terminal(execution_id, deadline_seconds=180):
+    deadline = time.monotonic() + deadline_seconds
+    current = request("GET", f"/executions/{execution_id}")
+    while current["status"] in ("pending", "running") and time.monotonic() < deadline:
+        time.sleep(2)
+        current = request("GET", f"/executions/{execution_id}")
+    check(
+        current["status"] not in ("pending", "running"),
+        f"execution {execution_id} did not reach a terminal state: {current['status']}",
+    )
+    return current
+
+
+# --- M3.2 Secret Store: credentials ------------------------------------------
+credential = request(
+    "POST",
+    "/credentials",
+    {
+        "name": "smoke-credential",
+        "type": "password",
+        "fields": {"username": "smoke-user", "password": SMOKE_SECRET},
+    },
+    expected=201,
+)
+credential_id = credential["id"]
+refetched = request("GET", f"/credentials/{credential_id}")
+for blob in (json.dumps(credential), json.dumps(refetched), json.dumps(request("GET", "/credentials"))):
+    check(SMOKE_SECRET not in blob, "credential responses must never carry plaintext")
+    check("ciphertext" not in blob, "credential responses must not expose ciphertext")
+
+# --- M3.2 package sources ------------------------------------------------------
+source = request(
+    "POST",
+    "/package-sources",
+    {"name": "smoke-source", "index_url": "http://web/api/health", "is_default": True},
+    expected=201,
+)
+reachability = request("POST", f"/package-sources/{source['id']}/test")
+check(reachability["ok"] is True, f"default package source must be reachable: {reachability}")
+
+# --- production worker + publish gate -------------------------------------------
+workers = request("GET", "/workers")
+online_workers = [worker for worker in workers if worker["status"] == "online"]
+check(online_workers, "an online worker is required for the production chain")
+worker_id = online_workers[0]["id"]
+
+adapter = request(
+    "POST",
+    "/adapters",
+    {"name": "smoke-prod-adapter", "description": "m3.2"},
+    expected=201,
+)
+adapter_id = adapter["id"]
+check(adapter["production_state"] == "idle", "a fresh adapter starts in the idle state")
+version = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {"code": PROD_CODE, "requirements": "", "runtime_config": {"stage": "m3-2-smoke"}},
+    expected=201,
+)
+version_id = version["id"]
+
+patched = request("PATCH", f"/adapters/{adapter_id}", {"production_worker_id": worker_id})
+check(patched["production_worker_id"] == worker_id, "patch sets the production worker")
+
+gated = request("POST", f"/adapters/{adapter_id}/versions/{version_id}/publish", expected=409)
+check(
+    gated["detail"]["code"] == "publish_gate_locked",
+    f"publish before a successful target test must be gated, got {gated}",
+)
+gate = request("GET", f"/adapters/{adapter_id}/versions/{version_id}/publish-gate")
+check(gate["allowed"] is False, "the gate must be locked before any test run")
+check(gate["reason"] == "not_tested_on_production_worker", f"unexpected gate reason: {gate}")
+
+# A manual test run targets the production worker automatically once it is set.
+test_run = request(
+    "POST", f"/adapters/{adapter_id}/executions", {"input": {"warmup": True}}, expected=202
+)
+check(test_run["trigger"] == "manual", "test runs stay manual triggers")
+check(test_run["target_worker_id"] == worker_id, "test runs target the production worker")
+test_run = wait_terminal(test_run["id"])
+check(
+    test_run["status"] == "succeeded",
+    f"gate test run must succeed, got {test_run['status']}: {test_run['error']} / {test_run['stderr']}",
+)
+
+gate = request("GET", f"/adapters/{adapter_id}/versions/{version_id}/publish-gate")
+check(gate["allowed"] is True, f"the gate must open after a succeeded test run: {gate}")
+check(gate["last_test"]["execution_id"] == test_run["id"], "gate reports the last test run")
+published = request("POST", f"/adapters/{adapter_id}/versions/{version_id}/publish")
+check(published["published_version_id"] == version_id, "publish sets the published pointer")
+
+# --- credential binding ---------------------------------------------------------
+bindings = request(
+    "PUT",
+    f"/adapters/{adapter_id}/credential-bindings",
+    {"bindings": [{"env_key": "SMOKE_CRED", "credential_id": credential_id, "field": "password"}]},
+)
+check(len(bindings) == 1 and bindings[0]["env_key"] == "SMOKE_CRED", "binding is stored")
+check(bindings[0]["credential_name"] == "smoke-credential", "binding enriches credential metadata")
+
+# --- start -> stop(terminate) -> cancelled --------------------------------------
+started = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
+prod_execution_id = started["id"]
+check(started["trigger"] == "production", "start creates a production execution")
+check(started["version_id"] == version_id, "start pins the published version")
+check(started["target_worker_id"] == worker_id, "start targets the production worker")
+running_adapter = request("GET", f"/adapters/{adapter_id}")
+check(running_adapter["production_state"] == "running", "start opens the production entry")
+check(running_adapter["running_execution_id"] == prod_execution_id, "running execution is derived")
+check(running_adapter["running_version_id"] == version_id, "running version is derived")
+
+duplicate = request("POST", f"/adapters/{adapter_id}/production/start", expected=409)
+check(
+    duplicate["detail"]["code"] == "production_already_running",
+    f"a second start must be rejected, got {duplicate}",
+)
+
+# Wait until the worker actually claims it and enters the sleep(6) body, so
+# the cancel exercises the running-path (cancel_requested) instead of the
+# pending-path (immediate cancelled).
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
+    state = request("GET", f"/executions/{prod_execution_id}")
+    if state["status"] == "running":
+        break
+    time.sleep(1)
+check(state["status"] == "running", f"production execution must become running: {state['status']}")
+cancelled_direct = request("POST", f"/executions/{prod_execution_id}/cancel")
+check(cancelled_direct["cancel_requested"] is True, "cancel marks a running execution")
+stopped = request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "terminate"})
+check(stopped["production_state"] == "stopped", "terminate closes the production entry")
+cancelled = wait_terminal(prod_execution_id)
+check(cancelled["status"] == "cancelled", f"terminated execution must end cancelled, got {cancelled['status']}")
+
+# --- start again: bound secret reaches the worker --------------------------------
+started = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
+prod_execution_id = started["id"]
+succeeded = wait_terminal(prod_execution_id)
+check(
+    succeeded["status"] == "succeeded",
+    f"production run must succeed, got {succeeded['status']}: {succeeded['error']} / {succeeded['stderr']}",
+)
+check(
+    succeeded["output"] == {"stage": "m3-2-smoke", "secret_digest": EXPECTED_DIGEST},
+    "the bound credential reaches the worker (digest round-trip)",
+)
+check(SMOKE_SECRET not in json.dumps(succeeded), "raw bound secret must not leak into responses")
+
+history = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+check(
+    sum(1 for item in history["items"] if item["trigger"] == "production") >= 2,
+    "history distinguishes production runs",
+)
+
+stopped = request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
+check(stopped["production_state"] == "stopped", "wait closes the production entry")
+
+# --- clone / archive / restore -----------------------------------------------------
+clone = request(
+    "POST", f"/adapters/{adapter_id}/clone", {"name": "smoke-prod-clone"}, expected=201
+)
+check(clone["published_version_id"] is None, "a clone starts unpublished")
+check(clone["production_state"] == "idle", "a clone starts not running")
+check(clone["latest_version_id"] is not None, "a clone copies the working copy as v1")
+clone_bindings = request("GET", f"/adapters/{clone['id']}/credential-bindings")
+check(len(clone_bindings) == 1, "a clone copies the binding references")
+
+archived = request("POST", f"/adapters/{adapter_id}/archive")
+check(archived["archived_at"] is not None, "archive stamps archived_at")
+blocked_save = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {"code": PROD_CODE, "requirements": "", "runtime_config": {}},
+    expected=409,
+)
+check(blocked_save["detail"]["code"] == "adapter_archived", "archived adapters are read-only")
+blocked_start = request("POST", f"/adapters/{adapter_id}/production/start", expected=409)
+check(blocked_start["detail"]["code"] == "adapter_archived", "archived adapters cannot start")
+restored = request("POST", f"/adapters/{adapter_id}/restore")
+check(restored["archived_at"] is None, "restore clears archived_at")
+
+in_use = request("DELETE", f"/credentials/{credential_id}", expected=409)
+check(
+    in_use["detail"]["code"] == "credential_in_use",
+    "bound credentials cannot be deleted",
+)
+
+print("M3.2 smoke chain passed")
+PY
 
 echo "==> compose smoke test passed"

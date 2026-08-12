@@ -20,6 +20,7 @@ from dlr.control.schemas.execution import (
     ProgressReport,
 )
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.execution_cancellation import lock_execution, request_cancellation
 
 # Statuses after which an Execution never changes again.
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
@@ -34,11 +35,41 @@ def compact_json_bytes(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+def _resolve_test_target(session: Session, adapter: Adapter) -> int | None:
+    """Scheduling target for a test run (M3.2).
+
+    A configured production Worker is always the target. Without one, the
+    only online Worker is adopted (and written back as the production
+    Worker); with multiple online Workers the caller must pick one first.
+    With no online Worker at all the target stays None so the historical
+    any-Worker claiming keeps working.
+    """
+    if adapter.production_worker_id is not None:
+        worker = session.get(Worker, adapter.production_worker_id)
+        if worker is not None:
+            if worker.status != "online":
+                raise domain_error(409, "worker_offline", "The production Worker is offline")
+            return worker.id
+    online = list(session.scalars(select(Worker).where(Worker.status == "online")).all())
+    if len(online) == 1:
+        adapter.production_worker_id = online[0].id
+        return online[0].id
+    if len(online) > 1:
+        raise domain_error(
+            409,
+            "production_worker_required",
+            "Multiple online Workers exist; configure a production Worker first",
+        )
+    return None
+
+
 def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -> Execution:
-    """Create a Manual Execution pinned to one immutable version."""
-    adapter = session.get(Adapter, adapter_id)
+    """Create a Manual (test) Execution pinned to one immutable version."""
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    if adapter.archived_at is not None:
+        raise domain_error(409, "adapter_archived", "Adapter is archived")
     # Oversized input is rejected before anything is persisted; it is never
     # truncated and executed.
     if len(compact_json_bytes(data.input)) > settings.execution_input_max_bytes:
@@ -62,6 +93,7 @@ def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -
         trigger="manual",
         status="pending",
         input=data.input,
+        target_worker_id=_resolve_test_target(session, adapter),
     )
     session.add(execution)
     session.commit()
@@ -206,14 +238,18 @@ def _append_stream(existing: str, already_truncated: bool, chunk: str) -> tuple[
 
 def apply_progress(
     session: Session, worker_id: int, execution_id: int, report: ProgressReport
-) -> None:
+) -> bool:
     """Append best-effort stdout/stderr chunks from the owning Worker.
 
     Progress never changes Execution status and never touches output, error,
     ended_at or duration_ms. After the Execution reached a terminal state the
-    call is a 204 no-op, so the tail of the progress stream can never
+    chunks are dropped, so the tail of the progress stream can never
     overwrite the M2 final result; ownership is checked first, so a
     non-owning Worker still gets 409 even for terminal Executions.
+
+    Returns the current ``cancel_requested`` flag: the progress round trip
+    doubles as the cancel channel (M3.2), and empty uploads are accepted as
+    pure cancel polls (no commit happens when nothing changed).
     """
     execution = (
         session.query(Execution)
@@ -226,19 +262,40 @@ def apply_progress(
     if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
     if execution.status != "running":
-        # Terminal: accept silently. The final result is authoritative.
-        return
-    stdout, stdout_truncated = _append_stream(
-        execution.stdout, execution.stdout_truncated, report.stdout_chunk
-    )
-    stderr, stderr_truncated = _append_stream(
-        execution.stderr, execution.stderr_truncated, report.stderr_chunk
-    )
-    execution.stdout = stdout
-    execution.stdout_truncated = stdout_truncated
-    execution.stderr = stderr
-    execution.stderr_truncated = stderr_truncated
+        # Terminal: drop the chunks, still answer the cancel flag.
+        return execution.cancel_requested
+    if report.stdout_chunk or report.stderr_chunk:
+        stdout, stdout_truncated = _append_stream(
+            execution.stdout, execution.stdout_truncated, report.stdout_chunk
+        )
+        stderr, stderr_truncated = _append_stream(
+            execution.stderr, execution.stderr_truncated, report.stderr_chunk
+        )
+        execution.stdout = stdout
+        execution.stdout_truncated = stdout_truncated
+        execution.stderr = stderr
+        execution.stderr_truncated = stderr_truncated
+        session.commit()
+    return execution.cancel_requested
+
+
+def cancel_execution(session: Session, execution_id: int) -> Execution:
+    """Request cancellation of one Execution (M3.2).
+
+    Idempotent: pending Executions become ``cancelled`` immediately (they
+    can never be claimed again), running Executions get ``cancel_requested``
+    set so the owning Worker kills the subprocess on its next progress round
+    trip and reports ``cancelled``, and terminal Executions are returned
+    unchanged.
+    """
+    execution = lock_execution(session, execution_id)
+    if execution is None:
+        raise domain_error(404, "execution_not_found", "Execution not found")
+    request_cancellation(execution)
+    # Terminal states are never rewritten.
     session.commit()
+    session.refresh(execution)
+    return execution
 
 
 def list_adapter_executions(

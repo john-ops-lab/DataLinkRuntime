@@ -6,10 +6,12 @@ from typing import Any
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import WORKER_TOKEN
 from dlr.control.schemas.adapter import VersionCreate
 from dlr.control.services.adapter import save_version as service_save_version
 
 STARTER_CODE = "def handle(context, input):\n    return input\n"
+WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 
 
 def create_adapter(client: TestClient, name: str = "example-adapter", **extra: Any) -> dict:
@@ -33,6 +35,39 @@ def save_version(
     response = client.post(f"/api/adapters/{adapter_id}/versions", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def pass_publish_gate(
+    client: TestClient, adapter_id: int, version_id: int, worker_name: str = "gate-worker"
+) -> dict:
+    """Satisfy the M3.2 publish gate: configure the production Worker and
+    run one succeeded test of the target version on it."""
+    register = client.post(
+        "/api/workers/register",
+        json={"name": worker_name, "capabilities": ["python"]},
+        headers=WORKER_HEADERS,
+    )
+    assert register.status_code == 200, register.text
+    worker = register.json()
+    patch = client.patch(f"/api/adapters/{adapter_id}", json={"production_worker_id": worker["id"]})
+    assert patch.status_code == 200, patch.text
+    execution = client.post(
+        f"/api/adapters/{adapter_id}/executions", json={"version_id": version_id}
+    )
+    assert execution.status_code == 202, execution.text
+    claimed = client.post(
+        f"/api/workers/{worker['id']}/tasks/claim",
+        params={"wait_seconds": 0},
+        headers=WORKER_HEADERS,
+    )
+    assert claimed.status_code == 200, claimed.text
+    result = client.post(
+        f"/api/workers/{worker['id']}/executions/{execution.json()['id']}/result",
+        json={"status": "succeeded"},
+        headers=WORKER_HEADERS,
+    )
+    assert result.status_code == 200, result.text
+    return worker
 
 
 # --- Adapter CRUD -----------------------------------------------------------
@@ -250,6 +285,7 @@ def test_publish_sets_published_without_touching_latest(api_client: TestClient) 
     created = create_adapter(api_client)
     first = save_version(api_client, created["id"], code="v1")
     second = save_version(api_client, created["id"], code="v2")
+    pass_publish_gate(api_client, created["id"], first["id"])
 
     response = api_client.post(f"/api/adapters/{created['id']}/versions/{first['id']}/publish")
     assert response.status_code == 200
@@ -262,6 +298,7 @@ def test_publish_sets_published_without_touching_latest(api_client: TestClient) 
 def test_publish_latest_version(api_client: TestClient) -> None:
     created = create_adapter(api_client)
     version = save_version(api_client, created["id"])
+    pass_publish_gate(api_client, created["id"], version["id"])
 
     response = api_client.post(f"/api/adapters/{created['id']}/versions/{version['id']}/publish")
     assert response.status_code == 200
@@ -273,6 +310,7 @@ def test_publish_latest_version(api_client: TestClient) -> None:
 def test_publish_same_version_is_idempotent(api_client: TestClient) -> None:
     created = create_adapter(api_client)
     version = save_version(api_client, created["id"])
+    pass_publish_gate(api_client, created["id"], version["id"])
     path = f"/api/adapters/{created['id']}/versions/{version['id']}/publish"
 
     assert api_client.post(path).status_code == 200

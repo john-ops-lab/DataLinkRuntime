@@ -85,11 +85,12 @@ def test_progress_appends_streams_without_disturbing_state(api_client: TestClien
     worker, execution, _ = setup_claimed_execution(api_client, adapter_name="progress-append")
 
     first = progress(api_client, worker["id"], execution["id"], stdout_chunk="line 1\n")
-    assert first.status_code == 204
+    assert first.status_code == 200
+    assert first.json()["cancel_requested"] is False
     second = progress(
         api_client, worker["id"], execution["id"], stdout_chunk="line 2\n", stderr_chunk="warn\n"
     )
-    assert second.status_code == 204
+    assert second.status_code == 200
 
     fetched = api_client.get(f"/api/executions/{execution['id']}").json()
     assert fetched["status"] == "running"
@@ -108,7 +109,8 @@ def test_progress_appends_streams_without_disturbing_state(api_client: TestClien
 def test_progress_empty_chunks_are_a_noop(api_client: TestClient) -> None:
     worker, execution, _ = setup_claimed_execution(api_client, adapter_name="progress-empty")
     response = progress(api_client, worker["id"], execution["id"])
-    assert response.status_code == 204
+    assert response.status_code == 200, "empty uploads are legal cancel polls (M3.2)"
+    assert response.json()["cancel_requested"] is False
     fetched = api_client.get(f"/api/executions/{execution['id']}").json()
     assert fetched["stdout"] == ""
     assert fetched["stderr"] == ""
@@ -160,7 +162,7 @@ def test_progress_requires_worker_token(api_client: TestClient) -> None:
 
 
 def test_progress_after_terminal_is_noop(api_client: TestClient) -> None:
-    """The M2 final result is authoritative; late progress is a 204 no-op."""
+    """The M2 final result is authoritative; late chunks are dropped."""
     worker, execution, _ = setup_claimed_execution(api_client, adapter_name="progress-terminal")
     done = report(
         api_client,
@@ -172,7 +174,7 @@ def test_progress_after_terminal_is_noop(api_client: TestClient) -> None:
     ended_at = done.json()["ended_at"]
 
     late = progress(api_client, worker["id"], execution["id"], stdout_chunk="late tail\n")
-    assert late.status_code == 204
+    assert late.status_code == 200
 
     fetched = api_client.get(f"/api/executions/{execution['id']}").json()
     assert fetched["status"] == "succeeded"
@@ -198,7 +200,7 @@ def test_progress_caps_streams(api_client: TestClient, monkeypatch: pytest.Monke
         response = progress(
             api_client, worker["id"], execution["id"], stdout_chunk=f"chunk-{index}\n" * 8
         )
-        assert response.status_code == 204
+        assert response.status_code == 200
 
     fetched = api_client.get(f"/api/executions/{execution['id']}").json()
     assert fetched["stdout_truncated"] is True
@@ -376,7 +378,7 @@ def test_split_secret_never_reaches_persisted_live_logs(
     worker, execution, _ = setup_claimed_execution(api_client, adapter_name="progress-split")
     uploaded: list[str] = []
 
-    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+    def callback(stdout_chunk: str, stderr_chunk: str) -> bool:
         uploaded.append(stdout_chunk)
         response = progress(
             api_client,
@@ -385,7 +387,8 @@ def test_split_secret_never_reaches_persisted_live_logs(
             stdout_chunk=stdout_chunk,
             stderr_chunk=stderr_chunk,
         )
-        assert response.status_code == 204
+        assert response.status_code == 200
+        return bool(response.json()["cancel_requested"])
 
     result = executor.run(
         make_payload(code=SPLIT_SECRET_CODE),
