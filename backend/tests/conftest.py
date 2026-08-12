@@ -79,7 +79,8 @@ def _truncate(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE adapters, adapter_versions, workers, executions "
+                "TRUNCATE TABLE adapters, adapter_versions, workers, executions, "
+                "credentials, adapter_credential_bindings, package_sources "
                 "RESTART IDENTITY CASCADE"
             )
         )
