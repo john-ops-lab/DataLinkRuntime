@@ -4,6 +4,7 @@ import type {
   Adapter,
   Execution,
   ExecutionHistoryPage,
+  PublishGate,
   VersionDetail,
   VersionSummary,
   Worker,
@@ -106,7 +107,7 @@ export const api = {
 
   updateAdapter: (
     adapterId: number,
-    payload: { name?: string; description?: string },
+    payload: { name?: string; description?: string; production_worker_id?: number | null },
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}`, { method: "PATCH", body: JSON.stringify(payload) }),
 
@@ -130,6 +131,40 @@ export const api = {
 
   publishVersion: (adapterId: number, versionId: number): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}/versions/${versionId}/publish`, { method: "POST" }),
+
+  // --- M3.2: production lifecycle -------------------------------------------
+
+  /** Read-only publish gate evaluation for the Publish confirmation dialog. */
+  getPublishGate: (adapterId: number, versionId: number): Promise<PublishGate> =>
+    request(`/api/adapters/${adapterId}/versions/${versionId}/publish-gate`),
+
+  /** Open the production entry; returns the created pending Execution. */
+  startProduction: (adapterId: number): Promise<Execution> =>
+    request(`/api/adapters/${adapterId}/production/start`, { method: "POST" }),
+
+  /** Close the production entry; ``terminate`` also cancels the active run. */
+  stopProduction: (adapterId: number, mode: "wait" | "terminate"): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/production/stop`, {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    }),
+
+  /** Clear the published pointer; requires production to be stopped. */
+  unpublishAdapter: (adapterId: number): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/unpublish`, { method: "POST" }),
+
+  archiveAdapter: (adapterId: number): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/archive`, { method: "POST" }),
+
+  restoreAdapter: (adapterId: number): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/restore`, { method: "POST" }),
+
+  /** Copy the Adapter: working copy becomes v1, unpublished and not running. */
+  cloneAdapter: (
+    adapterId: number,
+    payload: { name: string; description?: string },
+  ): Promise<Adapter> =>
+    request(`/api/adapters/${adapterId}/clone`, { method: "POST", body: JSON.stringify(payload) }),
 
   // --- M3: executions, history and workers ---------------------------------
 

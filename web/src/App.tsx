@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor from "@monaco-editor/react";
-import { ConfigProvider, Segmented, Tabs } from "antd";
+import { Button, Checkbox, ConfigProvider, Modal, Segmented, Space, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -11,7 +11,8 @@ import LoginPage from "./components/LoginPage";
 import TestRunPanel from "./components/TestRunPanel";
 import WorkerStatus from "./components/WorkerStatus";
 import WorkbenchHeader from "./components/WorkbenchHeader";
-import type { Adapter, VersionDetail, VersionSummary } from "./types";
+import { statusLabel } from "./status";
+import type { Adapter, PublishGate, VersionDetail, VersionSummary } from "./types";
 
 type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
 
@@ -114,6 +115,32 @@ function errorMessage(error: unknown): string {
   return "请求失败";
 }
 
+/** 发布门禁拒绝原因的稳定中文文案（后端 reason code → 展示）。 */
+function publishGateReasonText(gate: PublishGate): string {
+  switch (gate.reason) {
+    case "no_production_worker":
+      return "未配置生产 Worker：请先在 Adapter 设置中指定生产 Worker 后再发布。";
+    case "not_tested_on_production_worker":
+      return "该版本尚未在生产 Worker 上测试：请先在测试运行页运行一次测试。";
+    case "last_test_not_succeeded":
+      return gate.last_test !== null
+        ? `最近一次生产 Worker 测试未成功（Execution #${gate.last_test.execution_id}，状态：${statusLabel(gate.last_test.status)}）。`
+        : "最近一次生产 Worker 测试未成功。";
+    default:
+      return "发布门禁未通过。";
+  }
+}
+
+type WorkbenchTabKey = "edit" | "test" | "history";
+
+/** 发布确认框状态：门禁信息在打开时拉取，versionId 固定本次目标。 */
+interface PublishConfirmState {
+  versionId: number;
+  versionSeq: number | null;
+  gate: PublishGate | null;
+  gateError: string | null;
+}
+
 // M1 frontend validation mirrors the backend contract: runtime_config must be
 // parseable JSON whose top level is an object.
 function parseRuntimeConfig(text: string): Record<string, unknown> | null {
@@ -157,6 +184,13 @@ function AdapterConsole() {
   const [contentReady, setContentReady] = useState(false);
   // Low-frequency Adapter settings live in a drawer, outside the main work area.
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // M3.2：受控 Tab，Start 成功后可自动切到执行记录页。
+  const [activeTabKey, setActiveTabKey] = useState<WorkbenchTabKey>("edit");
+  // Start 创建的 Production Execution id：执行记录页自动打开其详情抽屉。
+  const [autoOpenExecutionId, setAutoOpenExecutionId] = useState<number | null>(null);
+  // 发布确认框：门禁信息在打开时拉取；热切换需额外勾选确认。
+  const [publishConfirm, setPublishConfirm] = useState<PublishConfirmState | null>(null);
+  const [hotSwitchConfirmed, setHotSwitchConfirmed] = useState(false);
   // Known version seq per adapter, cached once a version list has loaded (and
   // kept up to date on save/publish). The cache survives adapter switches, so
   // catalog summaries never degrade back to a stateless placeholder.
@@ -264,6 +298,9 @@ function AdapterConsole() {
     setSelectedVersionId(null);
     setContentReady(false);
     setSettingsOpen(false);
+    setActiveTabKey("edit");
+    setAutoOpenExecutionId(null);
+    setPublishConfirm(null);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
       const list = await api.listVersions(adapter.id);
@@ -417,21 +454,189 @@ function AdapterConsole() {
     }
   }
 
-  async function handlePublish() {
-    if (!selected || selectedVersionId === null || busy || !contentReady) {
+  // 发布按钮入口：打开确认框并拉取只读门禁评估（后端 Publish 仍强制门禁）。
+  function handlePublishRequest() {
+    if (!selected || selectedVersionId === null || busy || !contentReady || selected.archived_at) {
       return;
     }
+    const targetAdapterId = selected.id;
+    const targetVersionId = selectedVersionId;
+    const seq = versions.find((version) => version.id === targetVersionId)?.seq ?? null;
+    setHotSwitchConfirmed(false);
+    setPublishConfirm({ versionId: targetVersionId, versionSeq: seq, gate: null, gateError: null });
+    void (async () => {
+      try {
+        const gate = await api.getPublishGate(targetAdapterId, targetVersionId);
+        setPublishConfirm((current) =>
+          current !== null && current.versionId === targetVersionId
+            ? { ...current, gate }
+            : current,
+        );
+      } catch (err) {
+        setPublishConfirm((current) =>
+          current !== null && current.versionId === targetVersionId
+            ? { ...current, gateError: errorMessage(err) }
+            : current,
+        );
+      }
+    })();
+  }
+
+  async function handlePublishConfirmed() {
+    if (!selected || publishConfirm === null || busy) {
+      return;
+    }
+    const targetVersionId = publishConfirm.versionId;
+    setPublishConfirm(null);
     setBusy(true);
     try {
       setError(null);
-      const refreshed = await api.publishVersion(selected.id, selectedVersionId);
+      const refreshed = await api.publishVersion(selected.id, targetVersionId);
       // Keep the cached catalog summary in sync with the new published pointer.
-      const publishedSeq = versions.find((version) => version.id === selectedVersionId)?.seq;
+      const publishedSeq = versions.find((version) => version.id === targetVersionId)?.seq;
       if (publishedSeq !== undefined) {
         setPublishedSeqById((current) => new Map(current).set(selected.id, publishedSeq));
       }
       setSelected(refreshed);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // M3.2 生产生命周期：Start 后自动切到执行记录页并打开新 Execution 的实时日志。
+  async function handleStartProduction() {
+    if (!selected || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      setError(null);
+      const execution = await api.startProduction(selected.id);
+      let refreshed: Adapter;
+      try {
+        refreshed = await api.getAdapter(selected.id);
+      } catch {
+        // Best-effort refresh failed: derive the known changes locally so the
+        // header/catalog still reflect the successful start.
+        refreshed = {
+          ...selected,
+          production_state: "running",
+          running_execution_id: execution.id,
+          running_version_id: selected.published_version_id,
+        };
+      }
+      setSelected(refreshed);
+      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+      setAutoOpenExecutionId(execution.id);
+      setActiveTabKey("history");
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleStopProduction(mode: "wait" | "terminate") {
+    if (!selected || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      setError(null);
+      const refreshed = await api.stopProduction(selected.id, mode);
+      setSelected(refreshed);
+      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUnpublish() {
+    if (!selected || busy) {
+      return;
+    }
+    if (!window.confirm("确定取消发布吗？将清除已发布版本指针（需先停止生产）。")) {
+      return;
+    }
+    setBusy(true);
+    try {
+      setError(null);
+      const refreshed = await api.unpublishAdapter(selected.id);
+      setSelected(refreshed);
+      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+      setPublishedSeqById((current) => {
+        const next = new Map(current);
+        next.delete(selected.id);
+        return next;
+      });
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleArchive() {
+    if (!selected || busy) {
+      return;
+    }
+    if (
+      !window.confirm(
+        "归档后该 Adapter 只读：保存、发布、测试与启动均被禁用（可随时恢复）。确定归档吗？",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      setError(null);
+      const refreshed = await api.archiveAdapter(selected.id);
+      setSelected(refreshed);
+      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRestore() {
+    if (!selected || busy) {
+      return;
+    }
+    setBusy(true);
+    try {
+      setError(null);
+      const refreshed = await api.restoreAdapter(selected.id);
+      setSelected(refreshed);
+      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleClone() {
+    if (!selected || busy) {
+      return;
+    }
+    const cloneName = window.prompt("新 Adapter 名称", `${selected.name}-copy`);
+    if (cloneName === null || cloneName.trim() === "") {
+      return;
+    }
+    setBusy(true);
+    try {
+      setError(null);
+      const created = await api.cloneAdapter(selected.id, { name: cloneName.trim() });
+      const list = await refreshAdapters();
+      const target = list.find((item) => item.id === created.id) ?? created;
+      await loadAdapterContent(target);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -505,6 +710,15 @@ function AdapterConsole() {
   const isPublished =
     selectedVersionId !== null && selected?.published_version_id === selectedVersionId;
 
+  // 热切换拦截：生产运行中发布另一个版本时需要额外勾选确认。
+  const hotSwitch =
+    selected !== null &&
+    publishConfirm !== null &&
+    (selected.production_state ?? "idle") === "running" &&
+    selected.running_version_id !== null &&
+    selected.running_version_id !== undefined &&
+    selected.running_version_id !== publishConfirm.versionId;
+
   const healthDotClass =
     health === "ok"
       ? "health-dot-ok"
@@ -564,13 +778,16 @@ function AdapterConsole() {
                 contentReady={contentReady}
                 onSelectVersion={(versionId) => void handleSelectVersion(versionId)}
                 onSave={() => void handleSaveVersion()}
-                onPublish={() => void handlePublish()}
+                onPublishRequest={handlePublishRequest}
+                onStartProduction={() => void handleStartProduction()}
+                onStopProduction={(mode) => void handleStopProduction(mode)}
                 onOpenSettings={() => setSettingsOpen(true)}
               />
 
               <Tabs
                 className="workbench-tabs"
-                defaultActiveKey="edit"
+                activeKey={activeTabKey}
+                onChange={(key) => setActiveTabKey(key as WorkbenchTabKey)}
                 items={[
                   {
                     key: "edit",
@@ -657,7 +874,13 @@ function AdapterConsole() {
                     label: "执行记录",
                     // antd Tabs render lazily: the history API is only called
                     // after this tab is activated for the first time.
-                    children: <ExecutionHistoryPanel key={selected.id} adapterId={selected.id} />,
+                    children: (
+                      <ExecutionHistoryPanel
+                        key={selected.id}
+                        adapterId={selected.id}
+                        autoOpenExecutionId={autoOpenExecutionId}
+                      />
+                    ),
                   },
                 ]}
               />
@@ -678,7 +901,100 @@ function AdapterConsole() {
         onDescriptionChange={setDescription}
         onUpdate={() => void handleUpdateDetails()}
         onDelete={() => void handleDelete()}
+        onUnpublish={() => void handleUnpublish()}
+        onArchive={() => void handleArchive()}
+        onRestore={() => void handleRestore()}
+        onClone={() => void handleClone()}
       />
+
+      <Modal
+        title="发布确认"
+        open={publishConfirm !== null}
+        onCancel={() => setPublishConfirm(null)}
+        footer={
+          <Space>
+            <Button
+              data-testid="publish-diff"
+              onClick={() =>
+                Modal.info({
+                  title: "版本差异",
+                  content:
+                    "Diff 视图（发布目标 vs 当前生产版本）即将接入 Monaco DiffEditor，敬请期待。",
+                })
+              }
+            >
+              查看差异
+            </Button>
+            <Button onClick={() => setPublishConfirm(null)}>取消</Button>
+            <Button
+              type="primary"
+              data-testid="confirm-publish"
+              loading={busy}
+              disabled={
+                publishConfirm === null ||
+                publishConfirm.gate === null ||
+                !publishConfirm.gate.allowed ||
+                busy ||
+                (hotSwitch && !hotSwitchConfirmed)
+              }
+              onClick={() => void handlePublishConfirmed()}
+            >
+              确认发布
+            </Button>
+          </Space>
+        }
+      >
+        {publishConfirm !== null && (
+          <div className="publish-confirm">
+            <p data-testid="publish-confirm-target">
+              将发布版本{" "}
+              <strong>
+                {publishConfirm.versionSeq !== null
+                  ? `v${publishConfirm.versionSeq}`
+                  : `#${publishConfirm.versionId}`}
+              </strong>
+              。发布指针立即生效；正在运行的生产执行不会自动切换版本。
+            </p>
+            {publishConfirm.gateError !== null && (
+              <p className="publish-gate-error" data-testid="publish-gate-error">
+                门禁检查失败：{publishConfirm.gateError}
+              </p>
+            )}
+            {publishConfirm.gate === null && publishConfirm.gateError === null && (
+              <p>正在检查发布门禁…</p>
+            )}
+            {publishConfirm.gate !== null &&
+              (publishConfirm.gate.allowed ? (
+                <p className="publish-gate-ok" data-testid="publish-gate-ok">
+                  门禁检查通过：该版本已在生产 Worker 上测试成功
+                  {publishConfirm.gate.last_test !== null
+                    ? `（Execution #${publishConfirm.gate.last_test.execution_id}）`
+                    : ""}
+                  。
+                </p>
+              ) : (
+                <p className="publish-gate-blocked" data-testid="publish-gate-blocked">
+                  {publishGateReasonText(publishConfirm.gate)}
+                </p>
+              ))}
+            {hotSwitch && (
+              <div className="publish-hot-switch" data-testid="publish-hot-switch">
+                <p>
+                  生产运行中（Execution #{selected?.running_execution_id ?? "—"}）：本次发布将与正在运行的版本形成热切换，
+                  新版本需先停止再启动才会生效。
+                </p>
+                <Checkbox
+                  data-testid="hot-switch-confirm"
+                  checked={hotSwitchConfirmed}
+                  onChange={(event) => setHotSwitchConfirmed(event.target.checked)}
+                >
+                  我确认理解上述影响
+                </Checkbox>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

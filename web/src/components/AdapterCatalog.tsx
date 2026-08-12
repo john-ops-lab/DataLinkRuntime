@@ -2,8 +2,12 @@
 
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Button, Drawer, Input, Space } from "antd";
+import { Button, Drawer, Input, Segmented, Space } from "antd";
 
+import {
+  productionDisplayState,
+  productionStateLabel,
+} from "../status";
 import type { Adapter } from "../types";
 
 interface AdapterCatalogProps {
@@ -57,6 +61,8 @@ export default function AdapterCatalog({
 }: AdapterCatalogProps) {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
+  // M3.2：归档 Adapter 默认隐藏，避免污染活跃工作列表。
+  const [view, setView] = useState<"active" | "archived">("active");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -81,7 +87,11 @@ export default function AdapterCatalog({
   }
 
   const keyword = search.trim().toLowerCase();
-  const visible = keyword === "" ? adapters : adapters.filter((adapter) => adapter.name.toLowerCase().includes(keyword));
+  const inView = adapters.filter((adapter) =>
+    view === "archived" ? !!adapter.archived_at : !adapter.archived_at,
+  );
+  const visible =
+    keyword === "" ? inView : inView.filter((adapter) => adapter.name.toLowerCase().includes(keyword));
 
   return (
     <aside className="catalog" data-testid="adapter-catalog">
@@ -107,25 +117,48 @@ export default function AdapterCatalog({
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
+        <Segmented
+          block
+          size="small"
+          data-testid="catalog-view"
+          className="catalog-view-switch"
+          value={view}
+          options={[
+            { label: "活跃", value: "active" },
+            { label: "已归档", value: "archived" },
+          ]}
+          onChange={(value) => setView(value as "active" | "archived")}
+        />
       </div>
 
       <div className="catalog-list">
         {visible.length === 0 ? (
-          <p className="catalog-empty">{adapters.length === 0 ? "暂无 Adapter" : "没有匹配的 Adapter"}</p>
+          <p className="catalog-empty">{inView.length === 0 ? (view === "archived" ? "暂无已归档 Adapter" : "暂无 Adapter") : "没有匹配的 Adapter"}</p>
         ) : (
-          visible.map((adapter) => (
-            <button
-              key={adapter.id}
-              type="button"
-              data-testid="adapter-item"
-              className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
-              disabled={busy}
-              onClick={() => onSelect(adapter)}
-            >
-              <span className="catalog-item-name">{adapter.name}</span>
-              <span className="catalog-item-sub">{catalogSubtitle(adapter, latestSeqById, publishedSeqById)}</span>
-            </button>
-          ))
+          visible.map((adapter) => {
+            const displayState = productionDisplayState(adapter);
+            return (
+              <button
+                key={adapter.id}
+                type="button"
+                data-testid="adapter-item"
+                className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
+                disabled={busy}
+                onClick={() => onSelect(adapter)}
+              >
+                <span className="catalog-item-name">
+                  <span
+                    className={`catalog-status-dot catalog-status-${displayState}`}
+                    title={`生产状态：${productionStateLabel(displayState)}`}
+                  />
+                  {adapter.name}
+                </span>
+                <span className="catalog-item-sub">
+                  {catalogSubtitle(adapter, latestSeqById, publishedSeqById)}
+                </span>
+              </button>
+            );
+          })
         )}
       </div>
 

@@ -212,6 +212,36 @@ body {
   white-space: nowrap;
 }
 
+/* M3.2 生产状态点：与 Header 四层状态同一颜色词汇。 */
+.catalog-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--dlr-text-weak);
+}
+
+.catalog-status-ready {
+  background: #1677ff;
+}
+
+.catalog-status-running {
+  background: #52c41a;
+}
+
+.catalog-status-abnormal {
+  background: #ff4d4f;
+}
+
+.catalog-status-archived {
+  background: #faad14;
+}
+
+.catalog-view-switch {
+  margin-top: 8px;
+}
+
 /* --- Developer Workbench（中间主工作区） -------------------------------- */
 
 .workbench {
@@ -285,6 +315,11 @@ body {
 
 .workbench-context {
   min-width: 0;
+}
+
+/* Header 内的状态提示（Published≠Running / 已归档）与标题行保持间距。 */
+.workbench-context .ant-alert {
+  margin-top: 6px;
 }
 
 .version-menu-item {
@@ -667,6 +702,52 @@ body {
   margin: 0;
   font-size: 0.78rem;
   color: var(--dlr-text-weak);
+}
+
+/* M3.2 设置抽屉生命周期区。 */
+.settings-section-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.settings-lifecycle-actions {
+  width: 100%;
+  display: flex;
+}
+
+.settings-field-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--dlr-text-weak);
+}
+
+/* M3.2 发布确认框。 */
+.publish-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.publish-confirm p {
+  margin: 0;
+}
+
+.publish-gate-ok {
+  color: #389e0d;
+}
+
+.publish-gate-blocked,
+.publish-gate-error {
+  color: #cf1322;
+}
+
+.publish-hot-switch {
+  padding: 8px;
+  border: 1px solid #ffe58f;
+  border-radius: 4px;
+  background: #fffbe6;
 }
 
 /* --- Worker 弹层 --------------------------------------------------------- */

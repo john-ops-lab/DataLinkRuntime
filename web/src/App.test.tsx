@@ -122,6 +122,21 @@ const emptyAdaptersRoute: Route = {
   respond: () => ({ body: [] }),
 };
 
+// M3.2：Publish 走确认框，打开时拉取只读门禁评估。
+const publishGateRoute = (
+  adapterId: number,
+  versionId: number,
+  gate: { allowed: boolean; reason: string | null; last_test: unknown } = {
+    allowed: true,
+    reason: null,
+    last_test: null,
+  },
+): Route => ({
+  method: "GET",
+  match: `/api/adapters/${adapterId}/versions/${versionId}/publish-gate`,
+  respond: () => ({ body: gate }),
+});
+
 function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
   return {
     id: 1,
@@ -573,6 +588,7 @@ it("updates the published badge after publishing the selected version", async ()
       match: "/api/adapters/1/versions/10",
       respond: () => ({ body: makeVersion() }),
     },
+    publishGateRoute(1, 10),
     {
       method: "POST",
       match: "/api/adapters/1/versions/10/publish",
@@ -586,7 +602,10 @@ it("updates the published badge after publishing the selected version", async ()
   await selectFirstAdapter();
   expect(screen.queryByTestId("published-badge")).toBeNull();
 
+  // M3.2：发布需先在确认框中确认（门禁通过后才可点）。
   fireEvent.click(screen.getByTestId("publish-version"));
+  await screen.findByTestId("publish-gate-ok");
+  fireEvent.click(screen.getByTestId("confirm-publish"));
   await screen.findByTestId("published-badge");
   expect(screen.getByTestId("latest-badge")).toBeTruthy();
 });
@@ -960,6 +979,7 @@ it("locks navigation while Publish is in flight so a late response cannot mix ad
       match: "/api/adapters/1/versions/10",
       respond: () => ({ body: makeVersion({ id: 10, code: "code-a" }) }),
     },
+    publishGateRoute(1, 10),
     {
       method: "POST",
       match: "/api/adapters/1/versions/10/publish",
@@ -970,8 +990,10 @@ it("locks navigation while Publish is in flight so a late response cannot mix ad
   await selectFirstAdapter();
   expect(valueOf("code-editor")).toBe("code-a");
 
-  // Publish(A) starts and stays pending.
+  // Publish(A) starts in the confirmation dialog and stays pending.
   fireEvent.click(screen.getByTestId("publish-version"));
+  await screen.findByTestId("publish-gate-ok");
+  fireEvent.click(screen.getByTestId("confirm-publish"));
   await waitFor(() => {
     expect((screen.getByTestId("publish-version") as HTMLButtonElement).disabled).toBe(true);
   });
@@ -2068,3 +2090,159 @@ it("labels the current execution with the user-facing vN instead of the internal
   expect(versionCell.textContent).toContain("v1");
   expect(versionCell.querySelector(".execution-version-debug")?.textContent).toBe("#10");
 });
+
+// --- M3.2 production lifecycle --------------------------------------------------
+
+it("starts production, refreshes the header and auto-opens the new execution", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    production_worker_id: 3,
+  });
+  const started = makeExecution({ id: 77, trigger: "production", status: "pending" });
+  const finished = makeExecution({ id: 77, trigger: "production", status: "succeeded" });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/production/start",
+      respond: () => ({ status: 202, body: started }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => ({
+        body: { ...adapter, production_state: "running", running_execution_id: 77, running_version_id: 10 },
+      }),
+    },
+    // Start 后自动切到执行记录 Tab：首页列表 + 自动打开的详情抽屉。
+    {
+      method: "GET",
+      match: "/api/adapters/1/executions?limit=50",
+      respond: () => ({
+        body: {
+          items: [{ ...makeSummary({ id: 77 }), trigger: "production" }],
+          next_before_id: null,
+        },
+      }),
+    },
+    { method: "GET", match: "/api/executions/77", respond: () => ({ body: finished }) },
+    // 抽屉实时跟随：直接推送终态事件，避免遗留 fallback 轮询。
+    {
+      method: "GET",
+      match: "/api/executions/77/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(finished)}\n\n`,
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.click(screen.getByTestId("start-production"));
+  // Header 刷新后展示运行中的生产 Execution。
+  await screen.findByTestId("running-execution");
+  expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
+
+  // 自动切到执行记录 Tab 并打开新 Execution 的详情抽屉。
+  await screen.findByText("Execution #77");
+  expect(
+    fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1/executions?limit=50"),
+  ).toBe(true);
+});
+
+it("blocks the publish confirmation when the gate rejects the version", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_worker_id: 3 });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    publishGateRoute(1, 10, {
+      allowed: false,
+      reason: "not_tested_on_production_worker",
+      last_test: null,
+    }),
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions/10/publish",
+      respond: () => {
+        throw new Error("publish must not be issued when the gate rejects");
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.click(screen.getByTestId("publish-version"));
+  await screen.findByTestId("publish-gate-blocked");
+  expect(screen.getByTestId("publish-gate-blocked").textContent).toContain("尚未在生产 Worker 上测试");
+  expect((screen.getByTestId("confirm-publish") as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url).endsWith("/publish") && init?.method === "POST",
+    ),
+  ).toBe(false);
+});
+
+it("stops production with terminate via the stop modal", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    production_state: "running",
+    running_execution_id: 77,
+    running_version_id: 10,
+  });
+  let stopBody: string | null = null;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/production/stop",
+      respond: (body) => {
+        stopBody = body;
+        return {
+          body: { ...adapter, production_state: "stopped", running_execution_id: null, running_version_id: null },
+        };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
+
+  fireEvent.click(screen.getByTestId("stop-production"));
+  fireEvent.click(await screen.findByTestId("stop-mode-terminate"));
+
+  await waitFor(() => {
+    expect(screen.getByTestId("production-state").textContent).toBe("生产：已停止");
+  });
+  expect(JSON.parse(stopBody ?? "")).toEqual({ mode: "terminate" });
+  // 停止后运行中 Execution 标签消失，启动按钮重新可用。
+  expect(screen.queryByTestId("running-execution")).toBeNull();
+  expect(screen.getByTestId("start-production")).toBeTruthy();
+});
+
+it("hides archived adapters from the active catalog and disables editing when archived", async () => {
+  const archived = makeAdapter({ archived_at: "2026-08-11T01:00:00Z" });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [archived] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+  ]);
+
+  render(<App />);
+  // 活跃视图默认不展示已归档 Adapter。
+  await waitFor(() => {
+    expect(screen.queryByTestId("adapter-item")).toBeNull();
+  });
+
+  // 切到已归档视图后可见并可选中。
+  fireEvent.click(screen.getByText("已归档"));
+  fireEvent.click(await screen.findByTestId("adapter-item"));
+  await screen.findByTestId("archived-notice");
+  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByTestId("publish-version") as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByTestId("start-production")).toBeNull();
+});
+
