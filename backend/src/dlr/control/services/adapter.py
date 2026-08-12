@@ -3,6 +3,12 @@
 Owns transactions, version numbering and publish semantics. Pointer fields
 (``latest_version_id`` / ``published_version_id``) are only ever modified
 here, never from public API input.
+
+M3.2 adds the production lifecycle: the publish gate, Start/Stop of the
+production entry, Unpublish, Archive/Restore and Clone. The stored
+``production_state`` only ever holds ``idle/running/stopped``; richer UI
+states (未发布/待启动/异常/已归档) are derived from pointers, the active
+Production Execution and ``archived_at`` on the client side.
 """
 
 from fastapi import HTTPException
@@ -10,8 +16,21 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dlr.control.models import Adapter, AdapterVersion, Execution
-from dlr.control.schemas.adapter import AdapterCreate, AdapterUpdate, VersionCreate
+from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
+from dlr.control.models.platform import AdapterCredentialBinding
+from dlr.control.schemas.adapter import (
+    AdapterCreate,
+    AdapterResponse,
+    AdapterUpdate,
+    CloneRequest,
+    PublishGateLastTest,
+    PublishGateResponse,
+    VersionCreate,
+)
+
+# Statuses that make a Production Execution "active" (at most one per
+# Adapter, enforced by the partial unique index in migration 0003).
+ACTIVE_PRODUCTION_STATUSES = ("pending", "running")
 
 
 def domain_error(status_code: int, code: str, message: str) -> HTTPException:
@@ -32,6 +51,35 @@ def get_adapter(session: Session, adapter_id: int) -> Adapter:
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     return adapter
+
+
+def _require_not_archived(adapter: Adapter) -> None:
+    """Archived Adapters are read-only: no Save/Publish/Test/Start (M3.2)."""
+    if adapter.archived_at is not None:
+        raise domain_error(409, "adapter_archived", "Adapter is archived")
+
+
+def _active_production_execution(session: Session, adapter_id: int) -> Execution | None:
+    """The Adapter's active Production Execution, or None."""
+    return session.scalar(
+        select(Execution)
+        .where(
+            Execution.adapter_id == adapter_id,
+            Execution.trigger == "production",
+            Execution.status.in_(ACTIVE_PRODUCTION_STATUSES),
+        )
+        .limit(1)
+    )
+
+
+def adapter_response(session: Session, adapter: Adapter) -> AdapterResponse:
+    """Serialize one Adapter including the derived running pointers."""
+    response = AdapterResponse.model_validate(adapter)
+    active = _active_production_execution(session, adapter.id)
+    if active is not None:
+        response.running_version_id = active.version_id
+        response.running_execution_id = active.id
+    return response
 
 
 def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
@@ -61,6 +109,15 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
         adapter.name = data.name
     if data.description is not None:
         adapter.description = data.description
+    # Explicit null clears the pointer (invalidating the publish gate by
+    # design); omitting the field leaves it unchanged.
+    if "production_worker_id" in data.model_fields_set:
+        if (
+            data.production_worker_id is not None
+            and session.get(Worker, data.production_worker_id) is None
+        ):
+            raise domain_error(404, "worker_not_found", "Worker not found")
+        adapter.production_worker_id = data.production_worker_id
     try:
         session.commit()
     except IntegrityError:
@@ -120,6 +177,7 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    _require_not_archived(adapter)
     max_seq = session.scalar(
         select(func.max(AdapterVersion.seq)).where(AdapterVersion.adapter_id == adapter_id)
     )
@@ -139,20 +197,277 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
     return version
 
 
+def _evaluate_publish_gate(
+    session: Session, adapter: Adapter, version_id: int
+) -> PublishGateResponse:
+    """Gate rule: the target version's most recent test run on the current
+    production Worker must be ``succeeded``. Historical test rows without a
+    target Worker never satisfy the gate and require a re-test.
+    """
+    worker_id = adapter.production_worker_id
+    if worker_id is None:
+        return PublishGateResponse(allowed=False, reason="no_production_worker")
+    last = session.scalar(
+        select(Execution)
+        .where(
+            Execution.adapter_id == adapter.id,
+            Execution.version_id == version_id,
+            Execution.trigger == "manual",
+            Execution.target_worker_id == worker_id,
+        )
+        .order_by(Execution.id.desc())
+        .limit(1)
+    )
+    if last is None:
+        return PublishGateResponse(allowed=False, reason="not_tested_on_production_worker")
+    last_test = PublishGateLastTest(
+        execution_id=last.id, status=last.status, ended_at=last.ended_at
+    )
+    if last.status != "succeeded":
+        return PublishGateResponse(
+            allowed=False, reason="last_test_not_succeeded", last_test=last_test
+        )
+    return PublishGateResponse(allowed=True, last_test=last_test)
+
+
+def publish_gate(session: Session, adapter_id: int, version_id: int) -> PublishGateResponse:
+    """Read-only gate evaluation for the Publish confirmation dialog."""
+    adapter = get_adapter(session, adapter_id)
+    version = get_version(session, adapter_id, version_id)
+    return _evaluate_publish_gate(session, adapter, version.id)
+
+
 def publish_version(session: Session, adapter_id: int, version_id: int) -> Adapter:
     """Point published_version_id at an existing version of this Adapter.
 
-    Publish never creates or mutates versions and never touches latest;
-    re-publishing the same version is idempotent.
+    Publish never creates or mutates versions and never touches latest.
+    M3.2 enforces the publish gate server-side (409 ``publish_gate_locked``),
+    rejects publishing another version while production is active (no hot
+    switch), and rejects archived Adapters. Re-publishing the already
+    published version stays idempotent and gate-free.
     """
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    _require_not_archived(adapter)
     version = session.get(AdapterVersion, version_id)
     if version is None or version.adapter_id != adapter_id:
         raise domain_error(404, "version_not_found", "Version not found")
-    if adapter.published_version_id != version_id:
-        adapter.published_version_id = version_id
+    if adapter.published_version_id == version_id:
+        session.refresh(adapter)
+        return adapter
+    if _active_production_execution(session, adapter_id) is not None:
+        raise domain_error(
+            409,
+            "production_running",
+            "Stop production before publishing another version",
+        )
+    gate = _evaluate_publish_gate(session, adapter, version.id)
+    if not gate.allowed:
+        raise domain_error(
+            409,
+            "publish_gate_locked",
+            f"Publish gate locked: {gate.reason}",
+        )
+    adapter.published_version_id = version_id
     session.commit()
     session.refresh(adapter)
     return adapter
+
+
+# --- M3.2 production lifecycle --------------------------------------------------
+
+
+def _resolve_production_worker(session: Session, adapter: Adapter) -> Worker:
+    """The Adapter's production Worker, with the single-online default.
+
+    A configured Worker is returned regardless of its status (the caller
+    checks online-ness). Without one, the only online Worker is adopted and
+    written back to the Adapter; zero or multiple online Workers are errors.
+    """
+    if adapter.production_worker_id is not None:
+        worker = session.get(Worker, adapter.production_worker_id)
+        if worker is not None:
+            return worker
+        # The FK is ON DELETE SET NULL, so a missing row means the Worker
+        # was removed: fall through to the defaulting logic.
+    online = list(
+        session.scalars(
+            select(Worker).where(Worker.status == "online").order_by(Worker.id.asc())
+        ).all()
+    )
+    if len(online) == 1:
+        adapter.production_worker_id = online[0].id
+        return online[0]
+    if not online:
+        raise domain_error(409, "worker_offline", "No online Worker is available")
+    raise domain_error(
+        409,
+        "production_worker_required",
+        "Multiple online Workers exist; configure a production Worker first",
+    )
+
+
+def start_production(session: Session, adapter_id: int) -> Execution:
+    """Open the production entry: create the pending Production Execution.
+
+    Preconditions (all 409): not archived, a version is published, the
+    production Worker resolves and is online, and no active Production
+    Execution exists (also enforced by the DB unique index).
+    """
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    _require_not_archived(adapter)
+    if adapter.published_version_id is None:
+        raise domain_error(
+            409, "adapter_not_published", "Publish a version before starting production"
+        )
+    worker = _resolve_production_worker(session, adapter)
+    if worker.status != "online":
+        raise domain_error(409, "worker_offline", "The production Worker is offline")
+    if _active_production_execution(session, adapter_id) is not None:
+        raise domain_error(409, "production_already_running", "Production is already running")
+    execution = Execution(
+        adapter_id=adapter_id,
+        version_id=adapter.published_version_id,
+        trigger="production",
+        status="pending",
+        input=None,
+        target_worker_id=worker.id,
+    )
+    adapter.production_state = "running"
+    session.add(execution)
+    session.commit()
+    session.refresh(execution)
+    return execution
+
+
+def stop_production(session: Session, adapter_id: int, mode: str) -> Adapter:
+    """Close the production entry.
+
+    ``wait`` only flips the state (an active Execution still runs to
+    completion); ``terminate`` additionally cancels it: pending becomes
+    cancelled immediately, running gets the cancel flag the owning Worker
+    picks up on its next progress round trip.
+    """
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    adapter.production_state = "stopped"
+    if mode == "terminate":
+        active = _active_production_execution(session, adapter_id)
+        if active is not None:
+            if active.status == "pending":
+                active.status = "cancelled"
+                active.ended_at = func.now()
+            else:
+                active.cancel_requested = True
+    session.commit()
+    session.refresh(adapter)
+    return adapter
+
+
+def unpublish_adapter(session: Session, adapter_id: int) -> Adapter:
+    """Clear the published pointer; requires production to be stopped.
+
+    Idempotent when nothing is published. A still-active Production
+    Execution blocks Unpublish (409), matching the "Stop first" rule.
+    """
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    if adapter.published_version_id is None:
+        session.refresh(adapter)
+        return adapter
+    if _active_production_execution(session, adapter_id) is not None:
+        raise domain_error(409, "production_running", "Stop production before unpublishing")
+    adapter.published_version_id = None
+    session.commit()
+    session.refresh(adapter)
+    return adapter
+
+
+def archive_adapter(session: Session, adapter_id: int) -> Adapter:
+    """Archive the Adapter (read-only afterwards); requires production stopped.
+
+    Idempotent for already archived Adapters.
+    """
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    if adapter.archived_at is not None:
+        session.refresh(adapter)
+        return adapter
+    if (
+        adapter.production_state == "running"
+        or _active_production_execution(session, adapter_id) is not None
+    ):
+        raise domain_error(409, "production_running", "Stop production before archiving")
+    adapter.archived_at = func.now()
+    session.commit()
+    session.refresh(adapter)
+    return adapter
+
+
+def restore_adapter(session: Session, adapter_id: int) -> Adapter:
+    """Restore an archived Adapter; idempotent for non-archived ones."""
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    adapter.archived_at = None
+    session.commit()
+    session.refresh(adapter)
+    return adapter
+
+
+def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adapter:
+    """Copy an Adapter: working copy becomes v1, bindings are referenced.
+
+    The clone is unpublished, not running, without a production Worker.
+    language/code/requirements/runtime_config come from the source's latest
+    version; credential binding rows are copied by reference.
+    """
+    source = get_adapter(session, adapter_id)
+    existing = session.scalar(select(Adapter).where(Adapter.name == data.name))
+    if existing is not None:
+        raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
+    clone = Adapter(
+        name=data.name,
+        description=data.description if data.description is not None else source.description,
+        language=source.language,
+    )
+    session.add(clone)
+    try:
+        session.flush()  # assign clone.id before child rows
+    except IntegrityError:
+        session.rollback()
+        raise domain_error(409, "adapter_name_conflict", "Adapter name already exists") from None
+    if source.latest_version_id is not None:
+        version = session.get(AdapterVersion, source.latest_version_id)
+        if version is not None:
+            first = AdapterVersion(
+                adapter_id=clone.id,
+                seq=1,
+                code=version.code,
+                requirements=version.requirements,
+                runtime_config=version.runtime_config,
+            )
+            session.add(first)
+            session.flush()
+            clone.latest_version_id = first.id
+    bindings = session.scalars(
+        select(AdapterCredentialBinding).where(AdapterCredentialBinding.adapter_id == adapter_id)
+    ).all()
+    for binding in bindings:
+        session.add(
+            AdapterCredentialBinding(
+                adapter_id=clone.id,
+                env_key=binding.env_key,
+                credential_id=binding.credential_id,
+                field=binding.field,
+            )
+        )
+    session.commit()
+    session.refresh(clone)
+    return clone

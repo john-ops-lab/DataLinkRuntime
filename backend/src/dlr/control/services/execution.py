@@ -34,11 +34,37 @@ def compact_json_bytes(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+def _resolve_test_target(session: Session, adapter: Adapter) -> int | None:
+    """Scheduling target for a test run (M3.2).
+
+    A configured production Worker is always the target. Without one, the
+    only online Worker is adopted (and written back as the production
+    Worker); with multiple online Workers the caller must pick one first.
+    With no online Worker at all the target stays None so the historical
+    any-Worker claiming keeps working.
+    """
+    if adapter.production_worker_id is not None:
+        return adapter.production_worker_id
+    online = list(session.scalars(select(Worker).where(Worker.status == "online")).all())
+    if len(online) == 1:
+        adapter.production_worker_id = online[0].id
+        return online[0].id
+    if len(online) > 1:
+        raise domain_error(
+            409,
+            "production_worker_required",
+            "Multiple online Workers exist; configure a production Worker first",
+        )
+    return None
+
+
 def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -> Execution:
-    """Create a Manual Execution pinned to one immutable version."""
-    adapter = session.get(Adapter, adapter_id)
+    """Create a Manual (test) Execution pinned to one immutable version."""
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    if adapter.archived_at is not None:
+        raise domain_error(409, "adapter_archived", "Adapter is archived")
     # Oversized input is rejected before anything is persisted; it is never
     # truncated and executed.
     if len(compact_json_bytes(data.input)) > settings.execution_input_max_bytes:
@@ -62,6 +88,7 @@ def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -
         trigger="manual",
         status="pending",
         input=data.input,
+        target_worker_id=_resolve_test_target(session, adapter),
     )
     session.add(execution)
     session.commit()

@@ -37,12 +37,15 @@ class AdapterCreate(BaseModel):
 class AdapterUpdate(BaseModel):
     """Request body for PATCH /api/adapters/{adapter_id}.
 
-    Only metadata fields are editable; pointers, language and timestamps are
-    intentionally not part of this schema.
+    Only metadata and the production Worker pointer are editable; version
+    pointers, language and timestamps are intentionally not part of this
+    schema. Sending ``production_worker_id: null`` explicitly clears it
+    (omitting the field leaves it unchanged).
     """
 
     name: str | None = None
     description: str | None = None
+    production_worker_id: int | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -75,7 +78,12 @@ class VersionCreate(BaseModel):
 
 
 class AdapterResponse(BaseModel):
-    """Adapter representation returned by the API."""
+    """Adapter representation returned by the API.
+
+    ``running_version_id`` / ``running_execution_id`` are derived from the
+    Adapter's active Production Execution (at most one, enforced by the DB);
+    both are None whenever production has no pending/running Execution.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -85,6 +93,11 @@ class AdapterResponse(BaseModel):
     language: str
     latest_version_id: int | None
     published_version_id: int | None
+    production_worker_id: int | None
+    production_state: str
+    archived_at: datetime | None
+    running_version_id: int | None = None
+    running_execution_id: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -106,3 +119,50 @@ class VersionDetail(VersionSummary):
     code: str
     requirements: str
     runtime_config: dict[str, Any]
+
+
+class ProductionStopRequest(BaseModel):
+    """Request body for POST /api/adapters/{adapter_id}/production/stop.
+
+    ``wait`` only closes the production entry (the active Execution runs to
+    completion); ``terminate`` additionally cancels the active Execution.
+    """
+
+    mode: Literal["wait", "terminate"] = "wait"
+
+
+class CloneRequest(BaseModel):
+    """Request body for POST /api/adapters/{adapter_id}/clone.
+
+    The clone copies the working copy (latest version) as its v1 plus the
+    credential binding references; it starts unpublished and not running.
+    """
+
+    name: str
+    description: str | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> str:
+        return _validate_name(value)
+
+
+class PublishGateLastTest(BaseModel):
+    """The most recent test run of the target version on the production Worker."""
+
+    execution_id: int
+    status: str
+    ended_at: datetime | None
+
+
+class PublishGateResponse(BaseModel):
+    """Publish gate evaluation for one target version (M3.2).
+
+    ``reason`` is None exactly when ``allowed`` is true; stable reason codes:
+    ``no_production_worker``, ``not_tested_on_production_worker``,
+    ``last_test_not_succeeded``.
+    """
+
+    allowed: bool
+    reason: str | None = None
+    last_test: PublishGateLastTest | None = None
