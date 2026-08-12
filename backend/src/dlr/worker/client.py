@@ -107,15 +107,19 @@ class ControlClient:
 
     def report_progress(
         self, worker_id: int, execution_id: int, stdout_chunk: str, stderr_chunk: str
-    ) -> None:
+    ) -> bool:
         """Best-effort live-log upload (M3). Progress is never retried here;
         callers swallow failures so an Execution can never fail because its
         live logs could not be delivered. Uses a dedicated short timeout so
-        a stuck upload can never stretch the adapter execution deadline."""
-        self._expect(
+        a stuck upload can never stretch the adapter execution deadline.
+
+        Returns True when Control requested cancellation of this Execution
+        (M3.2); empty uploads are legal and double as the cancel poll."""
+        raw = self._expect(
             "POST",
             f"/api/workers/{worker_id}/executions/{execution_id}/progress",
             {"stdout_chunk": stdout_chunk, "stderr_chunk": stderr_chunk},
-            expected=204,
             timeout=self.PROGRESS_TIMEOUT_SECONDS,
         )
+        body = json.loads(raw) if raw else {}
+        return bool(body.get("cancel_requested", False))

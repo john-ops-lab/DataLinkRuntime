@@ -634,7 +634,7 @@ def test_blocking_progress_callback_cannot_delay_the_deadline(
 
     started = time.monotonic()
     try:
-        returncode, timed_out = executor._wait_with_progress(
+        returncode, timed_out, cancelled = executor._wait_with_progress(
             process,
             stdout_path,
             stderr_path,
@@ -648,6 +648,7 @@ def test_blocking_progress_callback_cannot_delay_the_deadline(
     elapsed = time.monotonic() - started
 
     assert timed_out is True
+    assert cancelled is False
     assert returncode == -1
     # 1s deadline plus the bounded final-drain wait (PROGRESS_DRAIN_SECONDS)
     # plus small tolerance; a synchronous callback would hang forever.

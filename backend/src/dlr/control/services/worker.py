@@ -7,7 +7,7 @@ parallel. Long polling simply retries the atomic claim until the deadline.
 
 import time
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
@@ -92,11 +92,24 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
 
 
 def try_claim(session: Session, worker_id: int) -> TaskPayload | None:
-    """One atomic claim attempt; None when no pending Execution is free."""
+    """One atomic claim attempt; None when no pending Execution is free.
+
+    M3.2 scheduling rules: Executions flagged for cancellation are never
+    claimed, and an Execution with a scheduling target may only be claimed
+    by that Worker (a NULL target stays claimable by any Worker, which keeps
+    historical rows working).
+    """
     get_worker(session, worker_id)
     execution = session.scalar(
         select(Execution)
-        .where(Execution.status == "pending")
+        .where(
+            Execution.status == "pending",
+            Execution.cancel_requested.is_(False),
+            or_(
+                Execution.target_worker_id.is_(None),
+                Execution.target_worker_id == worker_id,
+            ),
+        )
         .order_by(Execution.created_at.asc(), Execution.id.asc())
         .with_for_update(skip_locked=True)
         .limit(1)

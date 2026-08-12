@@ -26,8 +26,10 @@ class ExecutionResponse(BaseModel):
     adapter_id: int
     version_id: int
     worker_id: int | None
+    target_worker_id: int | None
     trigger: str
     status: str
+    cancel_requested: bool
     input: Any
     output: Any = None
     output_size: int | None
@@ -51,7 +53,7 @@ class ExecutionResultReport(BaseModel):
     misbehaving client can never store oversized or half-broken payloads.
     """
 
-    status: Literal["succeeded", "failed", "timeout"]
+    status: Literal["succeeded", "failed", "timeout", "cancelled"]
     output: Any = None
     output_size: int | None = None
     output_truncated: bool = False
@@ -72,6 +74,16 @@ class ProgressReport(BaseModel):
 
     stdout_chunk: str = ""
     stderr_chunk: str = ""
+
+
+class ProgressAck(BaseModel):
+    """Acknowledgement of one progress upload (M3.2).
+
+    Carries the cancel flag so the owning Worker learns about a cancel
+    request on its normal live-log round trip, without an extra endpoint.
+    """
+
+    cancel_requested: bool
 
 
 class ExecutionSummary(BaseModel):

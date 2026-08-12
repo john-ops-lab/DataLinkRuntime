@@ -10,6 +10,11 @@ M3 adds an optional progress callback: while the subprocess runs, newly
 appended stdout/stderr bytes are uploaded about once per second. Progress is
 best effort — failures are logged and never change the Execution outcome,
 and the final result report stays the authoritative source of truth.
+
+M3.2 turns the callback into a cancel channel: it returns whether Control
+requested cancellation, and is invoked once per poll slice even without new
+output so a silent subprocess can still be cancelled. On cancel the whole
+process group is killed and the final report uses status ``cancelled``.
 """
 
 import json
@@ -43,8 +48,9 @@ PROGRESS_POLL_SECONDS = 1.0
 # so a wedged upload must never delay the final result for longer than this.
 PROGRESS_DRAIN_SECONDS = 1.0
 
-# Receives already redacted (stdout_chunk, stderr_chunk); see run().
-ProgressCallback = Callable[[str, str], None]
+# Receives already redacted (stdout_chunk, stderr_chunk) and returns whether
+# Control requested cancellation of this Execution (M3.2); see run().
+ProgressCallback = Callable[[str, str], bool]
 
 # Basic platform variables the adapter subprocess may inherit. Everything
 # else (DLR_WORKER_TOKEN, DLR_ADMIN_TOKEN, DATABASE_URL, Control settings)
@@ -169,11 +175,18 @@ class _ProgressUploader:
         self._idle = threading.Condition(self._lock)
         self._pending: tuple[str, str] = ("", "")
         self._in_flight = False
+        self._cancel = threading.Event()
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel.is_set()
 
     def submit(self, stdout_chunk: str, stderr_chunk: str) -> None:
-        """Non-blocking: merge into the pending payload, ensure one upload."""
-        if not stdout_chunk and not stderr_chunk:
-            return
+        """Non-blocking: merge into the pending payload, ensure one upload.
+
+        Empty submissions are kept: they double as the cancel poll so a
+        subprocess without any output can still observe a cancel request.
+        """
         with self._lock:
             out, err = self._pending
             self._pending = (out + stdout_chunk, err + stderr_chunk)
@@ -202,11 +215,13 @@ class _ProgressUploader:
             with self._lock:
                 stdout_chunk, stderr_chunk = self._pending
                 self._pending = ("", "")
-            if stdout_chunk or stderr_chunk:
-                try:
-                    self._callback(stdout_chunk, stderr_chunk)
-                except Exception:  # noqa: BLE001 - progress never fails a run
-                    logger.warning("progress upload failed; continuing execution", exc_info=True)
+            # Always invoke (even with empty chunks): the round trip is the
+            # cancel channel, so a silent subprocess still gets polled.
+            try:
+                if self._callback(stdout_chunk, stderr_chunk):
+                    self._cancel.set()
+            except Exception:  # noqa: BLE001 - progress never fails a run
+                logger.warning("progress upload failed; continuing execution", exc_info=True)
             with self._lock:
                 if self._pending == ("", ""):
                     self._in_flight = False
@@ -258,20 +273,22 @@ def _wait_with_progress(
     stderr_path: Path,
     timeout: int,
     progress_callback: ProgressCallback | None,
-) -> tuple[int, bool]:
+) -> tuple[int, bool, bool]:
     """Wait for the adapter subprocess, uploading live log chunks.
 
-    Returns ``(returncode, timed_out)``. Without a callback this degrades to
-    the plain M2 blocking wait. Callback invocations receive redacted text
-    and happen on a background uploader thread: a slow or failing upload can
-    never delay the deadline checks, and progress never fails the Execution.
+    Returns ``(returncode, timed_out, cancelled)``. Without a callback this
+    degrades to the plain M2 blocking wait (no cancel channel). Callback
+    invocations receive redacted text and happen on a background uploader
+    thread: a slow or failing upload can never delay the deadline checks,
+    and progress never fails the Execution. When the callback reports a
+    cancel request the process group is killed at the next poll slice.
     """
     if progress_callback is None:
         try:
-            return process.wait(timeout=timeout), False
+            return process.wait(timeout=timeout), False, False
         except subprocess.TimeoutExpired:
             _kill_process_group(process)
-            return -1, True
+            return -1, True, False
 
     deadline = time.monotonic() + timeout
     stdout_tailer = _StreamTailer(stdout_path)
@@ -296,7 +313,7 @@ def _wait_with_progress(
                 _kill_process_group(process)
                 emit(final=True)
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
-                return -1, True
+                return -1, True, False
             # Wait at most one poll slice, and never past the execution
             # deadline; uploads run off-thread and can never delay this loop.
             wait_slice = min(PROGRESS_POLL_SECONDS, remaining)
@@ -304,10 +321,15 @@ def _wait_with_progress(
                 returncode = process.wait(timeout=wait_slice)
                 emit(final=True)  # final drain so the live view matches the end state
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
-                return returncode, False
+                return returncode, False, False
             except subprocess.TimeoutExpired:
                 pass
             emit()
+            if uploader.cancel_requested:
+                _kill_process_group(process)
+                emit(final=True)
+                uploader.drain(PROGRESS_DRAIN_SECONDS)
+                return -1, False, True
     finally:
         stdout_tailer.close()
         stderr_tailer.close()
@@ -321,7 +343,9 @@ def run(
     """Run one task payload to completion; always returns a report dict.
 
     ``progress_callback`` receives redacted live stdout/stderr chunks while
-    the subprocess runs; it never influences the returned final report.
+    the subprocess runs and returns the Control-side cancel flag; a cancel
+    request kills the subprocess and yields a ``cancelled`` report. It never
+    influences any other part of the final report.
     """
     execution_id = int(payload["execution_id"])
     adapter_id = int(payload["adapter_id"])
@@ -350,6 +374,7 @@ def run(
     workspace = Path(tempfile.mkdtemp(prefix=f"dlr-exec-{execution_id}-"))
     output_raw: bytes | None = None
     timed_out = False
+    cancelled = False
     returncode = 0
     try:
         (workspace / "adapter.py").write_text(str(payload["code"]), encoding="utf-8")
@@ -371,13 +396,13 @@ def run(
                 env=child_env(),
                 cwd=str(workspace),
             )
-            returncode, timed_out = _wait_with_progress(
+            returncode, timed_out, cancelled = _wait_with_progress(
                 process, stdout_path, stderr_path, timeout, progress_callback
             )
 
         stdout_raw = stdout_path.read_bytes()
         stderr_raw = stderr_path.read_bytes()
-        if not timed_out and returncode == 0:
+        if not timed_out and not cancelled and returncode == 0:
             output_file = workspace / "output.json"
             output_raw = output_file.read_bytes() if output_file.exists() else None
     finally:
@@ -392,6 +417,8 @@ def run(
         "stderr_truncated": stderr_truncated,
     }
 
+    if cancelled:
+        return base | {"status": "cancelled", "error": "execution cancelled"}
     if timed_out:
         return base | {
             "status": "timeout",

@@ -206,14 +206,18 @@ def _append_stream(existing: str, already_truncated: bool, chunk: str) -> tuple[
 
 def apply_progress(
     session: Session, worker_id: int, execution_id: int, report: ProgressReport
-) -> None:
+) -> bool:
     """Append best-effort stdout/stderr chunks from the owning Worker.
 
     Progress never changes Execution status and never touches output, error,
     ended_at or duration_ms. After the Execution reached a terminal state the
-    call is a 204 no-op, so the tail of the progress stream can never
+    chunks are dropped, so the tail of the progress stream can never
     overwrite the M2 final result; ownership is checked first, so a
     non-owning Worker still gets 409 even for terminal Executions.
+
+    Returns the current ``cancel_requested`` flag: the progress round trip
+    doubles as the cancel channel (M3.2), and empty uploads are accepted as
+    pure cancel polls (no commit happens when nothing changed).
     """
     execution = (
         session.query(Execution)
@@ -226,19 +230,49 @@ def apply_progress(
     if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
     if execution.status != "running":
-        # Terminal: accept silently. The final result is authoritative.
-        return
-    stdout, stdout_truncated = _append_stream(
-        execution.stdout, execution.stdout_truncated, report.stdout_chunk
+        # Terminal: drop the chunks, still answer the cancel flag.
+        return execution.cancel_requested
+    if report.stdout_chunk or report.stderr_chunk:
+        stdout, stdout_truncated = _append_stream(
+            execution.stdout, execution.stdout_truncated, report.stdout_chunk
+        )
+        stderr, stderr_truncated = _append_stream(
+            execution.stderr, execution.stderr_truncated, report.stderr_chunk
+        )
+        execution.stdout = stdout
+        execution.stdout_truncated = stdout_truncated
+        execution.stderr = stderr
+        execution.stderr_truncated = stderr_truncated
+        session.commit()
+    return execution.cancel_requested
+
+
+def cancel_execution(session: Session, execution_id: int) -> Execution:
+    """Request cancellation of one Execution (M3.2).
+
+    Idempotent: pending Executions become ``cancelled`` immediately (they
+    can never be claimed again), running Executions get ``cancel_requested``
+    set so the owning Worker kills the subprocess on its next progress round
+    trip and reports ``cancelled``, and terminal Executions are returned
+    unchanged.
+    """
+    execution = (
+        session.query(Execution)
+        .filter(Execution.id == execution_id)
+        .with_for_update()
+        .one_or_none()
     )
-    stderr, stderr_truncated = _append_stream(
-        execution.stderr, execution.stderr_truncated, report.stderr_chunk
-    )
-    execution.stdout = stdout
-    execution.stdout_truncated = stdout_truncated
-    execution.stderr = stderr
-    execution.stderr_truncated = stderr_truncated
+    if execution is None:
+        raise domain_error(404, "execution_not_found", "Execution not found")
+    if execution.status == "pending":
+        execution.status = "cancelled"
+        execution.ended_at = func.now()
+    elif execution.status == "running":
+        execution.cancel_requested = True
+    # Terminal states are never rewritten.
     session.commit()
+    session.refresh(execution)
+    return execution
 
 
 def list_adapter_executions(
