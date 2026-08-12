@@ -119,22 +119,60 @@ class _SecretHoldback:
     small held-back tail (at most ``max_secret_len - 1`` characters) before
     redacting, and only emits the part that can no longer complete a split
     Secret. The remainder is flushed once the subprocess exits.
+
+    A held tail that stays unchanged past ``HOLD_MAX_SECONDS`` is released on
+    an empty push: a split Secret can only complete via the next read, so
+    holding longer just stalls the live log of a long-silent subprocess.
+    Tails that are still a suffix of a Secret value stay held to the very
+    end, because only they could genuinely complete a split Secret later.
     """
+
+    # Progress reads happen about once per second; two poll slices of silence
+    # already exceed any realistic split-Secret window.
+    HOLD_MAX_SECONDS = 2.0
 
     def __init__(self, secret_values: Iterable[str] | None = None) -> None:
         self._secret_values = _env_secret_values() if secret_values is None else list(secret_values)
         self._held = ""
         self._hold = max(_max_secret_length(self._secret_values) - 1, 0)
+        self._held_since: float | None = None
+
+    def _could_complete_a_secret(self) -> bool:
+        """True when a suffix of the held tail is a Secret prefix: only then
+        could upcoming output complete a split Secret with the held text."""
+        held = self._held
+        for value in self._secret_values:
+            if not value:
+                continue
+            for k in range(min(len(held), len(value) - 1), 0, -1):
+                if value.startswith(held[len(held) - k :]):
+                    return True
+        return False
 
     def push(self, text: str) -> str:
+        now = time.monotonic()
+        if (
+            not text
+            and self._held
+            and self._held_since is not None
+            and now - self._held_since > self.HOLD_MAX_SECONDS
+            and not self._could_complete_a_secret()
+        ):
+            released, self._held, self._held_since = self._held, "", None
+            return released
         redacted = redact_secrets(self._held + text, self._secret_values)
         keep = min(self._hold, len(redacted))
         self._held = redacted[len(redacted) - keep :]
+        if text and keep:
+            self._held_since = now
+        elif not keep:
+            self._held_since = None
         return redacted[: len(redacted) - keep]
 
     def flush(self) -> str:
         text = redact_secrets(self._held, self._secret_values)
         self._held = ""
+        self._held_since = None
         return text
 
 
