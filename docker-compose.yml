@@ -25,8 +25,9 @@ services:
       DLR_WORKER_TOKEN: ${DLR_WORKER_TOKEN:?set DLR_WORKER_TOKEN (see .env.example)}
       # M3.2 Secret Store master key: derives the Fernet key for credential
       # encryption. Only Control decrypts (at claim time); never persisted.
-      # Local dev default is NOT suitable for production deployments.
-      DLR_MASTER_KEY: ${DLR_MASTER_KEY:-local-dev-master-key}
+      # Empty by default: credential APIs stay disabled (503) until the
+      # operator explicitly configures a deployment-specific key.
+      DLR_MASTER_KEY: ${DLR_MASTER_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

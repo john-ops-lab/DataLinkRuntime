@@ -20,6 +20,7 @@ from dlr.control.schemas.execution import (
     ProgressReport,
 )
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.execution_cancellation import lock_execution, request_cancellation
 
 # Statuses after which an Execution never changes again.
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
@@ -44,7 +45,11 @@ def _resolve_test_target(session: Session, adapter: Adapter) -> int | None:
     any-Worker claiming keeps working.
     """
     if adapter.production_worker_id is not None:
-        return adapter.production_worker_id
+        worker = session.get(Worker, adapter.production_worker_id)
+        if worker is not None:
+            if worker.status != "online":
+                raise domain_error(409, "worker_offline", "The production Worker is offline")
+            return worker.id
     online = list(session.scalars(select(Worker).where(Worker.status == "online")).all())
     if len(online) == 1:
         adapter.production_worker_id = online[0].id
@@ -283,19 +288,10 @@ def cancel_execution(session: Session, execution_id: int) -> Execution:
     trip and reports ``cancelled``, and terminal Executions are returned
     unchanged.
     """
-    execution = (
-        session.query(Execution)
-        .filter(Execution.id == execution_id)
-        .with_for_update()
-        .one_or_none()
-    )
+    execution = lock_execution(session, execution_id)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
-    if execution.status == "pending":
-        execution.status = "cancelled"
-        execution.ended_at = func.now()
-    elif execution.status == "running":
-        execution.cancel_requested = True
+    request_cancellation(execution)
     # Terminal states are never rewritten.
     session.commit()
     session.refresh(execution)

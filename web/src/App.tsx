@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor from "@monaco-editor/react";
-import { Button, Checkbox, ConfigProvider, Modal, Segmented, Space, Tabs } from "antd";
+import { Button, ConfigProvider, Modal, Segmented, Space, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -14,8 +14,9 @@ import TestRunPanel from "./components/TestRunPanel";
 import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
 import WorkerStatus from "./components/WorkerStatus";
 import WorkbenchHeader from "./components/WorkbenchHeader";
+import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
 import { statusLabel } from "./status";
-import type { Adapter, PublishGate, VersionDetail, VersionSummary } from "./types";
+import type { Adapter, PublishGate, VersionDetail, VersionSummary, Worker } from "./types";
 
 type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
 
@@ -179,6 +180,11 @@ function AdapterConsole() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [productionWorkerId, setProductionWorkerId] = useState<number | null>(null);
+  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [workersLoading, setWorkersLoading] = useState(true);
+  const [workersError, setWorkersError] = useState<string | null>(null);
+  const [workerRetestAdapterIds, setWorkerRetestAdapterIds] = useState<Set<number>>(new Set());
 
   const [snapshot, setSnapshot] = useState<EditorSnapshot>({
     code: "",
@@ -202,18 +208,17 @@ function AdapterConsole() {
   const [activeTabKey, setActiveTabKey] = useState<WorkbenchTabKey>("edit");
   // Start 创建的 Production Execution id：执行记录页自动打开其详情抽屉。
   const [autoOpenExecutionId, setAutoOpenExecutionId] = useState<number | null>(null);
-  // 发布确认框：门禁信息在打开时拉取；热切换需额外勾选确认。
+  // 发布确认框：门禁信息在打开时拉取。发布只更新生产目标，
+  // 不会停止或替换当前 Production Execution。
   const [publishConfirm, setPublishConfirm] = useState<PublishConfirmState | null>(null);
-  const [hotSwitchConfirmed, setHotSwitchConfirmed] = useState(false);
   // M3.2：编辑页次级配置 Tabs 与系统设置抽屉（凭据管理 + Python 包源）。
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
   const [diffView, setDiffView] = useState<DiffViewState | null>(null);
-  // Known version seq per adapter, cached once a version list has loaded (and
-  // kept up to date on save/publish). The cache survives adapter switches, so
-  // catalog summaries never degrade back to a stateless placeholder.
-  const [latestSeqById, setLatestSeqById] = useState<Map<number, number>>(new Map());
-  const [publishedSeqById, setPublishedSeqById] = useState<Map<number, number>>(new Map());
+  // Known version-id -> seq values, cached once a version list has loaded and
+  // kept up to date on save/publish. Unvisited Catalog rows use server-derived
+  // production seq fields, so this cache never causes extra list requests.
+  const [versionSeqById, setVersionSeqById] = useState<Map<number, number>>(new Map());
   const { preference: themePreference, resolvedTheme: editorTheme, setPreference: setThemePreference } = useMonacoTheme();
   // Monotonic guard: only the newest content-loading request may commit state, so
   // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
@@ -223,6 +228,9 @@ function AdapterConsole() {
     snapshot.code !== baseline.code ||
     snapshot.requirements !== baseline.requirements ||
     snapshot.runtimeConfigText !== baseline.runtimeConfigText;
+  const selectedAdapterId = selected?.id ?? null;
+  const selectedProductionState = selected?.production_state ?? null;
+  const activeProductionExecutionId = selected?.running_execution_id ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -242,6 +250,88 @@ function AdapterConsole() {
     }
 
     void checkHealth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Stop(wait/terminate) and a naturally completed production run both leave
+  // an active pointer until the Worker reports a terminal status. Reconcile
+  // only while that pointer exists; cleanup prevents an old Adapter response
+  // from overwriting a newly selected one.
+  useEffect(() => {
+    if (busy || selectedAdapterId === null || activeProductionExecutionId === null) {
+      return;
+    }
+    const adapterId = selectedAdapterId;
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    async function refreshActiveProduction() {
+      try {
+        const refreshed = await api.getAdapter(adapterId);
+        if (cancelled) {
+          return;
+        }
+        setSelected((current) => (current?.id === adapterId ? refreshed : current));
+        setAdapters((current) =>
+          current.map((item) => (item.id === adapterId ? refreshed : item)),
+        );
+        if (refreshed.running_execution_id != null) {
+          timeoutId = setTimeout(
+            () => void refreshActiveProduction(),
+            PRODUCTION_REFRESH_POLICY.pollIntervalMs,
+          );
+        }
+      } catch {
+        // A transient read failure must not unlock lifecycle actions. Keep the
+        // last authoritative active pointer and retry quietly.
+        if (!cancelled) {
+          timeoutId = setTimeout(
+            () => void refreshActiveProduction(),
+            PRODUCTION_REFRESH_POLICY.pollIntervalMs,
+          );
+        }
+      }
+    }
+
+    timeoutId = setTimeout(
+      () => void refreshActiveProduction(),
+      PRODUCTION_REFRESH_POLICY.pollIntervalMs,
+    );
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [activeProductionExecutionId, busy, selectedAdapterId, selectedProductionState]);
+
+  // Catalog, Worker badge and Adapter settings share one Worker collection;
+  // no component performs its own request and no Adapter row causes N+1.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadWorkers() {
+      setWorkersLoading(true);
+      setWorkersError(null);
+      try {
+        const list = await api.listWorkers();
+        if (!cancelled) {
+          setWorkers(list);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setWorkersError(errorMessage(err));
+        }
+      } finally {
+        if (!cancelled) {
+          setWorkersLoading(false);
+        }
+      }
+    }
+
+    void loadWorkers();
     return () => {
       cancelled = true;
     };
@@ -280,21 +370,16 @@ function AdapterConsole() {
     setBaseline(next);
   }
 
-  // Cache the version_id -> seq knowledge for one adapter so catalog rows keep
-  // showing real summaries after the user switches to another adapter.
-  function recordVersionSeqs(adapterId: number, list: VersionSummary[], pointer: Adapter) {
-    const nextLatest = new Map(latestSeqById);
-    const nextPublished = new Map(publishedSeqById);
-    for (const version of list) {
-      if (version.id === pointer.latest_version_id) {
-        nextLatest.set(adapterId, version.seq);
+  // Cache every known version_id -> seq. Unvisited Catalog rows use the
+  // server-provided published/running seq fields instead of extra requests.
+  function recordVersionSeqs(list: VersionSummary[]) {
+    setVersionSeqById((current) => {
+      const next = new Map(current);
+      for (const version of list) {
+        next.set(version.id, version.seq);
       }
-      if (version.id === pointer.published_version_id) {
-        nextPublished.set(adapterId, version.seq);
-      }
-    }
-    setLatestSeqById(nextLatest);
-    setPublishedSeqById(nextPublished);
+      return next;
+    });
   }
 
   function confirmDiscard(): boolean {
@@ -311,6 +396,7 @@ function AdapterConsole() {
     setSelected(adapter);
     setName(adapter.name);
     setDescription(adapter.description);
+    setProductionWorkerId(adapter.production_worker_id ?? null);
     setError(null);
     setVersions([]);
     setSelectedVersionId(null);
@@ -327,7 +413,7 @@ function AdapterConsole() {
         return;
       }
       setVersions(list);
-      recordVersionSeqs(adapter.id, list, adapter);
+      recordVersionSeqs(list);
       if (adapter.latest_version_id === null) {
         setSelectedVersionId(null);
         applySnapshot({ code: STARTER_CODE, requirements: "", runtimeConfigText: "{}" });
@@ -448,7 +534,7 @@ function AdapterConsole() {
       setVersions((current) => [saved, ...current]);
       // The new immutable version is the latest one: keep the cached catalog
       // summary in sync without waiting for the best-effort list refresh.
-      setLatestSeqById((current) => new Map(current).set(selected.id, saved.seq));
+      setVersionSeqById((current) => new Map(current).set(saved.id, saved.seq));
       setSelectedVersionId(saved.id);
       applySnapshot(versionSnapshot(saved));
       try {
@@ -481,7 +567,6 @@ function AdapterConsole() {
     const targetAdapterId = selected.id;
     const targetVersionId = selectedVersionId;
     const seq = versions.find((version) => version.id === targetVersionId)?.seq ?? null;
-    setHotSwitchConfirmed(false);
     setPublishConfirm({ versionId: targetVersionId, versionSeq: seq, gate: null, gateError: null });
     void (async () => {
       try {
@@ -514,9 +599,10 @@ function AdapterConsole() {
       // Keep the cached catalog summary in sync with the new published pointer.
       const publishedSeq = versions.find((version) => version.id === targetVersionId)?.seq;
       if (publishedSeq !== undefined) {
-        setPublishedSeqById((current) => new Map(current).set(selected.id, publishedSeq));
+        setVersionSeqById((current) => new Map(current).set(targetVersionId, publishedSeq));
       }
       setSelected(refreshed);
+      setProductionWorkerId(refreshed.production_worker_id ?? productionWorkerId);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
     } catch (err) {
       setError(errorMessage(err));
@@ -548,6 +634,7 @@ function AdapterConsole() {
         };
       }
       setSelected(refreshed);
+      setProductionWorkerId(refreshed.production_worker_id ?? productionWorkerId);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
       setAutoOpenExecutionId(execution.id);
       setActiveTabKey("history");
@@ -588,11 +675,6 @@ function AdapterConsole() {
       const refreshed = await api.unpublishAdapter(selected.id);
       setSelected(refreshed);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-      setPublishedSeqById((current) => {
-        const next = new Map(current);
-        next.delete(selected.id);
-        return next;
-      });
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -787,6 +869,47 @@ function AdapterConsole() {
     }
   }
 
+  async function handleUpdateProductionWorker() {
+    if (
+      !selected ||
+      busy ||
+      productionWorkerId === (selected.production_worker_id ?? null)
+    ) {
+      return;
+    }
+    const previousWorkerId = selected.production_worker_id ?? null;
+    setBusy(true);
+    try {
+      setError(null);
+      const refreshed = await api.updateAdapter(selected.id, {
+        production_worker_id: productionWorkerId,
+      });
+      setSelected(refreshed);
+      setProductionWorkerId(refreshed.production_worker_id ?? null);
+      setAdapters((current) =>
+        current.map((item) => (item.id === refreshed.id ? refreshed : item)),
+      );
+      if ((refreshed.production_worker_id ?? null) !== previousWorkerId) {
+        setWorkerRetestAdapterIds((current) => new Set(current).add(refreshed.id));
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const handlePublishedVersionTestSucceeded = useCallback((adapterId: number) => {
+    setWorkerRetestAdapterIds((current) => {
+      if (!current.has(adapterId)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.delete(adapterId);
+      return next;
+    });
+  }, []);
+
   async function handleDelete() {
     if (!selected || busy) {
       return;
@@ -835,15 +958,6 @@ function AdapterConsole() {
   const isPublished =
     selectedVersionId !== null && selected?.published_version_id === selectedVersionId;
 
-  // 热切换拦截：生产运行中发布另一个版本时需要额外勾选确认。
-  const hotSwitch =
-    selected !== null &&
-    publishConfirm !== null &&
-    (selected.production_state ?? "idle") === "running" &&
-    selected.running_version_id !== null &&
-    selected.running_version_id !== undefined &&
-    selected.running_version_id !== publishConfirm.versionId;
-
   const healthDotClass =
     health === "ok"
       ? "health-dot-ok"
@@ -872,7 +986,7 @@ function AdapterConsole() {
           >
             系统设置
           </Button>
-          <WorkerStatus />
+          <WorkerStatus workers={workers} loading={workersLoading} error={workersError} />
         </div>
       </header>
 
@@ -889,8 +1003,8 @@ function AdapterConsole() {
           busy={busy}
           onSelect={handleSelectAdapter}
           onCreate={handleCreateAdapter}
-          latestSeqById={latestSeqById}
-          publishedSeqById={publishedSeqById}
+          versionSeqById={versionSeqById}
+          workers={workers}
         />
 
         <main className="workbench">
@@ -1035,6 +1149,7 @@ function AdapterConsole() {
                         contentReady={contentReady}
                         busy={busy}
                         onError={setError}
+                        onPublishedVersionTestSucceeded={handlePublishedVersionTestSucceeded}
                       />
                     ),
                   },
@@ -1063,12 +1178,21 @@ function AdapterConsole() {
         adapter={selected}
         name={name}
         description={description}
+        productionWorkerId={productionWorkerId}
+        workers={workers}
+        workersLoading={workersLoading}
+        workersError={workersError}
+        productionWorkerRetestRequired={
+          selected !== null && workerRetestAdapterIds.has(selected.id)
+        }
         busy={busy}
         contentReady={contentReady}
         onClose={() => setSettingsOpen(false)}
         onNameChange={setName}
         onDescriptionChange={setDescription}
+        onProductionWorkerChange={setProductionWorkerId}
         onUpdate={() => void handleUpdateDetails()}
+        onProductionWorkerUpdate={() => void handleUpdateProductionWorker()}
         onDelete={() => void handleDelete()}
         onUnpublish={() => void handleUnpublish()}
         onArchive={() => void handleArchive()}
@@ -1097,8 +1221,7 @@ function AdapterConsole() {
                 publishConfirm === null ||
                 publishConfirm.gate === null ||
                 !publishConfirm.gate.allowed ||
-                busy ||
-                (hotSwitch && !hotSwitchConfirmed)
+                busy
               }
               onClick={() => void handlePublishConfirmed()}
             >
@@ -1116,7 +1239,8 @@ function AdapterConsole() {
                   ? `v${publishConfirm.versionSeq}`
                   : `#${publishConfirm.versionId}`}
               </strong>
-              。发布指针立即生效；正在运行的生产执行不会自动切换版本。
+              。发布只更新生产目标；当前运行不会自动切换。如需运行新版本，
+              必须人工 Stop 并等待旧 Production Execution 安全结束后再 Start。
             </p>
             {publishConfirm.gateError !== null && (
               <p className="publish-gate-error" data-testid="publish-gate-error">
@@ -1140,21 +1264,6 @@ function AdapterConsole() {
                   {publishGateReasonText(publishConfirm.gate)}
                 </p>
               ))}
-            {hotSwitch && (
-              <div className="publish-hot-switch" data-testid="publish-hot-switch">
-                <p>
-                  生产运行中（Execution #{selected?.running_execution_id ?? "—"}）：本次发布将与正在运行的版本形成热切换，
-                  新版本需先停止再启动才会生效。
-                </p>
-                <Checkbox
-                  data-testid="hot-switch-confirm"
-                  checked={hotSwitchConfirmed}
-                  onChange={(event) => setHotSwitchConfirmed(event.target.checked)}
-                >
-                  我确认理解上述影响
-                </Checkbox>
-              </div>
-            )}
           </div>
         )}
       </Modal>

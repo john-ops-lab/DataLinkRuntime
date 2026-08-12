@@ -1,9 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import App, { EDITOR_THEME_STORAGE_KEY, TOKEN_STORAGE_KEY } from "./App";
+import App, {
+  EDITOR_THEME_STORAGE_KEY,
+  TOKEN_STORAGE_KEY,
+} from "./App";
 import { setAuthToken } from "./api";
 import { FALLBACK_POLICY } from "./fallback-policy";
+import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
 import type {
   Adapter,
   Execution,
@@ -200,6 +204,7 @@ afterEach(() => {
   // Restore the production fallback pace for tests that tightened it.
   FALLBACK_POLICY.pollIntervalMs = 3000;
   FALLBACK_POLICY.maxPolls = 60;
+  PRODUCTION_REFRESH_POLICY.pollIntervalMs = 3000;
 });
 
 // --- Admin token auth (M2) -----------------------------------------------------
@@ -2010,8 +2015,14 @@ it("follows the browser color scheme when the Monaco theme preference is 跟随�
   });
 });
 
-it("keeps catalog version summaries stable across adapter switches without extra requests", async () => {
-  const adapterA = makeAdapter({ id: 1, name: "adapter-a", latest_version_id: 10, published_version_id: 10 });
+it("keeps catalog production summaries stable across adapter switches without extra requests", async () => {
+  const adapterA = makeAdapter({
+    id: 1,
+    name: "adapter-a",
+    latest_version_id: 10,
+    published_version_id: 10,
+    published_version_seq: 1,
+  });
   const adapterB = makeAdapter({ id: 2, name: "adapter-b", latest_version_id: 20 });
   const fetchMock = stubFetch([
     healthRoute({ status: "ok", database: true }),
@@ -2045,27 +2056,27 @@ it("keeps catalog version summaries stable across adapter switches without extra
   render(<App />);
   await screen.findAllByTestId("adapter-item");
 
-  // 未加载版本明细：利用 latest/published 指针展示真实状态，已发布不被隐藏。
-  expect(subOf(0)).toBe("已保存 · 已发布");
-  expect(subOf(1)).toBe("已保存 · 未发布");
+  // 未加载版本明细：列表响应直接提供真实生产 vN，不伪造 seq。
+  expect(subOf(0)).toBe("待启动 · 生产 v1 待启动 · Worker 未配置");
+  expect(subOf(1)).toBe("未发布 · Worker 未配置");
 
   fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
   await screen.findByTestId("code-editor");
   await waitFor(() => {
-    expect(subOf(0)).toBe("v1 · Published v1");
+    expect(subOf(0)).toBe("待启动 · 生产 v1 待启动 · Worker 未配置");
   });
 
   // 切到 B：A 的已知摘要不得退化；B 展示真实的未发布状态。
   fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
   await waitFor(() => {
-    expect(subOf(1)).toBe("v2 · 未发布");
+    expect(subOf(1)).toBe("未发布 · Worker 未配置");
   });
-  expect(subOf(0)).toBe("v1 · Published v1");
+  expect(subOf(0)).toBe("待启动 · 生产 v1 待启动 · Worker 未配置");
 
   // 切回 A：缓存仍然生效。
   fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
   await screen.findByTestId("code-editor");
-  expect(subOf(0)).toBe("v1 · Published v1");
+  expect(subOf(0)).toBe("待启动 · 生产 v1 待启动 · Worker 未配置");
 
   // 不为展示 seq 增加额外请求：版本列表只在选中对应 Adapter 时加载。
   const bListCalls = fetchMock.mock.calls.filter(([url]) => String(url) === "/api/adapters/2/versions");
@@ -2166,6 +2177,457 @@ it("starts production, refreshes the header and auto-opens the new execution", a
   expect(
     fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1/executions?limit=50"),
   ).toBe(true);
+});
+
+it("publishes v3 while v2 keeps running and explains the manual Stop then Start boundary", async () => {
+  const runningV2 = makeAdapter({
+    latest_version_id: 30,
+    published_version_id: 20,
+    published_version_seq: 2,
+    production_worker_id: 3,
+    production_state: "running",
+    running_execution_id: 77,
+    running_version_id: 20,
+    running_version_seq: 2,
+  });
+  const publishedV3 = {
+    ...runningV2,
+    published_version_id: 30,
+    published_version_seq: 3,
+  };
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [runningV2] }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          {
+            id: 3,
+            name: "worker-01",
+            status: "online",
+            last_heartbeat: "2026-08-12T00:00:00Z",
+            capabilities: [],
+          },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({
+        body: [
+          { id: 30, adapter_id: 1, seq: 3, created_at: "" },
+          { id: 20, adapter_id: 1, seq: 2, created_at: "" },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/30",
+      respond: () => ({ body: makeVersion({ id: 30, seq: 3 }) }),
+    },
+    publishGateRoute(1, 30),
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions/30/publish",
+      respond: () => ({ body: publishedV3 }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("publish-version"));
+  await screen.findByTestId("publish-gate-ok");
+
+  const confirmation = screen.getByTestId("publish-confirm-target").textContent ?? "";
+  expect(confirmation).toContain("当前运行不会自动切换");
+  expect(confirmation).toContain("人工 Stop");
+  expect(confirmation).toContain("安全结束后再 Start");
+  expect(confirmation).not.toContain("热切换");
+  expect((screen.getByTestId("confirm-publish") as HTMLButtonElement).disabled).toBe(false);
+
+  fireEvent.click(screen.getByTestId("confirm-publish"));
+  await screen.findByTestId("published-running-mismatch");
+  expect(screen.getByTestId("running-execution").textContent).toContain("#77");
+  expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
+  expect(screen.getByTestId("published-running-mismatch").textContent).toContain("已发布版本（v3）");
+  expect(screen.getByTestId("published-running-mismatch").textContent).toContain("生产运行版本（v2）");
+  expect(
+    screen.getByTestId("adapter-item").querySelector(".catalog-item-sub")?.textContent,
+  ).toBe("已启动 · 运行 v2 · 生产 v3 待启动 · worker-01");
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) =>
+        String(url) === "/api/adapters/1/versions/30/publish" && init?.method === "POST",
+    ),
+  ).toBe(true);
+});
+
+it("does not let an in-flight production refresh overwrite a completed Publish", async () => {
+  PRODUCTION_REFRESH_POLICY.pollIntervalMs = 20;
+  const runningV2 = makeAdapter({
+    latest_version_id: 30,
+    published_version_id: 20,
+    published_version_seq: 2,
+    production_state: "running",
+    running_execution_id: 77,
+    running_version_id: 20,
+    running_version_seq: 2,
+  });
+  const publishedV3 = {
+    ...runningV2,
+    published_version_id: 30,
+    published_version_seq: 3,
+  };
+  let releaseStaleRefresh: () => void = () => {};
+  const staleRefreshGate = new Promise<void>((resolve) => {
+    releaseStaleRefresh = resolve;
+  });
+  let refreshCalls = 0;
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [runningV2] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({
+        body: [
+          { id: 30, adapter_id: 1, seq: 3, created_at: "" },
+          { id: 20, adapter_id: 1, seq: 2, created_at: "" },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/30",
+      respond: () => ({ body: makeVersion({ id: 30, seq: 3 }) }),
+    },
+    publishGateRoute(1, 30),
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions/30/publish",
+      respond: () => ({ body: publishedV3 }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: async () => {
+        refreshCalls += 1;
+        if (refreshCalls === 1) {
+          await staleRefreshGate;
+          return { body: runningV2 };
+        }
+        return { body: publishedV3 };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => {
+    expect(refreshCalls).toBe(1);
+  });
+  fireEvent.click(screen.getByTestId("publish-version"));
+  await screen.findByTestId("publish-gate-ok");
+  fireEvent.click(screen.getByTestId("confirm-publish"));
+  await screen.findByTestId("published-running-mismatch");
+
+  releaseStaleRefresh();
+  await waitFor(() => {
+    expect(refreshCalls).toBeGreaterThanOrEqual(2);
+  });
+  expect(screen.getByTestId("published-running-mismatch").textContent).toContain(
+    "已发布版本（v3）",
+  );
+});
+
+it("selects an explicit production Worker and keeps the retest gate visible after saving", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    published_version_seq: 1,
+    production_worker_id: 1,
+  });
+  const workers = [
+    {
+      id: 1,
+      name: "worker-a",
+      status: "online",
+      last_heartbeat: "2026-08-12T00:00:00Z",
+      capabilities: [],
+    },
+    {
+      id: 2,
+      name: "worker-b",
+      status: "online",
+      last_heartbeat: "2026-08-12T00:00:00Z",
+      capabilities: [],
+    },
+    {
+      id: 3,
+      name: "worker-c",
+      status: "offline",
+      last_heartbeat: "2026-08-12T00:00:00Z",
+      capabilities: [],
+    },
+  ];
+  let patchBody: string | null = null;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    { method: "GET", match: "/api/workers", respond: () => ({ body: workers }) },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        patchBody = body;
+        return { body: { ...adapter, production_worker_id: 2 } };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({ status: 202, body: makeExecution({ id: 88 }) }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/88/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(
+          makeExecution({ id: 88, worker_id: 2, status: "succeeded" }),
+        )}\n\n`,
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/88",
+      respond: () => ({ body: makeExecution({ id: 88, worker_id: 2, status: "succeeded" }) }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  const selector = await screen.findByTestId("production-worker");
+  fireEvent.mouseDown(selector.querySelector(".ant-select-selector") ?? selector);
+  expect(await screen.findAllByText("在线")).toHaveLength(2);
+  await screen.findByText("离线");
+  fireEvent.click(screen.getByText("worker-b"));
+
+  expect(screen.getByTestId("production-worker-retest").textContent).toContain("需重新测试");
+  fireEvent.click(screen.getByTestId("update-production-worker"));
+
+  await waitFor(() => {
+    expect(JSON.parse(patchBody ?? "{}")).toEqual({ production_worker_id: 2 });
+  });
+  // 保存后不把门禁警告当成已消除；必须真的重测。
+  expect(screen.getByTestId("production-worker-retest").textContent).toContain("需重新测试");
+  expect(
+    screen.getByTestId("adapter-item").querySelector(".catalog-item-sub")?.textContent,
+  ).toContain("worker-b");
+
+  const drawerClose = document.querySelector(".ant-drawer-close");
+  if (drawerClose === null) {
+    throw new Error("Adapter settings close button not found");
+  }
+  fireEvent.click(drawerClose);
+  await openTestRunTab();
+  fireEvent.click(screen.getByTestId("run-test"));
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  await screen.findByTestId("production-worker");
+  expect(screen.queryByTestId("production-worker-retest")).toBeNull();
+});
+
+it("refreshes a naturally completed production run into the started and idle state", async () => {
+  PRODUCTION_REFRESH_POLICY.pollIntervalMs = 20;
+  const running = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    published_version_seq: 1,
+    production_worker_id: 3,
+    production_state: "running",
+    running_execution_id: 77,
+    running_version_id: 10,
+    running_version_seq: 1,
+  });
+  const idle = {
+    ...running,
+    running_execution_id: null,
+    running_version_id: null,
+    running_version_seq: null,
+    last_production_execution_id: 77,
+    last_production_execution_status: "succeeded" as const,
+    last_production_version_id: 10,
+    last_production_version_seq: 1,
+  };
+  stubFetch([
+    ...consoleWithVersionRoutes(running, makeVersion()),
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: idle }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await screen.findByTestId("production-execution-idle");
+  expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
+  expect(screen.getByTestId("production-execution-idle").textContent).toBe("执行：空闲");
+  // 生产入口仍已启动；必须人工 Stop，不得直接再 Start。
+  expect(screen.queryByTestId("start-production")).toBeNull();
+  expect(screen.getByTestId("stop-production")).toBeTruthy();
+});
+
+it("shows an unvisited started-and-idle Adapter with the server-derived last run vN", async () => {
+  const idle = makeAdapter({
+    latest_version_id: 20,
+    published_version_id: 20,
+    published_version_seq: 2,
+    production_worker_id: 3,
+    production_state: "running",
+    running_execution_id: null,
+    running_version_id: null,
+    running_version_seq: null,
+    last_production_execution_id: 77,
+    last_production_execution_status: "succeeded",
+    last_production_version_id: 10,
+    last_production_version_seq: 1,
+  });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [idle] }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          {
+            id: 3,
+            name: "worker-01",
+            status: "online",
+            last_heartbeat: "2026-08-12T00:00:00Z",
+            capabilities: [],
+          },
+        ],
+      }),
+    },
+  ]);
+
+  render(<App />);
+  const [row] = await screen.findAllByTestId("adapter-item");
+  expect(row.querySelector(".catalog-item-sub")?.textContent).toBe(
+    "已启动/空闲 · 运行 v1 · 生产 v2 待启动 · worker-01",
+  );
+});
+
+it("keeps lifecycle actions locked during Stop(wait) until the active execution is terminal", async () => {
+  const running = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    published_version_seq: 1,
+    production_state: "running",
+    running_execution_id: 77,
+    running_version_id: 10,
+    running_version_seq: 1,
+  });
+  const stopping = { ...running, production_state: "stopped" as const };
+  const stopped = {
+    ...stopping,
+    running_execution_id: null,
+    running_version_id: null,
+    running_version_seq: null,
+    last_production_execution_id: 77,
+    last_production_execution_status: "succeeded" as const,
+    last_production_version_id: 10,
+  };
+  let getCalls = 0;
+  stubFetch([
+    ...consoleWithVersionRoutes(running, makeVersion()),
+    {
+      method: "POST",
+      match: "/api/adapters/1/production/stop",
+      respond: () => ({ body: stopping }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => {
+        getCalls += 1;
+        return { body: stopped };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  PRODUCTION_REFRESH_POLICY.pollIntervalMs = 100;
+  fireEvent.click(screen.getByTestId("stop-production"));
+  fireEvent.click(await screen.findByTestId("stop-mode-wait"));
+
+  await screen.findByTestId("production-stopping");
+  const startWhileStopping = screen.getByTestId("start-production") as HTMLButtonElement;
+  expect(startWhileStopping.disabled).toBe(true);
+  expect(screen.getByTestId("production-stopping").textContent).toContain("Execution #77");
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  expect((screen.getByTestId("unpublish-adapter") as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByTestId("archive-adapter") as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByTestId("settings-production-stopping").textContent).toContain("Execution #77");
+
+  await waitFor(
+    () => {
+      expect(screen.getByTestId("production-state").textContent).toBe("生产：已停止");
+    },
+    { timeout: 3000 },
+  );
+  expect(getCalls).toBeGreaterThan(0);
+  expect((screen.getByTestId("start-production") as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByTestId("unpublish-adapter") as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByTestId("archive-adapter") as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("labels a stopped Catalog row with the last run instead of claiming it is running", async () => {
+  const stopped = makeAdapter({
+    latest_version_id: 20,
+    published_version_id: 20,
+    published_version_seq: 2,
+    production_worker_id: 3,
+    production_state: "stopped",
+    running_execution_id: null,
+    running_version_id: null,
+    running_version_seq: null,
+    last_production_execution_id: 77,
+    last_production_execution_status: "succeeded",
+    last_production_version_id: 10,
+    last_production_version_seq: 1,
+  });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [stopped] }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          {
+            id: 3,
+            name: "worker-01",
+            status: "online",
+            last_heartbeat: "2026-08-12T00:00:00Z",
+            capabilities: [],
+          },
+        ],
+      }),
+    },
+  ]);
+
+  render(<App />);
+  const [row] = await screen.findAllByTestId("adapter-item");
+  const subtitle = row.querySelector(".catalog-item-sub")?.textContent ?? "";
+  expect(subtitle).toBe("已停止 · 上次运行 v1 · 生产 v2 待启动 · worker-01");
+  expect(subtitle).not.toContain("· 运行 v1");
 });
 
 it("blocks the publish confirmation when the gate rejects the version", async () => {
@@ -2389,4 +2851,3 @@ it("manages credentials and package sources from the system settings drawer", as
   await screen.findByTestId("package-source-test-result");
   expect(screen.getByTestId("package-source-test-result").textContent).toContain("可达");
 });
-

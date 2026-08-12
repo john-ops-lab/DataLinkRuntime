@@ -80,7 +80,9 @@
 | archived_at | 归档时间戳（可空）；归档后只读 |
 | created_at / updated_at | 时间戳 |
 
-生产状态派生规则（纯展示层）：`未发布` = published 指针为空；`待启动` = 已发布且 state=idle；`已启动` = state=running；`已停止` = state=stopped；`异常` = 无 active Execution 且最近一次生产 Execution 为 failed/timeout；`已归档` = archived_at 非空。
+生产状态派生规则（纯展示层）：`未发布` = published 指针为空；`待启动` = 已发布且 state=idle；`已启动` = state=running；`已停止` = state=stopped；`异常` = 无 active Execution 且最近一次 Production Execution 为 failed/timeout；`已归档` = archived_at 非空。`production_state=running` 表示生产入口已开启，与当前是否恰有子进程执行分离；无 active Execution 且最近一次成功时是“已启动 / 空闲”。Adapter API 同时返回 active Production Execution 指针与最近一次 Production Execution 最小摘要，前端不靠猜测状态。
+
+Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `published_version_id`，不会修改或停止当前 Production Execution；因此允许 `Running=v2 / Published=v3`。只有管理员人工 Stop、旧 Execution 真正终态，且 v3 已在当前 production Worker 上重新测试成功后，Start 才创建绑定 v3 的新 Production Execution。
 
 ### 3.2 AdapterVersion（不可变）
 
@@ -180,7 +182,7 @@ v1 不做 input/output schema 校验。多语言扩展方式：Worker 侧增加�
 - **version-scoped venv**：Worker 上每个 AdapterVersion 独立 venv 目录，与版本 requirements 严格一致，首次执行该版本时惰性构建，不被其他版本覆盖。
 - 磁盘控制采用最简策略：清理该 Adapter 过期版本的 venv，保留 published + latest；不做跨 Adapter 依赖共享与复杂缓存。
 - **依赖安装策略（M3.2，offline-first）**：`.ready` 已就绪 → 直接通过不联网；否则先尝试本地 cache 离线安装 → 失败且平台配置了默认包源 → 用包源安装 → 失败且无包源（含 Worker 环境变量 `DLR_PYPI_INDEX_URL` 兼容源）→ 明确失败并提示管理员。测试与生产走同一策略。
-- 包源由平台统一管理（CRUD + 可达性探测），claim 时把默认包源 index URL（如绑定凭据则内嵌 basic auth）放入 TaskPayload。
+- 包源由平台统一管理（CRUD + 可达性探测），claim 时把默认包源 index URL（如绑定凭据则内嵌 basic auth）放入 TaskPayload。Worker 在持久化依赖安装输出前显式脱敏 URI userinfo 及包源凭据，确保 `install_log` / Execution stderr 不含明文用户名或密码。
 
 ## 5. 部署架构
 
@@ -189,7 +191,7 @@ Docker Compose 四容器（单机最小部署）：
 | 服务 | 镜像/构建 | 说明 |
 |------|-----------|------|
 | postgres | postgres:16-alpine | healthcheck：pg_isready |
-| control | backend 代码构建 | 依赖 postgres 健康；注入数据库连接串、DLR_ADMIN_TOKEN、DLR_WORKER_TOKEN、DLR_MASTER_KEY（M3.2 Secret Store） |
+| control | backend 代码构建 | 依赖 postgres 健康；注入数据库连接串、DLR_ADMIN_TOKEN、DLR_WORKER_TOKEN、DLR_MASTER_KEY（M3.2 Secret Store，Compose 无默认值，必须显式配置） |
 | worker | backend 代码构建 | 注入 DLR_WORKER_TOKEN、control 地址、DLR_SECRET_* |
 | web | 前端构建产物 + Nginx | 托管 SPA，反代 `/api` 到 control |
 

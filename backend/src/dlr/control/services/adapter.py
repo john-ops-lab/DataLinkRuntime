@@ -27,6 +27,10 @@ from dlr.control.schemas.adapter import (
     PublishGateResponse,
     VersionCreate,
 )
+from dlr.control.services.execution_cancellation import (
+    lock_active_production_execution,
+    request_cancellation,
+)
 
 # Statuses that make a Production Execution "active" (at most one per
 # Adapter, enforced by the partial unique index in migration 0003).
@@ -72,14 +76,116 @@ def _active_production_execution(session: Session, adapter_id: int) -> Execution
     )
 
 
-def adapter_response(session: Session, adapter: Adapter) -> AdapterResponse:
-    """Serialize one Adapter including the derived running pointers."""
+def _latest_production_executions(session: Session, adapter_ids: list[int]) -> dict[int, Execution]:
+    """Return each Adapter's latest Production Execution in one query.
+
+    Execution ids are creation ordered throughout the existing history API.
+    Using a grouped max-id subquery keeps Adapter list serialization bounded
+    to one extra query instead of adding one query per Catalog row.
+    """
+    if not adapter_ids:
+        return {}
+    latest_ids = (
+        select(func.max(Execution.id).label("id"))
+        .where(
+            Execution.adapter_id.in_(adapter_ids),
+            Execution.trigger == "production",
+        )
+        .group_by(Execution.adapter_id)
+        .subquery()
+    )
+    executions = session.scalars(
+        select(Execution).join(latest_ids, Execution.id == latest_ids.c.id)
+    ).all()
+    return {execution.adapter_id: execution for execution in executions}
+
+
+def _active_production_executions(session: Session, adapter_ids: list[int]) -> dict[int, Execution]:
+    """Return active Production Executions for a group of Adapters."""
+    if not adapter_ids:
+        return {}
+    executions = session.scalars(
+        select(Execution).where(
+            Execution.adapter_id.in_(adapter_ids),
+            Execution.trigger == "production",
+            Execution.status.in_(ACTIVE_PRODUCTION_STATUSES),
+        )
+    ).all()
+    return {execution.adapter_id: execution for execution in executions}
+
+
+def _version_seqs(session: Session, version_ids: set[int]) -> dict[int, int]:
+    """Return Adapter-local version numbers for a group of version ids."""
+    if not version_ids:
+        return {}
+    rows = session.execute(
+        select(AdapterVersion.id, AdapterVersion.seq).where(AdapterVersion.id.in_(version_ids))
+    ).all()
+    return {version_id: seq for version_id, seq in rows}
+
+
+def _adapter_response(
+    adapter: Adapter,
+    active: Execution | None,
+    latest: Execution | None,
+    version_seqs: dict[int, int],
+) -> AdapterResponse:
+    """Build an Adapter response from its latest Production Execution."""
     response = AdapterResponse.model_validate(adapter)
-    active = _active_production_execution(session, adapter.id)
+    if adapter.published_version_id is not None:
+        response.published_version_seq = version_seqs.get(adapter.published_version_id)
+    if latest is not None:
+        response.last_production_execution_id = latest.id
+        response.last_production_execution_status = latest.status
+        response.last_production_version_id = latest.version_id
+        response.last_production_version_seq = version_seqs.get(latest.version_id)
     if active is not None:
         response.running_version_id = active.version_id
+        response.running_version_seq = version_seqs.get(active.version_id)
         response.running_execution_id = active.id
     return response
+
+
+def adapter_response(session: Session, adapter: Adapter) -> AdapterResponse:
+    """Serialize one Adapter including active and latest production facts."""
+    latest = _latest_production_executions(session, [adapter.id]).get(adapter.id)
+    active = _active_production_executions(session, [adapter.id]).get(adapter.id)
+    version_ids = {
+        version_id
+        for version_id in (
+            adapter.published_version_id,
+            active.version_id if active is not None else None,
+            latest.version_id if latest is not None else None,
+        )
+        if version_id is not None
+    }
+    return _adapter_response(adapter, active, latest, _version_seqs(session, version_ids))
+
+
+def adapter_responses(session: Session, adapters: list[Adapter]) -> list[AdapterResponse]:
+    """Serialize an Adapter list without per-Adapter Execution queries."""
+    latest_by_adapter = _latest_production_executions(session, [adapter.id for adapter in adapters])
+    active_by_adapter = _active_production_executions(session, [adapter.id for adapter in adapters])
+    version_ids = {
+        version_id
+        for adapter in adapters
+        for version_id in (
+            adapter.published_version_id,
+            active_by_adapter[adapter.id].version_id if adapter.id in active_by_adapter else None,
+            latest_by_adapter[adapter.id].version_id if adapter.id in latest_by_adapter else None,
+        )
+        if version_id is not None
+    }
+    version_seqs = _version_seqs(session, version_ids)
+    return [
+        _adapter_response(
+            adapter,
+            active_by_adapter.get(adapter.id),
+            latest_by_adapter.get(adapter.id),
+            version_seqs,
+        )
+        for adapter in adapters
+    ]
 
 
 def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
@@ -241,10 +347,10 @@ def publish_version(session: Session, adapter_id: int, version_id: int) -> Adapt
     """Point published_version_id at an existing version of this Adapter.
 
     Publish never creates or mutates versions and never touches latest.
-    M3.2 enforces the publish gate server-side (409 ``publish_gate_locked``),
-    rejects publishing another version while production is active (no hot
-    switch), and rejects archived Adapters. Re-publishing the already
-    published version stays idempotent and gate-free.
+    M3.2 enforces the publish gate server-side (409 ``publish_gate_locked``)
+    and rejects archived Adapters. Publish only changes the production target:
+    an active Production Execution remains pinned to its original version.
+    Re-publishing the already published version stays idempotent and gate-free.
     """
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
@@ -256,12 +362,6 @@ def publish_version(session: Session, adapter_id: int, version_id: int) -> Adapt
     if adapter.published_version_id == version_id:
         session.refresh(adapter)
         return adapter
-    if _active_production_execution(session, adapter_id) is not None:
-        raise domain_error(
-            409,
-            "production_running",
-            "Stop production before publishing another version",
-        )
     gate = _evaluate_publish_gate(session, adapter, version.id)
     if not gate.allowed:
         raise domain_error(
@@ -312,8 +412,10 @@ def start_production(session: Session, adapter_id: int) -> Execution:
     """Open the production entry: create the pending Production Execution.
 
     Preconditions (all 409): not archived, a version is published, the
-    production Worker resolves and is online, and no active Production
-    Execution exists (also enforced by the DB unique index).
+    production entry was explicitly stopped before a restart, the production
+    Worker resolves and is online, the Published Version most recently tested
+    successfully on that current Worker, and no active Production Execution
+    exists (also enforced by the DB unique index).
     """
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
@@ -323,11 +425,26 @@ def start_production(session: Session, adapter_id: int) -> Execution:
         raise domain_error(
             409, "adapter_not_published", "Publish a version before starting production"
         )
+    if (
+        adapter.production_state == "running"
+        or _active_production_execution(session, adapter_id) is not None
+    ):
+        raise domain_error(
+            409,
+            "production_already_running",
+            "Stop production before starting it again",
+        )
     worker = _resolve_production_worker(session, adapter)
     if worker.status != "online":
         raise domain_error(409, "worker_offline", "The production Worker is offline")
-    if _active_production_execution(session, adapter_id) is not None:
-        raise domain_error(409, "production_already_running", "Production is already running")
+    gate = _evaluate_publish_gate(session, adapter, adapter.published_version_id)
+    if not gate.allowed:
+        raise domain_error(
+            409,
+            "production_test_required",
+            "Run a successful test of the published version on the production Worker before "
+            "starting",
+        )
     execution = Execution(
         adapter_id=adapter_id,
         version_id=adapter.published_version_id,
@@ -356,13 +473,12 @@ def stop_production(session: Session, adapter_id: int, mode: str) -> Adapter:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     adapter.production_state = "stopped"
     if mode == "terminate":
-        active = _active_production_execution(session, adapter_id)
+        # Serialize with Worker claim: after waiting for the same Execution
+        # row lock, the status is re-read as either pending (cancel now) or
+        # running (request the owning Worker to terminate it).
+        active = lock_active_production_execution(session, adapter_id)
         if active is not None:
-            if active.status == "pending":
-                active.status = "cancelled"
-                active.ended_at = func.now()
-            else:
-                active.cancel_requested = True
+            request_cancellation(active)
     session.commit()
     session.refresh(adapter)
     return adapter
@@ -380,7 +496,10 @@ def unpublish_adapter(session: Session, adapter_id: int) -> Adapter:
     if adapter.published_version_id is None:
         session.refresh(adapter)
         return adapter
-    if _active_production_execution(session, adapter_id) is not None:
+    if (
+        adapter.production_state == "running"
+        or _active_production_execution(session, adapter_id) is not None
+    ):
         raise domain_error(409, "production_running", "Stop production before unpublishing")
     adapter.published_version_id = None
     session.commit()

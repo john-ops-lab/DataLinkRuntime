@@ -5,6 +5,7 @@ import { Alert, Button, Dropdown, Modal, Space, Tag } from "antd";
 
 import {
   productionDisplayState,
+  productionRunningVersionId,
   productionStateColor,
   productionStateLabel,
 } from "../status";
@@ -48,14 +49,17 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
   const productionState = adapter.production_state ?? "idle";
   const runningExecutionId = adapter.running_execution_id ?? null;
   const displayState = productionDisplayState(adapter);
+  const stopping = displayState === "stopping";
+  const runningIdle =
+    productionState === "running" && runningExecutionId === null && displayState === "running";
+  const runningVersionId = productionRunningVersionId(adapter);
 
   // Published != Running 显著提示：只有两个指针都存在且不一致时才显示。
   const publishedRunningMismatch =
     adapter.published_version_id !== null &&
     adapter.published_version_id !== undefined &&
-    adapter.running_version_id !== null &&
-    adapter.running_version_id !== undefined &&
-    adapter.published_version_id !== adapter.running_version_id;
+    runningVersionId !== null &&
+    adapter.published_version_id !== runningVersionId;
 
   const menuItems = versions.map((version) => ({
     key: String(version.id),
@@ -96,9 +100,12 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
           <Tag color={productionStateColor(displayState)} data-testid="production-state">
             生产：{productionStateLabel(displayState)}
           </Tag>
+          {runningIdle && (
+            <Tag data-testid="production-execution-idle">执行：空闲</Tag>
+          )}
           {runningExecutionId !== null && (
             <Tag color="processing" data-testid="running-execution">
-              执行进行中 #{runningExecutionId}
+              {stopping ? "等待执行完成" : "执行进行中"} #{runningExecutionId}
             </Tag>
           )}
           {props.dirty && (
@@ -113,8 +120,17 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
             type="warning"
             showIcon
             data-testid="published-running-mismatch"
-            message={`已发布版本（${versionSeqOrId(versions, adapter.published_version_id)}）与生产运行版本（${versionSeqOrId(versions, adapter.running_version_id)}）不一致`}
-            description="发布新版本不会自动切换正在运行的生产执行；如需生效请先停止再启动。"
+            message={`已发布版本（${versionSeqOrId(versions, adapter.published_version_id)}）与生产运行版本（${versionSeqOrId(versions, runningVersionId)}）不一致`}
+            description="发布只更新生产目标，不会自动切换当前运行；请人工 Stop 并等待旧 Execution 安全结束后，再 Start 新版本。"
+          />
+        )}
+        {stopping && runningExecutionId !== null && (
+          <Alert
+            type="info"
+            showIcon
+            data-testid="production-stopping"
+            message={`生产入口已关闭，等待 Execution #${runningExecutionId} 完成`}
+            description="旧 Execution 进入终态并刷新后，才能启动新的生产执行。"
           />
         )}
         {archived && (
@@ -153,7 +169,7 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
           <Button
             type="primary"
             data-testid="start-production"
-            disabled={props.busy || archived}
+            disabled={props.busy || archived || stopping}
             onClick={props.onStartProduction}
           >
             启动生产

@@ -7,6 +7,9 @@ export interface Adapter {
   language: string;
   latest_version_id: number | null;
   published_version_id: number | null;
+  /** Server-derived display fields used by the Catalog without per-row requests. */
+  published_version_seq?: number | null;
+  running_version_seq?: number | null;
   // M3.2 production lifecycle fields; optional so older fixtures and tests
   // that predate them stay valid. Consumers derive safe defaults (idle / not
   // archived) whenever they are absent.
@@ -16,6 +19,11 @@ export interface Adapter {
   /** Derived from the active Production Execution; null when none exists. */
   running_version_id?: number | null;
   running_execution_id?: number | null;
+  /** Minimal summary of the newest Production Execution, including terminal runs. */
+  last_production_execution_id?: number | null;
+  last_production_execution_status?: ExecutionStatus | null;
+  last_production_version_id?: number | null;
+  last_production_version_seq?: number | null;
   created_at: string;
   updated_at: string;
 }

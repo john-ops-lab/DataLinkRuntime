@@ -15,15 +15,20 @@ neither is available.
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
+from collections.abc import Iterable
 from pathlib import Path
+from urllib import parse as url_parse
 
 logger = logging.getLogger("dlr.worker.venv")
 
 _build_locks: dict[tuple[int, int], threading.Lock] = {}
 _build_locks_guard = threading.Lock()
+
+_URI_USERINFO_PATTERN = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#@]+@")
 
 # Environment variables the dependency subprocess is allowed to inherit.
 # Everything else (platform tokens, database URL, runtime secrets) is
@@ -64,17 +69,46 @@ def _dependency_env() -> dict[str, str]:
     return env
 
 
-def _redact_sensitive(text: str) -> str:
-    """Defensively redact platform credentials from dependency logs.
+def package_index_secret_values(index_url: str | None) -> list[str]:
+    """Return encoded and decoded userinfo values from a package index URL.
 
-    Scans for common sensitive patterns (tokens, database URLs, secrets) and
-    replaces them with [REDACTED]. This is a safety net on top of the minimal
-    environment; even if a build script somehow echoes a sensitive value, it
-    will not be persisted to Execution.stderr.
+    The effective package-source URL may carry Basic Auth credentials. These
+    values join the Worker's explicit redaction set so uv output cannot leak
+    either the URL-encoded form or a decoded username/password.
     """
-    import re
+    if not index_url:
+        return []
+    try:
+        parts = url_parse.urlsplit(index_url)
+    except ValueError:
+        return []
+    if "@" not in parts.netloc:
+        return []
 
+    raw_userinfo = parts.netloc.rsplit("@", 1)[0]
+    candidates = [raw_userinfo, url_parse.unquote(raw_userinfo)]
+    for value in (parts.username, parts.password):
+        if value:
+            candidates.extend((value, url_parse.unquote(value)))
+    return list(dict.fromkeys(value for value in candidates if value))
+
+
+def _redact_sensitive(text: str, sensitive_values: Iterable[str] = ()) -> str:
+    """Defensively redact credentials from dependency logs.
+
+    Scans for explicit values plus common sensitive patterns (including URI
+    userinfo) and replaces them with [REDACTED]. This is a safety net on top
+    of the minimal environment; even if uv or a build script echoes a package
+    source URL, it will not be persisted to Execution.stderr.
+    """
     redacted = text
+    # Known package-source and runtime values, longest first so a username
+    # cannot partially rewrite its complete ``username:password`` userinfo.
+    for value in sorted(set(sensitive_values), key=len, reverse=True):
+        if value:
+            redacted = redacted.replace(value, "[REDACTED]")
+    # URI userinfo for any scheme, independent of the explicit value set.
+    redacted = _URI_USERINFO_PATTERN.sub(r"\g<scheme>[REDACTED]@", redacted)
     # Bearer tokens and common token patterns.
     redacted = re.sub(
         r"Bearer\s+[A-Za-z0-9._-]+", "Bearer [REDACTED]", redacted, flags=re.IGNORECASE
@@ -97,6 +131,11 @@ def _redact_sensitive(text: str) -> str:
         if key.startswith("DLR_SECRET_") and value:
             redacted = redacted.replace(value, "[REDACTED]")
     return redacted
+
+
+def redact_package_index_log(text: str, index_url: str | None) -> str:
+    """Redact one dependency log using the effective package index URL."""
+    return _redact_sensitive(text, package_index_secret_values(index_url))
 
 
 class DependencyPreparationError(Exception):
@@ -138,6 +177,9 @@ def _partial_log(error: subprocess.TimeoutExpired) -> str:
 def _run_logged(command: list[str], timeout_seconds: int) -> str:
     """Run a command with a minimal environment, returning its redacted combined output."""
     env = _dependency_env()
+    sensitive_values = [
+        value for argument in command for value in package_index_secret_values(argument)
+    ]
     try:
         completed = subprocess.run(  # noqa: S603 - fixed uv command list
             command,
@@ -150,9 +192,9 @@ def _run_logged(command: list[str], timeout_seconds: int) -> str:
     except subprocess.TimeoutExpired as error:
         raise DependencyPreparationError(
             f"{' '.join(command[:3])} timed out after {timeout_seconds}s",
-            _redact_sensitive(_partial_log(error)),
+            _redact_sensitive(_partial_log(error), sensitive_values),
         ) from error
-    log = _redact_sensitive(completed.stdout + completed.stderr)
+    log = _redact_sensitive(completed.stdout + completed.stderr, sensitive_values)
     if completed.returncode != 0:
         raise DependencyPreparationError(f"{' '.join(command[:3])} failed", log)
     return log

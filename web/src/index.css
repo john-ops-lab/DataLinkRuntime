@@ -230,6 +230,10 @@ body {
   background: #52c41a;
 }
 
+.catalog-status-stopping {
+  background: #1677ff;
+}
+
 .catalog-status-abnormal {
   background: #ff4d4f;
 }
@@ -738,13 +742,6 @@ body {
 .publish-gate-blocked,
 .publish-gate-error {
   color: #cf1322;
-}
-
-.publish-hot-switch {
-  padding: 8px;
-  border: 1px solid #ffe58f;
-  border-radius: 4px;
-  background: #fffbe6;
 }
 
 /* --- M3.2 凭据绑定编辑器 ------------------------------------------------- */

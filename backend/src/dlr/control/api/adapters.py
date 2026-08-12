@@ -32,7 +32,7 @@ _DEFAULT_STOP_REQUEST = ProductionStopRequest()
 @router.get("/api/adapters", response_model=list[AdapterResponse])
 def list_adapters(session: DbSession) -> list[AdapterResponse]:
     adapters = adapter_service.list_adapters(session)
-    return [adapter_service.adapter_response(session, adapter) for adapter in adapters]
+    return adapter_service.adapter_responses(session, adapters)
 
 
 @router.post("/api/adapters", status_code=201, response_model=AdapterResponse)

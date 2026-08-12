@@ -1,6 +1,6 @@
 /** 测试运行 Tab：Input JSON + 显式绑定选中 Version + 实时日志（M3 §4/§7/§8）。 */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Tabs, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
@@ -19,6 +19,7 @@ interface TestRunPanelProps {
   contentReady: boolean;
   busy: boolean;
   onError: (message: string) => void;
+  onPublishedVersionTestSucceeded: (adapterId: number) => void;
 }
 
 // After any abnormal SSE end, converge on the authoritative M2 result with
@@ -39,16 +40,40 @@ function formatDuration(durationMs: number | null): string {
 }
 
 export default function TestRunPanel(props: TestRunPanelProps) {
+  const {
+    adapter,
+    onPublishedVersionTestSucceeded,
+  } = props;
   const [inputText, setInputText] = useState("{}");
   const [submitting, setSubmitting] = useState(false);
   const watcher = useExecutionWatcher(props.onError);
   const execution = watcher.execution;
+  const reportedQualificationExecutionId = useRef<number | null>(null);
   // version_id -> seq resolved locally at run time: the summary must keep
   // showing the version that was actually executed even after the user
   // switches to another version (Review round 1 Minor 1). No extra request;
   // the internal version_id stays as secondary debug info only. Kept as
   // state (not a ref) because it is read during render.
   const [runSeqByVersionId, setRunSeqByVersionId] = useState<Map<number, number>>(new Map());
+
+  useEffect(() => {
+    if (
+      execution?.status !== "succeeded" ||
+      execution.id === reportedQualificationExecutionId.current ||
+      execution.version_id !== adapter.published_version_id ||
+      execution.worker_id !== adapter.production_worker_id
+    ) {
+      return;
+    }
+    reportedQualificationExecutionId.current = execution.id;
+    onPublishedVersionTestSucceeded(adapter.id);
+  }, [
+    adapter.id,
+    adapter.production_worker_id,
+    adapter.published_version_id,
+    execution,
+    onPublishedVersionTestSucceeded,
+  ]);
 
   async function handleRun() {
     // Interaction guards: explicit version binding, no dirty runs, valid

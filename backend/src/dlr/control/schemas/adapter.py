@@ -82,7 +82,14 @@ class AdapterResponse(BaseModel):
 
     ``running_version_id`` / ``running_execution_id`` are derived from the
     Adapter's active Production Execution (at most one, enforced by the DB);
-    both are None whenever production has no pending/running Execution.
+    both are None whenever production has no pending/running Execution. The
+    ``published_version_seq`` / ``running_version_seq`` provide the
+    Adapter-local display numbers without forcing Catalog callers to fetch
+    every version list. The ``last_production_*`` fields retain the latest
+    Production Execution's minimal identity/status after it becomes terminal,
+    so an open production
+    entry with no active child process can be distinguished from a failed or
+    timed-out run.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -93,11 +100,17 @@ class AdapterResponse(BaseModel):
     language: str
     latest_version_id: int | None
     published_version_id: int | None
+    published_version_seq: int | None = None
     production_worker_id: int | None
     production_state: str
     archived_at: datetime | None
     running_version_id: int | None = None
+    running_version_seq: int | None = None
     running_execution_id: int | None = None
+    last_production_execution_id: int | None = None
+    last_production_execution_status: str | None = None
+    last_production_version_id: int | None = None
+    last_production_version_seq: int | None = None
     created_at: datetime
     updated_at: datetime
 

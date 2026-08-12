@@ -1,53 +1,30 @@
-/** 顶部 Worker 状态观察（M3 §10）：懒加载，只在打开弹层时请求。 */
+/** 顶部 Worker 状态观察（M3 §10）：复用 App 为 Catalog/设置加载的列表。 */
 
-import { useState } from "react";
 import { Badge, Button, Empty, List, Popover, Spin, Tag } from "antd";
 
-import { ApiError, api } from "../api";
 import type { Worker } from "../types";
-
-function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "请求失败";
-}
 
 function formatTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-export default function WorkerStatus() {
-  const [open, setOpen] = useState(false);
-  const [workers, setWorkers] = useState<Worker[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+interface WorkerStatusProps {
+  workers: Worker[];
+  loading: boolean;
+  error: string | null;
+}
 
-  async function handleOpenChange(nextOpen: boolean) {
-    setOpen(nextOpen);
-    if (!nextOpen || workers !== null || loading) {
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      setWorkers(await api.listWorkers());
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }
+export default function WorkerStatus({ workers, loading, error }: WorkerStatusProps) {
 
   const content = (
     <div className="worker-popover">
       {loading && <Spin size="small" />}
       {error !== null && <span className="history-error">{error}</span>}
-      {!loading && error === null && workers !== null && workers.length === 0 && (
+      {!loading && error === null && workers.length === 0 && (
         <Empty description="暂无已注册 Worker" />
       )}
-      {!loading && workers !== null && workers.length > 0 && (
+      {!loading && workers.length > 0 && (
         <List
           size="small"
           dataSource={workers}
@@ -66,7 +43,7 @@ export default function WorkerStatus() {
           )}
         />
       )}
-      {!loading && workers !== null && (
+      {!loading && (
         <p className="worker-hint">
           状态为 Worker 最近上报值，平台不做心跳超时判定，请结合最近心跳时间判断 Worker 是否可能离线。
         </p>
@@ -74,17 +51,14 @@ export default function WorkerStatus() {
     </div>
   );
 
-  const hasOnlineWorker =
-    workers !== null && workers.some((worker) => worker.status === "online");
-  const allOffline = workers !== null && workers.length > 0 && !hasOnlineWorker;
+  const hasOnlineWorker = workers.some((worker) => worker.status === "online");
+  const allOffline = workers.length > 0 && !hasOnlineWorker;
 
   return (
     <Popover
       content={content}
       title="Workers"
       trigger="click"
-      open={open}
-      onOpenChange={(nextOpen) => void handleOpenChange(nextOpen)}
     >
       <Button size="small" data-testid="worker-status">
         <Badge status={hasOnlineWorker ? "success" : allOffline ? "error" : "default"} />

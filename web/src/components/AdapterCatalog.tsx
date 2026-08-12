@@ -6,9 +6,10 @@ import { Button, Drawer, Input, Segmented, Space } from "antd";
 
 import {
   productionDisplayState,
+  productionRunningVersionId,
   productionStateLabel,
 } from "../status";
-import type { Adapter } from "../types";
+import type { Adapter, Worker } from "../types";
 
 interface AdapterCatalogProps {
   adapters: Adapter[];
@@ -20,34 +21,74 @@ interface AdapterCatalogProps {
   // Returns true only when the adapter was actually created; the form is cleared
   // and closed only on real success, so failures keep the user's input editable.
   onCreate: (name: string, description: string) => Promise<boolean>;
-  // The list API only exposes latest/published version ids, no seq. Once an
-  // adapter's version list has been loaded, its known seq values are cached
-  // in App state and keep showing across adapter switches; adapters that were
-  // never loaded still expose their real saved/published state via the
-  // version pointers, never hiding a published status (Issue #8 补充).
-  latestSeqById: Map<number, number>;
-  publishedSeqById: Map<number, number>;
+  // Version lists are loaded only for selected Adapters. Known id -> seq
+  // mappings are cached by App; unknown ids stay explicit as #id instead of
+  // causing one list request per Catalog row.
+  versionSeqById: Map<number, number>;
+  // Loaded once by App and shared with Worker status/settings/Catalog. This
+  // keeps Worker names visible without a per-Adapter request.
+  workers: Worker[];
+}
+
+function versionLabel(
+  versionId: number,
+  serverSeq: number | null | undefined,
+  versionSeqById: Map<number, number>,
+): string {
+  const seq = serverSeq ?? versionSeqById.get(versionId);
+  return seq === undefined ? `#${versionId}` : `v${seq}`;
 }
 
 function catalogSubtitle(
   adapter: Adapter,
-  latestSeqById: Map<number, number>,
-  publishedSeqById: Map<number, number>,
+  versionSeqById: Map<number, number>,
+  workerNames: Map<number, string>,
 ): string {
-  if (adapter.latest_version_id === null) {
-    return "暂无版本";
+  const displayState = productionDisplayState(adapter);
+  const stateLabel =
+    displayState === "running" && adapter.running_execution_id === null
+      ? "已启动/空闲"
+      : productionStateLabel(displayState);
+  const parts = [stateLabel];
+  const runningVersionId = productionRunningVersionId(adapter);
+  if (runningVersionId !== null) {
+    const runningVersionSeq =
+      adapter.running_version_id !== null && adapter.running_version_id !== undefined
+        ? adapter.running_version_seq
+        : adapter.last_production_version_seq;
+    parts.push(
+      `运行 ${versionLabel(runningVersionId, runningVersionSeq, versionSeqById)}`,
+    );
+  } else if (
+    displayState === "stopped" &&
+    adapter.last_production_version_id !== null &&
+    adapter.last_production_version_id !== undefined
+  ) {
+    parts.push(
+      `上次运行 ${versionLabel(
+        adapter.last_production_version_id,
+        adapter.last_production_version_seq,
+        versionSeqById,
+      )}`,
+    );
   }
-  const latestSeq = latestSeqById.get(adapter.id);
-  const publishedSeq = publishedSeqById.get(adapter.id);
-  if (latestSeq === undefined) {
-    // Versions not loaded yet: no seq is invented, but the real published
-    // state stays visible instead of degrading to a neutral placeholder.
-    return adapter.published_version_id === null ? "已保存 · 未发布" : "已保存 · 已发布";
+  const publishedVersionId = adapter.published_version_id;
+  if (
+    publishedVersionId !== null &&
+    publishedVersionId !== undefined &&
+    publishedVersionId !== (runningVersionId ?? adapter.last_production_version_id ?? null)
+  ) {
+    parts.push(
+      `生产 ${versionLabel(publishedVersionId, adapter.published_version_seq, versionSeqById)} 待启动`,
+    );
   }
-  if (publishedSeq !== undefined) {
-    return `v${latestSeq} · Published v${publishedSeq}`;
+  const workerId = adapter.production_worker_id;
+  if (workerId === null || workerId === undefined) {
+    parts.push("Worker 未配置");
+  } else {
+    parts.push(workerNames.get(workerId) ?? `Worker #${workerId}`);
   }
-  return adapter.published_version_id === null ? `v${latestSeq} · 未发布` : `v${latestSeq} · 已发布`;
+  return parts.join(" · ");
 }
 
 export default function AdapterCatalog({
@@ -56,8 +97,8 @@ export default function AdapterCatalog({
   busy,
   onSelect,
   onCreate,
-  latestSeqById,
-  publishedSeqById,
+  versionSeqById,
+  workers,
 }: AdapterCatalogProps) {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
@@ -66,6 +107,7 @@ export default function AdapterCatalog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const workerNames = new Map(workers.map((worker) => [worker.id, worker.name]));
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
@@ -154,7 +196,7 @@ export default function AdapterCatalog({
                   {adapter.name}
                 </span>
                 <span className="catalog-item-sub">
-                  {catalogSubtitle(adapter, latestSeqById, publishedSeqById)}
+                  {catalogSubtitle(adapter, versionSeqById, workerNames)}
                 </span>
               </button>
             );

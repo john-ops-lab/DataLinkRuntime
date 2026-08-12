@@ -5,6 +5,7 @@ payload index URL resolution (with embedded basic auth) and the offline-first
 dependency strategy shared by test runs and production runs.
 """
 
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,7 +22,7 @@ from dlr.worker import venv as venv_manager
 from test_adapters import create_adapter, save_version
 from test_executions import create_execution
 from test_runtime import ECHO_CODE, make_payload, runtime_settings
-from test_workers import claim, register_worker
+from test_workers import claim, register_worker, report
 
 
 def create_source(
@@ -261,6 +262,97 @@ def test_venv_falls_back_to_package_source_when_cache_misses(
     assert installs[1][-2:] == ["--index-url", "https://mirror.example.com/simple/"]
     directory = venv_manager.version_dir(tmp_path, 20, 2)  # type: ignore[arg-type]
     assert (directory / ".ready").exists()
+
+
+def test_credentialed_index_failure_is_redacted_before_execution_persistence(
+    api_client: TestClient,
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    username = "review user"
+    password = "pa@ss/word"
+    encoded_username = "review%20user"
+    encoded_password = "pa%40ss%2Fword"
+    raw_userinfo = f"{username}:{password}"
+    encoded_userinfo = f"{encoded_username}:{encoded_password}"
+    effective_url = f"https://{encoded_userinfo}@mirror.example.com/simple/"
+    credential = api_client.post(
+        "/api/credentials",
+        json={
+            "name": "redaction-index-auth",
+            "type": "password",
+            "fields": {"username": username, "password": password},
+        },
+    ).json()
+    create_source(
+        api_client,
+        name="redaction-mirror",
+        index_url="https://mirror.example.com/simple/",
+        is_default=True,
+        credential_id=credential["id"],
+    )
+
+    adapter = create_adapter(api_client, name="package-source-redaction")
+    save_version(api_client, adapter["id"], requirements="missing-package==1")
+    execution = create_execution(api_client, adapter["id"])
+    worker = register_worker(api_client, name="redaction-worker")
+    claimed = claim(api_client, worker["id"]).json()
+    assert claimed["index_url"] == effective_url
+
+    def fake_uv_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["uv", "venv"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if "--offline" in command:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="offline cache miss\n")
+        echoed = (
+            f"failed to fetch {effective_url}\n"
+            f"resolved username {username}\n"
+            f"resolved password {password}\n"
+        )
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr=echoed)
+
+    monkeypatch.setattr(venv_manager.subprocess, "run", fake_uv_run)
+
+    # The dependency error itself is safe before the executor sees it.
+    with pytest.raises(venv_manager.DependencyPreparationError) as preparation_error:
+        venv_manager.prepare_version_venv(
+            tmp_path,  # type: ignore[arg-type]
+            adapter["id"],
+            claimed["version_id"],
+            claimed["requirements"],
+            timeout_seconds=60,
+            index_url=effective_url,
+        )
+    install_log = preparation_error.value.install_log
+    for sensitive in (
+        username,
+        password,
+        encoded_username,
+        encoded_password,
+        raw_userinfo,
+        encoded_userinfo,
+    ):
+        assert sensitive not in install_log
+    assert "https://[REDACTED]@mirror.example.com/simple/" in install_log
+
+    # The executor applies the same policy defensively, and Control persists
+    # only the already-redacted result as Execution.stderr.
+    result = executor.run(claimed, runtime_settings(tmp_path))
+    assert result["status"] == "failed"
+    response = report(api_client, worker["id"], execution["id"], result)
+    assert response.status_code == 200, response.text
+    persisted = api_client.get(f"/api/executions/{execution['id']}").json()
+    for sensitive in (
+        username,
+        password,
+        encoded_username,
+        encoded_password,
+        raw_userinfo,
+        encoded_userinfo,
+    ):
+        assert sensitive not in persisted["stderr"]
+        assert sensitive not in (persisted["error"] or "")
+    assert "https://[REDACTED]@mirror.example.com/simple/" in persisted["stderr"]
 
 
 def test_venv_cache_miss_without_source_fails_with_operator_hint(

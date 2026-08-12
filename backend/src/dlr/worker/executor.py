@@ -412,12 +412,17 @@ def run(
     payload_secrets: dict[str, str] = {
         str(env_key): str(value) for env_key, value in (payload.get("secrets") or {}).items()
     }
-    secret_values = _env_secret_values() + [value for value in payload_secrets.values() if value]
-
     # M3.2: the platform default package source (resolved by Control at claim
     # time) wins; the Worker's DLR_PYPI_INDEX_URL stays the compatibility
     # fallback. Test runs and production runs share this exact strategy.
     index_url = payload.get("index_url") or config.pypi_index_url
+    index_url = str(index_url) if index_url else None
+    # Package-source credentials are only used by the dependency subprocess.
+    # Keep them in that error path's explicit redaction set, but do not apply
+    # them to normal Adapter stdout/output where a short username could cause
+    # unrelated business data to be over-redacted.
+    secret_values = _env_secret_values() + [value for value in payload_secrets.values() if value]
+    dependency_secret_values = secret_values + venv_manager.package_index_secret_values(index_url)
 
     try:
         python_path = venv_manager.prepare_version_venv(
@@ -429,12 +434,16 @@ def run(
             index_url=index_url,
         )
     except venv_manager.DependencyPreparationError as error:
-        stderr, stderr_truncated = _cap_stream(error.install_log.encode())
+        safe_install_log = venv_manager.redact_package_index_log(error.install_log, index_url)
+        safe_error = venv_manager.redact_package_index_log(str(error), index_url)
+        stderr, stderr_truncated = _cap_stream(safe_install_log.encode())
         return {
             "status": "failed",
-            "error": redact_secrets(f"dependency preparation failed: {error}", secret_values),
+            "error": redact_secrets(
+                f"dependency preparation failed: {safe_error}", dependency_secret_values
+            ),
             "stdout": "",
-            "stderr": redact_secrets(stderr, secret_values),
+            "stderr": redact_secrets(stderr, dependency_secret_values),
             "stderr_truncated": stderr_truncated,
         }
 

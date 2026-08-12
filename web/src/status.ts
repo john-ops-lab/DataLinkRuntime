@@ -41,13 +41,15 @@ export function isTerminal(status: string): boolean {
 }
 
 // --- M3.2: Adapter production display states -------------------------------
-// 四层状态（未发布/待启动/已启动/已停止）加上两个纯展示派生：异常（无 active
-// Execution 但状态仍是 running，后端不变量被打破时的可见兜底）与已归档。
+// 生产入口状态与单次 Execution 状态分开展示。“停止中”由
+// stopped + active Execution 派生；生产入口仍为 running 但当前无子进程是
+// 合法的“已启动 / 空闲”，只有最近生产执行 failed/timeout 才派生异常。
 
 export type ProductionDisplayState =
   | "unpublished"
   | "ready"
   | "running"
+  | "stopping"
   | "stopped"
   | "abnormal"
   | "archived";
@@ -56,6 +58,7 @@ export const PRODUCTION_STATE_LABELS: Record<ProductionDisplayState, string> = {
   unpublished: "未发布",
   ready: "待启动",
   running: "已启动",
+  stopping: "停止中",
   stopped: "已停止",
   abnormal: "异常",
   archived: "已归档",
@@ -66,6 +69,7 @@ export const PRODUCTION_STATE_COLORS: Record<ProductionDisplayState, string> = {
   unpublished: "default",
   ready: "processing",
   running: "success",
+  stopping: "processing",
   stopped: "default",
   abnormal: "error",
   archived: "warning",
@@ -80,14 +84,33 @@ export function productionDisplayState(adapter: Adapter): ProductionDisplayState
   }
   const state = adapter.production_state ?? "idle";
   if (state === "running") {
-    // 后端不变量：running 必有 active Production Execution。字段为 null 时用
-    // 异常展示兜底；字段缺失（存量桩数据）则按已启动展示。
-    return adapter.running_execution_id === null ? "abnormal" : "running";
+    const lastStatus = adapter.last_production_execution_status;
+    const hasActiveExecution =
+      adapter.running_execution_id !== null && adapter.running_execution_id !== undefined;
+    return !hasActiveExecution &&
+      (lastStatus === "failed" || lastStatus === "timeout")
+      ? "abnormal"
+      : "running";
   }
   if (state === "stopped") {
-    return "stopped";
+    return adapter.running_execution_id !== null && adapter.running_execution_id !== undefined
+      ? "stopping"
+      : "stopped";
   }
   return "ready";
+}
+
+/** Version currently executing, or the last successfully/abnormally executed
+ * version while the production entry remains started but idle. */
+export function productionRunningVersionId(adapter: Adapter): number | null {
+  if ((adapter.production_state ?? "idle") !== "running") {
+    return adapter.running_version_id ?? null;
+  }
+  return adapter.running_version_id ?? adapter.last_production_version_id ?? null;
+}
+
+export function isProductionStopping(adapter: Adapter): boolean {
+  return productionDisplayState(adapter) === "stopping";
 }
 
 export function productionStateLabel(state: ProductionDisplayState): string {

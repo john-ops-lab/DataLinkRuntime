@@ -316,6 +316,7 @@ def test_dependency_install_log_redacts_sensitive_patterns(
         "Bearer abc123token was rejected\n"
         "token=should-be-hidden\n"
         "postgresql+psycopg://user:pass@host/db leaked\n"
+        "https://uri-user:uri-password@mirror.example.com/simple/ failed\n"
         "secret value: smoke-secret-value\n"
     )
     redacted = venv_manager._redact_sensitive(text)
@@ -323,6 +324,9 @@ def test_dependency_install_log_redacts_sensitive_patterns(
     assert "Bearer [REDACTED]" in redacted
     assert "should-be-hidden" not in redacted
     assert "user:pass@host" not in redacted
+    assert "uri-user" not in redacted
+    assert "uri-password" not in redacted
+    assert "https://[REDACTED]@mirror.example.com/simple/" in redacted
     assert "smoke-secret-value" not in redacted
     assert "[REDACTED]" in redacted
 
