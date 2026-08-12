@@ -53,17 +53,19 @@
 - Adapter 代码在 Worker 主机权限内运行，**v1 不做代码沙箱**。
 - 子进程与 version-scoped venv 用于**运行隔离与依赖隔离，不构成真正的安全沙箱**。
 - `context.secrets` 是 **Runtime API 抽象**（保证 Adapter 代码与凭据来源解耦），**不是安全隔离边界**。
-- 数据库不持久化任何真实 Secret。
+- 数据库只持久化凭据的 Fernet 密文（M3.2 Secret Store，见 §2.3）；**明文从不落库**。
 
-### 2.3 Secret 注入路径（v1）
+### 2.3 Secret 注入路径（M3.2 演进）
 
-- Secret 只存在于 Worker 部署环境：Worker 从环境变量读取，约定前缀 `DLR_SECRET_<KEY>`。
-- Adapter 通过 `context.secrets.get(key)` 获取；v1 实现即解析上述环境变量。
-- **稳定性约束**：未来引入 Secret Store 时，只替换 Worker 侧解析实现，Runtime Contract 与 Adapter 代码零修改。
+两条路径并存，`context.secrets.get(key)` 的 Runtime Contract 完全不变：
+
+- **Worker 环境变量路径（v1，保留为兼容路径）**：Secret 只存在于 Worker 部署环境，约定前缀 `DLR_SECRET_<KEY>`；`context.secrets.get(key)` 即解析该环境变量。
+- **Secret Store 路径（M3.2）**：凭据以 Fernet（认证对称加密）密文存入 `credentials` 表，Fernet 密钥由部署级 Master Key（`DLR_MASTER_KEY`）经 HKDF-SHA256 派生，Master Key 只存在于部署环境、从不落库。Adapter 绑定 `env_key → credential.field`；Control 在 Worker claim 时只解密该 Execution 绑定的字段并注入 TaskPayload；Worker 以 `DLR_SECRET_{env_key}` 注入子进程并纳入日志脱敏集合。未配置 Master Key 时凭据 API 返回 503（不回退明文存储）。
+- **安全边界变化（明确声明）**：v1“Secret 不经过 Control”的表述演进为“密文经 Control 解密后在内网传输给 Worker”；解密只发生在 claim 时刻，明文不落库、不进任何响应与日志。
 
 ## 3. 领域模型与持久化
 
-持久化全部在 PostgreSQL（SQLAlchemy 2.x + Alembic）。v1 共四张表：
+持久化全部在 PostgreSQL（SQLAlchemy 2.x + Alembic）。v1 共四张核心表（M3.2 另增三张平台表，见 §3.6）：
 
 ### 3.1 Adapter
 
@@ -73,7 +75,12 @@
 | language | v1 固定 `python`，为多语言预留 |
 | latest_version_id | 每次保存代码产生新版本后更新 |
 | published_version_id | 发布时设置 |
+| production_worker_id | 生产 Worker（FK workers，可空，ON DELETE SET NULL）；测试运行默认以此为目标 |
+| production_state | `idle / running / stopped`（生产入口开关，默认 idle） |
+| archived_at | 归档时间戳（可空）；归档后只读 |
 | created_at / updated_at | 时间戳 |
+
+生产状态派生规则（纯展示层）：`未发布` = published 指针为空；`待启动` = 已发布且 state=idle；`已启动` = state=running；`已停止` = state=stopped；`异常` = 无 active Execution 且最近一次生产 Execution 为 failed/timeout；`已归档` = archived_at 非空。
 
 ### 3.2 AdapterVersion（不可变）
 
@@ -96,11 +103,15 @@
 | 字段 | 说明 |
 |------|------|
 | id / adapter_id / **version_id（必填）** / worker_id | 关联关系 |
-| trigger | 枚举：`manual`（预留 `schedule` / `webhook`） |
+| target_worker_id | 指定执行的 Worker（可空）；为空时可被任意 Worker 领取（存量兼容） |
+| trigger | 枚举：`manual`（测试运行）/ `production`（生产启动）；预留 `schedule` / `webhook` |
+| cancel_requested | 取消请求标志：running 的执行由 Worker 在下次进度上报时感知并 kill |
 | status | `pending / running / succeeded / failed / timeout / cancelled` |
 | input / output / stdout / stderr | 见 §3.5 大字段策略 |
 | error | 失败摘要 |
 | start_time / end_time / duration | 时间与耗时 |
+
+一个 Adapter 同时只允许一个 active Production Execution，由部分唯一索引 `uq_executions_active_production ON executions(adapter_id) WHERE trigger='production' AND status IN ('pending','running')` 在数据库层强制。
 
 ### 3.4 Worker
 
@@ -127,6 +138,14 @@ AdapterInstance：长期领域概念，v1 不建表。
 | output | 小于上限：保存完整 JSON。超过上限：**不持久化完整 output、不产生被破坏的 JSON**，记录 `output_size`、`output_truncated` 与有限的 `output_preview`（供人阅读的文本摘录，字段命名以实现时最简方案为准） |
 
 不引入对象存储或独立日志系统。
+
+### 3.6 平台表（M3.2）
+
+| 表 | 说明 |
+|------|------|
+| credentials | 凭据：name 唯一、type ∈ `password/token/access_key/secret`（字段 schema 按类型固定）、Fernet 密文、时间戳 |
+| adapter_credential_bindings | Adapter 绑定：env_key → credential.field，unique(adapter_id, env_key)；全量替换语义 |
+| package_sources | Python 包源：name 唯一、index_url、is_default（部分唯一索引保证至多一个默认）、可绑定凭据（basic auth） |
 
 ## 4. Adapter Runtime（第一阶段：Python）
 
@@ -160,7 +179,8 @@ v1 不做 input/output schema 校验。多语言扩展方式：Worker 侧增加�
 
 - **version-scoped venv**：Worker 上每个 AdapterVersion 独立 venv 目录，与版本 requirements 严格一致，首次执行该版本时惰性构建，不被其他版本覆盖。
 - 磁盘控制采用最简策略：清理该 Adapter 过期版本的 venv，保留 published + latest；不做跨 Adapter 依赖共享与复杂缓存。
-- pip 源可在 Worker 配置中指定（应对内网镜像场景）。
+- **依赖安装策略（M3.2，offline-first）**：`.ready` 已就绪 → 直接通过不联网；否则先尝试本地 cache 离线安装 → 失败且平台配置了默认包源 → 用包源安装 → 失败且无包源（含 Worker 环境变量 `DLR_PYPI_INDEX_URL` 兼容源）→ 明确失败并提示管理员。测试与生产走同一策略。
+- 包源由平台统一管理（CRUD + 可达性探测），claim 时把默认包源 index URL（如绑定凭据则内嵌 basic auth）放入 TaskPayload。
 
 ## 5. 部署架构
 
@@ -169,7 +189,7 @@ Docker Compose 四容器（单机最小部署）：
 | 服务 | 镜像/构建 | 说明 |
 |------|-----------|------|
 | postgres | postgres:16-alpine | healthcheck：pg_isready |
-| control | backend 代码构建 | 依赖 postgres 健康；注入数据库连接串、DLR_ADMIN_TOKEN、DLR_WORKER_TOKEN |
+| control | backend 代码构建 | 依赖 postgres 健康；注入数据库连接串、DLR_ADMIN_TOKEN、DLR_WORKER_TOKEN、DLR_MASTER_KEY（M3.2 Secret Store） |
 | worker | backend 代码构建 | 注入 DLR_WORKER_TOKEN、control 地址、DLR_SECRET_* |
 | web | 前端构建产物 + Nginx | 托管 SPA，反代 `/api` 到 control |
 
@@ -200,7 +220,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 
 技术选型：Python 3.13、uv、FastAPI、SQLAlchemy 2.x、Alembic、pytest、ruff、mypy；前端 React（不固定版本，实现时选与当前工具链兼容的稳定版）+ TypeScript + Vite，Monaco Editor 于 M1 引入。**各阶段只安装该阶段真正需要的依赖。**
 
-## 7. 里程碑（M0–M3.1）
+## 7. 里程碑（M0–M3.2）
 
 | 里程碑 | 内容 | 验收口径 |
 |--------|------|----------|
@@ -209,6 +229,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 | M2 执行闭环 | Worker 注册 / 心跳、version-scoped venv、Manual 触发、子进程执行、Execution 落库（含 §3.5 大字段策略） | "测试运行"→ Worker 执行 → 状态与结果正确 |
 | M3 可观测与体验 | 测试输入面板、Output 查看（对象/数组渲染）、实时日志（SSE）、执行历史 | 第一阶段闭环完整可用 |
 | M3.1 Console 视觉收敛 | 不改后端与业务合同，仅收敛 Web UI：Console Shell（App Header + 左侧 Adapter Catalog + Developer Workbench）、Monaco 作为编辑页主视觉、测试运行 Input + Execution 双栏、高密度执行记录表格与详情抽屉、登录页品牌区 | 四个核心页面（登录 / 编辑 / 测试运行 / 执行记录）对照 docs/ui/m3/ 视觉基线收敛；1440/1680/1920 宽度布局正常；全部既有业务测试保持通过 |
+| M3.2 Adapter 生产生命周期与运行配置闭环 | 生产 Worker / Publish 门禁 / Start / Stop(wait-terminate) / Execution 取消、target Worker 调度、归档与 Clone、Secret Store（Fernet + 凭据绑定，§2.3）、Python 包源（offline-first）、前端四层状态 / 发布确认 Diff / 系统设置 | 测试→门禁→发布→启动→实时日志→停止→cancelled/succeeded 全链通；绑定凭据只以摘要出现在 output；M1–M3.1 测试保持通过 |
 
 下一阶段：**M4 AI Editor**（AI 辅助生成 / 修改 / 调试 Adapter 代码）。M3.1 建立的 Console Shell 为 M4 预留了结构能力：中间 Workbench 为 flex 布局，右侧可直接挂载 360–420px 的 AI/Context Panel，无需推翻现有布局。
 
@@ -217,11 +238,10 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 - M4 AI Editor：AI 辅助生成 / 修改 / 调试 Adapter 代码（下一阶段）。
 - Schedule Trigger（届时引入调度库）。
 - Webhook 统一入口（异步 202 语义）；如需同步调用另设 invoke API。
-- Secret Store（仅替换 Worker 侧解析，Contract 不变）。
 - 常驻 Adapter（AdapterInstance 落库与进程生命周期管理）。
 - JavaScript / Java Runtime。
 - Worker 独立凭据认证。
 
 ## 9. 过度设计检查清单（v1 明确不做）
 
-Draft 实体；join token / enrollment；DB 加密 Secret；APScheduler 与前端状态框架预装；同步 Webhook 转发通道；Adapter 级覆盖式全局 venv；AdapterInstance 表；runner 抽象层；Sink / Connector 框架；MQ / 长连接网关；镜像构建与跨 Adapter 依赖共享；日志系统组件；RBAC；schema 校验；重试与优先级队列。
+Draft 实体；join token / enrollment；APScheduler 与前端状态框架预装；同步 Webhook 转发通道；Adapter 级覆盖式全局 venv；AdapterInstance 表；runner 抽象层；Sink / Connector 框架；MQ / 长连接网关；镜像构建与跨 Adapter 依赖共享；日志系统组件；RBAC；schema 校验；重试与优先级队列。
