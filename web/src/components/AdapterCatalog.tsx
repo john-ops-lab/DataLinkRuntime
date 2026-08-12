@@ -1,12 +1,12 @@
-/** Left panel: adapter search, list plus the create form. */
+/** 左侧 Adapter Catalog：高密度行式导航 + 新建表单（M3.1 §7，业务合同仍沿用 M1）。 */
 
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Button, Card, Input, Space } from "antd";
+import { Button, Drawer, Input, Space } from "antd";
 
 import type { Adapter } from "../types";
 
-interface AdapterListProps {
+interface AdapterCatalogProps {
   adapters: Adapter[];
   selectedId: number | null;
   // Interaction lock: while a mutation is in flight, switching adapters and
@@ -16,9 +16,38 @@ interface AdapterListProps {
   // Returns true only when the adapter was actually created; the form is cleared
   // and closed only on real success, so failures keep the user's input editable.
   onCreate: (name: string, description: string) => Promise<boolean>;
+  // The list API only exposes latest/published version ids, no seq; the seq is
+  // known once the selected adapter's version list has loaded. Catalog rows
+  // degrade to a neutral text instead of inventing numbers (M3.1 §7.3).
+  latestSeqById: Map<number, number>;
+  publishedSeqById: Map<number, number>;
 }
 
-export default function AdapterList({ adapters, selectedId, busy, onSelect, onCreate }: AdapterListProps) {
+function catalogSubtitle(
+  adapter: Adapter,
+  latestSeqById: Map<number, number>,
+  publishedSeqById: Map<number, number>,
+): string {
+  if (adapter.latest_version_id === null) {
+    return "暂无版本";
+  }
+  const latestSeq = latestSeqById.get(adapter.id);
+  if (latestSeq === undefined) {
+    return "已有保存版本";
+  }
+  const publishedSeq = publishedSeqById.get(adapter.id);
+  return publishedSeq === undefined ? `v${latestSeq}` : `v${latestSeq} · Published v${publishedSeq}`;
+}
+
+export default function AdapterCatalog({
+  adapters,
+  selectedId,
+  busy,
+  onSelect,
+  onCreate,
+  latestSeqById,
+  publishedSeqById,
+}: AdapterCatalogProps) {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [name, setName] = useState("");
@@ -48,11 +77,9 @@ export default function AdapterList({ adapters, selectedId, busy, onSelect, onCr
   const visible = keyword === "" ? adapters : adapters.filter((adapter) => adapter.name.toLowerCase().includes(keyword));
 
   return (
-    <Card
-      className="adapter-list"
-      size="small"
-      title="Adapter 列表"
-      extra={
+    <aside className="catalog" data-testid="adapter-catalog">
+      <div className="catalog-header">
+        <h2 className="catalog-title">Adapters</h2>
         <Button
           size="small"
           type="primary"
@@ -60,20 +87,48 @@ export default function AdapterList({ adapters, selectedId, busy, onSelect, onCr
           disabled={busy}
           onClick={() => setCreating(true)}
         >
-          + 新建
+          新建
         </Button>
-      }
-    >
-      <Input.Search
-        data-testid="adapter-search"
-        placeholder="搜索 Adapter"
-        allowClear
-        size="small"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-      />
+      </div>
 
-      {creating && (
+      <div className="catalog-search">
+        <Input
+          data-testid="adapter-search"
+          placeholder="搜索 Adapter"
+          allowClear
+          size="small"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </div>
+
+      <div className="catalog-list">
+        {visible.length === 0 ? (
+          <p className="catalog-empty">{adapters.length === 0 ? "暂无 Adapter" : "没有匹配的 Adapter"}</p>
+        ) : (
+          visible.map((adapter) => (
+            <button
+              key={adapter.id}
+              type="button"
+              data-testid="adapter-item"
+              className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
+              disabled={busy}
+              onClick={() => onSelect(adapter)}
+            >
+              <span className="catalog-item-name">{adapter.name}</span>
+              <span className="catalog-item-sub">{catalogSubtitle(adapter, latestSeqById, publishedSeqById)}</span>
+            </button>
+          ))
+        )}
+      </div>
+
+      <Drawer
+        title="新建 Adapter"
+        width={360}
+        open={creating}
+        destroyOnClose
+        onClose={() => setCreating(false)}
+      >
         <form className="create-form" onSubmit={(event) => void handleCreate(event)}>
           <Input
             data-testid="new-adapter-name"
@@ -102,27 +157,7 @@ export default function AdapterList({ adapters, selectedId, busy, onSelect, onCr
             <Button onClick={() => setCreating(false)}>取消</Button>
           </Space>
         </form>
-      )}
-
-      {visible.length === 0 ? (
-        <p className="adapter-list-empty">{adapters.length === 0 ? "暂无 Adapter" : "没有匹配的 Adapter"}</p>
-      ) : (
-        <ul>
-          {visible.map((adapter) => (
-            <li key={adapter.id}>
-              <button
-                type="button"
-                data-testid="adapter-item"
-                className={adapter.id === selectedId ? "selected" : ""}
-                disabled={busy}
-                onClick={() => onSelect(adapter)}
-              >
-                {adapter.name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </Card>
+      </Drawer>
+    </aside>
   );
 }

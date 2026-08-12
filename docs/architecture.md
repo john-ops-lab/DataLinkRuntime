@@ -200,7 +200,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 
 技术选型：Python 3.13、uv、FastAPI、SQLAlchemy 2.x、Alembic、pytest、ruff、mypy；前端 React（不固定版本，实现时选与当前工具链兼容的稳定版）+ TypeScript + Vite，Monaco Editor 于 M1 引入。**各阶段只安装该阶段真正需要的依赖。**
 
-## 7. 里程碑（M0–M3）
+## 7. 里程碑（M0–M3.1）
 
 | 里程碑 | 内容 | 验收口径 |
 |--------|------|----------|
@@ -208,16 +208,19 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 | M1 Adapter 管理 | Adapter CRUD、Monaco 在线编辑、保存即不可变版本、发布、requirements / runtime_config | 创建→编辑→保存→发布全通 |
 | M2 执行闭环 | Worker 注册 / 心跳、version-scoped venv、Manual 触发、子进程执行、Execution 落库（含 §3.5 大字段策略） | "测试运行"→ Worker 执行 → 状态与结果正确 |
 | M3 可观测与体验 | 测试输入面板、Output 查看（对象/数组渲染）、实时日志（SSE）、执行历史 | 第一阶段闭环完整可用 |
+| M3.1 Console 视觉收敛 | 不改后端与业务合同，仅收敛 Web UI：Console Shell（App Header + 左侧 Adapter Catalog + Developer Workbench）、Monaco 作为编辑页主视觉、测试运行 Input + Execution 双栏、高密度执行记录表格与详情抽屉、登录页品牌区 | 四个核心页面（登录 / 编辑 / 测试运行 / 执行记录）对照 docs/ui/m3/ 视觉基线收敛；1440/1680/1920 宽度布局正常；全部既有业务测试保持通过 |
+
+下一阶段：**M4 AI Editor**（AI 辅助生成 / 修改 / 调试 Adapter 代码）。M3.1 建立的 Console Shell 为 M4 预留了结构能力：中间 Workbench 为 flex 布局，右侧可直接挂载 360–420px 的 AI/Context Panel，无需推翻现有布局。
 
 ## 8. 未来演进（不在第一阶段）
 
+- M4 AI Editor：AI 辅助生成 / 修改 / 调试 Adapter 代码（下一阶段）。
 - Schedule Trigger（届时引入调度库）。
 - Webhook 统一入口（异步 202 语义）；如需同步调用另设 invoke API。
 - Secret Store（仅替换 Worker 侧解析，Contract 不变）。
 - 常驻 Adapter（AdapterInstance 落库与进程生命周期管理）。
 - JavaScript / Java Runtime。
 - Worker 独立凭据认证。
-- AI 生成 / 修改 / 调试 Adapter 代码。
 
 ## 9. 过度设计检查清单（v1 明确不做）
 

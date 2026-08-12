@@ -28,6 +28,16 @@ window.getComputedStyle = (elt: Element, pseudoElt?: string | null): CSSStyleDec
   return nativeGetComputedStyle(elt);
 };
 
+// jsdom does not implement ResizeObserver; antd (Tabs/Dropdown/Drawer)
+// measures elements with it. A no-op stub keeps layout effects silent.
+if (typeof window.ResizeObserver !== "function") {
+  window.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
+
 // Vitest globals are disabled, so register Testing Library cleanup explicitly.
 afterEach(() => {
   cleanup();

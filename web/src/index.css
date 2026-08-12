@@ -1,183 +1,380 @@
-/* M3 Console 风格：浅灰应用背景 + 白色卡片工作区（对齐 UI 视觉参考）。 */
+/* M3.1 Console 视觉收敛：浅灰应用 Shell + 白色核心工作区（对齐 docs/ui/m3/ 视觉基线）。
+   布局骨架：固定 App Header + 左侧 Adapter Catalog + 中间 Developer Workbench；
+   中间区域为 flex 结构，未来 M4 可在右侧自然挂载 360–420px AI/Context Panel。 */
 
+:root {
+  --dlr-shell-bg: #f5f6f8;
+  --dlr-workspace-bg: #ffffff;
+  --dlr-border: #e5e7eb;
+  --dlr-border-strong: #d9dde3;
+  --dlr-text: #1f2430;
+  --dlr-text-secondary: #5f6672;
+  --dlr-text-weak: #8c939f;
+  --dlr-header-height: 48px;
+  --dlr-mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html,
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: #f0f2f5;
-  color: #1f2430;
+  height: 100%;
 }
 
-.layout {
+body {
+  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--dlr-shell-bg);
+  color: var(--dlr-text);
+}
+
+#root {
+  height: 100%;
+}
+
+/* --- App Shell --------------------------------------------------------- */
+
+.app-shell {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 100vh;
-  padding: 16px 20px;
+  height: 100vh;
 }
 
-.header {
+.app-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px;
-  background: #ffffff;
-  border: 1px solid #e5e8ee;
-  border-radius: 8px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  height: var(--dlr-header-height);
+  padding: 0 16px;
+  background: var(--dlr-workspace-bg);
+  border-bottom: 1px solid var(--dlr-border);
 }
 
-.header h1 {
+.app-header-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.app-header-logo {
   margin: 0;
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: #1f2430;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #1677ff;
+  letter-spacing: 0.5px;
+}
+
+.app-header-product {
+  font-size: 0.8rem;
+  color: var(--dlr-text-weak);
+}
+
+.app-header-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.8rem;
+}
+
+.health-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dlr-text-secondary);
+}
+
+.health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dlr-text-weak);
+}
+
+.health-dot-ok {
+  background: #52c41a;
+}
+
+.health-dot-degraded {
+  background: #faad14;
+}
+
+.health-dot-unreachable {
+  background: #ff4d4f;
+}
+
+/* Shell 主体：左侧 Catalog + 中间 Workbench（右侧预留给 M4 Context Panel）。 */
+.console-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 .error-banner {
+  flex: 0 0 auto;
   margin: 0;
-  padding: 8px 12px;
-  border: 1px solid #ffccc7;
+  padding: 6px 16px;
+  border-bottom: 1px solid #ffccc7;
   background: #fff2f0;
   color: #a8071a;
-  border-radius: 6px;
+  font-size: 0.85rem;
 }
 
-.panels {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-}
+/* --- Adapter Catalog（左侧固定导航区） ---------------------------------- */
 
-/* --- 左侧 Adapter 列表 ---------------------------------------------- */
-
-.adapter-list {
+.catalog {
   flex: 0 0 260px;
-}
-
-.adapter-list ul {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  min-height: 0;
+  background: var(--dlr-workspace-bg);
+  border-right: 1px solid var(--dlr-border);
 }
 
-.adapter-list li button {
+.catalog-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+}
+
+.catalog-title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.catalog-search {
+  flex: 0 0 auto;
+  padding: 0 12px 8px;
+}
+
+.catalog-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.catalog-empty {
+  margin: 12px 4px 0;
+  color: var(--dlr-text-weak);
+  font-size: 0.8rem;
+}
+
+/* 高密度行式导航：不为每条 Adapter 建 Card。 */
+.catalog-item {
   width: 100%;
+  display: block;
   text-align: left;
-  padding: 6px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
   background: none;
   cursor: pointer;
-  font-size: 0.9rem;
 }
 
-.adapter-list li button:hover:not(:disabled) {
+.catalog-item:hover:not(:disabled) {
   background: #f5f7fa;
 }
 
-.adapter-list li button.selected {
+.catalog-item.selected {
   background: #e6f4ff;
-  border-color: #91caff;
-  color: #0958d9;
 }
 
-.adapter-list li button:disabled {
+.catalog-item:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
 
-.adapter-list-empty {
-  margin: 12px 0 0;
-  color: #8c939f;
+.catalog-item-name {
+  display: block;
   font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--dlr-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.create-form {
+.catalog-item.selected .catalog-item-name {
+  color: #0958d9;
+  font-weight: 600;
+}
+
+.catalog-item-sub {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--dlr-text-weak);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Developer Workbench（中间主工作区） -------------------------------- */
+
+.workbench {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-  padding: 8px;
-  border: 1px dashed #d9dde3;
-  border-radius: 6px;
+  min-height: 0;
+  background: var(--dlr-shell-bg);
 }
 
-/* --- 主工作区 -------------------------------------------------------- */
-
-.detail-empty {
+.workbench-empty {
   flex: 1;
-  color: #5f6672;
-  background: #ffffff;
-  border: 1px solid #e5e8ee;
-  border-radius: 8px;
-  padding: 32px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dlr-text-secondary);
+  font-size: 0.9rem;
 }
 
 .detail {
   flex: 1;
-  min-width: 0;
-  background: #ffffff;
-  border: 1px solid #e5e8ee;
-  border-radius: 8px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
-  padding: 16px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.detail-header {
+/* Workbench Header：Adapter 上下文 + 版本与主操作。 */
+.workbench-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--dlr-workspace-bg);
+  border-bottom: 1px solid var(--dlr-border);
 }
 
-.detail-header h2 {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-.metadata,
-.version-controls {
+.workbench-title-row {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
 }
 
-.version-controls select {
-  padding: 4px 8px;
-  border: 1px solid #d9dde3;
-  border-radius: 6px;
-  background: #ffffff;
+.workbench-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.workspace-tabs {
+.workbench-description {
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: var(--dlr-text-weak);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workbench-context {
+  min-width: 0;
+}
+
+.version-menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.version-seq {
+  font-size: 0.8rem;
+  color: var(--dlr-text-secondary);
+}
+
+/* 三个主 Tab 撑满剩余高度，内容区不再有多余外层 padding。 */
+.workbench-tabs {
   flex: 1;
-}
-
-.editor-pane {
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.version-fields {
+.workbench-tabs > .ant-tabs-nav {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 16px;
+  background: var(--dlr-workspace-bg);
+  border-bottom: 1px solid var(--dlr-border);
+}
+
+.workbench-tabs > .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
   display: flex;
+}
+
+.workbench-tabs .ant-tabs-content {
+  height: 100%;
+}
+
+.workbench-tabs .ant-tabs-tabpane {
+  height: 100%;
+}
+
+/* 只对激活的 tabpane 设 flex 布局，避免覆盖 antd 对隐藏 pane 的 display:none。 */
+.workbench-tabs .ant-tabs-tabpane-active {
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-fill {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- 编辑页：Monaco 为主视觉区域 ---------------------------------------- */
+
+.editor-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.editor-main {
+  flex: 1;
+  min-height: 300px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--dlr-workspace-bg);
+}
+
+/* Requirements / Runtime Config 降为次级配置区。 */
+.version-fields {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 
 .version-fields label {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 0.85rem;
-  color: #5f6672;
+  font-size: 0.78rem;
+  color: var(--dlr-text-secondary);
 }
 
 .version-fields textarea,
@@ -185,68 +382,193 @@ body {
   width: 100%;
   box-sizing: border-box;
   padding: 8px;
-  border: 1px solid #d9dde3;
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
+  border: 1px solid var(--dlr-border-strong);
+  border-radius: 4px;
+  background: var(--dlr-workspace-bg);
+  font-family: var(--dlr-mono-font);
+  font-size: 0.8rem;
   resize: vertical;
 }
 
-/* --- 测试运行 / 执行结果 ---------------------------------------------- */
+/* --- 测试运行：Input + Execution 双栏工作台 ------------------------------ */
 
-.test-run-panel,
-.history-panel {
+.test-run-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.test-input-col {
+  flex: 0 0 44%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
+  padding: 12px;
+  background: var(--dlr-workspace-bg);
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+}
+
+.test-run-col-title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--dlr-text);
+}
+
+.test-version-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--dlr-text-secondary);
 }
 
 .test-input-block {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.execution-panel {
+.test-input-block .code-textarea {
+  flex: 1;
+  min-height: 120px;
+  height: 100%;
+}
+
+.test-run-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.execution-col {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border: 1px solid #e5e8ee;
-  border-radius: 8px;
-  background: #fafbfc;
+  background: var(--dlr-workspace-bg);
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
 }
 
-.execution-overview {
-  font-size: 0.9rem;
+.execution-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* 终端风格日志：深色背景 + 等宽字体（对齐视觉参考）。 */
-.terminal-view {
+.execution-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.execution-summary {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 0.8rem;
+  color: var(--dlr-text-secondary);
+}
+
+.execution-summary-label {
+  margin-right: 4px;
+  color: var(--dlr-text-weak);
+}
+
+.execution-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.execution-tabs > .ant-tabs-nav {
+  flex: 0 0 auto;
   margin: 0;
-  max-height: 320px;
+}
+
+.execution-tabs > .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.execution-tabs .ant-tabs-content,
+.execution-tabs .ant-tabs-tabpane {
+  height: 100%;
+}
+
+.execution-tabs .ant-tabs-tabpane-active {
+  display: flex;
+  flex-direction: column;
+}
+
+.result-fill {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Output / 日志：开发工具风格，撑满可用高度。 */
+.output-view {
+  flex: 1;
+  min-height: 120px;
+  margin: 0;
   overflow: auto;
   padding: 10px 12px;
-  background: #111827;
-  color: #d1d5db;
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #f6f8fa;
+  border: 1px solid var(--dlr-border);
+  border-radius: 4px;
+  font-family: var(--dlr-mono-font);
   font-size: 0.8rem;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
 }
 
-.output-view {
+.output-empty {
+  color: var(--dlr-text-weak);
+}
+
+.log-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 终端风格日志：深色背景 + 等宽字体，stdout/stderr 保持分离。 */
+.terminal-view {
+  flex: 1;
+  min-height: 120px;
   margin: 0;
-  max-height: 320px;
   overflow: auto;
   padding: 10px 12px;
-  background: #f6f8fa;
-  border: 1px solid #e5e8ee;
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #111827;
+  color: #d1d5db;
+  border-radius: 4px;
+  font-family: var(--dlr-mono-font);
   font-size: 0.8rem;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -255,21 +577,80 @@ body {
   color: #ff7875;
 }
 
+/* --- 执行记录：高密度表格 + 详情 Drawer ---------------------------------- */
+
+.history-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
 .history-toolbar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
 }
 
 .history-error {
   color: #a8071a;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+}
+
+.history-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--dlr-workspace-bg);
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
 }
 
 .history-panel .ant-table-row {
   cursor: pointer;
 }
 
-/* --- Worker 弹层 ------------------------------------------------------ */
+.execution-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* --- Drawer 表单（新建 Adapter / Adapter 设置） ------------------------- */
+
+.create-form,
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.create-form-actions {
+  display: flex;
+}
+
+.settings-field {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-field-label {
+  font-size: 0.78rem;
+  color: var(--dlr-text-secondary);
+}
+
+.settings-danger-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--dlr-text-weak);
+}
+
+/* --- Worker 弹层 --------------------------------------------------------- */
 
 .worker-popover {
   max-width: 320px;
@@ -280,33 +661,151 @@ body {
 
 .worker-hint {
   margin: 0;
-  color: #8c939f;
+  color: var(--dlr-text-weak);
   font-size: 0.75rem;
 }
 
-/* --- 登录页 ------------------------------------------------------------ */
+/* --- 登录页：品牌区 + Token 登录卡片 -------------------------------------- */
 
-.login-layout {
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(160deg, #eaf2ff 0%, #f0f2f5 45%);
+.login-page {
+  display: flex;
+  min-height: 100vh;
+  background: linear-gradient(160deg, #eaf2ff 0%, #f5f6f8 50%);
 }
 
-.login-layout .header {
-  position: absolute;
-  top: 16px;
-  left: 20px;
-  right: 20px;
+.login-brand {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  padding: 48px 56px;
+  min-width: 0;
+}
+
+.login-brand-logo {
+  margin: 0;
+  font-size: 3rem;
+  font-weight: 700;
+  color: #1677ff;
+  letter-spacing: 1px;
+}
+
+.login-brand-name {
+  font-size: 1rem;
+  color: var(--dlr-text-secondary);
+}
+
+.login-brand-tagline {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #0958d9;
+}
+
+.login-brand-sub {
+  margin: 0;
+  max-width: 460px;
+  font-size: 0.85rem;
+  color: var(--dlr-text-secondary);
+  line-height: 1.7;
+}
+
+.login-features {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  max-width: 480px;
+  margin-top: 8px;
+}
+
+.login-feature {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+}
+
+.login-feature-title {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--dlr-text);
+}
+
+.login-feature-text {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: var(--dlr-text-weak);
+}
+
+.login-copyright {
+  margin: 24px 0 0;
+  font-size: 0.75rem;
+  color: var(--dlr-text-weak);
+}
+
+.login-side {
+  flex: 0 0 480px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
 }
 
 .login-card {
-  width: 360px;
-  display: flex;
-  flex-direction: column;
+  width: 100%;
+  max-width: 380px;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(16, 24, 40, 0.08);
 }
 
-.login-card .ant-card-body {
+.login-card-inner {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.login-card-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.login-card-subtitle {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  color: var(--dlr-text-weak);
+  text-align: center;
+}
+
+.login-notice {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid #ffe58f;
+  border-radius: 4px;
+  background: #fffbe6;
+  color: #874d00;
+  font-size: 0.8rem;
+}
+
+/* 窄屏（非验收重点）：仅做最小堆叠，不引入响应式框架。 */
+@media (max-width: 1100px) {
+  .test-run-panel {
+    flex-direction: column;
+  }
+
+  .test-input-col {
+    flex: 0 0 auto;
+  }
+
+  .login-page {
+    flex-direction: column;
+  }
+
+  .login-side {
+    flex: 1;
+  }
 }

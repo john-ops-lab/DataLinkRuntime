@@ -1,7 +1,7 @@
 /** 测试运行 Tab：Input JSON + 显式绑定选中 Version + 实时日志（M3 §4/§7/§8）。 */
 
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Descriptions, Space, Tabs, Tag, Typography } from "antd";
+import { Alert, Button, Tabs, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
 import { FALLBACK_POLICY } from "../fallback-policy";
@@ -31,6 +31,13 @@ function errorMessage(error: unknown): string {
     return `${error.message} (${error.code})`;
   }
   return "请求失败";
+}
+
+function formatDuration(durationMs: number | null): string {
+  if (durationMs === null) {
+    return "—";
+  }
+  return durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)} 秒` : `${durationMs} 毫秒`;
 }
 
 export default function TestRunPanel(props: TestRunPanelProps) {
@@ -235,115 +242,123 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     props.selectedVersionId === null;
 
   return (
+    // M3.1 双栏工作台：左栏测试输入，右栏 Execution 状态与实时日志。
     <div className="test-run-panel">
-      <Descriptions
-        size="small"
-        column={2}
-        items={[
-          {
-            key: "version",
-            label: "测试版本",
-            children: (
-              <Space size={4} data-testid="test-run-version">
-                <span>{props.selectedVersionSeq !== null ? `v${props.selectedVersionSeq}` : "—"}</span>
-                {props.isLatest && <Tag color="blue">Latest</Tag>}
-                {props.isPublished && <Tag color="green">Published</Tag>}
-              </Space>
-            ),
-          },
-          {
-            key: "hint",
-            label: "绑定说明",
-            children: <Typography.Text type="secondary">运行将显式绑定上方选中的已保存版本</Typography.Text>,
-          },
-        ]}
-      />
-
-      <div className="test-input-block">
-        <Typography.Text type="secondary">Input（任意合法 JSON）</Typography.Text>
-        <textarea
-          data-testid="test-input"
-          className="code-textarea"
-          rows={6}
-          value={inputText}
-          disabled={submitting}
-          onChange={(event) => setInputText(event.target.value)}
-        />
-      </div>
-
-      <Space>
-        <Button
-          type="primary"
-          data-testid="run-test"
-          loading={submitting}
-          disabled={runDisabled}
-          onClick={() => void handleRun()}
-        >
-          运行测试
-        </Button>
-        {props.dirty && (
-          <Typography.Text type="warning">存在未保存修改，请先保存为新版本</Typography.Text>
-        )}
-      </Space>
-
-      {execution === null ? (
-        <Alert type="info" showIcon message="尚未运行测试" description="输入 JSON 后点击“运行测试”，这里会显示执行状态与实时日志。" />
-      ) : (
-        <div className="execution-panel">
-          {fallbackExhausted && execution !== null && !isTerminal(execution.status) && (
-            <Alert
-              type="warning"
-              showIcon
-              data-testid="fallback-exhausted"
-              message="实时连接已断开，状态可能已过期"
-              description="已按权威结果轮询至上限仍未等到终态，请刷新页面或稍后重新查看该 Execution。"
-            />
-          )}
-          <Space size={12} align="center" className="execution-overview" wrap>
-            <span data-testid="execution-id">Execution #{execution.id}</span>
-            <Tag color={statusColor(execution.status)} data-testid="execution-status">
-              {statusLabel(execution.status)}
-            </Tag>
-            {execution.error && (
-              <Typography.Text type="danger" data-testid="execution-error">
-                {execution.error}
-              </Typography.Text>
-            )}
-          </Space>
-          <Tabs
-            size="small"
-            items={[
-              {
-                key: "output",
-                label: "Output",
-                children: <OutputView execution={execution} />,
-              },
-              {
-                key: "stdout",
-                label: "stdout",
-                children: (
-                  <LogView
-                    testId="stdout-view"
-                    content={liveStdout}
-                    truncated={execution.stdout_truncated}
-                  />
-                ),
-              },
-              {
-                key: "stderr",
-                label: "stderr",
-                children: (
-                  <LogView
-                    testId="stderr-view"
-                    content={liveStderr}
-                    truncated={execution.stderr_truncated}
-                  />
-                ),
-              },
-            ]}
+      <section className="test-input-col" data-testid="test-input-col">
+        <h3 className="test-run-col-title">测试输入</h3>
+        <div className="test-version-row" data-testid="test-run-version">
+          <span className="execution-summary-label">测试版本</span>
+          <span>{props.selectedVersionSeq !== null ? `v${props.selectedVersionSeq}` : "—"}</span>
+          {props.isLatest && <Tag color="blue">Latest</Tag>}
+          {props.isPublished && <Tag color="green">Published</Tag>}
+        </div>
+        <Typography.Text type="secondary">运行将显式绑定上方选中的已保存版本</Typography.Text>
+        <div className="test-input-block">
+          <textarea
+            data-testid="test-input"
+            className="code-textarea"
+            placeholder="Input（任意合法 JSON）"
+            value={inputText}
+            disabled={submitting}
+            onChange={(event) => setInputText(event.target.value)}
           />
         </div>
-      )}
+        <div className="test-run-actions">
+          <Button
+            type="primary"
+            data-testid="run-test"
+            loading={submitting}
+            disabled={runDisabled}
+            onClick={() => void handleRun()}
+          >
+            运行测试
+          </Button>
+          {props.dirty && (
+            <Typography.Text type="warning">存在未保存修改，请先保存为新版本</Typography.Text>
+          )}
+        </div>
+      </section>
+
+      <section className="execution-col" data-testid="execution-col">
+        <h3 className="test-run-col-title">Execution</h3>
+        {execution === null ? (
+          <div className="execution-empty">
+            <Alert
+              type="info"
+              showIcon
+              message="尚未运行测试"
+              description="输入 JSON 后点击“运行测试”，这里会显示执行状态与实时日志。"
+            />
+          </div>
+        ) : (
+          <div className="execution-body">
+            {fallbackExhausted && !isTerminal(execution.status) && (
+              <Alert
+                type="warning"
+                showIcon
+                data-testid="fallback-exhausted"
+                message="实时连接已断开，状态可能已过期"
+                description="已按权威结果轮询至上限仍未等到终态，请刷新页面或稍后重新查看该 Execution。"
+              />
+            )}
+            <div className="execution-summary">
+              <span data-testid="execution-id">Execution #{execution.id}</span>
+              <Tag color={statusColor(execution.status)} data-testid="execution-status">
+                {statusLabel(execution.status)}
+              </Tag>
+              {execution.error && (
+                <Typography.Text type="danger" data-testid="execution-error">
+                  {execution.error}
+                </Typography.Text>
+              )}
+              <span>
+                <span className="execution-summary-label">Version</span>#{execution.version_id}
+              </span>
+              <span>
+                <span className="execution-summary-label">Worker</span>
+                {execution.worker_id ?? "—"}
+              </span>
+              <span>
+                <span className="execution-summary-label">耗时</span>
+                {formatDuration(execution.duration_ms)}
+              </span>
+            </div>
+            <Tabs
+              className="execution-tabs"
+              size="small"
+              items={[
+                {
+                  key: "output",
+                  label: "Output",
+                  children: <OutputView execution={execution} />,
+                },
+                {
+                  key: "stdout",
+                  label: "stdout",
+                  children: (
+                    <LogView
+                      testId="stdout-view"
+                      content={liveStdout}
+                      truncated={execution.stdout_truncated}
+                    />
+                  ),
+                },
+                {
+                  key: "stderr",
+                  label: "stderr",
+                  children: (
+                    <LogView
+                      testId="stderr-view"
+                      content={liveStderr}
+                      truncated={execution.stderr_truncated}
+                    />
+                  ),
+                },
+              ]}
+            />
+          </div>
+        )}
+      </section>
     </div>
   );
 }

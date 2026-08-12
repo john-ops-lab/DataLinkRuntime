@@ -319,10 +319,12 @@ it("loads the adapter list", async () => {
   ]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getAllByTestId("adapter-item").map((item) => item.textContent)).toEqual([
-      "adapter-a",
-      "adapter-b",
-    ]);
+    // M3.1: catalog rows are dense two-line items; the name line stays assertable.
+    expect(
+      screen
+        .getAllByTestId("adapter-item")
+        .map((item) => item.querySelector(".catalog-item-name")?.textContent ?? ""),
+    ).toEqual(["adapter-a", "adapter-b"]);
   });
 });
 
@@ -358,14 +360,17 @@ it("creates an adapter and selects it", async () => {
   await screen.findByText("暂无 Adapter");
 
   fireEvent.click(screen.getByTestId("show-create-form"));
+  await screen.findByTestId("new-adapter-name");
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "cmdb-sync" } });
   fireEvent.change(screen.getByTestId("new-adapter-description"), {
     target: { value: "sync cmdb" },
   });
   fireEvent.click(screen.getByTestId("create-adapter"));
 
-  // Created adapter becomes selected and shows its metadata.
+  // Created adapter becomes selected; metadata moved to the settings drawer.
   await screen.findByRole("heading", { name: "cmdb-sync" });
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  await screen.findByTestId("adapter-name");
   expect(valueOf("adapter-name")).toBe("cmdb-sync");
 
   const createCall = fetchMock.mock.calls.find(
@@ -497,7 +502,8 @@ it("saves a new version with the edited content", async () => {
     requirements: "requests==2.32.0",
     runtime_config: { batch: 10 },
   });
-  expect(valueOf("version-selector")).toBe("10");
+  // The header version selector now shows the acknowledged version.
+  expect(screen.getByTestId("version-selector").textContent).toContain("v1");
 });
 
 it("loads the snapshot of a selected historical version", async () => {
@@ -534,7 +540,9 @@ it("loads the snapshot of a selected historical version", async () => {
   await selectFirstAdapter();
   expect(valueOf("code-editor")).toBe("code-v2");
 
-  fireEvent.change(screen.getByTestId("version-selector"), { target: { value: "10" } });
+  // Version switching moved to the header dropdown menu.
+  fireEvent.click(screen.getByTestId("version-selector"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "v1" }));
   await waitFor(() => {
     expect(valueOf("code-editor")).toBe("code-v1");
   });
@@ -652,6 +660,7 @@ it("shows the domain error code when creating a duplicate adapter", async () => 
   await selectFirstAdapter();
 
   fireEvent.click(screen.getByTestId("show-create-form"));
+  await screen.findByTestId("new-adapter-name");
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "adapter-a" } });
   fireEvent.click(screen.getByTestId("create-adapter"));
 
@@ -836,7 +845,7 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
   // so the user is never encouraged to repeat an already-successful save.
   expect(screen.queryByTestId("dirty-indicator")).toBeNull();
   expect(screen.getByTestId("latest-badge")).toBeTruthy();
-  expect(valueOf("version-selector")).toBe("10");
+  expect(screen.getByTestId("version-selector").textContent).toContain("v1");
   expect(valueOf("code-editor")).toBe("saved code");
 });
 
@@ -868,6 +877,7 @@ it("keeps the create form and its inputs when creation fails with a duplicate na
   await selectFirstAdapter();
 
   fireEvent.click(screen.getByTestId("show-create-form"));
+  await screen.findByTestId("new-adapter-name");
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "adapter-a" } });
   fireEvent.change(screen.getByTestId("new-adapter-description"), {
     target: { value: "keep me" },
@@ -910,6 +920,7 @@ it("keeps the create form open when creation is cancelled by the discard confirm
 
   const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
   fireEvent.click(screen.getByTestId("show-create-form"));
+  await screen.findByTestId("new-adapter-name");
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "new-one" } });
   fireEvent.click(screen.getByTestId("create-adapter"));
 
@@ -1029,7 +1040,7 @@ it("locks editing while Save is in flight so the saved snapshot stays consistent
   expect((screen.getByTestId("runtime-config-input") as HTMLTextAreaElement).disabled).toBe(true);
   expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getAllByTestId("adapter-item")[0] as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByTestId("version-selector") as HTMLSelectElement).disabled).toBe(true);
+  expect((screen.getByTestId("version-selector") as HTMLButtonElement).disabled).toBe(true);
 
   // Save completes with exactly the snapshot that existed when it started.
   const savedVersion = makeVersion({ code: "edited code", requirements: "", runtime_config: {} });
@@ -1767,4 +1778,108 @@ it("shows the worker badge by online presence, not by registration count", async
   expect(
     screen.getByTestId("worker-status").querySelector(".ant-badge-status-success"),
   ).toBeTruthy();
+});
+
+// --- M3.1 Console shell structure ---------------------------------------------
+
+it("shows the brand area and the token card on the login page", async () => {
+  sessionStorage.clear();
+  // No routes registered: the login screen must not call any API.
+  stubFetch([]);
+  render(<App />);
+  await screen.findByTestId("admin-token-input");
+  expect(screen.getByText("DataLinkRuntime")).toBeTruthy();
+  expect(screen.getByText("欢迎登录 DLR 控制台")).toBeTruthy();
+  expect(screen.getByText("轻量数据适配运行平台")).toBeTruthy();
+});
+
+it("renders the console shell with catalog, workbench header and the three main tabs", async () => {
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [makeAdapter()] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [] }),
+    },
+  ]);
+  render(<App />);
+  await screen.findByTestId("adapter-catalog");
+  await selectFirstAdapter();
+  expect(screen.getByTestId("workbench-header")).toBeTruthy();
+  expect(screen.getByText("编辑")).toBeTruthy();
+  expect(screen.getByText("测试运行")).toBeTruthy();
+  expect(screen.getByText("执行记录")).toBeTruthy();
+});
+
+it("renders the two-column test run layout with input and execution panels", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  render(<App />);
+  await selectFirstAdapter();
+  await openTestRunTab();
+  expect(screen.getByTestId("test-input-col")).toBeTruthy();
+  expect(screen.getByTestId("execution-col")).toBeTruthy();
+});
+
+it("edits metadata and deletes the adapter from the settings drawer", async () => {
+  const adapters: Adapter[] = [makeAdapter()];
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: adapters }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [] }),
+    },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}") as { name: string; description: string };
+        const updated = { ...adapters[0], name: payload.name, description: payload.description };
+        adapters[0] = updated;
+        return { body: updated };
+      },
+    },
+    {
+      method: "DELETE",
+      match: "/api/adapters/1",
+      respond: () => {
+        adapters.length = 0;
+        return { status: 204 };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  await screen.findByTestId("adapter-name");
+  fireEvent.change(screen.getByTestId("adapter-name"), { target: { value: "renamed" } });
+  fireEvent.change(screen.getByTestId("adapter-description"), { target: { value: "new desc" } });
+  fireEvent.click(screen.getByTestId("update-details"));
+  await screen.findByRole("heading", { name: "renamed" });
+
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  fireEvent.click(screen.getByTestId("delete-adapter"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => url === "/api/adapters/1" && init?.method === "DELETE",
+      ),
+    ).toBe(true);
+  });
+  await waitFor(() => {
+    expect(screen.queryAllByTestId("adapter-item")).toHaveLength(0);
+  });
+  expect(screen.getByText("请选择一个 Adapter 进行管理。")).toBeTruthy();
 });

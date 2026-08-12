@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
-import { Button, Card, ConfigProvider, Input, Space, Tabs, Tag, Typography } from "antd";
+import { ConfigProvider, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
-import AdapterList from "./components/AdapterList";
+import AdapterCatalog from "./components/AdapterCatalog";
+import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
 import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
+import LoginPage from "./components/LoginPage";
 import TestRunPanel from "./components/TestRunPanel";
 import WorkerStatus from "./components/WorkerStatus";
+import WorkbenchHeader from "./components/WorkbenchHeader";
 import type { Adapter, VersionDetail, VersionSummary } from "./types";
 
 type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
@@ -110,6 +113,8 @@ function AdapterConsole() {
   // True only after the selected adapter's version list and content loaded successfully.
   // Save/Publish are gated on it so stale or failed loads can never be persisted.
   const [contentReady, setContentReady] = useState(false);
+  // Low-frequency Adapter settings live in a drawer, outside the main work area.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Monotonic guard: only the newest content-loading request may commit state, so
   // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
   const requestGeneration = useRef(0);
@@ -193,6 +198,7 @@ function AdapterConsole() {
     setVersions([]);
     setSelectedVersionId(null);
     setContentReady(false);
+    setSettingsOpen(false);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
       const list = await api.listVersions(adapter.id);
@@ -395,6 +401,7 @@ function AdapterConsole() {
       setSelectedVersionId(null);
       setVersions([]);
       setContentReady(false);
+      setSettingsOpen(false);
       applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
       await refreshAdapters();
     } catch (err) {
@@ -418,14 +425,44 @@ function AdapterConsole() {
   const isPublished =
     selectedVersionId !== null && selected?.published_version_id === selectedVersionId;
 
+  // Catalog rows may only show seq values we actually know (the loaded version
+  // list of the selected adapter); other adapters degrade to neutral text.
+  const latestSeqById = new Map<number, number>();
+  const publishedSeqById = new Map<number, number>();
+  if (selected !== null) {
+    for (const version of versions) {
+      if (version.id === selected.latest_version_id) {
+        latestSeqById.set(selected.id, version.seq);
+      }
+      if (version.id === selected.published_version_id) {
+        publishedSeqById.set(selected.id, version.seq);
+      }
+    }
+  }
+
+  const healthDotClass =
+    health === "ok"
+      ? "health-dot-ok"
+      : health === "degraded"
+        ? "health-dot-degraded"
+        : health === "unreachable"
+          ? "health-dot-unreachable"
+          : "";
+
   return (
-    <main className="layout">
-      <header className="header">
-        <h1>DataLinkRuntime</h1>
-        <Space size={12} align="center">
-          <span data-testid="control-status">{healthText}</span>
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="app-header-brand">
+          <h1 className="app-header-logo">DLR</h1>
+          <span className="app-header-product">DataLinkRuntime · 轻量数据适配运行平台</span>
+        </div>
+        <div className="app-header-status">
+          <span className="health-status">
+            <span className={`health-dot ${healthDotClass}`.trim()} />
+            <span data-testid="control-status">{healthText}</span>
+          </span>
           <WorkerStatus />
-        </Space>
+        </div>
       </header>
 
       {error && (
@@ -434,230 +471,140 @@ function AdapterConsole() {
         </p>
       )}
 
-      <div className="panels">
-        <AdapterList
+      <div className="console-body">
+        <AdapterCatalog
           adapters={adapters}
           selectedId={selected?.id ?? null}
           busy={busy}
           onSelect={handleSelectAdapter}
           onCreate={handleCreateAdapter}
+          latestSeqById={latestSeqById}
+          publishedSeqById={publishedSeqById}
         />
 
-        {selected === null ? (
-          <section className="detail-empty">请选择一个 Adapter 进行管理。</section>
-        ) : (
-          <section className="detail">
-            <div className="detail-header">
-              <h2>{selected.name}</h2>
-              {dirty && (
-                <Tag color="warning" data-testid="dirty-indicator">
-                  未保存修改
-                </Tag>
-              )}
-              <Button danger data-testid="delete-adapter" disabled={busy} onClick={() => void handleDelete()}>
-                删除
-              </Button>
-            </div>
-
-            <div className="metadata">
-              <Input
-                data-testid="adapter-name"
-                value={name}
-                disabled={busy}
-                onChange={(event) => setName(event.target.value)}
+        <main className="workbench">
+          {selected === null ? (
+            <div className="workbench-empty">请选择一个 Adapter 进行管理。</div>
+          ) : (
+            <section className="detail">
+              <WorkbenchHeader
+                adapter={selected}
+                versions={versions}
+                selectedVersionId={selectedVersionId}
+                selectedVersion={selectedVersion}
+                isLatest={isLatest}
+                isPublished={isPublished}
+                dirty={dirty}
+                busy={busy}
+                contentReady={contentReady}
+                onSelectVersion={(versionId) => void handleSelectVersion(versionId)}
+                onSave={() => void handleSaveVersion()}
+                onPublish={() => void handlePublish()}
+                onOpenSettings={() => setSettingsOpen(true)}
               />
-              <Input
-                data-testid="adapter-description"
-                placeholder="描述"
-                value={description}
-                disabled={busy}
-                onChange={(event) => setDescription(event.target.value)}
-              />
-              <Button
-                data-testid="update-details"
-                disabled={busy || !contentReady}
-                onClick={() => void handleUpdateDetails()}
-              >
-                更新信息
-              </Button>
-            </div>
 
-            <div className="version-controls">
-              <label>
-                版本{" "}
-                <select
-                  data-testid="version-selector"
-                  value={selectedVersionId ?? ""}
-                  disabled={busy || versions.length === 0}
-                  onChange={(event) => void handleSelectVersion(Number(event.target.value))}
-                >
-                  {versions.map((version) => (
-                    <option key={version.id} value={version.id}>
-                      v{version.seq}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {selectedVersion && <span data-testid="version-seq">v{selectedVersion.seq}</span>}
-              {isLatest && <Tag color="blue" data-testid="latest-badge">Latest</Tag>}
-              {isPublished && <Tag color="green" data-testid="published-badge">Published</Tag>}
-              <Button
-                data-testid="publish-version"
-                disabled={selectedVersionId === null || busy || !contentReady}
-                onClick={() => void handlePublish()}
-              >
-                发布
-              </Button>
-            </div>
-
-            <Tabs
-              className="workspace-tabs"
-              defaultActiveKey="edit"
-              items={[
-                {
-                  key: "edit",
-                  label: "编辑",
-                  children: (
-                    <div className="editor-pane">
-                      <Editor
-                        height="320px"
-                        defaultLanguage="python"
-                        value={snapshot.code}
-                        onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
-                        options={{ minimap: { enabled: false }, readOnly: busy || !contentReady }}
-                      />
-
-                      <div className="version-fields">
-                        <label>
-                          Requirements
-                          <textarea
-                            data-testid="requirements-input"
-                            rows={4}
-                            value={snapshot.requirements}
-                            disabled={busy || !contentReady}
-                            onChange={(event) =>
-                              setSnapshot((current) => ({ ...current, requirements: event.target.value }))
-                            }
+              <Tabs
+                className="workbench-tabs"
+                defaultActiveKey="edit"
+                items={[
+                  {
+                    key: "edit",
+                    label: "编辑",
+                    children: (
+                      <div className="editor-pane">
+                        <div className="editor-main">
+                          <Editor
+                            height="100%"
+                            defaultLanguage="python"
+                            value={snapshot.code}
+                            onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
+                            options={{ minimap: { enabled: false }, readOnly: busy || !contentReady }}
                           />
-                        </label>
-                        <label>
-                          Runtime config（JSON 对象）
-                          <textarea
-                            data-testid="runtime-config-input"
-                            rows={4}
-                            value={snapshot.runtimeConfigText}
-                            disabled={busy || !contentReady}
-                            onChange={(event) =>
-                              setSnapshot((current) => ({
-                                ...current,
-                                runtimeConfigText: event.target.value,
-                              }))
-                            }
-                          />
-                        </label>
+                        </div>
+
+                        <div className="version-fields">
+                          <label>
+                            Requirements
+                            <textarea
+                              data-testid="requirements-input"
+                              rows={3}
+                              value={snapshot.requirements}
+                              disabled={busy || !contentReady}
+                              onChange={(event) =>
+                                setSnapshot((current) => ({ ...current, requirements: event.target.value }))
+                              }
+                            />
+                          </label>
+                          <label>
+                            Runtime config（JSON 对象）
+                            <textarea
+                              data-testid="runtime-config-input"
+                              rows={3}
+                              value={snapshot.runtimeConfigText}
+                              disabled={busy || !contentReady}
+                              onChange={(event) =>
+                                setSnapshot((current) => ({
+                                  ...current,
+                                  runtimeConfigText: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                        </div>
                       </div>
-
-                      <Button
-                        type="primary"
-                        data-testid="save-version"
-                        disabled={busy || !contentReady}
-                        onClick={() => void handleSaveVersion()}
-                      >
-                        保存新版本
-                      </Button>
-                    </div>
-                  ),
-                },
-                {
-                  key: "test",
-                  label: "测试运行",
-                  children: (
-                    <TestRunPanel
-                      key={selected.id}
-                      adapter={selected}
-                      selectedVersionId={selectedVersionId}
-                      selectedVersionSeq={selectedVersion?.seq ?? null}
-                      isLatest={isLatest}
-                      isPublished={isPublished}
-                      dirty={dirty}
-                      contentReady={contentReady}
-                      busy={busy}
-                      onError={setError}
-                    />
-                  ),
-                },
-                {
-                  key: "history",
-                  label: "执行记录",
-                  // antd Tabs render lazily: the history API is only called
-                  // after this tab is activated for the first time.
-                  children: <ExecutionHistoryPanel key={selected.id} adapterId={selected.id} />,
-                },
-              ]}
-            />
-          </section>
-        )}
+                    ),
+                  },
+                  {
+                    key: "test",
+                    label: "测试运行",
+                    children: (
+                      <TestRunPanel
+                        key={selected.id}
+                        adapter={selected}
+                        selectedVersionId={selectedVersionId}
+                        selectedVersionSeq={selectedVersion?.seq ?? null}
+                        isLatest={isLatest}
+                        isPublished={isPublished}
+                        dirty={dirty}
+                        contentReady={contentReady}
+                        busy={busy}
+                        onError={setError}
+                      />
+                    ),
+                  },
+                  {
+                    key: "history",
+                    label: "执行记录",
+                    // antd Tabs render lazily: the history API is only called
+                    // after this tab is activated for the first time.
+                    children: <ExecutionHistoryPanel key={selected.id} adapterId={selected.id} />,
+                  },
+                ]}
+              />
+            </section>
+          )}
+        </main>
       </div>
-    </main>
+
+      <AdapterSettingsDrawer
+        open={settingsOpen}
+        adapter={selected}
+        name={name}
+        description={description}
+        busy={busy}
+        contentReady={contentReady}
+        onClose={() => setSettingsOpen(false)}
+        onNameChange={setName}
+        onDescriptionChange={setDescription}
+        onUpdate={() => void handleUpdateDetails()}
+        onDelete={() => void handleDelete()}
+      />
+    </div>
   );
 }
 
-// Minimal admin token input shown while no valid token is present.
-function TokenLogin(props: { notice: string | null; onSubmit: (token: string) => Promise<void> }) {
-  const [token, setToken] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function handleSubmit() {
-    if (busy || !token.trim()) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await props.onSubmit(token.trim());
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main className="layout login-layout">
-      <header className="header">
-        <h1>DataLinkRuntime</h1>
-      </header>
-      <Card className="login-card" title="需要 Admin Token">
-        <Typography.Paragraph type="secondary">
-          请输入管理 Token 后进入控制台。Token 仅保存在当前浏览器会话中。
-        </Typography.Paragraph>
-        {props.notice && <p data-testid="auth-notice">{props.notice}</p>}
-        {error && (
-          <p className="error-banner" role="alert" data-testid="login-error">
-            {error}
-          </p>
-        )}
-        <Input.Password
-          data-testid="admin-token-input"
-          placeholder="Admin token"
-          value={token}
-          disabled={busy}
-          onChange={(event) => setToken(event.target.value)}
-        />
-        <Button
-          type="primary"
-          data-testid="admin-token-submit"
-          loading={busy}
-          disabled={busy || !token.trim()}
-          onClick={() => void handleSubmit()}
-        >
-          登录
-        </Button>
-      </Card>
-    </main>
-  );
-}
+// Minimal admin token input shown while no valid token is present;
+// the M3.1 login page keeps the M2 auth contract unchanged.
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(() => {
@@ -693,8 +640,8 @@ export default function App() {
   }
 
   return (
-    <ConfigProvider locale={zhCN}>
-      {authed ? <AdapterConsole /> : <TokenLogin notice={notice} onSubmit={handleLogin} />}
+    <ConfigProvider locale={zhCN} theme={{ token: { colorBgLayout: "#f5f6f8", borderRadius: 4 } }}>
+      {authed ? <AdapterConsole /> : <LoginPage notice={notice} onSubmit={handleLogin} />}
     </ConfigProvider>
   );
 }

@@ -117,29 +117,40 @@ export default function ExecutionHistoryPanel(props: { adapterId: number }) {
   }
 
   const columns: ColumnsType<ExecutionSummary> = [
-    { title: "ID", dataIndex: "id", width: 80 },
     {
       title: "状态",
       dataIndex: "status",
-      width: 100,
+      width: 96,
       render: (status: string) => <Tag color={statusColor(status)}>{statusLabel(status)}</Tag>,
     },
     {
-      title: "版本",
+      title: "Execution",
+      dataIndex: "id",
+      width: 110,
+      render: (id: number) => `#${id}`,
+    },
+    {
+      title: "Version",
       dataIndex: "version_seq",
-      width: 80,
+      width: 90,
       render: (seq: number) => `v${seq}`,
     },
     {
       title: "Worker",
       dataIndex: "worker_name",
-      width: 140,
+      width: 130,
       render: (name: string | null) => name ?? "—",
+    },
+    {
+      title: "触发",
+      dataIndex: "trigger",
+      width: 80,
+      render: (trigger: string) => (trigger === "manual" ? "手动" : trigger),
     },
     {
       title: "耗时",
       dataIndex: "duration_ms",
-      width: 110,
+      width: 100,
       render: (duration: number | null) => formatDuration(duration),
     },
     {
@@ -157,18 +168,20 @@ export default function ExecutionHistoryPanel(props: { adapterId: number }) {
         </Button>
         {loadError && <span className="history-error">{loadError}</span>}
       </Space>
-      <Table<ExecutionSummary>
-        rowKey="id"
-        size="small"
-        columns={columns}
-        dataSource={items}
-        pagination={false}
-        locale={{ emptyText: <Empty description="暂无执行记录" /> }}
-        onRow={(summary) => ({
-          onClick: () => void openDetail(summary),
-          "data-testid": "history-row",
-        })}
-      />
+      <div className="history-scroll">
+        <Table<ExecutionSummary>
+          rowKey="id"
+          size="small"
+          columns={columns}
+          dataSource={items}
+          pagination={false}
+          locale={{ emptyText: <Empty description="暂无执行记录" /> }}
+          onRow={(summary) => ({
+            onClick: () => void openDetail(summary),
+            "data-testid": "history-row",
+          })}
+        />
+      </div>
       {nextBeforeId !== null && (
         <Button
           data-testid="history-load-more"
@@ -198,8 +211,10 @@ export default function ExecutionHistoryPanel(props: { adapterId: number }) {
                 { key: "status", label: "状态", children: <Tag color={statusColor(detail.status)}>{statusLabel(detail.status)}</Tag> },
                 { key: "version", label: "Version ID", children: detail.version_id },
                 { key: "worker", label: "Worker", children: detail.worker_id ?? "—" },
-                { key: "trigger", label: "触发方式", children: detail.trigger },
+                { key: "trigger", label: "触发方式", children: detail.trigger === "manual" ? "手动" : detail.trigger },
                 { key: "created", label: "创建时间", children: formatTime(detail.created_at) },
+                { key: "started", label: "开始时间", children: formatTime(detail.started_at) },
+                { key: "ended", label: "结束时间", children: formatTime(detail.ended_at) },
                 { key: "duration", label: "耗时", children: formatDuration(detail.duration_ms) },
               ]}
             />
