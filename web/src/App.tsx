@@ -141,7 +141,7 @@ function publishGateReasonText(gate: PublishGate): string {
 
 type WorkbenchTabKey = "edit" | "test" | "history";
 
-// M3.2：编辑页次级配置区（Python 依赖 | 运行参数（JSON） | 凭据绑定）。
+// 编辑页次级配置区（语言依赖 | 运行参数（JSON） | 凭据绑定）。
 type ConfigTabKey = "requirements" | "runtime-config" | "bindings";
 
 /** Diff 弹窗状态：两个入口（Working Copy / 发布对比）共用一个弹窗。 */
@@ -776,13 +776,13 @@ function AdapterConsole() {
         {
           key: "code",
           label: "代码",
-          language: "python",
+          language: selected.language,
           original: baseline.code,
           modified: snapshot.code,
         },
         {
           key: "requirements",
-          label: "Python 依赖",
+          label: DEPENDENCY_UI[selected.language].label,
           language: "plaintext",
           original: baseline.requirements,
           modified: snapshot.requirements,
@@ -832,13 +832,13 @@ function AdapterConsole() {
           {
             key: "code",
             label: "代码",
-            language: "python",
+            language: selected.language,
             original: current?.code ?? "",
             modified: target.code,
           },
           {
             key: "requirements",
-            label: "Python 依赖",
+            label: DEPENDENCY_UI[selected.language].label,
             language: "plaintext",
             original: current?.requirements ?? "",
             modified: target.requirements,

@@ -2,6 +2,7 @@
 
 import html
 import shutil
+import tempfile
 import threading
 from pathlib import Path
 from urllib import parse as url_parse
@@ -34,40 +35,42 @@ def parse_requirements(requirements: str) -> list[tuple[str, str, str]]:
     return dependencies
 
 
-def _pom(dependencies: list[tuple[str, str, str]], repository_url: str | None) -> str:
+def _pom(dependencies: list[tuple[str, str, str]]) -> str:
     dependencies_xml = "".join(
         "<dependency><groupId>{}</groupId><artifactId>{}</artifactId>"
         "<version>{}</version></dependency>".format(*(html.escape(value) for value in dep))
         for dep in dependencies
     )
-    repository_xml = ""
-    if repository_url:
-        repository_xml = (
-            "<repositories><repository><id>dlr</id><url>"
-            f"{html.escape(repository_url)}</url></repository></repositories>"
-        )
     return (
         '<project xmlns="http://maven.apache.org/POM/4.0.0">'
         "<modelVersion>4.0.0</modelVersion><groupId>dlr.runtime</groupId>"
         "<artifactId>adapter</artifactId><version>1</version>"
-        f"{repository_xml}<dependencies>{dependencies_xml}</dependencies></project>"
+        f"<dependencies>{dependencies_xml}</dependencies></project>"
     )
 
 
-def _maven_auth(repository_url: str) -> tuple[str, str | None]:
+def _maven_settings(repository_url: str) -> tuple[str, str]:
     parts = url_parse.urlsplit(repository_url)
-    if "@" not in parts.netloc:
-        return repository_url, None
-    host = parts.netloc.rsplit("@", 1)[1]
+    host = parts.netloc.rsplit("@", 1)[-1]
     clean_url = url_parse.urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
-    username = html.escape(url_parse.unquote(parts.username or ""))
-    password = html.escape(url_parse.unquote(parts.password or ""))
-    settings = (
-        "<settings><servers><server><id>dlr</id>"
-        f"<username>{username}</username><password>{password}</password>"
-        "</server></servers></settings>"
+    mirror_id = "dlr-mirror"
+    mirror = (
+        "<mirrors><mirror>"
+        f"<id>{mirror_id}</id><url>{html.escape(clean_url)}</url>"
+        "<mirrorOf>*</mirrorOf>"
+        "</mirror></mirrors>"
     )
-    return clean_url, settings
+    server = ""
+    if "@" in parts.netloc:
+        username = html.escape(url_parse.unquote(parts.username or ""))
+        password = html.escape(url_parse.unquote(parts.password or ""))
+        server = (
+            "<servers><server>"
+            f"<id>{mirror_id}</id><username>{username}</username>"
+            f"<password>{password}</password>"
+            "</server></servers>"
+        )
+    return clean_url, f"<settings>{mirror}{server}</settings>"
 
 
 def prepare_version_java(
@@ -96,18 +99,24 @@ def prepare_version_java(
         dependencies = parse_requirements(requirements)
         (directory / "Adapter.java").write_text(code, encoding="utf-8")
         (directory / "DlrRuntime.java").write_text(RUNTIME_SOURCE, encoding="utf-8")
-        clean_repository = None
         settings_path = None
-        if repository_url:
-            clean_repository, settings_xml = _maven_auth(repository_url)
-            if settings_xml:
-                settings_path = directory / ".settings.auth.xml"
-                settings_path.write_text(settings_xml, encoding="utf-8")
-        (directory / "pom.xml").write_text(_pom(dependencies, clean_repository), encoding="utf-8")
+        (directory / "pom.xml").write_text(_pom(dependencies), encoding="utf-8")
         try:
             if dependencies:
                 if shutil.which("mvn") is None:
                     raise venv.DependencyPreparationError("Maven Runtime is unavailable", "")
+                if repository_url:
+                    _, settings_xml = _maven_settings(repository_url)
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        encoding="utf-8",
+                        prefix="dlr-maven-",
+                        suffix=".xml",
+                        delete=False,
+                    ) as handle:
+                        handle.write(settings_xml)
+                        settings_path = Path(handle.name)
+                    settings_path.chmod(0o600)
                 base = [
                     "mvn",
                     "-q",

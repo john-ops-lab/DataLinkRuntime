@@ -123,6 +123,7 @@ export default function AdapterCatalog({
       if (created) {
         setName("");
         setDescription("");
+        setLanguage("python");
         setCreating(false);
       }
     } finally {
@@ -146,7 +147,10 @@ export default function AdapterCatalog({
           type="primary"
           data-testid="show-create-form"
           disabled={busy}
-          onClick={() => setCreating(true)}
+          onClick={() => {
+            setLanguage("python");
+            setCreating(true);
+          }}
         >
           新建
         </Button>

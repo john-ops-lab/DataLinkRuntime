@@ -10,8 +10,10 @@ heartbeating / claiming with simple capped backoff instead of crashing.
 
 import logging
 import os
+import re
 import shutil
 import signal
+import subprocess
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
@@ -29,6 +31,35 @@ DEFAULT_READY_FILE = "/tmp/dlr-worker.ready"
 
 MAX_BACKOFF_SECONDS = 30.0
 REPORT_ATTEMPTS = 3
+MIN_JAVA_MAJOR_VERSION = 21
+
+
+def _runtime_major_version(command: str) -> int | None:
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed Runtime version probe
+            [command, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    output = f"{completed.stdout}\n{completed.stderr}"
+    prefix = "javac" if command == "javac" else "version"
+    match = re.search(rf"\b{prefix}\s+\"?(\d+)", output)
+    return int(match.group(1)) if match is not None else None
+
+
+def _supports_java_runtime() -> bool:
+    if any(shutil.which(command) is None for command in ("java", "javac", "mvn")):
+        return False
+    return all(
+        (_runtime_major_version(command) or 0) >= MIN_JAVA_MAJOR_VERSION
+        for command in ("java", "javac")
+    )
 
 
 class WorkerConfig:
@@ -56,7 +87,7 @@ class WorkerConfig:
             capabilities.append("python")
         if shutil.which("node") and shutil.which("npm"):
             capabilities.append("javascript")
-        if shutil.which("java") and shutil.which("javac") and shutil.which("mvn"):
+        if _supports_java_runtime():
             capabilities.append("java")
         return capabilities
 

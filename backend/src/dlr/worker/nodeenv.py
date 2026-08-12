@@ -3,6 +3,7 @@
 import base64
 import json
 import shutil
+import tempfile
 import threading
 from pathlib import Path
 from urllib import parse as url_parse
@@ -89,23 +90,31 @@ def prepare_version_node(
                 raise venv.DependencyPreparationError("npm Runtime is unavailable", "")
             clean_registry = None
             npmrc = None
-            if registry_url:
-                clean_registry, auth_config = _npm_auth(registry_url)
-                if auth_config:
-                    npmrc = directory / ".npmrc.auth"
-                    npmrc.write_text(auth_config, encoding="utf-8")
-            command = [
-                "npm",
-                "install",
-                "--ignore-scripts",
-                "--no-audit",
-                "--no-fund",
-                "--prefix",
-                str(directory),
-            ]
-            if npmrc is not None:
-                command.extend(["--userconfig", str(npmrc)])
             try:
+                if registry_url:
+                    clean_registry, auth_config = _npm_auth(registry_url)
+                    if auth_config:
+                        with tempfile.NamedTemporaryFile(
+                            mode="w",
+                            encoding="utf-8",
+                            prefix="dlr-npm-",
+                            suffix=".npmrc",
+                            delete=False,
+                        ) as handle:
+                            handle.write(auth_config)
+                            npmrc = Path(handle.name)
+                        npmrc.chmod(0o600)
+                command = [
+                    "npm",
+                    "install",
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--no-fund",
+                    "--prefix",
+                    str(directory),
+                ]
+                if npmrc is not None:
+                    command.extend(["--userconfig", str(npmrc)])
                 try:
                     venv._run_logged(command + ["--offline"], timeout_seconds)
                 except venv.DependencyPreparationError as offline_error:

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import App, {
@@ -40,10 +40,15 @@ vi.mock("@monaco-editor/react", () => ({
     );
   },
   // M3.2：DiffEditor 降级为两侧文本展示，便于断言 original/modified 内容。
-  DiffEditor: function DiffEditor(props: { original?: string; modified?: string }) {
+  DiffEditor: function DiffEditor(props: {
+    language?: string;
+    original?: string;
+    modified?: string;
+  }) {
     return (
       <div
         data-testid="diff-editor"
+        data-monaco-language={props.language ?? ""}
         data-original={props.original ?? ""}
         data-modified={props.modified ?? ""}
       />
@@ -464,6 +469,9 @@ it("creates a JavaScript adapter with the language starter and Monaco mode", asy
   expect((editor as HTMLTextAreaElement).value).toContain("export async function handle");
   expect(editor.getAttribute("data-monaco-language")).toBe("javascript");
   expect(screen.getByText("npm 依赖")).toBeTruthy();
+
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  expect((screen.getByRole("radio", { name: "Python" }) as HTMLInputElement).checked).toBe(true);
 });
 
 // --- Version editing ---------------------------------------------------------
@@ -2776,8 +2784,8 @@ it("hides archived adapters from the active catalog and disables editing when ar
 
 // --- M3.2 配置区 / 系统设置 / Diff -------------------------------------------
 
-it("shows the working copy diff against the baseline version", async () => {
-  const adapter = makeAdapter({ latest_version_id: 10 });
+it("shows a JavaScript working copy diff with the matching Monaco mode and dependency label", async () => {
+  const adapter = makeAdapter({ language: "javascript", latest_version_id: 10 });
   stubFetch(consoleWithVersionRoutes(adapter, makeVersion({ code: "baseline-code\n" })));
   render(<App />);
   await selectFirstAdapter();
@@ -2787,12 +2795,18 @@ it("shows the working copy diff against the baseline version", async () => {
 
   await screen.findByTestId("version-diff");
   const diff = screen.getByTestId("diff-editor");
+  expect(diff.getAttribute("data-monaco-language")).toBe("javascript");
   expect(diff.getAttribute("data-original")).toBe("baseline-code\n");
   expect(diff.getAttribute("data-modified")).toBe("edited-code\n");
+  expect(within(screen.getByTestId("version-diff")).getByText("npm 依赖")).toBeTruthy();
 });
 
-it("compares the publish target with the current production version in the diff modal", async () => {
-  const adapter = makeAdapter({ latest_version_id: 10, published_version_id: 11 });
+it("shows a Java publish diff with the matching Monaco mode and dependency label", async () => {
+  const adapter = makeAdapter({
+    language: "java",
+    latest_version_id: 10,
+    published_version_id: 11,
+  });
   const fetchMock = stubFetch([
     healthRoute({ status: "ok", database: true }),
     { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
@@ -2833,8 +2847,11 @@ it("compares the publish target with the current production version in the diff 
 
   await screen.findByTestId("version-diff");
   // 默认展示代码窗格：original 为当前生产版本，modified 为发布目标。
-  expect(screen.getByTestId("diff-editor").getAttribute("data-original")).toBe("running-code\n");
-  expect(screen.getByTestId("diff-editor").getAttribute("data-modified")).toBe("target-code\n");
+  const diff = screen.getByTestId("diff-editor");
+  expect(diff.getAttribute("data-monaco-language")).toBe("java");
+  expect(diff.getAttribute("data-original")).toBe("running-code\n");
+  expect(diff.getAttribute("data-modified")).toBe("target-code\n");
+  expect(within(screen.getByTestId("version-diff")).getByText("Maven 依赖")).toBeTruthy();
   // Diff 覆盖绑定引用：需拉取当前 Adapter 绑定。
   expect(
     fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1/credential-bindings"),

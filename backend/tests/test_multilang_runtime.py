@@ -1,11 +1,13 @@
 """M3.3 regression tests for language dispatch and Worker capabilities."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from conftest import WORKER_TOKEN
+from dlr.worker import agent as worker_agent
 from dlr.worker import executor, javaenv, nodeenv, venv
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
@@ -199,14 +201,145 @@ def test_dependency_auth_is_kept_out_of_generated_manifests() -> None:
     assert npm_auth is not None and "npm-token" in npm_auth
     assert "npm-token" not in nodeenv._npm_auth(npm_url)[0]
 
-    maven_url, maven_settings = javaenv._maven_auth(
+    maven_url, maven_settings = javaenv._maven_settings(
         "https://maven-user:maven-password@maven.example.com/repository/"
     )
     assert maven_url == "https://maven.example.com/repository/"
-    assert maven_settings is not None and "maven-password" in maven_settings
-    pom = javaenv._pom([], maven_url)
+    assert "<mirrorOf>*</mirrorOf>" in maven_settings
+    assert "<url>https://maven.example.com/repository/</url>" in maven_settings
+    assert "maven-password" in maven_settings
+    pom = javaenv._pom([])
     assert "maven-user" not in pom
     assert "maven-password" not in pom
+    assert "maven.example.com" not in pom
+
+    _, anonymous_settings = javaenv._maven_settings("https://maven.example.com/repository/")
+    assert "<mirrorOf>*</mirrorOf>" in anonymous_settings
+
+
+def test_npm_auth_file_is_private_and_outside_version_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    directory = venv.version_dir(runtime_root, 1, 2)
+    seen_auth_files: list[Path] = []
+    monkeypatch.setattr(nodeenv.shutil, "which", lambda command: f"/fake/{command}")
+
+    def fake_run(command: list[str], _timeout: int) -> str:
+        if command[0] == "npm":
+            auth_path = Path(command[command.index("--userconfig") + 1])
+            assert auth_path.exists()
+            assert not auth_path.is_relative_to(directory)
+            assert auth_path.stat().st_mode & 0o777 == 0o600
+            assert "npm-token" in auth_path.read_text(encoding="utf-8")
+            seen_auth_files.append(auth_path)
+        return ""
+
+    monkeypatch.setattr(venv, "_run_logged", fake_run)
+    result = nodeenv.prepare_version_node(
+        runtime_root,
+        1,
+        2,
+        "export function handle(context, input) { return input; }",
+        "fixture@1.0.0",
+        timeout_seconds=5,
+        registry_url="https://npm-token:@registry.example.com/npm/",
+    )
+    assert seen_auth_files
+    assert all(not path.exists() for path in seen_auth_files)
+    assert (result / ".ready").exists()
+    assert list(result.rglob("*.auth")) == []
+
+
+@pytest.mark.parametrize(
+    ("repository_url", "has_credentials"),
+    [
+        (
+            "https://maven-user:maven-password@maven.example.com/repository/",
+            True,
+        ),
+        ("https://maven.example.com/repository/", False),
+    ],
+)
+def test_maven_mirror_controls_plugin_and_dependency_resolution_without_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    repository_url: str,
+    has_credentials: bool,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    directory = venv.version_dir(runtime_root, 3, 4)
+    settings_paths: list[Path] = []
+    maven_commands: list[list[str]] = []
+    monkeypatch.setattr(javaenv.shutil, "which", lambda command: f"/fake/{command}")
+
+    def fake_run(command: list[str], _timeout: int) -> str:
+        if command[0] == "mvn":
+            settings_path = Path(command[command.index("-s") + 1])
+            settings = settings_path.read_text(encoding="utf-8")
+            assert not settings_path.is_relative_to(directory)
+            assert settings_path.stat().st_mode & 0o777 == 0o600
+            assert "<mirrorOf>*</mirrorOf>" in settings
+            assert "<url>https://maven.example.com/repository/</url>" in settings
+            if has_credentials:
+                assert "maven-user" in settings and "maven-password" in settings
+            else:
+                assert "<servers>" not in settings
+            assert "dependency:copy-dependencies" in command
+            settings_paths.append(settings_path)
+            maven_commands.append(command)
+            if "-o" in command:
+                raise venv.DependencyPreparationError("offline fixture miss", "")
+            (directory / "deps" / "fixture.jar").write_bytes(b"fixture")
+        elif command[0] == "javac":
+            (directory / "classes" / "Adapter.class").write_bytes(b"fixture")
+        return ""
+
+    monkeypatch.setattr(venv, "_run_logged", fake_run)
+    result = javaenv.prepare_version_java(
+        runtime_root,
+        3,
+        4,
+        "public class Adapter { public Object handle(Context c, Object i) { return i; } }",
+        "example:fixture:1.0.0",
+        timeout_seconds=5,
+        repository_url=repository_url,
+    )
+    assert len(maven_commands) == 2
+    assert all("-s" in command for command in maven_commands)
+    assert settings_paths and all(not path.exists() for path in settings_paths)
+    assert (result / ".ready").exists()
+    assert "maven.example.com" not in (result / "pom.xml").read_text(encoding="utf-8")
+    assert list(result.rglob("*.auth.xml")) == []
+
+
+@pytest.mark.parametrize(
+    ("java_version", "javac_version", "expected"),
+    [
+        ('openjdk version "21.0.2"', "javac 21.0.2", True),
+        ('openjdk version "17.0.12"', "javac 17.0.12", False),
+        ('openjdk version "21.0.2"', "javac 17.0.12", False),
+    ],
+)
+def test_java_capability_requires_java_and_javac_21(
+    monkeypatch: pytest.MonkeyPatch,
+    java_version: str,
+    javac_version: str,
+    expected: bool,
+) -> None:
+    installed = {"java", "javac", "mvn"}
+    monkeypatch.setattr(
+        worker_agent.shutil,
+        "which",
+        lambda command: f"/fake/{command}" if command in installed else None,
+    )
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output = java_version if command[0] == "java" else javac_version
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr=output)
+
+    monkeypatch.setattr(worker_agent.subprocess, "run", fake_run)
+    assert ("java" in worker_agent.WorkerConfig().capabilities()) is expected
 
 
 def register(client: TestClient, name: str, capabilities: list[str]) -> dict[str, object]:
