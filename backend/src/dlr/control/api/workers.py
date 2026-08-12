@@ -17,6 +17,7 @@ from dlr.control.schemas.worker import WorkerRegister, WorkerResponse
 from dlr.control.security import require_admin_token, require_worker_token
 from dlr.control.services import execution as execution_service
 from dlr.control.services import worker as worker_service
+from dlr.control.services import worker_availability
 
 router = APIRouter(dependencies=[Depends(require_worker_token)])
 # M3: the read-only Worker list is an admin-facing observability API, so it
@@ -87,7 +88,11 @@ def report_progress(
 
 @admin_router.get("/api/workers", response_model=list[WorkerResponse])
 def list_workers(session: DbSession) -> list[WorkerResponse]:
-    """Minimal admin-facing Worker status list (M3 spec §10)."""
+    """Admin Worker list whose status is the derived effective status."""
+    now = worker_availability.current_time(session)
     return [
-        WorkerResponse.model_validate(worker) for worker in worker_service.list_workers(session)
+        WorkerResponse.model_validate(worker).model_copy(
+            update={"status": worker_availability.effective_status(worker, now=now)}
+        )
+        for worker in worker_service.list_workers(session)
     ]

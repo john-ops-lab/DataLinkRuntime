@@ -6,6 +6,7 @@ appends and the cursor-paged execution history.
 """
 
 import json
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -19,6 +20,7 @@ from dlr.control.schemas.execution import (
     ExecutionSummary,
     ProgressReport,
 )
+from dlr.control.services import worker_availability
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.execution_cancellation import lock_execution, request_cancellation
 
@@ -35,52 +37,40 @@ def compact_json_bytes(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def _resolve_test_target(session: Session, adapter: Adapter) -> int | None:
-    """Scheduling target for a test run (M3.2).
-
-    A configured production Worker is always the target. Without one, the
-    only online Worker is adopted (and written back as the production
-    Worker); with multiple online Workers the caller must pick one first.
-    With no online Worker at all the target stays None so the historical
-    any-Worker claiming keeps working.
-    """
+def _resolve_test_target(session: Session, adapter: Adapter, *, now: datetime) -> int:
+    """Resolve one effective-online, language-compatible Manual Test target."""
     if adapter.production_worker_id is not None:
         worker = session.get(Worker, adapter.production_worker_id)
-        if worker is not None:
-            if worker.status != "online":
-                raise domain_error(409, "worker_offline", "The production Worker is offline")
-            if adapter.language not in worker.capabilities:
-                raise domain_error(
-                    409,
-                    "worker_capability_missing",
-                    f"The production Worker does not support {adapter.language}",
-                )
-            return worker.id
-    online = list(
-        session.scalars(
-            select(Worker).where(
-                Worker.status == "online",
-                Worker.capabilities.contains([adapter.language]),
+        if worker is None:
+            raise domain_error(404, "worker_not_found", "The production Worker was not found")
+        if not worker_availability.is_effectively_online(worker, now=now):
+            raise domain_error(409, "worker_offline", "The production Worker is offline")
+        if adapter.language not in worker.capabilities:
+            raise domain_error(
+                409,
+                "worker_capability_missing",
+                f"The production Worker does not support {adapter.language}",
             )
-        ).all()
-    )
-    if len(online) == 1:
-        adapter.production_worker_id = online[0].id
-        return online[0].id
-    if len(online) > 1:
+        return worker.id
+
+    online = worker_availability.list_effectively_online_workers(session, now=now)
+    compatible = [worker for worker in online if adapter.language in worker.capabilities]
+    if len(compatible) == 1:
+        adapter.production_worker_id = compatible[0].id
+        return compatible[0].id
+    if len(compatible) > 1:
         raise domain_error(
             409,
             "production_worker_required",
             "Multiple online Workers exist; configure a production Worker first",
         )
-    any_online = session.scalar(select(Worker.id).where(Worker.status == "online").limit(1))
-    if any_online is not None:
+    if online:
         raise domain_error(
             409,
             "worker_capability_missing",
             f"No online Worker supports {adapter.language}",
         )
-    return None
+    raise domain_error(409, "worker_offline", "No online Worker is available")
 
 
 def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -> Execution:
@@ -113,7 +103,11 @@ def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -
         trigger="manual",
         status="pending",
         input=data.input,
-        target_worker_id=_resolve_test_target(session, adapter),
+        target_worker_id=_resolve_test_target(
+            session,
+            adapter,
+            now=worker_availability.current_time(session),
+        ),
     )
     session.add(execution)
     session.commit()

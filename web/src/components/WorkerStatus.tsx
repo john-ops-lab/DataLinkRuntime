@@ -45,7 +45,7 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
       )}
       {!loading && (
         <p className="worker-hint">
-          状态为 Worker 最近上报值，平台不做心跳超时判定，请结合最近心跳时间判断 Worker 是否可能离线。
+          在线状态已结合最近心跳和超时阈值判定；最近心跳时间用于排障。
         </p>
       )}
     </div>

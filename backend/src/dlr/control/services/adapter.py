@@ -11,6 +11,8 @@ states (未发布/待启动/异常/已归档) are derived from pointers, the act
 Production Execution and ``archived_at`` on the client side.
 """
 
+from datetime import datetime
+
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +29,7 @@ from dlr.control.schemas.adapter import (
     PublishGateResponse,
     VersionCreate,
 )
+from dlr.control.services import worker_availability
 from dlr.control.services.execution_cancellation import (
     lock_active_production_execution,
     request_cancellation,
@@ -387,39 +390,34 @@ def publish_version(session: Session, adapter_id: int, version_id: int) -> Adapt
 # --- M3.2 production lifecycle --------------------------------------------------
 
 
-def _resolve_production_worker(session: Session, adapter: Adapter) -> Worker:
-    """The Adapter's production Worker, with the single-online default.
-
-    A configured Worker is returned regardless of its status (the caller
-    checks online-ness). Without one, the only online Worker is adopted and
-    written back to the Adapter; zero or multiple online Workers are errors.
-    """
+def _resolve_production_worker(session: Session, adapter: Adapter, *, now: datetime) -> Worker:
+    """Resolve one effective-online, language-compatible production Worker."""
     if adapter.production_worker_id is not None:
         worker = session.get(Worker, adapter.production_worker_id)
-        if worker is not None:
-            _require_worker_capability(worker, adapter.language)
-            return worker
-        # The FK is ON DELETE SET NULL, so a missing row means the Worker
-        # was removed: fall through to the defaulting logic.
-    online = list(
-        session.scalars(
-            select(Worker)
-            .where(
-                Worker.status == "online",
-                Worker.capabilities.contains([adapter.language]),
-            )
-            .order_by(Worker.id.asc())
-        ).all()
-    )
-    if len(online) == 1:
-        adapter.production_worker_id = online[0].id
-        return online[0]
+        if worker is None:
+            raise domain_error(404, "worker_not_found", "The production Worker was not found")
+        if not worker_availability.is_effectively_online(worker, now=now):
+            raise domain_error(409, "worker_offline", "The production Worker is offline")
+        _require_worker_capability(worker, adapter.language)
+        return worker
+
+    online = worker_availability.list_effectively_online_workers(session, now=now)
+    compatible = [worker for worker in online if adapter.language in worker.capabilities]
+    if len(compatible) == 1:
+        adapter.production_worker_id = compatible[0].id
+        return compatible[0]
+    if len(compatible) > 1:
+        raise domain_error(
+            409,
+            "production_worker_required",
+            "Multiple online Workers exist; configure a production Worker first",
+        )
     if not online:
         raise domain_error(409, "worker_offline", "No online Worker is available")
     raise domain_error(
         409,
-        "production_worker_required",
-        "Multiple online Workers exist; configure a production Worker first",
+        "worker_capability_missing",
+        f"No online Worker supports {adapter.language}",
     )
 
 
@@ -449,9 +447,11 @@ def start_production(session: Session, adapter_id: int) -> Execution:
             "production_already_running",
             "Stop production before starting it again",
         )
-    worker = _resolve_production_worker(session, adapter)
-    if worker.status != "online":
-        raise domain_error(409, "worker_offline", "The production Worker is offline")
+    worker = _resolve_production_worker(
+        session,
+        adapter,
+        now=worker_availability.current_time(session),
+    )
     gate = _evaluate_publish_gate(session, adapter, adapter.published_version_id)
     if not gate.allowed:
         raise domain_error(

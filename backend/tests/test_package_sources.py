@@ -371,8 +371,8 @@ def test_credentialed_index_failure_is_redacted_before_execution_persistence(
 
     adapter = create_adapter(api_client, name="package-source-redaction")
     save_version(api_client, adapter["id"], requirements="missing-package==1")
-    execution = create_execution(api_client, adapter["id"])
     worker = register_worker(api_client, name="redaction-worker")
+    execution = create_execution(api_client, adapter["id"])
     claimed = claim(api_client, worker["id"]).json()
     assert claimed["index_url"] == effective_url
 

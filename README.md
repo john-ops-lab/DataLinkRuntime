@@ -12,6 +12,8 @@ AI Assistant 基于当前 Working Copy 生成完整 Candidate。Candidate 必须
 并明确应用，应用只更新浏览器 Working Copy；Save / Test / Publish / Start / Stop 仍全部由
 管理员执行。官方 Worker 镜像包含 Python 3.13 / uv、Node.js LTS / npm、JDK 21 / Maven，
 并按实际可用 Runtime 自动上报 capability。
+M4.1 进一步以心跳超时派生 Worker 的有效在线状态，避免 Test / Start 选择已经失联的
+Worker。
 
 ## 快速开始
 
@@ -63,6 +65,22 @@ docker compose down --volumes
 | control | FastAPI 控制节点（Python 3.13） |
 | postgres | PostgreSQL 16 |
 | worker | Worker Agent：注册/心跳/长轮询，按语言在 version-scoped 环境的独立子进程中执行 Adapter |
+
+## Worker 有效在线状态
+
+Worker 默认每 10 秒发送一次心跳（`DLR_WORKER_HEARTBEAT_SECONDS`）。数据库中的
+`workers.status` 是 Worker 在 register / heartbeat / graceful offline 时主动写入的
+Stored Status；Control 不通过后台任务把心跳过期记录改写为 `offline`。
+
+Control 在需要判断 Worker 当前是否可用时派生 Effective Status：Stored Status 必须为
+`online`，且最近心跳年龄必须小于等于
+`DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS`（默认 30 秒）。恰好位于超时边界仍视为在线。
+Admin Worker API 的 `status`、Test 与 Start 都使用该有效状态；`last_heartbeat` 原样返回，
+仅用于排障，Web 不使用浏览器时间重复计算。
+
+心跳超时值必须为正数并严格大于 Worker 心跳间隔；部署方调整心跳间隔时，应同步调整
+超时值，建议不少于心跳间隔的约 3 倍。过期 Worker 恢复心跳后会自动恢复有效在线，
+无需人工 Restore。
 
 ## AI Assistant 配置与边界
 
