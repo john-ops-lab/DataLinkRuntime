@@ -32,7 +32,7 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
       title="Adapter 设置"
       width={400}
       open={props.open}
-      destroyOnClose
+      destroyOnHidden
       onClose={props.onClose}
     >
       {props.adapter !== null && (

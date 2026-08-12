@@ -2,9 +2,14 @@
 
 import type {
   Adapter,
+  Credential,
+  CredentialBinding,
+  CredentialType,
   Execution,
   ExecutionHistoryPage,
+  PackageSource,
   PublishGate,
+  ReachabilityResult,
   VersionDetail,
   VersionSummary,
   Worker,
@@ -193,4 +198,67 @@ export const api = {
   },
 
   listWorkers: (): Promise<Worker[]> => request("/api/workers"),
+
+  // --- M3.2: Secret Store credentials and bindings ---------------------------
+
+  listCredentials: (): Promise<Credential[]> => request("/api/credentials"),
+
+  createCredential: (payload: {
+    name: string;
+    type: CredentialType;
+    fields: Record<string, string>;
+  }): Promise<Credential> =>
+    request("/api/credentials", { method: "POST", body: JSON.stringify(payload) }),
+
+  updateCredential: (
+    credentialId: number,
+    payload: { name?: string; fields?: Record<string, string> },
+  ): Promise<Credential> =>
+    request(`/api/credentials/${credentialId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+
+  deleteCredential: (credentialId: number): Promise<void> =>
+    request(`/api/credentials/${credentialId}`, { method: "DELETE" }),
+
+  listAdapterBindings: (adapterId: number): Promise<CredentialBinding[]> =>
+    request(`/api/adapters/${adapterId}/credential-bindings`),
+
+  /** Full replacement: the submitted list becomes the complete binding set. */
+  setAdapterBindings: (
+    adapterId: number,
+    bindings: { env_key: string; credential_id: number; field: string }[],
+  ): Promise<CredentialBinding[]> =>
+    request(`/api/adapters/${adapterId}/credential-bindings`, {
+      method: "PUT",
+      body: JSON.stringify({ bindings }),
+    }),
+
+  // --- M3.2: Python package sources -------------------------------------------
+
+  listPackageSources: (): Promise<PackageSource[]> => request("/api/package-sources"),
+
+  createPackageSource: (payload: {
+    name: string;
+    index_url: string;
+    is_default: boolean;
+    credential_id: number | null;
+  }): Promise<PackageSource> =>
+    request("/api/package-sources", { method: "POST", body: JSON.stringify(payload) }),
+
+  updatePackageSource: (
+    sourceId: number,
+    payload: {
+      name?: string;
+      index_url?: string;
+      is_default?: boolean;
+      credential_id?: number | null;
+    },
+  ): Promise<PackageSource> =>
+    request(`/api/package-sources/${sourceId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+
+  deletePackageSource: (sourceId: number): Promise<void> =>
+    request(`/api/package-sources/${sourceId}`, { method: "DELETE" }),
+
+  /** Control-side reachability probe against the saved source's index URL. */
+  testPackageSource: (sourceId: number): Promise<ReachabilityResult> =>
+    request(`/api/package-sources/${sourceId}/test`, { method: "POST" }),
 };

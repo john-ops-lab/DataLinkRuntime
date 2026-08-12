@@ -110,3 +110,44 @@ export interface PublishGate {
   reason: string | null;
   last_test: PublishGateLastTest | null;
 }
+
+// --- M3.2: Secret Store credentials and package sources --------------------
+
+export type CredentialType = "password" | "token" | "access_key" | "secret";
+
+/** Credential metadata; plaintext values are never returned by the API. */
+export interface Credential {
+  id: number;
+  name: string;
+  type: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One env_key -> credential field binding on an Adapter. */
+export interface CredentialBinding {
+  env_key: string;
+  credential_id: number;
+  field: string;
+  /** Enriched server-side on read; absent in write payloads. */
+  credential_name?: string;
+  credential_type?: string;
+}
+
+export interface PackageSource {
+  id: number;
+  name: string;
+  index_url: string;
+  is_default: boolean;
+  credential_id: number | null;
+  credential_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Control-side reachability probe result for one package source. */
+export interface ReachabilityResult {
+  ok: boolean;
+  status_code: number | null;
+  error: string | null;
+}

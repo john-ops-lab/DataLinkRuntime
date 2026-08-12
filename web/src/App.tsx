@@ -6,9 +6,12 @@ import zhCN from "antd/locale/zh_CN";
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
 import AdapterCatalog from "./components/AdapterCatalog";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
+import CredentialBindingsEditor from "./components/CredentialBindingsEditor";
 import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
+import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
 import TestRunPanel from "./components/TestRunPanel";
+import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
 import WorkerStatus from "./components/WorkerStatus";
 import WorkbenchHeader from "./components/WorkbenchHeader";
 import { statusLabel } from "./status";
@@ -133,6 +136,17 @@ function publishGateReasonText(gate: PublishGate): string {
 
 type WorkbenchTabKey = "edit" | "test" | "history";
 
+// M3.2：编辑页次级配置区（Python 依赖 | 运行参数（JSON） | 凭据绑定）。
+type ConfigTabKey = "requirements" | "runtime-config" | "bindings";
+
+/** Diff 弹窗状态：两个入口（Working Copy / 发布对比）共用一个弹窗。 */
+interface DiffViewState {
+  title: string;
+  originalTitle: string;
+  modifiedTitle: string;
+  panes: DiffPane[];
+}
+
 /** 发布确认框状态：门禁信息在打开时拉取，versionId 固定本次目标。 */
 interface PublishConfirmState {
   versionId: number;
@@ -191,6 +205,10 @@ function AdapterConsole() {
   // 发布确认框：门禁信息在打开时拉取；热切换需额外勾选确认。
   const [publishConfirm, setPublishConfirm] = useState<PublishConfirmState | null>(null);
   const [hotSwitchConfirmed, setHotSwitchConfirmed] = useState(false);
+  // M3.2：编辑页次级配置 Tabs 与系统设置抽屉（凭据管理 + Python 包源）。
+  const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
+  const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
+  const [diffView, setDiffView] = useState<DiffViewState | null>(null);
   // Known version seq per adapter, cached once a version list has loaded (and
   // kept up to date on save/publish). The cache survives adapter switches, so
   // catalog summaries never degrade back to a stateless placeholder.
@@ -299,6 +317,7 @@ function AdapterConsole() {
     setContentReady(false);
     setSettingsOpen(false);
     setActiveTabKey("edit");
+    setConfigTabKey("requirements");
     setAutoOpenExecutionId(null);
     setPublishConfirm(null);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
@@ -644,6 +663,111 @@ function AdapterConsole() {
     }
   }
 
+  // M3.2 Diff：Working Copy（当前编辑器快照）vs 基准版本（最近一次加载/保存的不可变版本）。
+  function handleOpenWorkingDiff() {
+    if (!selected) {
+      return;
+    }
+    const baseLabel =
+      selectedVersion !== null ? `基准版本 v${selectedVersion.seq}` : "基准版本（无已保存版本）";
+    setDiffView({
+      title: "版本差异：Working Copy vs 基准版本",
+      originalTitle: baseLabel,
+      modifiedTitle: "Working Copy（当前编辑内容）",
+      panes: [
+        {
+          key: "code",
+          label: "代码",
+          language: "python",
+          original: baseline.code,
+          modified: snapshot.code,
+        },
+        {
+          key: "requirements",
+          label: "Python 依赖",
+          language: "plaintext",
+          original: baseline.requirements,
+          modified: snapshot.requirements,
+        },
+        {
+          key: "runtime-config",
+          label: "运行参数",
+          language: "json",
+          original: baseline.runtimeConfigText,
+          modified: snapshot.runtimeConfigText,
+        },
+      ],
+    });
+  }
+
+  // M3.2 Diff：发布目标 vs 当前生产版本（覆盖 code/依赖/参数/绑定引用）。
+  async function handleOpenPublishDiff() {
+    if (!selected || publishConfirm === null) {
+      return;
+    }
+    const targetAdapterId = selected.id;
+    const targetVersionId = publishConfirm.versionId;
+    try {
+      const [target, bindings] = await Promise.all([
+        api.getVersion(targetAdapterId, targetVersionId),
+        api.listAdapterBindings(targetAdapterId),
+      ]);
+      const publishedVersionId = selected.published_version_id;
+      const current =
+        publishedVersionId !== null && publishedVersionId !== undefined
+          ? await api.getVersion(targetAdapterId, publishedVersionId)
+          : null;
+      const targetSeq = versions.find((version) => version.id === targetVersionId)?.seq;
+      const currentSeq =
+        publishedVersionId !== null && publishedVersionId !== undefined
+          ? versions.find((version) => version.id === publishedVersionId)?.seq
+          : undefined;
+      const bindingText = JSON.stringify(bindings, null, 2);
+      setDiffView({
+        title: "版本差异：发布目标 vs 当前生产版本",
+        originalTitle:
+          current !== null
+            ? `当前生产版本${currentSeq !== undefined ? ` v${currentSeq}` : ""}`
+            : "当前生产版本（未发布）",
+        modifiedTitle: `发布目标${targetSeq !== undefined ? ` v${targetSeq}` : ""}`,
+        panes: [
+          {
+            key: "code",
+            label: "代码",
+            language: "python",
+            original: current?.code ?? "",
+            modified: target.code,
+          },
+          {
+            key: "requirements",
+            label: "Python 依赖",
+            language: "plaintext",
+            original: current?.requirements ?? "",
+            modified: target.requirements,
+          },
+          {
+            key: "runtime-config",
+            label: "运行参数",
+            language: "json",
+            original:
+              current !== null ? JSON.stringify(current.runtime_config, null, 2) : "",
+            modified: JSON.stringify(target.runtime_config, null, 2),
+          },
+          {
+            key: "bindings",
+            label: "凭据绑定引用",
+            language: "json",
+            // 绑定是 Adapter 级配置，两侧展示同一份当前绑定（发布不改变绑定）。
+            original: bindingText,
+            modified: bindingText,
+          },
+        ],
+      });
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   async function handleUpdateDetails() {
     if (!selected || busy) {
       return;
@@ -687,6 +811,7 @@ function AdapterConsole() {
       setVersions([]);
       setContentReady(false);
       setSettingsOpen(false);
+      setSystemSettingsOpen(false);
       applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
       await refreshAdapters();
     } catch (err) {
@@ -740,6 +865,13 @@ function AdapterConsole() {
             <span className={`health-dot ${healthDotClass}`.trim()} />
             <span data-testid="control-status">{healthText}</span>
           </span>
+          <Button
+            size="small"
+            data-testid="system-settings"
+            onClick={() => setSystemSettingsOpen(true)}
+          >
+            系统设置
+          </Button>
           <WorkerStatus />
         </div>
       </header>
@@ -807,6 +939,14 @@ function AdapterConsole() {
                             ]}
                             onChange={(value) => setThemePreference(value as EditorThemePreference)}
                           />
+                          <Button
+                            size="small"
+                            data-testid="working-diff"
+                            disabled={busy || !contentReady}
+                            onClick={handleOpenWorkingDiff}
+                          >
+                            查看 Diff
+                          </Button>
                         </div>
                         <div className="editor-main" data-testid="editor-main" data-monaco-theme={editorTheme}>
                           <Editor
@@ -820,33 +960,62 @@ function AdapterConsole() {
                         </div>
 
                         <div className="version-fields">
-                          <label>
-                            Requirements
-                            <textarea
-                              data-testid="requirements-input"
-                              rows={3}
-                              value={snapshot.requirements}
-                              disabled={busy || !contentReady}
-                              onChange={(event) =>
-                                setSnapshot((current) => ({ ...current, requirements: event.target.value }))
-                              }
-                            />
-                          </label>
-                          <label>
-                            Runtime config（JSON 对象）
-                            <textarea
-                              data-testid="runtime-config-input"
-                              rows={3}
-                              value={snapshot.runtimeConfigText}
-                              disabled={busy || !contentReady}
-                              onChange={(event) =>
-                                setSnapshot((current) => ({
-                                  ...current,
-                                  runtimeConfigText: event.target.value,
-                                }))
-                              }
-                            />
-                          </label>
+                          <Tabs
+                            className="config-tabs"
+                            size="small"
+                            activeKey={configTabKey}
+                            onChange={(key) => setConfigTabKey(key as ConfigTabKey)}
+                            items={[
+                              {
+                                key: "requirements",
+                                label: "Python 依赖",
+                                children: (
+                                  <textarea
+                                    data-testid="requirements-input"
+                                    rows={4}
+                                    value={snapshot.requirements}
+                                    disabled={busy || !contentReady}
+                                    placeholder="如 requests==2.32.0（每行一个依赖）"
+                                    onChange={(event) =>
+                                      setSnapshot((current) => ({
+                                        ...current,
+                                        requirements: event.target.value,
+                                      }))
+                                    }
+                                  />
+                                ),
+                              },
+                              {
+                                key: "runtime-config",
+                                label: "运行参数（JSON）",
+                                children: (
+                                  <textarea
+                                    data-testid="runtime-config-input"
+                                    rows={4}
+                                    value={snapshot.runtimeConfigText}
+                                    disabled={busy || !contentReady}
+                                    onChange={(event) =>
+                                      setSnapshot((current) => ({
+                                        ...current,
+                                        runtimeConfigText: event.target.value,
+                                      }))
+                                    }
+                                  />
+                                ),
+                              },
+                              {
+                                key: "bindings",
+                                label: "凭据绑定",
+                                children: (
+                                  <CredentialBindingsEditor
+                                    adapterId={selected.id}
+                                    disabled={busy || !contentReady || !!selected.archived_at}
+                                    onError={setError}
+                                  />
+                                ),
+                              },
+                            ]}
+                          />
                         </div>
                       </div>
                     ),
@@ -915,13 +1084,7 @@ function AdapterConsole() {
           <Space>
             <Button
               data-testid="publish-diff"
-              onClick={() =>
-                Modal.info({
-                  title: "版本差异",
-                  content:
-                    "Diff 视图（发布目标 vs 当前生产版本）即将接入 Monaco DiffEditor，敬请期待。",
-                })
-              }
+              onClick={() => void handleOpenPublishDiff()}
             >
               查看差异
             </Button>
@@ -995,6 +1158,21 @@ function AdapterConsole() {
           </div>
         )}
       </Modal>
+
+      <SystemSettingsDrawer
+        open={systemSettingsOpen}
+        onClose={() => setSystemSettingsOpen(false)}
+        onError={setError}
+      />
+
+      <VersionDiffModal
+        open={diffView !== null}
+        title={diffView?.title ?? ""}
+        originalTitle={diffView?.originalTitle ?? ""}
+        modifiedTitle={diffView?.modifiedTitle ?? ""}
+        panes={diffView?.panes ?? []}
+        onClose={() => setDiffView(null)}
+      />
     </div>
   );
 }

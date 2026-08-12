@@ -409,20 +409,13 @@ body {
   color: var(--dlr-text-weak);
 }
 
-/* Requirements / Runtime Config 降为次级配置区。 */
+/* M3.2：Python 依赖 / 运行参数 / 凭据绑定降为次级配置 Tabs。 */
 .version-fields {
   flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
 }
 
-.version-fields label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.78rem;
-  color: var(--dlr-text-secondary);
+.config-tabs > .ant-tabs-nav {
+  margin: 0 0 8px;
 }
 
 .version-fields textarea,
@@ -435,7 +428,11 @@ body {
   background: var(--dlr-workspace-bg);
   font-family: var(--dlr-mono-font);
   font-size: 0.8rem;
-  resize: vertical;
+}
+
+/* M3.2：次级配置区 textarea 关闭 resize，避免破坏工作台布局。 */
+.version-fields textarea {
+  resize: none;
 }
 
 /* --- 测试运行：Input + Execution 双栏工作台 ------------------------------ */
@@ -748,6 +745,79 @@ body {
   border: 1px solid #ffe58f;
   border-radius: 4px;
   background: #fffbe6;
+}
+
+/* --- M3.2 凭据绑定编辑器 ------------------------------------------------- */
+
+.binding-editor {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.binding-rows {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.binding-row {
+  width: 100%;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.binding-actions {
+  display: flex;
+}
+
+/* --- M3.2 系统设置面板（凭据管理 / Python 包源） -------------------- */
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.settings-panel-toolbar {
+  display: flex;
+}
+
+.settings-panel-error {
+  margin: 0;
+  color: #cf1322;
+  font-size: 0.8rem;
+}
+
+.settings-inline-form {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  background: #fafbfc;
+}
+
+/* --- M3.2 版本差异弹窗 --------------------------------------------------- */
+
+.diff-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diff-modal-titles {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.8rem;
+  color: var(--dlr-text-secondary);
 }
 
 /* --- Worker 弹层 --------------------------------------------------------- */

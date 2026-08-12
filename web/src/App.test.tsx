@@ -33,6 +33,16 @@ vi.mock("@monaco-editor/react", () => ({
       />
     );
   },
+  // M3.2：DiffEditor 降级为两侧文本展示，便于断言 original/modified 内容。
+  DiffEditor: function DiffEditor(props: { original?: string; modified?: string }) {
+    return (
+      <div
+        data-testid="diff-editor"
+        data-original={props.original ?? ""}
+        data-modified={props.modified ?? ""}
+      />
+    );
+  },
 }));
 
 const STARTER_CODE = "def handle(context, input):\n    return input\n";
@@ -446,6 +456,8 @@ it("blocks saving when runtime config is not a JSON object", async () => {
   render(<App />);
   await selectFirstAdapter();
 
+  // M3.2：运行参数位于次级配置 Tabs，需先激活对应页签。
+  fireEvent.click(screen.getByText("运行参数（JSON）"));
   fireEvent.change(screen.getByTestId("runtime-config-input"), { target: { value: "[1, 2" } });
   fireEvent.click(screen.getByTestId("save-version"));
 
@@ -507,6 +519,8 @@ it("saves a new version with the edited content", async () => {
   fireEvent.change(screen.getByTestId("requirements-input"), {
     target: { value: "requests==2.32.0" },
   });
+  // M3.2：运行参数位于次级配置 Tabs，需先激活对应页签。
+  fireEvent.click(screen.getByText("运行参数（JSON）"));
   fireEvent.change(screen.getByTestId("runtime-config-input"), {
     target: { value: '{"batch": 10}' },
   });
@@ -1054,6 +1068,8 @@ it("locks editing while Save is in flight so the saved snapshot stays consistent
   ]);
   render(<App />);
   await selectFirstAdapter();
+  // M3.2：激活运行参数页签使其进入 DOM，随后验证 Save 期间的编辑锁。
+  fireEvent.click(screen.getByText("运行参数（JSON）"));
 
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited code" } });
   fireEvent.click(screen.getByTestId("save-version"));
@@ -2244,5 +2260,133 @@ it("hides archived adapters from the active catalog and disables editing when ar
   expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getByTestId("publish-version") as HTMLButtonElement).disabled).toBe(true);
   expect(screen.queryByTestId("start-production")).toBeNull();
+});
+
+// --- M3.2 配置区 / 系统设置 / Diff -------------------------------------------
+
+it("shows the working copy diff against the baseline version", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch(consoleWithVersionRoutes(adapter, makeVersion({ code: "baseline-code\n" })));
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited-code\n" } });
+  fireEvent.click(screen.getByTestId("working-diff"));
+
+  await screen.findByTestId("version-diff");
+  const diff = screen.getByTestId("diff-editor");
+  expect(diff.getAttribute("data-original")).toBe("baseline-code\n");
+  expect(diff.getAttribute("data-modified")).toBe("edited-code\n");
+});
+
+it("compares the publish target with the current production version in the diff modal", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, published_version_id: 11 });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({
+        body: [
+          { id: 10, adapter_id: 1, seq: 2, created_at: "" },
+          { id: 11, adapter_id: 1, seq: 1, created_at: "" },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/10",
+      respond: () => ({ body: makeVersion({ id: 10, seq: 2, code: "target-code\n" }) }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/11",
+      respond: () => ({ body: makeVersion({ id: 11, seq: 1, code: "running-code\n" }) }),
+    },
+    publishGateRoute(1, 10),
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: () => ({ body: [] }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.click(screen.getByTestId("publish-version"));
+  await screen.findByTestId("publish-gate-ok");
+  fireEvent.click(screen.getByTestId("publish-diff"));
+
+  await screen.findByTestId("version-diff");
+  // 默认展示代码窗格：original 为当前生产版本，modified 为发布目标。
+  expect(screen.getByTestId("diff-editor").getAttribute("data-original")).toBe("running-code\n");
+  expect(screen.getByTestId("diff-editor").getAttribute("data-modified")).toBe("target-code\n");
+  // Diff 覆盖绑定引用：需拉取当前 Adapter 绑定。
+  expect(
+    fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1/credential-bindings"),
+  ).toBe(true);
+});
+
+it("manages credentials and package sources from the system settings drawer", async () => {
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({
+        body: [
+          {
+            id: 1,
+            name: "db-password",
+            type: "password",
+            created_at: "2026-08-11T00:00:00Z",
+            updated_at: "2026-08-11T00:00:00Z",
+          },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/package-sources",
+      respond: () => ({
+        body: [
+          {
+            id: 1,
+            name: "internal-pypi",
+            index_url: "https://pypi.example.com/simple/",
+            is_default: true,
+            credential_id: null,
+            credential_name: null,
+            created_at: "2026-08-11T00:00:00Z",
+            updated_at: "2026-08-11T00:00:00Z",
+          },
+        ],
+      }),
+    },
+    {
+      method: "POST",
+      match: "/api/package-sources/1/test",
+      respond: () => ({ body: { ok: true, status_code: 200, error: null } }),
+    },
+  ]);
+  render(<App />);
+  fireEvent.click(await screen.findByTestId("system-settings"));
+
+  // 凭据管理为默认页签：只展示元数据，API 不会回传明文。
+  await screen.findByTestId("credentials-panel");
+  await screen.findByTestId("credential-row");
+  expect(screen.getByTestId("credential-row").textContent).toBe("db-password");
+
+  // Python 包源页签：默认包源标记 + 可达性测试。
+  fireEvent.click(screen.getByText("Python 包源"));
+  await screen.findByTestId("package-source-row");
+  expect(screen.getByTestId("default-source-badge")).toBeTruthy();
+
+  fireEvent.click(screen.getByTestId("test-package-source"));
+  await screen.findByTestId("package-source-test-result");
+  expect(screen.getByTestId("package-source-test-result").textContent).toContain("可达");
 });
 

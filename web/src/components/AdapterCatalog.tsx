@@ -166,7 +166,7 @@ export default function AdapterCatalog({
         title="新建 Adapter"
         width={360}
         open={creating}
-        destroyOnClose
+        destroyOnHidden
         onClose={() => setCreating(false)}
       >
         <form className="create-form" onSubmit={(event) => void handleCreate(event)}>
