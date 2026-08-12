@@ -85,7 +85,7 @@ Webhook 的未来设计约定（已裁决）：
 创建 Adapter → 选择语言 → 在线编辑代码 →（AI 生成/修改代码）→ 保存 → 测试 → 查看 Input / Output / 实时 Log → 发布 → 查看执行历史。
 
 - 代码编辑器：Monaco Editor。
-- 第一阶段不实现：AI 能力、Java、JavaScript、Schedule、Webhook。
+- 当前不实现：AI 能力、Schedule、Webhook。Python、JavaScript、Java 已支持。
 
 ## 7. Runtime Contract（产品级约定）
 
@@ -103,8 +103,8 @@ Input → Adapter → Output
 
 - Adapter 代码中**不得硬编码明文** Password / Token / API Secret / SecretKey。
 - Adapter 通过 Runtime Contract 的 `context.secrets.get(key)` 获取凭据。
-- v1：Secret 从 **Worker 部署时的环境变量**注入；数据库不持久化任何真实 Secret。
-- 后续引入 Secret Store 时，只替换平台侧解析实现，**不要求修改任何 Adapter 代码**。
+- Secret 可来自 Worker 的 `DLR_SECRET_*` 环境变量或平台 Secret Store；平台只持久化
+  Fernet 密文，claim 时按 Adapter 绑定解密并注入 Worker。
 - v1 为内网、单管理员、可信代码模型，详见 architecture.md 安全边界章节。
 
 ## 9. 部署原则
@@ -115,8 +115,8 @@ Input → Adapter → Output
 
 ## 10. 语言支持
 
-- 最终：Python、JavaScript、Java。
-- 第一阶段：**仅 Python**。
+- 当前正式支持：**Python、JavaScript、Java**。
+- Adapter 创建时确定语言且不可修改；Clone 继承源语言，所有 Version 继承 Adapter 语言。
 - Adapter 的第三方依赖属于 Adapter Version，不属于平台全局依赖；不同 Adapter 依赖相互隔离。
 
 ## 11. 明确不做的事
@@ -130,8 +130,8 @@ DLR 不是：n8n / Windmill / Kestra / DAG Engine / Workflow Engine / Kubernetes
 第一阶段打通最小闭环：
 
 ```
-创建 Adapter → 在线编辑 Python → 保存 → 输入测试数据 → Manual Test
-→ Worker 执行 Python → 查看 Log → 查看 Output
+创建 Adapter → 选择 Python / JavaScript / Java → 在线编辑 → 保存 → Manual Test
+→ 兼容 Worker 执行 → 查看 Log / Output → Publish → Start / Stop
 ```
 
 | 里程碑 | 内容 |
@@ -140,5 +140,8 @@ DLR 不是：n8n / Windmill / Kestra / DAG Engine / Workflow Engine / Kubernetes
 | M1 Adapter 管理 | Adapter CRUD、Monaco 在线编辑、保存即不可变版本、发布、requirements / runtime 配置 |
 | M2 执行闭环 | Worker 注册 / 心跳、version-scoped venv、Manual 触发、子进程执行、Execution 落库（含大字段策略） |
 | M3 可观测与体验 | 测试输入面板、Output 查看、实时日志、执行历史 |
+| M3.1 Console 视觉收敛 | Catalog / Workbench / Monaco / Test / History 控制台体验 |
+| M3.2 生产生命周期 | 生产 Worker、发布门禁、Start/Stop、Secret Store、依赖源 |
+| M3.3 多语言 Runtime | Python / JavaScript / Java、三语言依赖环境与 capability 调度 |
 
 M0 不实现 Adapter CRUD 与 Adapter Runtime。

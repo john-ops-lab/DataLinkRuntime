@@ -55,7 +55,7 @@ class Worker(Base):
     last_heartbeat: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    # M2 always stores ["python"].
+    # Runtime names detected by the Worker at registration time.
     capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

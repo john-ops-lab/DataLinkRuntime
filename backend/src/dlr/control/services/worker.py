@@ -74,10 +74,10 @@ def mark_offline(session: Session, worker_id: int) -> None:
 def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
     """Assemble the task payload from the immutable version snapshot.
 
-    M3.2: bound credential fields are decrypted here at claim time and travel
+    Bound credential fields are decrypted here at claim time and travel
     inside the payload as ``secrets`` — an Execution only ever receives the
-    secrets its own Adapter bound. The platform default package source index
-    URL travels as ``index_url``.
+    secrets its own Adapter bound. The language-specific platform default
+    dependency-source URL travels as ``index_url``.
     """
     version = session.get(AdapterVersion, execution.version_id)
     adapter = session.get(Adapter, execution.adapter_id)
@@ -89,6 +89,7 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
         execution_id=execution.id,
         adapter_id=execution.adapter_id,
         version_id=execution.version_id,
+        language=adapter.language,
         code=version.code,
         requirements=version.requirements,
         runtime_config=version.runtime_config,
@@ -97,7 +98,10 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
         published_version_id=adapter.published_version_id,
         execution_timeout_seconds=settings.execution_timeout_seconds,
         secrets=secrets_service.resolve_adapter_secrets(session, execution.adapter_id),
-        index_url=package_source_service.resolve_default_index_url(session),
+        index_url=package_source_service.resolve_default_index_url(
+            session,
+            {"python": "pypi", "javascript": "npm", "java": "maven"}[adapter.language],
+        ),
     )
 
 
@@ -109,12 +113,14 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | None:
     by that Worker (a NULL target stays claimable by any Worker, which keeps
     historical rows working).
     """
-    get_worker(session, worker_id)
+    worker = get_worker(session, worker_id)
     execution = session.scalar(
         select(Execution)
+        .join(Adapter, Adapter.id == Execution.adapter_id)
         .where(
             Execution.status == "pending",
             Execution.cancel_requested.is_(False),
+            Adapter.language.in_(worker.capabilities),
             or_(
                 Execution.target_worker_id.is_(None),
                 Execution.target_worker_id == worker_id,

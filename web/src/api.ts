@@ -105,7 +105,11 @@ export const api = {
 
   listAdapters: (): Promise<Adapter[]> => request("/api/adapters"),
 
-  createAdapter: (payload: { name: string; description: string }): Promise<Adapter> =>
+  createAdapter: (payload: {
+    name: string;
+    description: string;
+    language: "python" | "javascript" | "java";
+  }): Promise<Adapter> =>
     request("/api/adapters", { method: "POST", body: JSON.stringify(payload) }),
 
   getAdapter: (adapterId: number): Promise<Adapter> => request(`/api/adapters/${adapterId}`),
@@ -232,12 +236,13 @@ export const api = {
       body: JSON.stringify({ bindings }),
     }),
 
-  // --- M3.2: Python package sources -------------------------------------------
+  // --- M3.3: language-specific dependency sources ------------------------------
 
   listPackageSources: (): Promise<PackageSource[]> => request("/api/package-sources"),
 
   createPackageSource: (payload: {
     name: string;
+    kind: "pypi" | "npm" | "maven";
     index_url: string;
     is_default: boolean;
     credential_id: number | null;
@@ -248,6 +253,7 @@ export const api = {
     sourceId: number,
     payload: {
       name?: string;
+      kind?: "pypi" | "npm" | "maven";
       index_url?: string;
       is_default?: boolean;
       credential_id?: number | null;

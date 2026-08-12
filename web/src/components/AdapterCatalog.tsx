@@ -2,14 +2,15 @@
 
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Button, Drawer, Input, Segmented, Space } from "antd";
+import { Button, Drawer, Input, Radio, Segmented, Space } from "antd";
 
 import {
   productionDisplayState,
   productionRunningVersionId,
   productionStateLabel,
 } from "../status";
-import type { Adapter, Worker } from "../types";
+import { LANGUAGE_LABELS } from "../languages";
+import type { Adapter, AdapterLanguage, Worker } from "../types";
 
 interface AdapterCatalogProps {
   adapters: Adapter[];
@@ -20,7 +21,7 @@ interface AdapterCatalogProps {
   onSelect: (adapter: Adapter) => void;
   // Returns true only when the adapter was actually created; the form is cleared
   // and closed only on real success, so failures keep the user's input editable.
-  onCreate: (name: string, description: string) => Promise<boolean>;
+  onCreate: (name: string, description: string, language: AdapterLanguage) => Promise<boolean>;
   // Version lists are loaded only for selected Adapters. Known id -> seq
   // mappings are cached by App; unknown ids stay explicit as #id instead of
   // causing one list request per Catalog row.
@@ -49,7 +50,7 @@ function catalogSubtitle(
     displayState === "running" && adapter.running_execution_id === null
       ? "已启动/空闲"
       : productionStateLabel(displayState);
-  const parts = [stateLabel];
+  const parts = [LANGUAGE_LABELS[adapter.language], stateLabel];
   const runningVersionId = productionRunningVersionId(adapter);
   if (runningVersionId !== null) {
     const runningVersionSeq =
@@ -106,6 +107,7 @@ export default function AdapterCatalog({
   const [view, setView] = useState<"active" | "archived">("active");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [language, setLanguage] = useState<AdapterLanguage>("python");
   const [submitting, setSubmitting] = useState(false);
   const workerNames = new Map(workers.map((worker) => [worker.id, worker.name]));
 
@@ -117,10 +119,11 @@ export default function AdapterCatalog({
     }
     setSubmitting(true);
     try {
-      const created = await onCreate(trimmed, description);
+      const created = await onCreate(trimmed, description, language);
       if (created) {
         setName("");
         setDescription("");
+        setLanguage("python");
         setCreating(false);
       }
     } finally {
@@ -144,7 +147,10 @@ export default function AdapterCatalog({
           type="primary"
           data-testid="show-create-form"
           disabled={busy}
-          onClick={() => setCreating(true)}
+          onClick={() => {
+            setLanguage("python");
+            setCreating(true);
+          }}
         >
           新建
         </Button>
@@ -219,6 +225,19 @@ export default function AdapterCatalog({
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
           />
+          <div className="settings-field">
+            <span className="settings-field-label">开发语言</span>
+            <Radio.Group
+              data-testid="new-adapter-language"
+              value={language}
+              disabled={busy}
+              onChange={(event) => setLanguage(event.target.value as AdapterLanguage)}
+            >
+              <Radio value="python">Python</Radio>
+              <Radio value="javascript">JavaScript</Radio>
+              <Radio value="java">Java</Radio>
+            </Radio.Group>
+          </div>
           <Input
             data-testid="new-adapter-description"
             placeholder="描述（可选）"

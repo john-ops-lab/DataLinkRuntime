@@ -34,6 +34,8 @@ from typing import Any
 from dlr.common.bigfields import truncate_utf8
 from dlr.common.config import settings
 from dlr.runtime import harness
+from dlr.runtime.node_harness import SOURCE as NODE_HARNESS_SOURCE
+from dlr.worker import javaenv, nodeenv
 from dlr.worker import venv as venv_manager
 
 logger = logging.getLogger("dlr.worker.executor")
@@ -66,6 +68,8 @@ class RuntimeSettings:
     execution_timeout_seconds: int
     dep_install_timeout_seconds: int
     pypi_index_url: str | None = None
+    npm_registry_url: str | None = None
+    maven_repository_url: str | None = None
 
 
 def child_env(secrets: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -405,6 +409,7 @@ def run(
     execution_id = int(payload["execution_id"])
     adapter_id = int(payload["adapter_id"])
     version_id = int(payload["version_id"])
+    language = str(payload.get("language") or "python")
     timeout = int(payload.get("execution_timeout_seconds") or config.execution_timeout_seconds)
 
     # M3.2: bound credentials from the TaskPayload, injected as DLR_SECRET_*
@@ -412,10 +417,15 @@ def run(
     payload_secrets: dict[str, str] = {
         str(env_key): str(value) for env_key, value in (payload.get("secrets") or {}).items()
     }
-    # M3.2: the platform default package source (resolved by Control at claim
-    # time) wins; the Worker's DLR_PYPI_INDEX_URL stays the compatibility
-    # fallback. Test runs and production runs share this exact strategy.
-    index_url = payload.get("index_url") or config.pypi_index_url
+    # The language-specific platform default source (resolved at claim time)
+    # wins; Worker environment variables remain compatibility fallbacks. Test
+    # and production runs share this exact strategy.
+    fallback_source = {
+        "python": config.pypi_index_url,
+        "javascript": config.npm_registry_url,
+        "java": config.maven_repository_url,
+    }.get(language)
+    index_url = payload.get("index_url") or fallback_source
     index_url = str(index_url) if index_url else None
     # Package-source credentials are only used by the dependency subprocess.
     # Keep them in that error path's explicit redaction set, but do not apply
@@ -425,14 +435,42 @@ def run(
     dependency_secret_values = secret_values + venv_manager.package_index_secret_values(index_url)
 
     try:
-        python_path = venv_manager.prepare_version_venv(
-            config.runtime_root,
-            adapter_id,
-            version_id,
-            str(payload.get("requirements") or ""),
-            timeout_seconds=config.dep_install_timeout_seconds,
-            index_url=index_url,
-        )
+        if language == "python":
+            runtime_path = venv_manager.prepare_version_venv(
+                config.runtime_root,
+                adapter_id,
+                version_id,
+                str(payload.get("requirements") or ""),
+                timeout_seconds=config.dep_install_timeout_seconds,
+                index_url=index_url,
+            )
+        elif language == "javascript":
+            runtime_path = nodeenv.prepare_version_node(
+                config.runtime_root,
+                adapter_id,
+                version_id,
+                str(payload["code"]),
+                str(payload.get("requirements") or ""),
+                timeout_seconds=config.dep_install_timeout_seconds,
+                registry_url=index_url,
+            )
+        elif language == "java":
+            runtime_path = javaenv.prepare_version_java(
+                config.runtime_root,
+                adapter_id,
+                version_id,
+                str(payload["code"]),
+                str(payload.get("requirements") or ""),
+                timeout_seconds=config.dep_install_timeout_seconds,
+                repository_url=index_url,
+            )
+        else:
+            return {
+                "status": "failed",
+                "error": f"unsupported Adapter language: {language}",
+                "stdout": "",
+                "stderr": "",
+            }
     except venv_manager.DependencyPreparationError as error:
         safe_install_log = venv_manager.redact_package_index_log(error.install_log, index_url)
         safe_error = venv_manager.redact_package_index_log(str(error), index_url)
@@ -440,7 +478,8 @@ def run(
         return {
             "status": "failed",
             "error": redact_secrets(
-                f"dependency preparation failed: {safe_error}", dependency_secret_values
+                f"{language} dependency preparation failed: {safe_error}",
+                dependency_secret_values,
             ),
             "stdout": "",
             "stderr": redact_secrets(stderr, dependency_secret_values),
@@ -453,7 +492,23 @@ def run(
     cancelled = False
     returncode = 0
     try:
-        (workspace / "adapter.py").write_text(str(payload["code"]), encoding="utf-8")
+        if language == "python":
+            (workspace / "adapter.py").write_text(str(payload["code"]), encoding="utf-8")
+            command = [str(runtime_path), str(HARNESS_PATH), str(workspace)]
+        elif language == "javascript":
+            (workspace / "harness.mjs").write_text(NODE_HARNESS_SOURCE, encoding="utf-8")
+            (workspace / "node_modules").symlink_to(runtime_path / "node_modules")
+            command = [
+                "node",
+                str(workspace / "harness.mjs"),
+                str(workspace),
+                str(runtime_path / "adapter.mjs"),
+            ]
+        else:
+            classpath = os.pathsep.join(
+                [str(runtime_path / "classes"), str(runtime_path / "deps" / "*")]
+            )
+            command = ["java", "-cp", classpath, "DlrRuntime", str(workspace)]
         (workspace / "input.json").write_text(
             json.dumps(payload.get("input"), ensure_ascii=False), encoding="utf-8"
         )
@@ -465,7 +520,7 @@ def run(
         stderr_path = workspace / ".stderr"
         with stdout_path.open("wb") as out_file, stderr_path.open("wb") as err_file:
             process = subprocess.Popen(  # noqa: S603 - fixed harness command
-                [str(python_path), str(HARNESS_PATH), str(workspace)],
+                command,
                 stdout=out_file,
                 stderr=err_file,
                 start_new_session=True,

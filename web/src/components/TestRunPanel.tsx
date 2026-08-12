@@ -4,13 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Tabs, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
+import { LANGUAGE_LABELS } from "../languages";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
-import type { Adapter } from "../types";
+import type { Adapter, Worker } from "../types";
 import { LogView, OutputView } from "./OutputView";
 
 interface TestRunPanelProps {
   adapter: Adapter;
+  productionWorker: Worker | null;
   selectedVersionId: number | null;
   selectedVersionSeq: number | null;
   isLatest: boolean;
@@ -137,6 +139,22 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     <div className="test-run-panel">
       <section className="test-input-col" data-testid="test-input-col">
         <h3 className="test-run-col-title">测试输入</h3>
+        <div className="test-version-row" data-testid="test-runtime-info">
+          <span className="execution-summary-label">语言</span>
+          <span>{LANGUAGE_LABELS[adapter.language]}</span>
+          <span className="execution-summary-label">生产 Worker</span>
+          <span>{props.productionWorker?.name ?? "未配置"}</span>
+          {props.productionWorker !== null && (
+            <Tag>
+              {props.productionWorker.capabilities
+                .map(
+                  (capability) =>
+                    LANGUAGE_LABELS[capability as keyof typeof LANGUAGE_LABELS] ?? capability,
+                )
+                .join(" / ")}
+            </Tag>
+          )}
+        </div>
         <div className="test-version-row" data-testid="test-run-version">
           <span className="execution-summary-label">测试版本</span>
           <span>{props.selectedVersionSeq !== null ? `v${props.selectedVersionSeq}` : "—"}</span>

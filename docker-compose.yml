@@ -58,6 +58,11 @@ services:
       DLR_WORKER_TOKEN: ${DLR_WORKER_TOKEN:?set DLR_WORKER_TOKEN (see .env.example)}
       DLR_WORKER_NAME: ${DLR_WORKER_NAME:-worker-1}
       DLR_RUNTIME_ROOT: /var/lib/dlr/runtime
+      # Optional compatibility fallbacks. Platform-managed default dependency
+      # sources take precedence and are selected by Adapter language.
+      DLR_PYPI_INDEX_URL: ${DLR_PYPI_INDEX_URL:-}
+      DLR_NPM_REGISTRY_URL: ${DLR_NPM_REGISTRY_URL:-}
+      DLR_MAVEN_REPOSITORY_URL: ${DLR_MAVEN_REPOSITORY_URL:-}
       # Runtime secrets are injected into the Worker only; the Adapter
       # subprocess still only sees DLR_SECRET_* (never tokens or DATABASE_URL).
       DLR_SECRET_SMOKE: ${DLR_SECRET_SMOKE:-local-dev-secret}

@@ -37,6 +37,15 @@ from dlr.control.services.execution_cancellation import (
 ACTIVE_PRODUCTION_STATUSES = ("pending", "running")
 
 
+def _require_worker_capability(worker: Worker, language: str) -> None:
+    if language not in worker.capabilities:
+        raise domain_error(
+            409,
+            "worker_capability_missing",
+            f"Worker does not support {language}",
+        )
+
+
 def domain_error(status_code: int, code: str, message: str) -> HTTPException:
     """Build the stable M1 domain error format (detail object with a code)."""
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
@@ -218,11 +227,11 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
     # Explicit null clears the pointer (invalidating the publish gate by
     # design); omitting the field leaves it unchanged.
     if "production_worker_id" in data.model_fields_set:
-        if (
-            data.production_worker_id is not None
-            and session.get(Worker, data.production_worker_id) is None
-        ):
-            raise domain_error(404, "worker_not_found", "Worker not found")
+        if data.production_worker_id is not None:
+            worker = session.get(Worker, data.production_worker_id)
+            if worker is None:
+                raise domain_error(404, "worker_not_found", "Worker not found")
+            _require_worker_capability(worker, adapter.language)
         adapter.production_worker_id = data.production_worker_id
     try:
         session.commit()
@@ -388,12 +397,18 @@ def _resolve_production_worker(session: Session, adapter: Adapter) -> Worker:
     if adapter.production_worker_id is not None:
         worker = session.get(Worker, adapter.production_worker_id)
         if worker is not None:
+            _require_worker_capability(worker, adapter.language)
             return worker
         # The FK is ON DELETE SET NULL, so a missing row means the Worker
         # was removed: fall through to the defaulting logic.
     online = list(
         session.scalars(
-            select(Worker).where(Worker.status == "online").order_by(Worker.id.asc())
+            select(Worker)
+            .where(
+                Worker.status == "online",
+                Worker.capabilities.contains([adapter.language]),
+            )
+            .order_by(Worker.id.asc())
         ).all()
     )
     if len(online) == 1:

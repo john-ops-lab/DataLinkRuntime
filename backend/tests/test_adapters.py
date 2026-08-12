@@ -99,8 +99,17 @@ def test_create_adapter_blank_name_rejected(api_client: TestClient) -> None:
 
 
 def test_create_adapter_invalid_language_rejected(api_client: TestClient) -> None:
-    response = api_client.post("/api/adapters", json={"name": "x", "language": "javascript"})
+    response = api_client.post("/api/adapters", json={"name": "x", "language": "ruby"})
     assert response.status_code == 422
+
+
+def test_create_adapter_accepts_all_supported_languages(api_client: TestClient) -> None:
+    for language in ("python", "javascript", "java"):
+        response = api_client.post(
+            "/api/adapters", json={"name": f"adapter-{language}", "language": language}
+        )
+        assert response.status_code == 201
+        assert response.json()["language"] == language
 
 
 def test_create_adapter_language_defaults_to_python(api_client: TestClient) -> None:

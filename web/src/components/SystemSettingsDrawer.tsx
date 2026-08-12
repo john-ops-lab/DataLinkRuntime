@@ -1,4 +1,4 @@
-/** 系统设置抽屉：凭据管理 + Python 包源（M3.2，全局平台配置）。 */
+/** 系统设置抽屉：凭据管理 + 三语言依赖源（M3.3，全局平台配置）。 */
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -263,6 +263,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
 
 interface PackageSourceFormState {
   name: string;
+  kind: "pypi" | "npm" | "maven";
   index_url: string;
   is_default: boolean;
   credential_id: number | null;
@@ -270,6 +271,7 @@ interface PackageSourceFormState {
 
 const EMPTY_SOURCE_FORM: PackageSourceFormState = {
   name: "",
+  kind: "pypi",
   index_url: "",
   is_default: false,
   credential_id: null,
@@ -332,6 +334,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       setPanelError(null);
       await api.createPackageSource({
         name,
+        kind: form.kind,
         index_url: indexUrl,
         is_default: form.is_default,
         credential_id: form.credential_id,
@@ -386,6 +389,13 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
 
   const columns: ColumnsType<PackageSource> = [
     {
+      title: "类型",
+      dataIndex: "kind",
+      width: 90,
+      render: (kind: PackageSource["kind"]) =>
+        ({ pypi: "PyPI", npm: "npm", maven: "Maven" })[kind],
+    },
+    {
       title: "名称",
       dataIndex: "name",
       render: (name: string, source) => (
@@ -399,7 +409,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
         </span>
       ),
     },
-    { title: "Index URL", dataIndex: "index_url" },
+    { title: "Repository URL", dataIndex: "index_url" },
     {
       title: "凭据",
       dataIndex: "credential_name",
@@ -463,15 +473,14 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     <div className="settings-panel" data-testid="package-sources-panel">
       <Space className="settings-panel-toolbar">
         <Button type="primary" data-testid="new-package-source" onClick={() => setFormOpen(true)}>
-          新建包源
+          新建依赖源
         </Button>
         <Button data-testid="refresh-package-sources" loading={loading} onClick={() => void load()}>
           刷新
         </Button>
       </Space>
       <Typography.Text type="secondary">
-        默认包源会在依赖准备阶段（本地缓存不足时）提供给 Worker；仅凭据类型为“密码”的绑定会内嵌为
-        basic auth。
+        每种类型最多一个默认源；Worker 会先尝试本地缓存，再使用对应语言的默认依赖源。
       </Typography.Text>
       {panelError !== null && <p className="settings-panel-error">{panelError}</p>}
 
@@ -483,9 +492,22 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             value={form.name}
             onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
           />
+          <Select
+            data-testid="package-source-kind"
+            value={form.kind}
+            style={{ minWidth: 180 }}
+            options={[
+              { label: "PyPI", value: "pypi" },
+              { label: "npm", value: "npm" },
+              { label: "Maven", value: "maven" },
+            ]}
+            onChange={(kind: PackageSource["kind"]) =>
+              setForm((current) => ({ ...current, kind, credential_id: null }))
+            }
+          />
           <Input
             data-testid="package-source-url"
-            placeholder="index URL（如 https://pypi.example.com/simple/）"
+            placeholder="Repository URL"
             value={form.index_url}
             onChange={(event) => setForm((current) => ({ ...current, index_url: event.target.value }))}
           />
@@ -494,18 +516,24 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             checked={form.is_default}
             onChange={(event) => setForm((current) => ({ ...current, is_default: event.target.checked }))}
           >
-            设为默认包源
+            设为该类型的默认源
           </Checkbox>
           <Select
             data-testid="package-source-credential"
-            placeholder="凭据（可选，用于 basic auth）"
+            placeholder="凭据（可选）"
             allowClear
             style={{ minWidth: 220 }}
             value={form.credential_id ?? undefined}
-            options={credentials.map((credential) => ({
-              label: credential.name,
-              value: credential.id,
-            }))}
+            options={credentials
+              .filter((credential) =>
+                form.kind === "npm"
+                  ? credential.type === "password" || credential.type === "token"
+                  : credential.type === "password",
+              )
+              .map((credential) => ({
+                label: credential.name,
+                value: credential.id,
+              }))}
             onChange={(value) => setForm((current) => ({ ...current, credential_id: value ?? null }))}
           />
           <Space>
@@ -565,7 +593,7 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
           },
           {
             key: "package-sources",
-            label: "Python 包源",
+            label: "依赖源",
             children: <PackageSourcesPanel onError={props.onError} />,
           },
         ]}

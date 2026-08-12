@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import WORKER_TOKEN
 from dlr.control.models import PackageSource
 from dlr.control.services import package_source as package_source_service
 from dlr.worker import executor
@@ -24,6 +25,8 @@ from test_executions import create_execution
 from test_runtime import ECHO_CODE, make_payload, runtime_settings
 from test_workers import claim, register_worker, report
 
+WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
+
 
 def create_source(
     client: TestClient,
@@ -31,8 +34,14 @@ def create_source(
     index_url: str = "https://mirror.example.com/simple/",
     is_default: bool = False,
     credential_id: int | None = None,
+    kind: str = "pypi",
 ) -> dict:
-    payload: dict = {"name": name, "index_url": index_url, "is_default": is_default}
+    payload: dict = {
+        "name": name,
+        "kind": kind,
+        "index_url": index_url,
+        "is_default": is_default,
+    }
     if credential_id is not None:
         payload["credential_id"] = credential_id
     response = client.post("/api/package-sources", json=payload)
@@ -78,6 +87,28 @@ def test_package_source_default_is_exclusive(api_client: TestClient) -> None:
     sources = {item["name"]: item for item in api_client.get("/api/package-sources").json()}
     assert sources["src-a"]["is_default"] is True
     assert sources["src-b"]["is_default"] is False
+
+
+def test_package_source_defaults_are_independent_per_kind(api_client: TestClient) -> None:
+    pypi = create_source(api_client, name="pypi", is_default=True, kind="pypi")
+    npm = create_source(
+        api_client,
+        name="npm",
+        index_url="https://registry.example.com/",
+        is_default=True,
+        kind="npm",
+    )
+    maven = create_source(
+        api_client,
+        name="maven",
+        index_url="https://maven.example.com/repository/",
+        is_default=True,
+        kind="maven",
+    )
+    assert pypi["kind"] == "pypi"
+    assert npm["kind"] == "npm"
+    assert maven["kind"] == "maven"
+    assert all(source["is_default"] for source in (pypi, npm, maven))
 
 
 def test_package_source_credential_reference(api_client: TestClient) -> None:
@@ -176,6 +207,52 @@ def test_claim_payload_carries_default_source_url(api_client: TestClient) -> Non
     response = claim(api_client, worker["id"])
     assert response.json()["execution_id"] == execution["id"]
     assert response.json()["index_url"] == "https://mirror.example.com/simple/"
+
+
+def test_claim_payload_selects_source_by_adapter_language(api_client: TestClient) -> None:
+    worker_response = api_client.post(
+        "/api/workers/register",
+        json={
+            "name": "multilang-source-worker",
+            "capabilities": ["python", "javascript", "java"],
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert worker_response.status_code == 200, worker_response.text
+    worker = worker_response.json()
+    create_source(
+        api_client,
+        name="npm-default",
+        kind="npm",
+        index_url="https://registry.example.com/",
+        is_default=True,
+    )
+    create_source(
+        api_client,
+        name="maven-default",
+        kind="maven",
+        index_url="https://maven.example.com/repository/",
+        is_default=True,
+    )
+
+    cases = (
+        ("javascript", "https://registry.example.com/"),
+        ("java", "https://maven.example.com/repository/"),
+    )
+    for language, expected_url in cases:
+        adapter = create_adapter(
+            api_client,
+            name=f"source-{language}",
+            language=language,
+        )
+        save_version(api_client, adapter["id"], code="// source routing test")
+        execution = create_execution(api_client, adapter["id"])
+        response = claim(api_client, worker["id"])
+        assert response.status_code == 200, response.text
+        task = response.json()
+        assert task["execution_id"] == execution["id"]
+        assert task["language"] == language
+        assert task["index_url"] == expected_url
 
 
 def test_claim_payload_embeds_basic_auth(
