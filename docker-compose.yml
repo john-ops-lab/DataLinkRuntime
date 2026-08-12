@@ -28,6 +28,8 @@ services:
       # Empty by default: credential APIs stay disabled (503) until the
       # operator explicitly configures a deployment-specific key.
       DLR_MASTER_KEY: ${DLR_MASTER_KEY:-}
+      # M4 non-streaming Provider request deadline; Settings enforces 10..600s.
+      DLR_AI_PROVIDER_TIMEOUT_SECONDS: ${DLR_AI_PROVIDER_TIMEOUT_SECONDS:-180}
     depends_on:
       postgres:
         condition: service_healthy

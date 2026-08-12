@@ -6,6 +6,7 @@ import zhCN from "antd/locale/zh_CN";
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
 import AdapterCatalog from "./components/AdapterCatalog";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
+import AiAssistantPanel from "./components/AiAssistantPanel";
 import CredentialBindingsEditor from "./components/CredentialBindingsEditor";
 import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
@@ -20,6 +21,7 @@ import { statusLabel } from "./status";
 import type {
   Adapter,
   AdapterLanguage,
+  AiCandidate,
   PublishGate,
   VersionDetail,
   VersionSummary,
@@ -218,6 +220,7 @@ function AdapterConsole() {
   // M3.2：编辑页次级配置 Tabs 与系统设置抽屉（凭据管理 + Python 包源）。
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [diffView, setDiffView] = useState<DiffViewState | null>(null);
   // Known version-id -> seq values, cached once a version list has loaded and
   // kept up to date on save/publish. Unvisited Catalog rows use server-derived
@@ -798,6 +801,53 @@ function AdapterConsole() {
     });
   }
 
+  function handleOpenAiCandidateDiff(candidate: AiCandidate) {
+    if (!selected) {
+      return;
+    }
+    setDiffView({
+      title: "AI Candidate：与当前 Working Copy 对比",
+      originalTitle: "Working Copy（当前编辑内容）",
+      modifiedTitle: "AI Candidate",
+      panes: [
+        {
+          key: "code",
+          label: "代码",
+          language: selected.language,
+          original: snapshot.code,
+          modified: candidate.code,
+        },
+        {
+          key: "requirements",
+          label: DEPENDENCY_UI[selected.language].label,
+          language: "plaintext",
+          original: snapshot.requirements,
+          modified: candidate.requirements,
+        },
+        {
+          key: "runtime-config",
+          label: "运行参数",
+          language: "json",
+          original: snapshot.runtimeConfigText,
+          modified: JSON.stringify(candidate.runtime_config, null, 2),
+        },
+      ],
+    });
+  }
+
+  function handleApplyAiCandidate(candidate: AiCandidate) {
+    if (!selected || selected.archived_at || !contentReady || busy) {
+      return;
+    }
+    // Human-in-the-loop boundary: this updates browser state only. Persisting,
+    // testing and lifecycle actions remain separate explicit administrator actions.
+    setSnapshot({
+      code: candidate.code,
+      requirements: candidate.requirements,
+      runtimeConfigText: JSON.stringify(candidate.runtime_config, null, 2),
+    });
+  }
+
   // M3.2 Diff：发布目标 vs 当前生产版本（覆盖 code/依赖/参数/绑定引用）。
   async function handleOpenPublishDiff() {
     if (!selected || publishConfirm === null) {
@@ -1085,7 +1135,10 @@ function AdapterConsole() {
                             language={selected.language}
                             value={snapshot.code}
                             onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
-                            options={{ minimap: { enabled: false }, readOnly: busy || !contentReady }}
+                            options={{
+                              minimap: { enabled: false },
+                              readOnly: busy || !contentReady || !!selected.archived_at,
+                            }}
                           />
                         </div>
 
@@ -1104,7 +1157,7 @@ function AdapterConsole() {
                                     data-testid="requirements-input"
                                     rows={4}
                                     value={snapshot.requirements}
-                                    disabled={busy || !contentReady}
+                                    disabled={busy || !contentReady || !!selected.archived_at}
                                     placeholder={DEPENDENCY_UI[selected.language].placeholder}
                                     onChange={(event) =>
                                       setSnapshot((current) => ({
@@ -1123,7 +1176,7 @@ function AdapterConsole() {
                                     data-testid="runtime-config-input"
                                     rows={4}
                                     value={snapshot.runtimeConfigText}
-                                    disabled={busy || !contentReady}
+                                    disabled={busy || !contentReady || !!selected.archived_at}
                                     onChange={(event) =>
                                       setSnapshot((current) => ({
                                         ...current,
@@ -1191,6 +1244,21 @@ function AdapterConsole() {
             </section>
           )}
         </main>
+
+        <AiAssistantPanel
+          key={`ai-assistant-${selected?.id ?? "none"}`}
+          open={aiPanelOpen}
+          adapter={selected}
+          selectedVersionId={selectedVersionId}
+          selectedVersionSeq={selectedVersion?.seq ?? null}
+          workingCopy={snapshot}
+          contentReady={contentReady}
+          busy={busy}
+          onOpen={() => setAiPanelOpen(true)}
+          onClose={() => setAiPanelOpen(false)}
+          onApply={handleApplyAiCandidate}
+          onOpenDiff={handleOpenAiCandidateDiff}
+        />
       </div>
 
       <AdapterSettingsDrawer

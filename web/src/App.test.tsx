@@ -10,6 +10,8 @@ import { FALLBACK_POLICY } from "./fallback-policy";
 import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
 import type {
   Adapter,
+  AiAssistResponse,
+  AiCandidate,
   Execution,
   ExecutionSummary,
   VersionDetail,
@@ -2918,4 +2920,461 @@ it("manages credentials and package sources from the system settings drawer", as
   fireEvent.click(screen.getByTestId("test-package-source"));
   await screen.findByTestId("package-source-test-result");
   expect(screen.getByTestId("package-source-test-result").textContent).toContain("可达");
+});
+
+// --- M4 AI Editor -----------------------------------------------------------
+
+const AI_CANDIDATE: AiCandidate = {
+  summary: "增加分页处理",
+  code: "candidate-code\n",
+  requirements: "candidate-dependency\n",
+  runtime_config: { page_size: 100 },
+  required_secret_keys: ["API_TOKEN", "MISSING_TOKEN"],
+};
+
+function aiResponse(message: string, candidate: AiCandidate | null): AiAssistResponse {
+  return { message, candidate, provider: "openai", model: "test-model" };
+}
+
+function aiBindingsRoute(adapterId: number, envKeys: string[] = []): Route {
+  return {
+    method: "GET",
+    match: `/api/adapters/${adapterId}/credential-bindings`,
+    respond: () => ({
+      body: envKeys.map((envKey, index) => ({
+        env_key: envKey,
+        credential_id: index + 1,
+        field: "token",
+      })),
+    }),
+  };
+}
+
+async function openAiAssistant() {
+  fireEvent.click(screen.getByTestId("open-ai-assistant"));
+  await screen.findByTestId("ai-assistant-panel");
+}
+
+it("expands and collapses the AI panel and blocks send without an Adapter", async () => {
+  stubFetch([healthRoute({ status: "ok", database: true }), emptyAdaptersRoute]);
+  render(<App />);
+  await screen.findByTestId("open-ai-assistant");
+
+  await openAiAssistant();
+  expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).disabled).toBe(true);
+  expect((screen.getByTestId("ai-send") as HTMLButtonElement).disabled).toBe(true);
+
+  fireEvent.click(screen.getByTestId("close-ai-assistant"));
+  await screen.findByTestId("open-ai-assistant");
+  expect(screen.queryByTestId("ai-assistant-panel")).toBeNull();
+});
+
+it.each([
+  ["python", "Python 依赖"],
+  ["javascript", "npm 依赖"],
+  ["java", "Maven 依赖"],
+] as const)(
+  "sends the %s Working Copy, shows all Candidate diffs, and applies browser-only",
+  async (language, dependencyLabel) => {
+    const adapter = makeAdapter({ language, latest_version_id: 10 });
+    const version = makeVersion({
+      code: `base-${language}\n`,
+      requirements: `base-dependency-${language}\n`,
+      runtime_config: { before: true },
+    });
+    let assistBody = "";
+    const fetchMock = stubFetch([
+      ...consoleWithVersionRoutes(adapter, version),
+      aiBindingsRoute(1, ["API_TOKEN"]),
+      {
+        method: "POST",
+        match: "/api/adapters/1/ai/assist",
+        respond: (body) => {
+          assistBody = body ?? "";
+          return {
+            body: aiResponse("已生成修改候选", AI_CANDIDATE),
+          };
+        },
+      },
+    ]);
+    render(<App />);
+    await selectFirstAdapter();
+    await openAiAssistant();
+
+    fireEvent.change(screen.getByTestId("ai-message-input"), {
+      target: { value: "增加分页" },
+    });
+    fireEvent.click(screen.getByTestId("ai-send"));
+
+    await screen.findByTestId("ai-candidate-summary");
+    expect(screen.getByTestId("ai-candidate-summary").textContent).toBe("增加分页处理");
+    expect(screen.getByTestId("ai-required-secret-keys").textContent).toContain("API_TOKEN");
+    expect(screen.getByTestId("ai-missing-secret-keys").textContent).toContain("MISSING_TOKEN");
+    expect(screen.getByTestId("ai-missing-secret-keys").textContent).not.toContain(
+      "：API_TOKEN,",
+    );
+
+    const payload = JSON.parse(assistBody) as {
+      message: string;
+      working_copy: {
+        code: string;
+        requirements: string;
+        runtime_config: Record<string, unknown>;
+      };
+      recent_messages: unknown[];
+      base_version_id: number;
+    };
+    expect(payload).toEqual({
+      message: "增加分页",
+      working_copy: {
+        code: `base-${language}\n`,
+        requirements: `base-dependency-${language}\n`,
+        runtime_config: { before: true },
+      },
+      recent_messages: [],
+      base_version_id: 10,
+    });
+
+    fireEvent.click(screen.getByTestId("ai-view-diff"));
+    const diffModal = await screen.findByTestId("version-diff");
+    expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe(language);
+    expect(within(diffModal).getByText(dependencyLabel)).toBeTruthy();
+    fireEvent.click(within(diffModal).getByText(dependencyLabel));
+    expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe(
+      "plaintext",
+    );
+    fireEvent.click(within(diffModal).getByText("运行参数"));
+    expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe("json");
+    fireEvent.click(document.querySelector(".ant-modal-close") as HTMLButtonElement);
+
+    fireEvent.click(screen.getByTestId("ai-apply-candidate"));
+    expect(valueOf("code-editor")).toBe("candidate-code\n");
+    expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
+    expect(valueOf("requirements-input")).toBe("candidate-dependency\n");
+    fireEvent.click(screen.getByText("运行参数（JSON）"));
+    expect(valueOf("runtime-config-input")).toBe('{\n  "page_size": 100\n}');
+    expect(screen.getByTestId("dirty-indicator")).toBeTruthy();
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          init?.method === "POST" &&
+          (String(url).endsWith("/versions") ||
+            String(url).includes("/executions") ||
+            String(url).endsWith("/publish") ||
+            String(url).includes("/production/")),
+      ),
+    ).toBe(false);
+  },
+);
+
+it("rejects a runtime config whose JSON number overflows instead of silently sending null", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("运行参数（JSON）"));
+  fireEvent.change(screen.getByTestId("runtime-config-input"), {
+    target: { value: '{"overflow":1e400}' },
+  });
+  await openAiAssistant();
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "检查参数" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+
+  expect((await screen.findByTestId("ai-panel-error")).textContent).toContain(
+    "必须是合法的 JSON 对象",
+  );
+  expect(
+    fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/adapters/1/ai/assist")),
+  ).toBe(false);
+});
+
+it("refreshes bindings for a new Candidate while the AI panel remains open", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  let bindingReads = 0;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: () => {
+        bindingReads += 1;
+        return {
+          body:
+            bindingReads === 1
+              ? []
+              : [{ env_key: "MISSING_TOKEN", credential_id: 1, field: "token" }],
+        };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: () => ({ body: aiResponse("候选已生成", AI_CANDIDATE) }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+  await waitFor(() => expect(bindingReads).toBe(1));
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "使用刚绑定的 Secret" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+
+  expect(bindingReads).toBe(2);
+  expect(screen.getByTestId("ai-missing-secret-keys").textContent).toContain("API_TOKEN");
+  expect(screen.getByTestId("ai-missing-secret-keys").textContent).not.toContain("MISSING_TOKEN");
+});
+
+it("marks a Candidate stale after an in-flight edit and requires explicit still-apply", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  let resolveAssist: ((response: AiAssistResponse) => void) | undefined;
+  const pendingAssist = new Promise<AiAssistResponse>((resolve) => {
+    resolveAssist = resolve;
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion({ code: "base-code\n" })),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: async () => ({ body: await pendingAssist }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "修改代码" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-loading");
+  fireEvent.change(screen.getByTestId("code-editor"), {
+    target: { value: "manual-newer-code\n" },
+  });
+
+  await act(async () => {
+    resolveAssist?.(aiResponse("候选已生成", AI_CANDIDATE));
+    await pendingAssist;
+  });
+  await screen.findByTestId("ai-candidate-stale");
+  expect(valueOf("code-editor")).toBe("manual-newer-code\n");
+  expect(screen.getByTestId("ai-apply-candidate").textContent).toContain("仍然应用");
+
+  fireEvent.click(screen.getByTestId("ai-apply-candidate"));
+  expect(valueOf("code-editor")).toBe("candidate-code\n");
+});
+
+it("clears conversation on Adapter switch and ignores the old Adapter response", async () => {
+  const adapterA = makeAdapter({ id: 1, name: "adapter-a" });
+  const adapterB = makeAdapter({ id: 2, name: "adapter-b" });
+  let resolveAssistA: ((response: AiAssistResponse) => void) | undefined;
+  const pendingAssistA = new Promise<AiAssistResponse>((resolve) => {
+    resolveAssistA = resolve;
+  });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [adapterA, adapterB] }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [] }) },
+    aiBindingsRoute(1),
+    aiBindingsRoute(2),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: async () => ({ body: await pendingAssistA }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "A 的问题" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-message-user");
+
+  fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
+  await screen.findByRole("heading", { name: "adapter-b" });
+  expect(screen.queryByTestId("ai-message-user")).toBeNull();
+
+  await act(async () => {
+    resolveAssistA?.(aiResponse("A 的旧响应", AI_CANDIDATE));
+    await pendingAssistA;
+  });
+  expect(screen.queryByText("A 的旧响应")).toBeNull();
+  expect(screen.queryByTestId("ai-candidate")).toBeNull();
+});
+
+it("sends at most the latest eight visible role/content messages", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const requestBodies: string[] = [];
+  let responseNumber = 0;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: (body) => {
+        requestBodies.push(body ?? "");
+        responseNumber += 1;
+        return { body: { message: `回答 ${responseNumber}`, candidate: null } };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  for (let index = 1; index <= 6; index += 1) {
+    fireEvent.change(screen.getByTestId("ai-message-input"), {
+      target: { value: `问题 ${index}` },
+    });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await waitFor(() => {
+      expect(screen.getAllByTestId("ai-message-assistant")).toHaveLength(index);
+    });
+  }
+
+  const sixth = JSON.parse(requestBodies[5]) as {
+    recent_messages: Record<string, unknown>[];
+  };
+  expect(sixth.recent_messages).toHaveLength(8);
+  expect(sixth.recent_messages[0]).toEqual({ role: "user", content: "问题 2" });
+  expect(
+    sixth.recent_messages.every(
+      (message) => Object.keys(message).sort().join(",") === "content,role",
+    ),
+  ).toBe(true);
+});
+
+it("keeps archived Adapter editors read-only and disables Candidate Apply", async () => {
+  const archived = makeAdapter({ archived_at: "2026-08-11T01:00:00Z" });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [archived] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: () => ({ body: { message: "只读候选", candidate: AI_CANDIDATE } }),
+    },
+  ]);
+  render(<App />);
+  await screen.findByTestId("adapter-catalog");
+  fireEvent.click(screen.getByText("已归档"));
+  fireEvent.click(await screen.findByTestId("adapter-item"));
+  await screen.findByTestId("code-editor");
+  expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true);
+  expect((screen.getByTestId("requirements-input") as HTMLTextAreaElement).disabled).toBe(true);
+  fireEvent.click(screen.getByText("运行参数（JSON）"));
+  expect((screen.getByTestId("runtime-config-input") as HTMLTextAreaElement).disabled).toBe(true);
+
+  await openAiAssistant();
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "解释并建议" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-archived-apply-blocked");
+  expect((screen.getByTestId("ai-apply-candidate") as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("configures one AI model with manual Model ID, refresh, test, and default reasoning", async () => {
+  let refreshBody = "";
+  let testBody = "";
+  let saveBody = "";
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({
+        body: [
+          { id: 1, name: "ai-token", type: "token", created_at: "", updated_at: "" },
+          { id: 2, name: "not-a-token", type: "password", created_at: "", updated_at: "" },
+        ],
+      }),
+    },
+    { method: "GET", match: "/api/ai/settings", respond: () => ({ body: null }) },
+    {
+      method: "POST",
+      match: "/api/ai/models/refresh",
+      respond: (body) => {
+        refreshBody = body ?? "";
+        return { body: { models: ["model-from-server"] } };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/ai/settings/test",
+      respond: (body) => {
+        testBody = body ?? "";
+        return { body: { ok: true, message: "模型响应可解析" } };
+      },
+    },
+    {
+      method: "PUT",
+      match: "/api/ai/settings",
+      respond: (body) => {
+        saveBody = body ?? "";
+        return { body: JSON.parse(saveBody) };
+      },
+    },
+  ]);
+  render(<App />);
+  fireEvent.click(await screen.findByTestId("system-settings"));
+  fireEvent.click(await screen.findByText("AI 模型"));
+  await screen.findByTestId("ai-model-settings-panel");
+
+  expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("Working Copy");
+  expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("跟随模型默认");
+  expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
+
+  fireEvent.change(screen.getByTestId("ai-base-url"), {
+    target: { value: "https://models.example.com/v1" },
+  });
+  fireEvent.change(screen.getByTestId("ai-model-input"), {
+    target: { value: "manual-model" },
+  });
+  fireEvent.click(screen.getByTestId("ai-refresh-models"));
+  await waitFor(() => expect(refreshBody).not.toBe(""));
+  expect(valueOf("ai-model-input")).toBe("manual-model");
+  expect(
+    Array.from(screen.getByTestId("ai-model-suggestions").querySelectorAll("option")).map(
+      (option) => option.value,
+    ),
+  ).toEqual(["model-from-server"]);
+
+  fireEvent.click(screen.getByTestId("ai-test-connection"));
+  await waitFor(() => expect(testBody).not.toBe(""));
+  expect(screen.getByTestId("ai-settings-notice").textContent).toContain("模型响应可解析");
+
+  fireEvent.click(screen.getByTestId("ai-save-settings"));
+  await waitFor(() => expect(saveBody).not.toBe(""));
+  expect(JSON.parse(saveBody)).toEqual({
+    provider: "openai",
+    base_url: "https://models.example.com/v1",
+    model: "manual-model",
+    credential_id: null,
+    reasoning_mode: "default",
+    reasoning_effort: null,
+  });
+  expect(JSON.parse(testBody).reasoning_mode).toBe("default");
+  expect(JSON.parse(refreshBody).model).toBeUndefined();
 });

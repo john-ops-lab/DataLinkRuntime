@@ -2,6 +2,11 @@
 
 import type {
   Adapter,
+  AiAssistResponse,
+  AiConnectionTestResult,
+  AiConversationMessage,
+  AiModelSetting,
+  AiModelSettingDraft,
   Credential,
   CredentialBinding,
   CredentialType,
@@ -267,4 +272,39 @@ export const api = {
   /** Control-side reachability probe against the saved source's index URL. */
   testPackageSource: (sourceId: number): Promise<ReachabilityResult> =>
     request(`/api/package-sources/${sourceId}/test`, { method: "POST" }),
+
+  // --- M4: AI Editor ---------------------------------------------------------
+
+  getAiSetting: (): Promise<AiModelSetting | null> => request("/api/ai/settings"),
+
+  updateAiSetting: (payload: AiModelSettingDraft): Promise<AiModelSetting> =>
+    request("/api/ai/settings", { method: "PUT", body: JSON.stringify(payload) }),
+
+  testAiSetting: (payload: AiModelSettingDraft): Promise<AiConnectionTestResult> =>
+    request("/api/ai/settings/test", { method: "POST", body: JSON.stringify(payload) }),
+
+  refreshAiModels: (payload: {
+    provider: AiModelSettingDraft["provider"];
+    base_url: string;
+    credential_id: number | null;
+  }): Promise<{ models: string[] }> =>
+    request("/api/ai/models/refresh", { method: "POST", body: JSON.stringify(payload) }),
+
+  assistAdapter: (
+    adapterId: number,
+    payload: {
+      message: string;
+      working_copy: {
+        code: string;
+        requirements: string;
+        runtime_config: Record<string, unknown>;
+      };
+      recent_messages: AiConversationMessage[];
+      base_version_id?: number | null;
+    },
+  ): Promise<AiAssistResponse> =>
+    request(`/api/adapters/${adapterId}/ai/assist`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };

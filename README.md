@@ -4,11 +4,14 @@
 
 - 产品定义：[docs/product.md](docs/product.md)
 - 总体架构：[docs/architecture.md](docs/architecture.md)
+- M4 AI Editor Spec：[docs/specs/m4-ai-editor.md](docs/specs/m4-ai-editor.md)
 
-当前已完成 M3.3：Python / JavaScript / Java Adapter 共享同一套不可变 Version、
-Test / Publish / Start / Stop、Secret、实时日志与 Execution 历史语义。官方 Worker
-镜像包含 Python 3.13 / uv、Node.js LTS / npm、JDK 21 / Maven，并按实际可用 Runtime
-自动上报 capability。
+当前已完成 M4：Python / JavaScript / Java Adapter 共享同一套不可变 Version、
+Test / Publish / Start / Stop、Secret、实时日志与 Execution 历史语义，并可通过右侧
+AI Assistant 基于当前 Working Copy 生成完整 Candidate。Candidate 必须经管理员查看 Diff
+并明确应用，应用只更新浏览器 Working Copy；Save / Test / Publish / Start / Stop 仍全部由
+管理员执行。官方 Worker 镜像包含 Python 3.13 / uv、Node.js LTS / npm、JDK 21 / Maven，
+并按实际可用 Runtime 自动上报 capability。
 
 ## 快速开始
 
@@ -61,6 +64,24 @@ docker compose down --volumes
 | postgres | PostgreSQL 16 |
 | worker | Worker Agent：注册/心跳/长轮询，按语言在 version-scoped 环境的独立子进程中执行 Adapter |
 
+## AI Assistant 配置与边界
+
+AI Assistant 使用一个全局活动模型配置。在「系统设置 → AI 模型」中选择 Provider，填写
+Base URL 与 Model ID；Model ID 既可从 Provider 的 `/v1/models` 刷新，也可手工输入。如需
+API Key，先创建 `token` 类型 Credential，再在 AI 设置中引用；浏览器与 AI 设置 API
+只看到 Credential 元数据，不会得到 token 明文。推理策略默认「跟随模型默认」，此时
+DLR 不主动发送 reasoning override。
+
+非流式 Provider HTTP 请求默认超时为 180 秒，可通过
+`DLR_AI_PROVIDER_TIMEOUT_SECONDS` 在 10～600 秒范围内调整；该参数仅控制请求 deadline，
+不新增 streaming 或输出 token 参数管理。
+
+管理员配置的模型服务会收到当前 Working Copy、非敏感运行参数、已绑定 Secret 的
+`env_key` 名称以及有限的最近对话；不会收到这些业务 Credential 的真值。所选模型 API
+Key 只作为 Provider HTTP Authorization 使用，不进入 Prompt。对话、Prompt、Provider
+Response 与 reasoning 不落库、不写普通应用日志。模型返回的 Candidate 经本地 Schema
+校验后仍需人工 Apply，且 Apply 不调用任何生命周期 API。
+
 ## 本地开发
 
 ### backend
@@ -108,7 +129,10 @@ npm run build
 构建并启动全部容器（隔离的 compose project 与独立端口），在真实 PostgreSQL
 上执行 Alembic 迁移后等待全部服务健康，验证 `/api/health` 链路与 401 认证拒绝，
 带 Admin Token 执行 Adapter 管理、执行与 M3.2 生产生命周期回归，再对 Python、
-JavaScript、Java 分别真实执行 `Save → Test → Publish → Start → succeeded`；整个过程
+JavaScript、Java 分别真实执行 `Save → Test → Publish → Start → succeeded`。M4 链路
+额外启动一个临时、仅位于 smoke 网络中的 OpenAI-compatible fake Provider，验证设置、
+模型刷新、连接测试与三语言 AI Assist，并证明 Version / Execution / published / production
+事实未改变；不访问任何公网 AI，也不把 fake Provider 加入正式 Compose 拓扑。整个过程
 使用独立 Compose project 和卷，结束后自动清理：
 
 ```bash
