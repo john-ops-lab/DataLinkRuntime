@@ -173,7 +173,7 @@ export type AiProvider =
   | "custom_openai_compatible";
 
 export type AiReasoningMode = "default" | "enabled" | "disabled";
-export type AiReasoningEffort = "low" | "medium" | "high" | "max";
+export type AiReasoningEffort = "low" | "medium" | "high" | "max" | "xhigh";
 
 /** Metadata-only global setting. The referenced Credential value never reaches the browser. */
 export interface AiModelSettingDraft {

@@ -34,6 +34,35 @@ const PROVIDER_OPTIONS: { label: string; value: AiProvider }[] = [
   { label: "Custom OpenAI-compatible", value: "custom_openai_compatible" },
 ];
 
+const REASONING_EFFORTS_BY_PROVIDER: Record<
+  AiProvider,
+  readonly AiReasoningEffort[]
+> = {
+  openai: ["low", "medium", "high", "xhigh"],
+  deepseek: ["high", "max"],
+  kimi: [],
+  minimax: [],
+  custom_openai_compatible: [],
+};
+
+function supportedReasoningEfforts(
+  provider: AiProvider,
+  mode: AiReasoningMode,
+): readonly AiReasoningEffort[] {
+  return mode === "enabled" ? REASONING_EFFORTS_BY_PROVIDER[provider] : [];
+}
+
+function normalizeReasoningEffort(
+  provider: AiProvider,
+  mode: AiReasoningMode,
+  effort: AiReasoningEffort | null,
+): AiReasoningEffort | null {
+  if (effort === null || !supportedReasoningEfforts(provider, mode).includes(effort)) {
+    return null;
+  }
+  return effort;
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     return `${error.message} (${error.code})`;
@@ -51,7 +80,11 @@ function normalizeSetting(setting: AiModelSetting | null): AiModelSettingDraft {
     model: setting.model,
     credential_id: setting.credential_id,
     reasoning_mode: setting.reasoning_mode,
-    reasoning_effort: setting.reasoning_effort,
+    reasoning_effort: normalizeReasoningEffort(
+      setting.provider,
+      setting.reasoning_mode,
+      setting.reasoning_effort,
+    ),
   };
 }
 
@@ -66,6 +99,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const [testing, setTesting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const reasoningEfforts = supportedReasoningEfforts(form.provider, form.reasoning_mode);
 
   const fail = useCallback(
     (message: string) => {
@@ -111,13 +145,26 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       fail("Base URL 与 Model ID 均不能为空");
       return null;
     }
+    const reasoningEffort = normalizeReasoningEffort(
+      form.provider,
+      form.reasoning_mode,
+      form.reasoning_effort,
+    );
+    if (
+      form.provider === "openai" &&
+      form.reasoning_mode === "enabled" &&
+      reasoningEffort === null
+    ) {
+      fail("OpenAI 开启推理时必须显式选择受支持的推理强度");
+      return null;
+    }
     return {
       provider: form.provider,
       base_url: baseUrl,
       model,
       credential_id: form.credential_id,
       reasoning_mode: form.reasoning_mode,
-      reasoning_effort: form.reasoning_effort,
+      reasoning_effort: reasoningEffort,
     };
   }
 
@@ -210,7 +257,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
             setForm((current) => ({
               ...current,
               provider,
-              reasoning_effort: provider === "openai" ? current.reasoning_effort : null,
+              reasoning_effort: normalizeReasoningEffort(
+                provider,
+                current.reasoning_mode,
+                current.reasoning_effort,
+              ),
             }))
           }
         />
@@ -291,32 +342,33 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
             setForm((current) => ({
               ...current,
               reasoning_mode: reasoningMode,
-              reasoning_effort:
-                reasoningMode === "enabled" ? current.reasoning_effort : null,
+              reasoning_effort: normalizeReasoningEffort(
+                current.provider,
+                reasoningMode,
+                current.reasoning_effort,
+              ),
             }))
           }
         />
       </label>
 
-      <label className="settings-field">
-        <span>推理强度（可选）</span>
-        <Select<AiReasoningEffort>
-          data-testid="ai-reasoning-effort"
-          allowClear
-          disabled={form.provider !== "openai" || form.reasoning_mode !== "enabled"}
-          placeholder="默认"
-          value={form.reasoning_effort ?? undefined}
-          options={[
-            { label: "low", value: "low" },
-            { label: "medium", value: "medium" },
-            { label: "high", value: "high" },
-            { label: "max", value: "max" },
-          ]}
-          onChange={(reasoningEffort) =>
-            setForm((current) => ({ ...current, reasoning_effort: reasoningEffort ?? null }))
-          }
-        />
-      </label>
+      {reasoningEfforts.length > 0 && (
+        <label className="settings-field">
+          <span>{form.provider === "openai" ? "推理强度" : "推理强度（可选）"}</span>
+          <Select<AiReasoningEffort>
+            data-testid="ai-reasoning-effort"
+            allowClear={form.provider !== "openai"}
+            placeholder={
+              form.provider === "openai" ? "请选择推理强度" : "不覆盖模型默认强度"
+            }
+            value={form.reasoning_effort ?? undefined}
+            options={reasoningEfforts.map((effort) => ({ label: effort, value: effort }))}
+            onChange={(reasoningEffort) =>
+              setForm((current) => ({ ...current, reasoning_effort: reasoningEffort ?? null }))
+            }
+          />
+        </label>
+      )}
 
       <Typography.Text type="secondary">
         “跟随模型默认”不会主动发送 reasoning 开关。显式配置若不受支持，服务端会返回 ai_reasoning_unsupported，不会静默忽略。

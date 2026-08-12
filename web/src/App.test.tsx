@@ -3344,9 +3344,7 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
 
   expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("Working Copy");
   expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("跟随模型默认");
-  expect((screen.getByTestId("ai-reasoning-effort") as HTMLElement).className).toContain(
-    "ant-select-disabled",
-  );
+  expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
 
   fireEvent.change(screen.getByTestId("ai-base-url"), {
     target: { value: "https://models.example.com/v1" },

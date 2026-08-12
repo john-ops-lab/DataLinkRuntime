@@ -12,6 +12,7 @@ from typing import Literal, cast
 from urllib import error as url_error
 from urllib import request as url_request
 
+from dlr.common.config import settings
 from dlr.control.schemas.ai import (
     AiProvider,
     AiSettingDraft,
@@ -20,7 +21,6 @@ from dlr.control.schemas.ai import (
     contains_unicode_surrogate,
 )
 
-PROVIDER_TIMEOUT_SECONDS = 30.0
 MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
 
 JsonObject = dict[str, object]
@@ -59,6 +59,8 @@ class ProviderAdapter:
     provider: AiProvider
     structured_output: StructuredOutput
     reasoning_style: ReasoningStyle
+    reasoning_efforts: frozenset[ReasoningEffort] = frozenset()
+    require_effort_when_enabled: bool = False
     split_reasoning: bool = False
 
 
@@ -67,14 +69,25 @@ PROVIDERS: dict[AiProvider, ProviderAdapter] = {
     # OpenAI strict Structured Outputs requires closed object schemas, so a
     # strict json_schema would misrepresent this contract. Use JSON mode plus
     # the explicit prompt and mandatory local strict validation instead.
-    "openai": ProviderAdapter("openai", "json_object", "openai_effort"),
-    "deepseek": ProviderAdapter("deepseek", "json_object", "thinking"),
+    "openai": ProviderAdapter(
+        "openai",
+        "json_object",
+        "openai_effort",
+        frozenset(("low", "medium", "high", "xhigh")),
+        True,
+    ),
+    "deepseek": ProviderAdapter(
+        "deepseek",
+        "json_object",
+        "thinking",
+        frozenset(("high", "max")),
+    ),
     # Kimi exposes the OpenAI-compatible thinking switch for models that
     # support it; upstream rejection is converted to ai_reasoning_unsupported
     # without maintaining a brittle model-name allowlist.
     "kimi": ProviderAdapter("kimi", "json_object", "thinking"),
     # MiniMax can return reasoning separately when reasoning_split is true.
-    "minimax": ProviderAdapter("minimax", "prompt_only", "unsupported", True),
+    "minimax": ProviderAdapter("minimax", "prompt_only", "unsupported", split_reasoning=True),
     "custom_openai_compatible": ProviderAdapter(
         "custom_openai_compatible", "prompt_only", "unsupported"
     ),
@@ -99,13 +112,13 @@ def validate_reasoning(
         raise AiProviderError("ai_reasoning_unsupported")
     if adapter.reasoning_style == "unsupported":
         raise AiProviderError("ai_reasoning_unsupported")
+    if mode == "enabled" and adapter.require_effort_when_enabled and effort is None:
+        raise AiProviderError("ai_reasoning_unsupported")
+    if effort is not None and effort not in adapter.reasoning_efforts:
+        raise AiProviderError("ai_reasoning_unsupported")
     if adapter.reasoning_style == "openai_effort" and mode == "disabled":
         # There is no model-independent OpenAI Chat Completions switch that
         # reliably means "disable reasoning". Do not silently fake one.
-        raise AiProviderError("ai_reasoning_unsupported")
-    if adapter.reasoning_style == "thinking" and effort is not None:
-        # Thinking effort support varies by model. Avoid a hard-coded model
-        # list and reject the unsupported local mapping explicitly.
         raise AiProviderError("ai_reasoning_unsupported")
 
 
@@ -164,7 +177,7 @@ def _request_json(
         request = url_request.Request(url, data=data, headers=headers, method=method)
         with _NO_REDIRECT_OPENER.open(
             request,
-            timeout=PROVIDER_TIMEOUT_SECONDS,  # noqa: S310 - admin-configured URL
+            timeout=settings.ai_provider_timeout_seconds,  # noqa: S310 - admin-configured URL
         ) as response:
             raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
     except url_error.HTTPError as error:
@@ -198,11 +211,12 @@ def _apply_reasoning(payload: JsonObject, setting: AiSettingDraft) -> None:
     if setting.reasoning_mode == "default":
         return
     if adapter.reasoning_style == "openai_effort":
-        # An explicit "enabled" choice must produce an actual override. When
-        # no strength was chosen, use OpenAI's conventional medium setting.
-        payload["reasoning_effort"] = setting.reasoning_effort or "medium"
+        # validate_reasoning requires an explicit supported effort here.
+        payload["reasoning_effort"] = setting.reasoning_effort
     elif adapter.reasoning_style == "thinking":
         payload["thinking"] = {"type": setting.reasoning_mode}
+        if setting.reasoning_effort is not None:
+            payload["reasoning_effort"] = setting.reasoning_effort
 
 
 def build_chat_payload(
@@ -225,19 +239,14 @@ def build_chat_payload(
 
 
 def _strip_thinking_container(content: str) -> str:
-    """Remove only an explicit leading <think>...</think> container.
-
-    Any ambiguous or unclosed tag is rejected so chain-of-thought can never
-    leak through a best-effort parser.
-    """
+    """Remove one or more complete leading ``<think>`` containers only."""
     final = content.strip()
     while final.lower().startswith("<think>"):
         closing = final.lower().find("</think>", len("<think>"))
         if closing < 0:
             raise AiProviderError("ai_response_invalid")
         final = final[closing + len("</think>") :].strip()
-    lowered = final.lower()
-    if "<think>" in lowered or "</think>" in lowered or not final:
+    if not final:
         raise AiProviderError("ai_response_invalid")
     return final
 

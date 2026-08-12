@@ -50,5 +50,15 @@ class Settings(BaseSettings):
     )
     sse_keepalive_seconds: float = Field(default=15.0, validation_alias="DLR_SSE_KEEPALIVE_SECONDS")
 
+    # M4 non-streaming Provider requests may generate a complete code Candidate.
+    # Keep the deployment override bounded so a typo cannot create an
+    # effectively immediate or unbounded network deadline.
+    ai_provider_timeout_seconds: float = Field(
+        default=180.0,
+        ge=10.0,
+        le=600.0,
+        validation_alias="DLR_AI_PROVIDER_TIMEOUT_SECONDS",
+    )
+
 
 settings = Settings()

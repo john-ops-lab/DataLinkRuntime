@@ -72,6 +72,10 @@ API Key，先创建 `token` 类型 Credential，再在 AI 设置中引用；浏�
 只看到 Credential 元数据，不会得到 token 明文。推理策略默认「跟随模型默认」，此时
 DLR 不主动发送 reasoning override。
 
+非流式 Provider HTTP 请求默认超时为 180 秒，可通过
+`DLR_AI_PROVIDER_TIMEOUT_SECONDS` 在 10～600 秒范围内调整；该参数仅控制请求 deadline，
+不新增 streaming 或输出 token 参数管理。
+
 管理员配置的模型服务会收到当前 Working Copy、非敏感运行参数、已绑定 Secret 的
 `env_key` 名称以及有限的最近对话；不会收到这些业务 Credential 的真值。所选模型 API
 Key 只作为 Provider HTTP Authorization 使用，不进入 Prompt。对话、Prompt、Provider

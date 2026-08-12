@@ -150,7 +150,8 @@ class AiModelSetting(Base):
             name="ck_ai_model_settings_reasoning_mode",
         ),
         CheckConstraint(
-            "reasoning_effort IS NULL OR reasoning_effort IN ('low', 'medium', 'high', 'max')",
+            "reasoning_effort IS NULL OR "
+            "reasoning_effort IN ('low', 'medium', 'high', 'max', 'xhigh')",
             name="ck_ai_model_settings_reasoning_effort",
         ),
     )

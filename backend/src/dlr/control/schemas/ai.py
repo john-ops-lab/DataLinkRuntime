@@ -15,7 +15,7 @@ AiProvider = Literal[
     "custom_openai_compatible",
 ]
 ReasoningMode = Literal["default", "enabled", "disabled"]
-ReasoningEffort = Literal["low", "medium", "high", "max"]
+ReasoningEffort = Literal["low", "medium", "high", "max", "xhigh"]
 
 
 class _StrictSchema(BaseModel):

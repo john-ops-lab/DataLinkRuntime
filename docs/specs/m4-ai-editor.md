@@ -31,7 +31,7 @@ M4 只维护一条全局活动 AI 模型设置：
 | model | 管理员明确选择或手工输入的 Model ID；不自动升级 |
 | credential_id | 可空；非空时必须引用 `token` Credential |
 | reasoning_mode | `default / enabled / disabled`，默认 `default` |
-| reasoning_effort | 可空；`low / medium / high / max` |
+| reasoning_effort | 可空；Provider 支持集的并集为 `low / medium / high / xhigh / max` |
 | created_at / updated_at | 设置时间戳 |
 
 API Key 不进入设置表。Control 调用 Provider 时才在内存中解密所引用 Credential 的
@@ -147,8 +147,8 @@ Control 都必须执行本地 Schema Validation；禁止用正则截代码、猜
 
 | Provider | Structured output | 显式 reasoning 映射 |
 |---|---|---|
-| openai | `json_object` | `enabled` → `reasoning_effort`（未选强度时 medium）；通用 Chat Completions 无可靠 disabled，故拒绝 |
-| deepseek | `json_object` | `thinking.type=enabled/disabled`；不映射 effort |
+| openai | `json_object` | `enabled` 必须显式选择 `low / medium / high / xhigh` 并映射为 `reasoning_effort`；不支持 `max`，且通用 Chat Completions 无可靠 disabled，故拒绝 |
+| deepseek | `json_object` | `thinking.type=enabled/disabled`；enabled 时可显式发送 `reasoning_effort=high/max` |
 | kimi | `json_object` | `thinking.type=enabled/disabled`；不映射 effort |
 | minimax | prompt-only JSON | 始终加 `reasoning_split=true` 仅用于 final/reasoning 分离；显式开关/effort 拒绝 |
 | custom_openai_compatible | prompt-only JSON | 显式开关/effort 拒绝 |
@@ -160,13 +160,20 @@ JSON object，而 OpenAI strict schema 要求所有 object 都是 closed object�
 schema 会错误收窄运行参数合同。因此 OpenAI 使用 JSON mode，最终结果仍统一经过 DLR
 本地 `AiModelOutput` 严格校验。
 
-`reasoning_mode=default` 时不发送 reasoning override。管理员显式选择的 reasoning 配置
-若当前 Provider 不支持，返回 `ai_reasoning_unsupported`，不得静默忽略。
+`reasoning_mode=default` 时不发送 reasoning override。OpenAI 选择 `enabled` 但未指定 effort
+也返回 `ai_reasoning_unsupported`，不得由 DLR 擅自补 `medium`。管理员显式选择的 reasoning
+配置若当前 Provider 不支持，返回 `ai_reasoning_unsupported`，不得静默忽略。Web 根据上述
+Provider 级能力动态展示 effort，不维护脆弱的 model allowlist。
+
+Provider HTTP 使用统一、有界的部署参数 `DLR_AI_PROVIDER_TIMEOUT_SECONDS`，默认 180 秒，
+允许 10～600 秒。该 deadline 适用于 models / connection test / assist；M4 仍保持非流式，
+也不新增输出 token 参数 UI、后台任务或队列。
 
 Provider Adapter 只向上层交付 `final_text`：
 
 - `reasoning_content / reasoning_details` 丢弃；
-- Provider 明确的 thinking 容器按其确定规则去除；
+- 只剥离 final text 开头一个或多个明确闭合的 `<think>...</think>` 容器；进入最终 JSON
+  文档后不再扫描 Candidate 内部字符串，代码或配置中的合法 `<think>` 字面量允许保留；
 - 只有明确 `finish_reason=stop` 的完整回答才接受，截断或过滤的回答整次拒绝；
 - reasoning 不返回浏览器、不保存、不记录、不进入下一轮；
 - final answer 无法可靠分离时返回 `ai_response_invalid`。

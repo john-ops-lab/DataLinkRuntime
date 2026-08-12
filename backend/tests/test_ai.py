@@ -7,9 +7,11 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from dlr.common.config import Settings, settings
 from dlr.control.ai import providers
 from dlr.control.models import AdapterVersion, AiModelSetting, Execution
 from dlr.control.schemas.ai import AiSettingDraft
@@ -104,6 +106,33 @@ def assist_body(code: str = "def handle(context, input):\n    return input\n") -
     }
 
 
+def test_ai_provider_timeout_settings_default_and_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DLR_AI_PROVIDER_TIMEOUT_SECONDS", raising=False)
+    assert Settings().ai_provider_timeout_seconds == 180.0
+
+    monkeypatch.setenv("DLR_AI_PROVIDER_TIMEOUT_SECONDS", "247.5")
+    assert Settings().ai_provider_timeout_seconds == 247.5
+
+
+@pytest.mark.parametrize("value", [10.0, 600.0])
+def test_ai_provider_timeout_settings_accept_boundaries(
+    monkeypatch: pytest.MonkeyPatch, value: float
+) -> None:
+    monkeypatch.setenv("DLR_AI_PROVIDER_TIMEOUT_SECONDS", str(value))
+    assert Settings().ai_provider_timeout_seconds == value
+
+
+@pytest.mark.parametrize("value", [9.99, 600.01])
+def test_ai_provider_timeout_settings_reject_out_of_bounds(
+    monkeypatch: pytest.MonkeyPatch, value: float
+) -> None:
+    monkeypatch.setenv("DLR_AI_PROVIDER_TIMEOUT_SECONDS", str(value))
+    with pytest.raises(ValidationError):
+        Settings()
+
+
 def test_ai_setting_singleton_crud_never_echoes_api_key(
     api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
@@ -160,13 +189,34 @@ def test_ai_setting_credential_is_nullable_and_token_only(api_client: TestClient
 
 
 @pytest.mark.parametrize(
+    ("provider", "effort"),
+    [("openai", "xhigh"), ("deepseek", "max")],
+)
+def test_supported_provider_efforts_are_persisted(
+    api_client: TestClient, provider: Any, effort: Any
+) -> None:
+    saved = configure(
+        api_client,
+        provider=provider,
+        reasoning_mode="enabled",
+        reasoning_effort=effort,
+    )
+    assert saved["reasoning_effort"] == effort
+    assert api_client.get("/api/ai/settings").json()["reasoning_effort"] == effort
+
+
+@pytest.mark.parametrize(
     ("provider", "message_extras", "content"),
     [
         ("openai", {"reasoning_content": "OPENAI-THOUGHT"}, "FINAL"),
         ("deepseek", {"reasoning_content": "DEEPSEEK-THOUGHT"}, "FINAL"),
         ("kimi", {"reasoning_content": "KIMI-THOUGHT"}, "FINAL"),
         ("minimax", {"reasoning_details": [{"text": "MINIMAX-THOUGHT"}]}, "FINAL"),
-        ("custom_openai_compatible", {}, "<think>CUSTOM-THOUGHT</think>\nFINAL"),
+        (
+            "custom_openai_compatible",
+            {},
+            "<think>CUSTOM-THOUGHT-1</think>\n<THINK>CUSTOM-THOUGHT-2</THINK>\nFINAL",
+        ),
     ],
 )
 def test_provider_fixtures_normalize_final_text_without_reasoning(
@@ -181,7 +231,6 @@ def test_provider_fixtures_normalize_final_text_without_reasoning(
     [
         {"choices": [{"message": {"reasoning_content": "only thought"}}]},
         {"choices": [{"message": {"content": "<think>unclosed"}}]},
-        {"choices": [{"message": {"content": "prefix <think>ambiguous</think> FINAL"}}]},
     ],
 )
 def test_provider_rejects_ambiguous_or_missing_final_answer(response: object) -> None:
@@ -212,22 +261,69 @@ def test_reasoning_default_sends_no_enable_disable_override(provider: Any) -> No
     assert (payload.get("reasoning_split") is True) == (provider == "minimax")
 
 
-def test_reasoning_mapping_and_explicit_unsupported_are_not_silent() -> None:
-    openai = AiSettingDraft(
-        **setting_payload(provider="openai", reasoning_mode="enabled", reasoning_effort="high")
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh"])
+def test_openai_sends_only_supported_explicit_efforts(effort: Any) -> None:
+    draft = AiSettingDraft(
+        **setting_payload(provider="openai", reasoning_mode="enabled", reasoning_effort=effort)
     )
-    openai_payload = providers.build_chat_payload(openai, [], structured=False)
-    assert openai_payload["reasoning_effort"] == "high"
+    payload = providers.build_chat_payload(draft, [], structured=False)
+    assert payload["reasoning_effort"] == effort
+    assert "thinking" not in payload
 
-    deepseek = AiSettingDraft(**setting_payload(provider="deepseek", reasoning_mode="disabled"))
-    deepseek_payload = providers.build_chat_payload(deepseek, [], structured=False)
-    assert deepseek_payload["thinking"] == {"type": "disabled"}
 
-    unsupported = AiSettingDraft(
-        **setting_payload(provider="custom_openai_compatible", reasoning_mode="enabled")
+@pytest.mark.parametrize("effort", [None, "max"])
+def test_openai_rejects_enabled_without_supported_explicit_effort(effort: Any) -> None:
+    draft = AiSettingDraft(
+        **setting_payload(provider="openai", reasoning_mode="enabled", reasoning_effort=effort)
     )
     with pytest.raises(providers.AiProviderError) as error:
-        providers.build_chat_payload(unsupported, [], structured=False)
+        providers.build_chat_payload(draft, [], structured=False)
+    assert error.value.code == "ai_reasoning_unsupported"
+
+
+@pytest.mark.parametrize("effort", ["high", "max"])
+def test_deepseek_sends_thinking_and_supported_effort_together(effort: Any) -> None:
+    draft = AiSettingDraft(
+        **setting_payload(provider="deepseek", reasoning_mode="enabled", reasoning_effort=effort)
+    )
+    payload = providers.build_chat_payload(draft, [], structured=False)
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["reasoning_effort"] == effort
+
+
+def test_thinking_providers_map_explicit_mode_without_inventing_effort() -> None:
+    deepseek = AiSettingDraft(**setting_payload(provider="deepseek", reasoning_mode="disabled"))
+    assert providers.build_chat_payload(deepseek, [], structured=False)["thinking"] == {
+        "type": "disabled"
+    }
+
+    kimi = AiSettingDraft(**setting_payload(provider="kimi", reasoning_mode="enabled"))
+    kimi_payload = providers.build_chat_payload(kimi, [], structured=False)
+    assert kimi_payload["thinking"] == {"type": "enabled"}
+    assert "reasoning_effort" not in kimi_payload
+
+
+@pytest.mark.parametrize(
+    ("provider", "mode", "effort"),
+    [
+        ("deepseek", "enabled", "low"),
+        ("deepseek", "enabled", "xhigh"),
+        ("kimi", "enabled", "high"),
+        ("kimi", "enabled", "max"),
+        ("minimax", "enabled", None),
+        ("minimax", "default", "high"),
+        ("custom_openai_compatible", "enabled", None),
+        ("custom_openai_compatible", "default", "high"),
+    ],
+)
+def test_provider_reasoning_capabilities_reject_unsupported_choices(
+    provider: Any, mode: Any, effort: Any
+) -> None:
+    draft = AiSettingDraft(
+        **setting_payload(provider=provider, reasoning_mode=mode, reasoning_effort=effort)
+    )
+    with pytest.raises(providers.AiProviderError) as error:
+        providers.build_chat_payload(draft, [], structured=False)
     assert error.value.code == "ai_reasoning_unsupported"
 
 
@@ -339,6 +435,36 @@ def test_provider_http_envelope_uses_strict_bounded_json_parser(
             not_found_code="ai_provider_unreachable",
         )
     assert error.value.code == "ai_response_invalid"
+
+
+def test_provider_http_open_uses_configured_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened_with: list[float] = []
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def read(self, _limit: int) -> bytes:
+            return b"{}"
+
+    class FakeOpener:
+        def open(self, _request: object, *, timeout: float) -> FakeResponse:
+            opened_with.append(timeout)
+            return FakeResponse()
+
+    monkeypatch.setattr(settings, "ai_provider_timeout_seconds", 247.5)
+    monkeypatch.setattr(providers, "_NO_REDIRECT_OPENER", FakeOpener())
+    response = providers._request_json(
+        "GET",
+        "http://fake-provider.invalid/v1/models",
+        {},
+        not_found_code="ai_provider_unreachable",
+    )
+    assert response == {}
+    assert opened_with == [247.5]
 
 
 def test_models_refresh_normalizes_ids_and_failure_keeps_manual_model(
@@ -608,6 +734,22 @@ def test_assist_can_answer_without_candidate(
     assert response.json()["candidate"] is None
 
 
+def test_assist_accepts_candidate_code_containing_literal_think_tags(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = create_adapter(api_client, "literal-think-code")
+    configure(api_client)
+    code = 'def handle(context, input):\n    return "<think>literal</think>"\n'
+
+    def fake_request(*_: object, **__: object) -> object:
+        return fake_chat_response(valid_output(code))
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+    assert response.status_code == 200, response.text
+    assert response.json()["candidate"]["code"] == code
+
+
 @pytest.mark.parametrize("leak_field", ["message", "summary", "code"])
 def test_assist_rejects_provider_api_key_reflection_anywhere_visible(
     api_client: TestClient,
@@ -862,8 +1004,19 @@ def test_assist_provider_failures_have_stable_sanitized_codes(
     assert BUSINESS_SECRET not in response.text
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        setting_payload(provider="openai", reasoning_mode="enabled"),
+        setting_payload(provider="openai", reasoning_mode="enabled", reasoning_effort="max"),
+        setting_payload(provider="deepseek", reasoning_mode="enabled", reasoning_effort="xhigh"),
+        setting_payload(provider="kimi", reasoning_mode="enabled", reasoning_effort="high"),
+        setting_payload(provider="minimax", reasoning_mode="enabled"),
+        setting_payload(reasoning_mode="default", reasoning_effort="high"),
+    ],
+)
 def test_unsupported_reasoning_is_rejected_before_any_provider_call(
-    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]
 ) -> None:
     called = False
 
@@ -873,10 +1026,7 @@ def test_unsupported_reasoning_is_rejected_before_any_provider_call(
         return {}
 
     monkeypatch.setattr(providers, "_request_json", should_not_call)
-    response = api_client.put(
-        "/api/ai/settings",
-        json=setting_payload(reasoning_mode="enabled"),
-    )
+    response = api_client.post("/api/ai/settings/test", json=payload)
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "ai_reasoning_unsupported"
     assert called is False

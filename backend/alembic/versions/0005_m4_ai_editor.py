@@ -58,7 +58,8 @@ def upgrade() -> None:
             name="ck_ai_model_settings_reasoning_mode",
         ),
         sa.CheckConstraint(
-            "reasoning_effort IS NULL OR reasoning_effort IN ('low', 'medium', 'high', 'max')",
+            "reasoning_effort IS NULL OR "
+            "reasoning_effort IN ('low', 'medium', 'high', 'max', 'xhigh')",
             name="ck_ai_model_settings_reasoning_effort",
         ),
         sa.ForeignKeyConstraint(["credential_id"], ["credentials.id"], ondelete="SET NULL"),
