@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     admin_token: str | None = Field(default=None, validation_alias="DLR_ADMIN_TOKEN")
     worker_token: str | None = Field(default=None, validation_alias="DLR_WORKER_TOKEN")
 
+    # M3.2 Secret Store: deployment-level Master Key used to derive the
+    # Fernet encryption key for credentials. Never persisted, never logged.
+    # When unset, the credential APIs answer 503 instead of storing
+    # unencrypted secrets.
+    master_key: str | None = Field(default=None, validation_alias="DLR_MASTER_KEY")
+
     # Big-field limits in UTF-8 bytes; see docs/specs/m2-execution-loop.md §5.
     execution_input_max_bytes: int = Field(
         default=512 * 1024, validation_alias="DLR_EXECUTION_INPUT_MAX_BYTES"

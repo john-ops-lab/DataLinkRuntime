@@ -26,7 +26,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -68,33 +68,46 @@ class RuntimeSettings:
     pypi_index_url: str | None = None
 
 
-def child_env() -> dict[str, str]:
-    """Environment for the adapter subprocess (see module docstring)."""
+def child_env(secrets: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Environment for the adapter subprocess (see module docstring).
+
+    M3.2: bound credentials arrive as ``secrets`` (env_key -> value) and are
+    injected as ``DLR_SECRET_<env_key>`` alongside the inherited
+    ``DLR_SECRET_*`` platform variables, which stay as the compatibility
+    path. Payload values win on key collisions.
+    """
     env = {key: os.environ[key] for key in _INHERITED_ENV_KEYS if key in os.environ}
     for key, value in os.environ.items():
         if key.startswith("DLR_SECRET_"):
             env[key] = value
+    if secrets:
+        for env_key, value in secrets.items():
+            env[f"DLR_SECRET_{env_key}"] = value
     return env
 
 
-def redact_secrets(text: str) -> str:
-    """Best-effort masking of current DLR_SECRET_* plaintext values."""
-    for key, value in os.environ.items():
-        if key.startswith("DLR_SECRET_") and value:
+def _env_secret_values() -> list[str]:
+    """Non-empty DLR_SECRET_* values from the Worker environment."""
+    return [value for key, value in os.environ.items() if key.startswith("DLR_SECRET_") and value]
+
+
+def redact_secrets(text: str, secret_values: Iterable[str] | None = None) -> str:
+    """Best-effort masking of secret plaintext values.
+
+    Without an explicit value list the current DLR_SECRET_* environment
+    values are used (compatibility path); run() passes the union of those
+    and the payload-bound secrets so every known value is masked.
+    """
+    values = _env_secret_values() if secret_values is None else secret_values
+    for value in values:
+        if value:
             text = text.replace(value, REDACTED)
     return text
 
 
-def _max_secret_length() -> int:
-    """Length of the longest configured DLR_SECRET_* value (0 when none)."""
-    return max(
-        (
-            len(value)
-            for key, value in os.environ.items()
-            if key.startswith("DLR_SECRET_") and value
-        ),
-        default=0,
-    )
+def _max_secret_length(secret_values: Iterable[str]) -> int:
+    """Length of the longest secret value (0 when none)."""
+    return max((len(value) for value in secret_values if value), default=0)
 
 
 class _SecretHoldback:
@@ -108,24 +121,25 @@ class _SecretHoldback:
     Secret. The remainder is flushed once the subprocess exits.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, secret_values: Iterable[str] | None = None) -> None:
+        self._secret_values = _env_secret_values() if secret_values is None else list(secret_values)
         self._held = ""
-        self._hold = max(_max_secret_length() - 1, 0)
+        self._hold = max(_max_secret_length(self._secret_values) - 1, 0)
 
     def push(self, text: str) -> str:
-        redacted = redact_secrets(self._held + text)
+        redacted = redact_secrets(self._held + text, self._secret_values)
         keep = min(self._hold, len(redacted))
         self._held = redacted[len(redacted) - keep :]
         return redacted[: len(redacted) - keep]
 
     def flush(self) -> str:
-        text = redact_secrets(self._held)
+        text = redact_secrets(self._held, self._secret_values)
         self._held = ""
         return text
 
 
-def _redact_json_value(value: Any) -> Any:
-    """Recursively redact DLR_SECRET_* plaintext values from a JSON structure.
+def _redact_json_value(value: Any, secret_values: Iterable[str]) -> Any:
+    """Recursively redact secret plaintext values from a JSON structure.
 
     Strings are scanned for each secret value and replaced with [REDACTED].
     Dicts and lists are traversed recursively; dict string keys are redacted
@@ -133,14 +147,16 @@ def _redact_json_value(value: Any) -> Any:
     Other types are returned as-is.
     """
     if isinstance(value, str):
-        return redact_secrets(value)
+        return redact_secrets(value, secret_values)
     if isinstance(value, dict):
         return {
-            redact_secrets(k) if isinstance(k, str) else k: _redact_json_value(v)
+            redact_secrets(k, secret_values) if isinstance(k, str) else k: _redact_json_value(
+                v, secret_values
+            )
             for k, v in value.items()
         }
     if isinstance(value, list):
-        return [_redact_json_value(item) for item in value]
+        return [_redact_json_value(item, secret_values) for item in value]
     return value
 
 
@@ -273,6 +289,7 @@ def _wait_with_progress(
     stderr_path: Path,
     timeout: int,
     progress_callback: ProgressCallback | None,
+    secret_values: Iterable[str] = (),
 ) -> tuple[int, bool, bool]:
     """Wait for the adapter subprocess, uploading live log chunks.
 
@@ -293,8 +310,8 @@ def _wait_with_progress(
     deadline = time.monotonic() + timeout
     stdout_tailer = _StreamTailer(stdout_path)
     stderr_tailer = _StreamTailer(stderr_path)
-    stdout_guard = _SecretHoldback()
-    stderr_guard = _SecretHoldback()
+    stdout_guard = _SecretHoldback(secret_values)
+    stderr_guard = _SecretHoldback(secret_values)
     uploader = _ProgressUploader(progress_callback)
 
     def emit(final: bool = False) -> None:
@@ -352,6 +369,13 @@ def run(
     version_id = int(payload["version_id"])
     timeout = int(payload.get("execution_timeout_seconds") or config.execution_timeout_seconds)
 
+    # M3.2: bound credentials from the TaskPayload, injected as DLR_SECRET_*
+    # and added to the redaction set alongside the platform DLR_SECRET_*.
+    payload_secrets: dict[str, str] = {
+        str(env_key): str(value) for env_key, value in (payload.get("secrets") or {}).items()
+    }
+    secret_values = _env_secret_values() + [value for value in payload_secrets.values() if value]
+
     try:
         python_path = venv_manager.prepare_version_venv(
             config.runtime_root,
@@ -365,9 +389,9 @@ def run(
         stderr, stderr_truncated = _cap_stream(error.install_log.encode())
         return {
             "status": "failed",
-            "error": redact_secrets(f"dependency preparation failed: {error}"),
+            "error": redact_secrets(f"dependency preparation failed: {error}", secret_values),
             "stdout": "",
-            "stderr": redact_secrets(stderr),
+            "stderr": redact_secrets(stderr, secret_values),
             "stderr_truncated": stderr_truncated,
         }
 
@@ -393,11 +417,11 @@ def run(
                 stdout=out_file,
                 stderr=err_file,
                 start_new_session=True,
-                env=child_env(),
+                env=child_env(payload_secrets),
                 cwd=str(workspace),
             )
             returncode, timed_out, cancelled = _wait_with_progress(
-                process, stdout_path, stderr_path, timeout, progress_callback
+                process, stdout_path, stderr_path, timeout, progress_callback, secret_values
             )
 
         stdout_raw = stdout_path.read_bytes()
@@ -411,9 +435,9 @@ def run(
     stdout, stdout_truncated = _cap_stream(stdout_raw)
     stderr, stderr_truncated = _cap_stream(stderr_raw)
     base: dict[str, Any] = {
-        "stdout": redact_secrets(stdout),
+        "stdout": redact_secrets(stdout, secret_values),
         "stdout_truncated": stdout_truncated,
-        "stderr": redact_secrets(stderr),
+        "stderr": redact_secrets(stderr, secret_values),
         "stderr_truncated": stderr_truncated,
     }
 
@@ -422,12 +446,14 @@ def run(
     if timed_out:
         return base | {
             "status": "timeout",
-            "error": redact_secrets(f"execution timed out after {timeout}s"),
+            "error": redact_secrets(f"execution timed out after {timeout}s", secret_values),
         }
     if returncode != 0:
         return base | {
             "status": "failed",
-            "error": redact_secrets(f"adapter process exited with code {returncode}"),
+            "error": redact_secrets(
+                f"adapter process exited with code {returncode}", secret_values
+            ),
         }
     if output_raw is None:
         return base | {"status": "failed", "error": "adapter produced no output.json"}
@@ -435,11 +461,14 @@ def run(
     try:
         output_value = json.loads(output_raw)
     except ValueError as error:
-        return base | {"status": "failed", "error": redact_secrets(f"invalid output.json: {error}")}
+        return base | {
+            "status": "failed",
+            "error": redact_secrets(f"invalid output.json: {error}", secret_values),
+        }
 
     # Redact secrets from the output structure before size calculation so the
     # stored size/preview semantics stay consistent with the redacted form.
-    output_value = _redact_json_value(output_value)
+    output_value = _redact_json_value(output_value, secret_values)
 
     serialized = json.dumps(output_value, separators=(",", ":"), ensure_ascii=False).encode()
     if len(serialized) <= settings.execution_output_max_bytes:
@@ -456,5 +485,5 @@ def run(
         "status": "succeeded",
         "output_truncated": True,
         "output_size": len(serialized),
-        "output_preview": redact_secrets(preview),
+        "output_preview": redact_secrets(preview, secret_values),
     }
