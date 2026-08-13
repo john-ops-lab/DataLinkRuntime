@@ -1,7 +1,7 @@
 /** One global active AI model setting (M4); Credential values never enter this component. */
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Button, Input, Select, Space, Spin, Typography } from "antd";
+import { Alert, Button, Collapse, Input, Select, Space, Spin, Typography } from "antd";
 
 import { ApiError, api } from "../api";
 import type {
@@ -99,11 +99,20 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const [testing, setTesting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const reasoningEfforts = supportedReasoningEfforts(form.provider, form.reasoning_mode);
+  const actionBusy = saving || refreshingModels || testing;
+
+  function editForm(updater: (current: AiModelSettingDraft) => AiModelSettingDraft) {
+    setPanelError(null);
+    setNotice(null);
+    setForm(updater);
+  }
 
   const fail = useCallback(
     (message: string) => {
       setPanelError(message);
+      setNotice(null);
       onError(message);
     },
     [onError],
@@ -117,7 +126,9 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     ]);
 
     if (settingResult.status === "fulfilled") {
-      setForm(normalizeSetting(settingResult.value));
+      const normalized = normalizeSetting(settingResult.value);
+      setForm(normalized);
+      setAdvancedOpen(normalized.reasoning_mode !== "default");
     } else if (
       !(settingResult.reason instanceof ApiError) ||
       settingResult.reason.code !== "ai_not_configured"
@@ -169,14 +180,17 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   }
 
   async function handleRefreshModels() {
+    if (actionBusy) {
+      return;
+    }
+    setPanelError(null);
+    setNotice(null);
     const baseUrl = form.base_url.trim();
     if (baseUrl === "") {
       fail("刷新模型前请填写 Base URL");
       return;
     }
     setRefreshingModels(true);
-    setPanelError(null);
-    setNotice(null);
     try {
       const response = await api.refreshAiModels({
         provider: form.provider,
@@ -193,13 +207,16 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   }
 
   async function handleSave() {
+    if (actionBusy) {
+      return;
+    }
+    setPanelError(null);
+    setNotice(null);
     const payload = currentPayload();
-    if (payload === null || saving) {
+    if (payload === null) {
       return;
     }
     setSaving(true);
-    setPanelError(null);
-    setNotice(null);
     try {
       const saved = await api.updateAiSetting(payload);
       setForm(normalizeSetting(saved));
@@ -212,13 +229,16 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   }
 
   async function handleTest() {
+    if (actionBusy) {
+      return;
+    }
+    setPanelError(null);
+    setNotice(null);
     const payload = currentPayload();
-    if (payload === null || testing) {
+    if (payload === null) {
       return;
     }
     setTesting(true);
-    setPanelError(null);
-    setNotice(null);
     try {
       const result = await api.testAiSetting(payload);
       if (result.ok) {
@@ -251,10 +271,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         <span>Provider</span>
         <Select<AiProvider>
           data-testid="ai-provider"
+          disabled={actionBusy}
           value={form.provider}
           options={PROVIDER_OPTIONS}
           onChange={(provider) =>
-            setForm((current) => ({
+            editForm((current) => ({
               ...current,
               provider,
               reasoning_effort: normalizeReasoningEffort(
@@ -271,10 +292,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         <span>Base URL</span>
         <Input
           data-testid="ai-base-url"
+          disabled={actionBusy}
           placeholder="https://api.example.com"
           value={form.base_url}
           onChange={(event) =>
-            setForm((current) => ({ ...current, base_url: event.target.value }))
+            editForm((current) => ({ ...current, base_url: event.target.value }))
           }
         />
         <Typography.Text type="secondary">
@@ -286,6 +308,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         <span>API Key Credential（可选，仅 token 类型）</span>
         <Select<number>
           data-testid="ai-credential"
+          disabled={actionBusy}
           allowClear
           placeholder="无鉴权 / 选择 token Credential"
           value={form.credential_id ?? undefined}
@@ -294,7 +317,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
             value: credential.id,
           }))}
           onChange={(credentialId) =>
-            setForm((current) => ({ ...current, credential_id: credentialId ?? null }))
+            editForm((current) => ({ ...current, credential_id: credentialId ?? null }))
           }
         />
       </label>
@@ -303,10 +326,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         <span>Model ID</span>
         <Input
           data-testid="ai-model-input"
+          disabled={actionBusy}
           list="ai-model-suggestions"
           placeholder="可从模型列表选择，也可手工输入"
           value={form.model}
-          onChange={(event) => setForm((current) => ({ ...current, model: event.target.value }))}
+          onChange={(event) => editForm((current) => ({ ...current, model: event.target.value }))}
         />
         <datalist id="ai-model-suggestions" data-testid="ai-model-suggestions">
           {modelOptions.map((model) => (
@@ -319,6 +343,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         <Button
           data-testid="ai-refresh-models"
           loading={refreshingModels}
+          disabled={actionBusy}
           onClick={() => void handleRefreshModels()}
         >
           刷新模型
@@ -328,51 +353,81 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         </Typography.Text>
       </Space>
 
-      <label className="settings-field">
-        <span>推理策略</span>
-        <Select<AiReasoningMode>
-          data-testid="ai-reasoning-mode"
-          value={form.reasoning_mode}
-          options={[
-            { label: "跟随模型默认", value: "default" },
-            { label: "开启推理", value: "enabled" },
-            { label: "关闭推理", value: "disabled" },
-          ]}
-          onChange={(reasoningMode) =>
-            setForm((current) => ({
-              ...current,
-              reasoning_mode: reasoningMode,
-              reasoning_effort: normalizeReasoningEffort(
-                current.provider,
-                reasoningMode,
-                current.reasoning_effort,
-              ),
-            }))
-          }
-        />
-      </label>
+      <Collapse
+        ghost
+        size="small"
+        collapsible={actionBusy ? "disabled" : "header"}
+        activeKey={advancedOpen ? ["reasoning"] : []}
+        onChange={(key) =>
+          setAdvancedOpen(Array.isArray(key) ? key.includes("reasoning") : key === "reasoning")
+        }
+        items={[
+          {
+            key: "reasoning",
+            label: `高级：推理策略（${
+              form.reasoning_mode === "default"
+                ? "跟随模型默认"
+                : form.reasoning_mode === "enabled"
+                  ? "开启"
+                  : "关闭"
+            }）`,
+            children: (
+              <div className="settings-advanced">
+                <label className="settings-field">
+                  <span>推理策略</span>
+                  <Select<AiReasoningMode>
+                    data-testid="ai-reasoning-mode"
+                    disabled={actionBusy}
+                    value={form.reasoning_mode}
+                    options={[
+                      { label: "跟随模型默认", value: "default" },
+                      { label: "开启推理", value: "enabled" },
+                      { label: "关闭推理", value: "disabled" },
+                    ]}
+                    onChange={(reasoningMode) =>
+                      editForm((current) => ({
+                        ...current,
+                        reasoning_mode: reasoningMode,
+                        reasoning_effort: normalizeReasoningEffort(
+                          current.provider,
+                          reasoningMode,
+                          current.reasoning_effort,
+                        ),
+                      }))
+                    }
+                  />
+                </label>
 
-      {reasoningEfforts.length > 0 && (
-        <label className="settings-field">
-          <span>{form.provider === "openai" ? "推理强度" : "推理强度（可选）"}</span>
-          <Select<AiReasoningEffort>
-            data-testid="ai-reasoning-effort"
-            allowClear={form.provider !== "openai"}
-            placeholder={
-              form.provider === "openai" ? "请选择推理强度" : "不覆盖模型默认强度"
-            }
-            value={form.reasoning_effort ?? undefined}
-            options={reasoningEfforts.map((effort) => ({ label: effort, value: effort }))}
-            onChange={(reasoningEffort) =>
-              setForm((current) => ({ ...current, reasoning_effort: reasoningEffort ?? null }))
-            }
-          />
-        </label>
-      )}
+                {reasoningEfforts.length > 0 && (
+                  <label className="settings-field">
+                    <span>{form.provider === "openai" ? "推理强度" : "推理强度（可选）"}</span>
+                    <Select<AiReasoningEffort>
+                      data-testid="ai-reasoning-effort"
+                      disabled={actionBusy}
+                      allowClear={form.provider !== "openai"}
+                      placeholder={
+                        form.provider === "openai" ? "请选择推理强度" : "不覆盖模型默认强度"
+                      }
+                      value={form.reasoning_effort ?? undefined}
+                      options={reasoningEfforts.map((effort) => ({ label: effort, value: effort }))}
+                      onChange={(reasoningEffort) =>
+                        editForm((current) => ({
+                          ...current,
+                          reasoning_effort: reasoningEffort ?? null,
+                        }))
+                      }
+                    />
+                  </label>
+                )}
 
-      <Typography.Text type="secondary">
-        “跟随模型默认”不会主动发送 reasoning 开关。显式配置若不受支持，服务端会返回 ai_reasoning_unsupported，不会静默忽略。
-      </Typography.Text>
+                <Typography.Text type="secondary">
+                  “跟随模型默认”不会主动发送 reasoning 开关。显式配置若不受支持，服务端会返回 ai_reasoning_unsupported，不会静默忽略。
+                </Typography.Text>
+              </div>
+            ),
+          },
+        ]}
+      />
 
       {panelError !== null && (
         <p className="settings-panel-error" role="alert" data-testid="ai-settings-error">
@@ -380,7 +435,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         </p>
       )}
       {notice !== null && (
-        <p className="settings-panel-success" data-testid="ai-settings-notice">
+        <p className="settings-panel-success" role="status" data-testid="ai-settings-notice">
           {notice}
         </p>
       )}
@@ -389,6 +444,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         <Button
           data-testid="ai-test-connection"
           loading={testing}
+          disabled={actionBusy}
           onClick={() => void handleTest()}
         >
           测试连接
@@ -397,6 +453,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           type="primary"
           data-testid="ai-save-settings"
           loading={saving}
+          disabled={actionBusy}
           onClick={() => void handleSave()}
         >
           保存

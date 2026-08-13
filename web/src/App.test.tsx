@@ -8,6 +8,7 @@ import App, {
 import { setAuthToken } from "./api";
 import { FALLBACK_POLICY } from "./fallback-policy";
 import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
+import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   Adapter,
   AiAssistResponse,
@@ -214,6 +215,7 @@ afterEach(() => {
   FALLBACK_POLICY.pollIntervalMs = 3000;
   FALLBACK_POLICY.maxPolls = 60;
   PRODUCTION_REFRESH_POLICY.pollIntervalMs = 3000;
+  WORKER_REFRESH_POLICY.pollIntervalMs = 30_000;
 });
 
 // --- Admin token auth (M2) -----------------------------------------------------
@@ -371,6 +373,101 @@ it("loads the adapter list", async () => {
   });
 });
 
+it("keeps normal Catalog rows quiet, highlights exceptions, and searches descriptions", async () => {
+  const normal = makeAdapter({
+    id: 1,
+    name: "orders-sync",
+    description: "同步订单与账单",
+    language: "javascript",
+    published_version_id: 30,
+    published_version_seq: 3,
+    production_worker_id: 1,
+    production_state: "running",
+    running_execution_id: 90,
+    running_version_id: 30,
+    running_version_seq: 3,
+  });
+  const abnormal = makeAdapter({
+    id: 2,
+    name: "nightly-import",
+    description: "夜间失败数据导入",
+    published_version_id: 20,
+    published_version_seq: 2,
+    production_worker_id: 2,
+    production_state: "running",
+    running_execution_id: null,
+    last_production_execution_id: 91,
+    last_production_execution_status: "failed",
+    last_production_version_id: 20,
+    last_production_version_seq: 2,
+  });
+  const stopping = makeAdapter({
+    id: 3,
+    name: "stopping-export",
+    description: "停止中的长任务",
+    published_version_id: 30,
+    published_version_seq: 3,
+    production_worker_id: 1,
+    production_state: "stopped",
+    running_execution_id: 92,
+    running_version_id: 30,
+    running_version_seq: 3,
+  });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [normal, abnormal, stopping] }),
+    },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          { id: 1, name: "worker-main", status: "online", last_heartbeat: "", capabilities: ["javascript"] },
+          { id: 2, name: "worker-backup", status: "offline", last_heartbeat: "", capabilities: ["python"] },
+        ],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [] }) },
+  ]);
+
+  render(<App />);
+  const rows = await screen.findAllByTestId("adapter-item");
+  expect(rows[0].querySelector(".catalog-item-sub")?.textContent).toBe(
+    "JavaScript · 生产运行 v3",
+  );
+  expect(rows[0].querySelector(".catalog-item-sub")?.textContent).not.toContain("worker-main");
+  expect(rows[0].getAttribute("title")).toContain("同步订单与账单");
+  await waitFor(() => {
+    expect(rows[0].getAttribute("title")).toContain("Worker worker-main");
+    expect(rows[1].querySelector(".catalog-item-sub")?.textContent).toContain("Worker 离线");
+    expect(rows[1].querySelector(".catalog-item-sub")?.textContent).toContain("状态异常");
+  });
+  expect(rows[1].querySelector(".catalog-item-attention")).not.toBeNull();
+  expect(rows[2].querySelector(".catalog-item-sub")?.textContent).toContain("停止中 v3");
+  expect(rows[2].querySelector(".catalog-item-sub")?.textContent).toContain(
+    "等待 Execution #92 完成",
+  );
+  expect(
+    fetchMock.mock.calls.filter(([url]) => String(url) === "/api/workers"),
+  ).toHaveLength(1);
+
+  fireEvent.change(screen.getByTestId("adapter-search"), {
+    target: { value: "失败数据" },
+  });
+  const [descriptionMatch] = screen.getAllByTestId("adapter-item");
+  expect(descriptionMatch.querySelector(".catalog-item-name")?.textContent).toContain(
+    "nightly-import",
+  );
+  fireEvent.click(descriptionMatch);
+  const abnormalAlert = await screen.findByTestId("production-abnormal");
+  expect(abnormalAlert.textContent).toContain("Execution #91");
+  expect(abnormalAlert.textContent).toContain("先 Stop 关闭当前生产入口");
+  expect(abnormalAlert.textContent).toContain("如需恢复再 Start");
+});
+
 it("creates an adapter and selects it", async () => {
   const adapters: Adapter[] = [];
   const fetchMock = stubFetch([
@@ -409,6 +506,9 @@ it("creates an adapter and selects it", async () => {
 
   fireEvent.click(screen.getByTestId("show-create-form"));
   await screen.findByTestId("new-adapter-name");
+  expect(screen.getByRole("textbox", { name: "Adapter 名称" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Adapter 描述" })).toBeTruthy();
+  expect(screen.getByRole("radiogroup", { name: "Adapter 开发语言" })).toBeTruthy();
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "cmdb-sync" } });
   fireEvent.change(screen.getByTestId("new-adapter-description"), {
     target: { value: "sync cmdb" },
@@ -602,6 +702,7 @@ it("saves a new version with the edited content", async () => {
   });
   // The header version selector now shows the acknowledged version.
   expect(screen.getByTestId("version-selector").textContent).toContain("v1");
+  expect(await screen.findByText("已保存为 v1")).toBeTruthy();
 });
 
 it("loads the snapshot of a selected historical version", async () => {
@@ -687,6 +788,57 @@ it("updates the published badge after publishing the selected version", async ()
   fireEvent.click(screen.getByTestId("confirm-publish"));
   await screen.findByTestId("published-badge");
   expect(screen.getByTestId("latest-badge")).toBeTruthy();
+});
+
+it("keeps Publish available for the selected saved version while the Working Copy is dirty", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  let published: Adapter = adapter;
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [published] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [{ id: 10, adapter_id: 1, seq: 1, created_at: "" }] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/10",
+      respond: () => ({ body: makeVersion() }),
+    },
+    publishGateRoute(1, 10),
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions/10/publish",
+      respond: () => {
+        published = { ...adapter, published_version_id: 10 };
+        return { body: published };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "unsaved edit" } });
+  await screen.findByTestId("dirty-indicator");
+
+  const publishButton = screen.getByTestId("publish-version") as HTMLButtonElement;
+  expect(publishButton.disabled).toBe(false);
+  fireEvent.click(publishButton);
+  await screen.findByTestId("publish-gate-ok");
+  fireEvent.click(screen.getByTestId("confirm-publish"));
+  await screen.findByTestId("published-badge");
+
+  const publishCall = fetchMock.mock.calls.find(
+    ([url, init]) => init?.method === "POST" && String(url).endsWith("/versions/10/publish"),
+  );
+  expect(publishCall).toBeDefined();
+  expect(valueOf("code-editor")).toBe("unsaved edit");
+  expect(screen.getByTestId("dirty-indicator")).toBeTruthy();
 });
 
 it("asks for confirmation before discarding unsaved changes on adapter switch", async () => {
@@ -813,7 +965,16 @@ it("keeps Save disabled and never mixes content when switching to an adapter who
   // Save must stay disabled because nothing loaded successfully for adapter-b.
   expect(screen.getByRole("heading", { name: "adapter-b" })).toBeTruthy();
   expect(valueOf("code-editor")).not.toBe(STARTER_CODE);
-  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
+  const saveButton = screen.getByTestId("save-version") as HTMLButtonElement;
+  const publishButton = screen.getByTestId("publish-version") as HTMLButtonElement;
+  expect(saveButton.disabled).toBe(true);
+  expect(publishButton.disabled).toBe(true);
+  expect(saveButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
+    "版本内容尚未就绪",
+  );
+  expect(publishButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
+    "版本内容尚未就绪",
+  );
   fireEvent.click(screen.getByTestId("save-version"));
 });
 
@@ -1308,6 +1469,15 @@ it("runs a test bound to the selected version and follows the execution via SSE"
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
     {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          { id: 3, name: "worker-01", status: "online", last_heartbeat: "", capabilities: ["python"] },
+        ],
+      }),
+    },
+    {
       method: "POST",
       match: "/api/adapters/1/executions",
       respond: () => ({ status: 202, body: pending }),
@@ -1327,6 +1497,10 @@ it("runs a test bound to the selected version and follows the execution via SSE"
 
   render(<App />);
   await selectFirstAdapter();
+  const headerText = screen.getByTestId("workbench-header").textContent ?? "";
+  expect(headerText).toContain("adapter-a");
+  expect(headerText).toContain("Python");
+  expect(headerText).toContain("v1");
   await openTestRunTab();
   fireEvent.change(screen.getByTestId("test-input"), { target: { value: '{"k": 1}' } });
   // Duplicate clicks must not create a second execution.
@@ -1338,6 +1512,8 @@ it("runs a test bound to the selected version and follows the execution via SSE"
     expect(screen.getByTestId("execution-status").textContent).toBe("成功");
   });
   expect(screen.getByTestId("execution-id").textContent).toBe("Execution #5");
+  expect(screen.getByTestId("execution-worker").textContent).toContain("worker-01");
+  expect(screen.getByTestId("execution-worker").textContent).toContain("#3");
 
   // Explicit version binding: the create request carries the selected version.
   const createCalls = fetchMock.mock.calls.filter(
@@ -1429,6 +1605,9 @@ it("blocks test runs while the editor has unsaved changes", async () => {
   // reach the API (the business guard stays as defense in depth).
   const runButton = screen.getByTestId("run-test") as HTMLButtonElement;
   expect(runButton.disabled).toBe(true);
+  const reasonTarget = runButton.closest(".action-with-reason");
+  expect(reasonTarget?.getAttribute("title")).toContain("请先使用顶部“保存新版本”");
+  expect(reasonTarget?.getAttribute("aria-label")).toContain("运行测试不可用");
   fireEvent.click(runButton);
 
   expect(screen.queryByTestId("error-banner")).toBeNull();
@@ -1437,6 +1616,61 @@ it("blocks test runs while the editor has unsaved changes", async () => {
       ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
     ),
   ).toBe(false);
+  expect(screen.getByText(/存在未保存修改/)).toBeTruthy();
+  fireEvent.click(screen.getByTestId("return-to-edit"));
+  expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
+});
+
+it("warns about an offline Worker snapshot without creating a stale client-side Test gate", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    published_version_seq: 1,
+    production_worker_id: 3,
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          { id: 3, name: "worker-offline", status: "offline", last_heartbeat: "", capabilities: ["python"] },
+        ],
+      }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({
+        status: 202,
+        body: makeExecution({ id: 93, worker_id: 3, status: "succeeded" }),
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  expect((await screen.findByTestId("header-production-worker-warning")).textContent).toContain(
+    "worker-offline 最近状态为离线",
+  );
+  await openTestRunTab();
+  const runButton = screen.getByTestId("run-test") as HTMLButtonElement;
+  expect(runButton.disabled).toBe(false);
+  expect(screen.getByTestId("test-worker-offline-warning").textContent).toContain(
+    "worker-offline 最近状态为离线",
+  );
+  expect(screen.getByTestId("test-worker-offline-warning").textContent).toContain("后端");
+  fireEvent.click(runButton);
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) =>
+        String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+    ),
+  ).toBe(true);
 });
 
 it("blocks test runs when the input is not valid JSON", async () => {
@@ -1464,9 +1698,16 @@ it("blocks test runs when the input is not valid JSON", async () => {
 
 it("lists execution history with cursor pagination and opens the detail drawer", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
-  const pageOne = { items: [makeSummary({ id: 6 })], next_before_id: 6 };
-  const pageTwo = { items: [makeSummary({ id: 4, status: "failed" })], next_before_id: null };
-  const detail = makeExecution({ id: 6, input: { k: 1 }, output: { ok: true } });
+  const pageOne = {
+    items: [makeSummary({ id: 6, version_seq: 7, worker_id: 3, worker_name: "worker-main" })],
+    next_before_id: 6,
+  };
+  const pageTwo = {
+    items: [makeSummary({ id: 4, version_seq: 6, worker_id: 4, worker_name: "worker-alt", status: "failed" })],
+    next_before_id: null,
+  };
+  const detail = makeExecution({ id: 6, worker_id: 3, status: "succeeded", input: { k: 1 }, output: { ok: true } });
+  const secondDetail = makeExecution({ id: 4, worker_id: 4, status: "failed", input: { k: 2 } });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
     {
@@ -1477,6 +1718,7 @@ it("lists execution history with cursor pagination and opens the detail drawer",
       }),
     },
     { method: "GET", match: "/api/executions/6", respond: () => ({ body: detail }) },
+    { method: "GET", match: "/api/executions/4", respond: () => ({ body: secondDetail }) },
   ]);
 
   render(<App />);
@@ -1491,9 +1733,26 @@ it("lists execution history with cursor pagination and opens the detail drawer",
   });
   expect(screen.queryByTestId("history-load-more")).toBeNull();
 
-  fireEvent.click(screen.getAllByTestId("history-row")[0]);
+  const [firstRow, secondRow] = screen.getAllByTestId("history-row");
+  expect(firstRow.getAttribute("tabindex")).toBe("0");
+  firstRow.focus();
+  fireEvent.keyDown(firstRow, { key: "Enter" });
   const detailInput = await screen.findByTestId("detail-input");
   expect(detailInput.textContent).toContain('"k": 1');
+  const drawer = document.querySelector(".ant-drawer-content");
+  if (!(drawer instanceof HTMLElement)) {
+    throw new Error("Execution detail drawer not found");
+  }
+  expect(within(drawer).getByText("v7")).toBeTruthy();
+  expect(within(drawer).getByText("worker-main")).toBeTruthy();
+  expect(within(drawer).getByText("#10")).toBeTruthy();
+  expect(within(drawer).getByText("#3")).toBeTruthy();
+
+  fireEvent.click(drawer.querySelector(".ant-drawer-close") as HTMLButtonElement);
+  secondRow.focus();
+  expect(fireEvent.keyDown(secondRow, { key: " " })).toBe(false);
+  await screen.findByText("Execution #4");
+  expect((await screen.findByTestId("detail-input")).textContent).toContain('"k": 2');
 });
 
 it("converges to the final result when SSE ends without a terminal event", async () => {
@@ -1831,8 +2090,15 @@ it("never shows a stale detail when executions are clicked in quick succession",
   const rows = await screen.findAllByTestId("history-row");
   expect(rows).toHaveLength(2);
 
-  // Click A (slow), then B (fast): B must win even though A resolves last.
+  // Once B is visible, opening slow A must hide B immediately instead of
+  // presenting stale details under the new Execution title.
+  fireEvent.click(rows[1]);
+  await screen.findByText("Execution #4");
+  expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
   fireEvent.click(rows[0]);
+  expect(screen.queryByTestId("detail-input")).toBeNull();
+
+  // Click B again while A is still slow: B must win even though A resolves last.
   fireEvent.click(rows[1]);
   await screen.findByText("Execution #4");
   expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
@@ -1871,6 +2137,7 @@ it("shows the worker badge by online presence, not by registration count", async
   expect(
     screen.getByTestId("worker-status").querySelector(".ant-badge-status-success"),
   ).toBeNull();
+  expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
   unmount();
 
   stubFetch([
@@ -1887,9 +2154,110 @@ it("shows the worker badge by online presence, not by registration count", async
   render(<App />);
   fireEvent.click(await screen.findByTestId("worker-status"));
   await screen.findAllByTestId("worker-item");
+  expect(screen.getByTestId("worker-status").textContent).toContain("1/2 在线");
   expect(
     screen.getByTestId("worker-status").querySelector(".ant-badge-status-success"),
   ).toBeTruthy();
+});
+
+it("refreshes the shared effective Worker status on focus without a page reload", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    production_worker_id: 1,
+  });
+  const worker = {
+    id: 1,
+    name: "worker-a",
+    last_heartbeat: "2026-08-13T00:00:00Z",
+    capabilities: ["python"],
+  };
+  let workerCalls = 0;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => {
+        workerCalls += 1;
+        return {
+          body: [{ ...worker, status: workerCalls === 2 ? "offline" : "online" }],
+        };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => {
+    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+  });
+  expect(screen.queryByTestId("header-production-worker-warning")).toBeNull();
+
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => {
+    expect(workerCalls).toBe(2);
+    expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+  });
+  expect(screen.getByTestId("header-production-worker-warning").textContent).toContain(
+    "worker-a 最近状态为离线",
+  );
+  expect(
+    screen.getByTestId("adapter-item").querySelector(".catalog-item-attention")?.textContent,
+  ).toContain("Worker 离线");
+
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => {
+    expect(workerCalls).toBe(3);
+    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+    expect(screen.queryByTestId("header-production-worker-warning")).toBeNull();
+  });
+  expect(
+    screen.getByTestId("adapter-item").querySelector(".catalog-item-attention"),
+  ).toBeNull();
+});
+
+it("refreshes the shared Worker collection in the background without returning to loading", async () => {
+  WORKER_REFRESH_POLICY.pollIntervalMs = 50;
+  const offlineWorker = {
+    id: 1,
+    name: "worker-a",
+    status: "offline",
+    last_heartbeat: "2026-08-13T00:00:00Z",
+    capabilities: ["python"],
+  };
+  let workerCalls = 0;
+  let releaseOnline!: () => void;
+  const onlineResponse = new Promise<RouteResponse>((resolve) => {
+    releaseOnline = () => resolve({ body: [{ ...offlineWorker, status: "online" }] });
+  });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => {
+        workerCalls += 1;
+        return workerCalls === 1 ? { body: [offlineWorker] } : onlineResponse;
+      },
+    },
+  ]);
+
+  render(<App />);
+  await waitFor(() => {
+    expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+  });
+  await waitFor(() => {
+    expect(workerCalls).toBe(2);
+  });
+  expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+  expect(screen.getByTestId("worker-status").textContent).not.toContain("加载中");
+
+  releaseOnline();
+  await waitFor(() => {
+    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+  });
 });
 
 // --- M3.1 Console shell structure ---------------------------------------------
@@ -1939,12 +2307,92 @@ it("renders the console shell with catalog, workbench header and the three main 
 
 it("renders the two-column test run layout with input and execution panels", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
-  stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          {
+            id: 3,
+            name: "only-python-worker",
+            status: "online",
+            last_heartbeat: "",
+            capabilities: ["python"],
+          },
+        ],
+      }),
+    },
+  ]);
   render(<App />);
   await selectFirstAdapter();
   await openTestRunTab();
   expect(screen.getByTestId("test-input-col")).toBeTruthy();
   expect(screen.getByTestId("execution-col")).toBeTruthy();
+  const context = screen.getByTestId("test-runtime-info").textContent ?? "";
+  expect(context).toContain("v1");
+  expect(context).toContain("Python");
+  expect(context).toContain("only-python-worker（自动）");
+  expect(screen.getByTestId("test-input").getAttribute("aria-label")).toBe("测试输入 JSON");
+});
+
+it("explains when multiple compatible Workers prevent automatic selection", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    production_worker_id: null,
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [1, 2].map((id) => ({
+          id,
+          name: `worker-${id}`,
+          status: "online",
+          last_heartbeat: "",
+          capabilities: ["python"],
+        })),
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  expect(
+    (await screen.findByTestId("header-production-worker-selection-warning")).textContent,
+  ).toContain("2 个可用 Worker");
+  expect(screen.queryByTestId("publish-version")).toBeNull();
+  await openTestRunTab();
+  const warning = screen.getByTestId("test-worker-selection-warning");
+  expect(warning.textContent).toContain("2 个有效在线且兼容的 Worker");
+  fireEvent.click(within(warning).getByText("打开设置"));
+  await screen.findByTestId("production-worker");
+});
+
+it("guides the user to restore or register a Worker when none is available", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    production_worker_id: null,
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  const headerWarning = await screen.findByTestId("header-production-worker-selection-warning");
+  expect(headerWarning.textContent).toContain("当前没有有效在线且支持 Python 的 Worker");
+  expect(headerWarning.textContent).toContain("恢复、启动或注册");
+  await openTestRunTab();
+  const testWarning = screen.getByTestId("test-worker-selection-warning");
+  expect(testWarning.textContent).toContain("恢复、启动或注册");
+  expect(within(testWarning).queryByText("打开设置")).toBeNull();
 });
 
 it("edits metadata and deletes the adapter from the settings drawer", async () => {
@@ -2122,26 +2570,26 @@ it("keeps catalog production summaries stable across adapter switches without ex
   await screen.findAllByTestId("adapter-item");
 
   // 未加载版本明细：列表响应直接提供真实生产 vN，不伪造 seq。
-  expect(subOf(0)).toBe("Python · 待启动 · 生产 v1 待启动 · Worker 未配置");
-  expect(subOf(1)).toBe("Python · 未发布 · Worker 未配置");
+  expect(subOf(0)).toBe("Python · 待启动 v1");
+  expect(subOf(1)).toBe("Python · 未发布");
 
   fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
   await screen.findByTestId("code-editor");
   await waitFor(() => {
-    expect(subOf(0)).toBe("Python · 待启动 · 生产 v1 待启动 · Worker 未配置");
+    expect(subOf(0)).toBe("Python · 待启动 v1");
   });
 
   // 切到 B：A 的已知摘要不得退化；B 展示真实的未发布状态。
   fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
   await waitFor(() => {
-    expect(subOf(1)).toBe("Python · 未发布 · Worker 未配置");
+    expect(subOf(1)).toBe("Python · 未发布");
   });
-  expect(subOf(0)).toBe("Python · 待启动 · 生产 v1 待启动 · Worker 未配置");
+  expect(subOf(0)).toBe("Python · 待启动 v1");
 
   // 切回 A：缓存仍然生效。
   fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
   await screen.findByTestId("code-editor");
-  expect(subOf(0)).toBe("Python · 待启动 · 生产 v1 待启动 · Worker 未配置");
+  expect(subOf(0)).toBe("Python · 待启动 v1");
 
   // 不为展示 seq 增加额外请求：版本列表只在选中对应 Adapter 时加载。
   const bListCalls = fetchMock.mock.calls.filter(([url]) => String(url) === "/api/adapters/2/versions");
@@ -2189,12 +2637,27 @@ it("starts production, refreshes the header and auto-opens the new execution", a
   const adapter = makeAdapter({
     latest_version_id: 10,
     published_version_id: 10,
-    production_worker_id: 3,
+    production_worker_id: null,
   });
   const started = makeExecution({ id: 77, trigger: "production", status: "pending" });
   const finished = makeExecution({ id: 77, trigger: "production", status: "succeeded" });
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          {
+            id: 3,
+            name: "only-compatible-worker",
+            status: "online",
+            last_heartbeat: "",
+            capabilities: ["python"],
+          },
+        ],
+      }),
+    },
     {
       method: "POST",
       match: "/api/adapters/1/production/start",
@@ -2232,9 +2695,11 @@ it("starts production, refreshes the header and auto-opens the new execution", a
   render(<App />);
   await selectFirstAdapter();
 
+  expect((screen.getByTestId("start-production") as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(screen.getByTestId("start-production"));
   // Header 刷新后展示运行中的生产 Execution。
   await screen.findByTestId("running-execution");
+  expect(await screen.findByText("生产已启动：Execution #77")).toBeTruthy();
   expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
 
   // 自动切到执行记录 Tab 并打开新 Execution 的详情抽屉。
@@ -2315,13 +2780,14 @@ it("publishes v3 while v2 keeps running and explains the manual Stop then Start 
 
   fireEvent.click(screen.getByTestId("confirm-publish"));
   await screen.findByTestId("published-running-mismatch");
+  expect(await screen.findByText("已发布 v3；生产运行状态未自动改变")).toBeTruthy();
   expect(screen.getByTestId("running-execution").textContent).toContain("#77");
   expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
   expect(screen.getByTestId("published-running-mismatch").textContent).toContain("已发布版本（v3）");
   expect(screen.getByTestId("published-running-mismatch").textContent).toContain("生产运行版本（v2）");
   expect(
     screen.getByTestId("adapter-item").querySelector(".catalog-item-sub")?.textContent,
-  ).toBe("Python · 已启动 · 运行 v2 · 生产 v3 待启动 · worker-01");
+  ).toBe("Python · 生产运行 v2 · v3 待启动");
   expect(
     fetchMock.mock.calls.some(
       ([url, init]) =>
@@ -2501,13 +2967,17 @@ it("selects an explicit production Worker and keeps the retest gate visible afte
   expect(screen.getByTestId("production-worker-retest").textContent).toContain("需重新测试");
   expect(
     screen.getByTestId("adapter-item").querySelector(".catalog-item-sub")?.textContent,
-  ).toContain("worker-b");
+  ).not.toContain("worker-b");
+  expect(screen.getByTestId("adapter-item").getAttribute("title")).toContain("Worker worker-b");
 
   const drawerClose = document.querySelector(".ant-drawer-close");
   if (drawerClose === null) {
     throw new Error("Adapter settings close button not found");
   }
   fireEvent.click(drawerClose);
+  expect(screen.getByTestId("header-production-worker-retest").textContent).toContain(
+    "建议先重新测试",
+  );
   await openTestRunTab();
   fireEvent.click(screen.getByTestId("run-test"));
   await waitFor(() => {
@@ -2517,6 +2987,76 @@ it("selects an explicit production Worker and keeps the retest gate visible afte
   fireEvent.click(screen.getByTestId("adapter-settings"));
   await screen.findByTestId("production-worker");
   expect(screen.queryByTestId("production-worker-retest")).toBeNull();
+  expect(screen.queryByTestId("header-production-worker-retest")).toBeNull();
+});
+
+it("clears the retest guidance after the backend auto-selects a Worker for a successful test", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    published_version_seq: 1,
+    production_worker_id: 1,
+  });
+  const automaticWorker = {
+    id: 1,
+    name: "only-worker",
+    status: "online",
+    last_heartbeat: "2026-08-12T00:00:00Z",
+    capabilities: ["python"],
+  };
+  let patchBody: string | null = null;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [automaticWorker] }) },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        patchBody = body;
+        return { body: { ...adapter, production_worker_id: null } };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: () => ({
+        status: 202,
+        body: makeExecution({ id: 89, worker_id: 1, status: "succeeded" }),
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  const selector = await screen.findByTestId("production-worker");
+  const clear = selector.querySelector<HTMLElement>(".ant-select-clear");
+  if (clear === null) {
+    throw new Error("production Worker clear control not found");
+  }
+  fireEvent.mouseDown(clear);
+  fireEvent.click(screen.getByTestId("update-production-worker"));
+  await waitFor(() => {
+    expect(JSON.parse(patchBody ?? "{}")).toEqual({ production_worker_id: null });
+  });
+  expect(screen.getByTestId("production-worker-retest").textContent).toContain("需重新测试");
+
+  const drawerClose = document.querySelector(".ant-drawer-close");
+  if (drawerClose === null) {
+    throw new Error("Adapter settings close button not found");
+  }
+  fireEvent.click(drawerClose);
+  await openTestRunTab();
+  expect(screen.getByTestId("test-runtime-info").textContent).toContain("only-worker（自动）");
+  fireEvent.click(screen.getByTestId("run-test"));
+  await waitFor(() => {
+    expect(screen.getByTestId("execution-status").textContent).toBe("成功");
+  });
+
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  await screen.findByTestId("production-worker");
+  expect(screen.queryByTestId("production-worker-retest")).toBeNull();
+  expect(screen.queryByTestId("header-production-worker-retest")).toBeNull();
 });
 
 it("refreshes a naturally completed production run into the started and idle state", async () => {
@@ -2594,7 +3134,7 @@ it("shows an unvisited started-and-idle Adapter with the server-derived last run
   render(<App />);
   const [row] = await screen.findAllByTestId("adapter-item");
   expect(row.querySelector(".catalog-item-sub")?.textContent).toBe(
-    "Python · 已启动/空闲 · 运行 v1 · 生产 v2 待启动 · worker-01",
+    "Python · 生产运行 v1 · v2 待启动",
   );
 });
 
@@ -2645,6 +3185,10 @@ it("keeps lifecycle actions locked during Stop(wait) until the active execution 
   await screen.findByTestId("production-stopping");
   const startWhileStopping = screen.getByTestId("start-production") as HTMLButtonElement;
   expect(startWhileStopping.disabled).toBe(true);
+  expect(startWhileStopping.closest(".action-with-reason")?.getAttribute("title")).toContain(
+    "等待 Execution #77 完成",
+  );
+  expect(screen.getAllByText("生产入口已关闭，等待 Execution #77 完成")).toHaveLength(1);
   expect(screen.getByTestId("production-stopping").textContent).toContain("Execution #77");
   fireEvent.click(screen.getByTestId("adapter-settings"));
   expect((screen.getByTestId("unpublish-adapter") as HTMLButtonElement).disabled).toBe(true);
@@ -2701,7 +3245,7 @@ it("labels a stopped Catalog row with the last run instead of claiming it is run
   render(<App />);
   const [row] = await screen.findAllByTestId("adapter-item");
   const subtitle = row.querySelector(".catalog-item-sub")?.textContent ?? "";
-  expect(subtitle).toBe("Python · 已停止 · 上次运行 v1 · 生产 v2 待启动 · worker-01");
+  expect(subtitle).toBe("Python · 已停止 · 上次 v1 · v2 待启动");
   expect(subtitle).not.toContain("· 运行 v1");
 });
 
@@ -2794,8 +3338,16 @@ it("hides archived adapters from the active catalog and disables editing when ar
   fireEvent.click(screen.getByText("已归档"));
   fireEvent.click(await screen.findByTestId("adapter-item"));
   await screen.findByTestId("archived-notice");
-  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByTestId("publish-version") as HTMLButtonElement).disabled).toBe(true);
+  const saveButton = screen.getByTestId("save-version") as HTMLButtonElement;
+  const publishButton = screen.getByTestId("publish-version") as HTMLButtonElement;
+  expect(saveButton.disabled).toBe(true);
+  expect(publishButton.disabled).toBe(true);
+  expect(saveButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
+    "请先在设置中恢复",
+  );
+  expect(publishButton.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
+    "发布不可用",
+  );
   expect(screen.queryByTestId("start-production")).toBeNull();
 });
 
@@ -2875,6 +3427,56 @@ it("shows a Java publish diff with the matching Monaco mode and dependency label
   ).toBe(true);
 });
 
+it("gives repeated Credential Binding controls stable row-specific accessible names", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({
+        body: [
+          {
+            id: 1,
+            name: "runtime-secret",
+            type: "password",
+            created_at: "2026-08-11T00:00:00Z",
+            updated_at: "2026-08-11T00:00:00Z",
+          },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: () => ({
+        body: [
+          {
+            env_key: "DB_PASSWORD",
+            credential_id: 1,
+            credential_name: "runtime-secret",
+            field: "password",
+          },
+        ],
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("凭据绑定"));
+  await screen.findByRole("group", { name: "绑定 1" });
+  expect(screen.getByRole("textbox", { name: "绑定 1 环境变量" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "绑定 1 凭据" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "绑定 1 字段" })).toBeTruthy();
+
+  fireEvent.click(screen.getByTestId("add-binding"));
+  expect(screen.getByRole("group", { name: "绑定 2" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "绑定 2 环境变量" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "绑定 2 凭据" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "绑定 2 字段" })).toBeTruthy();
+});
+
 it("manages credentials and package sources from the system settings drawer", async () => {
   stubFetch([
     healthRoute({ status: "ok", database: true }),
@@ -2926,15 +3528,25 @@ it("manages credentials and package sources from the system settings drawer", as
   await screen.findByTestId("credentials-panel");
   await screen.findByTestId("credential-row");
   expect(screen.getByTestId("credential-row").textContent).toBe("db-password");
-
+  fireEvent.click(screen.getByTestId("new-credential"));
+  expect(screen.getByRole("textbox", { name: "凭据名称" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "凭据类型" })).toBeTruthy();
+  expect(screen.getByLabelText("凭据字段 username")).toBeTruthy();
+  expect(screen.getByLabelText("凭据字段 password")).toBeTruthy();
   // 依赖源页签：默认源标记 + 可达性测试。
   fireEvent.click(screen.getByText("依赖源"));
   await screen.findByTestId("package-source-row");
   expect(screen.getByTestId("default-source-badge")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("new-package-source"));
+  expect(screen.getByRole("textbox", { name: "依赖源名称" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "依赖源类型" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "依赖源 Repository URL" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "依赖源凭据" })).toBeTruthy();
 
   fireEvent.click(screen.getByTestId("test-package-source"));
   await screen.findByTestId("package-source-test-result");
   expect(screen.getByTestId("package-source-test-result").textContent).toContain("可达");
+  expect(screen.getByTestId("package-source-test-result").getAttribute("role")).toBe("status");
 });
 
 // --- M4 AI Editor -----------------------------------------------------------
@@ -3082,6 +3694,107 @@ it.each([
     ).toBe(false);
   },
 );
+
+it("keeps a normal AI Candidate quiet and follows messages only while the user stays near the bottom", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const normalCandidate: AiCandidate = { ...AI_CANDIDATE, required_secret_keys: [] };
+  let resolveFirst: ((response: AiAssistResponse) => void) | undefined;
+  const firstResponse = new Promise<AiAssistResponse>((resolve) => {
+    resolveFirst = resolve;
+  });
+  let resolveSecond: ((response: AiAssistResponse) => void) | undefined;
+  const secondResponse = new Promise<AiAssistResponse>((resolve) => {
+    resolveSecond = resolve;
+  });
+  let assistCalls = 0;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: async () => {
+        assistCalls += 1;
+        return {
+          body:
+            assistCalls === 1
+              ? await firstResponse
+              : await secondResponse,
+        };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+  const conversation = screen.getByTestId("ai-conversation") as HTMLDivElement;
+  let scrollHeight = 300;
+  Object.defineProperty(conversation, "clientHeight", { configurable: true, value: 100 });
+  Object.defineProperty(conversation, "scrollHeight", {
+    configurable: true,
+    get: () => scrollHeight,
+  });
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "生成一个正常候选" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-message-user");
+  expect(conversation.scrollTop).toBe(300);
+
+  conversation.scrollTop = 10;
+  fireEvent.scroll(conversation);
+  scrollHeight = 500;
+  await act(async () => {
+    resolveFirst?.(aiResponse("候选已生成", normalCandidate));
+    await firstResponse;
+  });
+  await screen.findByTestId("ai-candidate-summary");
+  expect(conversation.scrollTop).toBe(10);
+  expect(screen.getByTestId("ai-candidate-summary").textContent).toBe("增加分页处理");
+  expect(screen.getByTestId("ai-view-diff").textContent).toContain("查看修改");
+  expect(screen.getByTestId("ai-apply-candidate").textContent?.replace(/\s/g, "")).toBe("应用");
+  expect(screen.queryByTestId("ai-candidate-stale")).toBeNull();
+  expect(screen.queryByTestId("ai-missing-secret-keys")).toBeNull();
+
+  conversation.scrollTop = 400;
+  fireEvent.scroll(conversation);
+  scrollHeight = 700;
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "继续解释" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await waitFor(() => expect(assistCalls).toBe(2));
+  expect(conversation.scrollTop).toBe(700);
+  scrollHeight = 900;
+  await act(async () => {
+    resolveSecond?.(aiResponse("第二条回复", null));
+    await secondResponse;
+  });
+  await screen.findByText("第二条回复");
+  expect(conversation.scrollTop).toBe(900);
+
+  const inheritedScrollHeight = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "scrollHeight",
+  );
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => 950,
+  });
+  conversation.scrollTop = 10;
+  fireEvent.scroll(conversation);
+  fireEvent.click(screen.getByTestId("close-ai-assistant"));
+  await screen.findByTestId("open-ai-assistant");
+  await openAiAssistant();
+  expect((screen.getByTestId("ai-conversation") as HTMLDivElement).scrollTop).toBe(950);
+  if (inheritedScrollHeight === undefined) {
+    delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+  } else {
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", inheritedScrollHeight);
+  }
+});
 
 it("rejects a runtime config whose JSON number overflows instead of silently sending null", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
@@ -3306,7 +4019,11 @@ it("keeps archived Adapter editors read-only and disables Candidate Apply", asyn
   });
   fireEvent.click(screen.getByTestId("ai-send"));
   await screen.findByTestId("ai-archived-apply-blocked");
-  expect((screen.getByTestId("ai-apply-candidate") as HTMLButtonElement).disabled).toBe(true);
+  const applyButton = screen.getByTestId("ai-apply-candidate") as HTMLButtonElement;
+  expect(applyButton.disabled).toBe(true);
+  expect(applyButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
+    "请先在设置中恢复",
+  );
 });
 
 it("configures one AI model with manual Model ID, refresh, test, and default reasoning", async () => {
@@ -3358,6 +4075,7 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
   await screen.findByTestId("ai-model-settings-panel");
 
   expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("Working Copy");
+  fireEvent.click(screen.getByText("高级：推理策略（跟随模型默认）"));
   expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("跟随模型默认");
   expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
 

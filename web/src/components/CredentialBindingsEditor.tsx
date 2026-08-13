@@ -16,7 +16,7 @@ interface BindingRow {
 interface CredentialBindingsEditorProps {
   adapterId: number;
   disabled: boolean;
-  onError: (message: string) => void;
+  onError: (message: string | null) => void;
   /** 保存成功后通知父组件（如刷新 Diff 基线）。 */
   onSaved?: () => void;
 }
@@ -43,9 +43,11 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   const [baseline, setBaseline] = useState<BindingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setNotice(null);
     try {
       const [credentialList, bindingList] = await Promise.all([
         api.listCredentials(),
@@ -68,7 +70,13 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   }, [load]);
 
   function updateRow(index: number, patch: Partial<BindingRow>) {
+    setNotice(null);
     setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  }
+
+  function updateRows(updater: (current: BindingRow[]) => BindingRow[]) {
+    setNotice(null);
+    setRows(updater);
   }
 
   function handleCredentialChange(index: number, credentialId: number) {
@@ -95,6 +103,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
       props.onError("每行绑定都必须选择凭据与字段");
       return;
     }
+    props.onError(null);
     setSaving(true);
     try {
       const saved = await api.setAdapterBindings(
@@ -108,8 +117,10 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
       const refreshed = toRows(saved);
       setRows(refreshed);
       setBaseline(refreshed);
+      setNotice("凭据绑定已保存");
       props.onSaved?.();
     } catch (error) {
+      setNotice(null);
       props.onError(errorMessage(error));
     } finally {
       setSaving(false);
@@ -127,6 +138,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
       <Typography.Text type="secondary">
         绑定将凭据字段以 DLR_SECRET_{"{env_key}"} 注入该 Adapter 的执行环境；保存为全量替换。
       </Typography.Text>
+      {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
       {rows.length === 0 ? (
         <Empty description="暂无凭据绑定" />
       ) : (
@@ -138,9 +150,16 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                 ? credentialFields(credential.type).map((field) => ({ label: field, value: field }))
                 : [];
             return (
-              <Space key={index} className="binding-row" data-testid="binding-row">
+              <Space
+                key={index}
+                className="binding-row"
+                data-testid="binding-row"
+                role="group"
+                aria-label={`绑定 ${index + 1}`}
+              >
                 <Input
                   data-testid="binding-env-key"
+                  aria-label={`绑定 ${index + 1} 环境变量`}
                   placeholder="env_key（如 DB_PASSWORD）"
                   value={row.env_key}
                   disabled={props.disabled || saving}
@@ -148,6 +167,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                 />
                 <Select
                   data-testid="binding-credential"
+                  aria-label={`绑定 ${index + 1} 凭据`}
                   placeholder="选择凭据"
                   style={{ minWidth: 160 }}
                   value={row.credential_id ?? undefined}
@@ -160,6 +180,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                 />
                 <Select
                   data-testid="binding-field"
+                  aria-label={`绑定 ${index + 1} 字段`}
                   placeholder="字段"
                   style={{ minWidth: 120 }}
                   value={row.field !== "" ? row.field : undefined}
@@ -170,8 +191,9 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                 <Button
                   danger
                   data-testid="remove-binding"
+                  aria-label={`删除绑定 ${index + 1}`}
                   disabled={props.disabled || saving}
-                  onClick={() => setRows((current) => current.filter((_, i) => i !== index))}
+                  onClick={() => updateRows((current) => current.filter((_, i) => i !== index))}
                 >
                   删除
                 </Button>
@@ -184,7 +206,12 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
         <Button
           data-testid="add-binding"
           disabled={props.disabled || saving}
-          onClick={() => setRows((current) => [...current, { env_key: "", credential_id: null, field: "" }])}
+          onClick={() =>
+            updateRows((current) => [
+              ...current,
+              { env_key: "", credential_id: null, field: "" },
+            ])
+          }
         >
           添加绑定
         </Button>

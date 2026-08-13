@@ -43,53 +43,81 @@ function versionLabel(
 function catalogSubtitle(
   adapter: Adapter,
   versionSeqById: Map<number, number>,
-  workerNames: Map<number, string>,
-): string {
+  workersById: Map<number, Worker>,
+): { primary: string; attention: string[]; full: string } {
   const displayState = productionDisplayState(adapter);
-  const stateLabel =
-    displayState === "running" && adapter.running_execution_id === null
-      ? "已启动/空闲"
-      : productionStateLabel(displayState);
-  const parts = [LANGUAGE_LABELS[adapter.language], stateLabel];
   const runningVersionId = productionRunningVersionId(adapter);
+  const attention: string[] = [];
+  let productionFact = "未发布";
+
   if (runningVersionId !== null) {
     const runningVersionSeq =
       adapter.running_version_id !== null && adapter.running_version_id !== undefined
         ? adapter.running_version_seq
         : adapter.last_production_version_seq;
-    parts.push(
-      `运行 ${versionLabel(runningVersionId, runningVersionSeq, versionSeqById)}`,
-    );
+    productionFact = `${displayState === "stopping" ? "停止中" : "生产运行"} ${versionLabel(
+      runningVersionId,
+      runningVersionSeq,
+      versionSeqById,
+    )}`;
+    if (displayState === "stopping") {
+      attention.push(
+        adapter.running_execution_id === null || adapter.running_execution_id === undefined
+          ? "等待执行完成"
+          : `等待 Execution #${adapter.running_execution_id} 完成`,
+      );
+    }
   } else if (
     displayState === "stopped" &&
     adapter.last_production_version_id !== null &&
     adapter.last_production_version_id !== undefined
   ) {
-    parts.push(
-      `上次运行 ${versionLabel(
+    productionFact = `已停止 · 上次 ${versionLabel(
         adapter.last_production_version_id,
         adapter.last_production_version_seq,
         versionSeqById,
-      )}`,
-    );
+      )}`;
+  } else if (adapter.published_version_id !== null && adapter.published_version_id !== undefined) {
+    productionFact = `待启动 ${versionLabel(
+      adapter.published_version_id,
+      adapter.published_version_seq,
+      versionSeqById,
+    )}`;
   }
   const publishedVersionId = adapter.published_version_id;
+  const comparisonVersionId = runningVersionId ?? adapter.last_production_version_id ?? null;
   if (
     publishedVersionId !== null &&
     publishedVersionId !== undefined &&
-    publishedVersionId !== (runningVersionId ?? adapter.last_production_version_id ?? null)
+    comparisonVersionId !== null &&
+    publishedVersionId !== comparisonVersionId
   ) {
-    parts.push(
-      `生产 ${versionLabel(publishedVersionId, adapter.published_version_seq, versionSeqById)} 待启动`,
+    attention.push(
+      `${versionLabel(publishedVersionId, adapter.published_version_seq, versionSeqById)} 待启动`,
     );
   }
   const workerId = adapter.production_worker_id;
-  if (workerId === null || workerId === undefined) {
-    parts.push("Worker 未配置");
-  } else {
-    parts.push(workerNames.get(workerId) ?? `Worker #${workerId}`);
+  if (workerId !== null && workerId !== undefined) {
+    const worker = workersById.get(workerId);
+    if (worker !== undefined && worker.status !== "online") {
+      attention.push("Worker 离线");
+    }
   }
-  return parts.join(" · ");
+  if (displayState === "abnormal") {
+    attention.push("状态异常");
+  }
+  const primary = `${LANGUAGE_LABELS[adapter.language]} · ${productionFact}`;
+  const fullParts = [primary, ...attention];
+  if (workerId === null || workerId === undefined) {
+    fullParts.push("Worker 未配置");
+  } else {
+    const worker = workersById.get(workerId);
+    fullParts.push(worker === undefined ? `Worker #${workerId}` : `Worker ${worker.name}`);
+  }
+  if (adapter.description.trim() !== "") {
+    fullParts.push(adapter.description.trim());
+  }
+  return { primary, attention, full: fullParts.join(" · ") };
 }
 
 export default function AdapterCatalog({
@@ -109,7 +137,7 @@ export default function AdapterCatalog({
   const [description, setDescription] = useState("");
   const [language, setLanguage] = useState<AdapterLanguage>("python");
   const [submitting, setSubmitting] = useState(false);
-  const workerNames = new Map(workers.map((worker) => [worker.id, worker.name]));
+  const workersById = new Map(workers.map((worker) => [worker.id, worker]));
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
@@ -136,7 +164,11 @@ export default function AdapterCatalog({
     view === "archived" ? !!adapter.archived_at : !adapter.archived_at,
   );
   const visible =
-    keyword === "" ? inView : inView.filter((adapter) => adapter.name.toLowerCase().includes(keyword));
+    keyword === ""
+      ? inView
+      : inView.filter((adapter) =>
+          [adapter.name, adapter.description].some((value) => value.toLowerCase().includes(keyword)),
+        );
 
   return (
     <aside className="catalog" data-testid="adapter-catalog">
@@ -185,6 +217,7 @@ export default function AdapterCatalog({
         ) : (
           visible.map((adapter) => {
             const displayState = productionDisplayState(adapter);
+            const subtitle = catalogSubtitle(adapter, versionSeqById, workersById);
             return (
               <button
                 key={adapter.id}
@@ -192,6 +225,8 @@ export default function AdapterCatalog({
                 data-testid="adapter-item"
                 className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
                 disabled={busy}
+                title={`${adapter.name}${adapter.description ? ` — ${adapter.description}` : ""}\n${subtitle.full}`}
+                aria-label={`${adapter.name}，${subtitle.full}`}
                 onClick={() => onSelect(adapter)}
               >
                 <span className="catalog-item-name">
@@ -201,8 +236,11 @@ export default function AdapterCatalog({
                   />
                   {adapter.name}
                 </span>
-                <span className="catalog-item-sub">
-                  {catalogSubtitle(adapter, versionSeqById, workerNames)}
+                <span className="catalog-item-sub" title={subtitle.full}>
+                  <span>{subtitle.primary}</span>
+                  {subtitle.attention.map((item) => (
+                    <span className="catalog-item-attention" key={item}> · {item}</span>
+                  ))}
                 </span>
               </button>
             );
@@ -220,12 +258,17 @@ export default function AdapterCatalog({
         <form className="create-form" onSubmit={(event) => void handleCreate(event)}>
           <Input
             data-testid="new-adapter-name"
+            aria-label="Adapter 名称"
             placeholder="名称"
             value={name}
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
           />
-          <div className="settings-field">
+          <div
+            className="settings-field"
+            role="radiogroup"
+            aria-label="Adapter 开发语言"
+          >
             <span className="settings-field-label">开发语言</span>
             <Radio.Group
               data-testid="new-adapter-language"
@@ -240,6 +283,7 @@ export default function AdapterCatalog({
           </div>
           <Input
             data-testid="new-adapter-description"
+            aria-label="Adapter 描述"
             placeholder="描述（可选）"
             value={description}
             disabled={busy}

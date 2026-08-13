@@ -122,6 +122,7 @@ body {
 
 .catalog {
   flex: 0 0 260px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -177,6 +178,11 @@ body {
   background: #f5f7fa;
 }
 
+.catalog-item:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
+}
+
 .catalog-item.selected {
   background: #e6f4ff;
 }
@@ -210,6 +216,11 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.catalog-item-attention {
+  color: #ad4e00;
+  font-weight: 600;
 }
 
 /* M3.2 生产状态点：与 Header 四层状态同一颜色词汇。 */
@@ -277,9 +288,9 @@ body {
 .workbench-header {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px 16px;
   padding: 10px 16px;
   background: var(--dlr-workspace-bg);
   border-bottom: 1px solid var(--dlr-border);
@@ -292,6 +303,13 @@ body {
   gap: 8px;
 }
 
+.workbench-context-fact,
+.workbench-context-separator {
+  flex: 0 0 auto;
+  color: var(--dlr-text-secondary);
+  font-size: 0.8rem;
+}
+
 .workbench-title {
   margin: 0;
   font-size: 1rem;
@@ -301,24 +319,45 @@ body {
   white-space: nowrap;
 }
 
-.workbench-description {
-  margin-top: 2px;
-  font-size: 0.78rem;
-  color: var(--dlr-text-weak);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .workbench-controls {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .workbench-context {
+  flex: 1 1 360px;
   min-width: 0;
+}
+
+.workbench-production-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 5px;
+  color: var(--dlr-text-weak);
+  font-size: 0.74rem;
+}
+
+.workbench-lifecycle-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.action-with-reason {
+  display: inline-flex;
+  border-radius: 4px;
+}
+
+.action-with-reason:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
 }
 
 /* Header 内的状态提示（Published≠Running / 已归档）与标题行保持间距。 */
@@ -559,7 +598,8 @@ body {
 }
 
 .ai-secret-check-unavailable {
-  color: var(--dlr-text-weak);
+  color: #ad4e00;
+  font-weight: 600;
 }
 
 .ai-secret-warning,
@@ -661,9 +701,23 @@ body {
 .test-version-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   font-size: 0.8rem;
   color: var(--dlr-text-secondary);
+}
+
+.test-version-worker {
+  flex: 1 1 100px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.test-input-label {
+  color: var(--dlr-text-secondary);
+  font-size: 0.78rem;
 }
 
 .test-input-block {
@@ -686,6 +740,12 @@ body {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.test-blocked-guidance {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .execution-col {
@@ -728,6 +788,20 @@ body {
 .execution-summary-label {
   margin-right: 4px;
   color: var(--dlr-text-weak);
+}
+
+.execution-worker-summary {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: baseline;
+}
+
+.execution-worker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 内部 version_id 只作为次级调试信息，不作主版本标识。 */
@@ -855,6 +929,11 @@ body {
 
 .history-panel .ant-table-row {
   cursor: pointer;
+}
+
+.history-panel .ant-table-row:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
 }
 
 .execution-detail {
@@ -999,6 +1078,26 @@ body {
 
 .ai-model-settings {
   align-items: stretch;
+}
+
+.settings-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (max-width: 1400px) {
+  .catalog {
+    flex-basis: 230px;
+  }
+
+  .ai-assistant-expanded {
+    width: 360px;
+  }
+
+  .workbench-controls {
+    flex: 1 1 100%;
+  }
 }
 
 .settings-field {

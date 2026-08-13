@@ -3,13 +3,15 @@
 import { useState } from "react";
 import { Alert, Button, Dropdown, Modal, Space, Tag } from "antd";
 
+import { LANGUAGE_LABELS } from "../languages";
 import {
   productionDisplayState,
   productionRunningVersionId,
   productionStateColor,
   productionStateLabel,
 } from "../status";
-import type { Adapter, VersionSummary } from "../types";
+import type { Adapter, VersionSummary, Worker } from "../types";
+import ActionWithReason from "./ActionWithReason";
 
 interface WorkbenchHeaderProps {
   adapter: Adapter;
@@ -21,6 +23,11 @@ interface WorkbenchHeaderProps {
   dirty: boolean;
   busy: boolean;
   contentReady: boolean;
+  productionWorker: Worker | null;
+  workers: Worker[];
+  workersLoading: boolean;
+  workersError: string | null;
+  productionWorkerRetestRequired: boolean;
   onSelectVersion: (versionId: number) => void;
   onSave: () => void;
   /** 发布走确认框（门禁信息 + Diff 入口），由 App 打开。 */
@@ -53,6 +60,7 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
   const runningIdle =
     productionState === "running" && runningExecutionId === null && displayState === "running";
   const runningVersionId = productionRunningVersionId(adapter);
+  const contextVersion = selectedVersion ? `v${selectedVersion.seq}` : "未保存版本";
 
   // Published != Running 显著提示：只有两个指针都存在且不一致时才显示。
   const publishedRunningMismatch =
@@ -60,6 +68,55 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
     adapter.published_version_id !== undefined &&
     runningVersionId !== null &&
     adapter.published_version_id !== runningVersionId;
+  const abnormal = displayState === "abnormal";
+  const abnormalExecutionId = adapter.last_production_execution_id ?? null;
+  const startRelevant =
+    adapter.published_version_id !== null &&
+    adapter.published_version_id !== undefined &&
+    productionState !== "running" &&
+    !archived &&
+    !stopping;
+  const productionWorkerStatusUnavailable =
+    adapter.production_worker_id !== null &&
+    adapter.production_worker_id !== undefined &&
+    !props.workersLoading &&
+    props.productionWorker === null;
+  const productionWorkerOffline =
+    props.productionWorker !== null && props.productionWorker.status !== "online";
+  const compatibleOnlineWorkers = props.workers.filter(
+    (worker) =>
+      worker.status === "online" && worker.capabilities.includes(adapter.language),
+  );
+  const automaticWorkerUnavailable =
+    (adapter.production_worker_id === null || adapter.production_worker_id === undefined) &&
+    !props.workersLoading &&
+    props.workersError === null &&
+    compatibleOnlineWorkers.length !== 1;
+
+  const saveBlockedReason = archived
+    ? "Adapter 已归档，请先在设置中恢复"
+    : !props.contentReady
+      ? "版本内容尚未就绪，请等待加载完成或刷新后重试"
+      : props.busy
+        ? "其他操作正在进行，请等待完成"
+        : null;
+  const publishBlockedReason = archived
+    ? "Adapter 已归档，请先在设置中恢复"
+    : !props.contentReady
+      ? "版本内容尚未就绪，请等待加载完成或刷新后重试"
+      : props.selectedVersionId === null
+        ? "当前没有已保存版本，请先保存为新版本"
+        : props.busy
+          ? "其他操作正在进行，请等待完成"
+          : null;
+  const startBlockedReason = archived
+    ? "Adapter 已归档，请先在设置中恢复"
+    : stopping
+      ? `正在等待 Execution #${runningExecutionId ?? "—"} 完成，进入终态后才能重新启动`
+      : props.busy
+        ? "其他操作正在进行，请等待完成"
+        : null;
+  const stopBlockedReason = props.busy ? "其他操作正在进行，请等待完成" : null;
 
   const menuItems = versions.map((version) => ({
     key: String(version.id),
@@ -81,40 +138,79 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
     <header className="workbench-header" data-testid="workbench-header">
       <div className="workbench-context">
         <div className="workbench-title-row">
-          <h2 className="workbench-title">{adapter.name}</h2>
-          {selectedVersion && (
-            <span className="version-seq" data-testid="version-seq">
-              v{selectedVersion.seq}
-            </span>
-          )}
-          {props.isLatest && (
-            <Tag color="blue" data-testid="latest-badge">
-              Latest
-            </Tag>
-          )}
-          {props.isPublished && (
-            <Tag color="green" data-testid="published-badge">
-              Published
-            </Tag>
-          )}
-          <Tag color={productionStateColor(displayState)} data-testid="production-state">
-            生产：{productionStateLabel(displayState)}
-          </Tag>
-          {runningIdle && (
-            <Tag data-testid="production-execution-idle">执行：空闲</Tag>
-          )}
-          {runningExecutionId !== null && (
-            <Tag color="processing" data-testid="running-execution">
-              {stopping ? "等待执行完成" : "执行进行中"} #{runningExecutionId}
-            </Tag>
-          )}
+          <h2 className="workbench-title" title={adapter.name}>{adapter.name}</h2>
+          <span className="workbench-context-separator" aria-hidden="true">·</span>
+          <span className="workbench-context-fact">{LANGUAGE_LABELS[adapter.language]}</span>
+          <span className="workbench-context-separator" aria-hidden="true">·</span>
+          <span className="version-seq" data-testid="version-seq">{contextVersion}</span>
           {props.dirty && (
             <Tag color="warning" data-testid="dirty-indicator">
               未保存修改
             </Tag>
           )}
         </div>
-        {adapter.description && <p className="workbench-description">{adapter.description}</p>}
+        <div className="workbench-production-summary">
+          <Tag color={productionStateColor(displayState)} data-testid="production-state">
+            生产：{productionStateLabel(displayState)}
+          </Tag>
+          <span>
+            发布目标：{versionSeqOrId(versions, adapter.published_version_id) ?? "未发布"}
+          </span>
+          <span>
+            运行版本：{versionSeqOrId(versions, runningVersionId) ?? "无"}
+          </span>
+          {runningIdle && <span data-testid="production-execution-idle">执行：空闲</span>}
+          {runningExecutionId !== null && (
+            <span data-testid="running-execution">
+              {stopping ? "等待完成" : "执行中"} #{runningExecutionId}
+            </span>
+          )}
+          {props.isLatest && <span data-testid="latest-badge">当前为 Latest</span>}
+          {props.isPublished && <span data-testid="published-badge">当前为 Published</span>}
+        </div>
+        {startRelevant && (productionWorkerStatusUnavailable || productionWorkerOffline) && (
+          <Alert
+            type="warning"
+            showIcon
+            data-testid="header-production-worker-warning"
+            message={
+              productionWorkerOffline
+                ? `production Worker ${props.productionWorker?.name ?? ""} 最近状态为离线`
+                : `暂时无法取得 production Worker #${adapter.production_worker_id ?? "—"} 的状态`
+            }
+            description={
+              props.workersError !== null
+                ? "Worker 列表加载失败；可刷新页面重试。Start 时后端仍会做最终在线判定。"
+                : "可在设置中检查或更换 Worker；Start 时后端会按最新心跳再次判定。"
+            }
+          />
+        )}
+        {startRelevant && automaticWorkerUnavailable && (
+          <Alert
+            type="warning"
+            showIcon
+            data-testid="header-production-worker-selection-warning"
+            message={
+              compatibleOnlineWorkers.length === 0
+                ? `当前没有有效在线且支持 ${LANGUAGE_LABELS[adapter.language]} 的 Worker`
+                : `当前有 ${compatibleOnlineWorkers.length} 个可用 Worker，无法自动确定 production Worker`
+            }
+            description={
+              compatibleOnlineWorkers.length === 0
+                ? "请先恢复、启动或注册一个兼容 Worker；Start 时后端仍会按最新心跳最终复核。"
+                : "请在 Adapter 设置中指定 production Worker；Start 时后端仍会按最新心跳最终复核。"
+            }
+          />
+        )}
+        {startRelevant && props.productionWorkerRetestRequired && (
+          <Alert
+            type="warning"
+            showIcon
+            data-testid="header-production-worker-retest"
+            message="production Worker 已切换，建议先重新测试"
+            description="请到“测试运行”用当前已发布版本完成测试。Start 时后端会按权威测试记录复核。"
+          />
+        )}
         {publishedRunningMismatch && (
           <Alert
             type="warning"
@@ -131,6 +227,15 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
             data-testid="production-stopping"
             message={`生产入口已关闭，等待 Execution #${runningExecutionId} 完成`}
             description="旧 Execution 进入终态并刷新后，才能启动新的生产执行。"
+          />
+        )}
+        {abnormal && (
+          <Alert
+            type="error"
+            showIcon
+            data-testid="production-abnormal"
+            message="最近一次生产执行异常"
+            description={`请先在执行记录中查看${abnormalExecutionId === null ? "失败详情" : ` Execution #${abnormalExecutionId}`}，确认失败原因后先 Stop 关闭当前生产入口；如需恢复再 Start。`}
           />
         )}
         {archived && (
@@ -158,44 +263,55 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
             {selectedVersion ? `v${selectedVersion.seq}` : "暂无版本"} ▾
           </Button>
         </Dropdown>
-        <Button
-          data-testid="publish-version"
-          disabled={props.selectedVersionId === null || props.busy || !props.contentReady || archived}
-          onClick={props.onPublishRequest}
-        >
-          发布
-        </Button>
+        <div className="workbench-lifecycle-actions">
+          {!props.isPublished && (
+            <ActionWithReason label="发布" reason={publishBlockedReason}>
+              <Button
+                data-testid="publish-version"
+                disabled={publishBlockedReason !== null}
+                onClick={props.onPublishRequest}
+              >
+                发布
+              </Button>
+            </ActionWithReason>
+          )}
         {adapter.published_version_id !== null && productionState !== "running" && (
-          <Button
-            type="primary"
-            data-testid="start-production"
-            disabled={props.busy || archived || stopping}
-            onClick={props.onStartProduction}
-          >
-            启动生产
-          </Button>
+          <ActionWithReason label="启动生产" reason={startBlockedReason}>
+            <Button
+              data-testid="start-production"
+              disabled={startBlockedReason !== null}
+              onClick={props.onStartProduction}
+            >
+              启动生产
+            </Button>
+          </ActionWithReason>
         )}
         {productionState === "running" && (
-          <Button
-            danger
-            data-testid="stop-production"
-            disabled={props.busy}
-            onClick={() => setStopModalOpen(true)}
-          >
-            停止
-          </Button>
+          <ActionWithReason label="停止生产" reason={stopBlockedReason}>
+            <Button
+              danger
+              data-testid="stop-production"
+              disabled={stopBlockedReason !== null}
+              onClick={() => setStopModalOpen(true)}
+            >
+              停止
+            </Button>
+          </ActionWithReason>
         )}
+        </div>
         <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>
           设置
         </Button>
-        <Button
-          type="primary"
-          data-testid="save-version"
-          disabled={props.busy || !props.contentReady || archived}
-          onClick={props.onSave}
-        >
-          保存新版本
-        </Button>
+        <ActionWithReason label="保存新版本" reason={saveBlockedReason}>
+          <Button
+            type="primary"
+            data-testid="save-version"
+            disabled={saveBlockedReason !== null}
+            onClick={props.onSave}
+          >
+            保存新版本
+          </Button>
+        </ActionWithReason>
       </div>
 
       <Modal

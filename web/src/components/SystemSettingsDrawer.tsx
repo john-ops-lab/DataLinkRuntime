@@ -51,22 +51,26 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
   const [form, setForm] = useState<CredentialFormState>(emptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const fail = useCallback(
     (message: string) => {
       setPanelError(message);
+      setNotice(null);
       onError(message);
     },
     [onError],
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     try {
       setCredentials(await api.listCredentials());
       setPanelError(null);
+      return true;
     } catch (error) {
       fail(errorMessage(error));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -78,11 +82,13 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
   }, [load]);
 
   function openCreate() {
+    setNotice(null);
     setForm(emptyForm());
     setFormOpen(true);
   }
 
   function openUpdate(credential: Credential) {
+    setNotice(null);
     setForm({
       editingId: credential.id,
       name: credential.name,
@@ -115,6 +121,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
       }
       fields[key] = value;
     }
+    setNotice(null);
     setSubmitting(true);
     try {
       setPanelError(null);
@@ -124,7 +131,12 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
         await api.updateCredential(form.editingId, { name, fields });
       }
       setFormOpen(false);
-      await load();
+      const operation = form.editingId === null ? "凭据已创建" : "凭据已更新";
+      if (await load()) {
+        setNotice(operation);
+      } else {
+        setPanelError(`${operation}，但刷新列表失败；请手动刷新确认，避免重复提交。`);
+      }
     } catch (error) {
       fail(errorMessage(error));
     } finally {
@@ -138,8 +150,13 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
     }
     try {
       setPanelError(null);
+      setNotice(null);
       await api.deleteCredential(credential.id);
-      await load();
+      if (await load()) {
+        setNotice("凭据已删除");
+      } else {
+        setPanelError("凭据已删除，但刷新列表失败；请手动刷新确认。");
+      }
     } catch (error) {
       fail(errorMessage(error));
     }
@@ -153,22 +170,33 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
         <Button type="primary" data-testid="new-credential" onClick={openCreate}>
           新建凭据
         </Button>
-        <Button data-testid="refresh-credentials" loading={loading} onClick={() => void load()}>
+        <Button
+          data-testid="refresh-credentials"
+          loading={loading}
+          onClick={() => {
+            setNotice(null);
+            void load().then((ok) => ok && setNotice("凭据列表已刷新"));
+          }}
+        >
           刷新
         </Button>
       </Space>
-      {panelError !== null && <p className="settings-panel-error">{panelError}</p>}
+      <Typography.Text type="secondary">这里只展示凭据元数据；Secret 真值不会回显到浏览器。</Typography.Text>
+      {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
+      {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
 
       {formOpen && (
         <div className="settings-inline-form" data-testid="credential-form">
           <Input
             data-testid="credential-name"
+            aria-label="凭据名称"
             placeholder="名称"
             value={form.name}
             onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
           />
           <Select
             data-testid="credential-type"
+            aria-label="凭据类型"
             style={{ minWidth: 200 }}
             value={form.type}
             disabled={form.editingId !== null}
@@ -182,6 +210,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
             <Input.Password
               key={key}
               data-testid={`credential-field-${key}`}
+              aria-label={`凭据字段 ${key}`}
               placeholder={key}
               value={form.fields[key] ?? ""}
               autoComplete="new-password"
@@ -289,16 +318,18 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   const [testing, setTesting] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Map<number, { ok: boolean; text: string }>>(new Map());
   const [panelError, setPanelError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const fail = useCallback(
     (message: string) => {
       setPanelError(message);
+      setNotice(null);
       onError(message);
     },
     [onError],
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     try {
       const [sourceList, credentialList] = await Promise.all([
@@ -308,8 +339,10 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       setSources(sourceList);
       setCredentials(credentialList);
       setPanelError(null);
+      return true;
     } catch (error) {
       fail(errorMessage(error));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -330,6 +363,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       fail("包源名称与 index URL 均不能为空");
       return;
     }
+    setNotice(null);
     setSubmitting(true);
     try {
       setPanelError(null);
@@ -342,7 +376,11 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       });
       setFormOpen(false);
       setForm(EMPTY_SOURCE_FORM);
-      await load();
+      if (await load()) {
+        setNotice("依赖源已创建");
+      } else {
+        setPanelError("依赖源已创建，但刷新列表失败；请手动刷新确认，避免重复提交。");
+      }
     } catch (error) {
       fail(errorMessage(error));
     } finally {
@@ -353,8 +391,13 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   async function handleSetDefault(source: PackageSource) {
     try {
       setPanelError(null);
+      setNotice(null);
       await api.updatePackageSource(source.id, { is_default: true });
-      await load();
+      if (await load()) {
+        setNotice(`${source.name} 已设为默认依赖源`);
+      } else {
+        setPanelError(`${source.name} 已设为默认依赖源，但刷新列表失败；请手动刷新确认。`);
+      }
     } catch (error) {
       fail(errorMessage(error));
     }
@@ -366,15 +409,28 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     }
     try {
       setPanelError(null);
+      setNotice(null);
       await api.deletePackageSource(source.id);
-      await load();
+      if (await load()) {
+        setNotice("依赖源已删除");
+      } else {
+        setPanelError("依赖源已删除，但刷新列表失败；请手动刷新确认。");
+      }
     } catch (error) {
       fail(errorMessage(error));
     }
   }
 
   async function handleTest(source: PackageSource) {
+    if (testing !== null) {
+      return;
+    }
     setTesting(source.id);
+    setTestResults((current) => {
+      const next = new Map(current);
+      next.delete(source.id);
+      return next;
+    });
     try {
       const result = await api.testPackageSource(source.id);
       const text = result.ok
@@ -428,6 +484,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
               size="small"
               data-testid="test-package-source"
               loading={testing === source.id}
+              disabled={testing !== null}
               onClick={() => void handleTest(source)}
             >
               测试
@@ -435,6 +492,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             {result !== undefined && (
               <Typography.Text
                 type={result.ok ? "success" : "danger"}
+                role={result.ok ? "status" : "alert"}
                 data-testid="package-source-test-result"
               >
                 {result.text}
@@ -473,28 +531,45 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   return (
     <div className="settings-panel" data-testid="package-sources-panel">
       <Space className="settings-panel-toolbar">
-        <Button type="primary" data-testid="new-package-source" onClick={() => setFormOpen(true)}>
+        <Button
+          type="primary"
+          data-testid="new-package-source"
+          onClick={() => {
+            setNotice(null);
+            setFormOpen(true);
+          }}
+        >
           新建依赖源
         </Button>
-        <Button data-testid="refresh-package-sources" loading={loading} onClick={() => void load()}>
+        <Button
+          data-testid="refresh-package-sources"
+          loading={loading}
+          onClick={() => {
+            setNotice(null);
+            void load().then((ok) => ok && setNotice("依赖源列表已刷新"));
+          }}
+        >
           刷新
         </Button>
       </Space>
       <Typography.Text type="secondary">
         每种类型最多一个默认源；Worker 会先尝试本地缓存，再使用对应语言的默认依赖源。
       </Typography.Text>
-      {panelError !== null && <p className="settings-panel-error">{panelError}</p>}
+      {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
+      {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
 
       {formOpen && (
         <div className="settings-inline-form" data-testid="package-source-form">
           <Input
             data-testid="package-source-name"
+            aria-label="依赖源名称"
             placeholder="名称"
             value={form.name}
             onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
           />
           <Select
             data-testid="package-source-kind"
+            aria-label="依赖源类型"
             value={form.kind}
             style={{ minWidth: 180 }}
             options={[
@@ -508,6 +583,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           />
           <Input
             data-testid="package-source-url"
+            aria-label="依赖源 Repository URL"
             placeholder="Repository URL"
             value={form.index_url}
             onChange={(event) => setForm((current) => ({ ...current, index_url: event.target.value }))}
@@ -521,6 +597,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           </Checkbox>
           <Select
             data-testid="package-source-credential"
+            aria-label="依赖源凭据"
             placeholder="凭据（可选）"
             allowClear
             style={{ minWidth: 220 }}
@@ -573,8 +650,12 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
 interface SystemSettingsDrawerProps {
   open: boolean;
   onClose: () => void;
-  onError: (message: string) => void;
 }
+
+// Settings panels render their own persistent alert next to the failed action.
+// Keep those errors local so the same message is not duplicated in the global
+// Console banner while the Drawer is open.
+function keepErrorInline(): void {}
 
 export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
   return (
@@ -590,17 +671,17 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
           {
             key: "credentials",
             label: "凭据管理",
-            children: <CredentialsPanel onError={props.onError} />,
+            children: <CredentialsPanel onError={keepErrorInline} />,
           },
           {
             key: "package-sources",
             label: "依赖源",
-            children: <PackageSourcesPanel onError={props.onError} />,
+            children: <PackageSourcesPanel onError={keepErrorInline} />,
           },
           {
             key: "ai-model",
             label: "AI 模型",
-            children: <AiModelSettingsPanel onError={props.onError} />,
+            children: <AiModelSettingsPanel onError={keepErrorInline} />,
           },
         ]}
       />

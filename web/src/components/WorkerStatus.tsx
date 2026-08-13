@@ -16,11 +16,10 @@ interface WorkerStatusProps {
 }
 
 export default function WorkerStatus({ workers, loading, error }: WorkerStatusProps) {
-
   const content = (
     <div className="worker-popover">
       {loading && <Spin size="small" />}
-      {error !== null && <span className="history-error">{error}</span>}
+      {error !== null && <span className="history-error" role="alert">{error}</span>}
       {!loading && error === null && workers.length === 0 && (
         <Empty description="暂无已注册 Worker" />
       )}
@@ -52,6 +51,7 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
   );
 
   const hasOnlineWorker = workers.some((worker) => worker.status === "online");
+  const onlineCount = workers.filter((worker) => worker.status === "online").length;
   const allOffline = workers.length > 0 && !hasOnlineWorker;
 
   return (
@@ -62,7 +62,7 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
     >
       <Button size="small" data-testid="worker-status">
         <Badge status={hasOnlineWorker ? "success" : allOffline ? "error" : "default"} />
-        Workers
+        Workers · {loading ? "加载中" : error !== null ? "状态未知" : `${onlineCount}/${workers.length} 在线`}
       </Button>
     </Popover>
   );
