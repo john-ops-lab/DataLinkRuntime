@@ -4429,6 +4429,79 @@ it("rejects an unparsable input locally without calling the API", async () => {
   ).toBe(false);
 });
 
+it("renders the schedule read-only on an archived adapter and never calls PUT", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    archived_at: "2026-08-13T00:00:00Z",
+    production_state: "stopped",
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ body: makeSchedule() }),
+    },
+  ]);
+  render(<App />);
+  await screen.findByTestId("adapter-catalog");
+  // 已归档 Adapter 只在归档视图中可见。
+  fireEvent.click(screen.getByText("已归档"));
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  // GET 仍可查看配置，但编辑与保存全部禁用并给出只读提示。
+  expect(screen.getByTestId("schedule-archived-hint").textContent).toContain("只读");
+  expect(valueOf("schedule-cron")).toBe("0 */2 * * *");
+  expect((screen.getByTestId("schedule-cron") as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByTestId("schedule-timezone") as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByTestId("schedule-input") as HTMLTextAreaElement).disabled).toBe(true);
+  expect((screen.getByTestId("schedule-save") as HTMLButtonElement).disabled).toBe(true);
+
+  fireEvent.click(screen.getByTestId("schedule-save"));
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+    ),
+  ).toBe(false);
+});
+
+it("reloads the stale next_run_at through the refresh button", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  let scheduleGets = 0;
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => {
+        scheduleGets += 1;
+        // 调度器会推进游标：第二次 GET 返回更晚的计划点。
+        return {
+          body: makeSchedule({
+            next_run_at: scheduleGets === 1 ? "2026-08-13T10:00:00Z" : "2026-08-13T12:00:00Z",
+          }),
+        };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  const before = screen.getByTestId("schedule-next-run").textContent;
+  expect(before).not.toBe("已禁用，不计划执行");
+
+  fireEvent.click(screen.getByTestId("schedule-refresh"));
+  await waitFor(() => {
+    expect(screen.getByTestId("schedule-next-run").textContent).not.toBe(before);
+  });
+  expect(scheduleGets).toBe(2);
+  expect(
+    fetchMock.mock.calls.filter(([url]) => String(url) === "/api/adapters/1/schedule"),
+  ).toHaveLength(2);
+});
+
 it("shows scheduled trigger rows and the planned time in history", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
   const summary = makeSummary({

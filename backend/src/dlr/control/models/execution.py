@@ -143,9 +143,7 @@ class Execution(Base):
     trigger: Mapped[str] = mapped_column(String(16), nullable=False)
     # M5.2: the planned point this Schedule Execution represents; NULL for
     # every non-schedule trigger.
-    scheduled_for: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", server_default=text("'pending'")
     )

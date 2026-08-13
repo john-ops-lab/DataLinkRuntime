@@ -202,25 +202,34 @@ cron（固定 5 字段表达式）、timezone（IANA 名称）、input（JSON，
 
 配置 API：`GET /api/adapters/{id}/schedule` 未配置时返回稳定 404
 `schedule_not_configured`；`PUT` 全量替换（create-or-replace），cron / timezone / input
-校验失败一律不持久化（422 / 413），保存后游标总是重基准到下一个未来计划点，因此
-编辑、禁用、启用都不回放历史点。
+校验失败一律不持久化（422 / 413），已归档 Adapter 拒绝写入（409 `adapter_archived`，
+GET 仍可查看）；保存后游标总是重基准到下一个未来计划点，因此编辑、禁用、启用都
+不回放历史点。
 
 调度循环：Control 进程内一个轻量后台任务按 `DLR_SCHEDULE_POLL_SECONDS`（默认 5s）
 轮询 PostgreSQL；PostgreSQL 是唯一调度状态源，不引入 APScheduler / Celery / Redis。
-每个 tick 用 `FOR UPDATE SKIP LOCKED` 取 `enabled AND next_run_at <= now` 的行，多个
-Control 实例并发时自然分区不重复；随后在同一事务里把游标推进到 `now` 之后的下一个
-未来计划点，再评估统一生产门禁（未归档、`production_state=running`、锁定的
-Production Version 与 Worker、Worker 有效在线且 capability 兼容、无 active 生产类
-Execution、input 未超限），通过才创建 `trigger=schedule` 的 pending Execution
-（version_id = 锁定的 `production_version_id`，target_worker_id = 锁定的生产
-Worker，input = Schedule 配置值，scheduled_for = 到期计划点）。
+每个 tick 先纯读发现 `enabled AND next_run_at <= now` 的行，再逐行在独立短事务中
+处理：按平台统一锁顺序先 `FOR UPDATE SKIP LOCKED` 锁 Adapter 行、再锁 Schedule 行，
+在最终锁内复查到期条件（enabled 且 `next_run_at <= now`）后执行“领取→门禁→游标
+更新→创建 Execution”；多个 Control 实例并发时自然分区不重复。行处理结果分三类：
+创建 Execution（CREATED）、消费计划点仅推进游标（CONSUMED）两者提交；临时阻塞
+（HELD）不写任何数据并回滚，计划点保持 due。
 
-补跑语义（单次最新补跑）：游标在每个 tick 总是前进（无论是否创建 Execution），因此
-Control 停机 / Worker 离线 / 生产 busy 错过的窗口，在条件恢复后至多补跑窗口内最近
-一次计划点，绝不逐周期回放；门禁失败直接跳过不排队。显式 Stop / 禁用 / 编辑 cron
-时游标重基准，关闭窗口内的补跑。Adapter 行锁与 Start / Stop / PATCH 串行化；
-`(adapter_id, scheduled_for)` 部分唯一索引与 `uq_executions_active_production` 是
-最终的重复创建防线，竞争失败只回滚 savepoint，游标推进照常提交。
+门禁分两类：结构性失败（已归档、`production_state ≠ running`、缺锁定的 Production
+Version / Worker 指针、Worker 记录缺失或 capability 不兼容、input 超限）消费该点：
+游标推进到下一个未来计划点，跳过但不排队；临时性失败（生产 Worker 有效离线、存在
+active 生产类 Execution）保持 due：游标不动、不排队，条件恢复后立即补截至当前最近
+一次计划点。通过门禁才创建 `trigger=schedule` 的 pending Execution（version_id =
+锁定的 `production_version_id`，target_worker_id = 锁定的生产 Worker，input =
+Schedule 配置值，scheduled_for = 到期计划点）。
+
+补跑语义（单次最新补跑，绝不排队）：Worker 离线 / 生产 busy 错过的窗口保持 due，
+恢复后至多补跑窗口内最近一次计划点，绝不逐周期回放；Control 停机期间无 tick，
+恢复后同样至多补最近一次。显式 Stop / 禁用 / 编辑 cron / 启用时游标重基准到未来
+点，关闭窗口内的补跑。锁顺序全平台统一为 Adapter 行先于 Schedule 行（Start / Stop /
+PATCH / PUT Schedule / scheduler tick 一致），不会交叉死锁；`(adapter_id,
+scheduled_for)` 部分唯一索引与 `uq_executions_active_production` 是最终的重复创建
+防线，竞争失败只回滚 savepoint，游标推进照常提交。
 
 时间语义：cron 在配置的时区内求值，结果统一以 UTC 落库，从不使用服务器本地时区。
 DST 行为固定为 croniter 语义：被跳过的墙钟时间在转换边界触发一次，歧义的墙钟时间

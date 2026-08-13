@@ -42,6 +42,8 @@ function validationMessage(error: ApiError): string {
 interface ScheduleTriggerPanelProps {
   adapterId: number;
   productionState: "idle" | "running" | "stopped";
+  /** 已归档 Adapter 只读：可查看配置但禁用编辑与保存（与服务端 409 adapter_archived 对齐）。 */
+  archived: boolean;
 }
 
 export default function ScheduleTriggerPanel(props: ScheduleTriggerPanelProps) {
@@ -141,6 +143,15 @@ export default function ScheduleTriggerPanel(props: ScheduleTriggerPanelProps) {
         <Alert type="error" showIcon message={loadError} data-testid="schedule-load-error" />
       )}
 
+      {props.archived && (
+        <Alert
+          type="warning"
+          showIcon
+          message="Adapter 已归档，Schedule 为只读：可查看配置，但无法编辑或保存。"
+          data-testid="schedule-archived-hint"
+        />
+      )}
+
       {enabled && props.productionState !== "running" && (
         <Alert
           type="info"
@@ -156,6 +167,7 @@ export default function ScheduleTriggerPanel(props: ScheduleTriggerPanelProps) {
           <Switch
             data-testid="schedule-enabled"
             checked={enabled}
+            disabled={props.archived}
             onChange={(value) => {
               setEnabled(value);
               setNotice(null);
@@ -168,6 +180,7 @@ export default function ScheduleTriggerPanel(props: ScheduleTriggerPanelProps) {
             data-testid="schedule-cron"
             value={cron}
             placeholder="0 */2 * * *"
+            disabled={props.archived}
             onChange={(event) => {
               setCron(event.target.value);
               setNotice(null);
@@ -180,6 +193,7 @@ export default function ScheduleTriggerPanel(props: ScheduleTriggerPanelProps) {
             data-testid="schedule-timezone"
             value={timezone}
             placeholder="Asia/Shanghai"
+            disabled={props.archived}
             onChange={(event) => {
               setTimezone(event.target.value);
               setNotice(null);
@@ -192,6 +206,7 @@ export default function ScheduleTriggerPanel(props: ScheduleTriggerPanelProps) {
             data-testid="schedule-input"
             rows={4}
             value={inputText}
+            disabled={props.archived}
             onChange={(event) => {
               setInputText(event.target.value);
               setNotice(null);
@@ -200,9 +215,19 @@ export default function ScheduleTriggerPanel(props: ScheduleTriggerPanelProps) {
         </label>
         <div className="settings-field">
           <span className="settings-field-label">下次执行时间</span>
-          <span data-testid="schedule-next-run">
-            {enabled ? formatTime(saved?.next_run_at ?? null) : "已禁用，不计划执行"}
-          </span>
+          <Space>
+            <span data-testid="schedule-next-run">
+              {enabled ? formatTime(saved?.next_run_at ?? null) : "已禁用，不计划执行"}
+            </span>
+            {/* next_run_at 会被调度器推进，手动刷新避免展示过期的游标。 */}
+            <Button
+              size="small"
+              data-testid="schedule-refresh"
+              onClick={() => void load()}
+            >
+              刷新
+            </Button>
+          </Space>
         </div>
         {saveError !== null && (
           <Alert type="error" showIcon message={saveError} data-testid="schedule-error" />
@@ -215,6 +240,7 @@ export default function ScheduleTriggerPanel(props: ScheduleTriggerPanelProps) {
             type="primary"
             data-testid="schedule-save"
             loading={saving}
+            disabled={props.archived}
             onClick={() => void handleSave()}
           >
             保存

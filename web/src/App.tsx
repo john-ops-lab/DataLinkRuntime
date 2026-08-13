@@ -1296,6 +1296,7 @@ function AdapterConsole() {
                         key={selected.id}
                         adapterId={selected.id}
                         productionState={selected.production_state ?? "idle"}
+                        archived={!!selected.archived_at}
                       />
                     ),
                   },

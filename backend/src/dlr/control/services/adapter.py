@@ -498,9 +498,7 @@ def start_production(session: Session, adapter_id: int) -> Adapter:
     # import: services.schedule depends on this module.
     from dlr.control.services.schedule import rebase_enabled_schedule
 
-    rebase_enabled_schedule(
-        session, adapter_id, now=worker_availability.current_time(session)
-    )
+    rebase_enabled_schedule(session, adapter_id, now=worker_availability.current_time(session))
     session.commit()
     session.refresh(adapter)
     return adapter
