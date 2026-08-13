@@ -53,6 +53,8 @@ export interface Execution {
   version_id: number;
   worker_id: number | null;
   trigger: string;
+  /** M5.2: the planned point for trigger=schedule; null for other triggers. */
+  scheduled_for: string | null;
   status: ExecutionStatus;
   input: unknown;
   output: unknown;
@@ -87,6 +89,8 @@ export interface ExecutionSummary {
   worker_id: number | null;
   worker_name: string | null;
   trigger: string;
+  /** M5.2: the planned point for trigger=schedule; null for other triggers. */
+  scheduled_for: string | null;
   status: ExecutionStatus;
   created_at: string;
   started_at: string | null;
@@ -98,6 +102,27 @@ export interface ExecutionSummary {
 export interface ExecutionHistoryPage {
   items: ExecutionSummary[];
   next_before_id: number | null;
+}
+
+// --- M5.2: Schedule Trigger --------------------------------------------------
+
+/** Singleton Schedule configuration of one Adapter (GET/PUT response body). */
+export interface AdapterSchedule {
+  adapter_id: number;
+  enabled: boolean;
+  cron: string;
+  timezone: string;
+  input: unknown;
+  /** Scheduler cursor (UTC); null while disabled. */
+  next_run_at: string | null;
+  updated_at: string;
+}
+
+export interface AdapterScheduleDraft {
+  enabled: boolean;
+  cron: string;
+  timezone: string;
+  input: unknown;
 }
 
 export interface Worker {

@@ -19,13 +19,16 @@ function errorMessage(error: unknown): string {
   return "请求失败";
 }
 
-/** M3.2：触发列区分测试运行与生产启动；未知值原样展示。 */
+/** M3.2/M5.2：触发列区分测试运行、生产启动与定时触发；未知值原样展示。 */
 function triggerLabel(trigger: string): string {
   if (trigger === "manual") {
     return "测试运行";
   }
   if (trigger === "production") {
     return "生产启动";
+  }
+  if (trigger === "schedule") {
+    return "定时触发";
   }
   return trigger;
 }
@@ -185,8 +188,17 @@ export default function ExecutionHistoryPanel(props: {
     {
       title: "触发",
       dataIndex: "trigger",
-      width: 90,
-      render: (trigger: string) => triggerLabel(trigger),
+      width: 150,
+      render: (trigger: string, summary: ExecutionSummary) => (
+        <div>
+          <div>{triggerLabel(trigger)}</div>
+          {trigger === "schedule" && summary.scheduled_for !== null && (
+            <div className="execution-version-debug" data-testid="history-scheduled-for">
+              计划 {formatTime(summary.scheduled_for)}
+            </div>
+          )}
+        </div>
+      ),
     },
     {
       title: "耗时",
@@ -222,7 +234,7 @@ export default function ExecutionHistoryPanel(props: {
           columns={columns}
           dataSource={items}
           pagination={false}
-          scroll={{ x: 776 }}
+          scroll={{ x: 836 }}
           locale={{ emptyText: <Empty description="暂无执行记录" /> }}
           onRow={(summary) => ({
             onClick: () => void openExecution(summary.id, summary),
@@ -306,6 +318,15 @@ export default function ExecutionHistoryPanel(props: {
                   ),
                 },
                 { key: "trigger", label: "触发方式", children: triggerLabel(visibleDetail.trigger) },
+                ...(visibleDetail.trigger === "schedule"
+                  ? [
+                      {
+                        key: "scheduled-for",
+                        label: "计划时间",
+                        children: formatTime(visibleDetail.scheduled_for),
+                      },
+                    ]
+                  : []),
                 { key: "created", label: "创建时间", children: formatTime(visibleDetail.created_at) },
                 { key: "started", label: "开始时间", children: formatTime(visibleDetail.started_at) },
                 { key: "ended", label: "结束时间", children: formatTime(visibleDetail.ended_at) },

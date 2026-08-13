@@ -32,6 +32,8 @@ services:
       DLR_MASTER_KEY: ${DLR_MASTER_KEY:-}
       # M4 non-streaming Provider request deadline; Settings enforces 10..600s.
       DLR_AI_PROVIDER_TIMEOUT_SECONDS: ${DLR_AI_PROVIDER_TIMEOUT_SECONDS:-180}
+      # M5.2 Schedule Trigger: Control scheduler polling interval (0.5..300s).
+      DLR_SCHEDULE_POLL_SECONDS: ${DLR_SCHEDULE_POLL_SECONDS:-5}
     depends_on:
       postgres:
         condition: service_healthy

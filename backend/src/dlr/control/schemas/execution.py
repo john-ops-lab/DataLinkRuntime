@@ -28,6 +28,8 @@ class ExecutionResponse(BaseModel):
     worker_id: int | None
     target_worker_id: int | None
     trigger: str
+    # M5.2: the planned point for trigger=schedule; null for other triggers.
+    scheduled_for: datetime | None
     status: str
     cancel_requested: bool
     input: Any
@@ -96,6 +98,8 @@ class ExecutionSummary(BaseModel):
     worker_id: int | None
     worker_name: str | None
     trigger: str
+    # M5.2: the planned point for trigger=schedule; null for other triggers.
+    scheduled_for: datetime | None
     status: str
     created_at: datetime
     started_at: datetime | None

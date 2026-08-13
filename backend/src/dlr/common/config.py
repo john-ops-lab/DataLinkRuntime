@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     )
     sse_keepalive_seconds: float = Field(default=15.0, validation_alias="DLR_SSE_KEEPALIVE_SECONDS")
 
+    # M5.2 Schedule Trigger: the Control scheduler is a lightweight
+    # PostgreSQL polling loop; this is its scan interval.
+    schedule_poll_seconds: float = Field(
+        default=5.0,
+        ge=0.5,
+        le=300.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_SCHEDULE_POLL_SECONDS",
+    )
+
     # M4 non-streaming Provider requests may generate a complete code Candidate.
     # Keep the deployment override bounded so a typo cannot create an
     # effectively immediate or unbounded network deadline.

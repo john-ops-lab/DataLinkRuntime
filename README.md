@@ -147,7 +147,9 @@ npm run build
 构建并启动全部容器（隔离的 compose project 与独立端口），在真实 PostgreSQL
 上执行 Alembic 迁移后等待全部服务健康，验证 `/api/health` 链路与 401 认证拒绝，
 带 Admin Token 执行 Adapter 管理、执行与 M3.2 生产生命周期回归，再对 Python、
-JavaScript、Java 分别真实执行 `Save → Test → Publish → Start → Stop`（M5.1：Start 开启生产入口并锁定版本，不再创建 Execution）。M4 链路
+JavaScript、Java 分别真实执行 `Save → Test → Publish → Start → Stop`（M5.1：Start 开启生产入口并锁定版本，不再创建 Execution）。
+M5.2 链路真实跑通 `Save → Test → Publish → 配置短周期 Schedule → Start → Start 不执行 → 到点 schedule Execution → Worker succeeded`，
+并验证 Publish 新版本后、未 Stop/Start 前下一次 Schedule 仍执行锁定的旧 Production Version。M4 链路
 额外启动一个临时、仅位于 smoke 网络中的 OpenAI-compatible fake Provider，验证设置、
 模型刷新、连接测试与三语言 AI Assist，并证明 Version / Execution / published / production
 事实未改变；不访问任何公网 AI，也不把 fake Provider 加入正式 Compose 拓扑。整个过程

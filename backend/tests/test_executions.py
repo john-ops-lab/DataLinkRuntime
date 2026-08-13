@@ -158,6 +158,7 @@ SUMMARY_FIELDS = {
     "worker_id",
     "worker_name",
     "trigger",
+    "scheduled_for",
     "status",
     "created_at",
     "started_at",
@@ -196,6 +197,7 @@ def test_history_summaries_never_carry_big_fields(api_client: TestClient) -> Non
         assert forbidden not in item
     assert item["status"] == "pending"
     assert item["trigger"] == "manual"
+    assert item["scheduled_for"] is None
     assert item["worker_id"] is None
     assert item["worker_name"] is None
 

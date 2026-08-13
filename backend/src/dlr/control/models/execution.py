@@ -19,6 +19,14 @@ M3.2 scheduling and lifecycle fields:
   (``production`` / ``schedule`` / ``webhook``).
 - The partial unique index guarantees at most one active production-class
   Execution per Adapter at the database level (M5.1).
+
+M5.2 Schedule Trigger fields:
+
+- ``scheduled_for`` records the planned point a ``trigger=schedule``
+  Execution represents; NULL for every other trigger.
+- The partial unique index on ``(adapter_id, scheduled_for)`` guarantees
+  one planned point yields at most one Schedule Execution, even under
+  Control restarts or multiple competing scheduler instances.
 """
 
 from datetime import datetime
@@ -93,6 +101,16 @@ class Execution(Base):
                 "AND status IN ('pending', 'running')"
             ),
         ),
+        # M5.2: one planned point yields at most one Schedule Execution;
+        # the final defense against duplicate creation across Control
+        # restarts or concurrent scheduler loops.
+        Index(
+            "uq_executions_schedule_point",
+            "adapter_id",
+            "scheduled_for",
+            unique=True,
+            postgresql_where=text("trigger = 'schedule'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -123,6 +141,9 @@ class Execution(Base):
         index=True,
     )
     trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    # M5.2: the planned point this Schedule Execution represents; NULL for
+    # every non-schedule trigger.
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", server_default=text("'pending'")
     )

@@ -492,6 +492,13 @@ def start_production(session: Session, adapter_id: int) -> Adapter:
         )
     adapter.production_state = "running"
     adapter.production_version_id = adapter.published_version_id
+    # M5.2: re-base the enabled Schedule cursor inside the same transaction,
+    # so a Stop -> Start cycle begins from the next future planned point and
+    # never catches up the points missed while the entry was closed. Local
+    # import: services.schedule depends on this module.
+    from dlr.control.services.schedule import rebase_enabled_schedule
+
+    rebase_enabled_schedule(session, adapter_id, now=worker_availability.current_time(session))
     session.commit()
     session.refresh(adapter)
     return adapter

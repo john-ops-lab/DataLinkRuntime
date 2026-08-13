@@ -8,10 +8,12 @@ from dlr.control.models.platform import (
     Credential,
     PackageSource,
 )
+from dlr.control.models.schedule import AdapterSchedule
 
 __all__ = [
     "Adapter",
     "AdapterCredentialBinding",
+    "AdapterSchedule",
     "AdapterVersion",
     "AiModelSetting",
     "Credential",
