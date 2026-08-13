@@ -85,19 +85,21 @@ export function productionDisplayState(adapter: Adapter): ProductionDisplayState
   const state = adapter.production_state ?? "idle";
   if (state === "running") {
     const lastStatus = adapter.last_production_execution_status;
-    const hasActiveExecution =
-      adapter.running_execution_id !== null && adapter.running_execution_id !== undefined;
-    return !hasActiveExecution &&
+    return !hasActiveProductionExecution(adapter) &&
       (lastStatus === "failed" || lastStatus === "timeout")
       ? "abnormal"
       : "running";
   }
   if (state === "stopped") {
-    return adapter.running_execution_id !== null && adapter.running_execution_id !== undefined
-      ? "stopping"
-      : "stopped";
+    return hasActiveProductionExecution(adapter) ? "stopping" : "stopped";
   }
   return "ready";
+}
+
+/** M5.1: a real active production Execution exists only while one is pending
+ * or running; an open production entry without one is the legal idle state. */
+export function hasActiveProductionExecution(adapter: Adapter): boolean {
+  return adapter.running_execution_id !== null && adapter.running_execution_id !== undefined;
 }
 
 /** M5.1: Locked production version takes priority when running; falls back to
@@ -112,6 +114,23 @@ export function productionRunningVersionId(adapter: Adapter): number | null {
     adapter.last_production_version_id ??
     null
   );
+}
+
+/** M5.1: server-derived seq of the version shown for the production entry.
+ * Uses the locked production_version_seq first so unvisited Catalog rows never
+ * depend on a locally loaded version list. */
+export function productionRunningVersionSeq(adapter: Adapter): number | null | undefined {
+  const versionId = productionRunningVersionId(adapter);
+  if (versionId === null) {
+    return undefined;
+  }
+  if (adapter.production_version_id === versionId) {
+    return adapter.production_version_seq;
+  }
+  if (adapter.running_version_id === versionId) {
+    return adapter.running_version_seq;
+  }
+  return adapter.last_production_version_seq;
 }
 
 export function isProductionStopping(adapter: Adapter): boolean {

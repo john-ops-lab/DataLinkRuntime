@@ -62,6 +62,7 @@ Execution 包含：input、output、stdout、stderr、start time、end time、st
 - v1 只支持 **One-shot（一次性）Adapter**：每次触发 = 一次完整执行 = 一条 Execution 记录。
 - 常驻类型 Adapter（长生命周期进程）属于长期方向，v1 不建表、不实现进程生命周期管理。
 - **所有用户代码执行（包括 Manual Test）都在 Worker 上进行**，Control Node 不运行用户代码。
+- Publish 与 Start 分离：**Published Version** 是下一次 Start 的目标；**Production Version** 是当前 Start 生命周期锁定、供后续生产 Trigger 使用的版本。M5.1 起 Start 开启生产入口并锁定 Production Version 与 production Worker，不再创建 Execution，运行期间 Publish 不改变已锁定的生产版本；Stop 关闭入口，再次 Start 才锁定新的 Published Version。生产运行期间不可切换 production Worker。
 
 ## 5. Trigger
 
@@ -152,5 +153,6 @@ DLR 不是：n8n / Windmill / Kestra / DAG Engine / Workflow Engine / Kubernetes
 | M3.2 生产生命周期 | 生产 Worker、发布门禁、Start/Stop、Secret Store、依赖源 |
 | M3.3 多语言 Runtime | Python / JavaScript / Java、三语言依赖环境与 capability 调度 |
 | M4 AI Editor | 单一全局模型配置、三语言 AI Assist、完整 Candidate、Diff、人工 Apply、stale 防覆盖 |
+| M5.1 Production Entry 收敛 | Start 开启生产入口并锁定 Production Version / Worker，不再创建 Execution；Stop 后才切换到新的 Published Version |
 
 M0 不实现 Adapter CRUD 与 Adapter Runtime。

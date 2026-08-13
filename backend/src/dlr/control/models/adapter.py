@@ -84,9 +84,7 @@ class Adapter(Base):
     # entry never touches this pointer; only Stop → Start rotates it.
     production_version_id: Mapped[int | None] = mapped_column(
         BigInteger,
-        ForeignKey(
-            "adapter_versions.id", use_alter=True, name="fk_adapters_production_version_id"
-        ),
+        ForeignKey("adapter_versions.id", use_alter=True, name="fk_adapters_production_version_id"),
         nullable=True,
     )
     # The Worker that runs tests and production executions of this Adapter.

@@ -727,7 +727,7 @@ check(len(bindings) == 1 and bindings[0]["env_key"] == "SMOKE_CRED", "binding is
 check(bindings[0]["credential_name"] == "smoke-credential", "binding enriches credential metadata")
 
 # --- M5.1 start -> stop lifecycle: Start opens entry and locks version --------
-started = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
+started = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
 # M5.1: Start returns an AdapterResponse (not an Execution).
 check(started["production_state"] == "running", "start opens the production entry")
 check(started["production_version_id"] == version_id, "start locks the production version")
@@ -745,7 +745,7 @@ check(stopped["production_state"] == "stopped", "terminate closes the production
 check(stopped["production_version_id"] is None, "stop clears production_version_id")
 
 # --- start again: verify version re-locked, then test bound secret via manual exec -
-started2 = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
+started2 = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
 check(started2["production_state"] == "running", "re-start opens the production entry")
 check(started2["production_version_id"] == version_id, "re-start re-locks the production version")
 
@@ -895,7 +895,7 @@ for language, code in codes.items():
     assert tested["output"] == {"language": language}, tested
     request("POST", f"/adapters/{adapter_id}/versions/{version['id']}/publish")
     # M5.1: Start opens the production entry and locks the version; no Execution.
-    started = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
+    started = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
     assert started["production_state"] == "running", started
     assert started["production_version_id"] == version["id"], started
     request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})

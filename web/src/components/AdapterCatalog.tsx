@@ -5,8 +5,10 @@ import type { FormEvent } from "react";
 import { Button, Drawer, Input, Radio, Segmented, Space } from "antd";
 
 import {
+  hasActiveProductionExecution,
   productionDisplayState,
   productionRunningVersionId,
+  productionRunningVersionSeq,
   productionStateLabel,
 } from "../status";
 import { LANGUAGE_LABELS } from "../languages";
@@ -51,21 +53,25 @@ function catalogSubtitle(
   let productionFact = "未发布";
 
   if (runningVersionId !== null) {
-    const runningVersionSeq =
-      adapter.running_version_id !== null && adapter.running_version_id !== undefined
-        ? adapter.running_version_seq
-        : adapter.last_production_version_seq;
-    productionFact = `${displayState === "stopping" ? "停止中" : "生产运行"} ${versionLabel(
+    // M5.1: the locked production version is expressed from the server-side
+    // production_version_id/seq; “生产运行” is reserved for a real active
+    // Execution, an open but idle entry says “生产入口已开启 · 空闲”.
+    const versionText = versionLabel(
       runningVersionId,
-      runningVersionSeq,
+      productionRunningVersionSeq(adapter),
       versionSeqById,
-    )}`;
+    );
     if (displayState === "stopping") {
+      productionFact = `停止中 ${versionText}`;
       attention.push(
         adapter.running_execution_id === null || adapter.running_execution_id === undefined
           ? "等待执行完成"
           : `等待 Execution #${adapter.running_execution_id} 完成`,
       );
+    } else if (hasActiveProductionExecution(adapter)) {
+      productionFact = `生产运行 ${versionText}`;
+    } else {
+      productionFact = `生产入口已开启 · 空闲 ${versionText}`;
     }
   } else if (
     displayState === "stopped" &&

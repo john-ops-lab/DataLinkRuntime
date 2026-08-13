@@ -102,11 +102,14 @@ def get_publish_gate(adapter_id: int, version_id: int, session: DbSession) -> Pu
 
 @router.post(
     "/api/adapters/{adapter_id}/production/start",
-    status_code=202,
     response_model=AdapterResponse,
 )
 def start_production(adapter_id: int, session: DbSession) -> AdapterResponse:
-    """Open the production entry and lock the production version (M5.1)."""
+    """Open the production entry and lock the production version (M5.1).
+
+    Synchronous state change: the row lock, gates and commit all complete
+    before the final AdapterResponse is returned, so the answer is 200.
+    """
     return adapter_service.adapter_response(
         session, adapter_service.start_production(session, adapter_id)
     )

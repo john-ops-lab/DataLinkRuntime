@@ -226,7 +226,13 @@ def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
 
 
 def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Adapter:
-    adapter = get_adapter(session, adapter_id)
+    # The same Adapter row lock as Start/Stop/Publish (M5.1): a Worker PATCH
+    # can never commit a swapped production Worker underneath a concurrent
+    # Start, and Start can never commit "running" before the PATCH is
+    # re-checked against the locked state.
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
     if data.name is not None and data.name != adapter.name:
         conflict = session.scalar(
             select(Adapter).where(Adapter.name == data.name, Adapter.id != adapter_id)

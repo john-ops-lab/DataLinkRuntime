@@ -2667,7 +2667,7 @@ it("starts production, locks the version and shows success message", async () =>
     {
       method: "POST",
       match: "/api/adapters/1/production/start",
-      respond: () => ({ status: 202, body: startedAdapter }),
+      respond: () => ({ status: 200, body: startedAdapter }),
     },
     {
       method: "GET",
@@ -3093,13 +3093,18 @@ it("refreshes a naturally completed production run into the started and idle sta
   expect(screen.getByTestId("stop-production")).toBeTruthy();
 });
 
-it("shows an unvisited started-and-idle Adapter with the server-derived last run vN", async () => {
+it("shows an unvisited started-and-idle Adapter with the server-derived production version seq", async () => {
+  // M5.1: Start succeeded, no active Execution, and the row is never visited,
+  // so no local version list exists: the vN label must come from the
+  // server-provided production_version_id/production_version_seq alone.
   const idle = makeAdapter({
     latest_version_id: 20,
     published_version_id: 20,
     published_version_seq: 2,
     production_worker_id: 3,
     production_state: "running",
+    production_version_id: 10,
+    production_version_seq: 1,
     running_execution_id: null,
     running_version_id: null,
     running_version_seq: null,
@@ -3131,7 +3136,7 @@ it("shows an unvisited started-and-idle Adapter with the server-derived last run
   render(<App />);
   const [row] = await screen.findAllByTestId("adapter-item");
   expect(row.querySelector(".catalog-item-sub")?.textContent).toBe(
-    "Python · 生产运行 v1 · v2 待启动",
+    "Python · 生产入口已开启 · 空闲 v1 · v2 待启动",
   );
 });
 

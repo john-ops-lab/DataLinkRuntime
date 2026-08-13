@@ -409,7 +409,7 @@ def test_start_auto_selection_ignores_stale_worker(
 
     response = start(api_client, adapter["id"])
 
-    assert response.status_code == 202, response.text
+    assert response.status_code == 200, response.text
     body = response.json()
     assert body["production_worker_id"] == fresh["id"]
     assert body["production_state"] == "running"

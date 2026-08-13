@@ -12,14 +12,16 @@ import threading
 import time
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
-from dlr.control.models import Execution
+from dlr.control.models import Adapter, Execution
 from dlr.control.models.platform import AdapterCredentialBinding, Credential
+from dlr.control.schemas.adapter import AdapterUpdate
 from dlr.control.services import adapter as adapter_service
 from dlr.control.services import worker as worker_service
 from test_adapters import create_adapter, pass_publish_gate, save_version
@@ -53,6 +55,7 @@ def create_production_execution(
         session.add(execution)
         session.commit()
         return execution.id
+
 
 PUBLISH = "/api/adapters/{adapter_id}/versions/{version_id}/publish"
 START = "/api/adapters/{adapter_id}/production/start"
@@ -220,7 +223,7 @@ def test_start_opens_entry_locks_version(api_client: TestClient) -> None:
     adapter, version, worker = setup_publishable(api_client, "prod-start")
 
     response = start(api_client, adapter["id"])
-    assert response.status_code == 202, response.text
+    assert response.status_code == 200, response.text
     body = response.json()
     # Start now returns an AdapterResponse (not an ExecutionResponse).
     assert body["production_state"] == "running"
@@ -314,7 +317,7 @@ def test_start_revalidates_published_version_after_production_worker_switch(
     assert finish_execution(api_client, worker_02["id"], retest["id"]).status_code == 200
 
     started = start(api_client, adapter["id"])
-    assert started.status_code == 202, started.text
+    assert started.status_code == 200, started.text
     body = started.json()
     assert body["production_version_id"] == version["id"]
     assert body["production_worker_id"] == worker_02["id"]
@@ -338,7 +341,7 @@ def test_start_defaults_to_single_online_worker(api_client: TestClient) -> None:
     api_client.patch(f"/api/adapters/{adapter['id']}", json={"production_worker_id": None})
 
     response = start(api_client, adapter["id"])
-    assert response.status_code == 202, response.text
+    assert response.status_code == 200, response.text
     body = response.json()
     assert body["production_worker_id"] == worker["id"], "adoption is written back"
     assert body["production_version_id"] == version["id"]
@@ -374,7 +377,7 @@ def test_stop_wait_keeps_active_execution(
     assert fetched["ended_at"] is not None
 
     restarted = start(api_client, adapter["id"])
-    assert restarted.status_code == 202
+    assert restarted.status_code == 200
 
 
 def test_stop_terminate_flags_running_execution(
@@ -406,7 +409,7 @@ def test_stop_terminate_flags_running_execution(
     assert blocked.json()["detail"]["code"] == "production_already_running"
     cancelled = finish_execution(api_client, worker["id"], exec_id, status="cancelled")
     assert cancelled.status_code == 200
-    assert start(api_client, adapter["id"]).status_code == 202
+    assert start(api_client, adapter["id"]).status_code == 200
 
 
 def test_stop_terminate_serializes_with_claim_when_claim_wins(
@@ -626,7 +629,7 @@ def test_publish_new_version_keeps_running_version_until_stop_then_start(
 
     assert finish_execution(api_client, worker["id"], exec_id).status_code == 200
     restarted = start(api_client, adapter["id"])
-    assert restarted.status_code == 202, restarted.text
+    assert restarted.status_code == 200, restarted.text
     assert restarted.json()["production_version_id"] == next_version["id"]
 
 
@@ -663,7 +666,7 @@ def test_started_idle_exposes_succeeded_last_production_and_requires_stop(
     assert blocked.status_code == 409
     assert blocked.json()["detail"]["code"] == "production_already_running"
     assert stop(api_client, adapter["id"]).status_code == 200
-    assert start(api_client, adapter["id"]).status_code == 202
+    assert start(api_client, adapter["id"]).status_code == 200
 
 
 @pytest.mark.parametrize("status", ["failed", "timeout"])
@@ -877,7 +880,7 @@ def test_start_does_not_create_execution(api_client: TestClient) -> None:
     """M5.1: Start succeeds but no production Executions exist afterwards."""
     adapter, _version, _worker = setup_publishable(api_client, "m51-no-exec")
     response = start(api_client, adapter["id"])
-    assert response.status_code == 202
+    assert response.status_code == 200
 
     # Only manual test runs from the publish gate exist.
     history = api_client.get(f"/api/adapters/{adapter['id']}/executions").json()
@@ -888,7 +891,7 @@ def test_start_locks_published_version(api_client: TestClient) -> None:
     """M5.1: production_version_id == published_version_id after Start."""
     adapter, version, _worker = setup_publishable(api_client, "m51-lock-ver")
     response = start(api_client, adapter["id"])
-    assert response.status_code == 202
+    assert response.status_code == 200
     body = response.json()
     assert body["production_version_id"] == version["id"]
     assert body["production_version_id"] == body["published_version_id"]
@@ -918,9 +921,7 @@ def test_stop_then_start_locks_new_version(
     """Stop -> Start after a new publish locks the new version."""
     adapter, v1, worker = setup_publishable(api_client, "m51-stop-start")
     start(api_client, adapter["id"])
-    exec_id = create_production_execution(
-        session_factory, adapter["id"], v1["id"], worker["id"]
-    )
+    exec_id = create_production_execution(session_factory, adapter["id"], v1["id"], worker["id"])
     assert claim(api_client, worker["id"]).status_code == 200
     assert finish_execution(api_client, worker["id"], exec_id).status_code == 200
 
@@ -933,7 +934,7 @@ def test_stop_then_start_locks_new_version(
     assert stopped["production_version_id"] is None
 
     restarted = start(api_client, adapter["id"])
-    assert restarted.status_code == 202
+    assert restarted.status_code == 200
     started_body = restarted.json()
     assert started_body["production_version_id"] == v2["id"]
 
@@ -1073,3 +1074,166 @@ def test_manual_execution_not_constrained(
         assert len(rows) == 3
         assert sum(1 for r in rows if r.trigger == "manual") == 2
         assert sum(1 for r in rows if r.trigger == "production") == 1
+
+
+# --- M5.1: Start / Worker PATCH Adapter row-lock serialization ---------------------
+
+
+def test_start_wins_adapter_lock_and_worker_patch_rechecks_running(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Start holds the Adapter row lock: a concurrent Worker PATCH must queue on
+    the same lock and then see production_state=running (409), so the Worker can
+    never be swapped underneath an already-started production entry.
+    """
+    adapter, version, worker = setup_publishable(api_client, "m51-lock-start-wins")
+    intruder = register_worker(api_client, name="m51-lock-intruder")
+    adapter_id = adapter["id"]
+
+    start_has_lock = threading.Event()
+    allow_start_commit = threading.Event()
+    patch_ready = threading.Event()
+    patch_backend_pids: list[int] = []
+    patch_codes: list[str] = []
+    errors: list[BaseException] = []
+
+    def start_racer() -> None:
+        with session_factory() as session:
+            original_commit = session.commit
+
+            def coordinated_commit() -> None:
+                # start_production holds the Adapter row lock at commit time.
+                start_has_lock.set()
+                if not allow_start_commit.wait(timeout=5):
+                    raise AssertionError("Worker PATCH racer did not release Start commit")
+                original_commit()
+
+            session.commit = coordinated_commit  # type: ignore[method-assign]
+            try:
+                adapter_service.start_production(session, adapter_id)
+            except BaseException as exc:  # noqa: BLE001 - reported in the test thread
+                errors.append(exc)
+
+    def patch_racer() -> None:
+        with session_factory() as session:
+            try:
+                backend_pid = session.scalar(select(func.pg_backend_pid()))
+                assert isinstance(backend_pid, int)
+                patch_backend_pids.append(backend_pid)
+                patch_ready.set()
+                adapter_service.update_adapter(
+                    session,
+                    adapter_id,
+                    AdapterUpdate(production_worker_id=intruder["id"]),
+                )
+            except HTTPException as exc:
+                patch_codes.append(exc.detail["code"])
+            except BaseException as exc:  # noqa: BLE001 - reported in the test thread
+                errors.append(exc)
+
+    start_thread = threading.Thread(target=start_racer)
+    patch_thread = threading.Thread(target=patch_racer)
+    start_thread.start()
+    assert start_has_lock.wait(timeout=5), "Start did not acquire the Adapter row lock"
+    patch_thread.start()
+    try:
+        assert patch_ready.wait(timeout=5), "Worker PATCH did not open its transaction"
+        with session_factory() as monitor:
+            # PATCH must queue on the very same Adapter row lock Start holds.
+            wait_for_postgres_lock(monitor, patch_backend_pids[0])
+    finally:
+        allow_start_commit.set()
+    start_thread.join(timeout=10)
+    patch_thread.join(timeout=10)
+
+    assert not start_thread.is_alive()
+    assert not patch_thread.is_alive()
+    assert errors == []
+    assert patch_codes == ["production_running"]
+    with session_factory() as session:
+        stored = session.get(Adapter, adapter_id)
+        assert stored is not None
+        assert stored.production_state == "running"
+        assert stored.production_worker_id == worker["id"]
+        assert stored.production_version_id == version["id"]
+
+
+def test_worker_patch_wins_adapter_lock_and_start_revalidates_gate(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """PATCH holds the Adapter row lock: Start must queue on the same lock and
+    then re-evaluate every gate against the new Worker, never starting with a
+    version that was never tested on that Worker.
+    """
+    adapter, _version, _worker = setup_publishable(api_client, "m51-lock-patch-wins")
+    intruder = register_worker(api_client, name="m51-lock-patch-intruder")
+    adapter_id = adapter["id"]
+
+    patch_has_lock = threading.Event()
+    allow_patch_commit = threading.Event()
+    start_ready = threading.Event()
+    start_backend_pids: list[int] = []
+    start_codes: list[str] = []
+    errors: list[BaseException] = []
+
+    def patch_racer() -> None:
+        with session_factory() as session:
+            original_commit = session.commit
+
+            def coordinated_commit() -> None:
+                # update_adapter holds the Adapter row lock at commit time.
+                patch_has_lock.set()
+                if not allow_patch_commit.wait(timeout=5):
+                    raise AssertionError("Start racer did not release PATCH commit")
+                original_commit()
+
+            session.commit = coordinated_commit  # type: ignore[method-assign]
+            try:
+                adapter_service.update_adapter(
+                    session,
+                    adapter_id,
+                    AdapterUpdate(production_worker_id=intruder["id"]),
+                )
+            except BaseException as exc:  # noqa: BLE001 - reported in the test thread
+                errors.append(exc)
+
+    def start_racer() -> None:
+        with session_factory() as session:
+            try:
+                backend_pid = session.scalar(select(func.pg_backend_pid()))
+                assert isinstance(backend_pid, int)
+                start_backend_pids.append(backend_pid)
+                start_ready.set()
+                adapter_service.start_production(session, adapter_id)
+            except HTTPException as exc:
+                start_codes.append(exc.detail["code"])
+            except BaseException as exc:  # noqa: BLE001 - reported in the test thread
+                errors.append(exc)
+
+    patch_thread = threading.Thread(target=patch_racer)
+    start_thread = threading.Thread(target=start_racer)
+    patch_thread.start()
+    assert patch_has_lock.wait(timeout=5), "PATCH did not acquire the Adapter row lock"
+    start_thread.start()
+    try:
+        assert start_ready.wait(timeout=5), "Start did not open its transaction"
+        with session_factory() as monitor:
+            # Start must queue on the very same Adapter row lock PATCH holds.
+            wait_for_postgres_lock(monitor, start_backend_pids[0])
+    finally:
+        allow_patch_commit.set()
+    patch_thread.join(timeout=10)
+    start_thread.join(timeout=10)
+
+    assert not patch_thread.is_alive()
+    assert not start_thread.is_alive()
+    assert errors == []
+    assert start_codes == ["production_test_required"], (
+        "Start must re-validate the gate against the Worker PATCH installed"
+    )
+    with session_factory() as session:
+        stored = session.get(Adapter, adapter_id)
+        assert stored is not None
+        assert stored.production_state != "running"
+        assert stored.production_worker_id == intruder["id"]
+        assert stored.production_version_id is None
