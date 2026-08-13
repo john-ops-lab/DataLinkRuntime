@@ -13,8 +13,10 @@
 # (Manual Execution -> worker claim -> venv -> subprocess -> live logs over
 # SSE -> succeeded -> history list/detail), then run the M3.2 production
 # lifecycle chain (credentials/package sources -> production worker ->
-# publish gate -> publish -> start -> stop(terminate) -> cancelled ->
-# start again -> succeeded with a bound secret -> archive/restore) before
+# publish gate -> publish -> start (no Execution created) -> duplicate start
+# rejected -> version rotation while running (save + test + publish v2 keeps
+# the locked v1) -> stop -> start locks v2 -> manual run with a bound secret
+# -> archive/restore) before
 # the M3.3 three-language lifecycle. Finally, it starts a temporary local
 # OpenAI-compatible fake Provider outside the production Compose topology and
 # proves the M4 settings/models/assist chain cannot change lifecycle facts,
@@ -602,6 +604,21 @@ PROD_CODE = (
     "    }\n"
 )
 
+# M5.1 rotation version: no sleep so the rotation chain stays fast; the secret
+# digest still proves the credential binding survives a version rotation.
+PROD_CODE_V2 = (
+    "import hashlib\n"
+    "\n"
+    "\n"
+    "def handle(context, input):\n"
+    "    secret = context.secrets.get('SMOKE_CRED') or ''\n"
+    "    return {\n"
+    "        'stage': context.config.get('stage'),\n"
+    "        'rotation': True,\n"
+    "        'secret_digest': hashlib.sha256(secret.encode()).hexdigest(),\n"
+    "    }\n"
+)
+
 
 def request(method, path, payload=None, expected=200):
     data = json.dumps(payload).encode() if payload is not None else None
@@ -726,16 +743,18 @@ bindings = request(
 check(len(bindings) == 1 and bindings[0]["env_key"] == "SMOKE_CRED", "binding is stored")
 check(bindings[0]["credential_name"] == "smoke-credential", "binding enriches credential metadata")
 
-# --- start -> stop(terminate) -> cancelled --------------------------------------
-started = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
-prod_execution_id = started["id"]
-check(started["trigger"] == "production", "start creates a production execution")
-check(started["version_id"] == version_id, "start pins the published version")
-check(started["target_worker_id"] == worker_id, "start targets the production worker")
-running_adapter = request("GET", f"/adapters/{adapter_id}")
-check(running_adapter["production_state"] == "running", "start opens the production entry")
-check(running_adapter["running_execution_id"] == prod_execution_id, "running execution is derived")
-check(running_adapter["running_version_id"] == version_id, "running version is derived")
+# --- M5.1 start: Start opens the entry, locks the version, creates no Execution -
+history_before_start = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+started = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
+# M5.1: Start returns an AdapterResponse (not an Execution).
+check(started["production_state"] == "running", "start opens the production entry")
+check(started["production_version_id"] == version_id, "start locks the production version")
+check(started["production_version_seq"] is not None, "production version seq is populated")
+history_after_start = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+check(
+    len(history_after_start["items"]) == len(history_before_start["items"]),
+    "start must not create an Execution (execution count unchanged)",
+)
 
 duplicate = request("POST", f"/adapters/{adapter_id}/production/start", expected=409)
 check(
@@ -743,30 +762,67 @@ check(
     f"a second start must be rejected, got {duplicate}",
 )
 
-# Wait until the worker actually claims it and enters the sleep(6) body, so
-# the cancel exercises the running-path (cancel_requested) instead of the
-# pending-path (immediate cancelled).
-deadline = time.monotonic() + 60
-while time.monotonic() < deadline:
-    state = request("GET", f"/executions/{prod_execution_id}")
-    if state["status"] == "running":
-        break
-    time.sleep(1)
-check(state["status"] == "running", f"production execution must become running: {state['status']}")
-cancelled_direct = request("POST", f"/executions/{prod_execution_id}/cancel")
-check(cancelled_direct["cancel_requested"] is True, "cancel marks a running execution")
+# --- M5.1 version rotation while running: save + Test + Publish v2 ------------
+# Publishing v2 must move only the published pointer; the locked production
+# version stays v1 until an explicit Stop -> Start.
+rotation_v2 = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {"code": PROD_CODE_V2, "requirements": "", "runtime_config": {"stage": "m5-1-rotation"}},
+    expected=201,
+)
+check(rotation_v2["seq"] == 2, "the rotation version is v2")
+rotation_test = request(
+    "POST",
+    f"/adapters/{adapter_id}/executions",
+    {"version_id": rotation_v2["id"], "input": {"rotation": True}},
+    expected=202,
+)
+check(rotation_test["target_worker_id"] == worker_id, "v2 test targets the production worker")
+rotation_test = wait_terminal(rotation_test["id"])
+check(
+    rotation_test["status"] == "succeeded",
+    f"rotation test run must succeed, got {rotation_test['status']}: "
+    f"{rotation_test['error']} / {rotation_test['stderr']}",
+)
+published2 = request("POST", f"/adapters/{adapter_id}/versions/{rotation_v2['id']}/publish")
+check(
+    published2["published_version_id"] == rotation_v2["id"],
+    "publish v2 moves the published pointer",
+)
+running_locked = request("GET", f"/adapters/{adapter_id}")
+check(
+    running_locked["production_version_id"] == version_id,
+    "publishing v2 while running must not change the locked production version v1",
+)
+check(
+    running_locked["production_state"] == "running",
+    "publishing while running must not close the production entry",
+)
+
+# --- M5.1 stop then start again: the new Start locks the newly published v2 ---
 stopped = request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "terminate"})
 check(stopped["production_state"] == "stopped", "terminate closes the production entry")
-cancelled = wait_terminal(prod_execution_id)
-check(cancelled["status"] == "cancelled", f"terminated execution must end cancelled, got {cancelled['status']}")
+check(stopped["production_version_id"] is None, "stop clears production_version_id")
 
-# --- start again: bound secret reaches the worker --------------------------------
-started = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
-prod_execution_id = started["id"]
-succeeded = wait_terminal(prod_execution_id)
+started2 = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
+check(started2["production_state"] == "running", "re-start opens the production entry")
+check(
+    started2["production_version_id"] == rotation_v2["id"],
+    "re-start after Stop locks the newly published v2",
+)
+
+# M5.1: Start no longer creates an Execution. Test the bound credential via a
+# manual Execution (the worker still exercises the secret binding).
+manual_exec = request(
+    "POST", f"/adapters/{adapter_id}/executions",
+    {"version_id": version_id, "input": {"stage": "m3-2-smoke"}},
+    expected=202,
+)
+succeeded = wait_terminal(manual_exec["id"])
 check(
     succeeded["status"] == "succeeded",
-    f"production run must succeed, got {succeeded['status']}: {succeeded['error']} / {succeeded['stderr']}",
+    f"manual production run must succeed, got {succeeded['status']}: {succeeded['error']} / {succeeded['stderr']}",
 )
 check(
     succeeded["output"] == {"stage": "m3-2-smoke", "secret_digest": EXPECTED_DIGEST},
@@ -776,12 +832,13 @@ check(SMOKE_SECRET not in json.dumps(succeeded), "raw bound secret must not leak
 
 history = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
 check(
-    sum(1 for item in history["items"] if item["trigger"] == "production") >= 2,
-    "history distinguishes production runs",
+    sum(1 for item in history["items"] if item["trigger"] == "manual") >= 1,
+    "history records the manual smoke run",
 )
 
 stopped = request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
 check(stopped["production_state"] == "stopped", "wait closes the production entry")
+check(stopped["production_version_id"] is None, "wait stop also clears production_version_id")
 
 # --- clone / archive / restore -----------------------------------------------------
 clone = request(
@@ -900,9 +957,10 @@ for language, code in codes.items():
     tested = wait_succeeded(tested["id"])
     assert tested["output"] == {"language": language}, tested
     request("POST", f"/adapters/{adapter_id}/versions/{version['id']}/publish")
-    started = request("POST", f"/adapters/{adapter_id}/production/start", expected=202)
-    started = wait_succeeded(started["id"])
-    assert started["output"] == {"language": language}, started
+    # M5.1: Start opens the production entry and locks the version; no Execution.
+    started = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
+    assert started["production_state"] == "running", started
+    assert started["production_version_id"] == version["id"], started
     request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
 
 print("M3.3 three-language lifecycle smoke passed")

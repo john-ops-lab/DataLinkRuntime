@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 
-import { productionDisplayState, productionRunningVersionId } from "./status";
+import {
+  hasLastProductionExecutionFailure,
+  productionDisplayState,
+  productionRunningVersionId,
+} from "./status";
 import type { Adapter } from "./types";
 
 function adapter(overrides: Partial<Adapter>): Adapter {
@@ -31,22 +35,24 @@ it("keeps a started production entry healthy and idle after a successful run", (
   expect(productionRunningVersionId(value)).toBe(10);
 });
 
-it("derives abnormal only from a failed or timed-out latest production run", () => {
-  expect(
-    productionDisplayState(
-      adapter({ running_execution_id: null, last_production_execution_status: "failed" }),
-    ),
-  ).toBe("abnormal");
-  expect(
-    productionDisplayState(
-      adapter({ running_execution_id: null, last_production_execution_status: "timeout" }),
-    ),
-  ).toBe("abnormal");
-  expect(
-    productionDisplayState(
-      adapter({ running_execution_id: null, last_production_execution_status: "cancelled" }),
-    ),
-  ).toBe("running");
+it("keeps a started entry running and idle even when the previous lifecycle failed (M5.1)", () => {
+  // Start no longer creates an Execution: running + no active Execution is the
+  // legal idle state, and a failed/timeout Execution from the previous
+  // lifecycle must not derive a lifecycle-abnormal entry (no Stop → Start loop).
+  for (const lastStatus of ["failed", "timeout", "cancelled"] as const) {
+    expect(
+      productionDisplayState(
+        adapter({ running_execution_id: null, last_production_execution_status: lastStatus }),
+      ),
+    ).toBe("running");
+  }
+  const failed = adapter({
+    running_execution_id: null,
+    last_production_execution_id: 91,
+    last_production_execution_status: "failed",
+  });
+  expect(hasLastProductionExecutionFailure(failed)).toBe(true);
+  expect(hasLastProductionExecutionFailure(adapter({ running_execution_id: null }))).toBe(false);
 });
 
 it("derives stopping only while a stopped entry still owns an active execution", () => {

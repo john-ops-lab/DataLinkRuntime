@@ -79,14 +79,16 @@ class VersionCreate(BaseModel):
 class AdapterResponse(BaseModel):
     """Adapter representation returned by the API.
 
-    ``running_version_id`` / ``running_execution_id`` are derived from the
-    Adapter's active Production Execution (at most one, enforced by the DB);
-    both are None whenever production has no pending/running Execution. The
-    ``published_version_seq`` / ``running_version_seq`` provide the
-    Adapter-local display numbers without forcing Catalog callers to fetch
-    every version list. The ``last_production_*`` fields retain the latest
-    Production Execution's minimal identity/status after it becomes terminal,
-    so an open production
+    ``production_version_id`` is the version locked by the current production
+    entry (set by Start, cleared by Stop). ``production_version_seq`` is its
+    display number. ``running_version_id`` / ``running_execution_id`` are
+    derived from the Adapter's active Production Execution (at most one,
+    enforced by the DB); both are None whenever production has no
+    pending/running Execution. The ``published_version_seq`` /
+    ``running_version_seq`` provide the Adapter-local display numbers without
+    forcing Catalog callers to fetch every version list. The
+    ``last_production_*`` fields retain the latest Production Execution's
+    minimal identity/status after it becomes terminal, so an open production
     entry with no active child process can be distinguished from a failed or
     timed-out run.
     """
@@ -100,6 +102,9 @@ class AdapterResponse(BaseModel):
     latest_version_id: int | None
     published_version_id: int | None
     published_version_seq: int | None = None
+    # M5.1: locked production version; set by Start, cleared by Stop.
+    production_version_id: int | None
+    production_version_seq: int | None = None
     production_worker_id: int | None
     production_state: str
     archived_at: datetime | None

@@ -19,12 +19,15 @@ def lock_execution(session: Session, execution_id: int) -> Execution | None:
 
 
 def lock_active_production_execution(session: Session, adapter_id: int) -> Execution | None:
-    """Lock the Adapter's active Production Execution, if one exists."""
+    """Lock the Adapter's active production-class Execution, if one exists.
+
+    M5.1: covers production/schedule/webhook triggers.
+    """
     return session.scalar(
         select(Execution)
         .where(
             Execution.adapter_id == adapter_id,
-            Execution.trigger == "production",
+            Execution.trigger.in_(("production", "schedule", "webhook")),
             Execution.status.in_(ACTIVE_EXECUTION_STATUSES),
         )
         .with_for_update()

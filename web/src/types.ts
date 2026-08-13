@@ -21,6 +21,9 @@ export interface Adapter {
   /** Derived from the active Production Execution; null when none exists. */
   running_version_id?: number | null;
   running_execution_id?: number | null;
+  /** M5.1: Locked production version; set by Start, cleared by Stop. */
+  production_version_id?: number | null;
+  production_version_seq?: number | null;
   /** Minimal summary of the newest Production Execution, including terminal runs. */
   last_production_execution_id?: number | null;
   last_production_execution_status?: ExecutionStatus | null;

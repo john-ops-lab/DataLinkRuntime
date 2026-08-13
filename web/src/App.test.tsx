@@ -373,7 +373,7 @@ it("loads the adapter list", async () => {
   });
 });
 
-it("keeps normal Catalog rows quiet, highlights exceptions, and searches descriptions", async () => {
+it("keeps normal Catalog rows quiet, flags offline Workers, and searches descriptions", async () => {
   const normal = makeAdapter({
     id: 1,
     name: "orders-sync",
@@ -387,7 +387,9 @@ it("keeps normal Catalog rows quiet, highlights exceptions, and searches descrip
     running_version_id: 30,
     running_version_seq: 3,
   });
-  const abnormal = makeAdapter({
+  // M5.1: the previous lifecycle ended failed, but the entry is running without
+  // an active Execution: a legal “已开启 · 空闲” row, never “状态异常”.
+  const previouslyFailed = makeAdapter({
     id: 2,
     name: "nightly-import",
     description: "夜间失败数据导入",
@@ -395,6 +397,8 @@ it("keeps normal Catalog rows quiet, highlights exceptions, and searches descrip
     published_version_seq: 2,
     production_worker_id: 2,
     production_state: "running",
+    production_version_id: 20,
+    production_version_seq: 2,
     running_execution_id: null,
     last_production_execution_id: 91,
     last_production_execution_status: "failed",
@@ -418,7 +422,7 @@ it("keeps normal Catalog rows quiet, highlights exceptions, and searches descrip
     {
       method: "GET",
       match: "/api/adapters",
-      respond: () => ({ body: [normal, abnormal, stopping] }),
+      respond: () => ({ body: [normal, previouslyFailed, stopping] }),
     },
     {
       method: "GET",
@@ -443,7 +447,10 @@ it("keeps normal Catalog rows quiet, highlights exceptions, and searches descrip
   await waitFor(() => {
     expect(rows[0].getAttribute("title")).toContain("Worker worker-main");
     expect(rows[1].querySelector(".catalog-item-sub")?.textContent).toContain("Worker 离线");
-    expect(rows[1].querySelector(".catalog-item-sub")?.textContent).toContain("状态异常");
+    expect(rows[1].querySelector(".catalog-item-sub")?.textContent).toContain(
+      "生产入口已开启 · 空闲 v2",
+    );
+    expect(rows[1].querySelector(".catalog-item-sub")?.textContent).not.toContain("状态异常");
   });
   expect(rows[1].querySelector(".catalog-item-attention")).not.toBeNull();
   expect(rows[2].querySelector(".catalog-item-sub")?.textContent).toContain("停止中 v3");
@@ -462,10 +469,14 @@ it("keeps normal Catalog rows quiet, highlights exceptions, and searches descrip
     "nightly-import",
   );
   fireEvent.click(descriptionMatch);
-  const abnormalAlert = await screen.findByTestId("production-abnormal");
-  expect(abnormalAlert.textContent).toContain("Execution #91");
-  expect(abnormalAlert.textContent).toContain("先 Stop 关闭当前生产入口");
-  expect(abnormalAlert.textContent).toContain("如需恢复再 Start");
+  // The old failure stays visible as an independent execution-result notice,
+  // without any “先 Stop 再 Start” lifecycle guidance.
+  const failureNotice = await screen.findByTestId("production-last-failure");
+  expect(failureNotice.textContent).toContain("Execution #91");
+  expect(failureNotice.textContent).toContain("无需 Stop → Start");
+  expect(failureNotice.textContent).not.toContain("先 Stop 关闭当前生产入口");
+  expect(failureNotice.textContent).not.toContain("如需恢复再 Start");
+  expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
 });
 
 it("creates an adapter and selects it", async () => {
@@ -2633,14 +2644,20 @@ it("labels the current execution with the user-facing vN instead of the internal
 
 // --- M3.2 production lifecycle --------------------------------------------------
 
-it("starts production, refreshes the header and auto-opens the new execution", async () => {
+it("starts production, locks the version and shows success message", async () => {
   const adapter = makeAdapter({
     latest_version_id: 10,
     published_version_id: 10,
     production_worker_id: null,
   });
-  const started = makeExecution({ id: 77, trigger: "production", status: "pending" });
-  const finished = makeExecution({ id: 77, trigger: "production", status: "succeeded" });
+  // M5.1: Start returns an Adapter (not an Execution).
+  const startedAdapter = {
+    ...adapter,
+    production_state: "running",
+    production_version_id: 10,
+    production_version_seq: 1,
+    production_worker_id: 3,
+  };
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
     {
@@ -2661,33 +2678,21 @@ it("starts production, refreshes the header and auto-opens the new execution", a
     {
       method: "POST",
       match: "/api/adapters/1/production/start",
-      respond: () => ({ status: 202, body: started }),
+      respond: () => ({ status: 200, body: startedAdapter }),
     },
     {
       method: "GET",
       match: "/api/adapters/1",
       respond: () => ({
-        body: { ...adapter, production_state: "running", running_execution_id: 77, running_version_id: 10 },
-      }),
-    },
-    // Start 后自动切到执行记录 Tab：首页列表 + 自动打开的详情抽屉。
-    {
-      method: "GET",
-      match: "/api/adapters/1/executions?limit=50",
-      respond: () => ({
         body: {
-          items: [{ ...makeSummary({ id: 77 }), trigger: "production" }],
-          next_before_id: null,
+          ...adapter,
+          production_state: "running",
+          production_version_id: 10,
+          production_version_seq: 1,
+          production_worker_id: 3,
+          running_execution_id: null,
+          running_version_id: null,
         },
-      }),
-    },
-    { method: "GET", match: "/api/executions/77", respond: () => ({ body: finished }) },
-    // 抽屉实时跟随：直接推送终态事件，避免遗留 fallback 轮询。
-    {
-      method: "GET",
-      match: "/api/executions/77/events",
-      respond: () => ({
-        stream: `event: execution\ndata: ${JSON.stringify(finished)}\n\n`,
       }),
     },
   ]);
@@ -2697,16 +2702,88 @@ it("starts production, refreshes the header and auto-opens the new execution", a
 
   expect((screen.getByTestId("start-production") as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(screen.getByTestId("start-production"));
-  // Header 刷新后展示运行中的生产 Execution。
-  await screen.findByTestId("running-execution");
-  expect(await screen.findByText("生产已启动：Execution #77")).toBeTruthy();
+  // M5.1: Start no longer auto-opens an Execution; shows a version lock message.
+  await screen.findByText("生产入口已开启，生产版本锁定为 v1");
   expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
-
-  // 自动切到执行记录 Tab 并打开新 Execution 的详情抽屉。
-  await screen.findByText("Execution #77");
   expect(
-    fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1/executions?limit=50"),
+    fetchMock.mock.calls.some(
+      ([url, init]) =>
+        String(url) === "/api/adapters/1/production/start" && init?.method === "POST",
+    ),
   ).toBe(true);
+});
+
+it("shows a restarted entry as started and idle despite a failed previous lifecycle", async () => {
+  // M5.1 regression (历史 failed → Stop → Start): Start no longer creates an
+  // Execution, so running + no active Execution is the legal idle state. The
+  // old abnormal derivation must not resurface, and nothing may tell the user
+  // to do another Stop → Start round trip.
+  const stoppedAfterFailure = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    published_version_seq: 1,
+    production_worker_id: 3,
+    production_state: "stopped",
+    production_version_id: null,
+    last_production_execution_id: 91,
+    last_production_execution_status: "failed",
+    last_production_version_id: 10,
+    last_production_version_seq: 1,
+  });
+  const restarted = {
+    ...stoppedAfterFailure,
+    production_state: "running",
+    production_version_id: 10,
+    production_version_seq: 1,
+    running_execution_id: null,
+    running_version_id: null,
+  };
+  stubFetch([
+    ...consoleWithVersionRoutes(stoppedAfterFailure, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          {
+            id: 3,
+            name: "worker-01",
+            status: "online",
+            last_heartbeat: "",
+            capabilities: ["python"],
+          },
+        ],
+      }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/production/start",
+      respond: () => ({ status: 200, body: restarted }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => ({ body: restarted }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.click(screen.getByTestId("start-production"));
+  await screen.findByText("生产入口已开启，生产版本锁定为 v1");
+  expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
+  expect(screen.getByTestId("production-execution-idle").textContent).toBe("执行：空闲");
+  expect(screen.getByTestId("adapter-item").querySelector(".catalog-item-sub")?.textContent).toBe(
+    "Python · 生产入口已开启 · 空闲 v1",
+  );
+  // The previous failure stays visible as an independent execution-result
+  // notice only — never as a lifecycle alert asking for Stop → Start again.
+  const failureNotice = screen.getByTestId("production-last-failure");
+  expect(failureNotice.textContent).toContain("Execution #91");
+  expect(failureNotice.textContent).toContain("无需 Stop → Start");
+  expect(failureNotice.textContent).not.toContain("先 Stop 关闭当前生产入口");
+  expect(failureNotice.textContent).not.toContain("如需恢复再 Start");
 });
 
 it("publishes v3 while v2 keeps running and explains the manual Stop then Start boundary", async () => {
@@ -2716,6 +2793,8 @@ it("publishes v3 while v2 keeps running and explains the manual Stop then Start 
     published_version_seq: 2,
     production_worker_id: 3,
     production_state: "running",
+    production_version_id: 20,
+    production_version_seq: 2,
     running_execution_id: 77,
     running_version_id: 20,
     running_version_seq: 2,
@@ -2784,7 +2863,7 @@ it("publishes v3 while v2 keeps running and explains the manual Stop then Start 
   expect(screen.getByTestId("running-execution").textContent).toContain("#77");
   expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
   expect(screen.getByTestId("published-running-mismatch").textContent).toContain("已发布版本（v3）");
-  expect(screen.getByTestId("published-running-mismatch").textContent).toContain("生产运行版本（v2）");
+  expect(screen.getByTestId("published-running-mismatch").textContent).toContain("生产锁定版本（v2）");
   expect(
     screen.getByTestId("adapter-item").querySelector(".catalog-item-sub")?.textContent,
   ).toBe("Python · 生产运行 v2 · v3 待启动");
@@ -2803,6 +2882,8 @@ it("does not let an in-flight production refresh overwrite a completed Publish",
     published_version_id: 20,
     published_version_seq: 2,
     production_state: "running",
+    production_version_id: 20,
+    production_version_seq: 2,
     running_execution_id: 77,
     running_version_id: 20,
     running_version_seq: 2,
@@ -3096,13 +3177,18 @@ it("refreshes a naturally completed production run into the started and idle sta
   expect(screen.getByTestId("stop-production")).toBeTruthy();
 });
 
-it("shows an unvisited started-and-idle Adapter with the server-derived last run vN", async () => {
+it("shows an unvisited started-and-idle Adapter with the server-derived production version seq", async () => {
+  // M5.1: Start succeeded, no active Execution, and the row is never visited,
+  // so no local version list exists: the vN label must come from the
+  // server-provided production_version_id/production_version_seq alone.
   const idle = makeAdapter({
     latest_version_id: 20,
     published_version_id: 20,
     published_version_seq: 2,
     production_worker_id: 3,
     production_state: "running",
+    production_version_id: 10,
+    production_version_seq: 1,
     running_execution_id: null,
     running_version_id: null,
     running_version_seq: null,
@@ -3134,7 +3220,7 @@ it("shows an unvisited started-and-idle Adapter with the server-derived last run
   render(<App />);
   const [row] = await screen.findAllByTestId("adapter-item");
   expect(row.querySelector(".catalog-item-sub")?.textContent).toBe(
-    "Python · 生产运行 v1 · v2 待启动",
+    "Python · 生产入口已开启 · 空闲 v1 · v2 待启动",
   );
 });
 

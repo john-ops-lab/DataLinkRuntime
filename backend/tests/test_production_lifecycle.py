@@ -1,22 +1,27 @@
-"""M3.2 tests: Adapter production lifecycle (gate / Start / Stop / Clone / archive).
+"""M3.2 + M5.1 tests: Adapter production lifecycle.
 
-Covers the Issue §23 Version/Publish, Start/Stop and Worker items: publish
-gate evaluation and enforcement, production Start/Stop(wait|terminate),
-Unpublish after Stop, Archive/Restore read-only semantics and Clone.
+Covers publish gate, Start/Stop, production version locking (M5.1),
+Worker locking during production, trigger value space expansion and
+the active-production unique constraint.
+
+M5.1 changes Start to open the production entry and lock the production
+version without creating an Execution. Stop clears the locked version.
 """
 
 import threading
 import time
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
-from dlr.control.models import Execution
+from dlr.control.models import Adapter, Execution
 from dlr.control.models.platform import AdapterCredentialBinding, Credential
+from dlr.control.schemas.adapter import AdapterUpdate
 from dlr.control.services import adapter as adapter_service
 from dlr.control.services import worker as worker_service
 from test_adapters import create_adapter, pass_publish_gate, save_version
@@ -24,6 +29,33 @@ from test_executions import create_execution
 from test_workers import claim, register_worker
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
+
+
+def create_production_execution(
+    session_factory: sessionmaker[Session],
+    adapter_id: int,
+    version_id: int,
+    target_worker_id: int,
+    status: str = "pending",
+) -> int:
+    """Insert a production-class Execution directly in the DB.
+
+    M5.1: Start no longer creates an Execution. Tests that need an active
+    production Execution (e.g. Stop with cancel) use this helper.
+    """
+    with session_factory() as session:
+        execution = Execution(
+            adapter_id=adapter_id,
+            version_id=version_id,
+            trigger="production",
+            status=status,
+            target_worker_id=target_worker_id,
+            input={},
+        )
+        session.add(execution)
+        session.commit()
+        return execution.id
+
 
 PUBLISH = "/api/adapters/{adapter_id}/versions/{version_id}/publish"
 START = "/api/adapters/{adapter_id}/production/start"
@@ -186,29 +218,28 @@ def test_publish_enforces_gate(api_client: TestClient) -> None:
 # --- Start / Stop ------------------------------------------------------------------
 
 
-def test_start_creates_production_execution(api_client: TestClient) -> None:
+def test_start_opens_entry_locks_version(api_client: TestClient) -> None:
+    """M5.1: Start returns an Adapter, locks the production version, no Execution."""
     adapter, version, worker = setup_publishable(api_client, "prod-start")
 
     response = start(api_client, adapter["id"])
-    assert response.status_code == 202, response.text
+    assert response.status_code == 200, response.text
     body = response.json()
-    assert body["trigger"] == "production"
-    assert body["status"] == "pending"
-    assert body["version_id"] == version["id"]
-    assert body["target_worker_id"] == worker["id"]
-    assert body["input"] is None
+    # Start now returns an AdapterResponse (not an ExecutionResponse).
+    assert body["production_state"] == "running"
+    assert body["production_version_id"] == version["id"]
+    assert body["production_version_seq"] == version["seq"]
+    assert body["published_version_id"] == version["id"]
+    assert body["published_version_seq"] == version["seq"]
+    assert body["running_execution_id"] is None
+    assert body["running_version_id"] is None
 
-    fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    assert fetched["production_state"] == "running"
-    assert fetched["running_execution_id"] == body["id"]
-    assert fetched["running_version_id"] == version["id"]
-    assert fetched["running_version_seq"] == version["seq"]
-    assert fetched["published_version_seq"] == version["seq"]
-    assert fetched["last_production_execution_id"] == body["id"]
-    assert fetched["last_production_execution_status"] == "pending"
-    assert fetched["last_production_version_id"] == version["id"]
+    # No production Execution was created by Start (only the manual test run
+    # from pass_publish_gate exists).
+    history = api_client.get(f"/api/adapters/{adapter['id']}/executions").json()
+    assert all(item["trigger"] == "manual" for item in history["items"])
 
-    # A second Start is rejected while the Production Execution is active.
+    # A second Start is rejected while the production entry is running.
     again = start(api_client, adapter["id"])
     assert again.status_code == 409
     assert again.json()["detail"]["code"] == "production_already_running"
@@ -286,9 +317,10 @@ def test_start_revalidates_published_version_after_production_worker_switch(
     assert finish_execution(api_client, worker_02["id"], retest["id"]).status_code == 200
 
     started = start(api_client, adapter["id"])
-    assert started.status_code == 202, started.text
-    assert started.json()["version_id"] == version["id"]
-    assert started.json()["target_worker_id"] == worker_02["id"]
+    assert started.status_code == 200, started.text
+    body = started.json()
+    assert body["production_version_id"] == version["id"]
+    assert body["production_worker_id"] == worker_02["id"]
 
 
 def test_start_defaults_to_single_online_worker(api_client: TestClient) -> None:
@@ -309,23 +341,28 @@ def test_start_defaults_to_single_online_worker(api_client: TestClient) -> None:
     api_client.patch(f"/api/adapters/{adapter['id']}", json={"production_worker_id": None})
 
     response = start(api_client, adapter["id"])
-    assert response.status_code == 202, response.text
-    assert response.json()["target_worker_id"] == worker["id"]
-    fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    assert fetched["production_worker_id"] == worker["id"], "adoption is written back"
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["production_worker_id"] == worker["id"], "adoption is written back"
+    assert body["production_version_id"] == version["id"]
 
 
-def test_stop_wait_keeps_active_execution(api_client: TestClient) -> None:
-    adapter, _version, _worker = setup_publishable(api_client, "prod-stop-wait")
-    execution = start(api_client, adapter["id"]).json()
+def test_stop_wait_keeps_active_execution(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    adapter, version, worker = setup_publishable(api_client, "prod-stop-wait")
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(
+        session_factory, adapter["id"], version["id"], worker["id"]
+    )
 
     response = stop(api_client, adapter["id"], mode="wait")
     assert response.status_code == 200
     assert response.json()["production_state"] == "stopped"
-    assert response.json()["running_execution_id"] == execution["id"]
+    assert response.json()["running_execution_id"] == exec_id
     assert response.json()["last_production_execution_status"] == "pending"
 
-    fetched = api_client.get(f"/api/executions/{execution['id']}").json()
+    fetched = api_client.get(f"/api/executions/{exec_id}").json()
     assert fetched["status"] == "pending", "wait mode lets the run finish naturally"
 
     # Still blocked while the Execution is active.
@@ -335,28 +372,33 @@ def test_stop_wait_keeps_active_execution(api_client: TestClient) -> None:
     # Terminate now cancels the pending Execution and unblocks Start.
     terminated = stop(api_client, adapter["id"], mode="terminate")
     assert terminated.status_code == 200
-    fetched = api_client.get(f"/api/executions/{execution['id']}").json()
+    fetched = api_client.get(f"/api/executions/{exec_id}").json()
     assert fetched["status"] == "cancelled"
     assert fetched["ended_at"] is not None
 
     restarted = start(api_client, adapter["id"])
-    assert restarted.status_code == 202
+    assert restarted.status_code == 200
 
 
-def test_stop_terminate_flags_running_execution(api_client: TestClient) -> None:
-    adapter, _version, worker = setup_publishable(api_client, "prod-stop-term")
-    execution = start(api_client, adapter["id"]).json()
+def test_stop_terminate_flags_running_execution(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    adapter, version, worker = setup_publishable(api_client, "prod-stop-term")
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(
+        session_factory, adapter["id"], version["id"], worker["id"]
+    )
 
     # A non-target Worker can never claim it; the target Worker can.
     intruder = register_worker(api_client, name="prod-intruder")
     assert claim(api_client, intruder["id"]).status_code == 204
     claimed = claim(api_client, worker["id"])
     assert claimed.status_code == 200
-    assert claimed.json()["execution_id"] == execution["id"]
+    assert claimed.json()["execution_id"] == exec_id
 
     response = stop(api_client, adapter["id"], mode="terminate")
     assert response.status_code == 200
-    fetched = api_client.get(f"/api/executions/{execution['id']}").json()
+    fetched = api_client.get(f"/api/executions/{exec_id}").json()
     assert fetched["status"] == "running", "the Worker decides the terminal state"
     assert fetched["cancel_requested"] is True
 
@@ -365,17 +407,20 @@ def test_stop_terminate_flags_running_execution(api_client: TestClient) -> None:
     blocked = start(api_client, adapter["id"])
     assert blocked.status_code == 409
     assert blocked.json()["detail"]["code"] == "production_already_running"
-    cancelled = finish_execution(api_client, worker["id"], execution["id"], status="cancelled")
+    cancelled = finish_execution(api_client, worker["id"], exec_id, status="cancelled")
     assert cancelled.status_code == 200
-    assert start(api_client, adapter["id"]).status_code == 202
+    assert start(api_client, adapter["id"]).status_code == 200
 
 
 def test_stop_terminate_serializes_with_claim_when_claim_wins(
     api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
     """A claim holding the row lock wins; Stop observes running and requests cancel."""
-    adapter, _version, worker = setup_publishable(api_client, "prod-claim-wins")
-    execution = start(api_client, adapter["id"]).json()
+    adapter, version, worker = setup_publishable(api_client, "prod-claim-wins")
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(
+        session_factory, adapter["id"], version["id"], worker["id"]
+    )
 
     claim_has_lock = threading.Event()
     stop_connection_ready = threading.Event()
@@ -426,9 +471,9 @@ def test_stop_terminate_serializes_with_claim_when_claim_wins(
     assert len(claim_payloads) == 1
     payload = claim_payloads[0]
     assert payload is not None
-    assert payload.execution_id == execution["id"]
+    assert payload.execution_id == exec_id
     with session_factory() as session:
-        row = session.get(Execution, execution["id"])
+        row = session.get(Execution, exec_id)
         assert row is not None
         assert row.status == "running"
         assert row.worker_id == worker["id"]
@@ -439,8 +484,11 @@ def test_stop_terminate_serializes_with_claim_when_stop_wins(
     api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
     """Stop holding the row lock cancels pending before claim can see it."""
-    adapter, _version, worker = setup_publishable(api_client, "prod-stop-wins")
-    execution = start(api_client, adapter["id"]).json()
+    adapter, version, worker = setup_publishable(api_client, "prod-stop-wins")
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(
+        session_factory, adapter["id"], version["id"], worker["id"]
+    )
 
     stop_has_lock = threading.Event()
     allow_stop_commit = threading.Event()
@@ -477,7 +525,7 @@ def test_stop_terminate_serializes_with_claim_when_stop_wins(
     assert errors == []
     assert claim_payload is None
     with session_factory() as session:
-        row = session.get(Execution, execution["id"])
+        row = session.get(Execution, exec_id)
         assert row is not None
         assert row.status == "cancelled"
         assert row.worker_id is None
@@ -512,17 +560,21 @@ def test_unpublish_requires_stop_and_clears_pointer(api_client: TestClient) -> N
 
 
 def test_unpublish_and_archive_require_stop_after_production_execution_succeeds(
-    api_client: TestClient,
+    api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
     """A started-but-idle production entry remains protected until Stop."""
-    adapter, _version, worker = setup_publishable(api_client, "prod-idle-protected")
-    execution = start(api_client, adapter["id"]).json()
+    adapter, version, worker = setup_publishable(api_client, "prod-idle-protected")
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(
+        session_factory, adapter["id"], version["id"], worker["id"]
+    )
     assert claim(api_client, worker["id"]).status_code == 200
-    assert finish_execution(api_client, worker["id"], execution["id"]).status_code == 200
+    assert finish_execution(api_client, worker["id"], exec_id).status_code == 200
 
     fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
     assert fetched["production_state"] == "running"
     assert fetched["running_execution_id"] is None
+    assert fetched["production_version_id"] == version["id"]
 
     unpublish = api_client.post(f"/api/adapters/{adapter['id']}/unpublish")
     assert unpublish.status_code == 409
@@ -537,7 +589,7 @@ def test_unpublish_and_archive_require_stop_after_production_execution_succeeds(
 
 
 def test_publish_new_version_keeps_running_version_until_stop_then_start(
-    api_client: TestClient,
+    api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
     """Running=v2 -> Publish v3 keeps v2; v3 needs an explicit safe restart."""
     adapter, running_version, worker = setup_publishable(api_client, "prod-target-change")
@@ -549,7 +601,10 @@ def test_publish_new_version_keeps_running_version_until_stop_then_start(
         worker_name=worker["name"],
     )
 
-    running_execution = start(api_client, adapter["id"]).json()
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(
+        session_factory, adapter["id"], running_version["id"], worker["id"]
+    )
     assert claim(api_client, worker["id"]).status_code == 200
 
     published = publish(api_client, adapter["id"], next_version["id"])
@@ -559,8 +614,9 @@ def test_publish_new_version_keeps_running_version_until_stop_then_start(
     assert body["published_version_seq"] == next_version["seq"]
     assert body["running_version_id"] == running_version["id"]
     assert body["running_version_seq"] == running_version["seq"]
-    assert body["running_execution_id"] == running_execution["id"]
-    old_run = api_client.get(f"/api/executions/{running_execution['id']}").json()
+    assert body["running_execution_id"] == exec_id
+    assert body["production_version_id"] == running_version["id"]
+    old_run = api_client.get(f"/api/executions/{exec_id}").json()
     assert old_run["status"] == "running"
     assert old_run["version_id"] == running_version["id"]
 
@@ -568,28 +624,32 @@ def test_publish_new_version_keeps_running_version_until_stop_then_start(
     # Stop and while Stop(wait) is still waiting for v2 to end.
     assert start(api_client, adapter["id"]).status_code == 409
     waiting = stop(api_client, adapter["id"], mode="wait")
-    assert waiting.json()["running_execution_id"] == running_execution["id"]
+    assert waiting.json()["running_execution_id"] == exec_id
     assert start(api_client, adapter["id"]).status_code == 409
 
-    assert finish_execution(api_client, worker["id"], running_execution["id"]).status_code == 200
+    assert finish_execution(api_client, worker["id"], exec_id).status_code == 200
     restarted = start(api_client, adapter["id"])
-    assert restarted.status_code == 202, restarted.text
-    assert restarted.json()["version_id"] == next_version["id"]
+    assert restarted.status_code == 200, restarted.text
+    assert restarted.json()["production_version_id"] == next_version["id"]
 
 
 def test_started_idle_exposes_succeeded_last_production_and_requires_stop(
-    api_client: TestClient,
+    api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
     adapter, version, worker = setup_publishable(api_client, "prod-idle-success")
-    execution = start(api_client, adapter["id"]).json()
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(
+        session_factory, adapter["id"], version["id"], worker["id"]
+    )
     assert claim(api_client, worker["id"]).status_code == 200
-    assert finish_execution(api_client, worker["id"], execution["id"]).status_code == 200
+    assert finish_execution(api_client, worker["id"], exec_id).status_code == 200
 
     fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
     assert fetched["production_state"] == "running", "the production entry stays open"
     assert fetched["running_execution_id"] is None, "there is no active child process"
     assert fetched["running_version_id"] is None
-    assert fetched["last_production_execution_id"] == execution["id"]
+    assert fetched["production_version_id"] == version["id"], "M5.1: version stays locked"
+    assert fetched["last_production_execution_id"] == exec_id
     assert fetched["last_production_execution_status"] == "succeeded"
     assert fetched["last_production_version_id"] == version["id"]
     assert fetched["last_production_version_seq"] == version["seq"]
@@ -606,22 +666,26 @@ def test_started_idle_exposes_succeeded_last_production_and_requires_stop(
     assert blocked.status_code == 409
     assert blocked.json()["detail"]["code"] == "production_already_running"
     assert stop(api_client, adapter["id"]).status_code == 200
-    assert start(api_client, adapter["id"]).status_code == 202
+    assert start(api_client, adapter["id"]).status_code == 200
 
 
 @pytest.mark.parametrize("status", ["failed", "timeout"])
 def test_adapter_response_exposes_failed_last_production_execution(
-    api_client: TestClient, status: str
+    api_client: TestClient, status: str, session_factory: sessionmaker[Session]
 ) -> None:
     adapter, version, worker = setup_publishable(api_client, f"prod-last-{status}")
-    execution = start(api_client, adapter["id"]).json()
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(
+        session_factory, adapter["id"], version["id"], worker["id"]
+    )
     assert claim(api_client, worker["id"]).status_code == 200
-    assert finish_execution(api_client, worker["id"], execution["id"], status).status_code == 200
+    assert finish_execution(api_client, worker["id"], exec_id, status).status_code == 200
 
     fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
     assert fetched["production_state"] == "running"
     assert fetched["running_execution_id"] is None
-    assert fetched["last_production_execution_id"] == execution["id"]
+    assert fetched["production_version_id"] == version["id"]
+    assert fetched["last_production_execution_id"] == exec_id
     assert fetched["last_production_execution_status"] == status
     assert fetched["last_production_version_id"] == version["id"]
 
@@ -671,7 +735,16 @@ def test_archive_blocked_while_production_active(api_client: TestClient) -> None
     assert blocked.status_code == 409
     assert blocked.json()["detail"]["code"] == "production_running"
 
+    # M5.1: production_version_id is set while running.
+    fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert fetched["production_version_id"] is not None
+
     stop(api_client, adapter["id"], mode="terminate")
+
+    # M5.1: Stop clears production_version_id.
+    fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert fetched["production_version_id"] is None
+
     assert api_client.post(f"/api/adapters/{adapter['id']}/archive").status_code == 200
 
 
@@ -709,6 +782,7 @@ def test_clone_copies_working_copy_and_bindings(
     assert clone["published_version_id"] is None
     assert clone["production_state"] == "idle"
     assert clone["production_worker_id"] is None
+    assert clone["production_version_id"] is None
     assert clone["archived_at"] is None
 
     versions = api_client.get(f"/api/adapters/{clone['id']}/versions").json()
@@ -766,11 +840,12 @@ def test_single_online_worker_adopts_test_runs(api_client: TestClient) -> None:
 def test_only_active_production_execution_counts(
     api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
-    """The DB unique index forbids a second active Production Execution."""
+    """The DB unique index forbids a second active production-class Execution."""
     adapter, version, worker = setup_publishable(api_client, "prod-unique")
     start(api_client, adapter["id"])
 
-    with pytest.raises(IntegrityError), session_factory() as session:
+    # M5.1: Start no longer creates an Execution; insert one manually.
+    with session_factory() as session:
         session.add(
             Execution(
                 adapter_id=adapter["id"],
@@ -778,6 +853,387 @@ def test_only_active_production_execution_counts(
                 trigger="production",
                 status="pending",
                 target_worker_id=worker["id"],
+                input={},
             )
         )
         session.commit()
+
+    # A second active production-class Execution must conflict.
+    with pytest.raises(IntegrityError), session_factory() as session:
+        session.add(
+            Execution(
+                adapter_id=adapter["id"],
+                version_id=version["id"],
+                trigger="schedule",
+                status="pending",
+                target_worker_id=worker["id"],
+                input={},
+            )
+        )
+        session.commit()
+
+
+# --- M5.1 new tests ---------------------------------------------------------------
+
+
+def test_start_does_not_create_execution(api_client: TestClient) -> None:
+    """M5.1: Start succeeds but no production Executions exist afterwards."""
+    adapter, _version, _worker = setup_publishable(api_client, "m51-no-exec")
+    response = start(api_client, adapter["id"])
+    assert response.status_code == 200
+
+    # Only manual test runs from the publish gate exist.
+    history = api_client.get(f"/api/adapters/{adapter['id']}/executions").json()
+    assert all(item["trigger"] == "manual" for item in history["items"])
+
+
+def test_start_locks_published_version(api_client: TestClient) -> None:
+    """M5.1: production_version_id == published_version_id after Start."""
+    adapter, version, _worker = setup_publishable(api_client, "m51-lock-ver")
+    response = start(api_client, adapter["id"])
+    assert response.status_code == 200
+    body = response.json()
+    assert body["production_version_id"] == version["id"]
+    assert body["production_version_id"] == body["published_version_id"]
+
+
+def test_publish_during_running_does_not_change_production_version(
+    api_client: TestClient,
+) -> None:
+    """Publishing a new version while running must not change production_version_id."""
+    adapter, v1, worker = setup_publishable(api_client, "m51-publish-run")
+    start(api_client, adapter["id"])
+    before = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert before["production_version_id"] == v1["id"]
+
+    v2 = save_version(api_client, adapter["id"])
+    pass_publish_gate(api_client, adapter["id"], v2["id"], worker_name=worker["name"])
+    assert publish(api_client, adapter["id"], v2["id"]).status_code == 200
+
+    after = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert after["production_version_id"] == v1["id"], "production version unchanged"
+    assert after["published_version_id"] == v2["id"], "published version updated"
+
+
+def test_stop_then_start_locks_new_version(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Stop -> Start after a new publish locks the new version."""
+    adapter, v1, worker = setup_publishable(api_client, "m51-stop-start")
+    start(api_client, adapter["id"])
+    exec_id = create_production_execution(session_factory, adapter["id"], v1["id"], worker["id"])
+    assert claim(api_client, worker["id"]).status_code == 200
+    assert finish_execution(api_client, worker["id"], exec_id).status_code == 200
+
+    v2 = save_version(api_client, adapter["id"])
+    pass_publish_gate(api_client, adapter["id"], v2["id"], worker_name=worker["name"])
+    assert publish(api_client, adapter["id"], v2["id"]).status_code == 200
+
+    assert stop(api_client, adapter["id"]).status_code == 200
+    stopped = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert stopped["production_version_id"] is None
+
+    restarted = start(api_client, adapter["id"])
+    assert restarted.status_code == 200
+    started_body = restarted.json()
+    assert started_body["production_version_id"] == v2["id"]
+
+
+def test_running_worker_id_change_blocked(api_client: TestClient) -> None:
+    """Changing the production Worker while running returns 409."""
+    adapter, _version, _worker = setup_publishable(api_client, "m51-worker-lock")
+    start(api_client, adapter["id"])
+
+    new_worker = register_worker(api_client, name="m51-new-worker")
+    response = api_client.patch(
+        f"/api/adapters/{adapter['id']}",
+        json={"production_worker_id": new_worker["id"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "production_running"
+
+    # Same value (no actual change) is accepted.
+    same = api_client.patch(
+        f"/api/adapters/{adapter['id']}",
+        json={"production_worker_id": _worker["id"]},
+    )
+    assert same.status_code == 200
+
+
+def test_stop_clears_production_version_id(api_client: TestClient) -> None:
+    """Stop sets production_version_id to null."""
+    adapter, _version, _worker = setup_publishable(api_client, "m51-stop-clear")
+    start(api_client, adapter["id"])
+    before = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert before["production_version_id"] is not None
+
+    assert stop(api_client, adapter["id"]).status_code == 200
+    after = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert after["production_version_id"] is None
+
+
+def test_db_accepts_schedule_webhook_triggers(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """The DB check constraint accepts schedule and webhook trigger values."""
+    adapter = create_adapter(api_client, name="m51-triggers")
+    version = save_version(api_client, adapter["id"])
+    worker = register_worker(api_client, name="m51-tw")
+
+    for trigger_value in ("production", "schedule", "webhook", "manual"):
+        with session_factory() as session:
+            session.add(
+                Execution(
+                    adapter_id=adapter["id"],
+                    version_id=version["id"],
+                    trigger=trigger_value,
+                    status="succeeded",
+                    target_worker_id=worker["id"],
+                    input={},
+                )
+            )
+            session.commit()
+
+    with session_factory() as session:
+        rows = session.scalars(select(Execution)).all()
+        assert len(rows) == 4
+
+
+def test_unique_constraint_covers_all_production_triggers(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """production/schedule/webhook cannot have simultaneous active Executions."""
+    adapter, version, worker = setup_publishable(api_client, "m51-uq-triggers")
+    start(api_client, adapter["id"])
+
+    with session_factory() as session:
+        session.add(
+            Execution(
+                adapter_id=adapter["id"],
+                version_id=version["id"],
+                trigger="schedule",
+                status="pending",
+                target_worker_id=worker["id"],
+                input={},
+            )
+        )
+        session.commit()
+
+    # A webhook Execution must now conflict with the active schedule one.
+    with pytest.raises(IntegrityError), session_factory() as session:
+        session.add(
+            Execution(
+                adapter_id=adapter["id"],
+                version_id=version["id"],
+                trigger="webhook",
+                status="running",
+                target_worker_id=worker["id"],
+                input={},
+            )
+        )
+        session.commit()
+
+
+def test_manual_execution_not_constrained(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Manual Executions are never constrained by the production unique index."""
+    adapter, version, worker = setup_publishable(api_client, "m51-manual-ok")
+    start(api_client, adapter["id"])
+
+    with session_factory() as session:
+        session.add(
+            Execution(
+                adapter_id=adapter["id"],
+                version_id=version["id"],
+                trigger="production",
+                status="pending",
+                target_worker_id=worker["id"],
+                input={},
+            )
+        )
+        session.commit()
+
+    # A manual Execution coexists with the active production one.
+    with session_factory() as session:
+        session.add(
+            Execution(
+                adapter_id=adapter["id"],
+                version_id=version["id"],
+                trigger="manual",
+                status="pending",
+                target_worker_id=worker["id"],
+                input={},
+            )
+        )
+        session.commit()
+
+    with session_factory() as session:
+        rows = session.scalars(select(Execution)).all()
+        # 1 manual test run from setup_publishable + 1 production + 1 manual
+        assert len(rows) == 3
+        assert sum(1 for r in rows if r.trigger == "manual") == 2
+        assert sum(1 for r in rows if r.trigger == "production") == 1
+
+
+# --- M5.1: Start / Worker PATCH Adapter row-lock serialization ---------------------
+
+
+def test_start_wins_adapter_lock_and_worker_patch_rechecks_running(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Start holds the Adapter row lock: a concurrent Worker PATCH must queue on
+    the same lock and then see production_state=running (409), so the Worker can
+    never be swapped underneath an already-started production entry.
+    """
+    adapter, version, worker = setup_publishable(api_client, "m51-lock-start-wins")
+    intruder = register_worker(api_client, name="m51-lock-intruder")
+    adapter_id = adapter["id"]
+
+    start_has_lock = threading.Event()
+    allow_start_commit = threading.Event()
+    patch_ready = threading.Event()
+    patch_backend_pids: list[int] = []
+    patch_codes: list[str] = []
+    errors: list[BaseException] = []
+
+    def start_racer() -> None:
+        with session_factory() as session:
+            original_commit = session.commit
+
+            def coordinated_commit() -> None:
+                # start_production holds the Adapter row lock at commit time.
+                start_has_lock.set()
+                if not allow_start_commit.wait(timeout=5):
+                    raise AssertionError("Worker PATCH racer did not release Start commit")
+                original_commit()
+
+            session.commit = coordinated_commit  # type: ignore[method-assign]
+            try:
+                adapter_service.start_production(session, adapter_id)
+            except BaseException as exc:  # noqa: BLE001 - reported in the test thread
+                errors.append(exc)
+
+    def patch_racer() -> None:
+        with session_factory() as session:
+            try:
+                backend_pid = session.scalar(select(func.pg_backend_pid()))
+                assert isinstance(backend_pid, int)
+                patch_backend_pids.append(backend_pid)
+                patch_ready.set()
+                adapter_service.update_adapter(
+                    session,
+                    adapter_id,
+                    AdapterUpdate(production_worker_id=intruder["id"]),
+                )
+            except HTTPException as exc:
+                patch_codes.append(exc.detail["code"])
+            except BaseException as exc:  # noqa: BLE001 - reported in the test thread
+                errors.append(exc)
+
+    start_thread = threading.Thread(target=start_racer)
+    patch_thread = threading.Thread(target=patch_racer)
+    start_thread.start()
+    assert start_has_lock.wait(timeout=5), "Start did not acquire the Adapter row lock"
+    patch_thread.start()
+    try:
+        assert patch_ready.wait(timeout=5), "Worker PATCH did not open its transaction"
+        with session_factory() as monitor:
+            # PATCH must queue on the very same Adapter row lock Start holds.
+            wait_for_postgres_lock(monitor, patch_backend_pids[0])
+    finally:
+        allow_start_commit.set()
+    start_thread.join(timeout=10)
+    patch_thread.join(timeout=10)
+
+    assert not start_thread.is_alive()
+    assert not patch_thread.is_alive()
+    assert errors == []
+    assert patch_codes == ["production_running"]
+    with session_factory() as session:
+        stored = session.get(Adapter, adapter_id)
+        assert stored is not None
+        assert stored.production_state == "running"
+        assert stored.production_worker_id == worker["id"]
+        assert stored.production_version_id == version["id"]
+
+
+def test_worker_patch_wins_adapter_lock_and_start_revalidates_gate(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """PATCH holds the Adapter row lock: Start must queue on the same lock and
+    then re-evaluate every gate against the new Worker, never starting with a
+    version that was never tested on that Worker.
+    """
+    adapter, _version, _worker = setup_publishable(api_client, "m51-lock-patch-wins")
+    intruder = register_worker(api_client, name="m51-lock-patch-intruder")
+    adapter_id = adapter["id"]
+
+    patch_has_lock = threading.Event()
+    allow_patch_commit = threading.Event()
+    start_ready = threading.Event()
+    start_backend_pids: list[int] = []
+    start_codes: list[str] = []
+    errors: list[BaseException] = []
+
+    def patch_racer() -> None:
+        with session_factory() as session:
+            original_commit = session.commit
+
+            def coordinated_commit() -> None:
+                # update_adapter holds the Adapter row lock at commit time.
+                patch_has_lock.set()
+                if not allow_patch_commit.wait(timeout=5):
+                    raise AssertionError("Start racer did not release PATCH commit")
+                original_commit()
+
+            session.commit = coordinated_commit  # type: ignore[method-assign]
+            try:
+                adapter_service.update_adapter(
+                    session,
+                    adapter_id,
+                    AdapterUpdate(production_worker_id=intruder["id"]),
+                )
+            except BaseException as exc:  # noqa: BLE001 - reported in the test thread
+                errors.append(exc)
+
+    def start_racer() -> None:
+        with session_factory() as session:
+            try:
+                backend_pid = session.scalar(select(func.pg_backend_pid()))
+                assert isinstance(backend_pid, int)
+                start_backend_pids.append(backend_pid)
+                start_ready.set()
+                adapter_service.start_production(session, adapter_id)
+            except HTTPException as exc:
+                start_codes.append(exc.detail["code"])
+            except BaseException as exc:  # noqa: BLE001 - reported in the test thread
+                errors.append(exc)
+
+    patch_thread = threading.Thread(target=patch_racer)
+    start_thread = threading.Thread(target=start_racer)
+    patch_thread.start()
+    assert patch_has_lock.wait(timeout=5), "PATCH did not acquire the Adapter row lock"
+    start_thread.start()
+    try:
+        assert start_ready.wait(timeout=5), "Start did not open its transaction"
+        with session_factory() as monitor:
+            # Start must queue on the very same Adapter row lock PATCH holds.
+            wait_for_postgres_lock(monitor, start_backend_pids[0])
+    finally:
+        allow_patch_commit.set()
+    patch_thread.join(timeout=10)
+    start_thread.join(timeout=10)
+
+    assert not patch_thread.is_alive()
+    assert not start_thread.is_alive()
+    assert errors == []
+    assert start_codes == ["production_test_required"], (
+        "Start must re-validate the gate against the Worker PATCH installed"
+    )
+    with session_factory() as session:
+        stored = session.get(Adapter, adapter_id)
+        assert stored is not None
+        assert stored.production_state != "running"
+        assert stored.production_worker_id == intruder["id"]
+        assert stored.production_version_id is None

@@ -89,15 +89,16 @@
 | id / name / description | 基本信息 |
 | language | `python / javascript / java`；创建后不可修改，数据库 CHECK 约束 |
 | latest_version_id | 每次保存代码产生新版本后更新 |
-| published_version_id | 发布时设置 |
-| production_worker_id | 生产 Worker（FK workers，可空，ON DELETE SET NULL）；测试运行默认以此为目标 |
+| published_version_id | 发布时设置；Published Version 是下一次 Start 的目标 |
+| production_version_id | M5.1：Start 时锁定为当时的 Published Version（FK adapter_versions，可空）；Stop 清空 |
+| production_worker_id | 生产 Worker（FK workers，可空，ON DELETE SET NULL）；测试运行默认以此为目标；`production_state=running` 时不可修改（409） |
 | production_state | `idle / running / stopped`（生产入口开关，默认 idle） |
 | archived_at | 归档时间戳（可空）；归档后只读 |
 | created_at / updated_at | 时间戳 |
 
-生产状态派生规则（纯展示层）：`未发布` = published 指针为空；`待启动` = 已发布且 state=idle；`已启动` = state=running；`已停止` = state=stopped；`异常` = 无 active Execution 且最近一次 Production Execution 为 failed/timeout；`已归档` = archived_at 非空。`production_state=running` 表示生产入口已开启，与当前是否恰有子进程执行分离；无 active Execution 且最近一次成功时是“已启动 / 空闲”。Adapter API 同时返回 active Production Execution 指针与最近一次 Production Execution 最小摘要，前端不靠猜测状态。
+生产状态派生规则（纯展示层）：`未发布` = published 指针为空；`待启动` = 已发布且 state=idle；`已启动` = state=running；`已停止` = state=stopped；`已归档` = archived_at 非空。`production_state=running` 表示生产入口已开启，与当前是否恰有子进程执行分离；M5.1 起 Start 不再创建 Execution，因此 `running` 且无 active Execution 就是合法的“已启动 / 空闲”，不因上一生命周期的 failed/timeout 派生出需要 Stop→Start 的“异常”生命周期状态。最近一次 Production Execution 的 failed/timeout 如展示，只作为独立的“最近一次生产执行失败”结果提示（指向执行记录），不影响入口状态。Adapter API 同时返回 active Production Execution 指针与最近一次 Production Execution 最小摘要，前端不靠猜测状态。
 
-Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `published_version_id`，不会修改或停止当前 Production Execution；因此允许 `Running=v2 / Published=v3`。只有管理员人工 Stop、旧 Execution 真正终态，且 v3 已在当前 production Worker 上重新测试成功后，Start 才创建绑定 v3 的新 Production Execution。
+Publish 与 Start 是两个独立动作，术语全平台统一：**Published Version** 是下一次 Start 的目标；**Production Version** 是当前 Start 生命周期锁定、供后续生产 Trigger 使用的版本。Publish 只更新 `published_version_id`，不会修改 `production_version_id`。M5.1 起 Start 不再创建 Execution，而是开启生产入口并锁定 `production_version_id = published_version_id`，同时锁定 production Worker；Start 是同步状态变更，成功返回 200。运行期间 Publish 新版本不会改变已锁定的生产版本。只有管理员人工 Stop 关闭生产入口并清空 `production_version_id` 后，再次 Start 才锁定新的 Published Version。
 
 ### 3.2 AdapterVersion（不可变）
 
@@ -112,8 +113,8 @@ Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `publish
 版本模型规则：
 
 - **保存 = 新建不可变 Version** 并更新 `Adapter.latest_version_id`；不存在 Draft 实体。
-- **发布 = 设置 `Adapter.published_version_id`**。
-- Manual 测试默认执行 latest 版本；正式触发以 published 版本为准。
+- **发布 = 设置 `Adapter.published_version_id`**，只改变下一次 Start 的目标。
+- Manual 测试默认执行 latest 版本；生产类触发（M5.2 Schedule / M5.3 Webhook）执行当前 Start 生命周期锁定的 Production Version（`production_version_id`），而不是发布时的最新版本。
 
 ### 3.3 Execution
 
@@ -121,14 +122,14 @@ Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `publish
 |------|------|
 | id / adapter_id / **version_id（必填）** / worker_id | 关联关系 |
 | target_worker_id | 指定执行的 Worker（可空）；为空时可被任意 Worker 领取（存量兼容） |
-| trigger | 枚举：`manual`（测试运行）/ `production`（生产启动）；预留 `schedule` / `webhook` |
+| trigger | 枚举：`manual`（测试运行）/ `production`（历史兼容值：M3.2 的 Start 曾创建它；M5.1 起 Start 不再创建 Execution）/ `schedule`（定时触发）/ `webhook`（事件触发）；M5.1 扩展值空间，`schedule` / `webhook` 为未来 M5.2/M5.3 预留 |
 | cancel_requested | 取消请求标志：running 的执行由 Worker 在下次进度上报时感知并 kill |
 | status | `pending / running / succeeded / failed / timeout / cancelled` |
 | input / output / stdout / stderr | 见 §3.5 大字段策略 |
 | error | 失败摘要 |
 | start_time / end_time / duration | 时间与耗时 |
 
-一个 Adapter 同时只允许一个 active Production Execution，由部分唯一索引 `uq_executions_active_production ON executions(adapter_id) WHERE trigger='production' AND status IN ('pending','running')` 在数据库层强制。
+一个 Adapter 同时只允许一个 active 生产类 Execution（trigger IN ('production','schedule','webhook')），由部分唯一索引 `uq_executions_active_production ON executions(adapter_id) WHERE trigger IN ('production','schedule','webhook') AND status IN ('pending','running')` 在数据库层强制。
 
 ### 3.4 Worker
 

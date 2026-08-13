@@ -152,8 +152,8 @@ export const api = {
   getPublishGate: (adapterId: number, versionId: number): Promise<PublishGate> =>
     request(`/api/adapters/${adapterId}/versions/${versionId}/publish-gate`),
 
-  /** Open the production entry; returns the created pending Execution. */
-  startProduction: (adapterId: number): Promise<Execution> =>
+  /** M5.1: Open the production entry and lock the production version; returns the Adapter. */
+  startProduction: (adapterId: number): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}/production/start`, { method: "POST" }),
 
   /** Close the production entry; ``terminate`` also cancels the active run. */

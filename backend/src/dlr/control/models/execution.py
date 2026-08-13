@@ -15,10 +15,10 @@ M3.2 scheduling and lifecycle fields:
 - ``target_worker_id`` is the desired Worker; ``worker_id`` stays the
   Worker that actually claimed and runs the Execution.
 - ``trigger`` distinguishes test runs (``manual``; the documented
-  compatibility reading of historical rows) from production runs
-  (``production``).
-- The partial unique index guarantees at most one active Production
-  Execution per Adapter at the database level.
+  compatibility reading of historical rows) from production-class runs
+  (``production`` / ``schedule`` / ``webhook``).
+- The partial unique index guarantees at most one active production-class
+  Execution per Adapter at the database level (M5.1).
 """
 
 from datetime import datetime
@@ -74,16 +74,24 @@ class Execution(Base):
             "status IN ('pending', 'running', 'succeeded', 'failed', 'timeout', 'cancelled')",
             name="ck_executions_status",
         ),
-        # manual = test run (and historical rows); production = Start.
-        CheckConstraint("trigger IN ('manual', 'production')", name="ck_executions_trigger"),
+        # manual = test run (and historical rows); production/schedule/webhook
+        # are production-class triggers (M5.1 widens the value space).
+        CheckConstraint(
+            "trigger IN ('manual', 'production', 'schedule', 'webhook')",
+            name="ck_executions_trigger",
+        ),
         # Supports the claim query: pending rows ordered by (created_at, id).
         Index("ix_executions_claim", "status", "created_at", "id"),
-        # One active Production Execution per Adapter, enforced by the DB.
+        # One active production-class Execution per Adapter, enforced by the DB.
+        # Covers production/schedule/webhook triggers (M5.1).
         Index(
             "uq_executions_active_production",
             "adapter_id",
             unique=True,
-            postgresql_where=text("trigger = 'production' AND status IN ('pending', 'running')"),
+            postgresql_where=text(
+                "trigger IN ('production', 'schedule', 'webhook') "
+                "AND status IN ('pending', 'running')"
+            ),
         ),
     )
 

@@ -15,6 +15,13 @@ M3.2 lifecycle fields:
   existence of a running subprocess.
 - ``archived_at`` is the minimal archive marker; archived Adapters keep all
   Versions and Executions.
+
+M5.1 production version locking:
+
+- ``production_version_id`` is set by Start (to the current
+  ``published_version_id``) and cleared by Stop. Publish during a running
+  entry only changes ``published_version_id``; the locked production version
+  stays stable until the next Stop → Start cycle.
 """
 
 from datetime import datetime
@@ -70,6 +77,14 @@ class Adapter(Base):
     published_version_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("adapter_versions.id", use_alter=True, name="fk_adapters_published_version_id"),
+        nullable=True,
+    )
+    # M5.1: the version locked by the current production entry. Set by Start
+    # (to published_version_id) and cleared by Stop. Publish during a running
+    # entry never touches this pointer; only Stop → Start rotates it.
+    production_version_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("adapter_versions.id", use_alter=True, name="fk_adapters_production_version_id"),
         nullable=True,
     )
     # The Worker that runs tests and production executions of this Adapter.
