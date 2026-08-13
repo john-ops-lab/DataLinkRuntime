@@ -257,7 +257,9 @@ public_id（随机不可猜测字符串，全局唯一，创建后稳定不轮�
 比较，不区分失败细节）；生产门禁 → 409 稳定错误码（已归档 /
 `production_not_running` / `worker_offline` / `worker_capability_missing` /
 `production_busy`）；最后是 body 内容合同 → 非法或非标准 JSON（含 NaN /
-Infinity / 数值溢出等非有限值）→ 400 `webhook_body_invalid_json`；解析后的
+Infinity / 数值溢出等非有限值），或字符串 value / object key 超出
+PostgreSQL JSONB 可持久化边界（U+0000、未配对 surrogate）→ 400
+`webhook_body_invalid_json`；解析后的
 compact JSON（与 Manual / Schedule input 同一大字段口径）超过
 `execution_input_max_bytes` → 413 `execution_input_too_large`。所有拒绝零
 Execution 落库。

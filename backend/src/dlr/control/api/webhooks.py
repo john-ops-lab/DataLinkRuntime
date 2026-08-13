@@ -10,7 +10,8 @@ Two routers with different authentication models:
 
 The ingress reads the request body with a hard byte cap so an oversized
 external request can never occupy unbounded memory; the service layer
-re-validates the same limit plus the compact JSON Execution input cap.
+re-validates the same limit, the compact JSON Execution input cap and
+the JSONB-persistable string boundary.
 
 Concurrency contract: the async route only streams the body; the blocking
 database transaction runs via ``asyncio.to_thread`` on its own session

@@ -32,6 +32,7 @@ can never deadlock.
 import json
 import logging
 import math
+import re
 import secrets as stdlib_secrets
 from typing import Any
 
@@ -75,6 +76,37 @@ def _parse_finite_float(text: str) -> float:
     if not math.isfinite(value):
         raise ValueError(f"non-finite number: {text}")
     return value
+
+
+# U+0000 is forbidden in PostgreSQL text, and code points in the UTF-16
+# surrogate range can only appear as unpaired surrogates inside a Python
+# str (astral characters are single code points): both parse as JSON and
+# pass the size caps, then fail at JSONB write time.
+_JSONB_UNPERSISTABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _require_jsonb_persistable(payload: Any) -> None:
+    """Reject every string value / object key JSONB cannot persist.
+
+    Covers U+0000 and unpaired surrogates (accepted by ``json.loads``
+    from ``\\ud800``-style escapes); such input must answer a stable 400
+    with zero Executions instead of a write-time failure. The scan is
+    iterative: a capped body can still nest deeper than Python's
+    recursion limit.
+    """
+    stack: list[Any] = [payload]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            if _JSONB_UNPERSISTABLE.search(current):
+                raise ValueError("string cannot be persisted as JSONB")
+        elif isinstance(current, dict):
+            for key, value in current.items():
+                if _JSONB_UNPERSISTABLE.search(key):
+                    raise ValueError("object key cannot be persisted as JSONB")
+                stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(current)
 
 
 def webhook_path(public_id: str) -> str:
@@ -178,10 +210,11 @@ def receive_webhook(
 
     Order is fixed: body stream cap (route) -> unknown public_id -> 404;
     disabled -> 409; token -> 401; unified production gate -> 409 family;
-    body contract -> 400 (invalid or non-standard JSON) and 413 (compact
-    JSON over the Execution input cap). The Adapter row is locked before
-    the Webhook row (platform lock order), so a concurrent Stop / Start /
-    PUT is fully serialized with receipt.
+    body contract -> 400 (invalid or non-standard JSON, or strings JSONB
+    cannot persist) and 413 (compact JSON over the Execution input cap).
+    The Adapter row is locked before the Webhook row (platform lock
+    order), so a concurrent Stop / Start / PUT is fully serialized with
+    receipt.
     """
     webhook = session.scalar(select(AdapterWebhook).where(AdapterWebhook.public_id == public_id))
     if webhook is None:
@@ -240,6 +273,7 @@ def receive_webhook(
             parse_constant=_reject_non_standard_constant,
             parse_float=_parse_finite_float,
         )
+        _require_jsonb_persistable(payload)
     except (UnicodeDecodeError, ValueError) as error:
         raise domain_error(400, "webhook_body_invalid_json", "Body must be valid JSON") from error
     if len(compact_json_bytes(payload)) > settings.execution_input_max_bytes:

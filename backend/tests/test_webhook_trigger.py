@@ -457,6 +457,40 @@ def test_non_standard_json_is_rejected_with_zero_executions(
     assert webhook_executions_of(session_factory, adapter["id"]) == []
 
 
+def test_jsonb_unpersistable_unicode_is_rejected_with_zero_executions(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """U+0000 and unpaired surrogates parse as JSON but cannot be persisted
+    as PostgreSQL JSONB: stable 400 instead of a write-time failure, zero
+    Executions. Covers top-level values, nested values and object keys."""
+    adapter, version, worker, webhook = running_with_webhook(api_client, "whk-jsonb")
+    for content in (
+        b'"\\u0000"',  # top-level string value: U+0000
+        b'"\\ud800"',  # top-level string value: unpaired high surrogate
+        b'{"outer": {"inner": "\\udc00"}}',  # nested string value
+        b'{"key\\u0000": 1}',  # object key with U+0000
+        b'{"\\ud800key": [1]}',  # object key with unpaired surrogate
+        b'{"v": "raw\x00nul"}',  # raw NUL byte accepted by json.loads
+    ):
+        response = post_hook(api_client, webhook["public_id"], token=WEBHOOK_TOKEN, content=content)
+        assert response.status_code == 400, (content, response.text)
+        assert response.json()["detail"]["code"] == "webhook_body_invalid_json"
+    assert webhook_executions_of(session_factory, adapter["id"]) == []
+
+    # Persistable Unicode stays accepted and really lands in JSONB:
+    # astral characters (emoji) are single code points, not surrogates.
+    accepted = post_hook(
+        api_client,
+        webhook["public_id"],
+        token=WEBHOOK_TOKEN,
+        json_body={"emoji": "\U0001f600", "nested": {"中文": ["é"]}},
+    )
+    assert accepted.status_code == 202, accepted.text
+    rows = webhook_executions_of(session_factory, adapter["id"])
+    assert len(rows) == 1
+    assert rows[0].input == {"emoji": "\U0001f600", "nested": {"中文": ["é"]}}
+
+
 def test_compact_json_input_cap_is_enforced_after_parsing(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
