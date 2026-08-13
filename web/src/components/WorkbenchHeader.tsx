@@ -5,6 +5,7 @@ import { Alert, Button, Dropdown, Modal, Space, Tag } from "antd";
 
 import { LANGUAGE_LABELS } from "../languages";
 import {
+  hasLastProductionExecutionFailure,
   productionDisplayState,
   productionRunningVersionId,
   productionStateColor,
@@ -70,8 +71,11 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
     adapter.production_version_id !== null &&
     adapter.production_version_id !== undefined &&
     adapter.published_version_id !== adapter.production_version_id;
-  const abnormal = displayState === "abnormal";
-  const abnormalExecutionId = adapter.last_production_execution_id ?? null;
+  // M5.1: 最近一次生产执行失败只是 Execution 结果事实，不是生产入口的
+  // 生命周期异常；入口保持开启，不提示用户再次 Stop → Start。
+  const lastProductionFailure =
+    productionState === "running" && hasLastProductionExecutionFailure(adapter);
+  const lastFailureExecutionId = adapter.last_production_execution_id ?? null;
   const startRelevant =
     adapter.published_version_id !== null &&
     adapter.published_version_id !== undefined &&
@@ -231,13 +235,13 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
             description="旧 Execution 进入终态并刷新后，才能启动新的生产执行。"
           />
         )}
-        {abnormal && (
+        {lastProductionFailure && (
           <Alert
-            type="error"
+            type="warning"
             showIcon
-            data-testid="production-abnormal"
-            message="最近一次生产执行异常"
-            description={`请先在执行记录中查看${abnormalExecutionId === null ? "失败详情" : ` Execution #${abnormalExecutionId}`}，确认失败原因后先 Stop 关闭当前生产入口；如需恢复再 Start。`}
+            data-testid="production-last-failure"
+            message={`最近一次生产执行${adapter.last_production_execution_status === "timeout" ? "超时" : "失败"}`}
+            description={`请在执行记录中查看${lastFailureExecutionId === null ? "失败详情" : ` Execution #${lastFailureExecutionId}`}；这只是最近一次执行的结果，生产入口保持开启，无需 Stop → Start。`}
           />
         )}
         {archived && (

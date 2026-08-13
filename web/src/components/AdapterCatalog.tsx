@@ -109,9 +109,6 @@ function catalogSubtitle(
       attention.push("Worker 离线");
     }
   }
-  if (displayState === "abnormal") {
-    attention.push("状态异常");
-  }
   const primary = `${LANGUAGE_LABELS[adapter.language]} · ${productionFact}`;
   const fullParts = [primary, ...attention];
   if (workerId === null || workerId === undefined) {

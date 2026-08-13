@@ -96,7 +96,7 @@
 | archived_at | 归档时间戳（可空）；归档后只读 |
 | created_at / updated_at | 时间戳 |
 
-生产状态派生规则（纯展示层）：`未发布` = published 指针为空；`待启动` = 已发布且 state=idle；`已启动` = state=running；`已停止` = state=stopped；`异常` = 无 active Execution 且最近一次 Production Execution 为 failed/timeout；`已归档` = archived_at 非空。`production_state=running` 表示生产入口已开启，与当前是否恰有子进程执行分离；无 active Execution 且最近一次成功时是“已启动 / 空闲”。Adapter API 同时返回 active Production Execution 指针与最近一次 Production Execution 最小摘要，前端不靠猜测状态。
+生产状态派生规则（纯展示层）：`未发布` = published 指针为空；`待启动` = 已发布且 state=idle；`已启动` = state=running；`已停止` = state=stopped；`已归档` = archived_at 非空。`production_state=running` 表示生产入口已开启，与当前是否恰有子进程执行分离；M5.1 起 Start 不再创建 Execution，因此 `running` 且无 active Execution 就是合法的“已启动 / 空闲”，不因上一生命周期的 failed/timeout 派生出需要 Stop→Start 的“异常”生命周期状态。最近一次 Production Execution 的 failed/timeout 如展示，只作为独立的“最近一次生产执行失败”结果提示（指向执行记录），不影响入口状态。Adapter API 同时返回 active Production Execution 指针与最近一次 Production Execution 最小摘要，前端不靠猜测状态。
 
 Publish 与 Start 是两个独立动作，术语全平台统一：**Published Version** 是下一次 Start 的目标；**Production Version** 是当前 Start 生命周期锁定、供后续生产 Trigger 使用的版本。Publish 只更新 `published_version_id`，不会修改 `production_version_id`。M5.1 起 Start 不再创建 Execution，而是开启生产入口并锁定 `production_version_id = published_version_id`，同时锁定 production Worker；Start 是同步状态变更，成功返回 200。运行期间 Publish 新版本不会改变已锁定的生产版本。只有管理员人工 Stop 关闭生产入口并清空 `production_version_id` 后，再次 Start 才锁定新的 Published Version。
 

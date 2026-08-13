@@ -40,10 +40,12 @@ export function isTerminal(status: string): boolean {
   return TERMINAL_STATUSES.has(status as ExecutionStatus);
 }
 
-// --- M3.2: Adapter production display states -------------------------------
+// --- M3.2/M5.1: Adapter production display states ---------------------------
 // 生产入口状态与单次 Execution 状态分开展示。“停止中”由
-// stopped + active Execution 派生；生产入口仍为 running 但当前无子进程是
-// 合法的“已启动 / 空闲”，只有最近生产执行 failed/timeout 才派生异常。
+// stopped + active Execution 派生；production_state=running 且当前无 active
+// Execution 是合法的“已启动 / 空闲”（M5.1 起 Start 不再创建 Execution）。
+// 上一生命周期的 failed/timeout 不再把生产入口派生成异常，只作为独立的
+// “最近一次生产执行失败”结果提示（见 hasLastProductionExecutionFailure）。
 
 export type ProductionDisplayState =
   | "unpublished"
@@ -51,7 +53,6 @@ export type ProductionDisplayState =
   | "running"
   | "stopping"
   | "stopped"
-  | "abnormal"
   | "archived";
 
 export const PRODUCTION_STATE_LABELS: Record<ProductionDisplayState, string> = {
@@ -60,7 +61,6 @@ export const PRODUCTION_STATE_LABELS: Record<ProductionDisplayState, string> = {
   running: "已启动",
   stopping: "停止中",
   stopped: "已停止",
-  abnormal: "异常",
   archived: "已归档",
 };
 
@@ -71,7 +71,6 @@ export const PRODUCTION_STATE_COLORS: Record<ProductionDisplayState, string> = {
   running: "success",
   stopping: "processing",
   stopped: "default",
-  abnormal: "error",
   archived: "warning",
 };
 
@@ -84,11 +83,9 @@ export function productionDisplayState(adapter: Adapter): ProductionDisplayState
   }
   const state = adapter.production_state ?? "idle";
   if (state === "running") {
-    const lastStatus = adapter.last_production_execution_status;
-    return !hasActiveProductionExecution(adapter) &&
-      (lastStatus === "failed" || lastStatus === "timeout")
-      ? "abnormal"
-      : "running";
+    // M5.1: an open entry without an active Execution is the legal idle state,
+    // whatever the previous lifecycle's last Execution ended with.
+    return "running";
   }
   if (state === "stopped") {
     return hasActiveProductionExecution(adapter) ? "stopping" : "stopped";
@@ -131,6 +128,14 @@ export function productionRunningVersionSeq(adapter: Adapter): number | null | u
     return adapter.running_version_seq;
   }
   return adapter.last_production_version_seq;
+}
+
+/** M5.1: the most recent Production Execution ended in failure. This is an
+ * Execution-result fact, never a lifecycle state: the open production entry
+ * stays “已启动 / 空闲” and never asks for another Stop → Start round trip. */
+export function hasLastProductionExecutionFailure(adapter: Adapter): boolean {
+  const lastStatus = adapter.last_production_execution_status;
+  return lastStatus === "failed" || lastStatus === "timeout";
 }
 
 export function isProductionStopping(adapter: Adapter): boolean {
