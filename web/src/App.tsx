@@ -14,6 +14,7 @@ import ScheduleTriggerPanel from "./components/ScheduleTriggerPanel";
 import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
 import TestRunPanel from "./components/TestRunPanel";
 import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
+import WebhookTriggerPanel from "./components/WebhookTriggerPanel";
 import WorkerStatus from "./components/WorkerStatus";
 import WorkbenchHeader from "./components/WorkbenchHeader";
 import { DEPENDENCY_UI, STARTER_CODE } from "./languages";
@@ -1290,14 +1291,20 @@ function AdapterConsole() {
                   {
                     key: "triggers",
                     label: "触发器",
-                    // M5.2：触发器 Tab 只有 Schedule 区域，Webhook 留给 M5.3。
+                    // M5.2/M5.3：触发器 Tab 并列 Schedule 与 Webhook 两个区域。
                     children: (
-                      <ScheduleTriggerPanel
-                        key={selected.id}
-                        adapterId={selected.id}
-                        productionState={selected.production_state ?? "idle"}
-                        archived={!!selected.archived_at}
-                      />
+                      <div key={selected.id} className="triggers-tab">
+                        <ScheduleTriggerPanel
+                          adapterId={selected.id}
+                          productionState={selected.production_state ?? "idle"}
+                          archived={!!selected.archived_at}
+                        />
+                        <WebhookTriggerPanel
+                          adapterId={selected.id}
+                          productionState={selected.production_state ?? "idle"}
+                          archived={!!selected.archived_at}
+                        />
+                      </div>
                     ),
                   },
                 ]}

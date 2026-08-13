@@ -125,6 +125,28 @@ export interface AdapterScheduleDraft {
   input: unknown;
 }
 
+// --- M5.3: Webhook Trigger ---------------------------------------------------
+
+/** Singleton Webhook configuration of one Adapter (GET/PUT response body).
+ * Never carries Credential plaintext or ciphertext. */
+export interface AdapterWebhook {
+  adapter_id: number;
+  enabled: boolean;
+  /** Random routing identifier; never an authentication secret. */
+  public_id: string;
+  /** External entry path, e.g. /api/hooks/{public_id}. */
+  hook_path: string;
+  credential_id: number;
+  credential_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdapterWebhookDraft {
+  enabled: boolean;
+  credential_id: number;
+}
+
 export interface Worker {
   id: number;
   name: string;

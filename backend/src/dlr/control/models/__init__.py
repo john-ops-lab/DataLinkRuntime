@@ -9,12 +9,14 @@ from dlr.control.models.platform import (
     PackageSource,
 )
 from dlr.control.models.schedule import AdapterSchedule
+from dlr.control.models.webhook import AdapterWebhook
 
 __all__ = [
     "Adapter",
     "AdapterCredentialBinding",
     "AdapterSchedule",
     "AdapterVersion",
+    "AdapterWebhook",
     "AiModelSetting",
     "Credential",
     "Execution",

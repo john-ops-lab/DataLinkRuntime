@@ -4234,6 +4234,23 @@ const scheduleNotConfiguredRoute: Route = {
   }),
 };
 
+const webhookNotConfiguredRoute: Route = {
+  method: "GET",
+  match: "/api/adapters/1/webhook",
+  respond: () => ({
+    status: 404,
+    body: { detail: { code: "webhook_not_configured", message: "Webhook is not configured" } },
+  }),
+};
+
+// M5.3：触发器 Tab 中 WebhookTriggerPanel 与 Schedule 并列渲染，打开该 Tab 会额外
+// 请求 Webhook 配置与凭据列表；Schedule 测试补上这两条路由，让 Webhook 区域保持
+// 「未配置 + 无凭据」的初始态，不影响既有断言。
+const webhookSideRoutes: Route[] = [
+  webhookNotConfiguredRoute,
+  { method: "GET", match: "/api/credentials", respond: () => ({ body: [] }) },
+];
+
 async function openTriggerTab() {
   fireEvent.click(screen.getByText("触发器"));
   await screen.findByTestId("schedule-cron");
@@ -4243,6 +4260,7 @@ it("shows the trigger tab with an empty schedule form before configuration", asy
   const adapter = makeAdapter({ latest_version_id: 10 });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     scheduleNotConfiguredRoute,
   ]);
   render(<App />);
@@ -4260,6 +4278,7 @@ it("loads an enabled schedule and warns while the production entry is closed", a
   const adapter = makeAdapter({ latest_version_id: 10, production_state: "stopped" });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     {
       method: "GET",
       match: "/api/adapters/1/schedule",
@@ -4284,6 +4303,7 @@ it("hides the production-closed hint while production is running", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     {
       method: "GET",
       match: "/api/adapters/1/schedule",
@@ -4303,6 +4323,7 @@ it("saves the schedule and re-displays the normalized server response", async ()
   let putBody = "";
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     scheduleNotConfiguredRoute,
     {
       method: "PUT",
@@ -4348,6 +4369,7 @@ it("shows the cron validation error and persists nothing", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     scheduleNotConfiguredRoute,
     {
       method: "PUT",
@@ -4379,6 +4401,7 @@ it("shows the timezone validation error", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     scheduleNotConfiguredRoute,
     {
       method: "PUT",
@@ -4406,6 +4429,7 @@ it("rejects an unparsable input locally without calling the API", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     scheduleNotConfiguredRoute,
     {
       method: "PUT",
@@ -4437,6 +4461,7 @@ it("renders the schedule read-only on an archived adapter and never calls PUT", 
   });
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     {
       method: "GET",
       match: "/api/adapters/1/schedule",
@@ -4471,6 +4496,7 @@ it("reloads the stale next_run_at through the refresh button", async () => {
   let scheduleGets = 0;
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
+    ...webhookSideRoutes,
     {
       method: "GET",
       match: "/api/adapters/1/schedule",
@@ -4544,5 +4570,362 @@ it("shows scheduled trigger rows and the planned time in history", async () => {
     }
     expect(within(drawerBody).getByText("定时触发")).toBeTruthy();
     expect(within(drawerBody).getByText("计划时间")).toBeTruthy();
+  });
+});
+
+// --- Webhook Trigger (M5.3) ---------------------------------------------------
+
+interface WebhookBody {
+  adapter_id: number;
+  enabled: boolean;
+  public_id: string;
+  hook_path: string;
+  credential_id: number;
+  credential_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function makeWebhook(overrides: Partial<WebhookBody> = {}): WebhookBody {
+  return {
+    adapter_id: 1,
+    enabled: true,
+    public_id: "AbC123_unguessable",
+    hook_path: "/api/hooks/AbC123_unguessable",
+    credential_id: 7,
+    credential_name: "hook-token",
+    created_at: "2026-08-13T00:00:00Z",
+    updated_at: "2026-08-13T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function credentialsRoute(credentials: Array<{ id: number; name: string; type: string }>): Route {
+  return {
+    method: "GET",
+    match: "/api/credentials",
+    respond: () => ({
+      body: credentials.map((credential) => ({ ...credential, created_at: "", updated_at: "" })),
+    }),
+  };
+}
+
+/** 在 Webhook 区域的凭据下拉中选中指定凭据。 */
+async function selectWebhookCredential(name: string) {
+  const selector = screen.getByTestId("webhook-credential");
+  fireEvent.mouseDown(selector.querySelector(".ant-select-selector") ?? selector);
+  fireEvent.click(await screen.findByText(name));
+}
+
+it("shows an empty webhook form before configuration and lists only token credentials", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    credentialsRoute([
+      { id: 7, name: "hook-token", type: "token" },
+      { id: 8, name: "db-password", type: "password" },
+    ]),
+    webhookNotConfiguredRoute,
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  await screen.findByTestId("webhook-enabled");
+  // 未配置是合法初始态：不展示加载错误，也不展示地址与示例。
+  expect(screen.queryByTestId("webhook-load-error")).toBeNull();
+  expect(screen.queryByTestId("webhook-no-token-credential")).toBeNull();
+  expect((screen.getByTestId("webhook-enabled") as HTMLElement).getAttribute("aria-checked")).toBe("false");
+  expect(screen.queryByTestId("webhook-url")).toBeNull();
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
+
+  // 凭据下拉仅列出 token 类型：password 凭据不出现。
+  const selector = screen.getByTestId("webhook-credential");
+  fireEvent.mouseDown(selector.querySelector(".ant-select-selector") ?? selector);
+  expect(await screen.findByText("hook-token")).toBeTruthy();
+  expect(screen.queryByText("db-password")).toBeNull();
+});
+
+it("warns when there is no token credential and keeps save disabled", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    credentialsRoute([{ id: 8, name: "db-password", type: "password" }]),
+    webhookNotConfiguredRoute,
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  await screen.findByTestId("webhook-enabled");
+  expect(screen.getByTestId("webhook-no-token-credential").textContent).toContain("token");
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("shows the credential load failure instead of pretending there is no token credential", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    webhookNotConfiguredRoute,
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({
+        status: 503,
+        body: {
+          detail: { code: "secret_store_unavailable", message: "Secret Store is unavailable" },
+        },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  // 凭据列表加载失败必须明确报错，而不是落入「尚无 token 凭据」的空状态。
+  const error = await screen.findByTestId("webhook-load-error");
+  expect(error.textContent).toContain("Secret Store is unavailable");
+  expect(error.textContent).toContain("secret_store_unavailable");
+  expect(screen.queryByTestId("webhook-no-token-credential")).toBeNull();
+  expect(screen.queryByTestId("webhook-enabled")).toBeNull();
+});
+
+it("saves the webhook and shows the stable URL and example request without the secret", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  let putBody = "";
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    credentialsRoute([{ id: 7, name: "hook-token", type: "token" }]),
+    webhookNotConfiguredRoute,
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        putBody = body ?? "";
+        return { body: makeWebhook() };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  await screen.findByTestId("webhook-enabled");
+  fireEvent.click(screen.getByTestId("webhook-enabled"));
+  await selectWebhookCredential("hook-token");
+  fireEvent.click(screen.getByTestId("webhook-save"));
+
+  await screen.findByTestId("webhook-notice");
+  expect(JSON.parse(putBody)).toEqual({ enabled: true, credential_id: 7 });
+  // 服务端返回的地址保持稳定展示，生产运行中不展示关闭提示。
+  expect(valueOf("webhook-url")).toBe(window.location.origin + "/api/hooks/AbC123_unguessable");
+  expect(screen.queryByTestId("webhook-production-closed-hint")).toBeNull();
+  const example = screen.getByTestId("webhook-example").textContent ?? "";
+  expect(example).toContain("POST /api/hooks/AbC123_unguessable");
+  expect(example).toContain("Bearer <token>");
+  // 示例中只出现占位符，不出现任何 token 真值。
+  expect(example).not.toContain("s3cret-token-value");
+});
+
+it("loads a configured webhook, can disable it, and warns while production is closed", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "stopped" });
+  let putBody = "";
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    credentialsRoute([{ id: 7, name: "hook-token", type: "token" }]),
+    {
+      method: "GET",
+      match: "/api/adapters/1/webhook",
+      respond: () => ({ body: makeWebhook() }),
+    },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        putBody = body ?? "";
+        return { body: makeWebhook({ enabled: false }) };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  await screen.findByTestId("webhook-url");
+  expect((screen.getByTestId("webhook-enabled") as HTMLElement).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByTestId("webhook-production-closed-hint").textContent).toContain(
+    "生产入口当前关闭",
+  );
+
+  fireEvent.click(screen.getByTestId("webhook-enabled"));
+  fireEvent.click(screen.getByTestId("webhook-save"));
+  await screen.findByTestId("webhook-notice");
+  expect(JSON.parse(putBody)).toEqual({ enabled: false, credential_id: 7 });
+});
+
+it("copies the webhook URL to the clipboard", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    credentialsRoute([{ id: 7, name: "hook-token", type: "token" }]),
+    {
+      method: "GET",
+      match: "/api/adapters/1/webhook",
+      respond: () => ({ body: makeWebhook() }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  await screen.findByTestId("webhook-url");
+  fireEvent.click(screen.getByTestId("webhook-copy"));
+  await screen.findByTestId("webhook-notice");
+  expect(writeText).toHaveBeenCalledWith(window.location.origin + "/api/hooks/AbC123_unguessable");
+  expect(screen.getByTestId("webhook-notice").textContent).toContain("已复制");
+});
+
+it("shows a copy fallback hint when the clipboard is unavailable", async () => {
+  const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    credentialsRoute([{ id: 7, name: "hook-token", type: "token" }]),
+    {
+      method: "GET",
+      match: "/api/adapters/1/webhook",
+      respond: () => ({ body: makeWebhook() }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  await screen.findByTestId("webhook-url");
+  fireEvent.click(screen.getByTestId("webhook-copy"));
+  const fallback = await screen.findByTestId("webhook-copy-error");
+  expect(fallback.textContent).toContain("手动");
+});
+
+it("maps the server rejection to a stable Chinese message", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    credentialsRoute([{ id: 7, name: "hook-token", type: "token" }]),
+    webhookNotConfiguredRoute,
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: () => ({
+        status: 422,
+        body: {
+          detail: {
+            code: "webhook_credential_type_invalid",
+            message: "credential must be token type",
+          },
+        },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  await screen.findByTestId("webhook-enabled");
+  await selectWebhookCredential("hook-token");
+  fireEvent.click(screen.getByTestId("webhook-save"));
+
+  const error = await screen.findByTestId("webhook-error");
+  expect(error.textContent).toContain("只能绑定 token 类型的凭据");
+  expect(screen.queryByTestId("webhook-notice")).toBeNull();
+});
+
+it("renders the webhook read-only on an archived adapter and never calls PUT", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    archived_at: "2026-08-13T00:00:00Z",
+    production_state: "stopped",
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    // 已配置的 Webhook 路由需列在 webhookSideRoutes 的 404 路由之前（首个匹配生效）。
+    {
+      method: "GET",
+      match: "/api/adapters/1/webhook",
+      respond: () => ({ body: makeWebhook() }),
+    },
+    ...webhookSideRoutes,
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ body: makeSchedule() }),
+    },
+  ]);
+  render(<App />);
+  await screen.findByTestId("adapter-catalog");
+  // 已归档 Adapter 只在归档视图中可见。
+  fireEvent.click(screen.getByText("已归档"));
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  // GET 仍可查看配置，但编辑与保存全部禁用并给出只读提示。
+  await screen.findByTestId("webhook-url");
+  expect(screen.getByTestId("webhook-archived-hint").textContent).toContain("只读");
+  expect(valueOf("webhook-url")).toBe(window.location.origin + "/api/hooks/AbC123_unguessable");
+  expect((screen.getByTestId("webhook-enabled") as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
+
+  fireEvent.click(screen.getByTestId("webhook-save"));
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+    ),
+  ).toBe(false);
+});
+
+it("shows webhook trigger rows in execution history", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  const summary = makeSummary({ trigger: "webhook", worker_id: 3, worker_name: "prod-worker" });
+  const detail = makeExecution({
+    id: 6,
+    trigger: "webhook",
+    worker_id: 3,
+    status: "succeeded",
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: () => ({ body: { items: [summary], next_before_id: null } }),
+    },
+    { method: "GET", match: "/api/executions/6", respond: () => ({ body: detail }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("执行记录"));
+
+  const [row] = await screen.findAllByTestId("history-row");
+  expect(row.textContent).toContain("Webhook");
+
+  fireEvent.click(row);
+  await screen.findByText("Execution #6");
+  await waitFor(() => {
+    const drawerBody = document.querySelector(".ant-drawer-content");
+    if (!(drawerBody instanceof HTMLElement)) {
+      throw new Error("Execution detail drawer not found");
+    }
+    expect(within(drawerBody).getByText("Webhook")).toBeTruthy();
   });
 });

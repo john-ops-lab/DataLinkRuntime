@@ -21,7 +21,13 @@
 # (Save -> Test -> Publish -> short-cycle Schedule -> Start creates nothing
 # -> a real due point creates a schedule Execution locked to the production
 # version and worker -> worker succeeded; publishing v2 without Stop/Start
-# keeps the next due point executing the locked v1). Finally, it starts a
+# keeps the next due point executing the locked v1), then the M5.3 Webhook
+# Trigger chain (token credential -> webhook upsert with a stable public_id
+# -> Save -> Test -> Publish -> Start -> external POST accepted with 202 and
+# executed asynchronously on the locked production version/worker; unknown,
+# unauthorized, disabled and stopped calls reject with stable codes;
+# publishing v2 without Stop/Start keeps the webhook executing the locked
+# v1). Finally, it starts a
 # temporary local OpenAI-compatible fake Provider outside the production
 # Compose topology and proves the M4 settings/models/assist chain cannot
 # change lifecycle facts, before tearing down only the smoke project.
@@ -1186,6 +1192,356 @@ disabled = request(
 check(disabled["next_run_at"] is None, "disabling the schedule clears its cursor")
 
 print("M5.2 schedule trigger smoke passed")
+PY
+
+echo "==> running M5.3 webhook trigger chain (Save -> Test -> Publish -> Webhook -> Start -> POST -> 202)"
+# Runs against the real Control hook endpoint through the nginx edge: an
+# external POST carrying the Bearer credential token is accepted with 202 and
+# executed asynchronously on the locked production version/worker, while
+# unknown, unauthorized, disabled and stopped calls reject with stable error
+# codes; publishing v2 without Stop/Start keeps the webhook executing v1, and
+# Stop -> Start locks v2 and the webhook actually hits the v2 output.
+docker compose exec -T -e DLR_ADMIN_TOKEN control python - <<'PY'
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+BASE = "http://web/api"
+TOKEN = os.environ["DLR_ADMIN_TOKEN"]
+
+WEBHOOK_TOKEN = "smoke-webhook-token-5f2c"
+
+WEBHOOK_CODE = (
+    "def handle(context, input):\n"
+    "    return {'stage': context.config.get('stage'), 'echo': input}\n"
+)
+
+# Publishing this v2 without Stop/Start must not change what the Webhook
+# executes: the locked production version stays v1.
+WEBHOOK_CODE_V2 = (
+    "def handle(context, input):\n"
+    "    return {'stage': context.config.get('stage'), 'rotation': True}\n"
+)
+
+
+def request(method, path, payload=None, expected=200):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {TOKEN}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read()
+    body = json.loads(raw) if raw else None
+    assert status == expected, f"{method} {path}: expected {expected}, got {status}: {body}"
+    return body
+
+
+def hook_request(public_id, payload=None, token=None, raw=None, expected=202):
+    """Simulate the external caller: no admin token, only the Bearer credential."""
+    if raw is not None:
+        data = raw
+    elif payload is not None:
+        data = json.dumps(payload).encode()
+    else:
+        data = None
+    req = urllib.request.Request(BASE + f"/hooks/{public_id}", data=data, method="POST")
+    if token is not None:
+        req.add_header("Authorization", f"Bearer {token}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status, body_raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, body_raw = error.code, error.read()
+    body = json.loads(body_raw) if body_raw else None
+    assert status == expected, f"POST /hooks/{public_id}: expected {expected}, got {status}: {body}"
+    return body
+
+
+def check(condition, message):
+    assert condition, message
+
+
+def wait_terminal(execution_id, deadline_seconds=120):
+    deadline = time.monotonic() + deadline_seconds
+    current = request("GET", f"/executions/{execution_id}")
+    while current["status"] in ("pending", "running") and time.monotonic() < deadline:
+        time.sleep(2)
+        current = request("GET", f"/executions/{execution_id}")
+    check(
+        current["status"] not in ("pending", "running"),
+        f"execution {execution_id} did not reach a terminal state: {current['status']}",
+    )
+    return current
+
+
+workers = request("GET", "/workers")
+worker = next(item for item in workers if item["status"] == "online")
+
+adapter = request(
+    "POST",
+    "/adapters",
+    {"name": "smoke-m53-webhook-adapter", "description": "m5.3"},
+    expected=201,
+)
+adapter_id = adapter["id"]
+version = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {"code": WEBHOOK_CODE, "requirements": "", "runtime_config": {"stage": "m5-3-smoke"}},
+    expected=201,
+)
+version_id = version["id"]
+request("PATCH", f"/adapters/{adapter_id}", {"production_worker_id": worker["id"]})
+
+# --- Webhook admin API contract ------------------------------------------------
+not_configured = request("GET", f"/adapters/{adapter_id}/webhook", expected=404)
+check(
+    not_configured["detail"]["code"] == "webhook_not_configured",
+    f"GET before configuration must answer webhook_not_configured, got {not_configured}",
+)
+password_credential = request(
+    "POST",
+    "/credentials",
+    {
+        "name": "smoke-m53-password",
+        "type": "password",
+        "fields": {"username": "smoke-user", "password": "smoke-password"},
+    },
+    expected=201,
+)
+bad_type = request(
+    "PUT",
+    f"/adapters/{adapter_id}/webhook",
+    {"enabled": True, "credential_id": password_credential["id"]},
+    expected=422,
+)
+check(
+    bad_type["detail"]["code"] == "webhook_credential_type_invalid",
+    f"non-token credentials must be rejected: {bad_type}",
+)
+token_credential = request(
+    "POST",
+    "/credentials",
+    {"name": "smoke-m53-token", "type": "token", "fields": {"token": WEBHOOK_TOKEN}},
+    expected=201,
+)
+token_credential_id = token_credential["id"]
+check(
+    WEBHOOK_TOKEN not in json.dumps(token_credential),
+    "credential responses must never carry plaintext",
+)
+
+configured = request(
+    "PUT",
+    f"/adapters/{adapter_id}/webhook",
+    {"enabled": True, "credential_id": token_credential_id},
+)
+public_id = configured["public_id"]
+check(configured["enabled"] is True, f"webhook must be stored enabled: {configured}")
+check(
+    configured["hook_path"] == f"/api/hooks/{public_id}",
+    f"hook_path must route to the public id: {configured}",
+)
+check(
+    configured["credential_id"] == token_credential_id
+    and configured["credential_name"] == "smoke-m53-token",
+    f"webhook must reference the token credential: {configured}",
+)
+check(
+    WEBHOOK_TOKEN not in json.dumps(configured),
+    "webhook responses must never carry the token value",
+)
+refetched = request("GET", f"/adapters/{adapter_id}/webhook")
+check(refetched["public_id"] == public_id, "public_id is stable across reads")
+reconfigured = request(
+    "PUT",
+    f"/adapters/{adapter_id}/webhook",
+    {"enabled": True, "credential_id": token_credential_id},
+)
+check(reconfigured["public_id"] == public_id, "public_id is stable across upserts")
+
+# --- Save -> Test -> Publish --------------------------------------------------
+test_run = request(
+    "POST", f"/adapters/{adapter_id}/executions", {"input": {"warmup": True}}, expected=202
+)
+test_run = wait_terminal(test_run["id"])
+check(
+    test_run["status"] == "succeeded",
+    f"gate test run must succeed, got {test_run['status']}: "
+    f"{test_run['error']} / {test_run['stderr']}",
+)
+request("POST", f"/adapters/{adapter_id}/versions/{version_id}/publish")
+
+# --- Production gate while the entry is closed ----------------------------------
+closed = hook_request(
+    public_id, payload={"event": "too.early"}, token=WEBHOOK_TOKEN, expected=409
+)
+check(
+    closed["detail"]["code"] == "production_not_running",
+    f"closed entry must reject with production_not_running: {closed}",
+)
+
+# --- Start: opens the entry, locks the version, creates no Execution ----------
+started = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
+check(started["production_state"] == "running", f"start must open the entry: {started}")
+check(started["production_version_id"] == version_id, f"start must lock v1: {started}")
+
+# --- Routing and auth rejections ------------------------------------------------
+missing = hook_request(public_id, payload={"event": "no.auth"}, expected=401)
+check(missing["detail"]["code"] == "unauthorized", f"missing token must 401: {missing}")
+wrong = hook_request(
+    public_id, payload={"event": "bad.token"}, token="wrong-token", expected=401
+)
+check(wrong["detail"]["code"] == "unauthorized", f"wrong token must 401: {wrong}")
+unknown = hook_request("unknown-public-id", payload={}, token=WEBHOOK_TOKEN, expected=404)
+check(
+    unknown["detail"]["code"] == "webhook_not_found",
+    f"unknown public_id must 404: {unknown}",
+)
+invalid_json = hook_request(public_id, token=WEBHOOK_TOKEN, raw=b"{broken", expected=400)
+check(
+    invalid_json["detail"]["code"] == "webhook_body_invalid_json",
+    f"invalid JSON must 400: {invalid_json}",
+)
+
+# --- 202 accepted, asynchronous execution on the locked version/worker --------
+accepted = hook_request(
+    public_id,
+    payload={"event": "vm.created", "data": {"id": 42}},
+    token=WEBHOOK_TOKEN,
+    expected=202,
+)
+check(accepted["status"] == "accepted", f"202 response reports accepted: {accepted}")
+execution_id = accepted["execution_id"]
+check(isinstance(execution_id, int), f"202 response carries the execution id: {accepted}")
+finished = wait_terminal(execution_id)
+check(
+    finished["status"] == "succeeded",
+    f"webhook execution must succeed, got {finished['status']}: "
+    f"{finished['error']} / {finished['stderr']}",
+)
+check(finished["trigger"] == "webhook", f"the execution records its trigger: {finished}")
+check(finished["version_id"] == version_id, "the webhook Execution locks the production version")
+check(finished["worker_id"] == worker["id"], "the webhook Execution runs on the production worker")
+check(
+    finished["input"] == {"event": "vm.created", "data": {"id": 42}},
+    f"the whole JSON body becomes the execution input: {finished['input']}",
+)
+check(
+    finished["output"]
+    == {"stage": "m5-3-smoke", "echo": {"event": "vm.created", "data": {"id": 42}}},
+    f"webhook execution runs the production version code: {finished['output']}",
+)
+
+# --- Publish v2 without Stop/Start: webhook still executes locked v1 ----------
+v2 = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {"code": WEBHOOK_CODE_V2, "requirements": "", "runtime_config": {"stage": "m5-3-smoke"}},
+    expected=201,
+)
+v2_test = request(
+    "POST",
+    f"/adapters/{adapter_id}/executions",
+    {"version_id": v2["id"], "input": {"rotation": True}},
+    expected=202,
+)
+v2_test = wait_terminal(v2_test["id"])
+check(
+    v2_test["status"] == "succeeded",
+    f"v2 gate test run must succeed, got {v2_test['status']}: "
+    f"{v2_test['error']} / {v2_test['stderr']}",
+)
+request("POST", f"/adapters/{adapter_id}/versions/{v2['id']}/publish")
+still_locked = request("GET", f"/adapters/{adapter_id}")
+check(
+    still_locked["production_version_id"] == version_id,
+    "publish v2 without Stop/Start must not change the locked production version",
+)
+accepted_again = hook_request(
+    public_id, payload={"event": "after.rotation"}, token=WEBHOOK_TOKEN, expected=202
+)
+finished_again = wait_terminal(accepted_again["execution_id"])
+check(finished_again["version_id"] == version_id, "the next webhook call still executes locked v1")
+check(
+    "rotation" not in (finished_again["output"] or {}),
+    f"v2 code must not run before Stop/Start: {finished_again['output']}",
+)
+
+# --- Stop -> Start again: the new Start locks the newly published v2 --------
+stopped_for_rotation = request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
+check(
+    stopped_for_rotation["production_state"] == "stopped",
+    f"stop must close the entry: {stopped_for_rotation}",
+)
+started_v2 = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
+check(started_v2["production_state"] == "running", f"start must re-open the entry: {started_v2}")
+check(
+    started_v2["production_version_id"] == v2["id"],
+    f"the new Start must lock the published v2: {started_v2}",
+)
+accepted_on_v2 = hook_request(
+    public_id, payload={"event": "on.v2"}, token=WEBHOOK_TOKEN, expected=202
+)
+finished_on_v2 = wait_terminal(accepted_on_v2["execution_id"])
+check(
+    finished_on_v2["status"] == "succeeded",
+    f"webhook execution on v2 must succeed, got {finished_on_v2['status']}: "
+    f"{finished_on_v2['error']} / {finished_on_v2['stderr']}",
+)
+check(finished_on_v2["version_id"] == v2["id"], "the new lifecycle executes the locked v2")
+check(
+    (finished_on_v2["output"] or {}).get("rotation") is True,
+    f"the v2 code actually runs after Stop/Start: {finished_on_v2['output']}",
+)
+
+# --- Bound token credential is protected from deletion --------------------------
+in_use = request("DELETE", f"/credentials/{token_credential_id}", expected=409)
+check(
+    in_use["detail"]["code"] == "credential_in_use",
+    f"credentials bound to a webhook cannot be deleted: {in_use}",
+)
+
+# --- Disabled webhook rejects with a stable code ---------------------------------
+disabled = request(
+    "PUT",
+    f"/adapters/{adapter_id}/webhook",
+    {"enabled": False, "credential_id": token_credential_id},
+)
+check(disabled["enabled"] is False, f"webhook must be stored disabled: {disabled}")
+rejected_disabled = hook_request(
+    public_id, payload={"event": "disabled"}, token=WEBHOOK_TOKEN, expected=409
+)
+check(
+    rejected_disabled["detail"]["code"] == "webhook_disabled",
+    f"disabled webhook must reject with webhook_disabled: {rejected_disabled}",
+)
+request(
+    "PUT",
+    f"/adapters/{adapter_id}/webhook",
+    {"enabled": True, "credential_id": token_credential_id},
+)
+
+# --- Stop closes the entry: webhook calls are rejected ---------------------------
+stopped = request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
+check(stopped["production_state"] == "stopped", f"stop must close the entry: {stopped}")
+rejected_stopped = hook_request(
+    public_id, payload={"event": "closed"}, token=WEBHOOK_TOKEN, expected=409
+)
+check(
+    rejected_stopped["detail"]["code"] == "production_not_running",
+    f"stopped entry must reject with production_not_running: {rejected_stopped}",
+)
+
+print("M5.3 webhook trigger smoke passed")
 PY
 
 echo "==> starting temporary local OpenAI-compatible fake Provider"
