@@ -19,7 +19,7 @@ function errorMessage(error: unknown): string {
   return "请求失败";
 }
 
-/** M3.2/M5.2：触发列区分测试运行、生产启动与定时触发；未知值原样展示。 */
+/** M3.2/M5.2/M5.3：触发列区分测试运行、生产启动、定时与事件触发；未知值原样展示。 */
 function triggerLabel(trigger: string): string {
   if (trigger === "manual") {
     return "测试运行";
@@ -29,6 +29,9 @@ function triggerLabel(trigger: string): string {
   }
   if (trigger === "schedule") {
     return "定时触发";
+  }
+  if (trigger === "webhook") {
+    return "Webhook";
   }
   return trigger;
 }

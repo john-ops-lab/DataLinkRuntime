@@ -4,6 +4,8 @@ import type {
   Adapter,
   AdapterSchedule,
   AdapterScheduleDraft,
+  AdapterWebhook,
+  AdapterWebhookDraft,
   AiAssistResponse,
   AiConnectionTestResult,
   AiConversationMessage,
@@ -191,6 +193,19 @@ export const api = {
   /** Create or fully replace the Schedule; the cursor re-bases to the next future point. */
   putSchedule: (adapterId: number, payload: AdapterScheduleDraft): Promise<AdapterSchedule> =>
     request(`/api/adapters/${adapterId}/schedule`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  // --- M5.3: Webhook Trigger --------------------------------------------------
+
+  /** Singleton Webhook config; throws ApiError webhook_not_configured (404) before configuration. */
+  getWebhook: (adapterId: number): Promise<AdapterWebhook> =>
+    request(`/api/adapters/${adapterId}/webhook`),
+
+  /** Create or update the Webhook; the public_id is server-generated and stable. */
+  putWebhook: (adapterId: number, payload: AdapterWebhookDraft): Promise<AdapterWebhook> =>
+    request(`/api/adapters/${adapterId}/webhook`, {
       method: "PUT",
       body: JSON.stringify(payload),
     }),

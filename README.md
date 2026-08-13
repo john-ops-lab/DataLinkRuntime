@@ -149,7 +149,10 @@ npm run build
 带 Admin Token 执行 Adapter 管理、执行与 M3.2 生产生命周期回归，再对 Python、
 JavaScript、Java 分别真实执行 `Save → Test → Publish → Start → Stop`（M5.1：Start 开启生产入口并锁定版本，不再创建 Execution）。
 M5.2 链路真实跑通 `Save → Test → Publish → 配置短周期 Schedule → Start → Start 不执行 → 到点 schedule Execution → Worker succeeded`，
-并验证 Publish 新版本后、未 Stop/Start 前下一次 Schedule 仍执行锁定的旧 Production Version。M4 链路
+并验证 Publish 新版本后、未 Stop/Start 前下一次 Schedule 仍执行锁定的旧 Production Version。
+M5.3 链路真实跑通 `创建 Token Credential → 配置 Webhook → Save → Test → Publish → Start → 外部 POST /api/hooks/{public_id} → 202 → 异步执行锁定的 Production Version → Worker succeeded`，
+并验证未知 / 未授权 / 已禁用 / Stop 后的调用分别以稳定错误码拒绝，以及 Publish 新版本后、
+未 Stop/Start 前 Webhook 仍执行锁定的旧 Production Version。M4 链路
 额外启动一个临时、仅位于 smoke 网络中的 OpenAI-compatible fake Provider，验证设置、
 模型刷新、连接测试与三语言 AI Assist，并证明 Version / Execution / published / production
 事实未改变；不访问任何公网 AI，也不把 fake Provider 加入正式 Compose 拓扑。整个过程

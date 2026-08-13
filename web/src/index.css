@@ -938,7 +938,13 @@ body {
   gap: 12px;
 }
 
-/* --- 触发器（M5.2 Schedule） ---------------------------------------------- */
+/* --- 触发器（M5.2 Schedule / M5.3 Webhook） ---------------------------------------------- */
+
+.triggers-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
 
 .schedule-trigger-panel {
   display: flex;
@@ -950,6 +956,30 @@ body {
 
 .schedule-form {
   width: 100%;
+}
+
+.webhook-trigger-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  max-width: 720px;
+  border-top: 1px solid var(--dlr-border);
+}
+
+.webhook-form {
+  width: 100%;
+}
+
+.webhook-example {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  background: var(--dlr-surface-muted, rgba(128, 128, 128, 0.06));
+  overflow-x: auto;
 }
 
 /* --- Drawer 表单（新建 Adapter / Adapter 设置） ------------------------- */

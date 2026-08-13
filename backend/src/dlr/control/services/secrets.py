@@ -173,7 +173,8 @@ def delete_credential(session: Session, credential_id: int) -> None:
         raise domain_error(
             409,
             "credential_in_use",
-            "Credential is bound to at least one Adapter and cannot be deleted",
+            "Credential is still referenced (Adapter binding, Webhook or platform setting) "
+            "and cannot be deleted",
         ) from None
 
 

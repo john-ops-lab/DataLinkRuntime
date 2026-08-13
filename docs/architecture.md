@@ -122,7 +122,7 @@ Publish 与 Start 是两个独立动作，术语全平台统一：**Published Ve
 |------|------|
 | id / adapter_id / **version_id（必填）** / worker_id | 关联关系 |
 | target_worker_id | 指定执行的 Worker（可空）；为空时可被任意 Worker 领取（存量兼容） |
-| trigger | 枚举：`manual`（测试运行）/ `production`（历史兼容值：M3.2 的 Start 曾创建它；M5.1 起 Start 不再创建 Execution）/ `schedule`（定时触发，M5.2 实现）/ `webhook`（事件触发，M5.3 预留） |
+| trigger | 枚举：`manual`（测试运行）/ `production`（历史兼容值：M3.2 的 Start 曾创建它；M5.1 起 Start 不再创建 Execution）/ `schedule`（定时触发，M5.2 实现）/ `webhook`（事件触发，M5.3 实现） |
 | scheduled_for | M5.2：trigger=schedule 时该次执行对应的计划点（UTC，timestamptz）；其余触发为 NULL；`(adapter_id, scheduled_for) WHERE trigger='schedule'` 部分唯一索引防重复创建 |
 | cancel_requested | 取消请求标志：running 的执行由 Worker 在下次进度上报时感知并 kill |
 | status | `pending / running / succeeded / failed / timeout / cancelled` |
@@ -234,6 +234,36 @@ scheduled_for)` 部分唯一索引与 `uq_executions_active_production` 是最�
 时间语义：cron 在配置的时区内求值，结果统一以 UTC 落库，从不使用服务器本地时区。
 DST 行为固定为 croniter 语义：被跳过的墙钟时间在转换边界触发一次，歧义的墙钟时间
 两次都触发。
+
+### 3.9 Webhook Trigger（M5.3）
+
+一个 Adapter 至多一条 `adapter_webhooks` 记录（单例）：adapter_id 唯一、enabled、
+public_id（随机不可猜测字符串，全局唯一，创建后稳定不轮换，只负责路由、不视为
+认证 Secret）、credential_id（外键指向 token 类型 Credential，RESTRICT，被引用时
+不可删除）。
+
+配置 API（需 Admin Token）：`GET /api/adapters/{id}/webhook` 未配置时返回稳定 404
+`webhook_not_configured`；`PUT` create-or-replace（enabled + credential_id），非 token
+凭据 422 `webhook_credential_type_invalid`，已归档 Adapter 拒绝写入（409
+`adapter_archived`，GET 仍可查看）；响应只含 public_id / hook_path / credential 名称
+与时间戳，从不返回 token 真值或密文。
+
+外部入口（不要求 Admin Token）：`POST /api/hooks/{public_id}`，携带
+`Authorization: Bearer <token>` 与 JSON Body。校验顺序固定：未知 public_id → 404
+`webhook_not_found`；已禁用 → 409 `webhook_disabled`；Token 缺失或错误 → 401
+`unauthorized`（解密后 constant-time 比较，不区分失败细节）；生产门禁 → 409 稳定
+错误码（已归档 / `production_not_running` / `worker_offline` /
+`worker_capability_missing` / `production_busy`）；body 超过
+`execution_input_max_bytes` → 413 `execution_input_too_large`（流式分块读取，超限
+立即中断）；非法 JSON → 400 `webhook_body_invalid_json`。
+
+与 Schedule 的门禁差异：Webhook 拒绝即结束，**不排队、不补跑**（Schedule 的临时性
+失败保持 due 待补）。通过全部门禁后创建 `trigger=webhook` 的 pending Execution
+（version_id = 锁定的 `production_version_id`，target_worker_id = 锁定的生产
+Worker，input = 整个 JSON Body），立即返回 `202 + execution_id`，Control 不等待
+执行结果。锁顺序与平台一致：Adapter 行先于 Webhook 行（PUT / hooks 接收一致）；
+`uq_executions_active_production` 部分唯一索引是最终的重复创建防线，竞争失败
+（`production_busy`）只回滚不产生副作用。
 
 ## 4. Adapter Runtime（M3.3：Python / JavaScript / Java）
 
@@ -364,11 +394,12 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 | M4.1 Worker 有效在线判定 | Stored Status 与基于心跳超时的 Effective Status 分离；API / Test / Start 共用有效在线语义 | 心跳新鲜时可用；超时后不创建 Test / Production Execution；恢复心跳后自动恢复在线 |
 | M5.1 Production Entry 收敛 | Start 开启生产入口并锁定 Production Version / Worker，不再创建 Execution；Stop 后才切换到新的 Published Version | Start / Stop / 版本轮换全链通；运行期 Publish 不改锁定版本 |
 | M5.2 Schedule Trigger | Cron + IANA 时区 + 固定 input 的单例 Schedule；PostgreSQL 轮询调度循环、统一生产门禁、单次最新补跑、scheduled_for 唯一约束 | Compose smoke 真实到点执行锁定的 Production Version；Publish 新版本后未 Stop/Start 仍执行旧版本；Manual 零回归 |
+| M5.3 Webhook Trigger | 单例 adapter_webhooks（稳定 public_id + token Credential）；统一入口 POST /api/hooks/{public_id} 异步 202；固定校验顺序与稳定错误码；生产门禁拒绝不排队 | Compose smoke 真实完成配置 → Start → POST → 202 → 异步执行锁定版本；未知 / 未授权 / 禁用 / Stop 稳定拒绝；Publish 新版本后未 Stop/Start 仍执行旧版本；Schedule 零回归 |
 
 ## 9. 未来演进（不在第一阶段）
 
 - AI 自动调试循环 / Agent Loop（需单独设计执行权限与审计边界）。
-- Webhook 统一入口（异步 202 语义）；如需同步调用另设 invoke API。
+- 同步 invoke API（与 Webhook 解耦，如未来确有同步调用需求）。
 - 常驻 Adapter（AdapterInstance 落库与进程生命周期管理）。
 - Worker 独立凭据认证。
 

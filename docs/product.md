@@ -70,12 +70,14 @@ Execution 包含：input、output、stdout、stderr、start time、end time、st
 |------|------|------|
 | Manual | 用户手工点击执行一次 | **v1 实现** |
 | Schedule | 按配置的 Cron + 时区周期执行；仅在生产入口开启（`production_state=running`）时到点创建 Execution，执行锁定的 Production Version | **M5.2 实现** |
-| HTTP / Webhook | 外部系统调用平台统一入口触发 | 后续 |
+| HTTP / Webhook | 外部系统携带 Bearer Token 调用平台统一入口触发；异步 202 语义 | **M5.3 实现** |
 
-Webhook 的未来设计约定（已裁决）：
+Webhook 的设计约定（已裁决，M5.3 实现）：
 
-- 由 Control 统一入口接收并路由，**不允许每个 Adapter 暴露独立监听端口**。
+- 由 Control 统一入口接收并路由（`POST /api/hooks/{public_id}`），**不允许每个 Adapter 暴露独立监听端口**。
 - **默认异步语义**：Control 收到事件后创建 Execution 并尽快返回 `202`，Worker 后台执行。
+- 一个 Adapter 至多一个 Webhook；认证复用 token 类型 Credential（Bearer Token）。
+- 生产入口关闭、已禁用、存在运行中生产类执行时直接以稳定错误码拒绝，不排队。
 - 不为 Webhook 设计 Control 长时间同步等待 Worker 的通道。
 - 如未来确有同步调用需求，单独设计 invoke API，与 Webhook 解耦。
 
@@ -89,7 +91,7 @@ Webhook 的未来设计约定（已裁决）：
 - Python、JavaScript、Java 均支持 AI Assistant；Candidate 采用完整快照，不做模糊 patch apply。
 - AI Apply 只写浏览器 Working Copy 并进入 dirty；Save、Test、Publish、Start、Stop 等生命周期动作仍须管理员人工执行。
 - AI 会话仅存在于当前浏览器与当前 Adapter；切换 Adapter 或刷新页面后允许消失。
-- 当前不实现：Webhook、AI Agent 自动执行循环。
+- 当前不实现：AI Agent 自动执行循环。
 
 ## 7. Runtime Contract（产品级约定）
 

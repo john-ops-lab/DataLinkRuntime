@@ -17,6 +17,7 @@ from dlr.control.api import (
     health,
     package_sources,
     schedules,
+    webhooks,
     workers,
 )
 from dlr.control.services.schedule import scheduler_loop
@@ -48,6 +49,10 @@ def create_app() -> FastAPI:
     app.include_router(credentials.router)
     app.include_router(package_sources.router)
     app.include_router(schedules.router)
+    app.include_router(webhooks.router)
+    # M5.3: the external Webhook ingress has its own Bearer authentication
+    # and must never require the admin token.
+    app.include_router(webhooks.public_router)
     app.include_router(executions.router)
     app.include_router(workers.router)
     app.include_router(workers.admin_router)
