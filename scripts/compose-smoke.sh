@@ -17,10 +17,14 @@
 # rejected -> version rotation while running (save + test + publish v2 keeps
 # the locked v1) -> stop -> start locks v2 -> manual run with a bound secret
 # -> archive/restore) before
-# the M3.3 three-language lifecycle. Finally, it starts a temporary local
-# OpenAI-compatible fake Provider outside the production Compose topology and
-# proves the M4 settings/models/assist chain cannot change lifecycle facts,
-# before tearing down only the smoke project.
+# the M3.3 three-language lifecycle and the M5.2 Schedule Trigger chain
+# (Save -> Test -> Publish -> short-cycle Schedule -> Start creates nothing
+# -> a real due point creates a schedule Execution locked to the production
+# version and worker -> worker succeeded; publishing v2 without Stop/Start
+# keeps the next due point executing the locked v1). Finally, it starts a
+# temporary local OpenAI-compatible fake Provider outside the production
+# Compose topology and proves the M4 settings/models/assist chain cannot
+# change lifecycle facts, before tearing down only the smoke project.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -964,6 +968,224 @@ for language, code in codes.items():
     request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
 
 print("M3.3 three-language lifecycle smoke passed")
+PY
+
+echo "==> running M5.2 schedule trigger chain (Save -> Test -> Publish -> Schedule -> Start -> due point)"
+# Runs against the real Control scheduler loop: a per-minute cron fires on the
+# wall clock, the created Execution is locked to the production version and
+# worker, and publishing v2 without Stop/Start keeps the Schedule executing
+# the locked v1.
+docker compose exec -T -e DLR_ADMIN_TOKEN control python - <<'PY'
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+BASE = "http://web/api"
+TOKEN = os.environ["DLR_ADMIN_TOKEN"]
+
+SCHEDULE_CODE = (
+    "def handle(context, input):\n"
+    "    return {'stage': context.config.get('stage'), 'echo': input}\n"
+)
+
+# Publishing this v2 without Stop/Start must not change what the Schedule
+# executes: the locked production version stays v1.
+SCHEDULE_CODE_V2 = (
+    "def handle(context, input):\n"
+    "    return {'stage': context.config.get('stage'), 'rotation': True}\n"
+)
+
+
+def request(method, path, payload=None, expected=200):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {TOKEN}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read()
+    body = json.loads(raw) if raw else None
+    assert status == expected, f"{method} {path}: expected {expected}, got {status}: {body}"
+    return body
+
+
+def check(condition, message):
+    assert condition, message
+
+
+def wait_terminal(execution_id, deadline_seconds=120):
+    deadline = time.monotonic() + deadline_seconds
+    current = request("GET", f"/executions/{execution_id}")
+    while current["status"] in ("pending", "running") and time.monotonic() < deadline:
+        time.sleep(2)
+        current = request("GET", f"/executions/{execution_id}")
+    check(
+        current["status"] not in ("pending", "running"),
+        f"execution {execution_id} did not reach a terminal state: {current['status']}",
+    )
+    return current
+
+
+def wait_schedule_execution(adapter_id, after_execution_id, deadline_seconds=150):
+    """Wait for the real scheduler to create and finish a schedule Execution."""
+    deadline = time.monotonic() + deadline_seconds
+    while time.monotonic() < deadline:
+        history = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+        rows = [
+            item
+            for item in history["items"]
+            if item["trigger"] == "schedule" and item["id"] > after_execution_id
+        ]
+        if rows and rows[0]["status"] not in ("pending", "running"):
+            return request("GET", f"/executions/{rows[0]['id']}")
+        time.sleep(2)
+    raise AssertionError("no schedule execution reached a terminal state in time")
+
+
+workers = request("GET", "/workers")
+worker = next(item for item in workers if item["status"] == "online")
+
+adapter = request(
+    "POST",
+    "/adapters",
+    {"name": "smoke-m52-schedule-adapter", "description": "m5.2"},
+    expected=201,
+)
+adapter_id = adapter["id"]
+version = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {"code": SCHEDULE_CODE, "requirements": "", "runtime_config": {"stage": "m5-2-smoke"}},
+    expected=201,
+)
+version_id = version["id"]
+request("PATCH", f"/adapters/{adapter_id}", {"production_worker_id": worker["id"]})
+
+# --- Schedule configuration API contract ------------------------------------
+not_configured = request("GET", f"/adapters/{adapter_id}/schedule", expected=404)
+check(
+    not_configured["detail"]["code"] == "schedule_not_configured",
+    f"GET before configuration must answer schedule_not_configured, got {not_configured}",
+)
+bad_cron = request(
+    "PUT",
+    f"/adapters/{adapter_id}/schedule",
+    {"enabled": True, "cron": "every minute", "timezone": "UTC", "input": None},
+    expected=422,
+)
+check(
+    bad_cron["detail"]["code"] == "schedule_invalid_cron",
+    f"unexpected cron rejection: {bad_cron}",
+)
+bad_timezone = request(
+    "PUT",
+    f"/adapters/{adapter_id}/schedule",
+    {"enabled": True, "cron": "* * * * *", "timezone": "Mars/Olympus", "input": None},
+    expected=422,
+)
+check(
+    bad_timezone["detail"]["code"] == "schedule_invalid_timezone",
+    f"unexpected timezone rejection: {bad_timezone}",
+)
+
+# --- Save -> Test -> Publish --------------------------------------------------
+test_run = request(
+    "POST", f"/adapters/{adapter_id}/executions", {"input": {"warmup": True}}, expected=202
+)
+test_run = wait_terminal(test_run["id"])
+check(
+    test_run["status"] == "succeeded",
+    f"gate test run must succeed, got {test_run['status']}: "
+    f"{test_run['error']} / {test_run['stderr']}",
+)
+request("POST", f"/adapters/{adapter_id}/versions/{version_id}/publish")
+
+# --- Short-cycle Schedule (every minute) configured before Start --------------
+configured = request(
+    "PUT",
+    f"/adapters/{adapter_id}/schedule",
+    {"enabled": True, "cron": "* * * * *", "timezone": "UTC", "input": {"smoke": "m5.2"}},
+)
+check(configured["enabled"] is True, f"schedule must be stored enabled: {configured}")
+check(configured["cron"] == "* * * * *", f"schedule must store the cron: {configured}")
+check(configured["next_run_at"] is not None, "an enabled schedule carries a future cursor")
+
+# --- Start: opens the entry, locks the version, creates no Execution ----------
+started = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
+check(started["production_state"] == "running", f"start must open the entry: {started}")
+check(started["production_version_id"] == version_id, f"start must lock v1: {started}")
+history = request("GET", f"/adapters/{adapter_id}/executions?limit=50")
+check(
+    all(item["trigger"] != "schedule" for item in history["items"]),
+    "Start itself must not create a schedule Execution",
+)
+
+# --- Real due point: scheduler creates the Execution, the worker succeeds -----
+first = wait_schedule_execution(adapter_id, 0)
+check(first["trigger"] == "schedule", f"due point creates a schedule Execution: {first}")
+check(
+    first["status"] == "succeeded",
+    f"schedule execution must succeed, got {first['status']}: "
+    f"{first['error']} / {first['stderr']}",
+)
+check(first["scheduled_for"] is not None, "schedule executions carry their planned point")
+check(first["version_id"] == version_id, "the schedule Execution locks the production version")
+check(first["worker_id"] == worker["id"], "the schedule Execution runs on the production worker")
+check(first["input"] == {"smoke": "m5.2"}, "the configured schedule input is used")
+check(
+    first["output"] == {"stage": "m5-2-smoke", "echo": {"smoke": "m5.2"}},
+    f"schedule execution runs the production version code: {first['output']}",
+)
+
+# --- Publish v2 without Stop/Start: next due point still executes locked v1 ---
+v2 = request(
+    "POST",
+    f"/adapters/{adapter_id}/versions",
+    {"code": SCHEDULE_CODE_V2, "requirements": "", "runtime_config": {"stage": "m5-2-smoke"}},
+    expected=201,
+)
+v2_test = request(
+    "POST",
+    f"/adapters/{adapter_id}/executions",
+    {"version_id": v2["id"], "input": {"rotation": True}},
+    expected=202,
+)
+v2_test = wait_terminal(v2_test["id"])
+check(
+    v2_test["status"] == "succeeded",
+    f"v2 gate test run must succeed, got {v2_test['status']}: "
+    f"{v2_test['error']} / {v2_test['stderr']}",
+)
+request("POST", f"/adapters/{adapter_id}/versions/{v2['id']}/publish")
+still_locked = request("GET", f"/adapters/{adapter_id}")
+check(
+    still_locked["production_version_id"] == version_id,
+    "publish v2 without Stop/Start must not change the locked production version",
+)
+
+second = wait_schedule_execution(adapter_id, first["id"])
+check(second["version_id"] == version_id, "the next due point still executes the locked v1")
+check(
+    "rotation" not in (second["output"] or {}),
+    f"v2 code must not run before Stop/Start: {second['output']}",
+)
+
+# --- Close the entry and disable the schedule ----------------------------------
+stopped = request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
+check(stopped["production_state"] == "stopped", f"stop must close the entry: {stopped}")
+disabled = request(
+    "PUT",
+    f"/adapters/{adapter_id}/schedule",
+    {"enabled": False, "cron": "* * * * *", "timezone": "UTC", "input": None},
+)
+check(disabled["next_run_at"] is None, "disabling the schedule clears its cursor")
+
+print("M5.2 schedule trigger smoke passed")
 PY
 
 echo "==> starting temporary local OpenAI-compatible fake Provider"

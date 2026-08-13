@@ -11,6 +11,8 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.4",
     "cryptography>=43",
+    "croniter>=6",
+    "tzdata>=2024",
 ]
 
 [dependency-groups]
@@ -49,6 +51,11 @@ python_version = "3.13"
 strict = true
 mypy_path = "src"
 packages = ["dlr"]
+
+[[tool.mypy.overrides]]
+# croniter ships no type annotations.
+module = ["croniter"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1394,6 +1394,7 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
     version_id: 10,
     worker_id: null,
     trigger: "manual",
+    scheduled_for: null,
     status: "pending",
     input: {},
     output: null,
@@ -1422,6 +1423,7 @@ function makeSummary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummar
     worker_id: null,
     worker_name: null,
     trigger: "manual",
+    scheduled_for: null,
     status: "succeeded",
     created_at: "2026-08-11T00:00:00Z",
     started_at: null,
@@ -4196,4 +4198,278 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
   });
   expect(JSON.parse(testBody).reasoning_mode).toBe("default");
   expect(JSON.parse(refreshBody).model).toBeUndefined();
+});
+
+// --- Schedule Trigger (M5.2) ---------------------------------------------------
+
+interface ScheduleBody {
+  adapter_id: number;
+  enabled: boolean;
+  cron: string;
+  timezone: string;
+  input: unknown;
+  next_run_at: string | null;
+  updated_at: string;
+}
+
+function makeSchedule(overrides: Partial<ScheduleBody> = {}): ScheduleBody {
+  return {
+    adapter_id: 1,
+    enabled: true,
+    cron: "0 */2 * * *",
+    timezone: "Asia/Shanghai",
+    input: { full_sync: true },
+    next_run_at: "2026-08-13T10:00:00Z",
+    updated_at: "2026-08-13T00:00:00Z",
+    ...overrides,
+  };
+}
+
+const scheduleNotConfiguredRoute: Route = {
+  method: "GET",
+  match: "/api/adapters/1/schedule",
+  respond: () => ({
+    status: 404,
+    body: { detail: { code: "schedule_not_configured", message: "Schedule is not configured" } },
+  }),
+};
+
+async function openTriggerTab() {
+  fireEvent.click(screen.getByText("触发器"));
+  await screen.findByTestId("schedule-cron");
+}
+
+it("shows the trigger tab with an empty schedule form before configuration", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  expect(valueOf("schedule-cron")).toBe("0 */2 * * *");
+  expect((screen.getByTestId("schedule-enabled") as HTMLElement).getAttribute("aria-checked")).toBe("false");
+  expect(screen.getByTestId("schedule-next-run").textContent).toBe("已禁用，不计划执行");
+  expect(screen.queryByTestId("schedule-production-closed-hint")).toBeNull();
+  expect(screen.queryByTestId("schedule-error")).toBeNull();
+});
+
+it("loads an enabled schedule and warns while the production entry is closed", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "stopped" });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ body: makeSchedule() }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  expect(valueOf("schedule-cron")).toBe("0 */2 * * *");
+  expect(valueOf("schedule-timezone")).toBe("Asia/Shanghai");
+  expect(valueOf("schedule-input")).toContain("full_sync");
+  expect((screen.getByTestId("schedule-enabled") as HTMLElement).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByTestId("schedule-next-run").textContent).not.toBe("已禁用，不计划执行");
+  expect(screen.getByTestId("schedule-production-closed-hint").textContent).toContain(
+    "生产入口关闭期间不会执行",
+  );
+});
+
+it("hides the production-closed hint while production is running", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ body: makeSchedule() }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  await screen.findByTestId("schedule-next-run");
+  expect(screen.queryByTestId("schedule-production-closed-hint")).toBeNull();
+});
+
+it("saves the schedule and re-displays the normalized server response", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  let putBody = "";
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: (body) => {
+        putBody = body ?? "";
+        return {
+          body: makeSchedule({
+            enabled: true,
+            cron: "0 9 * * *",
+            timezone: "UTC",
+            input: { mode: "full" },
+            next_run_at: "2026-08-14T09:00:00Z",
+          }),
+        };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  fireEvent.click(screen.getByTestId("schedule-enabled"));
+  fireEvent.change(screen.getByTestId("schedule-cron"), { target: { value: "  0  9  *  *  * " } });
+  fireEvent.change(screen.getByTestId("schedule-timezone"), { target: { value: "UTC" } });
+  fireEvent.change(screen.getByTestId("schedule-input"), { target: { value: '{"mode":"full"}' } });
+  fireEvent.click(screen.getByTestId("schedule-save"));
+
+  await screen.findByTestId("schedule-notice");
+  expect(JSON.parse(putBody)).toEqual({
+    enabled: true,
+    cron: "  0  9  *  *  * ",
+    timezone: "UTC",
+    input: { mode: "full" },
+  });
+  // The server-normalized cron and cursor are re-displayed after saving.
+  expect(valueOf("schedule-cron")).toBe("0 9 * * *");
+  expect(screen.getByTestId("schedule-next-run").textContent).not.toBe("已禁用，不计划执行");
+  expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1/schedule")).toBe(true);
+});
+
+it("shows the cron validation error and persists nothing", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        status: 422,
+        body: { detail: { code: "schedule_invalid_cron", message: "cron must have exactly 5 fields" } },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  fireEvent.change(screen.getByTestId("schedule-cron"), { target: { value: "not-a-cron" } });
+  fireEvent.click(screen.getByTestId("schedule-save"));
+
+  const error = await screen.findByTestId("schedule-error");
+  expect(error.textContent).toContain("Cron 表达式无效");
+  expect(screen.queryByTestId("schedule-notice")).toBeNull();
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+    ),
+  ).toBe(true);
+});
+
+it("shows the timezone validation error", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        status: 422,
+        body: {
+          detail: { code: "schedule_invalid_timezone", message: "timezone is not a valid IANA timezone" },
+        },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  fireEvent.change(screen.getByTestId("schedule-timezone"), { target: { value: "Not/AZone" } });
+  fireEvent.click(screen.getByTestId("schedule-save"));
+
+  const error = await screen.findByTestId("schedule-error");
+  expect(error.textContent).toContain("时区无效");
+});
+
+it("rejects an unparsable input locally without calling the API", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ body: makeSchedule() }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  fireEvent.change(screen.getByTestId("schedule-input"), { target: { value: "{broken" } });
+  fireEvent.click(screen.getByTestId("schedule-save"));
+
+  const error = await screen.findByTestId("schedule-error");
+  expect(error.textContent).toContain("Input 必须是合法 JSON");
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+    ),
+  ).toBe(false);
+});
+
+it("shows scheduled trigger rows and the planned time in history", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
+  const summary = makeSummary({
+    trigger: "schedule",
+    scheduled_for: "2026-08-13T10:00:00Z",
+    worker_id: 3,
+    worker_name: "prod-worker",
+  });
+  const detail = makeExecution({
+    id: 6,
+    trigger: "schedule",
+    scheduled_for: "2026-08-13T10:00:00Z",
+    worker_id: 3,
+    status: "succeeded",
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: () => ({ body: { items: [summary], next_before_id: null } }),
+    },
+    { method: "GET", match: "/api/executions/6", respond: () => ({ body: detail }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("执行记录"));
+
+  const [row] = await screen.findAllByTestId("history-row");
+  expect(row.textContent).toContain("定时触发");
+  expect(screen.getByTestId("history-scheduled-for").textContent).toContain("计划");
+
+  fireEvent.click(row);
+  const drawer = await screen.findByText("Execution #6");
+  expect(drawer).toBeTruthy();
+  await waitFor(() => {
+    const drawerBody = document.querySelector(".ant-drawer-content");
+    if (!(drawerBody instanceof HTMLElement)) {
+      throw new Error("Execution detail drawer not found");
+    }
+    expect(within(drawerBody).getByText("定时触发")).toBeTruthy();
+    expect(within(drawerBody).getByText("计划时间")).toBeTruthy();
+  });
 });

@@ -79,8 +79,8 @@
 
 ## 3. 领域模型与持久化
 
-持久化全部在 PostgreSQL（SQLAlchemy 2.x + Alembic）。v1 共四张核心表（M3.2–M4
-另增平台表，见 §3.6–§3.7）：
+持久化全部在 PostgreSQL（SQLAlchemy 2.x + Alembic）。v1 共四张核心表（M3.2–M5.2
+另增平台表，见 §3.6–§3.8）：
 
 ### 3.1 Adapter
 
@@ -122,7 +122,8 @@ Publish 与 Start 是两个独立动作，术语全平台统一：**Published Ve
 |------|------|
 | id / adapter_id / **version_id（必填）** / worker_id | 关联关系 |
 | target_worker_id | 指定执行的 Worker（可空）；为空时可被任意 Worker 领取（存量兼容） |
-| trigger | 枚举：`manual`（测试运行）/ `production`（历史兼容值：M3.2 的 Start 曾创建它；M5.1 起 Start 不再创建 Execution）/ `schedule`（定时触发）/ `webhook`（事件触发）；M5.1 扩展值空间，`schedule` / `webhook` 为未来 M5.2/M5.3 预留 |
+| trigger | 枚举：`manual`（测试运行）/ `production`（历史兼容值：M3.2 的 Start 曾创建它；M5.1 起 Start 不再创建 Execution）/ `schedule`（定时触发，M5.2 实现）/ `webhook`（事件触发，M5.3 预留） |
+| scheduled_for | M5.2：trigger=schedule 时该次执行对应的计划点（UTC，timestamptz）；其余触发为 NULL；`(adapter_id, scheduled_for) WHERE trigger='schedule'` 部分唯一索引防重复创建 |
 | cancel_requested | 取消请求标志：running 的执行由 Worker 在下次进度上报时感知并 kill |
 | status | `pending / running / succeeded / failed / timeout / cancelled` |
 | input / output / stdout / stderr | 见 §3.5 大字段策略 |
@@ -159,7 +160,8 @@ Worker 默认心跳间隔为 10 秒（`DLR_WORKER_HEARTBEAT_SECONDS`），Contro
 Admin Worker API 的 `status` 返回 Effective Status，`last_heartbeat` 保持原值供排障；
 Test / Start 只选择有效在线且 capability 兼容的 Worker，Web 直接展示 API 状态而不使用
 浏览器时间重复计算。过期 Worker 后续 heartbeat 会更新 `last_heartbeat` 并自动恢复有效
-在线，不需要 Restore API、Worker lease 或后台 heartbeat scheduler。
+在线，不需要 Restore API、Worker lease 或后台 heartbeat scheduler（M5.2 的 Schedule
+轮询循环是独立的调度状态源，见 §3.8，不改写 Worker 状态）。
 
 **不保存 token / token_hash**：共享 Worker Token 属于平台部署配置，不是领域数据。
 
@@ -190,6 +192,39 @@ AdapterInstance：长期领域概念，v1 不建表。
 M4 只持久化一条全局活动 `AiModelSetting`，包含 provider、base_url、明确选定的
 model id、可空的 token Credential 引用、reasoning 策略与可选强度、时间戳。API Key
 不存入该表；模型列表刷新结果、Prompt、Response、Candidate 与对话历史均不持久化。
+
+### 3.8 Schedule Trigger（M5.2）
+
+一个 Adapter 至多一条 `adapter_schedules` 记录（单例）：adapter_id 唯一、enabled、
+cron（固定 5 字段表达式）、timezone（IANA 名称）、input（JSON，与 Execution input
+同大字段合同，超限零持久化）、`next_run_at`（调度游标，UTC timestamptz；enabled 时为
+下一个未来计划点，disabled 时为 NULL）、updated_at。
+
+配置 API：`GET /api/adapters/{id}/schedule` 未配置时返回稳定 404
+`schedule_not_configured`；`PUT` 全量替换（create-or-replace），cron / timezone / input
+校验失败一律不持久化（422 / 413），保存后游标总是重基准到下一个未来计划点，因此
+编辑、禁用、启用都不回放历史点。
+
+调度循环：Control 进程内一个轻量后台任务按 `DLR_SCHEDULE_POLL_SECONDS`（默认 5s）
+轮询 PostgreSQL；PostgreSQL 是唯一调度状态源，不引入 APScheduler / Celery / Redis。
+每个 tick 用 `FOR UPDATE SKIP LOCKED` 取 `enabled AND next_run_at <= now` 的行，多个
+Control 实例并发时自然分区不重复；随后在同一事务里把游标推进到 `now` 之后的下一个
+未来计划点，再评估统一生产门禁（未归档、`production_state=running`、锁定的
+Production Version 与 Worker、Worker 有效在线且 capability 兼容、无 active 生产类
+Execution、input 未超限），通过才创建 `trigger=schedule` 的 pending Execution
+（version_id = 锁定的 `production_version_id`，target_worker_id = 锁定的生产
+Worker，input = Schedule 配置值，scheduled_for = 到期计划点）。
+
+补跑语义（单次最新补跑）：游标在每个 tick 总是前进（无论是否创建 Execution），因此
+Control 停机 / Worker 离线 / 生产 busy 错过的窗口，在条件恢复后至多补跑窗口内最近
+一次计划点，绝不逐周期回放；门禁失败直接跳过不排队。显式 Stop / 禁用 / 编辑 cron
+时游标重基准，关闭窗口内的补跑。Adapter 行锁与 Start / Stop / PATCH 串行化；
+`(adapter_id, scheduled_for)` 部分唯一索引与 `uq_executions_active_production` 是
+最终的重复创建防线，竞争失败只回滚 savepoint，游标推进照常提交。
+
+时间语义：cron 在配置的时区内求值，结果统一以 UTC 落库，从不使用服务器本地时区。
+DST 行为固定为 croniter 语义：被跳过的墙钟时间在转换边界触发一次，歧义的墙钟时间
+两次都触发。
 
 ## 4. Adapter Runtime（M3.3：Python / JavaScript / Java）
 
@@ -271,7 +306,7 @@ Docker Compose 四容器（单机最小部署）：
 | 服务 | 镜像/构建 | 说明 |
 |------|-----------|------|
 | postgres | postgres:16-alpine | healthcheck：pg_isready |
-| control | backend 代码构建 | 依赖 postgres 健康；注入数据库连接串、DLR_ADMIN_TOKEN、DLR_WORKER_TOKEN、DLR_MASTER_KEY（M3.2 Secret Store，Compose 无默认值，必须显式配置）、DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS（默认 30） |
+| control | backend 代码构建 | 依赖 postgres 健康；注入数据库连接串、DLR_ADMIN_TOKEN、DLR_WORKER_TOKEN、DLR_MASTER_KEY（M3.2 Secret Store，Compose 无默认值，必须显式配置）、DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS（默认 30）、DLR_SCHEDULE_POLL_SECONDS（M5.2 调度轮询间隔，默认 5） |
 | worker | backend 代码构建 | 注入 DLR_WORKER_TOKEN、control 地址、DLR_WORKER_HEARTBEAT_SECONDS（默认 10）、DLR_SECRET_* |
 | web | 前端构建产物 + Nginx | 托管 SPA，反代 `/api` 到 control |
 
@@ -305,7 +340,7 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 
 技术选型：Python 3.13、uv、FastAPI、SQLAlchemy 2.x、Alembic、pytest、ruff、mypy；前端 React（不固定版本，实现时选与当前工具链兼容的稳定版）+ TypeScript + Vite，Monaco Editor 于 M1 引入。**各阶段只安装该阶段真正需要的依赖。**
 
-## 8. 里程碑（M0–M4.1）
+## 8. 里程碑（M0–M5.2）
 
 | 里程碑 | 内容 | 验收口径 |
 |--------|------|----------|
@@ -318,11 +353,12 @@ control 与 worker 共享同一 Python 包（`dlr.common` / `dlr.runtime`），�
 | M3.3 多语言 Runtime | Python / JavaScript / Java 合同、version-scoped venv/node_modules/classes、PyPI/npm/Maven 依赖源、Worker capability 硬调度、Web 语言体验 | 三语言分别真实完成 Save→Test→Publish→Start→succeeded，M3.2 生命周期零回归 |
 | M4 AI Editor | 单一全局模型配置、OpenAI-compatible Provider 薄适配、三语言上下文、完整 Candidate、Diff / Apply、stale 与 Adapter 切换防护 | 本地 fake Provider 完成设置→模型刷新→连接测试→三语言 Assist，且 Version / Execution / published / production 事实不变 |
 | M4.1 Worker 有效在线判定 | Stored Status 与基于心跳超时的 Effective Status 分离；API / Test / Start 共用有效在线语义 | 心跳新鲜时可用；超时后不创建 Test / Production Execution；恢复心跳后自动恢复在线 |
+| M5.1 Production Entry 收敛 | Start 开启生产入口并锁定 Production Version / Worker，不再创建 Execution；Stop 后才切换到新的 Published Version | Start / Stop / 版本轮换全链通；运行期 Publish 不改锁定版本 |
+| M5.2 Schedule Trigger | Cron + IANA 时区 + 固定 input 的单例 Schedule；PostgreSQL 轮询调度循环、统一生产门禁、单次最新补跑、scheduled_for 唯一约束 | Compose smoke 真实到点执行锁定的 Production Version；Publish 新版本后未 Stop/Start 仍执行旧版本；Manual 零回归 |
 
 ## 9. 未来演进（不在第一阶段）
 
 - AI 自动调试循环 / Agent Loop（需单独设计执行权限与审计边界）。
-- Schedule Trigger（届时引入调度库）。
 - Webhook 统一入口（异步 202 语义）；如需同步调用另设 invoke API。
 - 常驻 Adapter（AdapterInstance 落库与进程生命周期管理）。
 - Worker 独立凭据认证。

@@ -10,6 +10,7 @@ import AiAssistantPanel from "./components/AiAssistantPanel";
 import CredentialBindingsEditor from "./components/CredentialBindingsEditor";
 import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
+import ScheduleTriggerPanel from "./components/ScheduleTriggerPanel";
 import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
 import TestRunPanel from "./components/TestRunPanel";
 import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
@@ -142,7 +143,7 @@ function publishGateReasonText(gate: PublishGate): string {
   }
 }
 
-type WorkbenchTabKey = "edit" | "test" | "history";
+type WorkbenchTabKey = "edit" | "test" | "history" | "triggers";
 
 // 编辑页次级配置区（语言依赖 | 运行参数（JSON） | 凭据绑定）。
 type ConfigTabKey = "requirements" | "runtime-config" | "bindings";
@@ -1283,6 +1284,18 @@ function AdapterConsole() {
                         key={selected.id}
                         adapterId={selected.id}
                         autoOpenExecutionId={autoOpenExecutionId}
+                      />
+                    ),
+                  },
+                  {
+                    key: "triggers",
+                    label: "触发器",
+                    // M5.2：触发器 Tab 只有 Schedule 区域，Webhook 留给 M5.3。
+                    children: (
+                      <ScheduleTriggerPanel
+                        key={selected.id}
+                        adapterId={selected.id}
+                        productionState={selected.production_state ?? "idle"}
                       />
                     ),
                   },

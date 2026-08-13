@@ -16,7 +16,7 @@ DLR 是一个**轻量的数据适配运行平台**，主要用于 CMDB 等系统
 - 用户可在线编辑 Adapter 代码（Web IDE 体验，Monaco Editor）。
 - 支持 AI 理解当前 Working Copy、生成或修改候选代码，并由管理员查看 Diff 后人工应用。
 - 支持查看测试输入、输出和运行日志。
-- 支持多种触发方式（第一阶段仅 Manual）。
+- 支持多种触发方式（第一阶段：Manual 与 Schedule，M5.2 起）。
 - 保持轻量：**不发展成工作流平台**。
 
 ## 2. 核心对象：Adapter
@@ -69,7 +69,7 @@ Execution 包含：input、output、stdout、stderr、start time、end time、st
 | 类型 | 语义 | 阶段 |
 |------|------|------|
 | Manual | 用户手工点击执行一次 | **v1 实现** |
-| Schedule | 按配置的时间周期执行 | 后续 |
+| Schedule | 按配置的 Cron + 时区周期执行；仅在生产入口开启（`production_state=running`）时到点创建 Execution，执行锁定的 Production Version | **M5.2 实现** |
 | HTTP / Webhook | 外部系统调用平台统一入口触发 | 后续 |
 
 Webhook 的未来设计约定（已裁决）：
@@ -89,7 +89,7 @@ Webhook 的未来设计约定（已裁决）：
 - Python、JavaScript、Java 均支持 AI Assistant；Candidate 采用完整快照，不做模糊 patch apply。
 - AI Apply 只写浏览器 Working Copy 并进入 dirty；Save、Test、Publish、Start、Stop 等生命周期动作仍须管理员人工执行。
 - AI 会话仅存在于当前浏览器与当前 Adapter；切换 Adapter 或刷新页面后允许消失。
-- 当前不实现：Schedule、Webhook、AI Agent 自动执行循环。
+- 当前不实现：Webhook、AI Agent 自动执行循环。
 
 ## 7. Runtime Contract（产品级约定）
 
@@ -154,5 +154,6 @@ DLR 不是：n8n / Windmill / Kestra / DAG Engine / Workflow Engine / Kubernetes
 | M3.3 多语言 Runtime | Python / JavaScript / Java、三语言依赖环境与 capability 调度 |
 | M4 AI Editor | 单一全局模型配置、三语言 AI Assist、完整 Candidate、Diff、人工 Apply、stale 防覆盖 |
 | M5.1 Production Entry 收敛 | Start 开启生产入口并锁定 Production Version / Worker，不再创建 Execution；Stop 后才切换到新的 Published Version |
+| M5.2 Schedule Trigger | Cron + IANA 时区 + 固定 input 的单例 Schedule 配置；生产入口开启时到点自动执行锁定的 Production Version；停机/离线/busy 最多补跑最近一次；触发器 Tab 与执行记录定时触发展示 |
 
 M0 不实现 Adapter CRUD 与 Adapter Runtime。

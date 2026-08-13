@@ -2,6 +2,8 @@
 
 import type {
   Adapter,
+  AdapterSchedule,
+  AdapterScheduleDraft,
   AiAssistResponse,
   AiConnectionTestResult,
   AiConversationMessage,
@@ -179,6 +181,19 @@ export const api = {
     payload: { name: string; description?: string },
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}/clone`, { method: "POST", body: JSON.stringify(payload) }),
+
+  // --- M5.2: Schedule Trigger -------------------------------------------------
+
+  /** Singleton Schedule config; throws ApiError schedule_not_configured (404) before configuration. */
+  getSchedule: (adapterId: number): Promise<AdapterSchedule> =>
+    request(`/api/adapters/${adapterId}/schedule`),
+
+  /** Create or fully replace the Schedule; the cursor re-bases to the next future point. */
+  putSchedule: (adapterId: number, payload: AdapterScheduleDraft): Promise<AdapterSchedule> =>
+    request(`/api/adapters/${adapterId}/schedule`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
 
   // --- M3: executions, history and workers ---------------------------------
 
