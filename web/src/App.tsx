@@ -18,6 +18,7 @@ import WorkbenchHeader from "./components/WorkbenchHeader";
 import { DEPENDENCY_UI, STARTER_CODE } from "./languages";
 import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
 import { statusLabel } from "./status";
+import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   Adapter,
   AdapterLanguage,
@@ -319,29 +320,46 @@ function AdapterConsole() {
   // no component performs its own request and no Adapter row causes N+1.
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
-    async function loadWorkers() {
-      setWorkersLoading(true);
-      setWorkersError(null);
+    async function loadWorkers(initial = false) {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      if (initial) {
+        setWorkersLoading(true);
+        setWorkersError(null);
+      }
       try {
         const list = await api.listWorkers();
         if (!cancelled) {
           setWorkers(list);
+          setWorkersError(null);
         }
       } catch (err) {
         if (!cancelled) {
           setWorkersError(errorMessage(err));
         }
       } finally {
+        inFlight = false;
         if (!cancelled) {
           setWorkersLoading(false);
         }
       }
     }
 
-    void loadWorkers();
+    const handleFocus = () => void loadWorkers();
+    const intervalId = window.setInterval(
+      () => void loadWorkers(),
+      WORKER_REFRESH_POLICY.pollIntervalMs,
+    );
+    window.addEventListener("focus", handleFocus);
+    void loadWorkers(true);
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocus);
     };
   }, []);
 
@@ -685,9 +703,7 @@ function AdapterConsole() {
       const refreshed = await api.stopProduction(selected.id, mode);
       setSelected(refreshed);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-      if (refreshed.running_execution_id !== null && refreshed.running_execution_id !== undefined) {
-        messageApi.info(`生产入口已关闭，等待 Execution #${refreshed.running_execution_id} 完成`);
-      } else {
+      if (refreshed.running_execution_id === null || refreshed.running_execution_id === undefined) {
         messageApi.success("生产已停止");
       }
     } catch (err) {

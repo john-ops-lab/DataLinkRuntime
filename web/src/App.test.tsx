@@ -8,6 +8,7 @@ import App, {
 import { setAuthToken } from "./api";
 import { FALLBACK_POLICY } from "./fallback-policy";
 import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
+import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   Adapter,
   AiAssistResponse,
@@ -214,6 +215,7 @@ afterEach(() => {
   FALLBACK_POLICY.pollIntervalMs = 3000;
   FALLBACK_POLICY.maxPolls = 60;
   PRODUCTION_REFRESH_POLICY.pollIntervalMs = 3000;
+  WORKER_REFRESH_POLICY.pollIntervalMs = 30_000;
 });
 
 // --- Admin token auth (M2) -----------------------------------------------------
@@ -460,9 +462,10 @@ it("keeps normal Catalog rows quiet, highlights exceptions, and searches descrip
     "nightly-import",
   );
   fireEvent.click(descriptionMatch);
-  expect((await screen.findByTestId("production-abnormal")).textContent).toContain(
-    "Execution #91",
-  );
+  const abnormalAlert = await screen.findByTestId("production-abnormal");
+  expect(abnormalAlert.textContent).toContain("Execution #91");
+  expect(abnormalAlert.textContent).toContain("先 Stop 关闭当前生产入口");
+  expect(abnormalAlert.textContent).toContain("如需恢复再 Start");
 });
 
 it("creates an adapter and selects it", async () => {
@@ -503,6 +506,9 @@ it("creates an adapter and selects it", async () => {
 
   fireEvent.click(screen.getByTestId("show-create-form"));
   await screen.findByTestId("new-adapter-name");
+  expect(screen.getByRole("textbox", { name: "Adapter 名称" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Adapter 描述" })).toBeTruthy();
+  expect(screen.getByRole("radiogroup", { name: "Adapter 开发语言" })).toBeTruthy();
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "cmdb-sync" } });
   fireEvent.change(screen.getByTestId("new-adapter-description"), {
     target: { value: "sync cmdb" },
@@ -2154,6 +2160,106 @@ it("shows the worker badge by online presence, not by registration count", async
   ).toBeTruthy();
 });
 
+it("refreshes the shared effective Worker status on focus without a page reload", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    published_version_id: 10,
+    production_worker_id: 1,
+  });
+  const worker = {
+    id: 1,
+    name: "worker-a",
+    last_heartbeat: "2026-08-13T00:00:00Z",
+    capabilities: ["python"],
+  };
+  let workerCalls = 0;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => {
+        workerCalls += 1;
+        return {
+          body: [{ ...worker, status: workerCalls === 2 ? "offline" : "online" }],
+        };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => {
+    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+  });
+  expect(screen.queryByTestId("header-production-worker-warning")).toBeNull();
+
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => {
+    expect(workerCalls).toBe(2);
+    expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+  });
+  expect(screen.getByTestId("header-production-worker-warning").textContent).toContain(
+    "worker-a 最近状态为离线",
+  );
+  expect(
+    screen.getByTestId("adapter-item").querySelector(".catalog-item-attention")?.textContent,
+  ).toContain("Worker 离线");
+
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => {
+    expect(workerCalls).toBe(3);
+    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+    expect(screen.queryByTestId("header-production-worker-warning")).toBeNull();
+  });
+  expect(
+    screen.getByTestId("adapter-item").querySelector(".catalog-item-attention"),
+  ).toBeNull();
+});
+
+it("refreshes the shared Worker collection in the background without returning to loading", async () => {
+  WORKER_REFRESH_POLICY.pollIntervalMs = 50;
+  const offlineWorker = {
+    id: 1,
+    name: "worker-a",
+    status: "offline",
+    last_heartbeat: "2026-08-13T00:00:00Z",
+    capabilities: ["python"],
+  };
+  let workerCalls = 0;
+  let releaseOnline!: () => void;
+  const onlineResponse = new Promise<RouteResponse>((resolve) => {
+    releaseOnline = () => resolve({ body: [{ ...offlineWorker, status: "online" }] });
+  });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => {
+        workerCalls += 1;
+        return workerCalls === 1 ? { body: [offlineWorker] } : onlineResponse;
+      },
+    },
+  ]);
+
+  render(<App />);
+  await waitFor(() => {
+    expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+  });
+  await waitFor(() => {
+    expect(workerCalls).toBe(2);
+  });
+  expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+  expect(screen.getByTestId("worker-status").textContent).not.toContain("加载中");
+
+  releaseOnline();
+  await waitFor(() => {
+    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+  });
+});
+
 // --- M3.1 Console shell structure ---------------------------------------------
 
 it("shows the brand area and the token card on the login page", async () => {
@@ -3082,7 +3188,7 @@ it("keeps lifecycle actions locked during Stop(wait) until the active execution 
   expect(startWhileStopping.closest(".action-with-reason")?.getAttribute("title")).toContain(
     "等待 Execution #77 完成",
   );
-  expect(screen.getAllByText("生产入口已关闭，等待 Execution #77 完成").length).toBeGreaterThanOrEqual(2);
+  expect(screen.getAllByText("生产入口已关闭，等待 Execution #77 完成")).toHaveLength(1);
   expect(screen.getByTestId("production-stopping").textContent).toContain("Execution #77");
   fireEvent.click(screen.getByTestId("adapter-settings"));
   expect((screen.getByTestId("unpublish-adapter") as HTMLButtonElement).disabled).toBe(true);
@@ -3321,6 +3427,56 @@ it("shows a Java publish diff with the matching Monaco mode and dependency label
   ).toBe(true);
 });
 
+it("gives repeated Credential Binding controls stable row-specific accessible names", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({
+        body: [
+          {
+            id: 1,
+            name: "runtime-secret",
+            type: "password",
+            created_at: "2026-08-11T00:00:00Z",
+            updated_at: "2026-08-11T00:00:00Z",
+          },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: () => ({
+        body: [
+          {
+            env_key: "DB_PASSWORD",
+            credential_id: 1,
+            credential_name: "runtime-secret",
+            field: "password",
+          },
+        ],
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("凭据绑定"));
+  await screen.findByRole("group", { name: "绑定 1" });
+  expect(screen.getByRole("textbox", { name: "绑定 1 环境变量" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "绑定 1 凭据" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "绑定 1 字段" })).toBeTruthy();
+
+  fireEvent.click(screen.getByTestId("add-binding"));
+  expect(screen.getByRole("group", { name: "绑定 2" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "绑定 2 环境变量" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "绑定 2 凭据" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "绑定 2 字段" })).toBeTruthy();
+});
+
 it("manages credentials and package sources from the system settings drawer", async () => {
   stubFetch([
     healthRoute({ status: "ok", database: true }),
@@ -3372,11 +3528,20 @@ it("manages credentials and package sources from the system settings drawer", as
   await screen.findByTestId("credentials-panel");
   await screen.findByTestId("credential-row");
   expect(screen.getByTestId("credential-row").textContent).toBe("db-password");
-
+  fireEvent.click(screen.getByTestId("new-credential"));
+  expect(screen.getByRole("textbox", { name: "凭据名称" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "凭据类型" })).toBeTruthy();
+  expect(screen.getByLabelText("凭据字段 username")).toBeTruthy();
+  expect(screen.getByLabelText("凭据字段 password")).toBeTruthy();
   // 依赖源页签：默认源标记 + 可达性测试。
   fireEvent.click(screen.getByText("依赖源"));
   await screen.findByTestId("package-source-row");
   expect(screen.getByTestId("default-source-badge")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("new-package-source"));
+  expect(screen.getByRole("textbox", { name: "依赖源名称" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "依赖源类型" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "依赖源 Repository URL" })).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "依赖源凭据" })).toBeTruthy();
 
   fireEvent.click(screen.getByTestId("test-package-source"));
   await screen.findByTestId("package-source-test-result");

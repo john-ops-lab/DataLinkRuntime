@@ -258,12 +258,17 @@ export default function AdapterCatalog({
         <form className="create-form" onSubmit={(event) => void handleCreate(event)}>
           <Input
             data-testid="new-adapter-name"
+            aria-label="Adapter 名称"
             placeholder="名称"
             value={name}
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
           />
-          <div className="settings-field">
+          <div
+            className="settings-field"
+            role="radiogroup"
+            aria-label="Adapter 开发语言"
+          >
             <span className="settings-field-label">开发语言</span>
             <Radio.Group
               data-testid="new-adapter-language"
@@ -278,6 +283,7 @@ export default function AdapterCatalog({
           </div>
           <Input
             data-testid="new-adapter-description"
+            aria-label="Adapter 描述"
             placeholder="描述（可选）"
             value={description}
             disabled={busy}

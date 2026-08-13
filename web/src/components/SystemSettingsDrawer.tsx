@@ -189,12 +189,14 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
         <div className="settings-inline-form" data-testid="credential-form">
           <Input
             data-testid="credential-name"
+            aria-label="凭据名称"
             placeholder="名称"
             value={form.name}
             onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
           />
           <Select
             data-testid="credential-type"
+            aria-label="凭据类型"
             style={{ minWidth: 200 }}
             value={form.type}
             disabled={form.editingId !== null}
@@ -208,6 +210,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
             <Input.Password
               key={key}
               data-testid={`credential-field-${key}`}
+              aria-label={`凭据字段 ${key}`}
               placeholder={key}
               value={form.fields[key] ?? ""}
               autoComplete="new-password"
@@ -559,12 +562,14 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
         <div className="settings-inline-form" data-testid="package-source-form">
           <Input
             data-testid="package-source-name"
+            aria-label="依赖源名称"
             placeholder="名称"
             value={form.name}
             onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
           />
           <Select
             data-testid="package-source-kind"
+            aria-label="依赖源类型"
             value={form.kind}
             style={{ minWidth: 180 }}
             options={[
@@ -578,6 +583,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           />
           <Input
             data-testid="package-source-url"
+            aria-label="依赖源 Repository URL"
             placeholder="Repository URL"
             value={form.index_url}
             onChange={(event) => setForm((current) => ({ ...current, index_url: event.target.value }))}
@@ -591,6 +597,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           </Checkbox>
           <Select
             data-testid="package-source-credential"
+            aria-label="依赖源凭据"
             placeholder="凭据（可选）"
             allowClear
             style={{ minWidth: 220 }}

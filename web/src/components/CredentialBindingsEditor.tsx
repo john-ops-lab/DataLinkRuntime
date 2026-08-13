@@ -150,9 +150,16 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                 ? credentialFields(credential.type).map((field) => ({ label: field, value: field }))
                 : [];
             return (
-              <Space key={index} className="binding-row" data-testid="binding-row">
+              <Space
+                key={index}
+                className="binding-row"
+                data-testid="binding-row"
+                role="group"
+                aria-label={`绑定 ${index + 1}`}
+              >
                 <Input
                   data-testid="binding-env-key"
+                  aria-label={`绑定 ${index + 1} 环境变量`}
                   placeholder="env_key（如 DB_PASSWORD）"
                   value={row.env_key}
                   disabled={props.disabled || saving}
@@ -160,6 +167,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                 />
                 <Select
                   data-testid="binding-credential"
+                  aria-label={`绑定 ${index + 1} 凭据`}
                   placeholder="选择凭据"
                   style={{ minWidth: 160 }}
                   value={row.credential_id ?? undefined}
@@ -172,6 +180,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                 />
                 <Select
                   data-testid="binding-field"
+                  aria-label={`绑定 ${index + 1} 字段`}
                   placeholder="字段"
                   style={{ minWidth: 120 }}
                   value={row.field !== "" ? row.field : undefined}
@@ -182,6 +191,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                 <Button
                   danger
                   data-testid="remove-binding"
+                  aria-label={`删除绑定 ${index + 1}`}
                   disabled={props.disabled || saving}
                   onClick={() => updateRows((current) => current.filter((_, i) => i !== index))}
                 >

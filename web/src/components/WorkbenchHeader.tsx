@@ -235,7 +235,7 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
             showIcon
             data-testid="production-abnormal"
             message="最近一次生产执行异常"
-            description={`请在执行记录中查看${abnormalExecutionId === null ? "失败详情" : ` Execution #${abnormalExecutionId}`}，确认原因后再决定 Stop 或重新启动。`}
+            description={`请先在执行记录中查看${abnormalExecutionId === null ? "失败详情" : ` Execution #${abnormalExecutionId}`}，确认失败原因后先 Stop 关闭当前生产入口；如需恢复再 Start。`}
           />
         )}
         {archived && (
