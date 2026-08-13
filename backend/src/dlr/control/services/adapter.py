@@ -39,6 +39,11 @@ from dlr.control.services.execution_cancellation import (
 # Adapter, enforced by the partial unique index in migration 0003).
 ACTIVE_PRODUCTION_STATUSES = ("pending", "running")
 
+# M5.1: trigger values that count as production-class for the active-execution
+# unique constraint and the production lifecycle queries. ``manual`` stays
+# outside: test runs are never constrained by the production slot.
+PRODUCTION_TRIGGERS = ("production", "schedule", "webhook")
+
 
 def _require_worker_capability(worker: Worker, language: str) -> None:
     if language not in worker.capabilities:
@@ -81,7 +86,7 @@ def _active_production_execution(session: Session, adapter_id: int) -> Execution
         select(Execution)
         .where(
             Execution.adapter_id == adapter_id,
-            Execution.trigger == "production",
+            Execution.trigger.in_(PRODUCTION_TRIGGERS),
             Execution.status.in_(ACTIVE_PRODUCTION_STATUSES),
         )
         .limit(1)
@@ -101,7 +106,7 @@ def _latest_production_executions(session: Session, adapter_ids: list[int]) -> d
         select(func.max(Execution.id).label("id"))
         .where(
             Execution.adapter_id.in_(adapter_ids),
-            Execution.trigger == "production",
+            Execution.trigger.in_(PRODUCTION_TRIGGERS),
         )
         .group_by(Execution.adapter_id)
         .subquery()
@@ -119,7 +124,7 @@ def _active_production_executions(session: Session, adapter_ids: list[int]) -> d
     executions = session.scalars(
         select(Execution).where(
             Execution.adapter_id.in_(adapter_ids),
-            Execution.trigger == "production",
+            Execution.trigger.in_(PRODUCTION_TRIGGERS),
             Execution.status.in_(ACTIVE_PRODUCTION_STATUSES),
         )
     ).all()
@@ -146,6 +151,8 @@ def _adapter_response(
     response = AdapterResponse.model_validate(adapter)
     if adapter.published_version_id is not None:
         response.published_version_seq = version_seqs.get(adapter.published_version_id)
+    if adapter.production_version_id is not None:
+        response.production_version_seq = version_seqs.get(adapter.production_version_id)
     if latest is not None:
         response.last_production_execution_id = latest.id
         response.last_production_execution_status = latest.status
@@ -166,6 +173,7 @@ def adapter_response(session: Session, adapter: Adapter) -> AdapterResponse:
         version_id
         for version_id in (
             adapter.published_version_id,
+            adapter.production_version_id,
             active.version_id if active is not None else None,
             latest.version_id if latest is not None else None,
         )
@@ -183,6 +191,7 @@ def adapter_responses(session: Session, adapters: list[Adapter]) -> list[Adapter
         for adapter in adapters
         for version_id in (
             adapter.published_version_id,
+            adapter.production_version_id,
             active_by_adapter[adapter.id].version_id if adapter.id in active_by_adapter else None,
             latest_by_adapter[adapter.id].version_id if adapter.id in latest_by_adapter else None,
         )
@@ -230,6 +239,15 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
     # Explicit null clears the pointer (invalidating the publish gate by
     # design); omitting the field leaves it unchanged.
     if "production_worker_id" in data.model_fields_set:
+        # M5.1: the production Worker is locked while the entry is running.
+        if adapter.production_state == "running" and (
+            data.production_worker_id != adapter.production_worker_id
+        ):
+            raise domain_error(
+                409,
+                "production_running",
+                "Stop production before changing the production Worker",
+            )
         if data.production_worker_id is not None:
             worker = session.get(Worker, data.production_worker_id)
             if worker is None:
@@ -262,6 +280,7 @@ def delete_adapter(session: Session, adapter_id: int) -> None:
     # versions themselves are removed by adapter_versions ON DELETE CASCADE.
     adapter.latest_version_id = None
     adapter.published_version_id = None
+    adapter.production_version_id = None
     session.delete(adapter)
     session.commit()
 
@@ -421,14 +440,16 @@ def _resolve_production_worker(session: Session, adapter: Adapter, *, now: datet
     )
 
 
-def start_production(session: Session, adapter_id: int) -> Execution:
-    """Open the production entry: create the pending Production Execution.
+def start_production(session: Session, adapter_id: int) -> Adapter:
+    """Open the production entry and lock the production version.
 
-    Preconditions (all 409): not archived, a version is published, the
-    production entry was explicitly stopped before a restart, the production
+    M5.1: Start no longer creates an Execution. It sets production_state to
+    running, locks production_version_id to the current published_version_id
+    and keeps the production Worker. All preconditions (409) are preserved:
+    not archived, a version is published, the production entry was not
+    already running, no active production Execution exists, the production
     Worker resolves and is online, the Published Version most recently tested
-    successfully on that current Worker, and no active Production Execution
-    exists (also enforced by the DB unique index).
+    successfully on that current Worker.
     """
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
@@ -447,7 +468,10 @@ def start_production(session: Session, adapter_id: int) -> Execution:
             "production_already_running",
             "Stop production before starting it again",
         )
-    worker = _resolve_production_worker(
+    # Validate the production Worker (online + compatible) and auto-adopt
+    # when exactly one compatible Worker is online; the return value is
+    # unused because Start no longer creates an Execution.
+    _resolve_production_worker(
         session,
         adapter,
         now=worker_availability.current_time(session),
@@ -460,19 +484,11 @@ def start_production(session: Session, adapter_id: int) -> Execution:
             "Run a successful test of the published version on the production Worker before "
             "starting",
         )
-    execution = Execution(
-        adapter_id=adapter_id,
-        version_id=adapter.published_version_id,
-        trigger="production",
-        status="pending",
-        input=None,
-        target_worker_id=worker.id,
-    )
     adapter.production_state = "running"
-    session.add(execution)
+    adapter.production_version_id = adapter.published_version_id
     session.commit()
-    session.refresh(execution)
-    return execution
+    session.refresh(adapter)
+    return adapter
 
 
 def stop_production(session: Session, adapter_id: int, mode: str) -> Adapter:
@@ -487,6 +503,8 @@ def stop_production(session: Session, adapter_id: int, mode: str) -> Adapter:
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     adapter.production_state = "stopped"
+    # M5.1: Stop clears the locked production version.
+    adapter.production_version_id = None
     if mode == "terminate":
         # Serialize with Worker claim: after waiting for the same Execution
         # row lock, the status is re-read as either pending (cancel now) or

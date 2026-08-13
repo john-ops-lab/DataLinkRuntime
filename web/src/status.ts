@@ -100,13 +100,18 @@ export function productionDisplayState(adapter: Adapter): ProductionDisplayState
   return "ready";
 }
 
-/** Version currently executing, or the last successfully/abnormally executed
- * version while the production entry remains started but idle. */
+/** M5.1: Locked production version takes priority when running; falls back to
+ * active Execution version, then last production version. */
 export function productionRunningVersionId(adapter: Adapter): number | null {
   if ((adapter.production_state ?? "idle") !== "running") {
     return adapter.running_version_id ?? null;
   }
-  return adapter.running_version_id ?? adapter.last_production_version_id ?? null;
+  return (
+    adapter.production_version_id ??
+    adapter.running_version_id ??
+    adapter.last_production_version_id ??
+    null
+  );
 }
 
 export function isProductionStopping(adapter: Adapter): boolean {

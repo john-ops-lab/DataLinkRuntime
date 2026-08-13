@@ -2633,14 +2633,20 @@ it("labels the current execution with the user-facing vN instead of the internal
 
 // --- M3.2 production lifecycle --------------------------------------------------
 
-it("starts production, refreshes the header and auto-opens the new execution", async () => {
+it("starts production, locks the version and shows success message", async () => {
   const adapter = makeAdapter({
     latest_version_id: 10,
     published_version_id: 10,
     production_worker_id: null,
   });
-  const started = makeExecution({ id: 77, trigger: "production", status: "pending" });
-  const finished = makeExecution({ id: 77, trigger: "production", status: "succeeded" });
+  // M5.1: Start returns an Adapter (not an Execution).
+  const startedAdapter = {
+    ...adapter,
+    production_state: "running",
+    production_version_id: 10,
+    production_version_seq: 1,
+    production_worker_id: 3,
+  };
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
     {
@@ -2661,33 +2667,21 @@ it("starts production, refreshes the header and auto-opens the new execution", a
     {
       method: "POST",
       match: "/api/adapters/1/production/start",
-      respond: () => ({ status: 202, body: started }),
+      respond: () => ({ status: 202, body: startedAdapter }),
     },
     {
       method: "GET",
       match: "/api/adapters/1",
       respond: () => ({
-        body: { ...adapter, production_state: "running", running_execution_id: 77, running_version_id: 10 },
-      }),
-    },
-    // Start 后自动切到执行记录 Tab：首页列表 + 自动打开的详情抽屉。
-    {
-      method: "GET",
-      match: "/api/adapters/1/executions?limit=50",
-      respond: () => ({
         body: {
-          items: [{ ...makeSummary({ id: 77 }), trigger: "production" }],
-          next_before_id: null,
+          ...adapter,
+          production_state: "running",
+          production_version_id: 10,
+          production_version_seq: 1,
+          production_worker_id: 3,
+          running_execution_id: null,
+          running_version_id: null,
         },
-      }),
-    },
-    { method: "GET", match: "/api/executions/77", respond: () => ({ body: finished }) },
-    // 抽屉实时跟随：直接推送终态事件，避免遗留 fallback 轮询。
-    {
-      method: "GET",
-      match: "/api/executions/77/events",
-      respond: () => ({
-        stream: `event: execution\ndata: ${JSON.stringify(finished)}\n\n`,
       }),
     },
   ]);
@@ -2697,15 +2691,14 @@ it("starts production, refreshes the header and auto-opens the new execution", a
 
   expect((screen.getByTestId("start-production") as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(screen.getByTestId("start-production"));
-  // Header 刷新后展示运行中的生产 Execution。
-  await screen.findByTestId("running-execution");
-  expect(await screen.findByText("生产已启动：Execution #77")).toBeTruthy();
+  // M5.1: Start no longer auto-opens an Execution; shows a version lock message.
+  await screen.findByText("生产入口已开启，生产版本锁定为 v1");
   expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
-
-  // 自动切到执行记录 Tab 并打开新 Execution 的详情抽屉。
-  await screen.findByText("Execution #77");
   expect(
-    fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1/executions?limit=50"),
+    fetchMock.mock.calls.some(
+      ([url, init]) =>
+        String(url) === "/api/adapters/1/production/start" && init?.method === "POST",
+    ),
   ).toBe(true);
 });
 
@@ -2716,6 +2709,8 @@ it("publishes v3 while v2 keeps running and explains the manual Stop then Start 
     published_version_seq: 2,
     production_worker_id: 3,
     production_state: "running",
+    production_version_id: 20,
+    production_version_seq: 2,
     running_execution_id: 77,
     running_version_id: 20,
     running_version_seq: 2,
@@ -2784,7 +2779,7 @@ it("publishes v3 while v2 keeps running and explains the manual Stop then Start 
   expect(screen.getByTestId("running-execution").textContent).toContain("#77");
   expect(screen.getByTestId("production-state").textContent).toBe("生产：已启动");
   expect(screen.getByTestId("published-running-mismatch").textContent).toContain("已发布版本（v3）");
-  expect(screen.getByTestId("published-running-mismatch").textContent).toContain("生产运行版本（v2）");
+  expect(screen.getByTestId("published-running-mismatch").textContent).toContain("生产锁定版本（v2）");
   expect(
     screen.getByTestId("adapter-item").querySelector(".catalog-item-sub")?.textContent,
   ).toBe("Python · 生产运行 v2 · v3 待启动");
@@ -2803,6 +2798,8 @@ it("does not let an in-flight production refresh overwrite a completed Publish",
     published_version_id: 20,
     published_version_seq: 2,
     production_state: "running",
+    production_version_id: 20,
+    production_version_seq: 2,
     running_execution_id: 77,
     running_version_id: 20,
     running_version_seq: 2,

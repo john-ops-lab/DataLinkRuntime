@@ -97,7 +97,7 @@
 
 生产状态派生规则（纯展示层）：`未发布` = published 指针为空；`待启动` = 已发布且 state=idle；`已启动` = state=running；`已停止` = state=stopped；`异常` = 无 active Execution 且最近一次 Production Execution 为 failed/timeout；`已归档` = archived_at 非空。`production_state=running` 表示生产入口已开启，与当前是否恰有子进程执行分离；无 active Execution 且最近一次成功时是“已启动 / 空闲”。Adapter API 同时返回 active Production Execution 指针与最近一次 Production Execution 最小摘要，前端不靠猜测状态。
 
-Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `published_version_id`，不会修改或停止当前 Production Execution；因此允许 `Running=v2 / Published=v3`。只有管理员人工 Stop、旧 Execution 真正终态，且 v3 已在当前 production Worker 上重新测试成功后，Start 才创建绑定 v3 的新 Production Execution。
+Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `published_version_id`，不会修改 `production_version_id`。M5.1 起 Start 不再创建 Execution，而是开启生产入口并锁定 `production_version_id = published_version_id`，同时锁定 production Worker。运行期间 Publish 新版本不会改变已锁定的生产版本。只有管理员人工 Stop 关闭生产入口并清空 `production_version_id` 后，再次 Start 才锁定新的 Published Version。
 
 ### 3.2 AdapterVersion（不可变）
 
@@ -121,14 +121,14 @@ Publish 与 Start 是两个独立动作：Publish 只更新生产目标 `publish
 |------|------|
 | id / adapter_id / **version_id（必填）** / worker_id | 关联关系 |
 | target_worker_id | 指定执行的 Worker（可空）；为空时可被任意 Worker 领取（存量兼容） |
-| trigger | 枚举：`manual`（测试运行）/ `production`（生产启动）；预留 `schedule` / `webhook` |
+| trigger | 枚举：`manual`（测试运行）/ `production`（生产启动）/ `schedule`（定时触发）/ `webhook`（事件触发）；M5.1 扩展值空间，`schedule` / `webhook` 为未来 M5.2/M5.3 预留 |
 | cancel_requested | 取消请求标志：running 的执行由 Worker 在下次进度上报时感知并 kill |
 | status | `pending / running / succeeded / failed / timeout / cancelled` |
 | input / output / stdout / stderr | 见 §3.5 大字段策略 |
 | error | 失败摘要 |
 | start_time / end_time / duration | 时间与耗时 |
 
-一个 Adapter 同时只允许一个 active Production Execution，由部分唯一索引 `uq_executions_active_production ON executions(adapter_id) WHERE trigger='production' AND status IN ('pending','running')` 在数据库层强制。
+一个 Adapter 同时只允许一个 active 生产类 Execution（trigger IN ('production','schedule','webhook')），由部分唯一索引 `uq_executions_active_production ON executions(adapter_id) WHERE trigger IN ('production','schedule','webhook') AND status IN ('pending','running')` 在数据库层强制。
 
 ### 3.4 Worker
 

@@ -62,12 +62,14 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
   const runningVersionId = productionRunningVersionId(adapter);
   const contextVersion = selectedVersion ? `v${selectedVersion.seq}` : "未保存版本";
 
-  // Published != Running 显著提示：只有两个指针都存在且不一致时才显示。
-  const publishedRunningMismatch =
+  // M5.1: Published != Production Version 提示：比较 published_version_id 与
+  // production_version_id（而非 running_version_id）。
+  const publishedProductionMismatch =
     adapter.published_version_id !== null &&
     adapter.published_version_id !== undefined &&
-    runningVersionId !== null &&
-    adapter.published_version_id !== runningVersionId;
+    adapter.production_version_id !== null &&
+    adapter.production_version_id !== undefined &&
+    adapter.published_version_id !== adapter.production_version_id;
   const abnormal = displayState === "abnormal";
   const abnormalExecutionId = adapter.last_production_execution_id ?? null;
   const startRelevant =
@@ -211,13 +213,13 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
             description="请到“测试运行”用当前已发布版本完成测试。Start 时后端会按权威测试记录复核。"
           />
         )}
-        {publishedRunningMismatch && (
+        {publishedProductionMismatch && (
           <Alert
             type="warning"
             showIcon
             data-testid="published-running-mismatch"
-            message={`已发布版本（${versionSeqOrId(versions, adapter.published_version_id)}）与生产运行版本（${versionSeqOrId(versions, runningVersionId)}）不一致`}
-            description="发布只更新生产目标，不会自动切换当前运行；请人工 Stop 并等待旧 Execution 安全结束后，再 Start 新版本。"
+            message={`已发布版本（${versionSeqOrId(versions, adapter.published_version_id)}）与生产锁定版本（${versionSeqOrId(versions, adapter.production_version_id)}）不一致`}
+            description="发布只更新生产目标，不会自动切换生产版本；请人工 Stop 后再 Start 以锁定新版本。"
           />
         )}
         {stopping && runningExecutionId !== null && (

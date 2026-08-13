@@ -658,7 +658,7 @@ function AdapterConsole() {
     }
   }
 
-  // M3.2 生产生命周期：Start 后自动切到执行记录页并打开新 Execution 的实时日志。
+  // M5.1: Start 不再创建 Execution，改为开启生产入口并锁定生产版本。
   async function handleStartProduction() {
     if (!selected || busy) {
       return;
@@ -666,26 +666,19 @@ function AdapterConsole() {
     setBusy(true);
     try {
       setError(null);
-      const execution = await api.startProduction(selected.id);
+      const adapter = await api.startProduction(selected.id);
       let refreshed: Adapter;
       try {
         refreshed = await api.getAdapter(selected.id);
       } catch {
-        // Best-effort refresh failed: derive the known changes locally so the
-        // header/catalog still reflect the successful start.
-        refreshed = {
-          ...selected,
-          production_state: "running",
-          running_execution_id: execution.id,
-          running_version_id: selected.published_version_id,
-        };
+        // Best-effort refresh failed: derive the known changes locally.
+        refreshed = adapter;
       }
       setSelected(refreshed);
       setProductionWorkerId(refreshed.production_worker_id ?? productionWorkerId);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-      setAutoOpenExecutionId(execution.id);
-      setActiveTabKey("history");
-      messageApi.success(`生产已启动：Execution #${execution.id}`);
+      const versionSeq = refreshed.production_version_seq ?? "?";
+      messageApi.success(`生产入口已开启，生产版本锁定为 v${versionSeq}`);
     } catch (err) {
       setError(errorMessage(err));
     } finally {

@@ -103,7 +103,7 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
               placeholder="请选择生产 Worker"
               allowClear
               loading={props.workersLoading}
-              disabled={props.busy || props.workersLoading || archived}
+              disabled={props.busy || props.workersLoading || archived || productionRunning}
               optionLabelProp="label"
               onChange={(value: number | undefined) =>
                 props.onProductionWorkerChange(value ?? null)
@@ -169,6 +169,15 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
               data-testid="production-worker-incompatible"
               message={`Worker ${selectedWorker.name} 不支持 ${LANGUAGE_LABELS[adapter.language]}`}
               description="请选择具备对应 Runtime capability 的 Worker。"
+            />
+          )}
+          {productionRunning && (
+            <Alert
+              type="warning"
+              showIcon
+              data-testid="production-worker-locked"
+              message="生产运行期间不可切换 Worker"
+              description="请先 Stop 生产后再修改生产 Worker。"
             />
           )}
           {(workerChanged || props.productionWorkerRetestRequired) && (
