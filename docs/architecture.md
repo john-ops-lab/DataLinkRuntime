@@ -249,19 +249,27 @@ public_id（随机不可猜测字符串，全局唯一，创建后稳定不轮�
 与时间戳，从不返回 token 真值或密文。
 
 外部入口（不要求 Admin Token）：`POST /api/hooks/{public_id}`，携带
-`Authorization: Bearer <token>` 与 JSON Body。校验顺序固定：未知 public_id → 404
-`webhook_not_found`；已禁用 → 409 `webhook_disabled`；Token 缺失或错误 → 401
-`unauthorized`（解密后 constant-time 比较，不区分失败细节）；生产门禁 → 409 稳定
-错误码（已归档 / `production_not_running` / `worker_offline` /
-`worker_capability_missing` / `production_busy`）；body 超过
-`execution_input_max_bytes` → 413 `execution_input_too_large`（流式分块读取，超限
-立即中断）；非法 JSON → 400 `webhook_body_invalid_json`。
+`Authorization: Bearer <token>` 与 JSON Body。真实校验 precedence：入口先流式
+读取 body 并执行 raw 字节上限（超限立即 413 `execution_input_too_large`，
+先于路由与认证执行——外部入口绝不能读取无界 body，未知/未授权的超限请求
+同样先返回 413）；再未知 public_id → 404 `webhook_not_found`；已禁用 → 409
+`webhook_disabled`；Token 缺失或错误 → 401 `unauthorized`（解密后 constant-time
+比较，不区分失败细节）；生产门禁 → 409 稳定错误码（已归档 /
+`production_not_running` / `worker_offline` / `worker_capability_missing` /
+`production_busy`）；最后是 body 内容合同 → 非法或非标准 JSON（含 NaN /
+Infinity / 数值溢出等非有限值）→ 400 `webhook_body_invalid_json`；解析后的
+compact JSON（与 Manual / Schedule input 同一大字段口径）超过
+`execution_input_max_bytes` → 413 `execution_input_too_large`。所有拒绝零
+Execution 落库。
 
 与 Schedule 的门禁差异：Webhook 拒绝即结束，**不排队、不补跑**（Schedule 的临时性
 失败保持 due 待补）。通过全部门禁后创建 `trigger=webhook` 的 pending Execution
 （version_id = 锁定的 `production_version_id`，target_worker_id = 锁定的生产
 Worker，input = 整个 JSON Body），立即返回 `202 + execution_id`，Control 不等待
-执行结果。锁顺序与平台一致：Adapter 行先于 Webhook 行（PUT / hooks 接收一致）；
+执行结果。入口是 async 路由，但仅异步流式读取 body；同步数据库事务通过
+`asyncio.to_thread` 在 worker 线程内创建/关闭自己的 Session（与调度器
+`_tick_once` 同模式），锁等待与提交不阻塞 Control event loop，不引入 async
+ORM。锁顺序与平台一致：Adapter 行先于 Webhook 行（PUT / hooks 接收一致）；
 `uq_executions_active_production` 部分唯一索引是最终的重复创建防线，竞争失败
 （`production_busy`）只回滚不产生副作用。
 

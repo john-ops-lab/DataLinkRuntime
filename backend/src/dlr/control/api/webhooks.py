@@ -10,9 +10,15 @@ Two routers with different authentication models:
 
 The ingress reads the request body with a hard byte cap so an oversized
 external request can never occupy unbounded memory; the service layer
-re-validates the same limit.
+re-validates the same limit plus the compact JSON Execution input cap.
+
+Concurrency contract: the async route only streams the body; the blocking
+database transaction runs via ``asyncio.to_thread`` on its own session
+(created and closed inside the same worker thread), so lock waits and
+commits never block the Control event loop. No async ORM is introduced.
 """
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -55,7 +61,9 @@ async def _read_capped_body(request: Request) -> bytes:
 
     The minimal memory protection for an untrusted external ingress: an
     oversized body is rejected with 413 as soon as the cap is crossed,
-    before parsing and before creating anything.
+    before parsing and before creating anything. This runs before routing
+    and authentication on purpose: the ingress must never read an
+    unbounded body, even from unknown or unauthorized callers.
     """
     max_bytes = settings.execution_input_max_bytes
     chunks: list[bytes] = []
@@ -72,20 +80,40 @@ async def _read_capped_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
+def _receive_hook_sync(public_id: str, authorization: str | None, body: bytes) -> int:
+    """The blocking DB transaction of one Webhook receipt.
+
+    Runs on a worker thread via ``asyncio.to_thread`` (same pattern as the
+    scheduler's ``_tick_once``): the session is created and closed inside
+    the same thread, so ``FOR UPDATE`` waits, decryption and commits
+    never touch the Control event loop.
+    """
+    # Local import like schedule._tick_once: tests point SessionLocal at the test DB.
+    from dlr.control.db import SessionLocal
+
+    session = SessionLocal()
+    try:
+        execution = webhook_service.receive_webhook(session, public_id, authorization, body)
+        return execution.id
+    finally:
+        session.close()
+
+
 @public_router.post("/api/hooks/{public_id}", status_code=202)
 async def receive_hook(
     public_id: str,
     request: Request,
-    session: DbSession,
     authorization: AuthorizationHeader = None,
 ) -> dict[str, object]:
     """External Webhook ingress: validate, create a pending Execution, 202.
 
     Control never waits for the Execution; the response only carries the
-    created execution id. Unknown public_id -> 404; disabled -> 409
-    ``webhook_disabled``; wrong/missing token -> 401; gate failures ->
-    the stable 409/413/400 family.
+    created execution id. Real precedence: the raw body stream cap runs
+    first (413 even for unknown/unauthorized callers); then unknown
+    public_id -> 404; disabled -> 409 ``webhook_disabled``; wrong/missing
+    token -> 401; gate failures -> the stable 409 family; body contract ->
+    400 (invalid/non-standard JSON) and 413 (compact JSON over the cap).
     """
     body = await _read_capped_body(request)
-    execution = webhook_service.receive_webhook(session, public_id, authorization, body)
-    return {"execution_id": execution.id, "status": "accepted"}
+    execution_id = await asyncio.to_thread(_receive_hook_sync, public_id, authorization, body)
+    return {"execution_id": execution_id, "status": "accepted"}

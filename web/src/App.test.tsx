@@ -4664,6 +4664,35 @@ it("warns when there is no token credential and keeps save disabled", async () =
   expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
 });
 
+it("shows the credential load failure instead of pretending there is no token credential", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    scheduleNotConfiguredRoute,
+    webhookNotConfiguredRoute,
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({
+        status: 503,
+        body: {
+          detail: { code: "secret_store_unavailable", message: "Secret Store is unavailable" },
+        },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openTriggerTab();
+
+  // 凭据列表加载失败必须明确报错，而不是落入「尚无 token 凭据」的空状态。
+  const error = await screen.findByTestId("webhook-load-error");
+  expect(error.textContent).toContain("Secret Store is unavailable");
+  expect(error.textContent).toContain("secret_store_unavailable");
+  expect(screen.queryByTestId("webhook-no-token-credential")).toBeNull();
+  expect(screen.queryByTestId("webhook-enabled")).toBeNull();
+});
+
 it("saves the webhook and shows the stable URL and example request without the secret", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, production_state: "running" });
   let putBody = "";

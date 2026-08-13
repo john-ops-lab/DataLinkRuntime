@@ -53,11 +53,12 @@ export default function WebhookTriggerPanel(props: WebhookTriggerPanelProps) {
         api.listCredentials(),
         api.getWebhook(props.adapterId),
       ]);
-      if (credentialList.status === "fulfilled") {
-        setCredentials(credentialList.value);
-      } else if (!(credentialList.reason instanceof ApiError)) {
+      // 凭据列表加载失败必须明确报错：不得把 Secret Store 503 等失败
+      // 伪装成「没有 token 凭据」。
+      if (credentialList.status === "rejected") {
         throw credentialList.reason;
       }
+      setCredentials(credentialList.value);
       if (webhookResult.status === "fulfilled") {
         const webhook = webhookResult.value;
         setSaved(webhook);
@@ -77,7 +78,11 @@ export default function WebhookTriggerPanel(props: WebhookTriggerPanelProps) {
       }
       throw webhookResult.reason;
     } catch (error) {
-      setLoadError(error instanceof ApiError ? `${error.message} (${error.code})` : "请求失败");
+      setLoadError(
+        error instanceof ApiError
+          ? `Webhook 配置加载失败：${error.message} (${error.code})`
+          : "Webhook 配置加载失败：请求失败",
+      );
     } finally {
       setLoading(false);
     }
@@ -133,6 +138,17 @@ export default function WebhookTriggerPanel(props: WebhookTriggerPanelProps) {
     );
   }
 
+  // 加载失败时不渲染表单：避免把凭据列表加载失败误显示成
+  // 「尚无 token 类型凭据」的空状态。
+  if (loadError !== null) {
+    return (
+      <div className="webhook-trigger-panel">
+        <Typography.Title level={5}>Webhook（事件触发）</Typography.Title>
+        <Alert type="error" showIcon message={loadError} data-testid="webhook-load-error" />
+      </div>
+    );
+  }
+
   return (
     <div className="webhook-trigger-panel">
       <Typography.Title level={5}>Webhook（事件触发）</Typography.Title>
@@ -140,9 +156,6 @@ export default function WebhookTriggerPanel(props: WebhookTriggerPanelProps) {
         一个 Adapter 最多一个 Webhook：外部系统携带 Bearer Token POST JSON 到统一入口，Control
         校验后立即返回 202 并异步执行；生产入口关闭或存在运行中任务时直接拒绝，不排队。
       </Typography.Paragraph>
-      {loadError !== null && (
-        <Alert type="error" showIcon message={loadError} data-testid="webhook-load-error" />
-      )}
 
       {props.archived && (
         <Alert

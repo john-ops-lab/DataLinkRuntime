@@ -31,6 +31,7 @@ can never deadlock.
 
 import json
 import logging
+import math
 import secrets as stdlib_secrets
 from typing import Any
 
@@ -49,12 +50,31 @@ from dlr.control.services.adapter import (
     _require_not_archived,
     domain_error,
 )
+from dlr.control.services.execution import compact_json_bytes
 from dlr.control.services.secrets import decrypt_fields
 
 logger = logging.getLogger("dlr.control.webhook")
 
 # The single Credential field a Webhook authenticates against.
 WEBHOOK_CREDENTIAL_TYPE = "token"
+
+
+def _reject_non_standard_constant(name: str) -> float:
+    """Reject NaN / Infinity / -Infinity: standard JSON only.
+
+    ``json.loads`` accepts these constants by default, but the Execution
+    input contract is standard JSON; persisting them would surface as a
+    JSONB error instead of a stable 400.
+    """
+    raise ValueError(f"non-standard JSON constant: {name}")
+
+
+def _parse_finite_float(text: str) -> float:
+    """Reject numeric overflow (e.g. ``1e309`` parses to inf by default)."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite number: {text}")
+    return value
 
 
 def webhook_path(public_id: str) -> str:
@@ -156,10 +176,12 @@ def receive_webhook(
 ) -> Execution:
     """Validate one external Webhook request and create its Execution.
 
-    Order is fixed: unknown public_id -> 404; disabled -> 409; token ->
-    401; unified production gate -> 409 family; body contract -> 413/400.
-    The Adapter row is locked before the Webhook row (platform lock order),
-    so a concurrent Stop / Start / PUT is fully serialized with receipt.
+    Order is fixed: body stream cap (route) -> unknown public_id -> 404;
+    disabled -> 409; token -> 401; unified production gate -> 409 family;
+    body contract -> 400 (invalid or non-standard JSON) and 413 (compact
+    JSON over the Execution input cap). The Adapter row is locked before
+    the Webhook row (platform lock order), so a concurrent Stop / Start /
+    PUT is fully serialized with receipt.
     """
     webhook = session.scalar(select(AdapterWebhook).where(AdapterWebhook.public_id == public_id))
     if webhook is None:
@@ -201,9 +223,11 @@ def receive_webhook(
     if _active_production_execution(session, adapter.id) is not None:
         raise domain_error(409, "production_busy", "An active production Execution already exists")
 
-    # --- body contract: size first, then JSON --------------------------------
-    # The raw byte length is the memory-protection measure; the same limit
-    # as Execution input keeps the big-field contract unified.
+    # --- body contract: raw size, then JSON, then normalized size ------------
+    # The raw byte cap is the ingress memory protection; the compact JSON
+    # cap is the Execution input contract (the same big-field unit as
+    # Manual / Schedule input). A raw-small body can still normalize above
+    # the cap, so both checks run and both persist zero Executions.
     if len(body) > settings.execution_input_max_bytes:
         raise domain_error(
             413,
@@ -211,9 +235,19 @@ def receive_webhook(
             f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
         )
     try:
-        payload: Any = json.loads(body)
+        payload: Any = json.loads(
+            body,
+            parse_constant=_reject_non_standard_constant,
+            parse_float=_parse_finite_float,
+        )
     except (UnicodeDecodeError, ValueError) as error:
         raise domain_error(400, "webhook_body_invalid_json", "Body must be valid JSON") from error
+    if len(compact_json_bytes(payload)) > settings.execution_input_max_bytes:
+        raise domain_error(
+            413,
+            "execution_input_too_large",
+            f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
+        )
 
     execution = Execution(
         adapter_id=adapter.id,

@@ -1199,7 +1199,8 @@ echo "==> running M5.3 webhook trigger chain (Save -> Test -> Publish -> Webhook
 # external POST carrying the Bearer credential token is accepted with 202 and
 # executed asynchronously on the locked production version/worker, while
 # unknown, unauthorized, disabled and stopped calls reject with stable error
-# codes; publishing v2 without Stop/Start keeps the webhook executing v1.
+# codes; publishing v2 without Stop/Start keeps the webhook executing v1, and
+# Stop -> Start locks v2 and the webhook actually hits the v2 output.
 docker compose exec -T -e DLR_ADMIN_TOKEN control python - <<'PY'
 import json
 import os
@@ -1473,6 +1474,33 @@ check(finished_again["version_id"] == version_id, "the next webhook call still e
 check(
     "rotation" not in (finished_again["output"] or {}),
     f"v2 code must not run before Stop/Start: {finished_again['output']}",
+)
+
+# --- Stop -> Start again: the new Start locks the newly published v2 --------
+stopped_for_rotation = request("POST", f"/adapters/{adapter_id}/production/stop", {"mode": "wait"})
+check(
+    stopped_for_rotation["production_state"] == "stopped",
+    f"stop must close the entry: {stopped_for_rotation}",
+)
+started_v2 = request("POST", f"/adapters/{adapter_id}/production/start", expected=200)
+check(started_v2["production_state"] == "running", f"start must re-open the entry: {started_v2}")
+check(
+    started_v2["production_version_id"] == v2["id"],
+    f"the new Start must lock the published v2: {started_v2}",
+)
+accepted_on_v2 = hook_request(
+    public_id, payload={"event": "on.v2"}, token=WEBHOOK_TOKEN, expected=202
+)
+finished_on_v2 = wait_terminal(accepted_on_v2["execution_id"])
+check(
+    finished_on_v2["status"] == "succeeded",
+    f"webhook execution on v2 must succeed, got {finished_on_v2['status']}: "
+    f"{finished_on_v2['error']} / {finished_on_v2['stderr']}",
+)
+check(finished_on_v2["version_id"] == v2["id"], "the new lifecycle executes the locked v2")
+check(
+    (finished_on_v2["output"] or {}).get("rotation") is True,
+    f"the v2 code actually runs after Stop/Start: {finished_on_v2['output']}",
 )
 
 # --- Bound token credential is protected from deletion --------------------------

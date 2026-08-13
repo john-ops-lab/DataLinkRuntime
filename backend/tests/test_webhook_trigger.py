@@ -3,9 +3,11 @@
 Covers the singleton Webhook configuration API contract, the external
 ingress success chain (Bearer token -> unified production gate -> pending
 Execution -> 202), every stable rejection (401/404/409/413/400), the
-production-version pinning against later Publishes, the busy-no-queue
-contract and the security requirements (token never in responses or logs,
-Credential deletion blocked while referenced).
+Execution input contract (raw stream cap plus compact JSON cap, standard
+JSON only), the real validation precedence, the production-version
+pinning against later Publishes, the busy-no-queue contract and the
+security requirements (token never in responses or logs, Credential
+deletion blocked while referenced).
 """
 
 import json
@@ -16,11 +18,12 @@ from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import ADMIN_TOKEN
+from dlr.common.config import settings
 from dlr.control.models import Credential, Execution, Worker
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential
 from test_production_lifecycle import setup_publishable, start, stop
-from test_workers import WORKER_HEADERS, claim, report
+from test_workers import claim, report
 
 WEBHOOK_TOKEN = "whk-secret-token-value"
 NO_AUTH_HEADER = {"Authorization": ""}
@@ -81,9 +84,7 @@ def executions_of(session_factory: sessionmaker[Session], adapter_id: int) -> li
     with session_factory() as session:
         return list(
             session.scalars(
-                select(Execution)
-                .where(Execution.adapter_id == adapter_id)
-                .order_by(Execution.id)
+                select(Execution).where(Execution.adapter_id == adapter_id).order_by(Execution.id)
             ).all()
         )
 
@@ -210,9 +211,7 @@ def test_admin_api_never_returns_token_material(
         api_client, name="whk-leak-token", type_="token", fields={"token": WEBHOOK_TOKEN}
     )
     with session_factory() as session:
-        credential = session.scalar(
-            select(Credential).where(Credential.name == "whk-leak-token")
-        )
+        credential = session.scalar(select(Credential).where(Credential.name == "whk-leak-token"))
         assert credential is not None
         ciphertext = credential.ciphertext
 
@@ -289,9 +288,7 @@ def test_execution_runs_on_production_worker_via_claim(api_client: TestClient) -
 def test_input_json_types_follow_contract(api_client: TestClient) -> None:
     adapter, version, worker, webhook = running_with_webhook(api_client, "whk-input-types")
     for value in ({"k": "v"}, [1, 2, 3], "plain-string", 42, True, None):
-        response = post_hook(
-            api_client, webhook["public_id"], token=WEBHOOK_TOKEN, json_body=value
-        )
+        response = post_hook(api_client, webhook["public_id"], token=WEBHOOK_TOKEN, json_body=value)
         assert response.status_code == 202, (value, response.text)
         execution_id = response.json()["execution_id"]
         assert api_client.get(f"/api/executions/{execution_id}").json()["input"] == value
@@ -311,9 +308,10 @@ def test_publishing_new_version_keeps_locked_production_version(
     )
     assert test_run.status_code == 202
     finish_active_execution(api_client, worker["id"], test_run.json()["id"])
-    assert api_client.post(
-        f"/api/adapters/{adapter['id']}/versions/{v2['id']}/publish"
-    ).status_code == 200
+    assert (
+        api_client.post(f"/api/adapters/{adapter['id']}/versions/{v2['id']}/publish").status_code
+        == 200
+    )
 
     # The Webhook still executes the locked v1 until Stop -> Start.
     response = post_hook(api_client, webhook["public_id"], token=WEBHOOK_TOKEN, json_body={})
@@ -440,11 +438,60 @@ def test_invalid_json_is_rejected_with_zero_executions(
 ) -> None:
     adapter, version, worker, webhook = running_with_webhook(api_client, "whk-bad-json")
     for content in (b"{not json", b"", b"\xff\xfe\x00binary"):
-        response = post_hook(
-            api_client, webhook["public_id"], token=WEBHOOK_TOKEN, content=content
-        )
+        response = post_hook(api_client, webhook["public_id"], token=WEBHOOK_TOKEN, content=content)
         assert response.status_code == 400, (content, response.text)
         assert response.json()["detail"]["code"] == "webhook_body_invalid_json"
+    assert webhook_executions_of(session_factory, adapter["id"]) == []
+
+
+def test_non_standard_json_is_rejected_with_zero_executions(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """NaN / Infinity / numeric overflow are non-standard JSON: stable 400
+    instead of a JSONB persistence failure, and zero Executions."""
+    adapter, version, worker, webhook = running_with_webhook(api_client, "whk-nonfinite")
+    for content in (b'{"v": NaN}', b'{"v": Infinity}', b'{"v": -Infinity}', b'{"v": 1e309}'):
+        response = post_hook(api_client, webhook["public_id"], token=WEBHOOK_TOKEN, content=content)
+        assert response.status_code == 400, (content, response.text)
+        assert response.json()["detail"]["code"] == "webhook_body_invalid_json"
+    assert webhook_executions_of(session_factory, adapter["id"]) == []
+
+
+def test_compact_json_input_cap_is_enforced_after_parsing(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raw-small body can normalize above the Execution input cap.
+
+    float repr expands on compact serialization: ``1e9`` (3 raw bytes)
+    becomes ``1000000000.0`` (12 compact bytes), so the raw stream cap
+    alone is not the Execution input contract.
+    """
+    monkeypatch.setattr(settings, "execution_input_max_bytes", 200)
+    adapter, version, worker, webhook = running_with_webhook(api_client, "whk-compact-cap")
+    raw = b"[" + b",".join([b"1e9"] * 20) + b"]"
+    assert len(raw) <= 200  # passes the raw stream cap
+    response = post_hook(api_client, webhook["public_id"], token=WEBHOOK_TOKEN, content=raw)
+    assert response.status_code == 413, response.text
+    assert response.json()["detail"]["code"] == "execution_input_too_large"
+    assert webhook_executions_of(session_factory, adapter["id"]) == []
+
+
+def test_body_cap_precedes_routing_and_auth(
+    api_client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Real precedence: the ingress reads/caps the body before routing and
+    authentication, so oversized calls answer 413 even for unknown ids and
+    wrong tokens (the ingress must never read an unbounded body)."""
+    adapter, version, worker, webhook = running_with_webhook(api_client, "whk-precedence")
+    oversized = json.dumps({"blob": "x" * (600 * 1024)}).encode()
+    unknown = post_hook(api_client, "unknown-public-id", token=WEBHOOK_TOKEN, content=oversized)
+    assert unknown.status_code == 413
+    assert unknown.json()["detail"]["code"] == "execution_input_too_large"
+    wrong_token = post_hook(api_client, webhook["public_id"], token="wrong", content=oversized)
+    assert wrong_token.status_code == 413
+    assert wrong_token.json()["detail"]["code"] == "execution_input_too_large"
     assert webhook_executions_of(session_factory, adapter["id"]) == []
 
 
