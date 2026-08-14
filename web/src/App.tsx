@@ -592,6 +592,7 @@ function AdapterConsole() {
         // failure is non-fatal because the save itself is already acknowledged.
         const real = await api.getAdapter(selected.id);
         setSelected(real);
+        setRuntimeWorkerId(real.runtime_worker_id ?? null);
         setAdapters((current) => current.map((item) => (item.id === real.id ? real : item)));
       } catch (refreshErr) {
         refreshFailures.push(`刷新 Adapter 失败：${errorMessage(refreshErr)}`);

@@ -724,6 +724,69 @@ it("saves a new version with the edited content", async () => {
   expect(await screen.findByText("已保存为 v1")).toBeTruthy();
 });
 
+it("syncs the Settings draft after the first Save auto-selects the only runtime Worker", async () => {
+  const versions: VersionSummary[] = [];
+  let adapter = makeAdapter({ runtime_worker_id: null });
+  const worker = {
+    id: 1,
+    name: "only-worker",
+    status: "online",
+    last_heartbeat: "2026-08-15T00:00:00Z",
+    capabilities: ["python"],
+  };
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [worker] }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: versions }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions",
+      respond: () => {
+        const saved = makeVersion();
+        versions.push(saved);
+        adapter = { ...adapter, latest_version_id: saved.id, runtime_worker_id: worker.id };
+        return { status: 201, body: saved };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => ({ body: adapter }),
+    },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: () => {
+        throw new Error("the synchronized Worker must not be cleared");
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("save-version"));
+  await screen.findByText("已保存为 v1");
+
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  const workerSelect = await screen.findByTestId("production-worker");
+  expect(workerSelect.textContent).toContain("only-worker");
+  expect(screen.queryByTestId("production-worker-retest")).toBeNull();
+
+  const saveWorkerButton = screen.getByTestId("update-production-worker") as HTMLButtonElement;
+  expect(saveWorkerButton.disabled).toBe(true);
+  fireEvent.click(saveWorkerButton);
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+    ),
+  ).toBe(false);
+});
+
 it("loads the snapshot of a selected historical version", async () => {
   const adapter = makeAdapter({ latest_version_id: 11 });
   stubFetch([
