@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dlr.control.models import Adapter, AdapterVersion, Worker
+from dlr.control.models import Adapter, AdapterSchedule, AdapterVersion, Worker
 from dlr.control.models.platform import AdapterCredentialBinding
 from dlr.control.schemas.adapter import (
     AdapterCreate,
@@ -160,6 +160,18 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
             )
         adapter.runtime_worker_id = data.runtime_worker_id
 
+    run_mode_changed = "run_mode" in data.model_fields_set and data.run_mode != adapter.run_mode
+    if run_mode_changed:
+        if adapter.adapter_type != "task":
+            raise domain_error(
+                409,
+                "adapter_type_mismatch",
+                "Only task Adapters have a run mode",
+            )
+        adapter_runtime.require_runtime_unlocked(session, adapter)
+        if data.run_mode is not None:
+            adapter.run_mode = data.run_mode
+
     if data.name is not None and data.name != adapter.name:
         conflict = session.scalar(
             select(Adapter).where(Adapter.name == data.name, Adapter.id != adapter_id)
@@ -244,7 +256,12 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
 
 def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adapter:
     """Clone common M5.4 facts; the clone has its own Revision 1 and no runs."""
-    source = get_adapter(session, adapter_id)
+    # Freeze the source configuration while the copy is assembled. Runtime
+    # writes use the same Adapter-first lock order, so a clone cannot combine
+    # Worker/mode/Schedule/binding facts from different moments.
+    source = session.get(Adapter, adapter_id, with_for_update=True)
+    if source is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(source)
     existing = session.scalar(select(Adapter).where(Adapter.name == data.name))
     if existing is not None:
@@ -254,6 +271,7 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
         description=data.description if data.description is not None else source.description,
         language=source.language,
         adapter_type=source.adapter_type,
+        run_mode=source.run_mode,
         runtime_worker_id=source.runtime_worker_id,
     )
     session.add(clone)
@@ -290,6 +308,23 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
                 field=binding.field,
             )
         )
+    if source.adapter_type == "task":
+        source_schedule = session.scalar(
+            select(AdapterSchedule)
+            .where(AdapterSchedule.adapter_id == adapter_id)
+            .with_for_update()
+        )
+        if source_schedule is not None:
+            session.add(
+                AdapterSchedule(
+                    adapter_id=clone.id,
+                    cron=source_schedule.cron,
+                    timezone=source_schedule.timezone,
+                    input=source_schedule.input,
+                    enabled=False,
+                    next_run_at=None,
+                )
+            )
     session.commit()
     session.refresh(clone)
     return clone

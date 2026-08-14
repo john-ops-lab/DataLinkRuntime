@@ -1,10 +1,10 @@
-"""Fresh-schema assertions for the M5.4.1 Alembic head."""
+"""Fresh-schema assertions for the M5.4.2 Alembic head."""
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 
-def test_fresh_schema_has_simplified_adapter_and_active_execution_contract(
+def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
     test_engine: Engine,
 ) -> None:
     with test_engine.connect() as connection:
@@ -30,8 +30,14 @@ def test_fresh_schema_has_simplified_adapter_and_active_execution_contract(
             )
         )
 
-    assert revision == "0009_m5_4_1_adapter_lifecycle"
-    assert {"adapter_type", "latest_version_id", "runtime_worker_id", "archived_at"} <= columns
+    assert revision == "0010_m5_4_2_task_run_mode"
+    assert {
+        "adapter_type",
+        "run_mode",
+        "latest_version_id",
+        "runtime_worker_id",
+        "archived_at",
+    } <= columns
     assert {
         "published_version_id",
         "production_version_id",

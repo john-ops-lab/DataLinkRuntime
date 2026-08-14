@@ -59,7 +59,13 @@ vi.mock("@monaco-editor/react", () => ({
   },
 }));
 
-const STARTER_CODE = "def handle(context, input):\n    return input\n";
+const STARTER_CODE =
+  "def handle(context, input):\n" +
+  "    context.logger.info(\"任务开始\")\n" +
+  "    try:\n" +
+  "        return {\"message\": \"hello from DLR\", \"input\": input}\n" +
+  "    finally:\n" +
+  "        context.logger.info(\"任务结束\")\n";
 
 interface RouteResponse {
   status?: number;
@@ -167,7 +173,8 @@ function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
     name: "adapter-a",
     description: "",
     language: "python",
-    adapter_type: "task",
+    adapter_type: "webhook",
+    run_mode: "manual",
     latest_version_id: null,
     published_version_id: null,
     created_at: "2026-08-11T00:00:00Z",
@@ -217,6 +224,143 @@ afterEach(() => {
   FALLBACK_POLICY.maxPolls = 60;
   PRODUCTION_REFRESH_POLICY.pollIntervalMs = 3000;
   WORKER_REFRESH_POLICY.pollIntervalMs = 30_000;
+});
+
+// --- M5.4.2 Task Adapter user model -------------------------------------------
+
+it("shows the Task workbench without Version/Publish/Production controls", async () => {
+  const task = makeAdapter({
+    adapter_type: "task",
+    run_mode: "manual",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+  });
+  const version = makeVersion();
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [task] }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [{ id: 1, name: "task-worker", status: "online", last_heartbeat: "2026-08-15T00:00:00Z", capabilities: ["python"] }],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [version] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: version }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+
+  expect(screen.getByTestId("task-workbench-header")).toBeDefined();
+  expect(screen.getByRole("tab", { name: "编辑" })).toBeDefined();
+  expect(screen.getByRole("tab", { name: "运行设置" })).toBeDefined();
+  expect(screen.getByRole("tab", { name: "执行记录" })).toBeDefined();
+  expect(screen.queryByTestId("version-selector")).toBeNull();
+  expect(screen.queryByTestId("publish-version")).toBeNull();
+  expect(screen.queryByTestId("start-production")).toBeNull();
+  expect(screen.queryByTestId("stop-production")).toBeNull();
+  expect(document.body.textContent).not.toMatch(/Latest|Published|Production Worker|发布目标|生产入口/);
+});
+
+it("persists the Task run mode and reveals Schedule settings", async () => {
+  const manual = makeAdapter({
+    adapter_type: "task",
+    run_mode: "manual",
+    runtime_worker_id: 1,
+  });
+  const scheduled = { ...manual, run_mode: "schedule" as const };
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [manual] }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [{ id: 1, name: "task-worker", status: "online", last_heartbeat: "2026-08-15T00:00:00Z", capabilities: ["python"] }],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+    { method: "PATCH", match: "/api/adapters/1", respond: () => ({ body: scheduled }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ status: 404, body: { detail: { code: "schedule_not_configured", message: "Schedule is not configured" } } }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(await screen.findByLabelText("定时运行"));
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+
+  await screen.findByTestId("task-schedule-cron");
+  const patchCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+  );
+  expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+    runtime_worker_id: 1,
+    run_mode: "schedule",
+  });
+});
+
+it("locks Task editing while Schedule is enabled and unlocks after disable", async () => {
+  let current = makeAdapter({
+    adapter_type: "task",
+    run_mode: "schedule",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    runtime_locked: false,
+  });
+  let enabled = false;
+  const version = makeVersion();
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [current] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: current }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [{ id: 1, name: "task-worker", status: "online", last_heartbeat: "2026-08-15T00:00:00Z", capabilities: ["python"] }],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [version] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: version }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () =>
+        enabled
+          ? { body: { adapter_id: 1, enabled: true, cron: "*/5 * * * *", timezone: "Asia/Shanghai", input: {}, next_run_at: "2026-08-15T01:00:00Z", updated_at: "2026-08-15T00:00:00Z" } }
+          : { status: 404, body: { detail: { code: "schedule_not_configured", message: "Schedule is not configured" } } },
+    },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: (body) => {
+        enabled = JSON.parse(body ?? "{}").enabled as boolean;
+        current = { ...current, runtime_locked: enabled };
+        return { body: { adapter_id: 1, enabled, cron: "*/5 * * * *", timezone: "Asia/Shanghai", input: {}, next_run_at: enabled ? "2026-08-15T01:00:00Z" : null, updated_at: "2026-08-15T00:00:00Z" } };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(await screen.findByTestId("enable-task-schedule"));
+  await screen.findByTestId("disable-task-schedule");
+  fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
+  await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true));
+
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(screen.getByTestId("disable-task-schedule"));
+  await screen.findByTestId("enable-task-schedule");
+  fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
+  await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(false));
 });
 
 // --- Admin token auth (M2) -----------------------------------------------------
@@ -1464,6 +1608,7 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
     adapter_id: 1,
     version_id: 10,
     worker_id: null,
+    target_worker_id: null,
     trigger: "manual",
     scheduled_for: null,
     status: "pending",

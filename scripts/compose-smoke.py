@@ -1,4 +1,4 @@
-"""M5.4.1 end-to-end smoke assertions executed inside the Control container."""
+"""M5.4.2 end-to-end smoke assertions executed inside the Control container."""
 
 from __future__ import annotations
 
@@ -66,6 +66,20 @@ def wait_terminal(execution_id: int, *, timeout: float = 90) -> dict[str, Any]:
             return execution
         time.sleep(0.5)
     raise AssertionError(f"execution {execution_id} did not finish within {timeout}s")
+
+
+def wait_schedule_execution(adapter_id: int, *, timeout: float = 100) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        history = request("GET", f"/adapters/{adapter_id}/executions")
+        scheduled = next(
+            (item for item in history["items"] if item["trigger"] == "schedule"),
+            None,
+        )
+        if scheduled is not None:
+            return wait_terminal(scheduled["id"], timeout=timeout)
+        time.sleep(0.5)
+    raise AssertionError(f"adapter {adapter_id} did not create a schedule Execution")
 
 
 def create_adapter(name: str, language: str, adapter_type: str) -> dict[str, Any]:
@@ -136,6 +150,7 @@ with SessionLocal() as session:
     adapter_columns = {column["name"] for column in inspector.get_columns("adapters")}
     assert {
         "adapter_type",
+        "run_mode",
         "latest_version_id",
         "runtime_worker_id",
         "archived_at",
@@ -176,7 +191,11 @@ with SessionLocal() as session:
 # unified active lock, metadata exception, clone and soft delete.
 task = create_adapter("smoke-m541-task", "python", "task")
 task_id = task["id"]
-assert task["adapter_type"] == "task" and task["latest_version_id"] is None
+assert (
+    task["adapter_type"] == "task"
+    and task["run_mode"] == "manual"
+    and task["latest_version_id"] is None
+)
 offline = request(
     "PATCH",
     f"/adapters/{task_id}",
@@ -206,10 +225,14 @@ v1_code = (
     "import hashlib\n"
     "import time\n\n"
     "def handle(context, input):\n"
-    "    time.sleep(5)\n"
-    "    token = context.secrets.get('SMOKE_TOKEN')\n"
-    "    return {'revision': 1, 'input': input, 'secret_sha256': "
+    "    context.logger.info('任务开始')\n"
+    "    try:\n"
+    "        time.sleep(5)\n"
+    "        token = context.secrets.get('SMOKE_TOKEN')\n"
+    "        return {'revision': 1, 'input': input, 'secret_sha256': "
     "hashlib.sha256(token.encode()).hexdigest()}\n"
+    "    finally:\n"
+    "        context.logger.info('任务结束')\n"
 )
 v1 = save(task_id, v1_code, runtime_config={"revision": 1})
 assert v1["seq"] == 1
@@ -247,9 +270,17 @@ finished1 = wait_terminal(run1["id"])
 assert finished1["status"] == "succeeded", finished1
 assert finished1["version_id"] == v1["id"]
 assert finished1["output"]["secret_sha256"] == hashlib.sha256(STORED_SECRET.encode()).hexdigest()
+assert "任务开始" in finished1["stdout"] and "任务结束" in finished1["stdout"]
 assert STORED_SECRET not in json.dumps(finished1)
 
-v2_code = "def handle(context, input):\n    return {'revision': 2, 'input': input}\n"
+v2_code = (
+    "def handle(context, input):\n"
+    "    context.logger.info('任务开始')\n"
+    "    try:\n"
+    "        return {'revision': 2, 'input': input}\n"
+    "    finally:\n"
+    "        context.logger.info('任务结束')\n"
+)
 v2 = save(task_id, v2_code, runtime_config={"revision": 2})
 assert v2["seq"] == 2
 assert request("GET", f"/adapters/{task_id}/versions/{v1['id']}")["code"] == v1_code
@@ -258,20 +289,10 @@ assert run2["version_id"] == v2["id"]
 finished2 = wait_terminal(run2["id"])
 assert finished2["status"] == "succeeded" and finished2["output"]["revision"] == 2
 
-clone = request(
-    "POST",
-    f"/adapters/{task_id}/clone",
-    {"name": "smoke-m541-task-clone"},
-    expected=201,
-)
-assert clone["adapter_type"] == "task" and clone["runtime_worker_id"] == runtime_worker_id
-clone_versions = request("GET", f"/adapters/{clone['id']}/versions")
-assert len(clone_versions) == 1 and clone_versions[0]["seq"] == 1
-assert request("GET", f"/adapters/{clone['id']}/executions")["items"] == []
-
+request("PATCH", f"/adapters/{task_id}", {"run_mode": "schedule"})
 schedule_payload = {
     "enabled": True,
-    "cron": "*/5 * * * *",
+    "cron": "* * * * *",
     "timezone": "UTC",
     "input": {"scheduled": True},
 }
@@ -279,10 +300,45 @@ schedule = request("PUT", f"/adapters/{task_id}/schedule", schedule_payload)
 assert schedule["enabled"] is True
 assert request("GET", f"/adapters/{task_id}")["runtime_locked"] is True
 assert_locked(save(task_id, v2_code, expected=409))
-changed_schedule = dict(schedule_payload, cron="*/10 * * * *")
+changed_schedule = dict(schedule_payload, cron="*/2 * * * *")
 assert_locked(request("PUT", f"/adapters/{task_id}/schedule", changed_schedule, expected=409))
+
+# Schedule mode keeps an independent Run Once action. It uses the latest
+# Revision and must not mutate the Schedule cursor or enabled state.
+schedule_before_manual = request("GET", f"/adapters/{task_id}/schedule")
+manual_in_schedule_mode = create_execution(task_id, {"manual_in_schedule_mode": True})
+manual_finished = wait_terminal(manual_in_schedule_mode["id"])
+assert manual_finished["trigger"] == "manual" and manual_finished["version_id"] == v2["id"]
+schedule_after_manual = request("GET", f"/adapters/{task_id}/schedule")
+assert schedule_after_manual["enabled"] is True
+assert schedule_after_manual["next_run_at"] == schedule_before_manual["next_run_at"]
+
+scheduled_finished = wait_schedule_execution(task_id)
+assert scheduled_finished["status"] == "succeeded", scheduled_finished
+assert scheduled_finished["trigger"] == "schedule"
+assert scheduled_finished["version_id"] == v2["id"]
+assert scheduled_finished["target_worker_id"] == runtime_worker_id
+assert "任务开始" in scheduled_finished["stdout"]
+assert "任务结束" in scheduled_finished["stdout"]
 disabled_schedule = dict(schedule_payload, enabled=False)
 assert request("PUT", f"/adapters/{task_id}/schedule", disabled_schedule)["enabled"] is False
+
+clone = request(
+    "POST",
+    f"/adapters/{task_id}/clone",
+    {"name": "smoke-m542-task-clone"},
+    expected=201,
+)
+assert (
+    clone["adapter_type"] == "task"
+    and clone["run_mode"] == "schedule"
+    and clone["runtime_worker_id"] == runtime_worker_id
+)
+clone_versions = request("GET", f"/adapters/{clone['id']}/versions")
+assert len(clone_versions) == 1 and clone_versions[0]["seq"] == 1
+assert request("GET", f"/adapters/{clone['id']}/executions")["items"] == []
+clone_schedule = request("GET", f"/adapters/{clone['id']}/schedule")
+assert clone_schedule["enabled"] is False and clone_schedule["next_run_at"] is None
 
 # Removed lifecycle routes cannot participate in new business behavior.
 assert request("POST", f"/adapters/{task_id}/versions/{v2['id']}/publish", expected=404)
@@ -293,7 +349,10 @@ request("DELETE", f"/adapters/{task_id}", expected=204)
 deleted = request("GET", f"/adapters/{task_id}")
 assert deleted["archived_at"] is not None and deleted["latest_version_id"] == v2["id"]
 assert len(request("GET", f"/adapters/{task_id}/versions")) == 2
-assert len(request("GET", f"/adapters/{task_id}/executions")["items"]) == 2
+deleted_history = request("GET", f"/adapters/{task_id}/executions")["items"]
+assert len(deleted_history) == 4
+assert [item["trigger"] for item in deleted_history].count("manual") == 3
+assert [item["trigger"] for item in deleted_history].count("schedule") == 1
 deleted_save = save(task_id, v2_code, expected=409)
 assert deleted_save["detail"]["code"] == "adapter_deleted", deleted_save
 with SessionLocal() as session:
@@ -393,13 +452,22 @@ assert wrong_webhook["detail"]["code"] == "adapter_type_mismatch", wrong_webhook
 # Three-language runtime remains intact under the simplified lifecycle.
 language_cases = {
     "javascript": (
-        "export async function handle(context, input) { return {language: 'javascript', input}; }\n"
+        "export async function handle(context, input) {\n"
+        "  context.logger.info('任务开始');\n"
+        "  try { return {language: 'javascript', input}; }\n"
+        "  finally { context.logger.info('任务结束'); }\n"
+        "}\n"
     ),
     "java": (
         "import java.util.Map;\n"
         "public class Adapter {\n"
         "  public Object handle(Context context, Object input) {\n"
-        '    return Map.of("language", "java", "input", input);\n'
+        '    context.logger.info("任务开始");\n'
+        "    try {\n"
+        '      return Map.of("language", "java", "input", input);\n'
+        "    } finally {\n"
+        '      context.logger.info("任务结束");\n'
+        "    }\n"
         "  }\n"
         "}\n"
     ),
@@ -413,6 +481,7 @@ for language, code in language_cases.items():
     finished = wait_terminal(execution["id"], timeout=150)
     assert finished["status"] == "succeeded", finished
     assert finished["output"]["language"] == language, finished
+    assert "任务开始" in finished["stdout"] and "任务结束" in finished["stdout"]
 
 # AI remains browser-candidate-only and cannot mutate lifecycle facts.
 setting = {
@@ -465,4 +534,4 @@ assert after["runtime_worker_id"] == before["runtime_worker_id"]
 assert after_versions == before_versions
 assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
 
-print("M5.4.1 compose smoke passed")
+print("M5.4.2 compose smoke passed")

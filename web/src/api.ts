@@ -8,6 +8,7 @@ import type {
   AdapterWebhook,
   AdapterWebhookDraft,
   AdapterType,
+  TaskRunMode,
   AiAssistResponse,
   AiConnectionTestResult,
   AiConversationMessage,
@@ -128,7 +129,12 @@ export const api = {
 
   updateAdapter: (
     adapterId: number,
-    payload: { name?: string; description?: string; runtime_worker_id?: number | null },
+    payload: {
+      name?: string;
+      description?: string;
+      runtime_worker_id?: number | null;
+      run_mode?: TaskRunMode;
+    },
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}`, { method: "PATCH", body: JSON.stringify(payload) }),
 
@@ -226,6 +232,9 @@ export const api = {
 
   getExecution: (executionId: number): Promise<Execution> =>
     request(`/api/executions/${executionId}`),
+
+  cancelExecution: (executionId: number): Promise<Execution> =>
+    request(`/api/executions/${executionId}/cancel`, { method: "POST" }),
 
   listExecutions: (
     adapterId: number,

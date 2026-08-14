@@ -12,6 +12,8 @@ import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
 import ScheduleTriggerPanel from "./components/ScheduleTriggerPanel";
 import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
+import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
+import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
 import TestRunPanel from "./components/TestRunPanel";
 import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
 import WebhookTriggerPanel from "./components/WebhookTriggerPanel";
@@ -145,7 +147,7 @@ function publishGateReasonText(gate: PublishGate): string {
   }
 }
 
-type WorkbenchTabKey = "edit" | "test" | "history" | "triggers";
+type WorkbenchTabKey = "edit" | "runtime" | "test" | "history" | "triggers";
 
 // 编辑页次级配置区（语言依赖 | 运行参数（JSON） | 凭据绑定）。
 type ConfigTabKey = "requirements" | "runtime-config" | "bindings";
@@ -243,6 +245,10 @@ function AdapterConsole() {
   const selectedAdapterId = selected?.id ?? null;
   const selectedProductionState = selected?.production_state ?? null;
   const activeProductionExecutionId = selected?.running_execution_id ?? null;
+  const selectedTaskScheduleLocked =
+    selected?.adapter_type === "task" &&
+    selected.run_mode === "schedule" &&
+    selected.runtime_locked === true;
 
   useEffect(() => {
     let cancelled = false;
@@ -267,12 +273,16 @@ function AdapterConsole() {
     };
   }, []);
 
-  // Stop(wait/terminate) and a naturally completed production run both leave
-  // an active pointer until the Worker reports a terminal status. Reconcile
-  // only while that pointer exists; cleanup prevents an old Adapter response
-  // from overwriting a newly selected one.
+  // Reconcile selected runtime state while an Execution is active. An enabled
+  // Task Schedule also polls while idle so a newly created background run is
+  // discovered and exposes Stop immediately; cleanup prevents an old Adapter
+  // response from overwriting a newly selected one.
   useEffect(() => {
-    if (busy || selectedAdapterId === null || activeProductionExecutionId === null) {
+    if (
+      busy ||
+      selectedAdapterId === null ||
+      (activeProductionExecutionId === null && !selectedTaskScheduleLocked)
+    ) {
       return;
     }
     const adapterId = selectedAdapterId;
@@ -289,7 +299,12 @@ function AdapterConsole() {
         setAdapters((current) =>
           current.map((item) => (item.id === adapterId ? refreshed : item)),
         );
-        if (refreshed.running_execution_id != null) {
+        if (
+          refreshed.running_execution_id != null ||
+          (refreshed.adapter_type === "task" &&
+            refreshed.run_mode === "schedule" &&
+            refreshed.runtime_locked === true)
+        ) {
           timeoutId = setTimeout(
             () => void refreshActiveProduction(),
             PRODUCTION_REFRESH_POLICY.pollIntervalMs,
@@ -317,7 +332,13 @@ function AdapterConsole() {
         clearTimeout(timeoutId);
       }
     };
-  }, [activeProductionExecutionId, busy, selectedAdapterId, selectedProductionState]);
+  }, [
+    activeProductionExecutionId,
+    busy,
+    selectedAdapterId,
+    selectedProductionState,
+    selectedTaskScheduleLocked,
+  ]);
 
   // Catalog, Worker badge and Adapter settings share one Worker collection;
   // no component performs its own request and no Adapter row causes N+1.
@@ -370,6 +391,14 @@ function AdapterConsole() {
     const list = await api.listAdapters();
     setAdapters(list);
     return list;
+  }, []);
+
+  const handleTaskAdapterChange = useCallback((refreshed: Adapter) => {
+    setSelected((current) => (current?.id === refreshed.id ? refreshed : current));
+    setAdapters((current) =>
+      current.map((item) => (item.id === refreshed.id ? refreshed : item)),
+    );
+    setRuntimeWorkerId(refreshed.runtime_worker_id ?? null);
   }, []);
 
   useEffect(() => {
@@ -546,7 +575,7 @@ function AdapterConsole() {
   }
 
   async function handleSaveVersion() {
-    if (!selected || busy || !contentReady) {
+    if (!selected || busy || !contentReady || selected.runtime_locked === true) {
       return;
     }
     const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
@@ -867,7 +896,13 @@ function AdapterConsole() {
   }
 
   function handleApplyAiCandidate(candidate: AiCandidate) {
-    if (!selected || selected.archived_at || !contentReady || busy) {
+    if (
+      !selected ||
+      selected.archived_at ||
+      selected.runtime_locked === true ||
+      !contentReady ||
+      busy
+    ) {
       return;
     }
     // Human-in-the-loop boundary: this updates browser state only. Persisting,
@@ -1021,12 +1056,8 @@ function AdapterConsole() {
       return;
     }
     const warning = dirty ? "该 Adapter 存在未保存的编辑器修改。" : "";
-    // M2 真实规则：已有 Execution 的 Adapter 后端会拒绝删除（409 adapter_has_executions）。
     if (
-      !window.confirm(
-        `确定删除 Adapter “${selected.name}” 吗？无执行记录时将移除该 Adapter 及其全部版本；` +
-          `已有 Execution 的 Adapter 为保留执行历史不可删除。${warning}`,
-      )
+      !window.confirm(`确定删除 Adapter “${selected.name}” 吗？删除后将只读保留 Revision 与 Execution 历史。${warning}`)
     ) {
       return;
     }
@@ -1119,6 +1150,17 @@ function AdapterConsole() {
             <div className="workbench-empty">请选择一个 Adapter 进行管理。</div>
           ) : (
             <section className="detail">
+              {selected.adapter_type === "task" ? (
+                <TaskWorkbenchHeader
+                  adapter={selected}
+                  selectedVersion={selectedVersion}
+                  dirty={dirty}
+                  busy={busy}
+                  contentReady={contentReady}
+                  onSave={() => void handleSaveVersion()}
+                  onOpenSettings={() => setSettingsOpen(true)}
+                />
+              ) : (
               <WorkbenchHeader
                 adapter={selected}
                 versions={versions}
@@ -1143,6 +1185,7 @@ function AdapterConsole() {
                 onStopProduction={(mode) => void handleStopProduction(mode)}
                 onOpenSettings={() => setSettingsOpen(true)}
               />
+              )}
 
               <Tabs
                 className="workbench-tabs"
@@ -1185,7 +1228,7 @@ function AdapterConsole() {
                             onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
                             options={{
                               minimap: { enabled: false },
-                              readOnly: busy || !contentReady || !!selected.archived_at,
+                              readOnly: busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true,
                             }}
                           />
                         </div>
@@ -1205,7 +1248,7 @@ function AdapterConsole() {
                                     data-testid="requirements-input"
                                     rows={4}
                                     value={snapshot.requirements}
-                                    disabled={busy || !contentReady || !!selected.archived_at}
+                                    disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
                                     placeholder={DEPENDENCY_UI[selected.language].placeholder}
                                     onChange={(event) =>
                                       setSnapshot((current) => ({
@@ -1224,7 +1267,7 @@ function AdapterConsole() {
                                     data-testid="runtime-config-input"
                                     rows={4}
                                     value={snapshot.runtimeConfigText}
-                                    disabled={busy || !contentReady || !!selected.archived_at}
+                                    disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
                                     onChange={(event) =>
                                       setSnapshot((current) => ({
                                         ...current,
@@ -1240,7 +1283,7 @@ function AdapterConsole() {
                                 children: (
                                   <CredentialBindingsEditor
                                     adapterId={selected.id}
-                                    disabled={busy || !contentReady || !!selected.archived_at}
+                                    disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
                                     onError={setError}
                                   />
                                 ),
@@ -1251,7 +1294,23 @@ function AdapterConsole() {
                       </div>
                     ),
                   },
-                  {
+                  selected.adapter_type === "task"
+                    ? {
+                        key: "runtime",
+                        label: "运行设置",
+                        children: (
+                          <TaskRunSettingsPanel
+                            key={selected.id}
+                            adapter={selected}
+                            workers={workers}
+                            workersLoading={workersLoading}
+                            workersError={workersError}
+                            onAdapterChange={handleTaskAdapterChange}
+                            onError={setError}
+                          />
+                        ),
+                      }
+                    : {
                     key: "test",
                     label: "测试运行",
                     children: (
@@ -1293,7 +1352,7 @@ function AdapterConsole() {
                       />
                     ),
                   },
-                  {
+                  ...(selected.adapter_type === "task" ? [] : [{
                     key: "triggers",
                     label: "触发器",
                     // M5.2/M5.3：触发器 Tab 并列 Schedule 与 Webhook 两个区域。
@@ -1311,7 +1370,7 @@ function AdapterConsole() {
                         />
                       </div>
                     ),
-                  },
+                  }]),
                 ]}
               />
             </section>
