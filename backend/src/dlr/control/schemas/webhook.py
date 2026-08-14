@@ -18,7 +18,10 @@ class WebhookUpsert(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
-    public_id: str = Field(min_length=3, max_length=64, pattern=WEBHOOK_PUBLIC_ID_PATTERN)
+    # The service enforces WEBHOOK_PUBLIC_ID_PATTERN whenever the path is
+    # changed. Unchanged M5.3 token_urlsafe paths remain accepted so an
+    # upgraded running Webhook can still Stop/Start without changing its URL.
+    public_id: str = Field(min_length=3, max_length=64)
     credential_id: int | None
 
 

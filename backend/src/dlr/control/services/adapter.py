@@ -348,9 +348,7 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
             )
     else:
         source_webhook = session.scalar(
-            select(AdapterWebhook)
-            .where(AdapterWebhook.adapter_id == adapter_id)
-            .with_for_update()
+            select(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter_id).with_for_update()
         )
         session.add(
             AdapterWebhook(

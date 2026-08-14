@@ -28,7 +28,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
                 "WHERE conname = 'ck_adapters_adapter_type'"
             )
-            )
+        )
         webhook_index = connection.scalar(
             text(
                 "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "

@@ -2677,6 +2677,55 @@ it("rejects an invalid path locally and renders the stable path-in-use message",
   );
 });
 
+it("preserves an unchanged legacy Webhook path but validates it once edited", async () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+  });
+  const legacyPath = "Legacy_Path_ABC123";
+  let webhook = makeWebhook({
+    public_id: legacyPath,
+    hook_path: `/api/hooks/${legacyPath}`,
+  });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, webhook),
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        webhook = { ...webhook, ...JSON.parse(body ?? "{}") };
+        return { body: webhook };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+
+  expect(screen.getByTestId("webhook-path-legacy")).toBeDefined();
+  expect(screen.queryByTestId("webhook-path-invalid")).toBeNull();
+  fireEvent.change(screen.getByTestId("webhook-public-id"), {
+    target: { value: "Another_Invalid_Path" },
+  });
+  expect(screen.queryByTestId("webhook-path-legacy")).toBeNull();
+  expect(screen.getByTestId("webhook-path-invalid")).toBeDefined();
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
+
+  fireEvent.change(screen.getByTestId("webhook-public-id"), { target: { value: legacyPath } });
+  fireEvent.click(screen.getByTestId("webhook-start"));
+  await screen.findByText("已开启接收。");
+  const startCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+  );
+  expect(JSON.parse(String(startCall?.[1]?.body))).toEqual({
+    enabled: true,
+    public_id: legacyPath,
+    credential_id: 7,
+  });
+});
+
 it("stops receiving without unlocking an active call or exposing the Token", async () => {
   const adapter = makeAdapter({
     adapter_type: "webhook",

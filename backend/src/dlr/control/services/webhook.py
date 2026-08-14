@@ -43,7 +43,11 @@ from sqlalchemy.orm import Session
 from dlr.common.config import settings
 from dlr.control.models import Adapter, Credential, Execution, Worker
 from dlr.control.models.webhook import AdapterWebhook
-from dlr.control.schemas.webhook import WebhookResponse, WebhookUpsert
+from dlr.control.schemas.webhook import (
+    WEBHOOK_PUBLIC_ID_PATTERN,
+    WebhookResponse,
+    WebhookUpsert,
+)
 from dlr.control.security import _bearer_token
 from dlr.control.services import adapter_runtime, worker_availability
 from dlr.control.services.adapter import (
@@ -57,6 +61,7 @@ logger = logging.getLogger("dlr.control.webhook")
 
 # The single Credential field a Webhook authenticates against.
 WEBHOOK_CREDENTIAL_TYPE = "token"
+WEBHOOK_PUBLIC_ID_RE = re.compile(WEBHOOK_PUBLIC_ID_PATTERN)
 
 
 def _reject_non_standard_constant(name: str) -> float:
@@ -179,6 +184,16 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
         or data.credential_id != webhook.credential_id
         or data.enabled != webhook.enabled
     )
+    if (
+        data.public_id != webhook.public_id
+        and WEBHOOK_PUBLIC_ID_RE.fullmatch(data.public_id) is None
+    ):
+        raise domain_error(
+            422,
+            "webhook_path_invalid",
+            "Webhook path must use 3-64 lowercase letters, digits or hyphens "
+            "and start with a letter or digit",
+        )
     if adapter_runtime.adapter_runtime_locked(session, adapter):
         disable_only = (
             webhook.enabled
@@ -191,7 +206,9 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
 
     credential = None
     if data.credential_id is not None:
-        credential = session.get(Credential, data.credential_id)
+        credential = session.scalar(
+            select(Credential).where(Credential.id == data.credential_id).with_for_update()
+        )
         if credential is None:
             raise domain_error(404, "credential_not_found", "Credential not found")
         if credential.type != WEBHOOK_CREDENTIAL_TYPE:

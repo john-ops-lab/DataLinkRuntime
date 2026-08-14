@@ -167,9 +167,7 @@ with SessionLocal() as session:
         column["name"]: column for column in inspector.get_columns("adapter_webhooks")
     }
     assert webhook_columns["credential_id"]["nullable"] is True
-    webhook_indexes = {
-        index["name"]: index for index in inspector.get_indexes("adapter_webhooks")
-    }
+    webhook_indexes = {index["name"]: index for index in inspector.get_indexes("adapter_webhooks")}
     assert "uq_adapter_webhooks_enabled_public_id" in webhook_indexes
 
 # A stored-online Worker whose heartbeat expired is unavailable without its

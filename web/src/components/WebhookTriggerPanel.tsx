@@ -16,6 +16,9 @@ function errorMessage(error: unknown, publicId: string): string {
     if (error.code === "webhook_credential_type_invalid") {
       return "Webhook 只能绑定 token 类型的凭据";
     }
+    if (error.code === "webhook_path_invalid") {
+      return "Webhook 路径只允许 3–64 位小写字母、数字和连字符，且必须以字母或数字开头。";
+    }
     return `${error.message} (${error.code})`;
   }
   return "请求失败";
@@ -89,6 +92,12 @@ export default function WebhookTriggerPanel(props: Props) {
   // Stop, which are represented by adapter.runtime_locked.
   const runtimeLocked = enabled || props.adapter.runtime_locked === true;
   const pathValid = PATH_PATTERN.test(publicId);
+  // M5.3 generated token_urlsafe paths that may contain uppercase letters or
+  // underscores. Preserve an unchanged legacy URL so an upgraded Webhook can
+  // still Stop/Start; once edited, the final path contract applies.
+  const unchangedLegacyPath =
+    saved !== null && saved.public_id === publicId && !pathValid;
+  const pathAcceptable = pathValid || unchangedLegacyPath;
   const dirty =
     saved !== null &&
     (saved.public_id !== publicId ||
@@ -109,7 +118,7 @@ export default function WebhookTriggerPanel(props: Props) {
   const fullUrl = gatewayPrefix + publicId;
 
   async function saveConfiguration() {
-    if (!canConfigure || !pathValid || workerId === null) return;
+    if (!canConfigure || !pathAcceptable || workerId === null) return;
     setSaving(true);
     setNotice(null);
     props.onError(null);
@@ -205,8 +214,16 @@ export default function WebhookTriggerPanel(props: Props) {
           <Typography.Text type="secondary">
             系统已自动生成随机地址，也可以改成便于识别的路径，例如 receive-sys1-data。
           </Typography.Text>
-          {!pathValid && (
+          {!pathValid && !unchangedLegacyPath && (
             <Alert type="error" showIcon data-testid="webhook-path-invalid" message="只允许 3–64 位小写字母、数字和连字符，且必须以字母或数字开头。" />
+          )}
+          {unchangedLegacyPath && (
+            <Alert
+              type="warning"
+              showIcon
+              data-testid="webhook-path-legacy"
+              message="这是升级前创建的兼容地址；未修改时可继续启停。编辑后必须使用小写字母、数字和连字符。"
+            />
           )}
           <Input data-testid="webhook-url" readOnly value={fullUrl} onFocus={(event) => event.target.select()} />
         </div>
@@ -245,7 +262,7 @@ export default function WebhookTriggerPanel(props: Props) {
           <Button
             data-testid="webhook-save"
             loading={saving}
-            disabled={!canConfigure || !pathValid || workerId === null || !dirty}
+            disabled={!canConfigure || !pathAcceptable || workerId === null || !dirty}
             onClick={() => void saveConfiguration()}
           >保存运行设置</Button>
           {enabled ? (

@@ -51,7 +51,5 @@ def downgrade() -> None:
         "UPDATE adapter_webhooks w SET public_id = substr(md5(w.id::text), 1, 32) "
         "FROM duplicates d WHERE w.id = d.id AND d.n > 1"
     )
-    op.create_unique_constraint(
-        "adapter_webhooks_public_id_key", "adapter_webhooks", ["public_id"]
-    )
+    op.create_unique_constraint("adapter_webhooks_public_id_key", "adapter_webhooks", ["public_id"])
     op.alter_column("adapter_webhooks", "credential_id", nullable=False)
