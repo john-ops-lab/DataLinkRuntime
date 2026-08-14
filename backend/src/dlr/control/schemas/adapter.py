@@ -39,8 +39,8 @@ class AdapterCreate(BaseModel):
 class AdapterUpdate(BaseModel):
     """Request body for PATCH /api/adapters/{adapter_id}.
 
-    Only metadata and the runtime Worker pointer are editable; adapter type,
-    language, Revision pointers and timestamps are intentionally absent.
+    Only metadata, the Task run mode and the runtime Worker pointer are editable;
+    adapter type, language, Revision pointers and timestamps are intentionally absent.
     Sending ``runtime_worker_id: null`` explicitly clears it
     (omitting the field leaves it unchanged).
     """
@@ -50,6 +50,7 @@ class AdapterUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     runtime_worker_id: int | None = None
+    run_mode: Literal["manual", "schedule"] | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -57,6 +58,13 @@ class AdapterUpdate(BaseModel):
         if value is None:
             return None
         return _validate_name(value)
+
+    @field_validator("run_mode", mode="before")
+    @classmethod
+    def reject_null_run_mode(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("run_mode must be manual or schedule")
+        return value
 
 
 class VersionCreate(BaseModel):
@@ -91,6 +99,7 @@ class AdapterResponse(BaseModel):
     description: str
     language: str
     adapter_type: str
+    run_mode: str
     latest_version_id: int | None
     runtime_worker_id: int | None
     runtime_locked: bool = False

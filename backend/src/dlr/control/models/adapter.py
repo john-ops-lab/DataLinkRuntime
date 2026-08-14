@@ -34,6 +34,10 @@ class Adapter(Base):
             "adapter_type IN ('task', 'webhook')",
             name="ck_adapters_adapter_type",
         ),
+        CheckConstraint(
+            "run_mode IN ('manual', 'schedule')",
+            name="ck_adapters_run_mode",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -45,6 +49,11 @@ class Adapter(Base):
     language: Mapped[str] = mapped_column(String(16), nullable=False)
     # Fixed when the Adapter is created; no generic Trigger framework exists.
     adapter_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Task user model: manual by default; schedule mode reveals and governs
+    # the singleton AdapterSchedule configuration.
+    run_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="manual", server_default=text("'manual'")
+    )
     # Circular reference with adapter_versions: these foreign keys use
     # use_alter so DDL is emitted after both tables exist.
     latest_version_id: Mapped[int | None] = mapped_column(

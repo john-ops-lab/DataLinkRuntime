@@ -102,6 +102,7 @@ def test_create_adapter_success(api_client: TestClient) -> None:
     assert body["description"] == "sync cmdb"
     assert body["language"] == "python"
     assert body["adapter_type"] == "task"
+    assert body["run_mode"] == "manual"
     assert body["latest_version_id"] is None
     assert body["created_at"]
     assert body["updated_at"]
@@ -191,6 +192,42 @@ def test_patch_adapter_updates_metadata(api_client: TestClient) -> None:
     assert body["name"] == "after"
     assert body["description"] == "new description"
     assert body["updated_at"] >= created["updated_at"]
+
+
+def test_task_run_mode_can_change_while_unlocked(api_client: TestClient) -> None:
+    created = create_adapter(api_client, name="scheduled-task")
+
+    response = api_client.patch(
+        f"/api/adapters/{created['id']}",
+        json={"run_mode": "schedule"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["run_mode"] == "schedule"
+
+
+def test_webhook_rejects_task_run_mode_change(api_client: TestClient) -> None:
+    created = create_adapter(api_client, name="hook", adapter_type="webhook")
+
+    response = api_client.patch(
+        f"/api/adapters/{created['id']}",
+        json={"run_mode": "schedule"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "adapter_type_mismatch"
+
+
+def test_task_run_mode_rejects_null(api_client: TestClient) -> None:
+    created = create_adapter(api_client, name="null-mode")
+
+    response = api_client.patch(
+        f"/api/adapters/{created['id']}",
+        json={"run_mode": None},
+    )
+
+    assert response.status_code == 422
+    assert api_client.get(f"/api/adapters/{created['id']}").json()["run_mode"] == "manual"
 
 
 def test_patch_adapter_name_conflict(api_client: TestClient) -> None:
@@ -343,6 +380,60 @@ def test_publish_and_production_routes_are_removed(api_client: TestClient) -> No
     )
     assert api_client.post(f"/api/adapters/{created['id']}/production/start").status_code == 404
     assert api_client.post(f"/api/adapters/{created['id']}/unpublish").status_code == 404
+
+
+def test_clone_copies_task_runtime_and_schedule_configuration_disabled(
+    api_client: TestClient,
+) -> None:
+    source = create_adapter(api_client, name="source")
+    save_version(
+        api_client,
+        source["id"],
+        code="def handle(context, input):\n    return {'source': input}\n",
+        requirements="requests==2.32.4",
+        runtime_config={"timeout": 30},
+    )
+    mode = api_client.patch(
+        f"/api/adapters/{source['id']}",
+        json={"run_mode": "schedule"},
+    )
+    assert mode.status_code == 200, mode.text
+    configured = api_client.put(
+        f"/api/adapters/{source['id']}/schedule",
+        json={
+            "enabled": True,
+            "cron": "*/5 * * * *",
+            "timezone": "Asia/Shanghai",
+            "input": {"kind": "sync"},
+        },
+    )
+    assert configured.status_code == 200, configured.text
+
+    cloned = api_client.post(
+        f"/api/adapters/{source['id']}/clone",
+        json={"name": "source-copy"},
+    )
+
+    assert cloned.status_code == 201, cloned.text
+    body = cloned.json()
+    assert body["run_mode"] == "schedule"
+    assert body["runtime_worker_id"] == mode.json()["runtime_worker_id"]
+    assert body["running_execution_id"] is None
+    versions = api_client.get(f"/api/adapters/{body['id']}/versions").json()
+    assert [version["seq"] for version in versions] == [1]
+    detail = api_client.get(f"/api/adapters/{body['id']}/versions/{versions[0]['id']}").json()
+    assert detail["requirements"] == "requests==2.32.4"
+    assert detail["runtime_config"] == {"timeout": 30}
+    schedule = api_client.get(f"/api/adapters/{body['id']}/schedule").json()
+    assert schedule == {
+        "adapter_id": body["id"],
+        "enabled": False,
+        "cron": "*/5 * * * *",
+        "timezone": "Asia/Shanghai",
+        "input": {"kind": "sync"},
+        "next_run_at": None,
+        "updated_at": schedule["updated_at"],
+    }
 
 
 # --- Concurrency contract ---------------------------------------------------

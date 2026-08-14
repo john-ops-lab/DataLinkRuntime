@@ -151,6 +151,12 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     if adapter.adapter_type != "task":
         raise domain_error(409, "adapter_type_mismatch", "Only task Adapters support Schedule")
+    if adapter.run_mode != "schedule":
+        raise domain_error(
+            409,
+            "schedule_mode_required",
+            "Switch the Task to schedule mode before configuring Schedule",
+        )
     _require_not_archived(adapter)
     try:
         cron = validate_cron(data.cron)
@@ -166,6 +172,18 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
             413,
             "execution_input_too_large",
             f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
+        )
+    if data.enabled and adapter.latest_version_id is None:
+        raise domain_error(
+            409,
+            "adapter_has_no_version",
+            "Save a Revision before enabling Schedule",
+        )
+    if data.enabled and adapter.runtime_worker_id is None:
+        raise domain_error(
+            409,
+            "runtime_worker_required",
+            "Select a runtime Worker before enabling Schedule",
         )
     schedule = session.scalar(
         select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter_id).with_for_update()
@@ -206,7 +224,11 @@ def _structural_gate_failure(session: Session, adapter: Adapter, schedule: Adapt
     advancing the cursor, never queued. Disable / edit additionally
     re-base the cursor, so their closed windows are never caught up.
     """
-    if adapter.archived_at is not None or adapter.adapter_type != "task":
+    if (
+        adapter.archived_at is not None
+        or adapter.adapter_type != "task"
+        or adapter.run_mode != "schedule"
+    ):
         return True
     if adapter.latest_version_id is None or adapter.runtime_worker_id is None:
         return True

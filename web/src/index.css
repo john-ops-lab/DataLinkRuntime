@@ -1003,6 +1003,67 @@ body {
   gap: 4px;
 }
 
+/* --- M5.4.2 Task 运行台：工业化、信息优先的三段控制面 ------------------- */
+
+.task-run-settings {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 14px;
+  padding: 14px;
+  align-items: start;
+}
+
+.task-runtime-config,
+.task-schedule-config,
+.task-run-once {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(22, 119, 255, 0.05) 1px, transparent 1px) 0 0 / 24px 24px,
+    #fff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.task-runtime-config {
+  grid-row: span 2;
+  border-top: 3px solid #1677ff;
+}
+
+.task-schedule-config {
+  border-top: 3px solid #d48806;
+}
+
+.task-run-once {
+  border-top: 3px solid #389e0d;
+}
+
+.task-run-settings .schedule-form,
+.task-run-settings .ant-space-vertical {
+  width: 100%;
+}
+
+.task-run-once > .settings-field {
+  margin-bottom: 12px;
+}
+
+.task-run-once .execution-body {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--dlr-border);
+}
+
+@media (max-width: 1200px) {
+  .task-run-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .task-runtime-config {
+    grid-row: auto;
+  }
+}
+
 .settings-field-label {
   font-size: 0.78rem;
   color: var(--dlr-text-secondary);

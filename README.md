@@ -6,11 +6,12 @@
 - 总体架构：[docs/architecture.md](docs/architecture.md)
 - M4 AI Editor Spec：[docs/specs/m4-ai-editor.md](docs/specs/m4-ai-editor.md)
 
-当前已完成 M4：Python / JavaScript / Java Adapter 共享同一套不可变 Version、
-Test / Publish / Start / Stop、Secret、实时日志与 Execution 历史语义，并可通过右侧
+当前已完成 M5.4.2：Python / JavaScript / Java Adapter 共享不可变 Revision、
+Secret、实时日志与 Execution 历史语义，并可通过右侧
 AI Assistant 基于当前 Working Copy 生成完整 Candidate。Candidate 必须经管理员查看 Diff
-并明确应用，应用只更新浏览器 Working Copy；Save / Test / Publish / Start / Stop 仍全部由
-管理员执行。官方 Worker 镜像包含 Python 3.13 / uv、Node.js LTS / npm、JDK 21 / Maven，
+并明确应用，应用只更新浏览器 Working Copy；Save / Run Once / Schedule 仍全部由
+管理员执行。Task Adapter 默认手动运行，也可切换到定时运行；两种入口始终执行最新已保存
+Revision，并固定到配置的运行 Worker。官方 Worker 镜像包含 Python 3.13 / uv、Node.js LTS / npm、JDK 21 / Maven，
 并按实际可用 Runtime 自动上报 capability。
 M4.1 进一步以心跳超时派生 Worker 的有效在线状态，避免 Test / Start 选择已经失联的
 Worker。
@@ -145,15 +146,12 @@ npm run build
 ## 冒烟测试
 
 构建并启动全部容器（隔离的 compose project 与独立端口），在真实 PostgreSQL
-上执行 Alembic 迁移后等待全部服务健康，验证 `/api/health` 链路与 401 认证拒绝，
-带 Admin Token 执行 Adapter 管理、执行与 M3.2 生产生命周期回归，再对 Python、
-JavaScript、Java 分别真实执行 `Save → Test → Publish → Start → Stop`（M5.1：Start 开启生产入口并锁定版本，不再创建 Execution）。
-M5.2 链路真实跑通 `Save → Test → Publish → 配置短周期 Schedule → Start → Start 不执行 → 到点 schedule Execution → Worker succeeded`，
-并验证 Publish 新版本后、未 Stop/Start 前下一次 Schedule 仍执行锁定的旧 Production Version。
-M5.3 链路真实跑通 `创建 Token Credential → 配置 Webhook → Save → Test → Publish → Start → 外部 POST /api/hooks/{public_id} → 202 → 异步执行锁定的 Production Version → Worker succeeded`，
-并验证未知 / 未授权 / 已禁用 / Stop 后的调用分别以稳定错误码拒绝；Publish 新版本后、
-未 Stop/Start 前 Webhook 仍执行锁定的旧 Production Version，Stop → Start 后锁定新版本
-并实际命中 v2 输出。M4 链路
+上执行 Alembic 迁移后等待全部服务健康，验证 `/api/health` 链路与 401 认证拒绝。
+M5.4.2 Task 主链路真实跑通 `Task create → Save + Worker → Run Once → succeeded →
+切换定时运行 → 配置短周期 Schedule → enable → schedule Execution succeeded → disable`，
+并验证 Python / JavaScript / Java 的真实基础执行均输出“任务开始/任务结束”、Run Once 与
+Schedule 都固定 latest Revision/运行 Worker、统一活跃锁和 Clone 后 Schedule disabled。
+Webhook 基础链路继续验证 Token 鉴权、异步执行、禁用与 latest Revision；M4 链路
 额外启动一个临时、仅位于 smoke 网络中的 OpenAI-compatible fake Provider，验证设置、
 模型刷新、连接测试与三语言 AI Assist，并证明 Version / Execution / published / production
 事实未改变；不访问任何公网 AI，也不把 fake Provider 加入正式 Compose 拓扑。整个过程

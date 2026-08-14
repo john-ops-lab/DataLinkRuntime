@@ -36,7 +36,12 @@ def setup_task(client: TestClient, name: str) -> tuple[dict, dict, dict]:
     worker = register_worker(client, name=f"{name}-worker")
     adapter = create_adapter(client, name=name, adapter_type="task")
     version = save_version(client, adapter["id"])
-    return adapter, version, worker
+    response = client.patch(
+        f"/api/adapters/{adapter['id']}",
+        json={"run_mode": "schedule"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json(), version, worker
 
 
 def set_cursor(session_factory: sessionmaker[Session], adapter_id: int, at: datetime) -> None:
@@ -83,6 +88,10 @@ def test_schedule_is_task_only_and_get_before_configuration_is_404(
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "adapter_type_mismatch"
 
+    response = put_schedule(api_client, task["id"])
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "schedule_mode_required"
+
 
 def test_schedule_validation_and_input_cap(
     api_client: TestClient,
@@ -95,6 +104,44 @@ def test_schedule_validation_and_input_cap(
     too_large = put_schedule(api_client, adapter["id"], input="x" * 100)
     assert too_large.status_code == 413
     assert get_schedule(api_client, adapter["id"]).status_code == 404
+
+
+def test_schedule_enable_requires_saved_revision_and_configured_worker(
+    api_client: TestClient,
+) -> None:
+    worker = register_worker(api_client, name="schedule-prerequisite-worker")
+    no_revision = create_adapter(api_client, name="schedule-no-revision", adapter_type="task")
+    configured = api_client.patch(
+        f"/api/adapters/{no_revision['id']}",
+        json={"run_mode": "schedule", "runtime_worker_id": worker["id"]},
+    )
+    assert configured.status_code == 200, configured.text
+
+    rejected = put_schedule(api_client, no_revision["id"])
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == {
+        "code": "adapter_has_no_version",
+        "message": "Save a Revision before enabling Schedule",
+    }
+    assert get_schedule(api_client, no_revision["id"]).status_code == 404
+    assert api_client.get(f"/api/adapters/{no_revision['id']}").json()["runtime_locked"] is False
+
+    no_worker = create_adapter(api_client, name="schedule-no-worker", adapter_type="task")
+    save_version(api_client, no_worker["id"])
+    configured = api_client.patch(
+        f"/api/adapters/{no_worker['id']}",
+        json={"run_mode": "schedule", "runtime_worker_id": None},
+    )
+    assert configured.status_code == 200, configured.text
+
+    rejected = put_schedule(api_client, no_worker["id"])
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == {
+        "code": "runtime_worker_required",
+        "message": "Select a runtime Worker before enabling Schedule",
+    }
+    assert get_schedule(api_client, no_worker["id"]).status_code == 404
+    assert api_client.get(f"/api/adapters/{no_worker['id']}").json()["runtime_locked"] is False
 
 
 def test_enabled_schedule_locks_configuration_but_can_be_disabled(
@@ -196,6 +243,65 @@ def test_active_manual_execution_holds_schedule_without_creating_second_run(
     assert (
         datetime.fromisoformat(get_schedule(api_client, adapter["id"]).json()["next_run_at"]) == due
     )
+
+
+def test_disable_keeps_runtime_locked_until_active_manual_execution_finishes(
+    api_client: TestClient,
+) -> None:
+    adapter, _, _ = setup_task(api_client, "schedule-disable-active")
+    configured = put_schedule(api_client, adapter["id"])
+    assert configured.status_code == 200, configured.text
+    next_run_at = configured.json()["next_run_at"]
+
+    manual = api_client.post(
+        f"/api/adapters/{adapter['id']}/executions",
+        json={"input": {"source": "manual"}},
+    )
+    assert manual.status_code == 202, manual.text
+    unchanged = get_schedule(api_client, adapter["id"]).json()
+    assert unchanged["enabled"] is True
+    assert unchanged["next_run_at"] == next_run_at
+
+    disabled = put_schedule(api_client, adapter["id"], enabled=False)
+    assert disabled.status_code == 200, disabled.text
+    state = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert state["runtime_locked"] is True
+    assert state["running_execution_id"] == manual.json()["id"]
+
+    save = api_client.post(
+        f"/api/adapters/{adapter['id']}/versions",
+        json={"code": "# must remain locked\n"},
+    )
+    assert save.status_code == 409
+    assert save.json()["detail"]["code"] == "adapter_runtime_locked"
+    mode = api_client.patch(
+        f"/api/adapters/{adapter['id']}",
+        json={"run_mode": "manual"},
+    )
+    assert mode.status_code == 409
+    assert mode.json()["detail"]["code"] == "adapter_runtime_locked"
+
+    cancelled = api_client.post(f"/api/executions/{manual.json()['id']}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    state = api_client.get(f"/api/adapters/{adapter['id']}").json()
+    assert state["runtime_locked"] is False
+
+
+def test_active_schedule_execution_rejects_manual_run_once(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter, _, _ = setup_task(api_client, "schedule-run-once-busy")
+    assert put_schedule(api_client, adapter["id"]).status_code == 200
+    set_cursor(session_factory, adapter["id"], BASE - timedelta(minutes=1))
+    with session_factory() as session:
+        assert scheduler_tick(session, now=BASE) == 1
+
+    manual = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+
+    assert manual.status_code == 409
+    assert manual.json()["detail"]["code"] == "adapter_busy"
 
 
 def test_offline_worker_holds_due_point_then_recovers_once(

@@ -2,6 +2,7 @@
 
 export type AdapterLanguage = "python" | "javascript" | "java";
 export type AdapterType = "task" | "webhook";
+export type TaskRunMode = "manual" | "schedule";
 
 export interface Adapter {
   id: number;
@@ -9,6 +10,7 @@ export interface Adapter {
   description: string;
   language: AdapterLanguage;
   adapter_type: AdapterType;
+  run_mode: TaskRunMode;
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;
@@ -53,6 +55,7 @@ export interface Execution {
   adapter_id: number;
   version_id: number;
   worker_id: number | null;
+  target_worker_id: number | null;
   trigger: string;
   /** M5.2: the planned point for trigger=schedule; null for other triggers. */
   scheduled_for: string | null;

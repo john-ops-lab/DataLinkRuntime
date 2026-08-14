@@ -52,6 +52,35 @@ function catalogSubtitle(
   versionSeqById: Map<number, number>,
   workersById: Map<number, Worker>,
 ): { primary: string; attention: string[]; full: string } {
+  if (adapter.adapter_type === "task") {
+    const attention: string[] = [];
+    const mode = adapter.run_mode === "schedule" ? "定时运行" : "手动运行";
+    const runtimeFact =
+      adapter.running_execution_id != null
+        ? `Execution #${adapter.running_execution_id} 运行中`
+        : adapter.runtime_locked
+          ? "定时运行中"
+          : "空闲";
+    const workerId = adapter.runtime_worker_id;
+    if (workerId != null) {
+      const worker = workersById.get(workerId);
+      if (worker !== undefined && worker.status !== "online") {
+        attention.push("Worker 离线");
+      }
+    }
+    const primary = `${LANGUAGE_LABELS[adapter.language]} · ${mode} · ${runtimeFact}`;
+    const fullParts = [primary, ...attention];
+    if (workerId == null) {
+      fullParts.push("Worker 未配置");
+    } else {
+      const worker = workersById.get(workerId);
+      fullParts.push(worker === undefined ? `Worker #${workerId}` : `Worker ${worker.name}`);
+    }
+    if (adapter.description.trim() !== "") {
+      fullParts.push(adapter.description.trim());
+    }
+    return { primary, attention, full: fullParts.join(" · ") };
+  }
   const displayState = productionDisplayState(adapter);
   const runningVersionId = productionRunningVersionId(adapter);
   const attention: string[] = [];
@@ -228,6 +257,12 @@ export default function AdapterCatalog({
         ) : (
           visible.map((adapter) => {
             const displayState = productionDisplayState(adapter);
+            const taskState =
+              adapter.running_execution_id != null
+                ? "running"
+                : adapter.runtime_locked
+                  ? "running"
+                  : "stopped";
             const subtitle = catalogSubtitle(adapter, versionSeqById, workersById);
             return (
               <button
@@ -242,8 +277,12 @@ export default function AdapterCatalog({
               >
                 <span className="catalog-item-name">
                   <span
-                    className={`catalog-status-dot catalog-status-${displayState}`}
-                    title={`生产状态：${productionStateLabel(displayState)}`}
+                    className={`catalog-status-dot catalog-status-${adapter.adapter_type === "task" ? taskState : displayState}`}
+                    title={
+                      adapter.adapter_type === "task"
+                        ? `Task 状态：${adapter.running_execution_id != null ? "运行中" : adapter.runtime_locked ? "定时运行中" : "空闲"}`
+                        : `生产状态：${productionStateLabel(displayState)}`
+                    }
                   />
                   {adapter.name}
                 </span>

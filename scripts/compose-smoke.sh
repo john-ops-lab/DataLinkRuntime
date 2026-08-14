@@ -109,7 +109,7 @@ while ! docker compose exec -T -e AI_FAKE_BASE_URL control python -c \
   elapsed=$((elapsed + 2))
 done
 
-echo "==> running M5.4.1 lifecycle and regression chain"
+echo "==> running M5.4.2 Task lifecycle and regression chain"
 docker compose exec -T \
   -e DLR_ADMIN_TOKEN \
   -e DLR_WORKER_TOKEN \

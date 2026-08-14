@@ -46,6 +46,44 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
     selectedWorker === undefined ||
     adapter === null ||
     selectedWorker.capabilities.includes(adapter.language);
+  if (adapter?.adapter_type === "task") {
+    return (
+      <Drawer
+        title="Task Adapter 设置"
+        width={400}
+        open={props.open}
+        destroyOnHidden
+        onClose={props.onClose}
+      >
+        <div className="settings-form">
+          <label className="settings-field">
+            <span className="settings-field-label">名称</span>
+            <Input data-testid="adapter-name" value={props.name} disabled={props.busy} onChange={(event) => props.onNameChange(event.target.value)} />
+          </label>
+          <label className="settings-field">
+            <span className="settings-field-label">开发语言</span>
+            <Input data-testid="adapter-language" value={LANGUAGE_LABELS[adapter.language]} disabled />
+          </label>
+          <label className="settings-field">
+            <span className="settings-field-label">描述</span>
+            <Input data-testid="adapter-description" value={props.description} disabled={props.busy} onChange={(event) => props.onDescriptionChange(event.target.value)} />
+          </label>
+          <Button type="primary" data-testid="update-details" disabled={props.busy || !props.contentReady || archived} onClick={props.onUpdate}>
+            更新信息
+          </Button>
+          <Divider />
+          <Space direction="vertical" className="settings-lifecycle-actions">
+            <Button data-testid="clone-adapter" disabled={props.busy} onClick={props.onClone}>复制 Adapter</Button>
+            <Button danger data-testid="delete-adapter" disabled={props.busy || adapter.runtime_locked === true} onClick={props.onDelete}>删除 Adapter</Button>
+          </Space>
+          {adapter.runtime_locked === true && (
+            <Alert type="warning" showIcon message="定时启用或 Execution 活跃期间不能删除 Adapter。" />
+          )}
+          <p className="settings-danger-hint">删除会将 Adapter 标记为只读并保留 Revision 与 Execution 历史。</p>
+        </div>
+      </Drawer>
+    );
+  }
   return (
     <Drawer
       title="Adapter 设置"
