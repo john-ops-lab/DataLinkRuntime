@@ -55,6 +55,7 @@ export default function ExecutionHistoryPanel(props: {
   adapterId: number;
   /** Start 成功后自动打开该 Execution 的详情抽屉（含实时日志）。 */
   autoOpenExecutionId?: number | null;
+  recordLabel?: "执行记录" | "调用记录";
 }) {
   const [items, setItems] = useState<ExecutionSummary[]>([]);
   const [nextBeforeId, setNextBeforeId] = useState<number | null>(null);
@@ -238,7 +239,7 @@ export default function ExecutionHistoryPanel(props: {
           dataSource={items}
           pagination={false}
           scroll={{ x: 836 }}
-          locale={{ emptyText: <Empty description="暂无执行记录" /> }}
+          locale={{ emptyText: <Empty description={`暂无${props.recordLabel ?? "执行记录"}`} /> }}
           onRow={(summary) => ({
             onClick: () => void openExecution(summary.id, summary),
             onKeyDown: (event) => {

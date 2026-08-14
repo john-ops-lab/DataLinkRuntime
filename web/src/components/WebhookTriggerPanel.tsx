@@ -1,277 +1,267 @@
-/** 触发器 Tab：M5.3 Webhook 配置区（与 Schedule 区域并列）。 */
+/** Webhook Adapter final runtime settings: URL, token, Worker and receive state. */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Button, Input, Select, Space, Spin, Switch, Typography } from "antd";
+import { Alert, Button, Input, Select, Space, Spin, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
-import type { AdapterWebhook, Credential } from "../types";
+import type { Adapter, AdapterWebhook, Credential, Worker } from "../types";
 
-/** 后端校验错误 code → 稳定的中文说明。 */
-function validationMessage(error: ApiError): string {
-  if (error.code === "webhook_credential_type_invalid") {
-    return "Webhook 只能绑定 token 类型的凭据";
+const PATH_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
+
+function errorMessage(error: unknown, publicId: string): string {
+  if (error instanceof ApiError) {
+    if (error.code === "webhook_path_in_use") {
+      return `Webhook 地址 ${publicId} 当前正在被另一个运行中的 Adapter 使用，请先停止旧 Adapter 后再启动当前 Adapter。`;
+    }
+    if (error.code === "webhook_credential_type_invalid") {
+      return "Webhook 只能绑定 token 类型的凭据";
+    }
+    return `${error.message} (${error.code})`;
   }
-  if (error.code === "credential_not_found") {
-    return "所选凭据不存在，请重新选择";
-  }
-  if (error.code === "adapter_archived") {
-    return "Adapter 已归档，Webhook 为只读";
-  }
-  return `${error.message} (${error.code})`;
+  return "请求失败";
 }
 
-interface WebhookTriggerPanelProps {
-  adapterId: number;
-  productionState: "idle" | "running" | "stopped";
-  /** 已归档 Adapter 只读：可查看配置但禁用编辑与保存（与服务端 409 adapter_archived 对齐）。 */
-  archived: boolean;
+interface Props {
+  adapter: Adapter;
+  workers: Worker[];
+  workersLoading: boolean;
+  workersError: string | null;
+  onAdapterChange: (adapter: Adapter) => void;
+  onError: (message: string | null) => void;
 }
 
-export default function WebhookTriggerPanel(props: WebhookTriggerPanelProps) {
+export default function WebhookTriggerPanel(props: Props) {
+  const adapterId = props.adapter.id;
+  const onAdapterChange = props.onAdapterChange;
+  const onError = props.onError;
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [copyError, setCopyError] = useState<string | null>(null);
-
+  const [changingState, setChangingState] = useState(false);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [saved, setSaved] = useState<AdapterWebhook | null>(null);
-  const [enabled, setEnabled] = useState(false);
+  const [publicId, setPublicId] = useState("");
   const [credentialId, setCredentialId] = useState<number | null>(null);
+  const [workerId, setWorkerId] = useState<number | null>(props.adapter.runtime_worker_id ?? null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   const tokenCredentials = useMemo(
     () => credentials.filter((credential) => credential.type === "token"),
     [credentials],
   );
+  const compatibleWorkers = props.workers.filter((worker) =>
+    worker.capabilities.includes(props.adapter.language),
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
-    setLoadError(null);
+    onError(null);
     try {
-      const [credentialList, webhookResult] = await Promise.allSettled([
+      const [credentialList, webhook, adapter] = await Promise.all([
         api.listCredentials(),
-        api.getWebhook(props.adapterId),
+        api.getWebhook(adapterId),
+        api.getAdapter(adapterId),
       ]);
-      // 凭据列表加载失败必须明确报错：不得把 Secret Store 503 等失败
-      // 伪装成「没有 token 凭据」。
-      if (credentialList.status === "rejected") {
-        throw credentialList.reason;
-      }
-      setCredentials(credentialList.value);
-      if (webhookResult.status === "fulfilled") {
-        const webhook = webhookResult.value;
-        setSaved(webhook);
-        setEnabled(webhook.enabled);
-        setCredentialId(webhook.credential_id);
-        return;
-      }
-      // 未配置是合法初始状态：用默认值初始化表单，不当作错误展示。
-      if (
-        webhookResult.reason instanceof ApiError &&
-        webhookResult.reason.code === "webhook_not_configured"
-      ) {
-        setSaved(null);
-        setEnabled(false);
-        setCredentialId(null);
-        return;
-      }
-      throw webhookResult.reason;
+      setCredentials(credentialList);
+      setSaved(webhook);
+      setPublicId(webhook.public_id);
+      setCredentialId(webhook.credential_id);
+      setWorkerId(adapter.runtime_worker_id ?? null);
+      onAdapterChange(adapter);
     } catch (error) {
-      setLoadError(
-        error instanceof ApiError
-          ? `Webhook 配置加载失败：${error.message} (${error.code})`
-          : "Webhook 配置加载失败：请求失败",
-      );
+      onError(errorMessage(error, ""));
     } finally {
       setLoading(false);
     }
-  }, [props.adapterId]);
+  }, [adapterId, onAdapterChange, onError]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- 挂载时拉取 Webhook 配置的初始加载是有意的异步同步
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial server snapshot
     void load();
-  }, [load]);
+    // publicId changes are local edits and must not reload the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adapterId]);
 
-  async function handleSave() {
-    if (saving || credentialId === null) {
-      return;
-    }
+  const archived = !!props.adapter.archived_at;
+  const enabled = saved?.enabled === true;
+  // Treat enabled as locked immediately, even before the follow-up Adapter
+  // refresh returns. The backend remains authoritative for active calls after
+  // Stop, which are represented by adapter.runtime_locked.
+  const runtimeLocked = enabled || props.adapter.runtime_locked === true;
+  const pathValid = PATH_PATTERN.test(publicId);
+  const dirty =
+    saved !== null &&
+    (saved.public_id !== publicId ||
+      saved.credential_id !== credentialId ||
+      (props.adapter.runtime_worker_id ?? null) !== workerId);
+  const canConfigure = !archived && !runtimeLocked && !saving && !changingState;
+  const startBlockedReason =
+    props.adapter.latest_version_id === null
+      ? "请先保存 Revision。"
+      : workerId === null
+        ? "请先选择并保存运行节点。"
+        : credentialId === null
+          ? "请先选择并保存 Token Credential。"
+          : dirty
+            ? "运行设置有未保存修改，请先保存。"
+            : null;
+  const gatewayPrefix = `${window.location.origin}/api/hooks/`;
+  const fullUrl = gatewayPrefix + publicId;
+
+  async function saveConfiguration() {
+    if (!canConfigure || !pathValid || workerId === null) return;
     setSaving(true);
-    setSaveError(null);
     setNotice(null);
+    props.onError(null);
     try {
-      const stored = await api.putWebhook(props.adapterId, {
-        enabled,
+      const adapter = await api.updateAdapter(adapterId, { runtime_worker_id: workerId });
+      const webhook = await api.putWebhook(adapterId, {
+        enabled: false,
+        public_id: publicId,
         credential_id: credentialId,
       });
-      setSaved(stored);
-      setEnabled(stored.enabled);
-      setCredentialId(stored.credential_id);
-      setNotice("Webhook 已保存；地址保持稳定，外部系统可立即使用。");
+      setSaved(webhook);
+      props.onAdapterChange(adapter);
+      setNotice("运行设置已保存。");
     } catch (error) {
-      setSaveError(error instanceof ApiError ? validationMessage(error) : "请求失败");
+      props.onError(errorMessage(error, publicId));
     } finally {
       setSaving(false);
     }
   }
 
-  async function handleCopy() {
-    if (saved === null) {
-      return;
+  async function setReceiving(nextEnabled: boolean) {
+    if (saved === null || changingState) return;
+    setChangingState(true);
+    setNotice(null);
+    props.onError(null);
+    try {
+      const webhook = await api.putWebhook(adapterId, {
+        enabled: nextEnabled,
+        public_id: saved.public_id,
+        credential_id: saved.credential_id,
+      });
+      setSaved(webhook);
+      // A successful state transition must lock the UI conservatively while
+      // the derived Adapter runtime state is refreshed. If that refresh fails,
+      // Refresh can reconcile without exposing an unsafe edit window.
+      props.onAdapterChange({ ...props.adapter, runtime_locked: true });
+      const adapter = await api.getAdapter(adapterId);
+      props.onAdapterChange(adapter);
+      setNotice(nextEnabled ? "已开启接收。" : "已停止接收；已有调用会继续运行到终态。");
+    } catch (error) {
+      props.onError(errorMessage(error, saved.public_id));
+    } finally {
+      setChangingState(false);
     }
-    const fullUrl = window.location.origin + saved.hook_path;
+  }
+
+  async function copyUrl() {
     setCopyError(null);
     try {
       await navigator.clipboard.writeText(fullUrl);
       setNotice("Webhook 地址已复制到剪贴板。");
     } catch {
-      setCopyError("复制失败：请手动选择地址文本复制。");
+      setCopyError("复制失败，请手动选择完整地址复制。");
     }
   }
 
-  if (loading) {
-    return (
-      <div className="webhook-trigger-panel" data-testid="webhook-loading">
-        <Spin />
-      </div>
-    );
-  }
-
-  // 加载失败时不渲染表单：避免把凭据列表加载失败误显示成
-  // 「尚无 token 类型凭据」的空状态。
-  if (loadError !== null) {
-    return (
-      <div className="webhook-trigger-panel">
-        <Typography.Title level={5}>Webhook（事件触发）</Typography.Title>
-        <Alert type="error" showIcon message={loadError} data-testid="webhook-load-error" />
-      </div>
-    );
+  if (loading || saved === null) {
+    return <div className="webhook-trigger-panel" data-testid="webhook-loading"><Spin /></div>;
   }
 
   return (
-    <div className="webhook-trigger-panel">
-      <Typography.Title level={5}>Webhook（事件触发）</Typography.Title>
-      <Typography.Paragraph type="secondary">
-        一个 Adapter 最多一个 Webhook：外部系统携带 Bearer Token POST JSON 到统一入口，Control
-        校验后立即返回 202 并异步执行；生产入口关闭或存在运行中任务时直接拒绝，不排队。
-      </Typography.Paragraph>
-
-      {props.archived && (
-        <Alert
-          type="warning"
-          showIcon
-          message="Adapter 已归档，Webhook 为只读：可查看配置，但无法编辑或保存。"
-          data-testid="webhook-archived-hint"
-        />
-      )}
-
-      {saved !== null && props.productionState !== "running" && (
-        <Alert
-          type="info"
-          showIcon
-          message="Webhook 已配置，但生产入口当前关闭；外部调用会被拒绝。"
-          data-testid="webhook-production-closed-hint"
-        />
-      )}
-
+    <div className="webhook-trigger-panel" data-testid="webhook-run-settings">
+      <Typography.Title level={5}>运行设置</Typography.Title>
       <Space direction="vertical" size="middle" className="webhook-form">
-        <label className="settings-field">
-          <span className="settings-field-label">启用</span>
-          <Switch
-            data-testid="webhook-enabled"
-            checked={enabled}
-            disabled={props.archived}
-            onChange={(value) => {
-              setEnabled(value);
-              setNotice(null);
-            }}
-          />
-        </label>
-        <label className="settings-field">
-          <span className="settings-field-label">Token 凭据</span>
-          <Select
-            data-testid="webhook-credential"
-            style={{ minWidth: 240 }}
-            placeholder="选择 token 类型凭据"
-            value={credentialId ?? undefined}
-            disabled={props.archived}
-            options={tokenCredentials.map((credential) => ({
-              label: credential.name,
-              value: credential.id,
-            }))}
-            onChange={(value) => {
-              setCredentialId(value);
-              setNotice(null);
-            }}
-          />
-        </label>
-        {tokenCredentials.length === 0 && (
+        <div className="settings-field">
+          <span className="settings-field-label">接收状态</span>
+          <Tag color={enabled ? "green" : "default"}>{enabled ? "接收中" : "已停止"}</Tag>
+        </div>
+        {runtimeLocked && (
           <Alert
             type="warning"
             showIcon
-            message="尚无 token 类型凭据：请先在系统设置中创建一个。"
-            data-testid="webhook-no-token-credential"
+            data-testid="webhook-runtime-locked"
+            message="运行配置已锁定"
+            description={enabled
+              ? "请先停止接收；如果仍有 active Execution，需等待其进入终态后才能修改。"
+              : "已有调用仍在运行；进入终态后刷新即可修改 URL、Token、Worker、代码和依赖。"}
           />
         )}
-
-        {saved !== null && (
-          <>
-            <div className="settings-field">
-              <span className="settings-field-label">Webhook 地址</span>
-              <Space.Compact style={{ width: "100%", maxWidth: 720 }}>
-                <Input
-                  data-testid="webhook-url"
-                  readOnly
-                  value={window.location.origin + saved.hook_path}
-                  onFocus={(event) => event.target.select()}
-                />
-                <Button data-testid="webhook-copy" onClick={() => void handleCopy()}>
-                  复制
-                </Button>
-              </Space.Compact>
-            </div>
-            {copyError !== null && (
-              <Alert type="warning" showIcon message={copyError} data-testid="webhook-copy-error" />
-            )}
-            <div className="settings-field">
-              <span className="settings-field-label">示例请求</span>
-              <pre className="webhook-example" data-testid="webhook-example">
-                {[
-                  `POST ${saved.hook_path}`,
-                  "Authorization: Bearer <token>",
-                  "Content-Type: application/json",
-                  "",
-                  "{",
-                  '  "event": "vm.created",',
-                  '  "data": {}',
-                  "}",
-                ].join("\n")}
-              </pre>
-              <Typography.Text type="secondary">
-                {"<token> 为所选凭据中的 token 值；浏览器不显示其真值。"}
-              </Typography.Text>
-            </div>
-          </>
-        )}
-
-        {saveError !== null && (
-          <Alert type="error" showIcon message={saveError} data-testid="webhook-error" />
-        )}
-        {notice !== null && (
-          <Alert type="success" showIcon message={notice} data-testid="webhook-notice" />
-        )}
-        <div>
+        <div className="settings-field">
+          <span className="settings-field-label">Webhook URL</span>
+          <Space.Compact style={{ width: "100%", maxWidth: 760 }}>
+            <Input data-testid="webhook-prefix" readOnly value={gatewayPrefix} />
+            <Input
+              data-testid="webhook-public-id"
+              aria-label="Webhook path"
+              value={publicId}
+              disabled={!canConfigure}
+              onChange={(event) => { setPublicId(event.target.value); setNotice(null); }}
+            />
+            <Button data-testid="webhook-copy" onClick={() => void copyUrl()}>复制</Button>
+          </Space.Compact>
+          <Typography.Text type="secondary">
+            系统已自动生成随机地址，也可以改成便于识别的路径，例如 receive-sys1-data。
+          </Typography.Text>
+          {!pathValid && (
+            <Alert type="error" showIcon data-testid="webhook-path-invalid" message="只允许 3–64 位小写字母、数字和连字符，且必须以字母或数字开头。" />
+          )}
+          <Input data-testid="webhook-url" readOnly value={fullUrl} onFocus={(event) => event.target.select()} />
+        </div>
+        <label className="settings-field">
+          <span className="settings-field-label">Token Credential</span>
+          <Select
+            data-testid="webhook-credential"
+            value={credentialId ?? undefined}
+            placeholder="选择 token 类型凭据"
+            disabled={!canConfigure}
+            options={tokenCredentials.map((credential) => ({ label: credential.name, value: credential.id }))}
+            onChange={(value) => { setCredentialId(value); setNotice(null); }}
+          />
+        </label>
+        {tokenCredentials.length === 0 && <Alert type="warning" showIcon message="尚无 token 类型凭据，请先在系统设置中创建。" />}
+        <label className="settings-field">
+          <span className="settings-field-label">运行节点</span>
+          <Select
+            data-testid="webhook-runtime-worker"
+            value={workerId ?? undefined}
+            placeholder="选择支持当前语言的 Worker"
+            loading={props.workersLoading}
+            disabled={!canConfigure || props.workersLoading}
+            options={compatibleWorkers.map((worker) => ({
+              label: `${worker.name}（${worker.status === "online" ? "在线" : "离线"}）`,
+              value: worker.id,
+              disabled: worker.status !== "online",
+            }))}
+            onChange={(value) => { setWorkerId(value); setNotice(null); }}
+          />
+        </label>
+        {props.workersError !== null && <Alert type="error" showIcon message={props.workersError} />}
+        {copyError !== null && <Alert type="warning" showIcon message={copyError} />}
+        {notice !== null && <Alert type="success" showIcon data-testid="webhook-notice" message={notice} />}
+        <Space>
           <Button
-            type="primary"
             data-testid="webhook-save"
             loading={saving}
-            disabled={props.archived || credentialId === null}
-            onClick={() => void handleSave()}
-          >
-            保存
-          </Button>
-        </div>
+            disabled={!canConfigure || !pathValid || workerId === null || !dirty}
+            onClick={() => void saveConfiguration()}
+          >保存运行设置</Button>
+          {enabled ? (
+            <Button danger data-testid="webhook-stop" loading={changingState} onClick={() => void setReceiving(false)}>停止接收</Button>
+          ) : (
+            <Button
+              type="primary"
+              data-testid="webhook-start"
+              loading={changingState}
+              disabled={archived || runtimeLocked || startBlockedReason !== null}
+              onClick={() => void setReceiving(true)}
+            >开启接收</Button>
+          )}
+          <Button onClick={() => void load()}>刷新</Button>
+        </Space>
+        {!enabled && startBlockedReason !== null && <Alert type="info" showIcon data-testid="webhook-start-blocked" message={startBlockedReason} />}
       </Space>
     </div>
   );

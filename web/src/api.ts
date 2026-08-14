@@ -212,7 +212,7 @@ export const api = {
   getWebhook: (adapterId: number): Promise<AdapterWebhook> =>
     request(`/api/adapters/${adapterId}/webhook`),
 
-  /** Create or update the Webhook; the public_id is server-generated and stable. */
+  /** Replace the stopped Webhook config or Start/Stop receiving. */
   putWebhook: (adapterId: number, payload: AdapterWebhookDraft): Promise<AdapterWebhook> =>
     request(`/api/adapters/${adapterId}/webhook`, {
       method: "PUT",

@@ -140,15 +140,16 @@ export interface AdapterWebhook {
   public_id: string;
   /** External entry path, e.g. /api/hooks/{public_id}. */
   hook_path: string;
-  credential_id: number;
-  credential_name: string;
+  credential_id: number | null;
+  credential_name: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface AdapterWebhookDraft {
   enabled: boolean;
-  credential_id: number;
+  public_id: string;
+  credential_id: number | null;
 }
 
 export interface Worker {

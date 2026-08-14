@@ -6,12 +6,15 @@
 - 总体架构：[docs/architecture.md](docs/architecture.md)
 - M4 AI Editor Spec：[docs/specs/m4-ai-editor.md](docs/specs/m4-ai-editor.md)
 
-当前已完成 M5.4.2：Python / JavaScript / Java Adapter 共享不可变 Revision、
+当前已完成 M5.4.3：Python / JavaScript / Java Adapter 共享不可变 Revision、
 Secret、实时日志与 Execution 历史语义，并可通过右侧
 AI Assistant 基于当前 Working Copy 生成完整 Candidate。Candidate 必须经管理员查看 Diff
-并明确应用，应用只更新浏览器 Working Copy；Save / Run Once / Schedule 仍全部由
-管理员执行。Task Adapter 默认手动运行，也可切换到定时运行；两种入口始终执行最新已保存
-Revision，并固定到配置的运行 Worker。官方 Worker 镜像包含 Python 3.13 / uv、Node.js LTS / npm、JDK 21 / Maven，
+并明确应用，应用只更新浏览器 Working Copy；保存与运行仍全部由管理员执行。Task Adapter
+支持手动或定时运行，两种入口始终执行最新已保存 Revision，并固定到配置的运行 Worker。
+Webhook Adapter 创建时自动获得随机 URL path，配置 Token Credential 与运行节点后可开启接收；
+每个成功 JSON 请求异步创建一条 latest Revision Execution，并按 Adapter 只保留最近 100 条
+Webhook 调用记录。停止接收会立即拒绝新请求，但不会终止已经在执行的调用。
+官方 Worker 镜像包含 Python 3.13 / uv、Node.js LTS / npm、JDK 21 / Maven，
 并按实际可用 Runtime 自动上报 capability。
 M4.1 进一步以心跳超时派生 Worker 的有效在线状态，避免 Test / Start 选择已经失联的
 Worker。
@@ -147,11 +150,13 @@ npm run build
 
 构建并启动全部容器（隔离的 compose project 与独立端口），在真实 PostgreSQL
 上执行 Alembic 迁移后等待全部服务健康，验证 `/api/health` 链路与 401 认证拒绝。
-M5.4.2 Task 主链路真实跑通 `Task create → Save + Worker → Run Once → succeeded →
+M5.4.3 Task 主链路真实跑通 `Task create → Save + Worker → Run Once → succeeded →
 切换定时运行 → 配置短周期 Schedule → enable → schedule Execution succeeded → disable`，
 并验证 Python / JavaScript / Java 的真实基础执行均输出“任务开始/任务结束”、Run Once 与
 Schedule 都固定 latest Revision/运行 Worker、统一活跃锁和 Clone 后 Schedule disabled。
-Webhook 基础链路继续验证 Token 鉴权、异步执行、禁用与 latest Revision；M4 链路
+Webhook 主链路真实跑通 `create → Save + Worker + Token → 可读 path → 开启接收 → POST JSON
+→ 202 → succeeded → 调用记录 → 停止接收`，并验证停止不终止 active Execution、同 path 的
+运行中唯一约束，以及 `Clone disabled → 旧 Adapter 停止 → Clone 接管原 URL`。M4 链路
 额外启动一个临时、仅位于 smoke 网络中的 OpenAI-compatible fake Provider，验证设置、
 模型刷新、连接测试与三语言 AI Assist，并证明 Version / Execution / published / production
 事实未改变；不访问任何公网 AI，也不把 fake Provider 加入正式 Compose 拓扑。整个过程

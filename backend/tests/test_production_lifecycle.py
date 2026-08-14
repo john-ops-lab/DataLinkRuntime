@@ -229,18 +229,28 @@ def test_clone_gets_own_revision_one_type_worker_and_bindings_without_executions
     session_factory: sessionmaker[Session],
 ) -> None:
     source = create_adapter(api_client, name="clone-source", adapter_type="webhook")
+    credential = create_credential(
+        api_client,
+        name="clone-token",
+        type_="token",
+        fields={"token": "clone-secret"},
+    )
+    source_webhook = api_client.get(f"/api/adapters/{source['id']}/webhook").json()
+    configured = api_client.put(
+        f"/api/adapters/{source['id']}/webhook",
+        json={
+            "enabled": False,
+            "public_id": "clone-upgrade-path",
+            "credential_id": credential["id"],
+        },
+    )
+    assert configured.status_code == 200, configured.text
     version = save_version(
         api_client,
         source["id"],
         code="def handle(context, input):\n    return {'source': True}\n",
         requirements="requests==2.32.0",
         runtime_config={"batch": 20},
-    )
-    credential = create_credential(
-        api_client,
-        name="clone-token",
-        type_="token",
-        fields={"token": "clone-secret"},
     )
     assert (
         api_client.put(
@@ -253,6 +263,15 @@ def test_clone_gets_own_revision_one_type_worker_and_bindings_without_executions
         ).status_code
         == 200
     )
+    enabled_source = api_client.put(
+        f"/api/adapters/{source['id']}/webhook",
+        json={
+            "enabled": True,
+            "public_id": "clone-upgrade-path",
+            "credential_id": credential["id"],
+        },
+    )
+    assert enabled_source.status_code == 200, enabled_source.text
 
     response = api_client.post(
         f"/api/adapters/{source['id']}/clone",
@@ -274,6 +293,12 @@ def test_clone_gets_own_revision_one_type_worker_and_bindings_without_executions
     assert clone_version["requirements"] == version["requirements"]
     assert clone_version["runtime_config"] == version["runtime_config"]
     assert api_client.get(f"/api/adapters/{clone['id']}/executions").json()["items"] == []
+    clone_webhook = api_client.get(f"/api/adapters/{clone['id']}/webhook").json()
+    assert clone_webhook["public_id"] == "clone-upgrade-path"
+    assert clone_webhook["credential_id"] == credential["id"]
+    assert clone_webhook["enabled"] is False
+    assert source_webhook["enabled"] is False
+    assert api_client.get(f"/api/adapters/{source['id']}/webhook").json()["enabled"] is True
     with session_factory() as session:
         bindings = session.scalars(
             select(AdapterCredentialBinding).where(

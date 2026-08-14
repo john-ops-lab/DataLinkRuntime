@@ -1,11 +1,11 @@
-"""M5.4.1 Webhook integration with latest Revision and runtime lock."""
+"""M5.4.3 Webhook final-model integration tests."""
 
 import json
 import threading
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
@@ -18,10 +18,20 @@ WEBHOOK_TOKEN = "webhook-test-token"
 _ABSENT = object()
 
 
-def put_webhook(client: TestClient, adapter_id: int, credential_id: int, enabled: bool = True):
+def put_webhook(
+    client: TestClient,
+    adapter_id: int,
+    credential_id: int | None,
+    enabled: bool = True,
+    public_id: str | None = None,
+):
+    if public_id is None:
+        current = client.get(f"/api/adapters/{adapter_id}/webhook")
+        assert current.status_code == 200, current.text
+        public_id = current.json()["public_id"]
     return client.put(
         f"/api/adapters/{adapter_id}/webhook",
-        json={"enabled": enabled, "credential_id": credential_id},
+        json={"enabled": enabled, "public_id": public_id, "credential_id": credential_id},
     )
 
 
@@ -46,14 +56,20 @@ def setup_webhook(
 ) -> tuple[dict, dict, dict, dict, dict]:
     worker = register_worker(client, name=f"{name}-worker")
     adapter = create_adapter(client, name=name, adapter_type="webhook")
-    version = save_version(client, adapter["id"])
     credential = create_credential(
         client,
         name=f"{name}-token",
         type_="token",
         fields={"token": token},
     )
-    response = put_webhook(client, adapter["id"], credential["id"], enabled=enabled)
+    configured = put_webhook(client, adapter["id"], credential["id"], enabled=False)
+    assert configured.status_code == 200, configured.text
+    version = save_version(client, adapter["id"])
+    response = (
+        put_webhook(client, adapter["id"], credential["id"], enabled=True)
+        if enabled
+        else configured
+    )
     assert response.status_code == 200, response.text
     return adapter, version, worker, credential, response.json()
 
@@ -79,7 +95,7 @@ def finish_active(session_factory: sessionmaker[Session], adapter_id: int) -> No
         )
 
 
-def test_webhook_is_webhook_type_only_and_get_before_configuration_is_404(
+def test_webhook_is_webhook_type_only_and_created_with_random_stopped_path(
     api_client: TestClient,
 ) -> None:
     task = create_adapter(api_client, name="webhook-wrong-type", adapter_type="task")
@@ -89,14 +105,20 @@ def test_webhook_is_webhook_type_only_and_get_before_configuration_is_404(
         type_="token",
         fields={"token": WEBHOOK_TOKEN},
     )
-    mismatch = put_webhook(api_client, task["id"], credential["id"])
+    mismatch = put_webhook(
+        api_client, task["id"], credential["id"], public_id="wrong-type-hook"
+    )
     assert mismatch.status_code == 409
     assert mismatch.json()["detail"]["code"] == "adapter_type_mismatch"
 
     webhook = create_adapter(api_client, name="webhook-empty", adapter_type="webhook")
     response = api_client.get(f"/api/adapters/{webhook['id']}/webhook")
-    assert response.status_code == 404
-    assert response.json()["detail"]["code"] == "webhook_not_configured"
+    assert response.status_code == 200
+    created = response.json()
+    assert created["enabled"] is False
+    assert created["credential_id"] is None
+    assert len(created["public_id"]) == 16
+    assert created["public_id"].isalnum() and created["public_id"].islower()
 
 
 def test_put_requires_token_credential_and_never_returns_secret(api_client: TestClient) -> None:
@@ -117,6 +139,37 @@ def test_put_requires_token_credential_and_never_returns_secret(api_client: Test
     assert "ciphertext" not in serialized
 
 
+def test_first_revision_requires_token_and_start_creates_no_execution(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    worker = register_worker(api_client, name="webhook-first-save-worker")
+    adapter = create_adapter(api_client, name="webhook-first-save", adapter_type="webhook")
+    assert api_client.patch(
+        f"/api/adapters/{adapter['id']}", json={"runtime_worker_id": worker["id"]}
+    ).status_code == 200
+
+    missing_token = api_client.post(
+        f"/api/adapters/{adapter['id']}/versions",
+        json={"code": "def handle(context, input):\n    return input\n"},
+    )
+    assert missing_token.status_code == 409
+    assert missing_token.json()["detail"]["code"] == "webhook_token_required"
+
+    credential = create_credential(
+        api_client,
+        name="webhook-first-save-token",
+        type_="token",
+        fields={"token": WEBHOOK_TOKEN},
+    )
+    configured = put_webhook(api_client, adapter["id"], credential["id"], enabled=False)
+    assert configured.status_code == 200
+    save_version(api_client, adapter["id"])
+    assert executions_of(session_factory, adapter["id"]) == []
+    assert put_webhook(api_client, adapter["id"], credential["id"], enabled=True).status_code == 200
+    assert executions_of(session_factory, adapter["id"]) == []
+
+
 def test_public_id_is_stable_and_distinct(api_client: TestClient) -> None:
     first = setup_webhook(api_client, "webhook-id-a", enabled=False)
     second = setup_webhook(api_client, "webhook-id-b", enabled=False)
@@ -125,6 +178,30 @@ def test_public_id_is_stable_and_distinct(api_client: TestClient) -> None:
     updated = put_webhook(api_client, first[0]["id"], first[3]["id"], enabled=True)
     assert updated.status_code == 200
     assert updated.json()["public_id"] == first_id
+
+
+@pytest.mark.parametrize(
+    "public_id",
+    ["ABCD", "has_underscore", "-leading", "ab", "contains/slash", "has space"],
+)
+def test_stopped_path_format_is_validated(api_client: TestClient, public_id: str) -> None:
+    adapter = create_adapter(api_client, name=f"invalid-path-{public_id}", adapter_type="webhook")
+    response = put_webhook(api_client, adapter["id"], None, enabled=False, public_id=public_id)
+    assert response.status_code == 422
+
+
+def test_stopped_adapters_can_share_path_but_only_one_can_start(api_client: TestClient) -> None:
+    first = setup_webhook(api_client, "shared-path-a", enabled=False)
+    second = setup_webhook(api_client, "shared-path-b", enabled=False)
+    path = "receive-sys1-data"
+    assert put_webhook(api_client, first[0]["id"], first[3]["id"], False, path).status_code == 200
+    assert put_webhook(api_client, second[0]["id"], second[3]["id"], False, path).status_code == 200
+    assert put_webhook(api_client, first[0]["id"], first[3]["id"], True, path).status_code == 200
+    conflict = put_webhook(api_client, second[0]["id"], second[3]["id"], True, path)
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "webhook_path_in_use"
+    assert put_webhook(api_client, first[0]["id"], first[3]["id"], False, path).status_code == 200
+    assert put_webhook(api_client, second[0]["id"], second[3]["id"], True, path).status_code == 200
 
 
 def test_enabled_webhook_locks_token_change_but_can_be_disabled(api_client: TestClient) -> None:
@@ -144,6 +221,41 @@ def test_enabled_webhook_locks_token_change_but_can_be_disabled(api_client: Test
     assert disabled.status_code == 200
     assert disabled.json()["public_id"] == webhook["public_id"]
     assert api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_locked"] is False
+
+
+def test_stop_during_active_call_does_not_cancel_and_unlocks_only_after_terminal(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter, _, _, credential, webhook = setup_webhook(api_client, "webhook-stop-active")
+    accepted = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {"active": True})
+    assert accepted.status_code == 202
+
+    stopped = put_webhook(api_client, adapter["id"], credential["id"], enabled=False)
+    assert stopped.status_code == 200
+    assert stopped.json()["enabled"] is False
+    with session_factory() as session:
+        execution = session.get(Execution, accepted.json()["execution_id"])
+        assert execution is not None and execution.status == "pending"
+    assert api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_locked"] is True
+    assert post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {}).status_code == 404
+    other_worker = register_worker(api_client, name="webhook-stop-active-other-worker")
+    locked_worker = api_client.patch(
+        f"/api/adapters/{adapter['id']}", json={"runtime_worker_id": other_worker["id"]}
+    )
+    assert locked_worker.status_code == 409
+    assert locked_worker.json()["detail"]["code"] == "adapter_runtime_locked"
+
+    finish_active(session_factory, adapter["id"])
+    assert api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_locked"] is False
+    editable = put_webhook(
+        api_client,
+        adapter["id"],
+        credential["id"],
+        enabled=False,
+        public_id="webhook-stop-active-next",
+    )
+    assert editable.status_code == 200
 
 
 def test_success_creates_execution_from_latest_revision_on_runtime_worker(
@@ -211,7 +323,7 @@ def test_unknown_disabled_and_busy_requests_create_no_extra_execution(
         "webhook-disabled",
         enabled=False,
     )
-    assert post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {}).status_code == 409
+    assert post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {}).status_code == 404
     assert put_webhook(api_client, adapter["id"], credential["id"], enabled=True).status_code == 200
     first = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {})
     assert first.status_code == 202
@@ -306,3 +418,91 @@ def test_concurrent_requests_create_only_one_active_execution(
     assert sorted(status for status, _ in statuses) == [202, 409]
     assert any(code == "adapter_busy" for _, code in statuses)
     assert len(executions_of(session_factory, adapter["id"])) == 1
+
+
+def test_concurrent_start_same_path_has_one_database_winner(
+    api_client: TestClient,
+) -> None:
+    first = setup_webhook(api_client, "start-race-a", enabled=False)
+    second = setup_webhook(api_client, "start-race-b", enabled=False)
+    path = "concurrent-receiver"
+    for item in (first, second):
+        assert put_webhook(api_client, item[0]["id"], item[3]["id"], False, path).status_code == 200
+    barrier = threading.Barrier(2)
+    statuses: list[tuple[int, str | None]] = []
+
+    def start(item: tuple[dict, dict, dict, dict, dict]) -> None:
+        barrier.wait(timeout=5)
+        response = put_webhook(api_client, item[0]["id"], item[3]["id"], True, path)
+        statuses.append((response.status_code, response.json().get("detail", {}).get("code")))
+
+    threads = [threading.Thread(target=start, args=(item,)) for item in (first, second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(status for status, _ in statuses) == [200, 409]
+    assert any(code == "webhook_path_in_use" for _, code in statuses)
+
+
+def test_retention_keeps_latest_100_webhook_calls_only(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter, _, _, _, webhook = setup_webhook(api_client, "webhook-retention")
+    for sequence in range(101):
+        response = post_hook(
+            api_client, webhook["public_id"], WEBHOOK_TOKEN, {"sequence": sequence}
+        )
+        assert response.status_code == 202, response.text
+        finish_active(session_factory, adapter["id"])
+    rows = executions_of(session_factory, adapter["id"])
+    assert len(rows) == 100
+    assert [row.input["sequence"] for row in rows] == list(range(1, 101))
+
+
+def test_retention_never_deletes_task_or_active_execution(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter, version, worker, _, webhook = setup_webhook(
+        api_client, "webhook-retention-scope", enabled=False
+    )
+    with session_factory.begin() as session:
+        session.add(
+            Execution(
+                adapter_id=adapter["id"],
+                version_id=version["id"],
+                trigger="manual",
+                status="succeeded",
+                target_worker_id=worker["id"],
+                input={"manual": True},
+            )
+        )
+        for sequence in range(100):
+            session.add(
+                Execution(
+                    adapter_id=adapter["id"],
+                    version_id=version["id"],
+                    trigger="webhook",
+                    status="succeeded",
+                    target_worker_id=worker["id"],
+                    input={"sequence": sequence},
+                )
+            )
+    assert put_webhook(api_client, adapter["id"], webhook["credential_id"], True).status_code == 200
+    accepted = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {"active": True})
+    assert accepted.status_code == 202
+    with session_factory() as session:
+        assert session.scalar(
+            select(func.count()).select_from(Execution).where(
+                Execution.adapter_id == adapter["id"], Execution.trigger == "webhook"
+            )
+        ) == 100
+        assert session.scalar(
+            select(func.count()).select_from(Execution).where(
+                Execution.adapter_id == adapter["id"], Execution.trigger == "manual"
+            )
+        ) == 1
+        active = session.get(Execution, accepted.json()["execution_id"])
+        assert active is not None and active.status == "pending"

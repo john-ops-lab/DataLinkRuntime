@@ -47,6 +47,36 @@ export const TASK_STARTER_CODE: Record<AdapterLanguage, string> = {
     "}\n",
 };
 
+export const WEBHOOK_STARTER_CODE: Record<AdapterLanguage, string> = {
+  python:
+    "def handle(context, input):\n" +
+    "    context.logger.info(\"收到 Webhook 请求\")\n" +
+    "    try:\n" +
+    "        return {\"received\": True, \"data\": input}\n" +
+    "    finally:\n" +
+    "        context.logger.info(\"处理完 Webhook 请求\")\n",
+  javascript:
+    "export async function handle(context, input) {\n" +
+    "  context.logger.info(\"收到 Webhook 请求\");\n" +
+    "  try {\n" +
+    "    return { received: true, data: input };\n" +
+    "  } finally {\n" +
+    "    context.logger.info(\"处理完 Webhook 请求\");\n" +
+    "  }\n" +
+    "}\n",
+  java:
+    "public class Adapter {\n" +
+    "    public Object handle(Context context, Object input) throws Exception {\n" +
+    "        context.logger.info(\"收到 Webhook 请求\");\n" +
+    "        try {\n" +
+    "            return input;\n" +
+    "        } finally {\n" +
+    "            context.logger.info(\"处理完 Webhook 请求\");\n" +
+    "        }\n" +
+    "    }\n" +
+    "}\n",
+};
+
 export const DEPENDENCY_UI: Record<
   AdapterLanguage,
   { label: string; placeholder: string }
