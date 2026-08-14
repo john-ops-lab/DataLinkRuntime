@@ -191,7 +191,7 @@ function AdapterConsole() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [productionWorkerId, setProductionWorkerId] = useState<number | null>(null);
+  const [runtimeWorkerId, setRuntimeWorkerId] = useState<number | null>(null);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [workersLoading, setWorkersLoading] = useState(true);
   const [workersError, setWorkersError] = useState<string | null>(null);
@@ -425,7 +425,7 @@ function AdapterConsole() {
     setSelected(adapter);
     setName(adapter.name);
     setDescription(adapter.description);
-    setProductionWorkerId(adapter.production_worker_id ?? null);
+    setRuntimeWorkerId(adapter.runtime_worker_id ?? null);
     setError(null);
     setVersions([]);
     setSelectedVersionId(null);
@@ -651,7 +651,7 @@ function AdapterConsole() {
         setVersionSeqById((current) => new Map(current).set(targetVersionId, publishedSeq));
       }
       setSelected(refreshed);
-      setProductionWorkerId(refreshed.production_worker_id ?? productionWorkerId);
+      setRuntimeWorkerId(refreshed.runtime_worker_id ?? runtimeWorkerId);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
       messageApi.success(
         `已发布${publishedSeq === undefined ? `版本 #${targetVersionId}` : ` v${publishedSeq}`}；生产运行状态未自动改变`,
@@ -680,7 +680,7 @@ function AdapterConsole() {
         refreshed = adapter;
       }
       setSelected(refreshed);
-      setProductionWorkerId(refreshed.production_worker_id ?? productionWorkerId);
+      setRuntimeWorkerId(refreshed.runtime_worker_id ?? runtimeWorkerId);
       setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
       const versionSeq = refreshed.production_version_seq ?? "?";
       messageApi.success(`生产入口已开启，生产版本锁定为 v${versionSeq}`);
@@ -973,27 +973,27 @@ function AdapterConsole() {
     }
   }
 
-  async function handleUpdateProductionWorker() {
+  async function handleUpdateRuntimeWorker() {
     if (
       !selected ||
       busy ||
-      productionWorkerId === (selected.production_worker_id ?? null)
+      runtimeWorkerId === (selected.runtime_worker_id ?? null)
     ) {
       return;
     }
-    const previousWorkerId = selected.production_worker_id ?? null;
+    const previousWorkerId = selected.runtime_worker_id ?? null;
     setBusy(true);
     try {
       setError(null);
       const refreshed = await api.updateAdapter(selected.id, {
-        production_worker_id: productionWorkerId,
+        runtime_worker_id: runtimeWorkerId,
       });
       setSelected(refreshed);
-      setProductionWorkerId(refreshed.production_worker_id ?? null);
+      setRuntimeWorkerId(refreshed.runtime_worker_id ?? null);
       setAdapters((current) =>
         current.map((item) => (item.id === refreshed.id ? refreshed : item)),
       );
-      if ((refreshed.production_worker_id ?? null) !== previousWorkerId) {
+      if ((refreshed.runtime_worker_id ?? null) !== previousWorkerId) {
         setWorkerRetestAdapterIds((current) => new Set(current).add(refreshed.id));
       }
       messageApi.success("production Worker 已保存；切换后请重新测试已发布版本");
@@ -1129,7 +1129,7 @@ function AdapterConsole() {
                 busy={busy}
                 contentReady={contentReady}
                 productionWorker={
-                  workers.find((worker) => worker.id === selected.production_worker_id) ?? null
+                  workers.find((worker) => worker.id === selected.runtime_worker_id) ?? null
                 }
                 workers={workers}
                 workersLoading={workersLoading}
@@ -1257,14 +1257,15 @@ function AdapterConsole() {
                       <TestRunPanel
                         key={selected.id}
                         adapter={selected}
-                        productionWorker={
-                          workers.find((worker) => worker.id === selected.production_worker_id) ??
+                        runtimeWorker={
+                          workers.find((worker) => worker.id === selected.runtime_worker_id) ??
                           null
                         }
-                        selectedVersionId={selectedVersionId}
-                        selectedVersionSeq={selectedVersion?.seq ?? null}
-                        isLatest={isLatest}
-                        isPublished={isPublished}
+                        latestVersionSeq={
+                          versions.find((version) => version.id === selected.latest_version_id)
+                            ?.seq ?? null
+                        }
+                        viewingHistoricalVersion={selectedVersionId !== selected.latest_version_id}
                         dirty={dirty}
                         contentReady={contentReady}
                         busy={busy}
@@ -1337,7 +1338,7 @@ function AdapterConsole() {
         adapter={selected}
         name={name}
         description={description}
-        productionWorkerId={productionWorkerId}
+        runtimeWorkerId={runtimeWorkerId}
         workers={workers}
         workersLoading={workersLoading}
         workersError={workersError}
@@ -1349,9 +1350,9 @@ function AdapterConsole() {
         onClose={() => setSettingsOpen(false)}
         onNameChange={setName}
         onDescriptionChange={setDescription}
-        onProductionWorkerChange={setProductionWorkerId}
+        onRuntimeWorkerChange={setRuntimeWorkerId}
         onUpdate={() => void handleUpdateDetails()}
-        onProductionWorkerUpdate={() => void handleUpdateProductionWorker()}
+        onRuntimeWorkerUpdate={() => void handleUpdateRuntimeWorker()}
         onDelete={() => void handleDelete()}
         onUnpublish={() => void handleUnpublish()}
         onArchive={() => void handleArchive()}

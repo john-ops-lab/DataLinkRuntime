@@ -107,7 +107,7 @@ function catalogSubtitle(
       `${versionLabel(publishedVersionId, adapter.published_version_seq, versionSeqById)} 待启动`,
     );
   }
-  const workerId = adapter.production_worker_id;
+  const workerId = adapter.runtime_worker_id;
   if (workerId !== null && workerId !== undefined) {
     const worker = workersById.get(workerId);
     if (worker !== undefined && worker.status !== "online") {

@@ -128,7 +128,7 @@ export const api = {
 
   updateAdapter: (
     adapterId: number,
-    payload: { name?: string; description?: string; production_worker_id?: number | null },
+    payload: { name?: string; description?: string; runtime_worker_id?: number | null },
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}`, { method: "PATCH", body: JSON.stringify(payload) }),
 
@@ -217,7 +217,7 @@ export const api = {
 
   createExecution: (
     adapterId: number,
-    payload: { input?: unknown; version_id: number },
+    payload: { input?: unknown },
   ): Promise<Execution> =>
     request(`/api/adapters/${adapterId}/executions`, {
       method: "POST",

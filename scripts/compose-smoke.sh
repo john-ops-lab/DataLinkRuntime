@@ -86,15 +86,16 @@ wrong_token_status=$(curl -s -o /dev/null -w '%{http_code}' \
 echo "==> starting isolated local OpenAI-compatible fake Provider"
 AI_FAKE_CONTAINER_NAME="${COMPOSE_PROJECT_NAME}-ai-fake"
 export AI_FAKE_BASE_URL="http://${AI_FAKE_CONTAINER_NAME}:18080"
-AI_FAKE_CONTAINER_ID=$(docker compose run -d --no-deps \
+CONTROL_CONTAINER_ID=$(docker compose ps -q control)
+CONTROL_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CONTROL_CONTAINER_ID")
+CONTROL_NETWORK=$(docker inspect --format '{{range $network, $_ := .NetworkSettings.Networks}}{{println $network}}{{end}}' \
+  "$CONTROL_CONTAINER_ID" | head -n 1)
+AI_FAKE_CONTAINER_ID=$(docker run -d \
   --name "$AI_FAKE_CONTAINER_NAME" \
-  --env DATABASE_URL= \
-  --env DLR_ADMIN_TOKEN= \
-  --env DLR_WORKER_TOKEN= \
-  --env DLR_MASTER_KEY= \
+  --network "$CONTROL_NETWORK" \
   --volume "$PWD/scripts/ai-fake-provider.py:/tmp/dlr-ai-fake-provider.py:ro" \
   --entrypoint python \
-  control /tmp/dlr-ai-fake-provider.py --port 18080)
+  "$CONTROL_IMAGE" /tmp/dlr-ai-fake-provider.py --port 18080)
 
 elapsed=0
 while ! docker compose exec -T -e AI_FAKE_BASE_URL control python -c \

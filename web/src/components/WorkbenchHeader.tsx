@@ -83,8 +83,8 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
     !archived &&
     !stopping;
   const productionWorkerStatusUnavailable =
-    adapter.production_worker_id !== null &&
-    adapter.production_worker_id !== undefined &&
+    adapter.runtime_worker_id !== null &&
+    adapter.runtime_worker_id !== undefined &&
     !props.workersLoading &&
     props.productionWorker === null;
   const productionWorkerOffline =
@@ -94,7 +94,7 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
       worker.status === "online" && worker.capabilities.includes(adapter.language),
   );
   const automaticWorkerUnavailable =
-    (adapter.production_worker_id === null || adapter.production_worker_id === undefined) &&
+    (adapter.runtime_worker_id === null || adapter.runtime_worker_id === undefined) &&
     !props.workersLoading &&
     props.workersError === null &&
     compatibleOnlineWorkers.length !== 1;
@@ -182,7 +182,7 @@ export default function WorkbenchHeader(props: WorkbenchHeaderProps) {
             message={
               productionWorkerOffline
                 ? `production Worker ${props.productionWorker?.name ?? ""} 最近状态为离线`
-                : `暂时无法取得 production Worker #${adapter.production_worker_id ?? "—"} 的状态`
+                : `暂时无法取得 production Worker #${adapter.runtime_worker_id ?? "—"} 的状态`
             }
             description={
               props.workersError !== null

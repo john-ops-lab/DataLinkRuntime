@@ -382,7 +382,7 @@ it("keeps normal Catalog rows quiet, flags offline Workers, and searches descrip
     language: "javascript",
     published_version_id: 30,
     published_version_seq: 3,
-    production_worker_id: 1,
+    runtime_worker_id: 1,
     production_state: "running",
     running_execution_id: 90,
     running_version_id: 30,
@@ -396,7 +396,7 @@ it("keeps normal Catalog rows quiet, flags offline Workers, and searches descrip
     description: "夜间失败数据导入",
     published_version_id: 20,
     published_version_seq: 2,
-    production_worker_id: 2,
+    runtime_worker_id: 2,
     production_state: "running",
     production_version_id: 20,
     production_version_seq: 2,
@@ -412,7 +412,7 @@ it("keeps normal Catalog rows quiet, flags offline Workers, and searches descrip
     description: "停止中的长任务",
     published_version_id: 30,
     published_version_seq: 3,
-    production_worker_id: 1,
+    runtime_worker_id: 1,
     production_state: "stopped",
     running_execution_id: 92,
     running_version_id: 30,
@@ -1474,7 +1474,7 @@ async function openTestRunTab() {
   await screen.findByTestId("run-test");
 }
 
-it("runs a test bound to the selected version and follows the execution via SSE", async () => {
+it("runs the latest Revision without sending a client-selected version_id", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const pending = makeExecution({ status: "pending" });
   const running = makeExecution({ status: "running", worker_id: 3, stdout: "step 1\n" });
@@ -1536,14 +1536,14 @@ it("runs a test bound to the selected version and follows the execution via SSE"
   expect(screen.getByTestId("execution-worker").textContent).toContain("worker-01");
   expect(screen.getByTestId("execution-worker").textContent).toContain("#3");
 
-  // Explicit version binding: the create request carries the selected version.
+  // M5.4.1 contract: the backend binds latest_version_id; the browser must not
+  // send a client-selected version_id that strict request validation rejects.
   const createCalls = fetchMock.mock.calls.filter(
     ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
   );
   expect(createCalls).toHaveLength(1);
   expect(JSON.parse(String(createCalls[0][1]?.body))).toEqual({
     input: { k: 1 },
-    version_id: 10,
   });
 
   // SSE auth contract: Bearer header only, the token never enters the URL.
@@ -1558,6 +1558,66 @@ it("runs a test bound to the selected version and follows the execution via SSE"
   await waitFor(() => {
     expect(screen.getByTestId("stdout-view").textContent).toContain("done");
   });
+});
+
+it("keeps test execution fixed to Latest while a historical Revision is selected", async () => {
+  const adapter = makeAdapter({ latest_version_id: 11 });
+  let executionBody: string | null = null;
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({
+        body: [
+          { id: 11, adapter_id: 1, seq: 2, created_at: "2026-08-11T00:00:00Z" },
+          { id: 10, adapter_id: 1, seq: 1, created_at: "2026-08-11T00:00:00Z" },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/11",
+      respond: () => ({ body: makeVersion({ id: 11, seq: 2, code: "code-v2" }) }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions/10",
+      respond: () => ({ body: makeVersion({ id: 10, seq: 1, code: "code-v1" }) }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/executions",
+      respond: (body) => {
+        executionBody = body;
+        return {
+          status: 202,
+          body: makeExecution({ version_id: 11, status: "succeeded" }),
+        };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("version-selector"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "v1" }));
+  await waitFor(() => {
+    expect(valueOf("code-editor")).toBe("code-v1");
+  });
+
+  await openTestRunTab();
+  expect(screen.getByTestId("test-run-version").textContent).toContain("Latest v2");
+  expect(screen.getByTestId("latest-run-guidance").textContent).toContain(
+    "运行测试仍固定使用 Latest Revision",
+  );
+  fireEvent.click(screen.getByTestId("run-test"));
+
+  await waitFor(() => {
+    expect(JSON.parse(executionBody ?? "{}")).toEqual({ input: {} });
+  });
+  expect(screen.getByTestId("execution-version").textContent).toContain("v2");
 });
 
 it("shows size and preview instead of the full output when it was truncated", async () => {
@@ -1647,7 +1707,7 @@ it("warns about an offline Worker snapshot without creating a stale client-side 
     latest_version_id: 10,
     published_version_id: 10,
     published_version_seq: 1,
-    production_worker_id: 3,
+    runtime_worker_id: 3,
   });
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
@@ -2185,7 +2245,7 @@ it("refreshes the shared effective Worker status on focus without a page reload"
   const adapter = makeAdapter({
     latest_version_id: 10,
     published_version_id: 10,
-    production_worker_id: 1,
+    runtime_worker_id: 1,
   });
   const worker = {
     id: 1,
@@ -2362,7 +2422,7 @@ it("explains when multiple compatible Workers prevent automatic selection", asyn
   const adapter = makeAdapter({
     latest_version_id: 10,
     published_version_id: 10,
-    production_worker_id: null,
+    runtime_worker_id: null,
   });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
@@ -2398,7 +2458,7 @@ it("guides the user to restore or register a Worker when none is available", asy
   const adapter = makeAdapter({
     latest_version_id: 10,
     published_version_id: 10,
-    production_worker_id: null,
+    runtime_worker_id: null,
   });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
@@ -2658,7 +2718,7 @@ it("starts production, locks the version and shows success message", async () =>
   const adapter = makeAdapter({
     latest_version_id: 10,
     published_version_id: 10,
-    production_worker_id: null,
+    runtime_worker_id: null,
   });
   // M5.1: Start returns an Adapter (not an Execution).
   const startedAdapter = {
@@ -2666,7 +2726,7 @@ it("starts production, locks the version and shows success message", async () =>
     production_state: "running",
     production_version_id: 10,
     production_version_seq: 1,
-    production_worker_id: 3,
+    runtime_worker_id: 3,
   };
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
@@ -2699,7 +2759,7 @@ it("starts production, locks the version and shows success message", async () =>
           production_state: "running",
           production_version_id: 10,
           production_version_seq: 1,
-          production_worker_id: 3,
+          runtime_worker_id: 3,
           running_execution_id: null,
           running_version_id: null,
         },
@@ -2732,7 +2792,7 @@ it("shows a restarted entry as started and idle despite a failed previous lifecy
     latest_version_id: 10,
     published_version_id: 10,
     published_version_seq: 1,
-    production_worker_id: 3,
+    runtime_worker_id: 3,
     production_state: "stopped",
     production_version_id: null,
     last_production_execution_id: 91,
@@ -2801,7 +2861,7 @@ it("publishes v3 while v2 keeps running and explains the manual Stop then Start 
     latest_version_id: 30,
     published_version_id: 20,
     published_version_seq: 2,
-    production_worker_id: 3,
+    runtime_worker_id: 3,
     production_state: "running",
     production_version_id: 20,
     production_version_seq: 2,
@@ -2971,7 +3031,7 @@ it("selects an explicit production Worker and keeps the retest gate visible afte
     latest_version_id: 10,
     published_version_id: 10,
     published_version_seq: 1,
-    production_worker_id: 1,
+    runtime_worker_id: 1,
   });
   const workers = [
     {
@@ -3005,7 +3065,7 @@ it("selects an explicit production Worker and keeps the retest gate visible afte
       match: "/api/adapters/1",
       respond: (body) => {
         patchBody = body;
-        return { body: { ...adapter, production_worker_id: 2 } };
+        return { body: { ...adapter, runtime_worker_id: 2 } };
       },
     },
     {
@@ -3052,7 +3112,7 @@ it("selects an explicit production Worker and keeps the retest gate visible afte
   fireEvent.click(screen.getByTestId("update-production-worker"));
 
   await waitFor(() => {
-    expect(JSON.parse(patchBody ?? "{}")).toEqual({ production_worker_id: 2 });
+    expect(JSON.parse(patchBody ?? "{}")).toEqual({ runtime_worker_id: 2 });
   });
   // 保存后不把门禁警告当成已消除；必须真的重测。
   expect(screen.getByTestId("production-worker-retest").textContent).toContain("需重新测试");
@@ -3086,7 +3146,7 @@ it("clears the retest guidance after the backend auto-selects a Worker for a suc
     latest_version_id: 10,
     published_version_id: 10,
     published_version_seq: 1,
-    production_worker_id: 1,
+    runtime_worker_id: 1,
   });
   const automaticWorker = {
     id: 1,
@@ -3104,7 +3164,7 @@ it("clears the retest guidance after the backend auto-selects a Worker for a suc
       match: "/api/adapters/1",
       respond: (body) => {
         patchBody = body;
-        return { body: { ...adapter, production_worker_id: null } };
+        return { body: { ...adapter, runtime_worker_id: null } };
       },
     },
     {
@@ -3128,7 +3188,7 @@ it("clears the retest guidance after the backend auto-selects a Worker for a suc
   fireEvent.mouseDown(clear);
   fireEvent.click(screen.getByTestId("update-production-worker"));
   await waitFor(() => {
-    expect(JSON.parse(patchBody ?? "{}")).toEqual({ production_worker_id: null });
+    expect(JSON.parse(patchBody ?? "{}")).toEqual({ runtime_worker_id: null });
   });
   expect(screen.getByTestId("production-worker-retest").textContent).toContain("需重新测试");
 
@@ -3156,7 +3216,7 @@ it("refreshes a naturally completed production run into the started and idle sta
     latest_version_id: 10,
     published_version_id: 10,
     published_version_seq: 1,
-    production_worker_id: 3,
+    runtime_worker_id: 3,
     production_state: "running",
     running_execution_id: 77,
     running_version_id: 10,
@@ -3195,7 +3255,7 @@ it("shows an unvisited started-and-idle Adapter with the server-derived producti
     latest_version_id: 20,
     published_version_id: 20,
     published_version_seq: 2,
-    production_worker_id: 3,
+    runtime_worker_id: 3,
     production_state: "running",
     production_version_id: 10,
     production_version_seq: 1,
@@ -3308,7 +3368,7 @@ it("labels a stopped Catalog row with the last run instead of claiming it is run
     latest_version_id: 20,
     published_version_id: 20,
     published_version_seq: 2,
-    production_worker_id: 3,
+    runtime_worker_id: 3,
     production_state: "stopped",
     running_execution_id: null,
     running_version_id: null,
@@ -3346,7 +3406,7 @@ it("labels a stopped Catalog row with the last run instead of claiming it is run
 });
 
 it("blocks the publish confirmation when the gate rejects the version", async () => {
-  const adapter = makeAdapter({ latest_version_id: 10, production_worker_id: 3 });
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 3 });
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
     publishGateRoute(1, 10, {

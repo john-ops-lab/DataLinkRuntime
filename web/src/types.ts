@@ -17,7 +17,6 @@ export interface Adapter {
   published_version_id?: number | null;
   published_version_seq?: number | null;
   running_version_seq?: number | null;
-  production_worker_id?: number | null;
   production_state?: "idle" | "running" | "stopped";
   archived_at?: string | null;
   /** Derived from the active Production Execution; null when none exists. */
