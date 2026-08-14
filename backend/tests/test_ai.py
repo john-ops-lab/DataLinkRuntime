@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import WORKER_TOKEN
 from dlr.common.config import Settings, settings
 from dlr.control.ai import providers
 from dlr.control.models import AdapterVersion, AiModelSetting, Execution
@@ -36,7 +37,10 @@ def create_credential(
 
 
 def create_adapter(client: TestClient, name: str, language: str = "python") -> dict[str, Any]:
-    response = client.post("/api/adapters", json={"name": name, "language": language})
+    response = client.post(
+        "/api/adapters",
+        json={"name": name, "language": language, "adapter_type": "task"},
+    )
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -47,6 +51,20 @@ def save_version(
     *,
     code: str = "def handle(context, input):\n    return input\n",
 ) -> dict[str, Any]:
+    adapter = client.get(f"/api/adapters/{adapter_id}").json()
+    workers = client.get("/api/workers").json()
+    compatible = [
+        worker
+        for worker in workers
+        if worker["status"] == "online" and adapter["language"] in worker["capabilities"]
+    ]
+    if not compatible:
+        registered = client.post(
+            "/api/workers/register",
+            json={"name": f"ai-worker-{adapter_id}", "capabilities": [adapter["language"]]},
+            headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
+        )
+        assert registered.status_code == 200, registered.text
     response = client.post(
         f"/api/adapters/{adapter_id}/versions",
         json={"code": code, "requirements": "", "runtime_config": {}},
@@ -692,7 +710,7 @@ def test_assist_prompt_uses_language_contract_and_secret_names_only(
             "message": "forbidden lifecycle field",
             "candidate": {
                 **valid_output()["candidate"],  # type: ignore[dict-item]
-                "production_state": "running",
+                "adapter_type": "webhook",
             },
         },
         {
@@ -962,9 +980,9 @@ def test_assist_does_not_create_or_change_lifecycle_facts(
     after = api_client.get(f"/api/adapters/{adapter['id']}").json()
     assert counts() == before_counts == (1, 0)
     assert after["latest_version_id"] == before["latest_version_id"] == version["id"]
-    assert after["published_version_id"] == before["published_version_id"]
-    assert after["production_state"] == before["production_state"]
-    assert after["production_worker_id"] == before["production_worker_id"]
+    assert after["adapter_type"] == before["adapter_type"]
+    assert after["runtime_worker_id"] == before["runtime_worker_id"]
+    assert after["runtime_locked"] == before["runtime_locked"]
 
 
 def test_assist_requires_configuration(api_client: TestClient) -> None:

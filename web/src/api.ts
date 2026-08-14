@@ -2,10 +2,12 @@
 
 import type {
   Adapter,
+  AdapterLanguage,
   AdapterSchedule,
   AdapterScheduleDraft,
   AdapterWebhook,
   AdapterWebhookDraft,
+  AdapterType,
   AiAssistResponse,
   AiConnectionTestResult,
   AiConversationMessage,
@@ -117,7 +119,8 @@ export const api = {
   createAdapter: (payload: {
     name: string;
     description: string;
-    language: "python" | "javascript" | "java";
+    language: AdapterLanguage;
+    adapter_type: AdapterType;
   }): Promise<Adapter> =>
     request("/api/adapters", { method: "POST", body: JSON.stringify(payload) }),
 

@@ -294,6 +294,11 @@ def test_claim_payload_only_carries_bound_secrets(api_client: TestClient) -> Non
     set_bindings(api_client, bound["id"], [bound_binding])
 
     worker = register_worker(api_client, name="secret-worker")
+    for adapter in (bound, unbound):
+        updated = api_client.patch(
+            f"/api/adapters/{adapter['id']}", json={"runtime_worker_id": worker["id"]}
+        )
+        assert updated.status_code == 200, updated.text
 
     bound_execution = create_execution(api_client, bound["id"])
     response = claim(api_client, worker["id"])

@@ -23,9 +23,12 @@ def _validate_name(value: object) -> str:
 class AdapterCreate(BaseModel):
     """Request body for POST /api/adapters."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     description: str = ""
-    language: Literal["python", "javascript", "java"] = "python"
+    language: Literal["python", "javascript", "java"]
+    adapter_type: Literal["task", "webhook"]
 
     @field_validator("name", mode="before")
     @classmethod
@@ -36,15 +39,17 @@ class AdapterCreate(BaseModel):
 class AdapterUpdate(BaseModel):
     """Request body for PATCH /api/adapters/{adapter_id}.
 
-    Only metadata and the production Worker pointer are editable; version
-    pointers, language and timestamps are intentionally not part of this
-    schema. Sending ``production_worker_id: null`` explicitly clears it
+    Only metadata and the runtime Worker pointer are editable; adapter type,
+    language, Revision pointers and timestamps are intentionally absent.
+    Sending ``runtime_worker_id: null`` explicitly clears it
     (omitting the field leaves it unchanged).
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     description: str | None = None
-    production_worker_id: int | None = None
+    runtime_worker_id: int | None = None
 
     @field_validator("name", mode="before")
     @classmethod
@@ -77,21 +82,7 @@ class VersionCreate(BaseModel):
 
 
 class AdapterResponse(BaseModel):
-    """Adapter representation returned by the API.
-
-    ``production_version_id`` is the version locked by the current production
-    entry (set by Start, cleared by Stop). ``production_version_seq`` is its
-    display number. ``running_version_id`` / ``running_execution_id`` are
-    derived from the Adapter's active Production Execution (at most one,
-    enforced by the DB); both are None whenever production has no
-    pending/running Execution. The ``published_version_seq`` /
-    ``running_version_seq`` provide the Adapter-local display numbers without
-    forcing Catalog callers to fetch every version list. The
-    ``last_production_*`` fields retain the latest Production Execution's
-    minimal identity/status after it becomes terminal, so an open production
-    entry with no active child process can be distinguished from a failed or
-    timed-out run.
-    """
+    """Adapter representation after Publish / Production model removal."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -99,22 +90,12 @@ class AdapterResponse(BaseModel):
     name: str
     description: str
     language: str
+    adapter_type: str
     latest_version_id: int | None
-    published_version_id: int | None
-    published_version_seq: int | None = None
-    # M5.1: locked production version; set by Start, cleared by Stop.
-    production_version_id: int | None
-    production_version_seq: int | None = None
-    production_worker_id: int | None
-    production_state: str
+    runtime_worker_id: int | None
+    runtime_locked: bool = False
     archived_at: datetime | None
-    running_version_id: int | None = None
-    running_version_seq: int | None = None
     running_execution_id: int | None = None
-    last_production_execution_id: int | None = None
-    last_production_execution_status: str | None = None
-    last_production_version_id: int | None = None
-    last_production_version_seq: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -138,21 +119,12 @@ class VersionDetail(VersionSummary):
     runtime_config: dict[str, Any]
 
 
-class ProductionStopRequest(BaseModel):
-    """Request body for POST /api/adapters/{adapter_id}/production/stop.
-
-    ``wait`` only closes the production entry (the active Execution runs to
-    completion); ``terminate`` additionally cancels the active Execution.
-    """
-
-    mode: Literal["wait", "terminate"] = "wait"
-
-
 class CloneRequest(BaseModel):
     """Request body for POST /api/adapters/{adapter_id}/clone.
 
-    The clone copies the working copy (latest version) as its v1 plus the
-    credential binding references; it starts unpublished and not running.
+    The clone copies the latest Revision as its own Revision 1 plus shared
+    immutable Adapter facts and credential binding references. It has no
+    Execution and starts stopped.
     """
 
     name: str
@@ -162,24 +134,3 @@ class CloneRequest(BaseModel):
     @classmethod
     def normalize_name(cls, value: object) -> str:
         return _validate_name(value)
-
-
-class PublishGateLastTest(BaseModel):
-    """The most recent test run of the target version on the production Worker."""
-
-    execution_id: int
-    status: str
-    ended_at: datetime | None
-
-
-class PublishGateResponse(BaseModel):
-    """Publish gate evaluation for one target version (M3.2).
-
-    ``reason`` is None exactly when ``allowed`` is true; stable reason codes:
-    ``no_production_worker``, ``not_tested_on_production_worker``,
-    ``last_test_not_succeeded``.
-    """
-
-    allowed: bool
-    reason: str | None = None
-    last_test: PublishGateLastTest | None = None

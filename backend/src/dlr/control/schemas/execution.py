@@ -9,12 +9,14 @@ from pydantic import BaseModel, ConfigDict
 class ExecutionCreate(BaseModel):
     """Request body for POST /api/adapters/{adapter_id}/executions.
 
-    Any JSON value is a valid input, including JSON null (omitted).
-    ``version_id`` omitted/null runs the Adapter's latest version.
+    Any JSON value is a valid input, including JSON null (omitted). M5.4.1
+    always runs the latest saved Revision; historical Revision selection is
+    not accepted.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     input: Any = None
-    version_id: int | None = None
 
 
 class ExecutionResponse(BaseModel):

@@ -353,7 +353,10 @@ def register(client: TestClient, name: str, capabilities: list[str]) -> dict[str
 
 
 def create_adapter(client: TestClient, name: str, language: str) -> dict[str, object]:
-    response = client.post("/api/adapters", json={"name": name, "language": language})
+    response = client.post(
+        "/api/adapters",
+        json={"name": name, "language": language, "adapter_type": "task"},
+    )
     assert response.status_code == 201
     return response.json()
 
@@ -365,14 +368,14 @@ def test_worker_capability_is_hard_scheduling_constraint(api_client: TestClient)
 
     incompatible = api_client.patch(
         f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": python_worker["id"]},
+        json={"runtime_worker_id": python_worker["id"]},
     )
     assert incompatible.status_code == 409
     assert incompatible.json()["detail"]["code"] == "worker_capability_missing"
 
     compatible = api_client.patch(
         f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": js_worker["id"]},
+        json={"runtime_worker_id": js_worker["id"]},
     )
     assert compatible.status_code == 200
 
@@ -392,13 +395,9 @@ def test_execution_rejects_workers_without_language_capability(
 ) -> None:
     register(api_client, f"incompatible-{language}", capabilities)
     adapter = create_adapter(api_client, f"blocked-{language}", language)
-    version = api_client.post(
+    response = api_client.post(
         f"/api/adapters/{adapter['id']}/versions",
         json={"code": "// capability routing test"},
-    ).json()
-    response = api_client.post(
-        f"/api/adapters/{adapter['id']}/executions",
-        json={"version_id": version["id"]},
     )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "worker_capability_missing"
@@ -422,27 +421,24 @@ def test_single_compatible_worker_is_adopted_and_multiple_require_selection(
     register(api_client, "python-unrelated", ["python"])
     javascript = register(api_client, "javascript-compatible", ["javascript"])
     adapter = create_adapter(api_client, "auto-js", "javascript")
-    version = api_client.post(
+    version_response = api_client.post(
         f"/api/adapters/{adapter['id']}/versions",
         json={"code": "export function handle(c, i) { return i; }"},
-    ).json()
+    )
+    assert version_response.status_code == 201
     created = api_client.post(
         f"/api/adapters/{adapter['id']}/executions",
-        json={"version_id": version["id"]},
+        json={},
     )
     assert created.status_code == 202
     assert created.json()["target_worker_id"] == javascript["id"]
 
     second = register(api_client, "javascript-compatible-2", ["javascript"])
     other = create_adapter(api_client, "multi-js", "javascript")
-    other_version = api_client.post(
+    rejected = api_client.post(
         f"/api/adapters/{other['id']}/versions",
         json={"code": "export function handle(c, i) { return i; }"},
-    ).json()
-    rejected = api_client.post(
-        f"/api/adapters/{other['id']}/executions",
-        json={"version_id": other_version["id"]},
     )
     assert second["id"] != javascript["id"]
     assert rejected.status_code == 409
-    assert rejected.json()["detail"]["code"] == "production_worker_required"
+    assert rejected.json()["detail"]["code"] == "runtime_worker_required"

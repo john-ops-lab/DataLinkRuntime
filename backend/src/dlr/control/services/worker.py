@@ -90,7 +90,6 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
         runtime_config=version.runtime_config,
         input=execution.input,
         latest_version_id=adapter.latest_version_id,
-        published_version_id=adapter.published_version_id,
         execution_timeout_seconds=settings.execution_timeout_seconds,
         secrets=secrets_service.resolve_adapter_secrets(session, execution.adapter_id),
         index_url=package_source_service.resolve_default_index_url(

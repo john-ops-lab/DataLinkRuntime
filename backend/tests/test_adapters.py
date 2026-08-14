@@ -17,6 +17,8 @@ WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 def create_adapter(client: TestClient, name: str = "example-adapter", **extra: Any) -> dict:
     payload: dict[str, Any] = {"name": name, "description": extra.pop("description", "")}
     payload.update(extra)
+    payload.setdefault("language", "python")
+    payload.setdefault("adapter_type", "task")
     response = client.post("/api/adapters", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
@@ -29,6 +31,30 @@ def save_version(
     requirements: str = "",
     runtime_config: Any = None,
 ) -> dict:
+    adapter = client.get(f"/api/adapters/{adapter_id}").json()
+    if adapter.get("runtime_worker_id") is None:
+        workers = client.get("/api/workers").json()
+        compatible = [
+            worker
+            for worker in workers
+            if worker["status"] == "online" and adapter["language"] in worker["capabilities"]
+        ]
+        if not compatible:
+            response = client.post(
+                "/api/workers/register",
+                json={
+                    "name": "worker-1",
+                    "capabilities": [adapter["language"]],
+                },
+                headers=WORKER_HEADERS,
+            )
+            assert response.status_code == 200, response.text
+            compatible = [response.json()]
+        response = client.patch(
+            f"/api/adapters/{adapter_id}",
+            json={"runtime_worker_id": compatible[0]["id"]},
+        )
+        assert response.status_code == 200, response.text
     payload: dict[str, Any] = {"code": code, "requirements": requirements}
     if runtime_config is not None:
         payload["runtime_config"] = runtime_config
@@ -40,8 +66,7 @@ def save_version(
 def pass_publish_gate(
     client: TestClient, adapter_id: int, version_id: int, worker_name: str = "gate-worker"
 ) -> dict:
-    """Satisfy the M3.2 publish gate: configure the production Worker and
-    run one succeeded test of the target version on it."""
+    """Compatibility helper for tests that need one completed Manual run."""
     register = client.post(
         "/api/workers/register",
         json={"name": worker_name, "capabilities": ["python"]},
@@ -49,11 +74,9 @@ def pass_publish_gate(
     )
     assert register.status_code == 200, register.text
     worker = register.json()
-    patch = client.patch(f"/api/adapters/{adapter_id}", json={"production_worker_id": worker["id"]})
+    patch = client.patch(f"/api/adapters/{adapter_id}", json={"runtime_worker_id": worker["id"]})
     assert patch.status_code == 200, patch.text
-    execution = client.post(
-        f"/api/adapters/{adapter_id}/executions", json={"version_id": version_id}
-    )
+    execution = client.post(f"/api/adapters/{adapter_id}/executions", json={})
     assert execution.status_code == 202, execution.text
     claimed = client.post(
         f"/api/workers/{worker['id']}/tasks/claim",
@@ -78,8 +101,8 @@ def test_create_adapter_success(api_client: TestClient) -> None:
     assert body["name"] == "cmdb-sync"
     assert body["description"] == "sync cmdb"
     assert body["language"] == "python"
+    assert body["adapter_type"] == "task"
     assert body["latest_version_id"] is None
-    assert body["published_version_id"] is None
     assert body["created_at"]
     assert body["updated_at"]
 
@@ -106,21 +129,40 @@ def test_create_adapter_invalid_language_rejected(api_client: TestClient) -> Non
 def test_create_adapter_accepts_all_supported_languages(api_client: TestClient) -> None:
     for language in ("python", "javascript", "java"):
         response = api_client.post(
-            "/api/adapters", json={"name": f"adapter-{language}", "language": language}
+            "/api/adapters",
+            json={
+                "name": f"adapter-{language}",
+                "language": language,
+                "adapter_type": "task",
+            },
         )
         assert response.status_code == 201
         assert response.json()["language"] == language
 
 
-def test_create_adapter_language_defaults_to_python(api_client: TestClient) -> None:
-    response = api_client.post("/api/adapters", json={"name": "no-language"})
-    assert response.status_code == 201
-    assert response.json()["language"] == "python"
+def test_create_adapter_requires_language_and_type(api_client: TestClient) -> None:
+    assert api_client.post("/api/adapters", json={"name": "missing-both"}).status_code == 422
+    assert (
+        api_client.post(
+            "/api/adapters",
+            json={"name": "missing-type", "language": "python"},
+        ).status_code
+        == 422
+    )
+
+
+def test_create_adapter_accepts_task_and_webhook(api_client: TestClient) -> None:
+    for adapter_type in ("task", "webhook"):
+        body = create_adapter(api_client, name=adapter_type, adapter_type=adapter_type)
+        assert body["adapter_type"] == adapter_type
 
 
 def test_create_adapter_duplicate_name_conflict(api_client: TestClient) -> None:
     create_adapter(api_client, name="dup")
-    response = api_client.post("/api/adapters", json={"name": "dup"})
+    response = api_client.post(
+        "/api/adapters",
+        json={"name": "dup", "language": "python", "adapter_type": "task"},
+    )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "adapter_name_conflict"
 
@@ -162,7 +204,7 @@ def test_patch_adapter_name_conflict(api_client: TestClient) -> None:
 def test_patch_adapter_cannot_change_forbidden_fields(api_client: TestClient) -> None:
     created = create_adapter(api_client)
     version = save_version(api_client, created["id"])
-    # Foreign fields are ignored by the PATCH schema; pointers stay untouched.
+    # Immutable/derived fields are rejected instead of silently ignored.
     response = api_client.patch(
         f"/api/adapters/{created['id']}",
         json={
@@ -171,23 +213,24 @@ def test_patch_adapter_cannot_change_forbidden_fields(api_client: TestClient) ->
             "published_version_id": version["id"],
         },
     )
-    assert response.status_code == 200
-    body = response.json()
+    assert response.status_code == 422
+    body = api_client.get(f"/api/adapters/{created['id']}").json()
     assert body["language"] == "python"
     assert body["latest_version_id"] == version["id"]
-    assert body["published_version_id"] is None
 
 
-def test_delete_adapter_removes_versions(api_client: TestClient) -> None:
+def test_delete_adapter_soft_deletes_and_preserves_versions(api_client: TestClient) -> None:
     created = create_adapter(api_client)
     version = save_version(api_client, created["id"])
 
     response = api_client.delete(f"/api/adapters/{created['id']}")
     assert response.status_code == 204
 
-    assert api_client.get(f"/api/adapters/{created['id']}").status_code == 404
-    gone_version = api_client.get(f"/api/adapters/{created['id']}/versions/{version['id']}")
-    assert gone_version.status_code == 404
+    deleted = api_client.get(f"/api/adapters/{created['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["archived_at"] is not None
+    kept_version = api_client.get(f"/api/adapters/{created['id']}/versions/{version['id']}")
+    assert kept_version.status_code == 200
 
 
 def test_delete_adapter_not_found(api_client: TestClient) -> None:
@@ -207,7 +250,6 @@ def test_save_first_version_gets_seq_1_and_becomes_latest(api_client: TestClient
 
     adapter = api_client.get(f"/api/adapters/{created['id']}").json()
     assert adapter["latest_version_id"] == version["id"]
-    assert adapter["published_version_id"] is None
 
 
 def test_consecutive_saves_increment_seq_and_update_latest(api_client: TestClient) -> None:
@@ -287,73 +329,20 @@ def test_version_of_other_adapter_not_found(api_client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "version_not_found"
 
 
-# --- Publish ----------------------------------------------------------------
+# --- Removed Publish / Production API --------------------------------------
 
 
-def test_publish_sets_published_without_touching_latest(api_client: TestClient) -> None:
-    created = create_adapter(api_client)
-    first = save_version(api_client, created["id"], code="v1")
-    second = save_version(api_client, created["id"], code="v2")
-    pass_publish_gate(api_client, created["id"], first["id"])
-
-    response = api_client.post(f"/api/adapters/{created['id']}/versions/{first['id']}/publish")
-    assert response.status_code == 200
-    body = response.json()
-    # Publishing a historical version is allowed; latest stays untouched.
-    assert body["published_version_id"] == first["id"]
-    assert body["latest_version_id"] == second["id"]
-
-
-def test_publish_latest_version(api_client: TestClient) -> None:
+def test_publish_and_production_routes_are_removed(api_client: TestClient) -> None:
     created = create_adapter(api_client)
     version = save_version(api_client, created["id"])
-    pass_publish_gate(api_client, created["id"], version["id"])
-
-    response = api_client.post(f"/api/adapters/{created['id']}/versions/{version['id']}/publish")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["published_version_id"] == version["id"]
-    assert body["latest_version_id"] == version["id"]
-
-
-def test_publish_same_version_is_idempotent(api_client: TestClient) -> None:
-    created = create_adapter(api_client)
-    version = save_version(api_client, created["id"])
-    pass_publish_gate(api_client, created["id"], version["id"])
-    path = f"/api/adapters/{created['id']}/versions/{version['id']}/publish"
-
-    assert api_client.post(path).status_code == 200
-    response = api_client.post(path)
-    assert response.status_code == 200
-    assert response.json()["published_version_id"] == version["id"]
-
-
-def test_publish_unknown_version_not_found(api_client: TestClient) -> None:
-    created = create_adapter(api_client)
-    response = api_client.post(f"/api/adapters/{created['id']}/versions/99999/publish")
-    assert response.status_code == 404
-    assert response.json()["detail"]["code"] == "version_not_found"
-
-
-def test_publish_version_of_other_adapter_not_found(api_client: TestClient) -> None:
-    first = create_adapter(api_client, name="first")
-    second = create_adapter(api_client, name="second")
-    version = save_version(api_client, first["id"])
-
-    response = api_client.post(f"/api/adapters/{second['id']}/versions/{version['id']}/publish")
-    assert response.status_code == 404
-    assert response.json()["detail"]["code"] == "version_not_found"
-
-
-def test_publish_does_not_modify_version_content(api_client: TestClient) -> None:
-    created = create_adapter(api_client)
-    version = save_version(api_client, created["id"], code="original")
-
-    api_client.post(f"/api/adapters/{created['id']}/versions/{version['id']}/publish")
-
-    detail = api_client.get(f"/api/adapters/{created['id']}/versions/{version['id']}").json()
-    assert detail["code"] == "original"
-    assert detail["seq"] == 1
+    assert (
+        api_client.post(
+            f"/api/adapters/{created['id']}/versions/{version['id']}/publish"
+        ).status_code
+        == 404
+    )
+    assert api_client.post(f"/api/adapters/{created['id']}/production/start").status_code == 404
+    assert api_client.post(f"/api/adapters/{created['id']}/unpublish").status_code == 404
 
 
 # --- Concurrency contract ---------------------------------------------------
@@ -370,6 +359,19 @@ def test_concurrent_saves_keep_seq_unique_and_latest_correct(
     """
     created = create_adapter(api_client, name="concurrent-save")
     adapter_id = created["id"]
+    worker_response = api_client.post(
+        "/api/workers/register",
+        json={"name": "concurrent-save-worker", "capabilities": ["python"]},
+        headers=WORKER_HEADERS,
+    )
+    assert worker_response.status_code == 200
+    assert (
+        api_client.patch(
+            f"/api/adapters/{adapter_id}",
+            json={"runtime_worker_id": worker_response.json()["id"]},
+        ).status_code
+        == 200
+    )
 
     start = threading.Barrier(2)
     saved: list[tuple[str, int, int]] = []  # (tag, version_id, seq)

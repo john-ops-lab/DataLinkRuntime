@@ -24,6 +24,7 @@ import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   Adapter,
   AdapterLanguage,
+  AdapterType,
   AiCandidate,
   PublishGate,
   VersionDetail,
@@ -486,6 +487,7 @@ function AdapterConsole() {
     createdName: string,
     createdDescription: string,
     language: AdapterLanguage,
+    adapterType: AdapterType,
   ): Promise<boolean> {
     if (busy) {
       return false;
@@ -500,6 +502,7 @@ function AdapterConsole() {
         name: createdName,
         description: createdDescription,
         language,
+        adapter_type: adapterType,
       });
       await refreshAdapters();
       await loadAdapterContent(created);

@@ -419,7 +419,7 @@ def run(
     }
     # The language-specific platform default source (resolved at claim time)
     # wins; Worker environment variables remain compatibility fallbacks. Test
-    # and production runs share this exact strategy.
+    # and triggered runs share this exact strategy.
     fallback_source = {
         "python": config.pypi_index_url,
         "javascript": config.npm_registry_url,

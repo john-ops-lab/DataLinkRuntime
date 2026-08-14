@@ -285,9 +285,8 @@ class Agent:
     def _cleanup_version_environments(self, task: dict[str, Any]) -> None:
         adapter_id = int(task["adapter_id"])
         keep = {int(task["version_id"])}
-        for pointer in ("latest_version_id", "published_version_id"):
-            if task.get(pointer) is not None:
-                keep.add(int(task[pointer]))
+        if task.get("latest_version_id") is not None:
+            keep.add(int(task["latest_version_id"]))
         with self._state_lock:
             # Any version with an active count > 0 must be kept.
             for (active_adapter_id, active_version_id), count in self._active_versions.items():

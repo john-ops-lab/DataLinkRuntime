@@ -77,7 +77,6 @@ class TaskPayload(BaseModel):
     runtime_config: dict[str, Any]
     input: Any
     latest_version_id: int | None
-    published_version_id: int | None
     execution_timeout_seconds: int
     secrets: dict[str, str] = Field(default_factory=dict)
     # Default source URL resolved by Adapter language at claim time (auth may

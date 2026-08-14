@@ -43,7 +43,6 @@ def make_payload(
         "runtime_config": runtime_config or {},
         "input": input_value,
         "latest_version_id": 42,
-        "published_version_id": None,
         "execution_timeout_seconds": timeout,
     }
 

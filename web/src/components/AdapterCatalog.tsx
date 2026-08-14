@@ -12,7 +12,7 @@ import {
   productionStateLabel,
 } from "../status";
 import { LANGUAGE_LABELS } from "../languages";
-import type { Adapter, AdapterLanguage, Worker } from "../types";
+import type { Adapter, AdapterLanguage, AdapterType, Worker } from "../types";
 
 interface AdapterCatalogProps {
   adapters: Adapter[];
@@ -23,7 +23,12 @@ interface AdapterCatalogProps {
   onSelect: (adapter: Adapter) => void;
   // Returns true only when the adapter was actually created; the form is cleared
   // and closed only on real success, so failures keep the user's input editable.
-  onCreate: (name: string, description: string, language: AdapterLanguage) => Promise<boolean>;
+  onCreate: (
+    name: string,
+    description: string,
+    language: AdapterLanguage,
+    adapterType: AdapterType,
+  ) => Promise<boolean>;
   // Version lists are loaded only for selected Adapters. Known id -> seq
   // mappings are cached by App; unknown ids stay explicit as #id instead of
   // causing one list request per Catalog row.
@@ -139,6 +144,7 @@ export default function AdapterCatalog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [language, setLanguage] = useState<AdapterLanguage>("python");
+  const [adapterType, setAdapterType] = useState<AdapterType>("task");
   const [submitting, setSubmitting] = useState(false);
   const workersById = new Map(workers.map((worker) => [worker.id, worker]));
 
@@ -150,11 +156,12 @@ export default function AdapterCatalog({
     }
     setSubmitting(true);
     try {
-      const created = await onCreate(trimmed, description, language);
+      const created = await onCreate(trimmed, description, language, adapterType);
       if (created) {
         setName("");
         setDescription("");
         setLanguage("python");
+        setAdapterType("task");
         setCreating(false);
       }
     } finally {
@@ -184,6 +191,7 @@ export default function AdapterCatalog({
           disabled={busy}
           onClick={() => {
             setLanguage("python");
+            setAdapterType("task");
             setCreating(true);
           }}
         >
@@ -267,6 +275,18 @@ export default function AdapterCatalog({
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
           />
+          <div className="settings-field" role="radiogroup" aria-label="Adapter 类型">
+            <span className="settings-field-label">Adapter 类型</span>
+            <Radio.Group
+              data-testid="new-adapter-type"
+              value={adapterType}
+              disabled={busy}
+              onChange={(event) => setAdapterType(event.target.value as AdapterType)}
+            >
+              <Radio value="task">任务型 Adapter</Radio>
+              <Radio value="webhook">Webhook Adapter</Radio>
+            </Radio.Group>
+          </div>
           <div
             className="settings-field"
             role="radiogroup"

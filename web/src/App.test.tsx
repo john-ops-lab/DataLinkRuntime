@@ -167,6 +167,7 @@ function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
     name: "adapter-a",
     description: "",
     language: "python",
+    adapter_type: "task",
     latest_version_id: null,
     published_version_id: null,
     created_at: "2026-08-11T00:00:00Z",
@@ -539,6 +540,7 @@ it("creates an adapter and selects it", async () => {
     name: "cmdb-sync",
     description: "sync cmdb",
     language: "python",
+    adapter_type: "task",
   });
 });
 
@@ -557,7 +559,11 @@ it("creates a JavaScript adapter with the language starter and Monaco mode", asy
       match: "/api/adapters",
       respond: (body) => {
         createBody = body ?? "";
-        const created = makeAdapter({ name: "node-adapter", language: "javascript" });
+        const created = makeAdapter({
+          name: "node-adapter",
+          language: "javascript",
+          adapter_type: "webhook",
+        });
         adapters.push(created);
         return { status: 201, body: created };
       },
@@ -575,10 +581,12 @@ it("creates a JavaScript adapter with the language starter and Monaco mode", asy
     target: { value: "node-adapter" },
   });
   fireEvent.click(screen.getByText("JavaScript"));
+  fireEvent.click(screen.getByRole("radio", { name: "Webhook Adapter" }));
   fireEvent.click(screen.getByTestId("create-adapter"));
 
   const editor = await screen.findByTestId("code-editor");
   expect(JSON.parse(createBody).language).toBe("javascript");
+  expect(JSON.parse(createBody).adapter_type).toBe("webhook");
   expect((editor as HTMLTextAreaElement).value).toContain("export async function handle");
   expect(editor.getAttribute("data-monaco-language")).toBe("javascript");
   expect(screen.getByText("npm 依赖")).toBeTruthy();

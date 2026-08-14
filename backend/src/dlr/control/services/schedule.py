@@ -15,16 +15,16 @@ inside the final locks.
 
 Catch-up contract (single latest run, never queued):
 
-- Worker effectively offline / an active production Execution (transient
+- Worker effectively offline / an active Execution (transient
   gate failures): the planned point stays due; nothing is written and
   nothing is queued. On recovery the latest planned point up to now is
   created at most once, never replayed per period.
 - Control downtime: no ticks run; on recovery the latest planned point in
   the missed window is created at most once.
-- Structural gate failures (archived, production entry not running, missing
-  version/Worker pointers, capability mismatch, oversized input) consume the
+- Structural gate failures (deleted, wrong Adapter type, missing Revision/Worker
+  pointers, capability mismatch, oversized input) consume the
   point: the cursor advances and the point is skipped without queueing.
-- Explicit Stop / disable / cron edit / enable re-base the cursor to the
+- Explicit disable / cron edit / enable re-base the cursor to the
   next future planned point, so the missed window is skipped entirely.
 """
 
@@ -43,9 +43,8 @@ from sqlalchemy.orm import Session
 from dlr.common.config import settings
 from dlr.control.models import Adapter, AdapterSchedule, Execution, Worker
 from dlr.control.schemas.schedule import ScheduleUpsert
-from dlr.control.services import worker_availability
+from dlr.control.services import adapter_runtime, worker_availability
 from dlr.control.services.adapter import (
-    _active_production_execution,
     _require_not_archived,
     domain_error,
 )
@@ -150,7 +149,8 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
-    # Archived Adapters stay read-only (M3.2 contract); GET keeps viewing.
+    if adapter.adapter_type != "task":
+        raise domain_error(409, "adapter_type_mismatch", "Only task Adapters support Schedule")
     _require_not_archived(adapter)
     try:
         cron = validate_cron(data.cron)
@@ -167,11 +167,22 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
             "execution_input_too_large",
             f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
         )
-    now = worker_availability.current_time(session)
-    next_run_at = next_run_after(cron, tz_name, now) if data.enabled else None
     schedule = session.scalar(
         select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter_id).with_for_update()
     )
+    if adapter_runtime.adapter_runtime_locked(session, adapter):
+        disable_only = (
+            schedule is not None
+            and schedule.enabled
+            and not data.enabled
+            and cron == schedule.cron
+            and tz_name == schedule.timezone
+            and data.input == schedule.input
+        )
+        if not disable_only:
+            adapter_runtime.require_runtime_unlocked(session, adapter)
+    now = worker_availability.current_time(session)
+    next_run_at = next_run_after(cron, tz_name, now) if data.enabled else None
     if schedule is None:
         schedule = AdapterSchedule(adapter_id=adapter_id)
         session.add(schedule)
@@ -185,39 +196,21 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
     return schedule
 
 
-def rebase_enabled_schedule(session: Session, adapter_id: int, now: datetime) -> None:
-    """Re-base the Adapter's enabled Schedule cursor to the next future point.
-
-    Called inside the Start transaction (M5.2): after a Stop → Start cycle
-    the Schedule begins from the next future planned point and never catches
-    up the points missed while the production entry was closed.
-    """
-    schedule = session.scalar(
-        select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter_id).with_for_update()
-    )
-    if schedule is None or not schedule.enabled:
-        return
-    schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
-
-
 # --- Scheduler tick ---------------------------------------------------------------
 
 
 def _structural_gate_failure(session: Session, adapter: Adapter, schedule: AdapterSchedule) -> bool:
     """Explicit lifecycle/configuration states that consume the due point.
 
-    These reflect deliberate administrator state (archived, production entry
-    closed) or broken configuration; a due point under them is skipped by
-    advancing the cursor, never queued. Stop / disable / edit additionally
+    These reflect deliberate administrator state or broken configuration; a due point is skipped by
+    advancing the cursor, never queued. Disable / edit additionally
     re-base the cursor, so their closed windows are never caught up.
     """
-    if adapter.archived_at is not None:
+    if adapter.archived_at is not None or adapter.adapter_type != "task":
         return True
-    if adapter.production_state != "running":
+    if adapter.latest_version_id is None or adapter.runtime_worker_id is None:
         return True
-    if adapter.production_version_id is None or adapter.production_worker_id is None:
-        return True
-    worker = session.get(Worker, adapter.production_worker_id)
+    worker = session.get(Worker, adapter.runtime_worker_id)
     if worker is None or adapter.language not in worker.capabilities:
         return True
     # Defensive re-validation: an oversized stored input never executes.
@@ -227,14 +220,14 @@ def _structural_gate_failure(session: Session, adapter: Adapter, schedule: Adapt
 def _transient_gate_failure(session: Session, adapter: Adapter, *, now: datetime) -> bool:
     """Temporary conditions that keep the planned point due (no queueing).
 
-    A stale Worker or a still-running production Execution recovers on its
+    A stale Worker or a still-running Execution recovers on its
     own; the point must stay due so recovery creates exactly the latest
     planned point up to now, immediately.
     """
-    worker = session.get(Worker, cast(int, adapter.production_worker_id))
+    worker = session.get(Worker, cast(int, adapter.runtime_worker_id))
     if worker is None or not worker_availability.is_effectively_online(worker, now=now):
         return True
-    return _active_production_execution(session, adapter.id) is not None
+    return adapter_runtime.active_execution(session, adapter.id) is not None
 
 
 def process_due_schedule(
@@ -264,17 +257,17 @@ def process_due_schedule(
             session.add(
                 Execution(
                     adapter_id=adapter.id,
-                    version_id=adapter.production_version_id,
+                    version_id=adapter.latest_version_id,
                     trigger="schedule",
                     status="pending",
-                    target_worker_id=adapter.production_worker_id,
+                    target_worker_id=adapter.runtime_worker_id,
                     input=schedule.input,
                     scheduled_for=due_point,
                 )
             )
             session.flush()
     except IntegrityError:
-        # Lost a race (duplicate planned point or an active Production
+        # Lost a race (duplicate planned point or an active
         # Execution created concurrently): the savepoint rolled back, the
         # cursor advance still commits, so the point is never retried.
         logger.info(

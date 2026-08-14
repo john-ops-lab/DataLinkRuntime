@@ -13,7 +13,7 @@ Contracts kept by this model:
   the execution-history delete protection.
 - ``credential_id`` references a token-type Credential with RESTRICT: a
   Credential still used by a Webhook can never be deleted, so the
-  production ingress can never silently become unauthenticated.
+  external ingress can never silently become unauthenticated.
 """
 
 from datetime import datetime
