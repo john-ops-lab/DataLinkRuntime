@@ -183,9 +183,6 @@ export const api = {
   archiveAdapter: (adapterId: number): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}/archive`, { method: "POST" }),
 
-  restoreAdapter: (adapterId: number): Promise<Adapter> =>
-    request(`/api/adapters/${adapterId}/restore`, { method: "POST" }),
-
   /** Copy the Adapter: working copy becomes v1, unpublished and not running. */
   cloneAdapter: (
     adapterId: number,
@@ -238,12 +235,15 @@ export const api = {
 
   listExecutions: (
     adapterId: number,
-    options: { limit?: number; before_id?: number } = {},
+    options: { limit?: number; before_id?: number; trigger?: "manual" | "schedule" | "webhook" } = {},
   ): Promise<ExecutionHistoryPage> => {
     const params = new URLSearchParams();
     params.set("limit", String(options.limit ?? 50));
     if (options.before_id !== undefined) {
       params.set("before_id", String(options.before_id));
+    }
+    if (options.trigger !== undefined) {
+      params.set("trigger", options.trigger);
     }
     return request(`/api/adapters/${adapterId}/executions?${params.toString()}`);
   },

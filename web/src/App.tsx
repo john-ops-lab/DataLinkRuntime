@@ -564,23 +564,6 @@ function AdapterConsole() {
     }
   }
 
-  async function handleRestore() {
-    if (!selected || busy) {
-      return;
-    }
-    setBusy(true);
-    try {
-      setError(null);
-      const refreshed = await api.restoreAdapter(selected.id);
-      setSelected(refreshed);
-      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function handleClone() {
     if (!selected || busy) {
       return;
@@ -985,6 +968,7 @@ function AdapterConsole() {
                       <ExecutionHistoryPanel
                         key={selected.id}
                         adapterId={selected.id}
+                        trigger={selected.adapter_type === "webhook" ? "webhook" : undefined}
                         recordLabel={selected.adapter_type === "webhook" ? "调用记录" : "执行记录"}
                       />
                     ),
@@ -1023,7 +1007,6 @@ function AdapterConsole() {
         onDescriptionChange={setDescription}
         onUpdate={() => void handleUpdateDetails()}
         onDelete={() => void handleDelete()}
-        onRestore={() => void handleRestore()}
         onClone={() => void handleClone()}
       />
 

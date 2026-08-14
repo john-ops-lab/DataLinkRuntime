@@ -352,7 +352,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                     (key) => !boundSecretKeys.has(key),
                   );
             const applyBlockedReason = props.adapter?.archived_at
-              ? "Adapter 已归档，请先在设置中恢复"
+              ? "Adapter 已归档，Candidate 只能查看，不能应用"
               : !props.contentReady
                 ? "Working Copy 尚未加载完成，请稍后重试"
                 : props.busy

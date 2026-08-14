@@ -1402,7 +1402,7 @@ function consoleWithVersionRoutes(adapter: Adapter, version: VersionDetail): Rou
   ];
 }
 
-it("lists execution history with cursor pagination and opens the detail drawer", async () => {
+it("lists unfiltered Task execution history with cursor pagination and opens detail", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const pageOne = {
     items: [makeSummary({ id: 6, version_seq: 7, worker_id: 3, worker_name: "worker-main" })],
@@ -1414,7 +1414,7 @@ it("lists execution history with cursor pagination and opens the detail drawer",
   };
   const detail = makeExecution({ id: 6, worker_id: 3, status: "succeeded", input: { k: 1 }, output: { ok: true } });
   const secondDetail = makeExecution({ id: 4, worker_id: 4, status: "failed", input: { k: 2 } });
-  stubFetch([
+  const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
     {
       method: "GET",
@@ -1432,6 +1432,10 @@ it("lists execution history with cursor pagination and opens the detail drawer",
   // History is only requested when the tab is activated.
   fireEvent.click(screen.getByText("执行记录"));
   expect(await screen.findAllByTestId("history-row")).toHaveLength(1);
+  const firstHistoryUrl = String(
+    fetchMock.mock.calls.find(([url]) => String(url).startsWith("/api/adapters/1/executions?"))?.[0],
+  );
+  expect(firstHistoryUrl).not.toContain("trigger=");
 
   fireEvent.click(screen.getByTestId("history-load-more"));
   await waitFor(() => {
@@ -2420,41 +2424,55 @@ it("sends at most the latest eight visible role/content messages", async () => {
   ).toBe(true);
 });
 
-it("keeps archived Adapter editors read-only and disables Candidate Apply", async () => {
-  const archived = makeAdapter({ archived_at: "2026-08-11T01:00:00Z" });
-  stubFetch([
-    healthRoute({ status: "ok", database: true }),
-    { method: "GET", match: "/api/adapters", respond: () => ({ body: [archived] }) },
-    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
-    aiBindingsRoute(1),
-    {
-      method: "POST",
-      match: "/api/adapters/1/ai/assist",
-      respond: () => ({ body: { message: "只读候选", candidate: AI_CANDIDATE } }),
-    },
-  ]);
-  render(<App />);
-  await screen.findByTestId("adapter-catalog");
-  fireEvent.click(screen.getByText("已归档"));
-  fireEvent.click(await screen.findByTestId("adapter-item"));
-  await screen.findByTestId("code-editor");
-  expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true);
-  expect((screen.getByTestId("requirements-input") as HTMLTextAreaElement).disabled).toBe(true);
-  fireEvent.click(screen.getByText("运行参数（JSON）"));
-  expect((screen.getByTestId("runtime-config-input") as HTMLTextAreaElement).disabled).toBe(true);
+it.each(["task", "webhook"] as const)(
+  "keeps archived %s Adapter read-only without a restore action",
+  async (adapterType) => {
+    const archived = makeAdapter({
+      adapter_type: adapterType,
+      archived_at: "2026-08-11T01:00:00Z",
+    });
+    stubFetch([
+      healthRoute({ status: "ok", database: true }),
+      { method: "GET", match: "/api/adapters", respond: () => ({ body: [archived] }) },
+      { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+      aiBindingsRoute(1),
+      {
+        method: "POST",
+        match: "/api/adapters/1/ai/assist",
+        respond: () => ({ body: { message: "只读候选", candidate: AI_CANDIDATE } }),
+      },
+    ]);
+    render(<App />);
+    await screen.findByTestId("adapter-catalog");
+    fireEvent.click(screen.getByText("已归档"));
+    fireEvent.click(await screen.findByTestId("adapter-item"));
+    await screen.findByTestId("code-editor");
+    expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByTestId("requirements-input") as HTMLTextAreaElement).disabled).toBe(true);
+    fireEvent.click(screen.getByText("运行参数（JSON）"));
+    expect((screen.getByTestId("runtime-config-input") as HTMLTextAreaElement).disabled).toBe(true);
 
-  await openAiAssistant();
-  fireEvent.change(screen.getByTestId("ai-message-input"), {
-    target: { value: "解释并建议" },
-  });
-  fireEvent.click(screen.getByTestId("ai-send"));
-  await screen.findByTestId("ai-archived-apply-blocked");
-  const applyButton = screen.getByTestId("ai-apply-candidate") as HTMLButtonElement;
-  expect(applyButton.disabled).toBe(true);
-  expect(applyButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
-    "请先在设置中恢复",
-  );
-});
+    await openAiAssistant();
+    fireEvent.change(screen.getByTestId("ai-message-input"), {
+      target: { value: "解释并建议" },
+    });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await screen.findByTestId("ai-archived-apply-blocked");
+    const applyButton = screen.getByTestId("ai-apply-candidate") as HTMLButtonElement;
+    expect(applyButton.disabled).toBe(true);
+    expect(applyButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
+      "只能查看，不能应用",
+    );
+
+    fireEvent.click(screen.getByTestId("adapter-settings"));
+    await screen.findByTestId("archived-settings-readonly");
+    expect((screen.getByTestId("adapter-name") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId("adapter-description") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByTestId("restore-adapter")).toBeNull();
+    expect(screen.queryByTestId("delete-adapter")).toBeNull();
+    expect(screen.queryByTestId("clone-adapter")).toBeNull();
+  },
+);
 
 it("configures one AI model with manual Model ID, refresh, test, and default reasoning", async () => {
   let refreshBody = "";
@@ -2588,6 +2606,44 @@ it("shows the Webhook starter and only 编辑 / 运行设置 / 调用记录", as
   expect(screen.getByRole("tab", { name: "运行设置" })).toBeDefined();
   expect(screen.getByRole("tab", { name: "调用记录" })).toBeDefined();
   expect(document.body.textContent).not.toMatch(/Publish|Published|Production|测试运行|触发器|Cron|Timezone/);
+});
+
+it("requests Webhook call history with a server-side trigger filter", async () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+  });
+  const legacyManual = makeSummary({ id: 30, trigger: "manual" });
+  const webhookCall = makeSummary({ id: 31, trigger: "webhook" });
+  const historyUrls: string[] = [];
+  stubFetch([
+    ...webhookConsoleRoutes(adapter),
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: (_body, url) => {
+        historyUrls.push(url);
+        return {
+          body: {
+            items: url.includes("trigger=webhook")
+              ? [webhookCall]
+              : [legacyManual, webhookCall],
+            next_before_id: null,
+          },
+        };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "调用记录" }));
+
+  expect(await screen.findAllByTestId("history-row")).toHaveLength(1);
+  expect(historyUrls).toHaveLength(1);
+  expect(historyUrls[0]).toContain("trigger=webhook");
+  expect(document.body.textContent).toContain("#31");
+  expect(document.body.textContent).not.toContain("#30");
 });
 
 it("edits only the URL path, saves Worker and Token, then starts receiving", async () => {

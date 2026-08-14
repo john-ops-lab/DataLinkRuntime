@@ -17,7 +17,6 @@ interface Props {
   onDescriptionChange: (value: string) => void;
   onUpdate: () => void;
   onDelete: () => void;
-  onRestore: () => void;
   onClone: () => void;
 }
 
@@ -48,18 +47,24 @@ export default function AdapterSettingsDrawer(props: Props) {
           </label>
           <Button type="primary" data-testid="update-details" disabled={props.busy || !props.contentReady || archived} onClick={props.onUpdate}>更新信息</Button>
           <Divider />
-          <Space direction="vertical" className="settings-lifecycle-actions">
-            <Button data-testid="clone-adapter" disabled={props.busy || archived} onClick={props.onClone}>复制 Adapter</Button>
-            {archived ? (
-              <Button data-testid="restore-adapter" disabled={props.busy} onClick={props.onRestore}>恢复 Adapter</Button>
-            ) : (
+          {archived ? (
+            <Alert
+              type="info"
+              showIcon
+              data-testid="archived-settings-readonly"
+              message="已归档 Adapter 仅支持查看"
+              description="当前版本不提供恢复操作。Revision 与 Execution 历史仍会保留。"
+            />
+          ) : (
+            <Space direction="vertical" className="settings-lifecycle-actions">
+              <Button data-testid="clone-adapter" disabled={props.busy} onClick={props.onClone}>复制 Adapter</Button>
               <Button danger data-testid="delete-adapter" disabled={props.busy || adapter.runtime_locked === true} onClick={props.onDelete}>删除 Adapter</Button>
-            )}
-          </Space>
+            </Space>
+          )}
           {adapter.runtime_locked === true && (
             <Alert type="warning" showIcon message={adapter.adapter_type === "webhook" ? "接收中或调用活跃期间不能删除 Adapter。" : "定时启用或 Execution 活跃期间不能删除 Adapter。"} />
           )}
-          <p className="settings-danger-hint">删除会将 Adapter 标记为只读，并保留 Revision 与 Execution 历史。</p>
+          {!archived && <p className="settings-danger-hint">删除会将 Adapter 标记为只读，并保留 Revision 与 Execution 历史。</p>}
         </div>
       )}
     </Drawer>

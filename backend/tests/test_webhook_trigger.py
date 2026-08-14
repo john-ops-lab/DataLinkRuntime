@@ -609,3 +609,64 @@ def test_retention_never_deletes_task_or_active_execution(
         )
         active = session.get(Execution, accepted.json()["execution_id"])
         assert active is not None and active.status == "pending"
+
+
+def test_webhook_history_filter_excludes_legacy_manual_runs_and_keeps_cursor_paging(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter, version, worker, _, _ = setup_webhook(
+        api_client, "webhook-filtered-history", enabled=False
+    )
+    webhook_ids: list[int] = []
+    all_ids: list[int] = []
+    with session_factory.begin() as session:
+        for trigger in ("manual", "webhook", "manual", "webhook", "webhook"):
+            execution = Execution(
+                adapter_id=adapter["id"],
+                version_id=version["id"],
+                trigger=trigger,
+                status="succeeded",
+                target_worker_id=worker["id"],
+                input={},
+            )
+            session.add(execution)
+            session.flush()
+            all_ids.append(execution.id)
+            if trigger == "webhook":
+                webhook_ids.append(execution.id)
+
+    first = api_client.get(
+        f"/api/adapters/{adapter['id']}/executions",
+        params={"trigger": "webhook", "limit": 2},
+    )
+    assert first.status_code == 200
+    first_page = first.json()
+    assert [item["id"] for item in first_page["items"]] == list(reversed(webhook_ids[-2:]))
+    assert all(item["trigger"] == "webhook" for item in first_page["items"])
+    assert first_page["next_before_id"] == webhook_ids[-2]
+
+    second = api_client.get(
+        f"/api/adapters/{adapter['id']}/executions",
+        params={
+            "trigger": "webhook",
+            "limit": 2,
+            "before_id": first_page["next_before_id"],
+        },
+    )
+    assert second.status_code == 200
+    second_page = second.json()
+    assert [item["id"] for item in second_page["items"]] == [webhook_ids[0]]
+    assert second_page["next_before_id"] is None
+
+    unfiltered = api_client.get(f"/api/adapters/{adapter['id']}/executions").json()
+    assert [item["id"] for item in unfiltered["items"]] == list(reversed(all_ids))
+
+
+def test_history_rejects_unknown_trigger_filter(api_client: TestClient) -> None:
+    adapter = create_adapter(api_client, name="webhook-history-filter", adapter_type="webhook")
+    response = api_client.get(
+        f"/api/adapters/{adapter['id']}/executions",
+        params={"trigger": "production"},
+    )
+    assert response.status_code == 422

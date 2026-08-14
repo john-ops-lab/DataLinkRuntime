@@ -1,6 +1,6 @@
 """Execution management endpoints of the Control Node (admin-facing)."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -60,6 +60,7 @@ def list_executions(
     session: DbSession,
     limit: int = execution_service.DEFAULT_HISTORY_LIMIT,
     before_id: int | None = None,
+    trigger: Literal["manual", "schedule", "webhook"] | None = None,
 ) -> ExecutionHistoryPage:
     """Cursor-paged execution history of one Adapter, newest first.
 
@@ -67,6 +68,10 @@ def list_executions(
     included; ``GET /api/executions/{id}`` loads a full detail.
     """
     items, next_before_id = execution_service.list_adapter_executions(
-        session, adapter_id, limit=limit, before_id=before_id
+        session,
+        adapter_id,
+        limit=limit,
+        before_id=before_id,
+        trigger=trigger,
     )
     return ExecutionHistoryPage(items=items, next_before_id=next_before_id)
