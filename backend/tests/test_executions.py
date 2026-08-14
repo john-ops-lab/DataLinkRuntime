@@ -14,6 +14,9 @@ WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 
 
 def register_worker(client: TestClient, name: str = "execution-worker") -> dict:
+    existing = client.get("/api/workers").json()
+    if existing:
+        return existing[0]
     response = client.post(
         "/api/workers/register",
         json={"name": name, "capabilities": ["python"]},
@@ -46,23 +49,26 @@ def test_create_execution_binds_latest_version(api_client: TestClient) -> None:
     assert execution["started_at"] is None
     assert execution["ended_at"] is None
 
-    # A later Save must not move the already-created Execution.
+    # Saving is locked while active; after the Execution reaches a terminal
+    # state, a later Revision must not move the already-created audit fact.
+    assert api_client.post(f"/api/executions/{execution['id']}/cancel").status_code == 200
     save_version(api_client, adapter["id"], code="# v3\n")
     fetched = api_client.get(f"/api/executions/{execution['id']}").json()
     assert fetched["version_id"] == v2["id"]
     assert v1["id"] != v2["id"]
 
 
-def test_create_execution_explicit_historical_version(api_client: TestClient) -> None:
+def test_create_execution_rejects_historical_version_selection(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="exec-history")
     v1 = save_version(api_client, adapter["id"], code="# v1\n")
     save_version(api_client, adapter["id"], code="# v2\n")
     register_worker(api_client)
 
-    execution = create_execution(api_client, adapter["id"], {"version_id": v1["id"], "input": None})
-    assert execution["version_id"] == v1["id"]
-    # JSON null is a valid input.
-    assert execution["input"] is None
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/executions",
+        json={"version_id": v1["id"], "input": None},
+    )
+    assert response.status_code == 422
 
 
 def test_create_execution_adapter_not_found(api_client: TestClient) -> None:
@@ -78,7 +84,7 @@ def test_create_execution_without_any_version_conflicts(api_client: TestClient) 
     assert response.json()["detail"]["code"] == "adapter_has_no_version"
 
 
-def test_create_execution_cross_adapter_version_not_found(api_client: TestClient) -> None:
+def test_create_execution_rejects_any_version_id(api_client: TestClient) -> None:
     adapter_a = create_adapter(api_client, name="exec-a")
     adapter_b = create_adapter(api_client, name="exec-b")
     foreign_version = save_version(api_client, adapter_b["id"])
@@ -87,8 +93,7 @@ def test_create_execution_cross_adapter_version_not_found(api_client: TestClient
         f"/api/adapters/{adapter_a['id']}/executions",
         json={"version_id": foreign_version["id"]},
     )
-    assert response.status_code == 404
-    assert response.json()["detail"]["code"] == "version_not_found"
+    assert response.status_code == 422
 
 
 def test_create_execution_input_too_large_not_persisted(
@@ -122,7 +127,7 @@ def test_get_execution_not_found(api_client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "execution_not_found"
 
 
-def test_delete_adapter_with_executions_conflicts(
+def test_delete_adapter_with_active_execution_is_locked(
     api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
     adapter = create_adapter(api_client, name="exec-protected")
@@ -132,7 +137,7 @@ def test_delete_adapter_with_executions_conflicts(
 
     response = api_client.delete(f"/api/adapters/{adapter['id']}")
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "adapter_has_executions"
+    assert response.json()["detail"]["code"] == "adapter_runtime_locked"
 
     # The Adapter and its history are still fully intact.
     assert api_client.get(f"/api/adapters/{adapter['id']}").status_code == 200
@@ -144,7 +149,9 @@ def test_delete_adapter_without_executions_still_allowed(api_client: TestClient)
     adapter = create_adapter(api_client, name="exec-deletable")
     save_version(api_client, adapter["id"])
     assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
-    assert api_client.get(f"/api/adapters/{adapter['id']}").status_code == 404
+    deleted = api_client.get(f"/api/adapters/{adapter['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["archived_at"] is not None
 
 
 # --- M3 execution history (cursor pagination) --------------------------------
@@ -173,8 +180,13 @@ def test_history_lists_newest_first_and_isolates_adapters(api_client: TestClient
     other = create_adapter(api_client, name="hist-other")
     save_version(api_client, other["id"])
     register_worker(api_client)
-    ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(3)]
-    create_execution(api_client, other["id"])
+    ids = []
+    for _ in range(3):
+        execution_id = create_execution(api_client, adapter["id"])["id"]
+        ids.append(execution_id)
+        assert api_client.post(f"/api/executions/{execution_id}/cancel").status_code == 200
+    other_execution = create_execution(api_client, other["id"])
+    assert api_client.post(f"/api/executions/{other_execution['id']}/cancel").status_code == 200
 
     response = api_client.get(f"/api/adapters/{adapter['id']}/executions")
     assert response.status_code == 200
@@ -206,7 +218,11 @@ def test_history_before_id_cursor_walks_all_pages(api_client: TestClient) -> Non
     adapter = create_adapter(api_client, name="hist-cursor")
     save_version(api_client, adapter["id"])
     register_worker(api_client)
-    ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(5)]
+    ids = []
+    for _ in range(5):
+        execution_id = create_execution(api_client, adapter["id"])["id"]
+        ids.append(execution_id)
+        assert api_client.post(f"/api/executions/{execution_id}/cancel").status_code == 200
 
     first = api_client.get(f"/api/adapters/{adapter['id']}/executions", params={"limit": 2}).json()
     assert [item["id"] for item in first["items"]] == [ids[4], ids[3]]
@@ -231,7 +247,11 @@ def test_history_limit_is_clamped(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="hist-limit")
     save_version(api_client, adapter["id"])
     register_worker(api_client)
-    ids = [create_execution(api_client, adapter["id"])["id"] for _ in range(3)]
+    ids = []
+    for _ in range(3):
+        execution_id = create_execution(api_client, adapter["id"])["id"]
+        ids.append(execution_id)
+        assert api_client.post(f"/api/executions/{execution_id}/cancel").status_code == 200
 
     small = api_client.get(f"/api/adapters/{adapter['id']}/executions", params={"limit": 0}).json()
     assert len(small["items"]) == 1, "limit clamps up to 1"

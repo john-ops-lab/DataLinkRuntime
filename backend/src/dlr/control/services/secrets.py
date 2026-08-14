@@ -34,6 +34,7 @@ from dlr.control.models.platform import (
 )
 from dlr.control.schemas.credential import BindingResponse, CredentialCreate, CredentialUpdate
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.adapter_runtime import require_runtime_unlocked
 
 # Stable key-derivation parameters; changing either rotates every key.
 _HKDF_SALT = b"dlr-secret-store-v1"
@@ -214,6 +215,9 @@ def set_adapter_bindings(
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
+    if adapter.archived_at is not None:
+        raise domain_error(409, "adapter_deleted", "Adapter is deleted")
+    require_runtime_unlocked(session, adapter)
 
     seen_env_keys: set[str] = set()
     for env_key, credential_id, field in items:

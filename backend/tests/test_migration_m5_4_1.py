@@ -1,0 +1,45 @@
+"""Fresh-schema assertions for the M5.4.1 Alembic head."""
+
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
+
+
+def test_fresh_schema_has_simplified_adapter_and_active_execution_contract(
+    test_engine: Engine,
+) -> None:
+    with test_engine.connect() as connection:
+        revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        columns = set(
+            connection.scalars(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'adapters'"
+                )
+            ).all()
+        )
+        index_definition = connection.scalar(
+            text(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE schemaname = 'public' AND indexname = 'uq_executions_active_adapter'"
+            )
+        )
+        adapter_type_check = connection.scalar(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'ck_adapters_adapter_type'"
+            )
+        )
+
+    assert revision == "0009_m5_4_1_adapter_lifecycle"
+    assert {"adapter_type", "latest_version_id", "runtime_worker_id", "archived_at"} <= columns
+    assert {
+        "published_version_id",
+        "production_version_id",
+        "production_worker_id",
+        "production_state",
+    }.isdisjoint(columns)
+    assert index_definition is not None
+    assert "status" in index_definition
+    assert "trigger" not in index_definition
+    assert adapter_type_check is not None
+    assert "task" in adapter_type_check and "webhook" in adapter_type_check

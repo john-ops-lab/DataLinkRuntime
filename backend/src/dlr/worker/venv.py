@@ -6,7 +6,7 @@ after dependencies are fully prepared; an incomplete directory is removed
 and rebuilt. Within one Worker, concurrent first runs of the same Version
 share a lightweight in-process lock.
 
-M3.2 dependency strategy (identical for test runs and production runs):
+M3.2 dependency strategy (identical for manual and triggered runs):
 a ``.ready`` venv passes without any network; otherwise installation tries
 the local ``uv`` cache offline first, falls back to the configured package
 source index URL, and fails with an explicit operator-facing message when

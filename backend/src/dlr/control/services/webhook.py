@@ -6,13 +6,13 @@ Owns the singleton Webhook configuration API and the external ingress:
 POST /api/hooks/{public_id}
 -> Authorization: Bearer <token Credential value>
 -> JSON Body
--> Control validates Webhook / Token / Production Entry
+-> Control validates Webhook / Token / Adapter runtime
 -> creates Execution(trigger=webhook) with input = the whole JSON body
 -> HTTP 202 + execution_id; the Worker executes asynchronously
 ```
 
 Control never waits for the Execution to run. Rejections are immediate and
-never queued: production busy answers 409 and the caller decides whether to
+never queued: a busy Adapter answers 409 and the caller decides whether to
 retry. Rejected requests are never persisted; accepted ones live in
 Execution history.
 
@@ -45,9 +45,8 @@ from dlr.control.models import Adapter, Credential, Execution, Worker
 from dlr.control.models.webhook import AdapterWebhook
 from dlr.control.schemas.webhook import WebhookResponse, WebhookUpsert
 from dlr.control.security import _bearer_token
-from dlr.control.services import worker_availability
+from dlr.control.services import adapter_runtime, worker_availability
 from dlr.control.services.adapter import (
-    _active_production_execution,
     _require_not_archived,
     domain_error,
 )
@@ -156,7 +155,8 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
-    # Archived Adapters stay read-only (M3.2 contract); GET keeps viewing.
+    if adapter.adapter_type != "webhook":
+        raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
     _require_not_archived(adapter)
     credential = session.get(Credential, data.credential_id)
     if credential is None:
@@ -170,6 +170,15 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
     webhook = session.scalar(
         select(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter_id).with_for_update()
     )
+    if adapter_runtime.adapter_runtime_locked(session, adapter):
+        disable_only = (
+            webhook is not None
+            and webhook.enabled
+            and not data.enabled
+            and data.credential_id == webhook.credential_id
+        )
+        if not disable_only:
+            adapter_runtime.require_runtime_unlocked(session, adapter)
     if webhook is None:
         webhook = AdapterWebhook(
             adapter_id=adapter_id,
@@ -209,7 +218,7 @@ def receive_webhook(
     """Validate one external Webhook request and create its Execution.
 
     Order is fixed: body stream cap (route) -> unknown public_id -> 404;
-    disabled -> 409; token -> 401; unified production gate -> 409 family;
+    disabled -> 409; token -> 401; unified runtime gate -> 409 family;
     body contract -> 400 (invalid or non-standard JSON, or strings JSONB
     cannot persist) and 413 (compact JSON over the Execution input cap).
     The Adapter row is locked before the Webhook row (platform lock
@@ -233,28 +242,26 @@ def receive_webhook(
         raise domain_error(409, "webhook_disabled", "Webhook is disabled")
     _require_bearer(session, webhook, authorization)
 
-    # --- unified production gate --------------------------------------------
+    # --- unified runtime gate ------------------------------------------------
     if adapter.archived_at is not None:
-        raise domain_error(409, "adapter_archived", "Adapter is archived")
-    if (
-        adapter.production_state != "running"
-        or adapter.production_version_id is None
-        or adapter.production_worker_id is None
-    ):
-        raise domain_error(409, "production_not_running", "The production entry is not running")
-    worker = session.get(Worker, adapter.production_worker_id)
+        raise domain_error(409, "adapter_deleted", "Adapter is deleted")
+    if adapter.adapter_type != "webhook":
+        raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
+    if adapter.latest_version_id is None or adapter.runtime_worker_id is None:
+        raise domain_error(409, "adapter_not_ready", "Save the Adapter and choose a runtime Worker")
+    worker = session.get(Worker, adapter.runtime_worker_id)
     if worker is None or not worker_availability.is_effectively_online(
         worker, now=worker_availability.current_time(session)
     ):
-        raise domain_error(409, "worker_offline", "The production Worker is offline")
+        raise domain_error(409, "worker_offline", "The runtime Worker is offline")
     if adapter.language not in worker.capabilities:
         raise domain_error(
             409,
             "worker_capability_missing",
-            f"The production Worker does not support {adapter.language}",
+            f"The runtime Worker does not support {adapter.language}",
         )
-    if _active_production_execution(session, adapter.id) is not None:
-        raise domain_error(409, "production_busy", "An active production Execution already exists")
+    if adapter_runtime.active_execution(session, adapter.id) is not None:
+        raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
 
     # --- body contract: raw size, then JSON, then normalized size ------------
     # The raw byte cap is the ingress memory protection; the compact JSON
@@ -285,22 +292,21 @@ def receive_webhook(
 
     execution = Execution(
         adapter_id=adapter.id,
-        # Never the latest published version: the locked production version.
-        version_id=adapter.production_version_id,
+        version_id=adapter.latest_version_id,
         trigger="webhook",
         status="pending",
-        target_worker_id=adapter.production_worker_id,
+        target_worker_id=adapter.runtime_worker_id,
         input=payload,
     )
     session.add(execution)
     try:
         session.flush()
     except IntegrityError:
-        # Lost the race against a concurrently created active production
+        # Lost the race against a concurrently created active
         # Execution: the partial unique index is the final defense.
         session.rollback()
         raise domain_error(
-            409, "production_busy", "An active production Execution already exists"
+            409, "adapter_busy", "The Adapter already has an active Execution"
         ) from None
     session.commit()
     session.refresh(execution)

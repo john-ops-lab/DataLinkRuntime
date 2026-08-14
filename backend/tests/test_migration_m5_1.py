@@ -177,8 +177,12 @@ def test_upgrade_from_0005_recovers_production_version_for_running_adapters(
         # Idle and never published: stays NULL.
         configure("legacy-idle")
 
-    # The real upgrade under test: 0005 -> 0006/head.
-    _upgrade(_alembic_config(_base_url().set(database=MIGRATION_DATABASE)), "head")
+    # The real upgrade under test is deliberately bounded to 0006. Later
+    # migrations may retire these compatibility columns.
+    _upgrade(
+        _alembic_config(_base_url().set(database=MIGRATION_DATABASE)),
+        "0006_m5_1_production_entry",
+    )
 
     with legacy_engine.begin() as conn:
         rows = conn.execute(

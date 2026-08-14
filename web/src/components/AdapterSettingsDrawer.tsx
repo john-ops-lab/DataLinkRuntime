@@ -11,7 +11,7 @@ interface AdapterSettingsDrawerProps {
   adapter: Adapter | null;
   name: string;
   description: string;
-  productionWorkerId: number | null;
+  runtimeWorkerId: number | null;
   workers: Worker[];
   workersLoading: boolean;
   workersError: string | null;
@@ -21,9 +21,9 @@ interface AdapterSettingsDrawerProps {
   onClose: () => void;
   onNameChange: (value: string) => void;
   onDescriptionChange: (value: string) => void;
-  onProductionWorkerChange: (value: number | null) => void;
+  onRuntimeWorkerChange: (value: number | null) => void;
   onUpdate: () => void;
-  onProductionWorkerUpdate: () => void;
+  onRuntimeWorkerUpdate: () => void;
   onDelete: () => void;
   // --- M3.2 生产生命周期 ---------------------------------------------------
   onUnpublish: () => void;
@@ -38,9 +38,9 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
   const productionRunning = (adapter?.production_state ?? "idle") === "running";
   const productionStopping = adapter !== null && isProductionStopping(adapter);
   const workerChanged =
-    adapter !== null && props.productionWorkerId !== (adapter.production_worker_id ?? null);
+    adapter !== null && props.runtimeWorkerId !== (adapter.runtime_worker_id ?? null);
   const selectedWorker = props.workers.find(
-    (worker) => worker.id === props.productionWorkerId,
+    (worker) => worker.id === props.runtimeWorkerId,
   );
   const selectedWorkerCompatible =
     selectedWorker === undefined ||
@@ -99,14 +99,14 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
             <span className="settings-field-label">生产 Worker</span>
             <Select
               data-testid="production-worker"
-              value={props.productionWorkerId ?? undefined}
+              value={props.runtimeWorkerId ?? undefined}
               placeholder="请选择生产 Worker"
               allowClear
               loading={props.workersLoading}
               disabled={props.busy || props.workersLoading || archived || productionRunning}
               optionLabelProp="label"
               onChange={(value: number | undefined) =>
-                props.onProductionWorkerChange(value ?? null)
+                props.onRuntimeWorkerChange(value ?? null)
               }
               options={props.workers.map((worker) => ({
                 value: worker.id,
@@ -202,7 +202,7 @@ export default function AdapterSettingsDrawer(props: AdapterSettingsDrawerProps)
               !workerChanged ||
               !selectedWorkerCompatible
             }
-            onClick={props.onProductionWorkerUpdate}
+            onClick={props.onRuntimeWorkerUpdate}
           >
             保存生产 Worker
           </Button>

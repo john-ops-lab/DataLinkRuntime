@@ -11,8 +11,6 @@ from dlr.control.schemas.adapter import (
     AdapterResponse,
     AdapterUpdate,
     CloneRequest,
-    ProductionStopRequest,
-    PublishGateResponse,
     VersionCreate,
     VersionDetail,
     VersionSummary,
@@ -23,9 +21,6 @@ from dlr.control.services import adapter as adapter_service
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
-
-# Stop without a body means "wait".
-_DEFAULT_STOP_REQUEST = ProductionStopRequest()
 
 
 @router.get("/api/adapters", response_model=list[AdapterResponse])
@@ -80,80 +75,9 @@ def get_version(adapter_id: int, version_id: int, session: DbSession) -> Version
     )
 
 
-@router.post(
-    "/api/adapters/{adapter_id}/versions/{version_id}/publish",
-    response_model=AdapterResponse,
-)
-def publish_version(adapter_id: int, version_id: int, session: DbSession) -> AdapterResponse:
-    """Publish one version; the publish gate is enforced server-side (M3.2)."""
-    return adapter_service.adapter_response(
-        session, adapter_service.publish_version(session, adapter_id, version_id)
-    )
-
-
-@router.get(
-    "/api/adapters/{adapter_id}/versions/{version_id}/publish-gate",
-    response_model=PublishGateResponse,
-)
-def get_publish_gate(adapter_id: int, version_id: int, session: DbSession) -> PublishGateResponse:
-    """Read-only publish gate evaluation for the Publish confirmation dialog."""
-    return adapter_service.publish_gate(session, adapter_id, version_id)
-
-
-@router.post(
-    "/api/adapters/{adapter_id}/production/start",
-    response_model=AdapterResponse,
-)
-def start_production(adapter_id: int, session: DbSession) -> AdapterResponse:
-    """Open the production entry and lock the production version (M5.1).
-
-    Synchronous state change: the row lock, gates and commit all complete
-    before the final AdapterResponse is returned, so the answer is 200.
-    """
-    return adapter_service.adapter_response(
-        session, adapter_service.start_production(session, adapter_id)
-    )
-
-
-@router.post("/api/adapters/{adapter_id}/production/stop", response_model=AdapterResponse)
-def stop_production(
-    adapter_id: int,
-    session: DbSession,
-    payload: ProductionStopRequest = _DEFAULT_STOP_REQUEST,
-) -> AdapterResponse:
-    """Close the production entry; ``terminate`` also cancels the active run."""
-    return adapter_service.adapter_response(
-        session, adapter_service.stop_production(session, adapter_id, payload.mode)
-    )
-
-
-@router.post("/api/adapters/{adapter_id}/unpublish", response_model=AdapterResponse)
-def unpublish_adapter(adapter_id: int, session: DbSession) -> AdapterResponse:
-    """Clear the published pointer; requires production to be stopped."""
-    return adapter_service.adapter_response(
-        session, adapter_service.unpublish_adapter(session, adapter_id)
-    )
-
-
-@router.post("/api/adapters/{adapter_id}/archive", response_model=AdapterResponse)
-def archive_adapter(adapter_id: int, session: DbSession) -> AdapterResponse:
-    """Archive the Adapter (read-only afterwards); requires production stopped."""
-    return adapter_service.adapter_response(
-        session, adapter_service.archive_adapter(session, adapter_id)
-    )
-
-
-@router.post("/api/adapters/{adapter_id}/restore", response_model=AdapterResponse)
-def restore_adapter(adapter_id: int, session: DbSession) -> AdapterResponse:
-    """Restore an archived Adapter."""
-    return adapter_service.adapter_response(
-        session, adapter_service.restore_adapter(session, adapter_id)
-    )
-
-
 @router.post("/api/adapters/{adapter_id}/clone", status_code=201, response_model=AdapterResponse)
 def clone_adapter(adapter_id: int, payload: CloneRequest, session: DbSession) -> AdapterResponse:
-    """Copy the Adapter: working copy becomes v1, unpublished and not running."""
+    """Copy common Adapter facts into a stopped clone with its own Revision 1."""
     return adapter_service.adapter_response(
         session, adapter_service.clone_adapter(session, adapter_id, payload)
     )

@@ -273,7 +273,7 @@ def _assist_messages(
         "tool call, or reasoning. The object must strictly match this JSON Schema:\n"
         f"{json.dumps(output_schema, ensure_ascii=False, sort_keys=True)}\n"
         "A non-null candidate is a complete snapshot. Never include or change language, "
-        "published_version_id, production_worker_id, production_state, or any lifecycle action. "
+        "adapter_type, runtime_worker_id, or any lifecycle action. "
         "Never request, invent, or reveal secret values; use only "
         'context.secrets.get("ENV_KEY") with an available key name.\n'
         f"Runtime Contract for {language}:\n{_RUNTIME_CONTRACTS[language]}\n"

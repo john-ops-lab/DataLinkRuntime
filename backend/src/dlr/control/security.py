@@ -2,7 +2,7 @@
 
 Two platform-wide shared tokens protect all management and worker APIs:
 
-- ``DLR_ADMIN_TOKEN`` for Adapter/Version/Publish/Execution management.
+- ``DLR_ADMIN_TOKEN`` for Adapter/Revision/Execution management.
 - ``DLR_WORKER_TOKEN`` for the worker-internal API.
 
 Tokens live only in configuration: they are never persisted and never

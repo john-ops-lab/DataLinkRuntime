@@ -139,15 +139,17 @@ def test_claim_without_pending_task_returns_204(api_client: TestClient) -> None:
     assert claim(api_client, worker["id"]).status_code == 204
 
 
-def test_claim_serves_oldest_first(api_client: TestClient) -> None:
+def test_claim_serves_sequential_executions(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="worker-order")
     save_version(api_client, adapter["id"])
     worker = register_worker(api_client)
     first = create_execution(api_client, adapter["id"], {"input": 1})
-    second = create_execution(api_client, adapter["id"], {"input": 2})
 
     payload = claim(api_client, worker["id"]).json()
     assert payload["execution_id"] == first["id"]
+    assert report(api_client, worker["id"], first["id"], {"status": "succeeded"}).status_code == 200
+
+    second = create_execution(api_client, adapter["id"], {"input": 2})
     payload = claim(api_client, worker["id"]).json()
     assert payload["execution_id"] == second["id"]
     assert claim(api_client, worker["id"]).status_code == 204

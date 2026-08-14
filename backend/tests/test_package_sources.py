@@ -186,6 +186,10 @@ def test_claim_payload_carries_default_source_url(api_client: TestClient) -> Non
     adapter = create_adapter(api_client, name="pkg-src-adapter")
     save_version(api_client, adapter["id"])
     worker = register_worker(api_client, name="pkg-worker")
+    updated = api_client.patch(
+        f"/api/adapters/{adapter['id']}", json={"runtime_worker_id": worker["id"]}
+    )
+    assert updated.status_code == 200, updated.text
 
     # Without a default source the payload carries no index URL.
     execution = create_execution(api_client, adapter["id"])
@@ -193,6 +197,10 @@ def test_claim_payload_carries_default_source_url(api_client: TestClient) -> Non
     assert response.status_code == 200
     assert response.json()["execution_id"] == execution["id"]
     assert response.json()["index_url"] is None
+    assert (
+        report(api_client, worker["id"], execution["id"], {"status": "succeeded"}).status_code
+        == 200
+    )
 
     # A non-default source is ignored.
     create_source(api_client, name="non-default", is_default=False)
@@ -200,6 +208,10 @@ def test_claim_payload_carries_default_source_url(api_client: TestClient) -> Non
     response = claim(api_client, worker["id"])
     assert response.json()["execution_id"] == execution["id"]
     assert response.json()["index_url"] is None
+    assert (
+        report(api_client, worker["id"], execution["id"], {"status": "succeeded"}).status_code
+        == 200
+    )
 
     # The default source URL travels inside the payload.
     create_source(api_client, name="company-mirror", is_default=True)
@@ -372,6 +384,10 @@ def test_credentialed_index_failure_is_redacted_before_execution_persistence(
     adapter = create_adapter(api_client, name="package-source-redaction")
     save_version(api_client, adapter["id"], requirements="missing-package==1")
     worker = register_worker(api_client, name="redaction-worker")
+    updated = api_client.patch(
+        f"/api/adapters/{adapter['id']}", json={"runtime_worker_id": worker["id"]}
+    )
+    assert updated.status_code == 200, updated.text
     execution = create_execution(api_client, adapter["id"])
     claimed = claim(api_client, worker["id"]).json()
     assert claimed["index_url"] == effective_url

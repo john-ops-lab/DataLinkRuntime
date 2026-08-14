@@ -1,4 +1,4 @@
-/** 测试运行 Tab：Input JSON + 显式绑定选中 Version + 实时日志（M3 §4/§7/§8）。 */
+/** 测试运行 Tab：Input JSON + 固定运行 Latest Revision + 实时日志。 */
 
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Tabs, Tag, Typography } from "antd";
@@ -13,11 +13,9 @@ import { LogView, OutputView } from "./OutputView";
 
 interface TestRunPanelProps {
   adapter: Adapter;
-  productionWorker: Worker | null;
-  selectedVersionId: number | null;
-  selectedVersionSeq: number | null;
-  isLatest: boolean;
-  isPublished: boolean;
+  runtimeWorker: Worker | null;
+  latestVersionSeq: number | null;
+  viewingHistoricalVersion: boolean;
   dirty: boolean;
   contentReady: boolean;
   busy: boolean;
@@ -69,9 +67,9 @@ export default function TestRunPanel(props: TestRunPanelProps) {
       execution?.status !== "succeeded" ||
       execution.id === reportedQualificationExecutionId.current ||
       execution.version_id !== adapter.published_version_id ||
-      (adapter.production_worker_id !== null &&
-        adapter.production_worker_id !== undefined &&
-        execution.worker_id !== adapter.production_worker_id)
+      (adapter.runtime_worker_id !== null &&
+        adapter.runtime_worker_id !== undefined &&
+        execution.worker_id !== adapter.runtime_worker_id)
     ) {
       return;
     }
@@ -79,15 +77,15 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     onPublishedVersionTestSucceeded(adapter.id);
   }, [
     adapter.id,
-    adapter.production_worker_id,
+    adapter.runtime_worker_id,
     adapter.published_version_id,
     execution,
     onPublishedVersionTestSucceeded,
   ]);
 
   async function handleRun() {
-    // Interaction guards: explicit version binding, no dirty runs, valid
-    // JSON input and no duplicate submissions (M3 spec §2.1/§4.2/§4.3).
+    // Interaction guards: a saved latest Revision, no dirty runs, valid JSON
+    // input and no duplicate submissions.
     if (submitting || props.busy) {
       return;
     }
@@ -103,7 +101,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
       props.onError("版本内容尚未就绪，请等待加载完成或刷新后重试");
       return;
     }
-    if (props.selectedVersionId === null) {
+    if (props.adapter.latest_version_id === null) {
       props.onError("当前 Adapter 还没有已保存的版本，请先在编辑页保存版本");
       return;
     }
@@ -117,14 +115,13 @@ export default function TestRunPanel(props: TestRunPanelProps) {
     props.onError(null);
     setSubmitting(true);
     try {
-      if (props.selectedVersionSeq !== null) {
-        const seq = props.selectedVersionSeq;
-        const versionId = props.selectedVersionId;
+      if (props.latestVersionSeq !== null) {
+        const seq = props.latestVersionSeq;
+        const versionId = props.adapter.latest_version_id;
         setRunSeqByVersionId((current) => new Map(current).set(versionId, seq));
       }
       const created = await api.createExecution(props.adapter.id, {
         input,
-        version_id: props.selectedVersionId,
       });
       watcher.watch(created);
     } catch (error) {
@@ -140,7 +137,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
       ? "存在未保存修改，请先使用顶部“保存新版本”"
       : !props.contentReady
         ? "版本内容尚未就绪，请等待加载完成或刷新后重试"
-        : props.selectedVersionId === null
+        : props.adapter.latest_version_id === null
           ? "当前没有已保存版本，请先在编辑页保存为新版本"
           : props.busy || submitting
             ? "其他操作正在进行，请等待完成"
@@ -151,7 +148,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
   // only when the seq is genuinely unknown.
   const executionVersionSeq =
     execution === null ? null : (runSeqByVersionId.get(execution.version_id) ?? null);
-  const configuredWorkerId = props.adapter.production_worker_id;
+  const configuredWorkerId = props.adapter.runtime_worker_id;
   const compatibleOnlineWorkers = props.workers.filter(
     (worker) => worker.status === "online" && worker.capabilities.includes(adapter.language),
   );
@@ -162,7 +159,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
         : null
       : null;
   const workerContextLabel =
-    props.productionWorker?.name ??
+    props.runtimeWorker?.name ??
     (configuredWorkerId === null || configuredWorkerId === undefined
       ? props.workersLoading
         ? "Worker 状态载入中"
@@ -170,15 +167,15 @@ export default function TestRunPanel(props: TestRunPanelProps) {
           ? "Worker 状态暂不可用"
           : automaticWorker !== null
             ? `${automaticWorker.name}（自动）`
-            : "未配置 production Worker"
+            : "未配置运行 Worker"
       : `Worker #${configuredWorkerId}（状态暂不可用）`);
   const workerContextTitle =
-    props.productionWorker !== null
-      ? `${props.productionWorker.name} · ${props.productionWorker.capabilities.join(" / ")}`
+    props.runtimeWorker !== null
+      ? `${props.runtimeWorker.name} · ${props.runtimeWorker.capabilities.join(" / ")}`
       : configuredWorkerId === null || configuredWorkerId === undefined
         ? automaticWorker !== null
-          ? `未固定 production Worker；后端可自动采用唯一可用 Worker ${automaticWorker.name}`
-          : "未固定 production Worker；只有恰好一个有效在线且兼容的 Worker 时后端才能自动采用"
+          ? `未固定运行 Worker；后端可自动采用唯一可用 Worker ${automaticWorker.name}`
+          : "未固定运行 Worker；只有恰好一个有效在线且兼容的 Worker 时后端才能自动采用"
         : `已配置 Worker #${configuredWorkerId}，当前状态暂不可用`;
   const executionWorker =
     execution?.worker_id === null || execution?.worker_id === undefined
@@ -196,7 +193,11 @@ export default function TestRunPanel(props: TestRunPanelProps) {
           title={workerContextTitle}
         >
           <strong data-testid="test-run-version">
-            {props.selectedVersionSeq !== null ? `v${props.selectedVersionSeq}` : "未保存版本"}
+            {props.latestVersionSeq !== null
+              ? `Latest v${props.latestVersionSeq}`
+              : props.adapter.latest_version_id !== null
+                ? `Latest #${props.adapter.latest_version_id}`
+                : "未保存版本"}
           </strong>
           <span aria-hidden="true">·</span>
           <span>{LANGUAGE_LABELS[adapter.language]}</span>
@@ -207,12 +208,16 @@ export default function TestRunPanel(props: TestRunPanelProps) {
           >
             {workerContextLabel}
           </span>
-          {!props.isLatest && props.selectedVersionId !== null && <Tag>历史版本</Tag>}
-          {props.isPublished && <Tag color="green">生产目标</Tag>}
+          {props.adapter.latest_version_id !== null && <Tag color="blue">固定 Latest</Tag>}
         </div>
-        {props.productionWorker !== null && props.productionWorker.status !== "online" && (
+        {props.viewingHistoricalVersion && (
+          <Typography.Text type="secondary" role="status" data-testid="latest-run-guidance">
+            当前正在查看历史 Revision；运行测试仍固定使用 Latest Revision。
+          </Typography.Text>
+        )}
+        {props.runtimeWorker !== null && props.runtimeWorker.status !== "online" && (
           <Typography.Text type="warning" role="status" data-testid="test-worker-offline-warning">
-            production Worker {props.productionWorker.name} 最近状态为离线；可在设置中更换。
+            运行 Worker {props.runtimeWorker.name} 最近状态为离线；可在设置中更换。
             运行时仍由后端按最新心跳复核。
           </Typography.Text>
         )}
@@ -230,7 +235,7 @@ export default function TestRunPanel(props: TestRunPanelProps) {
                 ) : (
                   <>
                     当前有 {compatibleOnlineWorkers.length} 个有效在线且兼容的 Worker，无法自动确定。
-                    请在设置中指定 production Worker；运行时仍由后端按最新心跳复核。
+                    请在设置中指定运行 Worker；运行时仍由后端按最新心跳复核。
                   </>
                 )}
               </Typography.Text>

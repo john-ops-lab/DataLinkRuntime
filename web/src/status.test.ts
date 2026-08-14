@@ -13,6 +13,7 @@ function adapter(overrides: Partial<Adapter>): Adapter {
     name: "adapter-a",
     description: "",
     language: "python",
+    adapter_type: "task",
     latest_version_id: 10,
     published_version_id: 10,
     production_state: "running",

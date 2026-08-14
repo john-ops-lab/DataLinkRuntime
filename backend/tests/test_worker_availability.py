@@ -24,7 +24,7 @@ from dlr.control.services.worker_availability import (
     is_effectively_online,
 )
 from test_adapters import create_adapter, save_version
-from test_production_lifecycle import setup_publishable, start, wait_for_postgres_lock
+from test_production_lifecycle import wait_for_postgres_lock
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 FIXED_NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
@@ -250,7 +250,7 @@ def test_configured_stale_worker_blocks_manual_test_without_execution(
     worker = register_worker(api_client, "availability-test-configured-worker")
     configured = api_client.patch(
         f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": worker["id"]},
+        json={"runtime_worker_id": worker["id"]},
     )
     assert configured.status_code == 200
     set_worker_state(session_factory, worker["id"])
@@ -261,250 +261,8 @@ def test_configured_stale_worker_blocks_manual_test_without_execution(
     assert response.json()["detail"]["code"] == "worker_offline"
     assert execution_count(session_factory) == 0
     assert (
-        api_client.get(f"/api/adapters/{adapter['id']}").json()["production_worker_id"]
-        == worker["id"]
+        api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_worker_id"] == worker["id"]
     )
-
-
-def test_manual_test_auto_selection_ignores_stale_compatible_worker(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    stale = register_worker(api_client, "availability-test-auto-stale")
-    set_worker_state(session_factory, stale["id"])
-    fresh = register_worker(api_client, "availability-test-auto-fresh")
-    adapter = create_adapter(api_client, name="availability-test-auto")
-    save_version(api_client, adapter["id"])
-
-    response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
-
-    assert response.status_code == 202, response.text
-    assert response.json()["target_worker_id"] == fresh["id"]
-    assert (
-        api_client.get(f"/api/adapters/{adapter['id']}").json()["production_worker_id"]
-        == fresh["id"]
-    )
-
-
-def test_manual_test_auto_selection_ignores_stale_worker_when_counting_capabilities(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    stale_compatible = register_worker(api_client, "availability-test-stale-compatible")
-    set_worker_state(session_factory, stale_compatible["id"])
-    register_worker(
-        api_client,
-        "availability-test-fresh-incompatible",
-        capabilities=["javascript"],
-    )
-    adapter = create_adapter(api_client, name="availability-test-stale-capability")
-    save_version(api_client, adapter["id"])
-
-    response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "worker_capability_missing"
-    assert execution_count(session_factory) == 0
-
-
-def test_manual_test_without_effective_worker_is_offline_and_has_no_execution(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    stale = register_worker(api_client, "availability-test-none-stale")
-    set_worker_state(session_factory, stale["id"])
-    adapter = create_adapter(api_client, name="availability-test-none")
-    save_version(api_client, adapter["id"])
-
-    response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "worker_offline"
-    assert execution_count(session_factory) == 0
-    assert api_client.get(f"/api/adapters/{adapter['id']}").json()["production_worker_id"] is None
-
-
-def test_manual_test_with_only_effective_incompatible_workers_reports_capability_missing(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    stale_compatible = register_worker(api_client, "availability-test-cap-stale")
-    set_worker_state(session_factory, stale_compatible["id"])
-    register_worker(
-        api_client,
-        "availability-test-cap-javascript",
-        capabilities=["javascript"],
-    )
-    adapter = create_adapter(api_client, name="availability-test-capability")
-    save_version(api_client, adapter["id"])
-
-    response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "worker_capability_missing"
-    assert execution_count(session_factory) == 0
-
-
-def test_manual_test_with_multiple_effective_compatible_workers_requires_selection(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    register_worker(api_client, "availability-test-multi-a")
-    register_worker(api_client, "availability-test-multi-b")
-    adapter = create_adapter(api_client, name="availability-test-multi")
-    save_version(api_client, adapter["id"])
-
-    response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "production_worker_required"
-    assert execution_count(session_factory) == 0
-
-
-def test_configured_stale_worker_blocks_start_without_state_or_execution_changes(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    adapter, _version, worker = setup_publishable(
-        api_client,
-        "availability-start-configured-stale",
-        worker_name="availability-start-configured-worker",
-    )
-    set_worker_state(session_factory, worker["id"])
-    before = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    before_count = execution_count(session_factory)
-
-    response = start(api_client, adapter["id"])
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "worker_offline"
-    after = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    assert execution_count(session_factory) == before_count
-    for field in (
-        "latest_version_id",
-        "published_version_id",
-        "production_worker_id",
-        "production_state",
-        "running_execution_id",
-    ):
-        assert after[field] == before[field]
-
-
-def test_start_auto_selection_ignores_stale_worker(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    adapter, _version, fresh = setup_publishable(
-        api_client,
-        "availability-start-auto",
-        worker_name="availability-start-auto-fresh",
-    )
-    stale_compatible = register_worker(api_client, "availability-start-auto-stale")
-    set_worker_state(session_factory, stale_compatible["id"])
-    cleared = api_client.patch(
-        f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": None},
-    )
-    assert cleared.status_code == 200
-
-    response = start(api_client, adapter["id"])
-
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["production_worker_id"] == fresh["id"]
-    assert body["production_state"] == "running"
-    fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    assert fetched["production_worker_id"] == fresh["id"]
-    assert fetched["production_state"] == "running"
-
-
-def test_start_without_effective_worker_is_offline_and_has_no_side_effects(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    adapter, _version, worker = setup_publishable(
-        api_client,
-        "availability-start-none",
-        worker_name="availability-start-none-worker",
-    )
-    cleared = api_client.patch(
-        f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": None},
-    )
-    assert cleared.status_code == 200
-    set_worker_state(session_factory, worker["id"])
-    before = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    before_count = execution_count(session_factory)
-
-    response = start(api_client, adapter["id"])
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "worker_offline"
-    assert execution_count(session_factory) == before_count
-    after = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    assert after["production_worker_id"] is None
-    assert after["production_state"] == before["production_state"]
-    assert after["published_version_id"] == before["published_version_id"]
-
-
-def test_start_with_only_effective_incompatible_worker_reports_capability_missing(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    adapter, _version, worker = setup_publishable(
-        api_client,
-        "availability-start-capability",
-        worker_name="availability-start-capability-worker",
-    )
-    cleared = api_client.patch(
-        f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": None},
-    )
-    assert cleared.status_code == 200
-    set_worker_state(session_factory, worker["id"])
-    register_worker(
-        api_client,
-        "availability-start-capability-javascript",
-        capabilities=["javascript"],
-    )
-    before_count = execution_count(session_factory)
-
-    response = start(api_client, adapter["id"])
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "worker_capability_missing"
-    assert execution_count(session_factory) == before_count
-    fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    assert fetched["production_worker_id"] is None
-    assert fetched["production_state"] == "idle"
-
-
-def test_start_with_multiple_effective_compatible_workers_requires_selection(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-) -> None:
-    adapter, _version, first = setup_publishable(
-        api_client,
-        "availability-start-multi",
-        worker_name="availability-start-multi-a",
-    )
-    second = register_worker(api_client, "availability-start-multi-b")
-    assert second["id"] != first["id"]
-    cleared = api_client.patch(
-        f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": None},
-    )
-    assert cleared.status_code == 200
-    before_count = execution_count(session_factory)
-
-    response = start(api_client, adapter["id"])
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "production_worker_required"
-    assert execution_count(session_factory) == before_count
-    fetched = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    assert fetched["production_worker_id"] is None
-    assert fetched["production_state"] == "idle"
 
 
 def test_worker_heartbeat_timeout_settings_default_and_environment(
@@ -537,7 +295,7 @@ def test_large_finite_heartbeat_timeout_does_not_overflow(
     assert is_effectively_online(worker, now=FIXED_NOW) is True
 
 
-def test_adapter_settings_can_prebind_stale_or_stored_offline_worker(
+def test_adapter_settings_reject_stale_or_stored_offline_worker(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -554,14 +312,14 @@ def test_adapter_settings_can_prebind_stale_or_stored_offline_worker(
 
     stale_response = api_client.patch(
         f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": stale["id"]},
+        json={"runtime_worker_id": stale["id"]},
     )
     offline_response = api_client.patch(
         f"/api/adapters/{adapter['id']}",
-        json={"production_worker_id": offline["id"]},
+        json={"runtime_worker_id": offline["id"]},
     )
 
-    assert stale_response.status_code == 200
-    assert stale_response.json()["production_worker_id"] == stale["id"]
-    assert offline_response.status_code == 200
-    assert offline_response.json()["production_worker_id"] == offline["id"]
+    assert stale_response.status_code == 409
+    assert stale_response.json()["detail"]["code"] == "worker_offline"
+    assert offline_response.status_code == 409
+    assert offline_response.json()["detail"]["code"] == "worker_offline"

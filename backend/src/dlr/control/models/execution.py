@@ -3,10 +3,8 @@
 M2 contracts kept by these models:
 
 - Every Execution is pinned to one immutable ``version_id`` at creation
-  time; later Save/Publish never changes it.
-- Execution history must survive deletion attempts: ``adapter_id`` and
-  ``version_id`` foreign keys restrict deletion, and the service layer
-  answers 409 ``adapter_has_executions`` instead of deleting.
+  time; later Save operations never change it.
+- Execution history survives the Adapter's soft deletion.
 - Workers carry no credentials; the platform-wide Worker token lives only
   in the Control configuration.
 
@@ -14,11 +12,9 @@ M3.2 scheduling and lifecycle fields:
 
 - ``target_worker_id`` is the desired Worker; ``worker_id`` stays the
   Worker that actually claimed and runs the Execution.
-- ``trigger`` distinguishes test runs (``manual``; the documented
-  compatibility reading of historical rows) from production-class runs
-  (``production`` / ``schedule`` / ``webhook``).
-- The partial unique index guarantees at most one active production-class
-  Execution per Adapter at the database level (M5.1).
+- ``trigger`` distinguishes ``manual``, ``schedule`` and ``webhook`` runs.
+- The partial unique index guarantees at most one active Execution per
+  Adapter across every trigger type (M5.4.1).
 
 M5.2 Schedule Trigger fields:
 
@@ -82,24 +78,18 @@ class Execution(Base):
             "status IN ('pending', 'running', 'succeeded', 'failed', 'timeout', 'cancelled')",
             name="ck_executions_status",
         ),
-        # manual = test run (and historical rows); production/schedule/webhook
-        # are production-class triggers (M5.1 widens the value space).
         CheckConstraint(
-            "trigger IN ('manual', 'production', 'schedule', 'webhook')",
+            "trigger IN ('manual', 'schedule', 'webhook')",
             name="ck_executions_trigger",
         ),
         # Supports the claim query: pending rows ordered by (created_at, id).
         Index("ix_executions_claim", "status", "created_at", "id"),
-        # One active production-class Execution per Adapter, enforced by the DB.
-        # Covers production/schedule/webhook triggers (M5.1).
+        # One active Execution per Adapter across every trigger source.
         Index(
-            "uq_executions_active_production",
+            "uq_executions_active_adapter",
             "adapter_id",
             unique=True,
-            postgresql_where=text(
-                "trigger IN ('production', 'schedule', 'webhook') "
-                "AND status IN ('pending', 'running')"
-            ),
+            postgresql_where=text("status IN ('pending', 'running')"),
         ),
         # M5.2: one planned point yields at most one Schedule Execution;
         # the final defense against duplicate creation across Control

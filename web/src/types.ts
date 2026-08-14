@@ -1,21 +1,22 @@
 /** API shapes shared across the web UI (mirrors the Control API schemas). */
 
 export type AdapterLanguage = "python" | "javascript" | "java";
+export type AdapterType = "task" | "webhook";
 
 export interface Adapter {
   id: number;
   name: string;
   description: string;
   language: AdapterLanguage;
+  adapter_type: AdapterType;
   latest_version_id: number | null;
-  published_version_id: number | null;
-  /** Server-derived display fields used by the Catalog without per-row requests. */
+  runtime_worker_id?: number | null;
+  runtime_locked?: boolean;
+  // Transitional pre-M5.4 UI fields remain optional until the Task/Webhook
+  // Workbench follow-ups remove their consumers. The M5.4.1 API omits them.
+  published_version_id?: number | null;
   published_version_seq?: number | null;
   running_version_seq?: number | null;
-  // M3.2 production lifecycle fields; optional so older fixtures and tests
-  // that predate them stay valid. Consumers derive safe defaults (idle / not
-  // archived) whenever they are absent.
-  production_worker_id?: number | null;
   production_state?: "idle" | "running" | "stopped";
   archived_at?: string | null;
   /** Derived from the active Production Execution; null when none exists. */
