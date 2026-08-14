@@ -19,7 +19,7 @@ import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
 import WebhookTriggerPanel from "./components/WebhookTriggerPanel";
 import WorkerStatus from "./components/WorkerStatus";
 import WorkbenchHeader from "./components/WorkbenchHeader";
-import { DEPENDENCY_UI, STARTER_CODE } from "./languages";
+import { DEPENDENCY_UI, STARTER_CODE, TASK_STARTER_CODE } from "./languages";
 import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
 import { statusLabel } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
@@ -475,7 +475,10 @@ function AdapterConsole() {
       if (adapter.latest_version_id === null) {
         setSelectedVersionId(null);
         applySnapshot({
-          code: STARTER_CODE[adapter.language],
+          code:
+            adapter.adapter_type === "task"
+              ? TASK_STARTER_CODE[adapter.language]
+              : STARTER_CODE[adapter.language],
           requirements: "",
           runtimeConfigText: "{}",
         });

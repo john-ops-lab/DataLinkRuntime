@@ -106,6 +106,44 @@ def test_schedule_validation_and_input_cap(
     assert get_schedule(api_client, adapter["id"]).status_code == 404
 
 
+def test_schedule_enable_requires_saved_revision_and_configured_worker(
+    api_client: TestClient,
+) -> None:
+    worker = register_worker(api_client, name="schedule-prerequisite-worker")
+    no_revision = create_adapter(api_client, name="schedule-no-revision", adapter_type="task")
+    configured = api_client.patch(
+        f"/api/adapters/{no_revision['id']}",
+        json={"run_mode": "schedule", "runtime_worker_id": worker["id"]},
+    )
+    assert configured.status_code == 200, configured.text
+
+    rejected = put_schedule(api_client, no_revision["id"])
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == {
+        "code": "adapter_has_no_version",
+        "message": "Save a Revision before enabling Schedule",
+    }
+    assert get_schedule(api_client, no_revision["id"]).status_code == 404
+    assert api_client.get(f"/api/adapters/{no_revision['id']}").json()["runtime_locked"] is False
+
+    no_worker = create_adapter(api_client, name="schedule-no-worker", adapter_type="task")
+    save_version(api_client, no_worker["id"])
+    configured = api_client.patch(
+        f"/api/adapters/{no_worker['id']}",
+        json={"run_mode": "schedule", "runtime_worker_id": None},
+    )
+    assert configured.status_code == 200, configured.text
+
+    rejected = put_schedule(api_client, no_worker["id"])
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == {
+        "code": "runtime_worker_required",
+        "message": "Select a runtime Worker before enabling Schedule",
+    }
+    assert get_schedule(api_client, no_worker["id"]).status_code == 404
+    assert api_client.get(f"/api/adapters/{no_worker['id']}").json()["runtime_locked"] is False
+
+
 def test_enabled_schedule_locks_configuration_but_can_be_disabled(
     api_client: TestClient,
 ) -> None:

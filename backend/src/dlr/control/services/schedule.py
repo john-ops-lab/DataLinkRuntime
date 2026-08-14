@@ -173,6 +173,18 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
             "execution_input_too_large",
             f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
         )
+    if data.enabled and adapter.latest_version_id is None:
+        raise domain_error(
+            409,
+            "adapter_has_no_version",
+            "Save a Revision before enabling Schedule",
+        )
+    if data.enabled and adapter.runtime_worker_id is None:
+        raise domain_error(
+            409,
+            "runtime_worker_required",
+            "Select a runtime Worker before enabling Schedule",
+        )
     schedule = session.scalar(
         select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter_id).with_for_update()
     )

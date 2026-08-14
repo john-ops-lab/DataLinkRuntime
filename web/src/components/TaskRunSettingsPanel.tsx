@@ -233,6 +233,12 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
   const runtimeLocked = props.adapter.runtime_locked === true;
   const scheduleEnabled = schedule?.enabled === true;
   const scheduleFieldsLocked = scheduleEnabled || runtimeLocked;
+  const scheduleEnableBlockedReason =
+    props.adapter.latest_version_id === null
+      ? "请先保存 Revision，再启用定时。"
+      : props.adapter.runtime_worker_id == null
+        ? "请先保存运行节点，再启用定时。"
+        : null;
   const compatibleWorkers = props.workers.filter((worker) =>
     worker.capabilities.includes(props.adapter.language),
   );
@@ -332,12 +338,23 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
                   danger={scheduleEnabled}
                   data-testid={scheduleEnabled ? "disable-task-schedule" : "enable-task-schedule"}
                   loading={savingSchedule}
-                  disabled={activeExecution && !scheduleEnabled}
+                  disabled={
+                    !scheduleEnabled &&
+                    (activeExecution || scheduleEnableBlockedReason !== null)
+                  }
                   onClick={() => void saveSchedule(!scheduleEnabled)}
                 >
                   {scheduleEnabled ? "停用定时" : "启用定时"}
                 </Button>
               </Space>
+              {!scheduleEnabled && scheduleEnableBlockedReason !== null && (
+                <Alert
+                  type="info"
+                  showIcon
+                  data-testid="task-schedule-enable-blocked"
+                  message={scheduleEnableBlockedReason}
+                />
+              )}
             </Space>
           )}
         </section>

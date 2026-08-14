@@ -59,7 +59,9 @@ vi.mock("@monaco-editor/react", () => ({
   },
 }));
 
-const STARTER_CODE =
+const STARTER_CODE = "def handle(context, input):\n    return input\n";
+
+const TASK_STARTER_CODE =
   "def handle(context, input):\n" +
   "    context.logger.info(\"任务开始\")\n" +
   "    try:\n" +
@@ -228,6 +230,29 @@ afterEach(() => {
 
 // --- M5.4.2 Task Adapter user model -------------------------------------------
 
+it("uses the Task starter only for Task Adapters without a saved Revision", async () => {
+  const task = makeAdapter({ id: 1, name: "task-a", adapter_type: "task" });
+  const webhook = makeAdapter({ id: 2, name: "webhook-a", adapter_type: "webhook" });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [task, webhook] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [] }) },
+  ]);
+
+  render(<App />);
+  const items = await screen.findAllByTestId("adapter-item");
+  fireEvent.click(items[0]);
+  await waitFor(() => expect(valueOf("code-editor")).toBe(TASK_STARTER_CODE));
+
+  fireEvent.click(items[1]);
+  await screen.findByRole("heading", { name: "webhook-a" });
+  expect(valueOf("code-editor")).toBe(STARTER_CODE);
+  expect(valueOf("code-editor")).not.toContain("任务开始");
+  expect(valueOf("code-editor")).not.toContain("任务结束");
+});
+
 it("shows the Task workbench without Version/Publish/Production controls", async () => {
   const task = makeAdapter({
     adapter_type: "task",
@@ -361,6 +386,71 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   await screen.findByTestId("enable-task-schedule");
   fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
   await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(false));
+});
+
+it.each([
+  {
+    name: "a saved Revision",
+    adapter: makeAdapter({
+      adapter_type: "task",
+      run_mode: "schedule",
+      latest_version_id: null,
+      runtime_worker_id: 1,
+    }),
+    expectedReason: "请先保存 Revision，再启用定时。",
+  },
+  {
+    name: "a configured runtime Worker",
+    adapter: makeAdapter({
+      adapter_type: "task",
+      run_mode: "schedule",
+      latest_version_id: 10,
+      runtime_worker_id: null,
+    }),
+    expectedReason: "请先保存运行节点，再启用定时。",
+  },
+])("blocks Schedule enablement without $name", async ({ adapter, expectedReason }) => {
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: adapter.latest_version_id === null ? [] : [makeVersion()] }),
+    },
+    ...(adapter.latest_version_id === null
+      ? []
+      : [{
+          method: "GET",
+          match: "/api/adapters/1/versions/10",
+          respond: () => ({ body: makeVersion() }),
+        }]),
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        status: 404,
+        body: {
+          detail: { code: "schedule_not_configured", message: "Schedule is not configured" },
+        },
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+
+  const enable = await screen.findByTestId("enable-task-schedule") as HTMLButtonElement;
+  expect(enable.disabled).toBe(true);
+  expect(screen.getByText(expectedReason)).toBeDefined();
+  fireEvent.click(enable);
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+    ),
+  ).toBe(false);
 });
 
 // --- Admin token auth (M2) -----------------------------------------------------

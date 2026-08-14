@@ -7,6 +7,17 @@ export const LANGUAGE_LABELS: Record<AdapterLanguage, string> = {
 };
 
 export const STARTER_CODE: Record<AdapterLanguage, string> = {
+  python: "def handle(context, input):\n    return input\n",
+  javascript: "export async function handle(context, input) {\n  return input;\n}\n",
+  java:
+    "public class Adapter {\n" +
+    "    public Object handle(Context context, Object input) throws Exception {\n" +
+    "        return input;\n" +
+    "    }\n" +
+    "}\n",
+};
+
+export const TASK_STARTER_CODE: Record<AdapterLanguage, string> = {
   python:
     "def handle(context, input):\n" +
     "    context.logger.info(\"任务开始\")\n" +
