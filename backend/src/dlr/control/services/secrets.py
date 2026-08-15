@@ -21,12 +21,12 @@ import re
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter
+from dlr.control.models import Adapter, AdapterWebhook, Execution
 from dlr.control.models.platform import (
     CREDENTIAL_FIELDS,
     AdapterCredentialBinding,
@@ -142,7 +142,46 @@ def get_credential(session: Session, credential_id: int) -> Credential:
 
 
 def update_credential(session: Session, credential_id: int, data: CredentialUpdate) -> Credential:
-    credential = get_credential(session, credential_id)
+    _require_secret_store()
+    credential = session.get(
+        Credential,
+        credential_id,
+        with_for_update=data.fields is not None,
+    )
+    if credential is None:
+        raise domain_error(404, "credential_not_found", "Credential not found")
+
+    # Token values are runtime configuration. Serialize value replacement
+    # against Webhook Start on the Credential row, then reject while any
+    # referencing Webhook is enabled or still has an active call. Name-only
+    # edits remain metadata-only and do not need the runtime lock.
+    if data.fields is not None:
+        locked_webhook = session.scalar(
+            select(AdapterWebhook.adapter_id)
+            .where(
+                AdapterWebhook.credential_id == credential_id,
+                or_(
+                    AdapterWebhook.enabled.is_(True),
+                    exists(
+                        select(Execution.id).where(
+                            Execution.adapter_id == AdapterWebhook.adapter_id,
+                            Execution.status.in_(("pending", "running")),
+                        )
+                    ),
+                ),
+            )
+            .limit(1)
+        )
+        if locked_webhook is not None:
+            raise domain_error(
+                409,
+                "credential_webhook_runtime_locked",
+                "Stop every Webhook using this Credential and wait for active calls "
+                "to finish before changing its value",
+            )
+
+        _validate_fields(credential.type, data.fields)
+
     if data.name is not None and data.name != credential.name:
         conflict = session.scalar(
             select(Credential).where(Credential.name == data.name, Credential.id != credential_id)
@@ -151,7 +190,6 @@ def update_credential(session: Session, credential_id: int, data: CredentialUpda
             raise domain_error(409, "credential_name_conflict", "Credential name already exists")
         credential.name = data.name
     if data.fields is not None:
-        _validate_fields(credential.type, data.fields)
         credential.ciphertext = encrypt_fields(data.fields)
     try:
         session.commit()

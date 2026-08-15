@@ -283,13 +283,15 @@ def list_adapter_executions(
     adapter_id: int,
     limit: int = DEFAULT_HISTORY_LIMIT,
     before_id: int | None = None,
+    trigger: str | None = None,
 ) -> tuple[list[ExecutionSummary], int | None]:
     """One cursor page of an Adapter's execution history, newest first.
 
-    Uses a ``before_id`` cursor (never offset) and returns lightweight
-    summaries without the input/output/stdout/stderr big fields. The second
-    return value is the cursor for the next page, or None when the history
-    ends here.
+    Uses a ``before_id`` cursor (never offset) and optionally filters by
+    trigger before applying the page limit. This preserves cursor semantics
+    for the Webhook-only call history while the unfiltered Task history keeps
+    manual and schedule runs together. Summaries omit all big fields. The
+    second return value is the next-page cursor, or None at the end.
     """
     adapter = session.get(Adapter, adapter_id)
     if adapter is None:
@@ -317,6 +319,8 @@ def list_adapter_executions(
         .order_by(Execution.id.desc())
         .limit(limit + 1)
     )
+    if trigger is not None:
+        query = query.where(Execution.trigger == trigger)
     if before_id is not None:
         query = query.where(Execution.id < before_id)
     rows = session.execute(query).mappings().all()

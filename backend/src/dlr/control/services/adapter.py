@@ -1,5 +1,6 @@
 """Adapter and immutable Revision domain service (M5.4.1)."""
 
+import secrets as stdlib_secrets
 from datetime import datetime
 
 from fastapi import HTTPException
@@ -7,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dlr.control.models import Adapter, AdapterSchedule, AdapterVersion, Worker
+from dlr.control.models import Adapter, AdapterSchedule, AdapterVersion, AdapterWebhook, Worker
 from dlr.control.models.platform import AdapterCredentialBinding
 from dlr.control.schemas.adapter import (
     AdapterCreate,
@@ -76,6 +77,16 @@ def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
     )
     session.add(adapter)
     try:
+        session.flush()
+        if adapter.adapter_type == "webhook":
+            session.add(
+                AdapterWebhook(
+                    adapter_id=adapter.id,
+                    public_id=stdlib_secrets.token_hex(8),
+                    enabled=False,
+                    credential_id=None,
+                )
+            )
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -230,6 +241,16 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
     _require_not_archived(adapter)
     adapter_runtime.require_runtime_unlocked(session, adapter)
     if adapter.latest_version_id is None:
+        if adapter.adapter_type == "webhook":
+            webhook = session.scalar(
+                select(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter.id)
+            )
+            if webhook is None or webhook.credential_id is None:
+                raise domain_error(
+                    409,
+                    "webhook_token_required",
+                    "Choose a Token Credential before the first Webhook Revision is saved",
+                )
         resolve_runtime_worker(
             session,
             adapter,
@@ -325,6 +346,24 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
                     next_run_at=None,
                 )
             )
+    else:
+        source_webhook = session.scalar(
+            select(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter_id).with_for_update()
+        )
+        session.add(
+            AdapterWebhook(
+                adapter_id=clone.id,
+                public_id=(
+                    source_webhook.public_id
+                    if source_webhook is not None
+                    else stdlib_secrets.token_hex(8)
+                ),
+                credential_id=(
+                    source_webhook.credential_id if source_webhook is not None else None
+                ),
+                enabled=False,
+            )
+        )
     session.commit()
     session.refresh(clone)
     return clone

@@ -53,8 +53,11 @@ function formatDuration(durationMs: number | null): string {
 
 export default function ExecutionHistoryPanel(props: {
   adapterId: number;
+  /** Server-side filter; Webhook call history excludes legacy manual runs. */
+  trigger?: "webhook";
   /** Start 成功后自动打开该 Execution 的详情抽屉（含实时日志）。 */
   autoOpenExecutionId?: number | null;
+  recordLabel?: "执行记录" | "调用记录";
 }) {
   const [items, setItems] = useState<ExecutionSummary[]>([]);
   const [nextBeforeId, setNextBeforeId] = useState<number | null>(null);
@@ -79,6 +82,7 @@ export default function ExecutionHistoryPanel(props: {
         const page = await api.listExecutions(props.adapterId, {
           limit: PAGE_SIZE,
           ...(beforeId !== null ? { before_id: beforeId } : {}),
+          ...(props.trigger !== undefined ? { trigger: props.trigger } : {}),
         });
         setItems((current) => (beforeId === null ? page.items : [...current, ...page.items]));
         setNextBeforeId(page.next_before_id);
@@ -88,7 +92,7 @@ export default function ExecutionHistoryPanel(props: {
         setLoading(false);
       }
     },
-    [props.adapterId],
+    [props.adapterId, props.trigger],
   );
 
   // First page loads on mount (antd Tabs mount lazily, so this only runs
@@ -97,7 +101,10 @@ export default function ExecutionHistoryPanel(props: {
     let cancelled = false;
     void (async () => {
       try {
-        const page = await api.listExecutions(props.adapterId, { limit: PAGE_SIZE });
+        const page = await api.listExecutions(props.adapterId, {
+          limit: PAGE_SIZE,
+          ...(props.trigger !== undefined ? { trigger: props.trigger } : {}),
+        });
         if (cancelled) {
           return;
         }
@@ -116,7 +123,7 @@ export default function ExecutionHistoryPanel(props: {
     return () => {
       cancelled = true;
     };
-  }, [props.adapterId]);
+  }, [props.adapterId, props.trigger]);
 
   async function openExecution(executionId: number, summary: ExecutionSummary | null = null) {
     const requestId = ++detailRequestRef.current;
@@ -238,7 +245,7 @@ export default function ExecutionHistoryPanel(props: {
           dataSource={items}
           pagination={false}
           scroll={{ x: 836 }}
-          locale={{ emptyText: <Empty description="暂无执行记录" /> }}
+          locale={{ emptyText: <Empty description={`暂无${props.recordLabel ?? "执行记录"}`} /> }}
           onRow={(summary) => ({
             onClick: () => void openExecution(summary.id, summary),
             onKeyDown: (event) => {

@@ -1,4 +1,4 @@
-"""Adapter Webhook endpoints of the Control Node (M5.3).
+"""Final Webhook Adapter endpoints of the Control Node (M5.4.3).
 
 Two routers with different authentication models:
 
@@ -49,10 +49,10 @@ def get_webhook(adapter_id: int, session: DbSession) -> WebhookResponse:
 
 @router.put("/api/adapters/{adapter_id}/webhook", response_model=WebhookResponse)
 def put_webhook(adapter_id: int, payload: WebhookUpsert, session: DbSession) -> WebhookResponse:
-    """Create or update the Adapter's Webhook.
+    """Replace stopped settings or start/stop Webhook receiving.
 
-    The Credential must exist and be of type ``token``. The ``public_id``
-    is server-generated on first creation and stays stable afterwards.
+    ``public_id`` is editable while stopped. A referenced Credential must
+    exist and be type ``token``; starting also enforces runtime readiness.
     """
     return webhook_service.upsert_webhook(session, adapter_id, payload)
 
@@ -111,8 +111,8 @@ async def receive_hook(
     Control never waits for the Execution; the response only carries the
     created execution id. Real precedence: the raw body stream cap runs
     first (413 even for unknown/unauthorized callers); then unknown
-    public_id -> 404; disabled -> 409 ``webhook_disabled``; wrong/missing
-    token -> 401; gate failures -> the stable 409 family; body contract ->
+    public_id/disabled -> 404; wrong/missing token -> 401; gate failures ->
+    the stable 409 family; body contract ->
     400 (invalid/non-standard JSON) and 413 (compact JSON over the cap).
     """
     body = await _read_capped_body(request)

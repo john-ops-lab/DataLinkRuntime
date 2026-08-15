@@ -1,13 +1,12 @@
-"""Adapter Webhook persistence model (M5.3).
+"""Adapter Webhook persistence model (M5.4.3).
 
 Contracts kept by this model:
 
 - At most one Webhook per Adapter (``adapter_id`` is unique); no generic
   Trigger table and no Webhook request history table — accepted requests
   are carried by Execution history, rejected ones are never persisted.
-- ``public_id`` is a random, unpredictable identifier used only for
-  routing; it is never an authentication secret and never exposes the
-  Adapter id. Authentication is the referenced token Credential.
+- ``public_id`` is the editable final path segment. Only enabled Webhooks
+  must be unique, which supports a stopped clone taking over the same URL.
 - The Webhook row is deployment configuration of the Adapter: it is
   removed with the Adapter (ON DELETE CASCADE) and never participates in
   the execution-history delete protection.
@@ -24,6 +23,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    Index,
     String,
     func,
     text,
@@ -37,6 +37,14 @@ class AdapterWebhook(Base):
     """The single Webhook configuration of one Adapter (singleton per Adapter)."""
 
     __tablename__ = "adapter_webhooks"
+    __table_args__ = (
+        Index(
+            "uq_adapter_webhooks_enabled_public_id",
+            "public_id",
+            unique=True,
+            postgresql_where=text("enabled"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     adapter_id: Mapped[int] = mapped_column(
@@ -45,18 +53,19 @@ class AdapterWebhook(Base):
         nullable=False,
         unique=True,
     )
-    # Random token-safe identifier; routing only, never an auth secret.
-    # Stable after creation: PUT never rotates it (no URL rotation in M5.3).
-    public_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # Editable path segment; routing only, never an auth secret. Stopped
+    # Webhooks may share it, while the partial index prevents two enabled
+    # Webhooks from receiving at the same path.
+    public_id: Mapped[str] = mapped_column(String(64), nullable=False)
     enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
     # Must reference a token-type Credential; RESTRICT blocks deleting a
     # Credential that a Webhook still uses.
-    credential_id: Mapped[int] = mapped_column(
+    credential_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("credentials.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

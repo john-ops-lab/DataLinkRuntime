@@ -4,13 +4,6 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { Button, Drawer, Input, Radio, Segmented, Space } from "antd";
 
-import {
-  hasActiveProductionExecution,
-  productionDisplayState,
-  productionRunningVersionId,
-  productionRunningVersionSeq,
-  productionStateLabel,
-} from "../status";
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, AdapterLanguage, AdapterType, Worker } from "../types";
 
@@ -81,61 +74,13 @@ function catalogSubtitle(
     }
     return { primary, attention, full: fullParts.join(" · ") };
   }
-  const displayState = productionDisplayState(adapter);
-  const runningVersionId = productionRunningVersionId(adapter);
   const attention: string[] = [];
-  let productionFact = "未发布";
-
-  if (runningVersionId !== null) {
-    // M5.1: the locked production version is expressed from the server-side
-    // production_version_id/seq; “生产运行” is reserved for a real active
-    // Execution, an open but idle entry says “生产入口已开启 · 空闲”.
-    const versionText = versionLabel(
-      runningVersionId,
-      productionRunningVersionSeq(adapter),
-      versionSeqById,
-    );
-    if (displayState === "stopping") {
-      productionFact = `停止中 ${versionText}`;
-      attention.push(
-        adapter.running_execution_id === null || adapter.running_execution_id === undefined
-          ? "等待执行完成"
-          : `等待 Execution #${adapter.running_execution_id} 完成`,
-      );
-    } else if (hasActiveProductionExecution(adapter)) {
-      productionFact = `生产运行 ${versionText}`;
-    } else {
-      productionFact = `生产入口已开启 · 空闲 ${versionText}`;
-    }
-  } else if (
-    displayState === "stopped" &&
-    adapter.last_production_version_id !== null &&
-    adapter.last_production_version_id !== undefined
-  ) {
-    productionFact = `已停止 · 上次 ${versionLabel(
-        adapter.last_production_version_id,
-        adapter.last_production_version_seq,
-        versionSeqById,
-      )}`;
-  } else if (adapter.published_version_id !== null && adapter.published_version_id !== undefined) {
-    productionFact = `待启动 ${versionLabel(
-      adapter.published_version_id,
-      adapter.published_version_seq,
-      versionSeqById,
-    )}`;
-  }
-  const publishedVersionId = adapter.published_version_id;
-  const comparisonVersionId = runningVersionId ?? adapter.last_production_version_id ?? null;
-  if (
-    publishedVersionId !== null &&
-    publishedVersionId !== undefined &&
-    comparisonVersionId !== null &&
-    publishedVersionId !== comparisonVersionId
-  ) {
-    attention.push(
-      `${versionLabel(publishedVersionId, adapter.published_version_seq, versionSeqById)} 待启动`,
-    );
-  }
+  const runtimeFact =
+    adapter.running_execution_id != null
+      ? `调用 #${adapter.running_execution_id} 运行中`
+      : adapter.runtime_locked
+        ? "接收中"
+        : "已停止";
   const workerId = adapter.runtime_worker_id;
   if (workerId !== null && workerId !== undefined) {
     const worker = workersById.get(workerId);
@@ -143,7 +88,11 @@ function catalogSubtitle(
       attention.push("Worker 离线");
     }
   }
-  const primary = `${LANGUAGE_LABELS[adapter.language]} · ${productionFact}`;
+  const revision =
+    adapter.latest_version_id == null
+      ? "未保存 Revision"
+      : `Revision ${versionLabel(adapter.latest_version_id, null, versionSeqById)}`;
+  const primary = `${LANGUAGE_LABELS[adapter.language]} · ${runtimeFact} · ${revision}`;
   const fullParts = [primary, ...attention];
   if (workerId === null || workerId === undefined) {
     fullParts.push("Worker 未配置");
@@ -256,8 +205,7 @@ export default function AdapterCatalog({
           <p className="catalog-empty">{inView.length === 0 ? (view === "archived" ? "暂无已归档 Adapter" : "暂无 Adapter") : "没有匹配的 Adapter"}</p>
         ) : (
           visible.map((adapter) => {
-            const displayState = productionDisplayState(adapter);
-            const taskState =
+            const runtimeState =
               adapter.running_execution_id != null
                 ? "running"
                 : adapter.runtime_locked
@@ -277,12 +225,10 @@ export default function AdapterCatalog({
               >
                 <span className="catalog-item-name">
                   <span
-                    className={`catalog-status-dot catalog-status-${adapter.adapter_type === "task" ? taskState : displayState}`}
-                    title={
-                      adapter.adapter_type === "task"
-                        ? `Task 状态：${adapter.running_execution_id != null ? "运行中" : adapter.runtime_locked ? "定时运行中" : "空闲"}`
-                        : `生产状态：${productionStateLabel(displayState)}`
-                    }
+                    className={`catalog-status-dot catalog-status-${runtimeState}`}
+                    title={adapter.adapter_type === "task"
+                      ? `Task 状态：${adapter.running_execution_id != null ? "运行中" : adapter.runtime_locked ? "定时运行中" : "空闲"}`
+                      : `Webhook 状态：${adapter.running_execution_id != null ? "调用中" : adapter.runtime_locked ? "接收中" : "已停止"}`}
                   />
                   {adapter.name}
                 </span>

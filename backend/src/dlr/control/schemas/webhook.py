@@ -1,21 +1,28 @@
-"""Pydantic schemas for the Adapter Webhook configuration API (M5.3)."""
+"""Pydantic schemas for the Adapter Webhook final user model (M5.4.3)."""
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+WEBHOOK_PUBLIC_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{2,63}$"
 
 
 class WebhookUpsert(BaseModel):
     """Request body for PUT /api/adapters/{adapter_id}/webhook.
 
-    PUT is create-or-update: ``enabled`` and ``credential_id`` are both
-    mandatory and the saved Webhook becomes exactly the submitted
-    configuration. The referenced Credential must be of type ``token``.
-    The ``public_id`` is server-generated on first creation and stable.
+    The row exists from Adapter creation. PUT replaces the editable path,
+    optional token Credential reference and receiving state. Enabling adds
+    runtime readiness and enabled-path uniqueness gates.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool
-    credential_id: int
+    # The service enforces WEBHOOK_PUBLIC_ID_PATTERN whenever the path is
+    # changed. Unchanged M5.3 token_urlsafe paths remain accepted so an
+    # upgraded running Webhook can still Stop/Start without changing its URL.
+    public_id: str = Field(min_length=3, max_length=64)
+    credential_id: int | None
 
 
 class WebhookResponse(BaseModel):
@@ -32,7 +39,7 @@ class WebhookResponse(BaseModel):
     enabled: bool
     public_id: str
     hook_path: str
-    credential_id: int
-    credential_name: str
+    credential_id: int | None
+    credential_name: str | None
     created_at: datetime
     updated_at: datetime

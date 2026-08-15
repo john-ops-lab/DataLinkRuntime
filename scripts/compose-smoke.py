@@ -1,4 +1,4 @@
-"""M5.4.2 end-to-end smoke assertions executed inside the Control container."""
+"""M5.4.3 end-to-end smoke assertions executed inside the Control container."""
 
 from __future__ import annotations
 
@@ -163,6 +163,12 @@ with SessionLocal() as session:
     }.isdisjoint(adapter_columns)
     index_names = {index["name"] for index in inspector.get_indexes("executions")}
     assert "uq_executions_active_adapter" in index_names
+    webhook_columns = {
+        column["name"]: column for column in inspector.get_columns("adapter_webhooks")
+    }
+    assert webhook_columns["credential_id"]["nullable"] is True
+    webhook_indexes = {index["name"]: index for index in inspector.get_indexes("adapter_webhooks")}
+    assert "uq_adapter_webhooks_enabled_public_id" in webhook_indexes
 
 # A stored-online Worker whose heartbeat expired is unavailable without its
 # stored status being rewritten.
@@ -359,15 +365,16 @@ with SessionLocal() as session:
     assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v1["id"])) is not None
     assert session.scalar(select(Execution).where(Execution.id == run1["id"])) is not None
 
-# Webhook foundation: type-specific configuration, enabled lock, latest
-# Revision execution, auth, busy rejection and disable-before-save rotation.
-webhook_adapter = create_adapter("smoke-m541-webhook", "python", "webhook")
+# Final Webhook model: random stopped path, first-save Worker/Token gates,
+# readable path, immediate Stop without cancelling active work, and Clone
+# upgrade takeover while the public URL remains unchanged.
+webhook_adapter = create_adapter("smoke-m543-webhook", "python", "webhook")
 webhook_id = webhook_adapter["id"]
+initial_webhook = request("GET", f"/adapters/{webhook_id}/webhook")
+assert initial_webhook["enabled"] is False
+assert initial_webhook["credential_id"] is None
+assert len(initial_webhook["public_id"]) == 16
 choose_worker(webhook_id, runtime_worker_id)
-webhook_v1 = save(
-    webhook_id,
-    "def handle(context, input):\n    return {'revision': 1, 'input': input}\n",
-)
 webhook_token = "smoke-webhook-token"
 webhook_credential = request(
     "POST",
@@ -379,23 +386,54 @@ webhook_credential = request(
     },
     expected=201,
 )
+webhook_path = "receive-sys1-data"
 webhook_config = request(
     "PUT",
     f"/adapters/{webhook_id}/webhook",
-    {"enabled": True, "credential_id": webhook_credential["id"]},
+    {
+        "enabled": False,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
 )
-public_id = webhook_config["public_id"]
-unauthorized = hook(public_id, "wrong-token", {}, expected=401)
+assert webhook_config["public_id"] == webhook_path
+webhook_v1 = save(
+    webhook_id,
+    "import time\n\n"
+    "def handle(context, input):\n"
+    "    context.logger.info('收到 Webhook 请求')\n"
+    "    try:\n"
+    "        time.sleep(3)\n"
+    "        return {'received': True, 'data': input}\n"
+    "    finally:\n"
+    "        context.logger.info('处理完 Webhook 请求')\n",
+)
+started = request(
+    "PUT",
+    f"/adapters/{webhook_id}/webhook",
+    {
+        "enabled": True,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
+)
+assert started["enabled"] is True
+assert request("GET", f"/adapters/{webhook_id}/executions")["items"] == []
+unauthorized = hook(webhook_path, "wrong-token", {}, expected=401)
 assert unauthorized["detail"]["code"] == "unauthorized", unauthorized
-accepted1 = hook(public_id, webhook_token, {"event": 1})
-busy_hook = hook(public_id, webhook_token, {"event": "duplicate"}, expected=409)
+accepted1 = hook(webhook_path, webhook_token, {"event": 1})
+busy_hook = hook(webhook_path, webhook_token, {"event": "duplicate"}, expected=409)
 assert busy_hook["detail"]["code"] == "adapter_busy", busy_hook
 assert_locked(save(webhook_id, "# blocked\n", expected=409))
 assert_locked(
     request(
         "PUT",
         f"/adapters/{webhook_id}/webhook",
-        {"enabled": True, "credential_id": webhook_credential["id"]},
+        {
+            "enabled": True,
+            "public_id": "blocked-path-change",
+            "credential_id": webhook_credential["id"],
+        },
         expected=409,
     )
 )
@@ -405,33 +443,103 @@ webhook_metadata = request(
     {"description": "metadata remains editable"},
 )
 assert webhook_metadata["runtime_locked"] is True
+stopped_while_active = request(
+    "PUT",
+    f"/adapters/{webhook_id}/webhook",
+    {
+        "enabled": False,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
+)
+assert stopped_while_active["enabled"] is False
+assert request("GET", f"/adapters/{webhook_id}")["runtime_locked"] is True
+assert hook(webhook_path, webhook_token, {}, expected=404)["detail"]["code"] == "webhook_not_found"
 webhook_finished1 = wait_terminal(accepted1["execution_id"])
+assert webhook_finished1["status"] == "succeeded", webhook_finished1
 assert webhook_finished1["version_id"] == webhook_v1["id"]
-assert webhook_finished1["output"]["revision"] == 1
+assert webhook_finished1["target_worker_id"] == runtime_worker_id
+assert webhook_finished1["output"] == {"received": True, "data": {"event": 1}}
+assert "收到 Webhook 请求" in webhook_finished1["stdout"]
+assert "处理完 Webhook 请求" in webhook_finished1["stdout"]
+assert request("GET", f"/adapters/{webhook_id}")["runtime_locked"] is False
+call_history = request("GET", f"/adapters/{webhook_id}/executions")["items"]
+assert len(call_history) == 1 and call_history[0]["trigger"] == "webhook"
 
-disabled_webhook = request(
-    "PUT",
-    f"/adapters/{webhook_id}/webhook",
-    {"enabled": False, "credential_id": webhook_credential["id"]},
-)
-assert disabled_webhook["public_id"] == public_id and disabled_webhook["enabled"] is False
-webhook_v2 = save(
-    webhook_id,
-    "def handle(context, input):\n    return {'revision': 2, 'input': input}\n",
-)
+# Re-enable A, clone it to stopped B with the same URL/Token/Worker/current
+# Revision, then prove only the running owner can receive until Stop A.
 request(
     "PUT",
     f"/adapters/{webhook_id}/webhook",
-    {"enabled": True, "credential_id": webhook_credential["id"]},
+    {
+        "enabled": True,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
 )
-accepted2 = hook(public_id, webhook_token, {"event": 2})
+webhook_clone = request(
+    "POST",
+    f"/adapters/{webhook_id}/clone",
+    {"name": "smoke-m543-webhook-clone"},
+    expected=201,
+)
+clone_webhook = request("GET", f"/adapters/{webhook_clone['id']}/webhook")
+assert clone_webhook["public_id"] == webhook_path
+assert clone_webhook["credential_id"] == webhook_credential["id"]
+assert clone_webhook["enabled"] is False
+assert webhook_clone["runtime_worker_id"] == runtime_worker_id
+assert request("GET", f"/adapters/{webhook_clone['id']}/executions")["items"] == []
+clone_v2 = save(
+    webhook_clone["id"],
+    "def handle(context, input):\n"
+    "    context.logger.info('收到 Webhook 请求')\n"
+    "    try:\n"
+    "        return {'clone': True, 'data': input}\n"
+    "    finally:\n"
+    "        context.logger.info('处理完 Webhook 请求')\n",
+)
+assert clone_v2["seq"] == 2
+clone_conflict = request(
+    "PUT",
+    f"/adapters/{webhook_clone['id']}/webhook",
+    {
+        "enabled": True,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
+    expected=409,
+)
+assert clone_conflict["detail"]["code"] == "webhook_path_in_use", clone_conflict
+request(
+    "PUT",
+    f"/adapters/{webhook_id}/webhook",
+    {
+        "enabled": False,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
+)
+request(
+    "PUT",
+    f"/adapters/{webhook_clone['id']}/webhook",
+    {
+        "enabled": True,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
+)
+accepted2 = hook(webhook_path, webhook_token, {"event": 2})
 webhook_finished2 = wait_terminal(accepted2["execution_id"])
-assert webhook_finished2["version_id"] == webhook_v2["id"]
-assert webhook_finished2["output"]["revision"] == 2
+assert webhook_finished2["version_id"] == clone_v2["id"]
+assert webhook_finished2["output"] == {"clone": True, "data": {"event": 2}}
 request(
     "PUT",
-    f"/adapters/{webhook_id}/webhook",
-    {"enabled": False, "credential_id": webhook_credential["id"]},
+    f"/adapters/{webhook_clone['id']}/webhook",
+    {
+        "enabled": False,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
 )
 
 wrong_schedule = request(
@@ -444,7 +552,11 @@ assert wrong_schedule["detail"]["code"] == "adapter_type_mismatch", wrong_schedu
 wrong_webhook = request(
     "PUT",
     f"/adapters/{clone['id']}/webhook",
-    {"enabled": False, "credential_id": webhook_credential["id"]},
+    {
+        "enabled": False,
+        "public_id": webhook_path,
+        "credential_id": webhook_credential["id"],
+    },
     expected=409,
 )
 assert wrong_webhook["detail"]["code"] == "adapter_type_mismatch", wrong_webhook
@@ -534,4 +646,4 @@ assert after["runtime_worker_id"] == before["runtime_worker_id"]
 assert after_versions == before_versions
 assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
 
-print("M5.4.2 compose smoke passed")
+print("M5.4.3 compose smoke passed")

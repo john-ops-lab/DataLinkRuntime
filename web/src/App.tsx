@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor from "@monaco-editor/react";
-import { Button, ConfigProvider, message, Modal, Segmented, Space, Tabs } from "antd";
+import { Button, ConfigProvider, message, Segmented, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -10,25 +10,21 @@ import AiAssistantPanel from "./components/AiAssistantPanel";
 import CredentialBindingsEditor from "./components/CredentialBindingsEditor";
 import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
-import ScheduleTriggerPanel from "./components/ScheduleTriggerPanel";
 import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
 import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
 import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
-import TestRunPanel from "./components/TestRunPanel";
 import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
 import WebhookTriggerPanel from "./components/WebhookTriggerPanel";
+import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
-import WorkbenchHeader from "./components/WorkbenchHeader";
-import { DEPENDENCY_UI, STARTER_CODE, TASK_STARTER_CODE } from "./languages";
+import { DEPENDENCY_UI, TASK_STARTER_CODE, WEBHOOK_STARTER_CODE } from "./languages";
 import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
-import { statusLabel } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   Adapter,
   AdapterLanguage,
   AdapterType,
   AiCandidate,
-  PublishGate,
   VersionDetail,
   VersionSummary,
   Worker,
@@ -131,41 +127,17 @@ function errorMessage(error: unknown): string {
   return "请求失败";
 }
 
-/** 发布门禁拒绝原因的稳定中文文案（后端 reason code → 展示）。 */
-function publishGateReasonText(gate: PublishGate): string {
-  switch (gate.reason) {
-    case "no_production_worker":
-      return "未配置生产 Worker：请先在 Adapter 设置中指定生产 Worker 后再发布。";
-    case "not_tested_on_production_worker":
-      return "该版本尚未在生产 Worker 上测试：请先在测试运行页运行一次测试。";
-    case "last_test_not_succeeded":
-      return gate.last_test !== null
-        ? `最近一次生产 Worker 测试未成功（Execution #${gate.last_test.execution_id}，状态：${statusLabel(gate.last_test.status)}）。`
-        : "最近一次生产 Worker 测试未成功。";
-    default:
-      return "发布门禁未通过。";
-  }
-}
-
-type WorkbenchTabKey = "edit" | "runtime" | "test" | "history" | "triggers";
+type WorkbenchTabKey = "edit" | "runtime" | "history";
 
 // 编辑页次级配置区（语言依赖 | 运行参数（JSON） | 凭据绑定）。
 type ConfigTabKey = "requirements" | "runtime-config" | "bindings";
 
-/** Diff 弹窗状态：两个入口（Working Copy / 发布对比）共用一个弹窗。 */
+/** Working Copy / AI Candidate diff modal state. */
 interface DiffViewState {
   title: string;
   originalTitle: string;
   modifiedTitle: string;
   panes: DiffPane[];
-}
-
-/** 发布确认框状态：门禁信息在打开时拉取，versionId 固定本次目标。 */
-interface PublishConfirmState {
-  versionId: number;
-  versionSeq: number | null;
-  gate: PublishGate | null;
-  gateError: string | null;
 }
 
 // M1 frontend validation mirrors the backend contract: runtime_config must be
@@ -193,11 +165,9 @@ function AdapterConsole() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [runtimeWorkerId, setRuntimeWorkerId] = useState<number | null>(null);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [workersLoading, setWorkersLoading] = useState(true);
   const [workersError, setWorkersError] = useState<string | null>(null);
-  const [workerRetestAdapterIds, setWorkerRetestAdapterIds] = useState<Set<number>>(new Set());
 
   const [snapshot, setSnapshot] = useState<EditorSnapshot>({
     code: "",
@@ -217,13 +187,8 @@ function AdapterConsole() {
   const [contentReady, setContentReady] = useState(false);
   // Low-frequency Adapter settings live in a drawer, outside the main work area.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // M3.2：受控 Tab，Start 成功后可自动切到执行记录页。
+  // Controlled Workbench tab.
   const [activeTabKey, setActiveTabKey] = useState<WorkbenchTabKey>("edit");
-  // Start 创建的 Production Execution id：执行记录页自动打开其详情抽屉。
-  const [autoOpenExecutionId, setAutoOpenExecutionId] = useState<number | null>(null);
-  // 发布确认框：门禁信息在打开时拉取。发布只更新生产目标，
-  // 不会停止或替换当前 Production Execution。
-  const [publishConfirm, setPublishConfirm] = useState<PublishConfirmState | null>(null);
   // M3.2：编辑页次级配置 Tabs 与系统设置抽屉（凭据管理 + Python 包源）。
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
@@ -243,12 +208,8 @@ function AdapterConsole() {
     snapshot.requirements !== baseline.requirements ||
     snapshot.runtimeConfigText !== baseline.runtimeConfigText;
   const selectedAdapterId = selected?.id ?? null;
-  const selectedProductionState = selected?.production_state ?? null;
-  const activeProductionExecutionId = selected?.running_execution_id ?? null;
-  const selectedTaskScheduleLocked =
-    selected?.adapter_type === "task" &&
-    selected.run_mode === "schedule" &&
-    selected.runtime_locked === true;
+  const activeExecutionId = selected?.running_execution_id ?? null;
+  const selectedTriggerLocked = selected?.runtime_locked === true;
 
   useEffect(() => {
     let cancelled = false;
@@ -281,7 +242,7 @@ function AdapterConsole() {
     if (
       busy ||
       selectedAdapterId === null ||
-      (activeProductionExecutionId === null && !selectedTaskScheduleLocked)
+      (activeExecutionId === null && !selectedTriggerLocked)
     ) {
       return;
     }
@@ -301,9 +262,7 @@ function AdapterConsole() {
         );
         if (
           refreshed.running_execution_id != null ||
-          (refreshed.adapter_type === "task" &&
-            refreshed.run_mode === "schedule" &&
-            refreshed.runtime_locked === true)
+          refreshed.runtime_locked === true
         ) {
           timeoutId = setTimeout(
             () => void refreshActiveProduction(),
@@ -333,11 +292,10 @@ function AdapterConsole() {
       }
     };
   }, [
-    activeProductionExecutionId,
+    activeExecutionId,
     busy,
     selectedAdapterId,
-    selectedProductionState,
-    selectedTaskScheduleLocked,
+    selectedTriggerLocked,
   ]);
 
   // Catalog, Worker badge and Adapter settings share one Worker collection;
@@ -398,7 +356,6 @@ function AdapterConsole() {
     setAdapters((current) =>
       current.map((item) => (item.id === refreshed.id ? refreshed : item)),
     );
-    setRuntimeWorkerId(refreshed.runtime_worker_id ?? null);
   }, []);
 
   useEffect(() => {
@@ -454,7 +411,6 @@ function AdapterConsole() {
     setSelected(adapter);
     setName(adapter.name);
     setDescription(adapter.description);
-    setRuntimeWorkerId(adapter.runtime_worker_id ?? null);
     setError(null);
     setVersions([]);
     setSelectedVersionId(null);
@@ -462,8 +418,6 @@ function AdapterConsole() {
     setSettingsOpen(false);
     setActiveTabKey("edit");
     setConfigTabKey("requirements");
-    setAutoOpenExecutionId(null);
-    setPublishConfirm(null);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
       const list = await api.listVersions(adapter.id);
@@ -478,7 +432,7 @@ function AdapterConsole() {
           code:
             adapter.adapter_type === "task"
               ? TASK_STARTER_CODE[adapter.language]
-              : STARTER_CODE[adapter.language],
+              : WEBHOOK_STARTER_CODE[adapter.language],
           requirements: "",
           runtimeConfigText: "{}",
         });
@@ -547,36 +501,6 @@ function AdapterConsole() {
     }
   }
 
-  async function handleSelectVersion(versionId: number) {
-    // Interaction lock: no version switching while a mutation is in flight.
-    if (busy) {
-      return;
-    }
-    if (!selected || versionId === selectedVersionId) {
-      return;
-    }
-    if (!confirmDiscard()) {
-      return;
-    }
-    const generation = ++requestGeneration.current;
-    setContentReady(false);
-    try {
-      setError(null);
-      const detail = await api.getVersion(selected.id, versionId);
-      if (generation !== requestGeneration.current) {
-        return;
-      }
-      setSelectedVersionId(detail.id);
-      applySnapshot(versionSnapshot(detail));
-      setContentReady(true);
-    } catch (err) {
-      if (generation !== requestGeneration.current) {
-        return;
-      }
-      setError(errorMessage(err));
-    }
-  }
-
   async function handleSaveVersion() {
     if (!selected || busy || !contentReady || selected.runtime_locked === true) {
       return;
@@ -624,7 +548,6 @@ function AdapterConsole() {
         // failure is non-fatal because the save itself is already acknowledged.
         const real = await api.getAdapter(selected.id);
         setSelected(real);
-        setRuntimeWorkerId(real.runtime_worker_id ?? null);
         setAdapters((current) => current.map((item) => (item.id === real.id ? real : item)));
       } catch (refreshErr) {
         refreshFailures.push(`刷新 Adapter 失败：${errorMessage(refreshErr)}`);
@@ -634,170 +557,6 @@ function AdapterConsole() {
       } else {
         setError(`版本已保存（v${saved.seq}），但${refreshFailures.join("；")}`);
       }
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // 发布按钮入口：打开确认框并拉取只读门禁评估（后端 Publish 仍强制门禁）。
-  function handlePublishRequest() {
-    if (!selected || selectedVersionId === null || busy || !contentReady || selected.archived_at) {
-      return;
-    }
-    const targetAdapterId = selected.id;
-    const targetVersionId = selectedVersionId;
-    const seq = versions.find((version) => version.id === targetVersionId)?.seq ?? null;
-    setPublishConfirm({ versionId: targetVersionId, versionSeq: seq, gate: null, gateError: null });
-    void (async () => {
-      try {
-        const gate = await api.getPublishGate(targetAdapterId, targetVersionId);
-        setPublishConfirm((current) =>
-          current !== null && current.versionId === targetVersionId
-            ? { ...current, gate }
-            : current,
-        );
-      } catch (err) {
-        setPublishConfirm((current) =>
-          current !== null && current.versionId === targetVersionId
-            ? { ...current, gateError: errorMessage(err) }
-            : current,
-        );
-      }
-    })();
-  }
-
-  async function handlePublishConfirmed() {
-    if (!selected || publishConfirm === null || busy) {
-      return;
-    }
-    const targetVersionId = publishConfirm.versionId;
-    setPublishConfirm(null);
-    setBusy(true);
-    try {
-      setError(null);
-      const refreshed = await api.publishVersion(selected.id, targetVersionId);
-      // Keep the cached catalog summary in sync with the new published pointer.
-      const publishedSeq = versions.find((version) => version.id === targetVersionId)?.seq;
-      if (publishedSeq !== undefined) {
-        setVersionSeqById((current) => new Map(current).set(targetVersionId, publishedSeq));
-      }
-      setSelected(refreshed);
-      setRuntimeWorkerId(refreshed.runtime_worker_id ?? runtimeWorkerId);
-      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-      messageApi.success(
-        `已发布${publishedSeq === undefined ? `版本 #${targetVersionId}` : ` v${publishedSeq}`}；生产运行状态未自动改变`,
-      );
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // M5.1: Start 不再创建 Execution，改为开启生产入口并锁定生产版本。
-  async function handleStartProduction() {
-    if (!selected || busy) {
-      return;
-    }
-    setBusy(true);
-    try {
-      setError(null);
-      const adapter = await api.startProduction(selected.id);
-      let refreshed: Adapter;
-      try {
-        refreshed = await api.getAdapter(selected.id);
-      } catch {
-        // Best-effort refresh failed: derive the known changes locally.
-        refreshed = adapter;
-      }
-      setSelected(refreshed);
-      setRuntimeWorkerId(refreshed.runtime_worker_id ?? runtimeWorkerId);
-      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-      const versionSeq = refreshed.production_version_seq ?? "?";
-      messageApi.success(`生产入口已开启，生产版本锁定为 v${versionSeq}`);
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleStopProduction(mode: "wait" | "terminate") {
-    if (!selected || busy) {
-      return;
-    }
-    setBusy(true);
-    try {
-      setError(null);
-      const refreshed = await api.stopProduction(selected.id, mode);
-      setSelected(refreshed);
-      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-      if (refreshed.running_execution_id === null || refreshed.running_execution_id === undefined) {
-        messageApi.success("生产已停止");
-      }
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleUnpublish() {
-    if (!selected || busy) {
-      return;
-    }
-    if (!window.confirm("确定取消发布吗？将清除已发布版本指针（需先停止生产）。")) {
-      return;
-    }
-    setBusy(true);
-    try {
-      setError(null);
-      const refreshed = await api.unpublishAdapter(selected.id);
-      setSelected(refreshed);
-      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleArchive() {
-    if (!selected || busy) {
-      return;
-    }
-    if (
-      !window.confirm(
-        "归档后该 Adapter 只读：保存、发布、测试与启动均被禁用（可随时恢复）。确定归档吗？",
-      )
-    ) {
-      return;
-    }
-    setBusy(true);
-    try {
-      setError(null);
-      const refreshed = await api.archiveAdapter(selected.id);
-      setSelected(refreshed);
-      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleRestore() {
-    if (!selected || busy) {
-      return;
-    }
-    setBusy(true);
-    try {
-      setError(null);
-      const refreshed = await api.restoreAdapter(selected.id);
-      setSelected(refreshed);
-      setAdapters((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)));
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -917,74 +676,6 @@ function AdapterConsole() {
     });
   }
 
-  // M3.2 Diff：发布目标 vs 当前生产版本（覆盖 code/依赖/参数/绑定引用）。
-  async function handleOpenPublishDiff() {
-    if (!selected || publishConfirm === null) {
-      return;
-    }
-    const targetAdapterId = selected.id;
-    const targetVersionId = publishConfirm.versionId;
-    try {
-      const [target, bindings] = await Promise.all([
-        api.getVersion(targetAdapterId, targetVersionId),
-        api.listAdapterBindings(targetAdapterId),
-      ]);
-      const publishedVersionId = selected.published_version_id;
-      const current =
-        publishedVersionId !== null && publishedVersionId !== undefined
-          ? await api.getVersion(targetAdapterId, publishedVersionId)
-          : null;
-      const targetSeq = versions.find((version) => version.id === targetVersionId)?.seq;
-      const currentSeq =
-        publishedVersionId !== null && publishedVersionId !== undefined
-          ? versions.find((version) => version.id === publishedVersionId)?.seq
-          : undefined;
-      const bindingText = JSON.stringify(bindings, null, 2);
-      setDiffView({
-        title: "版本差异：发布目标 vs 当前生产版本",
-        originalTitle:
-          current !== null
-            ? `当前生产版本${currentSeq !== undefined ? ` v${currentSeq}` : ""}`
-            : "当前生产版本（未发布）",
-        modifiedTitle: `发布目标${targetSeq !== undefined ? ` v${targetSeq}` : ""}`,
-        panes: [
-          {
-            key: "code",
-            label: "代码",
-            language: selected.language,
-            original: current?.code ?? "",
-            modified: target.code,
-          },
-          {
-            key: "requirements",
-            label: DEPENDENCY_UI[selected.language].label,
-            language: "plaintext",
-            original: current?.requirements ?? "",
-            modified: target.requirements,
-          },
-          {
-            key: "runtime-config",
-            label: "运行参数",
-            language: "json",
-            original:
-              current !== null ? JSON.stringify(current.runtime_config, null, 2) : "",
-            modified: JSON.stringify(target.runtime_config, null, 2),
-          },
-          {
-            key: "bindings",
-            label: "凭据绑定引用",
-            language: "json",
-            // 绑定是 Adapter 级配置，两侧展示同一份当前绑定（发布不改变绑定）。
-            original: bindingText,
-            modified: bindingText,
-          },
-        ],
-      });
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
-
   async function handleUpdateDetails() {
     if (!selected || busy) {
       return;
@@ -1011,48 +702,6 @@ function AdapterConsole() {
       setBusy(false);
     }
   }
-
-  async function handleUpdateRuntimeWorker() {
-    if (
-      !selected ||
-      busy ||
-      runtimeWorkerId === (selected.runtime_worker_id ?? null)
-    ) {
-      return;
-    }
-    const previousWorkerId = selected.runtime_worker_id ?? null;
-    setBusy(true);
-    try {
-      setError(null);
-      const refreshed = await api.updateAdapter(selected.id, {
-        runtime_worker_id: runtimeWorkerId,
-      });
-      setSelected(refreshed);
-      setRuntimeWorkerId(refreshed.runtime_worker_id ?? null);
-      setAdapters((current) =>
-        current.map((item) => (item.id === refreshed.id ? refreshed : item)),
-      );
-      if ((refreshed.runtime_worker_id ?? null) !== previousWorkerId) {
-        setWorkerRetestAdapterIds((current) => new Set(current).add(refreshed.id));
-      }
-      messageApi.success("production Worker 已保存；切换后请重新测试已发布版本");
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const handlePublishedVersionTestSucceeded = useCallback((adapterId: number) => {
-    setWorkerRetestAdapterIds((current) => {
-      if (!current.has(adapterId)) {
-        return current;
-      }
-      const next = new Set(current);
-      next.delete(adapterId);
-      return next;
-    });
-  }, []);
 
   async function handleDelete() {
     if (!selected || busy) {
@@ -1094,9 +743,6 @@ function AdapterConsole() {
           : "Control 不可达";
 
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
-  const isLatest = selectedVersionId !== null && selected?.latest_version_id === selectedVersionId;
-  const isPublished =
-    selectedVersionId !== null && selected?.published_version_id === selectedVersionId;
 
   const healthDotClass =
     health === "ok"
@@ -1164,28 +810,13 @@ function AdapterConsole() {
                   onOpenSettings={() => setSettingsOpen(true)}
                 />
               ) : (
-              <WorkbenchHeader
+              <WebhookWorkbenchHeader
                 adapter={selected}
-                versions={versions}
-                selectedVersionId={selectedVersionId}
                 selectedVersion={selectedVersion}
-                isLatest={isLatest}
-                isPublished={isPublished}
                 dirty={dirty}
                 busy={busy}
                 contentReady={contentReady}
-                productionWorker={
-                  workers.find((worker) => worker.id === selected.runtime_worker_id) ?? null
-                }
-                workers={workers}
-                workersLoading={workersLoading}
-                workersError={workersError}
-                productionWorkerRetestRequired={workerRetestAdapterIds.has(selected.id)}
-                onSelectVersion={(versionId) => void handleSelectVersion(versionId)}
                 onSave={() => void handleSaveVersion()}
-                onPublishRequest={handlePublishRequest}
-                onStartProduction={() => void handleStartProduction()}
-                onStopProduction={(mode) => void handleStopProduction(mode)}
                 onOpenSettings={() => setSettingsOpen(true)}
               />
               )}
@@ -1314,66 +945,34 @@ function AdapterConsole() {
                         ),
                       }
                     : {
-                    key: "test",
-                    label: "测试运行",
-                    children: (
-                      <TestRunPanel
-                        key={selected.id}
-                        adapter={selected}
-                        runtimeWorker={
-                          workers.find((worker) => worker.id === selected.runtime_worker_id) ??
-                          null
-                        }
-                        latestVersionSeq={
-                          versions.find((version) => version.id === selected.latest_version_id)
-                            ?.seq ?? null
-                        }
-                        viewingHistoricalVersion={selectedVersionId !== selected.latest_version_id}
-                        dirty={dirty}
-                        contentReady={contentReady}
-                        busy={busy}
-                        workers={workers}
-                        workersLoading={workersLoading}
-                        workersError={workersError}
-                        onEdit={() => setActiveTabKey("edit")}
-                        onOpenSettings={() => setSettingsOpen(true)}
-                        onError={setError}
-                        onPublishedVersionTestSucceeded={handlePublishedVersionTestSucceeded}
-                      />
-                    ),
-                  },
+                        key: "runtime",
+                        label: "运行设置",
+                        children: (
+                          <WebhookTriggerPanel
+                            key={selected.id}
+                            adapter={selected}
+                            workers={workers}
+                            workersLoading={workersLoading}
+                            workersError={workersError}
+                            onAdapterChange={handleTaskAdapterChange}
+                            onError={setError}
+                          />
+                        ),
+                      },
                   {
                     key: "history",
-                    label: "执行记录",
+                    label: selected.adapter_type === "webhook" ? "调用记录" : "执行记录",
                     // antd Tabs render lazily: the history API is only called
                     // after this tab is activated for the first time.
                     children: (
                       <ExecutionHistoryPanel
                         key={selected.id}
                         adapterId={selected.id}
-                        autoOpenExecutionId={autoOpenExecutionId}
+                        trigger={selected.adapter_type === "webhook" ? "webhook" : undefined}
+                        recordLabel={selected.adapter_type === "webhook" ? "调用记录" : "执行记录"}
                       />
                     ),
                   },
-                  ...(selected.adapter_type === "task" ? [] : [{
-                    key: "triggers",
-                    label: "触发器",
-                    // M5.2/M5.3：触发器 Tab 并列 Schedule 与 Webhook 两个区域。
-                    children: (
-                      <div key={selected.id} className="triggers-tab">
-                        <ScheduleTriggerPanel
-                          adapterId={selected.id}
-                          productionState={selected.production_state ?? "idle"}
-                          archived={!!selected.archived_at}
-                        />
-                        <WebhookTriggerPanel
-                          adapterId={selected.id}
-                          productionState={selected.production_state ?? "idle"}
-                          archived={!!selected.archived_at}
-                        />
-                      </div>
-                    ),
-                  }]),
                 ]}
               />
             </section>
@@ -1401,95 +1000,15 @@ function AdapterConsole() {
         adapter={selected}
         name={name}
         description={description}
-        runtimeWorkerId={runtimeWorkerId}
-        workers={workers}
-        workersLoading={workersLoading}
-        workersError={workersError}
-        productionWorkerRetestRequired={
-          selected !== null && workerRetestAdapterIds.has(selected.id)
-        }
         busy={busy}
         contentReady={contentReady}
         onClose={() => setSettingsOpen(false)}
         onNameChange={setName}
         onDescriptionChange={setDescription}
-        onRuntimeWorkerChange={setRuntimeWorkerId}
         onUpdate={() => void handleUpdateDetails()}
-        onRuntimeWorkerUpdate={() => void handleUpdateRuntimeWorker()}
         onDelete={() => void handleDelete()}
-        onUnpublish={() => void handleUnpublish()}
-        onArchive={() => void handleArchive()}
-        onRestore={() => void handleRestore()}
         onClone={() => void handleClone()}
       />
-
-      <Modal
-        title="发布确认"
-        open={publishConfirm !== null}
-        onCancel={() => setPublishConfirm(null)}
-        footer={
-          <Space>
-            <Button
-              data-testid="publish-diff"
-              onClick={() => void handleOpenPublishDiff()}
-            >
-              查看差异
-            </Button>
-            <Button onClick={() => setPublishConfirm(null)}>取消</Button>
-            <Button
-              type="primary"
-              data-testid="confirm-publish"
-              loading={busy}
-              disabled={
-                publishConfirm === null ||
-                publishConfirm.gate === null ||
-                !publishConfirm.gate.allowed ||
-                busy
-              }
-              onClick={() => void handlePublishConfirmed()}
-            >
-              确认发布
-            </Button>
-          </Space>
-        }
-      >
-        {publishConfirm !== null && (
-          <div className="publish-confirm">
-            <p data-testid="publish-confirm-target">
-              将发布版本{" "}
-              <strong>
-                {publishConfirm.versionSeq !== null
-                  ? `v${publishConfirm.versionSeq}`
-                  : `#${publishConfirm.versionId}`}
-              </strong>
-              。发布只更新生产目标；当前运行不会自动切换。如需运行新版本，
-              必须人工 Stop 并等待旧 Production Execution 安全结束后再 Start。
-            </p>
-            {publishConfirm.gateError !== null && (
-              <p className="publish-gate-error" data-testid="publish-gate-error">
-                门禁检查失败：{publishConfirm.gateError}
-              </p>
-            )}
-            {publishConfirm.gate === null && publishConfirm.gateError === null && (
-              <p>正在检查发布门禁…</p>
-            )}
-            {publishConfirm.gate !== null &&
-              (publishConfirm.gate.allowed ? (
-                <p className="publish-gate-ok" data-testid="publish-gate-ok">
-                  门禁检查通过：该版本已在生产 Worker 上测试成功
-                  {publishConfirm.gate.last_test !== null
-                    ? `（Execution #${publishConfirm.gate.last_test.execution_id}）`
-                    : ""}
-                  。
-                </p>
-              ) : (
-                <p className="publish-gate-blocked" data-testid="publish-gate-blocked">
-                  {publishGateReasonText(publishConfirm.gate)}
-                </p>
-              ))}
-          </div>
-        )}
-      </Modal>
 
       <SystemSettingsDrawer
         open={systemSettingsOpen}

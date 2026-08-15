@@ -1,4 +1,4 @@
-"""Domain service for the Adapter Webhook Trigger (M5.3).
+"""Domain service for the final Webhook Adapter model (M5.4.3).
 
 Owns the singleton Webhook configuration API and the external ingress:
 
@@ -36,14 +36,18 @@ import re
 import secrets as stdlib_secrets
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control.models import Adapter, Credential, Execution, Worker
 from dlr.control.models.webhook import AdapterWebhook
-from dlr.control.schemas.webhook import WebhookResponse, WebhookUpsert
+from dlr.control.schemas.webhook import (
+    WEBHOOK_PUBLIC_ID_PATTERN,
+    WebhookResponse,
+    WebhookUpsert,
+)
 from dlr.control.security import _bearer_token
 from dlr.control.services import adapter_runtime, worker_availability
 from dlr.control.services.adapter import (
@@ -57,6 +61,7 @@ logger = logging.getLogger("dlr.control.webhook")
 
 # The single Credential field a Webhook authenticates against.
 WEBHOOK_CREDENTIAL_TYPE = "token"
+WEBHOOK_PUBLIC_ID_RE = re.compile(WEBHOOK_PUBLIC_ID_PATTERN)
 
 
 def _reject_non_standard_constant(name: str) -> float:
@@ -114,8 +119,12 @@ def webhook_path(public_id: str) -> str:
 
 
 def _webhook_response(session: Session, webhook: AdapterWebhook) -> WebhookResponse:
-    credential = session.get(Credential, webhook.credential_id)
-    if credential is None:
+    credential = (
+        session.get(Credential, webhook.credential_id)
+        if webhook.credential_id is not None
+        else None
+    )
+    if webhook.credential_id is not None and credential is None:
         # RESTRICT normally makes this impossible.
         raise RuntimeError("webhook references a missing credential")
     return WebhookResponse(
@@ -124,7 +133,7 @@ def _webhook_response(session: Session, webhook: AdapterWebhook) -> WebhookRespo
         public_id=webhook.public_id,
         hook_path=webhook_path(webhook.public_id),
         credential_id=webhook.credential_id,
-        credential_name=credential.name,
+        credential_name=credential.name if credential is not None else None,
         created_at=webhook.created_at,
         updated_at=webhook.updated_at,
     )
@@ -145,12 +154,11 @@ def get_webhook(session: Session, adapter_id: int) -> WebhookResponse:
 
 
 def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> WebhookResponse:
-    """Create or update the Adapter's Webhook (PUT semantics).
+    """Replace the stopped Webhook config or Start/Stop receiving.
 
-    Archived Adapters are rejected with 409 ``adapter_archived`` (read-only
-    contract; GET keeps viewing). The Credential must exist and be of type
-    ``token``. The ``public_id`` is generated on first creation and stays
-    stable across every later PUT (no URL rotation in M5.3).
+    The Adapter row is locked first. Different Adapters may Start
+    concurrently, so the partial unique index remains the final path
+    ownership defense after the explicit user-readable conflict check.
     """
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None:
@@ -158,36 +166,114 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
     if adapter.adapter_type != "webhook":
         raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
     _require_not_archived(adapter)
-    credential = session.get(Credential, data.credential_id)
-    if credential is None:
-        raise domain_error(404, "credential_not_found", "Credential not found")
-    if credential.type != WEBHOOK_CREDENTIAL_TYPE:
-        raise domain_error(
-            422,
-            "webhook_credential_type_invalid",
-            f"Webhook requires a '{WEBHOOK_CREDENTIAL_TYPE}' Credential, got '{credential.type}'",
-        )
     webhook = session.scalar(
         select(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter_id).with_for_update()
     )
-    if adapter_runtime.adapter_runtime_locked(session, adapter):
-        disable_only = (
-            webhook is not None
-            and webhook.enabled
-            and not data.enabled
-            and data.credential_id == webhook.credential_id
-        )
-        if not disable_only:
-            adapter_runtime.require_runtime_unlocked(session, adapter)
     if webhook is None:
         webhook = AdapterWebhook(
             adapter_id=adapter_id,
-            public_id=stdlib_secrets.token_urlsafe(32),
+            public_id=stdlib_secrets.token_hex(8),
+            enabled=False,
+            credential_id=None,
         )
         session.add(webhook)
+        session.flush()
+
+    changed = (
+        data.public_id != webhook.public_id
+        or data.credential_id != webhook.credential_id
+        or data.enabled != webhook.enabled
+    )
+    if (
+        data.public_id != webhook.public_id
+        and WEBHOOK_PUBLIC_ID_RE.fullmatch(data.public_id) is None
+    ):
+        raise domain_error(
+            422,
+            "webhook_path_invalid",
+            "Webhook path must use 3-64 lowercase letters, digits or hyphens "
+            "and start with a letter or digit",
+        )
+    if adapter_runtime.adapter_runtime_locked(session, adapter):
+        disable_only = (
+            webhook.enabled
+            and not data.enabled
+            and data.public_id == webhook.public_id
+            and data.credential_id == webhook.credential_id
+        )
+        if changed and not disable_only:
+            adapter_runtime.require_runtime_unlocked(session, adapter)
+
+    credential = None
+    if data.credential_id is not None:
+        credential = session.scalar(
+            select(Credential).where(Credential.id == data.credential_id).with_for_update()
+        )
+        if credential is None:
+            raise domain_error(404, "credential_not_found", "Credential not found")
+        if credential.type != WEBHOOK_CREDENTIAL_TYPE:
+            raise domain_error(
+                422,
+                "webhook_credential_type_invalid",
+                f"Webhook requires a '{WEBHOOK_CREDENTIAL_TYPE}' Credential, "
+                f"got '{credential.type}'",
+            )
+
+    if data.enabled and not webhook.enabled:
+        if adapter.latest_version_id is None:
+            raise domain_error(
+                409, "adapter_has_no_version", "Save the Webhook Adapter before receiving"
+            )
+        if credential is None:
+            raise domain_error(
+                409, "webhook_token_required", "Choose a Token Credential before receiving"
+            )
+        if adapter.runtime_worker_id is None:
+            raise domain_error(
+                409, "runtime_worker_required", "Choose a runtime Worker before receiving"
+            )
+        worker = session.get(Worker, adapter.runtime_worker_id)
+        if worker is None or not worker_availability.is_effectively_online(
+            worker, now=worker_availability.current_time(session)
+        ):
+            raise domain_error(409, "worker_offline", "The runtime Worker is offline")
+        if adapter.language not in worker.capabilities:
+            raise domain_error(
+                409,
+                "worker_capability_missing",
+                f"The runtime Worker does not support {adapter.language}",
+            )
+        if adapter_runtime.active_execution(session, adapter.id) is not None:
+            raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
+        owner = session.scalar(
+            select(AdapterWebhook.adapter_id).where(
+                AdapterWebhook.public_id == data.public_id,
+                AdapterWebhook.enabled.is_(True),
+                AdapterWebhook.adapter_id != adapter.id,
+            )
+        )
+        if owner is not None:
+            raise domain_error(
+                409,
+                "webhook_path_in_use",
+                f"Webhook path '{data.public_id}' is used by another running Adapter",
+            )
+
     webhook.enabled = data.enabled
-    webhook.credential_id = credential.id
-    session.commit()
+    webhook.public_id = data.public_id
+    webhook.credential_id = credential.id if credential is not None else None
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        constraint = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+        if constraint == "uq_adapter_webhooks_enabled_public_id":
+            raise domain_error(
+                409,
+                "webhook_path_in_use",
+                f"Webhook path '{data.public_id}' is used by another running Adapter",
+            ) from None
+        raise
     session.refresh(webhook)
     return _webhook_response(session, webhook)
 
@@ -203,6 +289,8 @@ def _require_bearer(session: Session, webhook: AdapterWebhook, authorization: st
     token" from "missing token".
     """
     provided = _bearer_token(authorization)
+    if webhook.credential_id is None:
+        raise RuntimeError("enabled webhook has no credential")
     credential = session.get(Credential, webhook.credential_id)
     if credential is None:
         # RESTRICT normally makes this impossible.
@@ -217,15 +305,22 @@ def receive_webhook(
 ) -> Execution:
     """Validate one external Webhook request and create its Execution.
 
-    Order is fixed: body stream cap (route) -> unknown public_id -> 404;
-    disabled -> 409; token -> 401; unified runtime gate -> 409 family;
+    Order is fixed: body stream cap (route) -> unknown/disabled public_id ->
+    404; token -> 401; unified runtime gate -> 409 family;
     body contract -> 400 (invalid or non-standard JSON, or strings JSONB
     cannot persist) and 413 (compact JSON over the Execution input cap).
     The Adapter row is locked before the Webhook row (platform lock
     order), so a concurrent Stop / Start / PUT is fully serialized with
     receipt.
     """
-    webhook = session.scalar(select(AdapterWebhook).where(AdapterWebhook.public_id == public_id))
+    # Re-check enabled under the row lock. ``populate_existing`` prevents the
+    # unlocked routing lookup from masking a concurrent Stop in the identity map.
+    webhook = session.scalar(
+        select(AdapterWebhook).where(
+            AdapterWebhook.public_id == public_id,
+            AdapterWebhook.enabled.is_(True),
+        )
+    )
     if webhook is None:
         # Never leak Credential metadata for unknown ids.
         raise domain_error(404, "webhook_not_found", "Webhook not found")
@@ -234,12 +329,16 @@ def receive_webhook(
         # Adapter deletion cascades the webhook; a racing delete lost nothing.
         raise domain_error(404, "webhook_not_found", "Webhook not found")
     webhook = session.scalar(
-        select(AdapterWebhook).where(AdapterWebhook.id == webhook.id).with_for_update()
+        select(AdapterWebhook)
+        .where(
+            AdapterWebhook.id == webhook.id,
+            AdapterWebhook.enabled.is_(True),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if webhook is None or webhook.adapter_id != adapter.id:
         raise domain_error(404, "webhook_not_found", "Webhook not found")
-    if not webhook.enabled:
-        raise domain_error(409, "webhook_disabled", "Webhook is disabled")
     _require_bearer(session, webhook, authorization)
 
     # --- unified runtime gate ------------------------------------------------
@@ -298,6 +397,20 @@ def receive_webhook(
         target_worker_id=adapter.runtime_worker_id,
         input=payload,
     )
+    # Keep at most 100 accepted calls total. With one active Execution per
+    # Adapter, retaining the newest 99 terminal Webhook rows before inserting
+    # the pending row gives 100 rows without ever deleting active work.
+    stale_terminal_ids = (
+        select(Execution.id)
+        .where(
+            Execution.adapter_id == adapter.id,
+            Execution.trigger == "webhook",
+            Execution.status.not_in(("pending", "running")),
+        )
+        .order_by(Execution.created_at.desc(), Execution.id.desc())
+        .offset(99)
+    )
+    session.execute(delete(Execution).where(Execution.id.in_(stale_terminal_ids)))
     session.add(execution)
     try:
         session.flush()

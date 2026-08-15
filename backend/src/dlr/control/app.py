@@ -50,7 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(package_sources.router)
     app.include_router(schedules.router)
     app.include_router(webhooks.router)
-    # M5.3: the external Webhook ingress has its own Bearer authentication
+    # M5.4.3: the external Webhook ingress has its own Bearer authentication
     # and must never require the admin token.
     app.include_router(webhooks.public_router)
     app.include_router(executions.router)

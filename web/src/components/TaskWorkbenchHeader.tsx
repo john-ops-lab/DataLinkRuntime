@@ -30,8 +30,8 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           : null;
 
   return (
-    <header className="workbench-header" data-testid="task-workbench-header">
-      <div className="workbench-context">
+    <header className="workbench-header" data-testid="workbench-header">
+      <div className="workbench-context" data-testid="task-workbench-header">
         <div className="workbench-title-row">
           <h2 className="workbench-title" title={props.adapter.name}>{props.adapter.name}</h2>
           <span className="workbench-context-separator" aria-hidden="true">·</span>
@@ -42,7 +42,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           <span className="version-seq" data-testid="task-revision">
             {props.selectedVersion === null ? "未保存 Revision" : `Revision ${props.selectedVersion.seq}`}
           </span>
-          {props.dirty && <Tag color="warning">未保存修改</Tag>}
+          {props.dirty && <Tag color="warning" data-testid="dirty-indicator">未保存修改</Tag>}
           {runtimeLocked && <Tag color="orange">运行配置已锁定</Tag>}
         </div>
         {props.adapter.running_execution_id != null && (

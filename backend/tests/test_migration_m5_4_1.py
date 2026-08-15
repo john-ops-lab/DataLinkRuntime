@@ -1,4 +1,4 @@
-"""Fresh-schema assertions for the M5.4.2 Alembic head."""
+"""Fresh-schema assertions for the current M5.4.3 Alembic head."""
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -29,8 +29,21 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
                 "WHERE conname = 'ck_adapters_adapter_type'"
             )
         )
+        webhook_index = connection.scalar(
+            text(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "
+                "AND indexname = 'uq_adapter_webhooks_enabled_public_id'"
+            )
+        )
+        webhook_credential_nullable = connection.scalar(
+            text(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'adapter_webhooks' "
+                "AND column_name = 'credential_id'"
+            )
+        )
 
-    assert revision == "0010_m5_4_2_task_run_mode"
+    assert revision == "0011_m5_4_3_webhook_final_model"
     assert {
         "adapter_type",
         "run_mode",
@@ -49,3 +62,6 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
     assert "trigger" not in index_definition
     assert adapter_type_check is not None
     assert "task" in adapter_type_check and "webhook" in adapter_type_check
+    assert webhook_index is not None
+    assert "UNIQUE" in webhook_index and "WHERE enabled" in webhook_index
+    assert webhook_credential_nullable == "YES"
