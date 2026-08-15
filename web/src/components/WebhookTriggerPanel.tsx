@@ -1,6 +1,6 @@
 /** Webhook Adapter final runtime settings: URL, token, Worker and receive state. */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { Alert, Button, Input, Select, Space, Spin, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
@@ -30,13 +30,28 @@ interface Props {
   workersLoading: boolean;
   workersError: string | null;
   onAdapterChange: (adapter: Adapter) => void;
+  onReceivingChange: (enabled: boolean) => void;
+  onRuntimeStateChange: (state: WebhookRuntimeState) => void;
   onError: (message: string | null) => void;
 }
 
-export default function WebhookTriggerPanel(props: Props) {
+export interface WebhookRuntimeState {
+  loaded: boolean;
+  enabled: boolean;
+  runtimeLocked: boolean;
+  changingState: boolean;
+  startBlockedReason: string | null;
+}
+
+export interface WebhookTriggerHandle {
+  toggleReceiving: () => void;
+}
+
+const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function WebhookTriggerPanel(props, ref) {
   const adapterId = props.adapter.id;
   const onAdapterChange = props.onAdapterChange;
   const onError = props.onError;
+  const onRuntimeStateChange = props.onRuntimeStateChange;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [changingState, setChangingState] = useState(false);
@@ -79,7 +94,6 @@ export default function WebhookTriggerPanel(props: Props) {
   }, [adapterId, onAdapterChange, onError]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial server snapshot
     void load();
     // publicId changes are local edits and must not reload the form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -106,7 +120,7 @@ export default function WebhookTriggerPanel(props: Props) {
   const canConfigure = !archived && !runtimeLocked && !saving && !changingState;
   const startBlockedReason =
     props.adapter.latest_version_id === null
-      ? "请先保存 Revision。"
+      ? "请先保存 Adapter。"
       : workerId === null
         ? "请先选择并保存运行节点。"
         : credentialId === null
@@ -116,6 +130,28 @@ export default function WebhookTriggerPanel(props: Props) {
             : null;
   const gatewayPrefix = `${window.location.origin}/api/hooks/`;
   const fullUrl = gatewayPrefix + publicId;
+
+  useEffect(() => {
+    onRuntimeStateChange({
+      loaded: !loading && saved !== null,
+      enabled,
+      runtimeLocked,
+      changingState,
+      startBlockedReason,
+    });
+  }, [
+    changingState,
+    enabled,
+    loading,
+    onRuntimeStateChange,
+    runtimeLocked,
+    saved,
+    startBlockedReason,
+  ]);
+
+  useImperativeHandle(ref, () => ({
+    toggleReceiving: () => void setReceiving(!enabled),
+  }));
 
   async function saveConfiguration() {
     if (!canConfigure || !pathAcceptable || workerId === null) return;
@@ -155,6 +191,7 @@ export default function WebhookTriggerPanel(props: Props) {
       // the derived Adapter runtime state is refreshed. If that refresh fails,
       // Refresh can reconcile without exposing an unsafe edit window.
       props.onAdapterChange({ ...props.adapter, runtime_locked: true });
+      props.onReceivingChange(nextEnabled);
       const adapter = await api.getAdapter(adapterId);
       props.onAdapterChange(adapter);
       setNotice(nextEnabled ? "已开启接收。" : "已停止接收；已有调用会继续运行到终态。");
@@ -181,7 +218,7 @@ export default function WebhookTriggerPanel(props: Props) {
 
   return (
     <div className="webhook-trigger-panel" data-testid="webhook-run-settings">
-      <Typography.Title level={5}>运行设置</Typography.Title>
+      <Typography.Title level={5}>Webhook 运行设置</Typography.Title>
       <Space direction="vertical" size="middle" className="webhook-form">
         <div className="settings-field">
           <span className="settings-field-label">接收状态</span>
@@ -282,4 +319,6 @@ export default function WebhookTriggerPanel(props: Props) {
       </Space>
     </div>
   );
-}
+});
+
+export default WebhookTriggerPanel;

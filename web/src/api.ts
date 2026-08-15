@@ -20,7 +20,6 @@ import type {
   Execution,
   ExecutionHistoryPage,
   PackageSource,
-  PublishGate,
   ReachabilityResult,
   VersionDetail,
   VersionSummary,
@@ -156,34 +155,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  publishVersion: (adapterId: number, versionId: number): Promise<Adapter> =>
-    request(`/api/adapters/${adapterId}/versions/${versionId}/publish`, { method: "POST" }),
-
-  // --- M3.2: production lifecycle -------------------------------------------
-
-  /** Read-only publish gate evaluation for the Publish confirmation dialog. */
-  getPublishGate: (adapterId: number, versionId: number): Promise<PublishGate> =>
-    request(`/api/adapters/${adapterId}/versions/${versionId}/publish-gate`),
-
-  /** M5.1: Open the production entry and lock the production version; returns the Adapter. */
-  startProduction: (adapterId: number): Promise<Adapter> =>
-    request(`/api/adapters/${adapterId}/production/start`, { method: "POST" }),
-
-  /** Close the production entry; ``terminate`` also cancels the active run. */
-  stopProduction: (adapterId: number, mode: "wait" | "terminate"): Promise<Adapter> =>
-    request(`/api/adapters/${adapterId}/production/stop`, {
-      method: "POST",
-      body: JSON.stringify({ mode }),
-    }),
-
-  /** Clear the published pointer; requires production to be stopped. */
-  unpublishAdapter: (adapterId: number): Promise<Adapter> =>
-    request(`/api/adapters/${adapterId}/unpublish`, { method: "POST" }),
-
-  archiveAdapter: (adapterId: number): Promise<Adapter> =>
-    request(`/api/adapters/${adapterId}/archive`, { method: "POST" }),
-
-  /** Copy the Adapter: working copy becomes v1, unpublished and not running. */
+  /** Copy the Adapter: working copy becomes v1 and the new Adapter stays stopped. */
   cloneAdapter: (
     adapterId: number,
     payload: { name: string; description?: string },

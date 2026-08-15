@@ -139,7 +139,7 @@ export default function ExecutionHistoryPanel(props: {
         return; // a newer click or a drawer close invalidated this load
       }
       // watch() commits the detail synchronously and follows non-terminal
-      // executions live (SSE + bounded fallback), shared with TestRunPanel.
+      // executions live (SSE + bounded fallback), shared with the Workbench log surface.
       watcher.watch(loaded);
     } catch (error) {
       if (requestId !== detailRequestRef.current) {

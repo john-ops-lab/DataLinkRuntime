@@ -352,7 +352,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                     (key) => !boundSecretKeys.has(key),
                   );
             const applyBlockedReason = props.adapter?.archived_at
-              ? "Adapter 已归档，Candidate 只能查看，不能应用"
+              ? "Adapter 已删除，Candidate 只能查看，不能应用"
               : !props.contentReady
                 ? "Working Copy 尚未加载完成，请稍后重试"
                 : props.busy
@@ -396,7 +396,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                     )}
                     {props.adapter?.archived_at && (
                       <p className="ai-secret-warning" role="alert" data-testid="ai-archived-apply-blocked">
-                        已归档 Adapter 为只读，不能应用 Candidate。
+                        已删除 Adapter 为只读，不能应用 Candidate。
                       </p>
                     )}
                     {candidateState.applied && (

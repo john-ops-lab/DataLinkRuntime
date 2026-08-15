@@ -1,161 +1,166 @@
 # DLR（DataLinkRuntime）产品定义
 
-> 版本：v1.0（已确认）
-> 本文档范围：产品定位、核心概念、行为边界与阶段目标。
-> 技术实现见 [architecture.md](./architecture.md)；工程规范见 `.qoder/rules/engineering.md`，此处不重复。
+> 当前基线：M5.4 Workbench
+> 本文档只描述当前产品模型；历史决策见 `docs/specs/` 与数据库迁移记录。
 
 ## 1. 产品定位
 
-DLR 是一个**轻量的数据适配运行平台**，主要用于 CMDB 等系统的数据采集、接收、解析、转换和输出。
+DLR 是一个轻量的数据适配运行平台，用于 CMDB 等系统的数据采集、接收、解析、转换和输出。
 
 核心目标：
 
-- 快速开发：Adapter 从编写到可运行的路径尽可能短。
-- 部署简单：一台服务器 + Docker Compose 即可运行完整平台。
-- 运维简单：组件少、依赖少、可观测性内建。
-- 用户可在线编辑 Adapter 代码（Web IDE 体验，Monaco Editor）。
-- 支持 AI 理解当前 Working Copy、生成或修改候选代码，并由管理员查看 Diff 后人工应用。
-- 支持查看测试输入、输出和运行日志。
-- 支持多种触发方式（第一阶段：Manual 与 Schedule，M5.2 起）。
-- 保持轻量：**不发展成工作流平台**。
+- 一台服务器与 Docker Compose 即可部署完整平台；
+- 在浏览器中完成 Adapter 创建、编辑、保存、运行、停止、Clone 升级与排障；
+- Python、JavaScript、Java 使用一致的 input / output / log 体验；
+- AI Assistant 只产生候选修改，最终保存和运行始终由管理员明确执行；
+- 不发展成工作流引擎、低代码平台或通用插件平台。
 
-## 2. 核心对象：Adapter
+## 2. 核心对象
 
-平台中的核心数据处理单元统一称为 **Adapter**。
+| 对象 | 当前定义 |
+|------|----------|
+| Adapter | 一个独立的数据处理单元，类型为 Task 或 Webhook |
+| Revision | 每次保存产生的不可变代码、依赖和运行参数快照；属于内部审计事实 |
+| Execution | 一次具体执行，记录 input、output、stdout、stderr、状态与耗时 |
+| Worker | 实际运行用户代码的节点，按语言 capability 参与调度 |
+| Credential | 加密保存的凭据；浏览器永远拿不到真值 |
 
-一个 Adapter 独立完成一次完整的数据处理职责：
+用户只执行“保存”。系统在后台创建不可变 Revision，并让后续运行固定使用最新已保存内容。
 
-```
-外部数据输入 / 主动采集
-→ 业务逻辑
-→ 解析和转换
-→ 输出 KV / JSON
-→ CMDB 或其他目标系统
-```
+## 3. Adapter 类型
 
-原则：
+### 3.1 Task Adapter
 
-- 一个业务处理过程由一个 Adapter 完成。
-- 逻辑复杂时，把业务逻辑写在 Adapter 内部，而不是拆成多个 Adapter 接力。
-- **向目标系统的输出由 Adapter 代码自行完成**（如调用 CMDB API）。平台不代替 Adapter 完成对外数据输出，不提供统一 Sink / Connector 框架。
+Task 支持两种运行方式：
 
-明确不设计：
+- 手动运行：`运行一次` / `停止运行`；
+- 定时运行：配置 Cron、Timezone 与 Input，使用 `启用定时` / `停用定时`，并可 `立即运行一次`。
 
-- Adapter → Adapter 串联
-- DAG / Workflow Engine / 可视化编排
+页面信息架构固定为：
 
-## 3. 核心领域概念
-
-| 概念 | 定义 | v1 状态 |
-|------|------|---------|
-| Adapter | 一个逻辑数据处理单元 | 实现 |
-| Adapter Version | Adapter 的某一个已保存版本，包括代码、运行时配置和依赖声明；不可变 | 实现 |
-| Adapter Instance | Adapter 部署到 Worker 后实际运行的实例（常驻语义） | 仅保留长期概念，v1 不实现 |
-| Execution | Adapter 的一次具体执行记录 | 实现 |
-| Control Node | 平台管理节点 | 实现 |
-| Worker Node | 真正运行 Adapter 的工作节点 | 实现 |
-
-Execution 包含：input、output、stdout、stderr、start time、end time、status、duration。
-
-## 4. 执行模型
-
-- v1 只支持 **One-shot（一次性）Adapter**：每次触发 = 一次完整执行 = 一条 Execution 记录。
-- 常驻类型 Adapter（长生命周期进程）属于长期方向，v1 不建表、不实现进程生命周期管理。
-- **所有用户代码执行（包括 Manual Test）都在 Worker 上进行**，Control Node 不运行用户代码。
-- Publish 与 Start 分离：**Published Version** 是下一次 Start 的目标；**Production Version** 是当前 Start 生命周期锁定、供后续生产 Trigger 使用的版本。M5.1 起 Start 开启生产入口并锁定 Production Version 与 production Worker，不再创建 Execution，运行期间 Publish 不改变已锁定的生产版本；Stop 关闭入口，再次 Start 才锁定新的 Published Version。生产运行期间不可切换 production Worker。
-
-## 5. Trigger
-
-| 类型 | 语义 | 阶段 |
-|------|------|------|
-| Manual | 用户手工点击执行一次 | **v1 实现** |
-| Schedule | 按配置的 Cron + 时区周期执行；仅在生产入口开启（`production_state=running`）时到点创建 Execution，执行锁定的 Production Version | **M5.2 实现** |
-| HTTP / Webhook | 外部系统携带 Bearer Token 调用平台统一入口触发；异步 202 语义 | **M5.3 实现** |
-
-Webhook 的设计约定（已裁决，M5.3 实现）：
-
-- 由 Control 统一入口接收并路由（`POST /api/hooks/{public_id}`），**不允许每个 Adapter 暴露独立监听端口**。
-- **默认异步语义**：Control 收到事件后创建 Execution 并尽快返回 `202`，Worker 后台执行。
-- 一个 Adapter 至多一个 Webhook；认证复用 token 类型 Credential（Bearer Token）。
-- 生产入口关闭、已禁用、存在运行中生产类执行时直接以稳定错误码拒绝，不排队。
-- 不为 Webhook 设计 Control 长时间同步等待 Worker 的通道。
-- 如未来确有同步调用需求，单独设计 invoke API，与 Webhook 解耦。
-
-## 6. Adapter 开发体验
-
-最终目标是类似轻量 Web IDE 的体验：
-
-创建 Adapter → 选择语言 → 在线编辑代码 →（AI 生成/修改 Candidate → 人工 Apply）→ 保存 → 测试 → 查看 Input / Output / 实时 Log → 发布 → 查看执行历史。
-
-- 代码编辑器：Monaco Editor。
-- Python、JavaScript、Java 均支持 AI Assistant；Candidate 采用完整快照，不做模糊 patch apply。
-- AI Apply 只写浏览器 Working Copy 并进入 dirty；Save、Test、Publish、Start、Stop 等生命周期动作仍须管理员人工执行。
-- AI 会话仅存在于当前浏览器与当前 Adapter；切换 Adapter 或刷新页面后允许消失。
-- 当前不实现：AI Agent 自动执行循环。
-
-## 7. Runtime Contract（产品级约定）
-
-不同语言最终拥有统一的逻辑入口语义：
-
-```
-Input → Adapter → Output
+```text
+编辑
+运行设置
+执行记录
 ```
 
-- Input / Output 使用 JSON-compatible / JSON-serializable 语义。
-- Output 必须允许对象、对象数组等常见形式。
-- 具体契约见 architecture.md 的 Runtime 章节。
+### 3.2 Webhook Adapter
 
-## 8. 安全原则
+Webhook 由 Control 提供统一入口：
 
-- Adapter 代码中**不得硬编码明文** Password / Token / API Secret / SecretKey。
-- Adapter 通过 Runtime Contract 的 `context.secrets.get(key)` 获取凭据。
-- Secret 可来自 Worker 的 `DLR_SECRET_*` 环境变量或平台 Secret Store；平台只持久化
-  Fernet 密文，claim 时按 Adapter 绑定解密并注入 Worker。
-- AI Prompt / 上下文只携带已绑定业务 Secret 的 `env_key` 名称，不携带其真值、密文或
-  平台 Token。模型 API Key 仅作为 Provider HTTP Authorization 使用，不进入 Prompt。
-  管理员配置的 Provider / Base URL 是 Working Copy 与非敏感运行参数的外部数据边界。
-- AI reasoning 不返回浏览器、不持久化、不进入下一轮对话，也不写普通应用日志；无法可靠
-  分离最终回答时整次请求失败。
-- v1 为内网、单管理员、可信代码模型，详见 architecture.md 安全边界章节。
-
-## 9. 部署原则
-
-- 最小化部署：一台服务器 + Docker Compose 运行完整 DLR。
-- 逻辑组件保持独立：`web` / `control` / `postgres` / `worker`，**不合并进单个容器**。
-- 未来允许 Control 与 Worker 分机部署（Control 在 A，Worker 在 B/C/D）；第一阶段只做单机。
-
-## 10. 语言支持
-
-- 当前正式支持：**Python、JavaScript、Java**。
-- Adapter 创建时确定语言且不可修改；Clone 继承源语言，所有 Version 继承 Adapter 语言。
-- Adapter 的第三方依赖属于 Adapter Version，不属于平台全局依赖；不同 Adapter 依赖相互隔离。
-
-## 11. 明确不做的事
-
-DLR 不是：n8n / Windmill / Kestra / DAG Engine / Workflow Engine / Kubernetes 平台 / 通用低代码平台。
-
-当前不引入：Kubernetes、Service Mesh、Kafka、RabbitMQ、Event Bus、微服务拆分、分布式一致性方案、复杂插件系统、Adapter-to-Adapter Workflow、统一 Sink / Connector Framework、RBAC / 账号体系、AI Agent Framework、RAG / Embedding / Vector DB、多模型自动路由。
-
-## 12. 第一阶段目标与里程碑
-
-第一阶段打通最小闭环：
-
-```
-创建 Adapter → 选择 Python / JavaScript / Java → 在线编辑 / AI Candidate 人工 Apply → 保存 → Manual Test
-→ 兼容 Worker 执行 → 查看 Log / Output → Publish → Start / Stop
+```text
+POST /api/hooks/{public_id}
+Authorization: Bearer <token>
 ```
 
-| 里程碑 | 内容 |
-|--------|------|
-| M0 工程骨架 | 仓库结构、四容器 Compose、Health Check、SQLAlchemy + Alembic 骨架、基础测试、lint / type check、CI、README |
-| M1 Adapter 管理 | Adapter CRUD、Monaco 在线编辑、保存即不可变版本、发布、requirements / runtime 配置 |
-| M2 执行闭环 | Worker 注册 / 心跳、version-scoped venv、Manual 触发、子进程执行、Execution 落库（含大字段策略） |
-| M3 可观测与体验 | 测试输入面板、Output 查看、实时日志、执行历史 |
-| M3.1 Console 视觉收敛 | Catalog / Workbench / Monaco / Test / History 控制台体验 |
-| M3.2 生产生命周期 | 生产 Worker、发布门禁、Start/Stop、Secret Store、依赖源 |
-| M3.3 多语言 Runtime | Python / JavaScript / Java、三语言依赖环境与 capability 调度 |
-| M4 AI Editor | 单一全局模型配置、三语言 AI Assist、完整 Candidate、Diff、人工 Apply、stale 防覆盖 |
-| M5.1 Production Entry 收敛 | Start 开启生产入口并锁定 Production Version / Worker，不再创建 Execution；Stop 后才切换到新的 Published Version |
-| M5.2 Schedule Trigger | Cron + IANA 时区 + 固定 input 的单例 Schedule 配置；生产入口开启时到点自动执行锁定的 Production Version；停机/离线/busy 最多补跑最近一次；触发器 Tab 与执行记录定时触发展示 |
+用户配置可读 path、Token Credential 与运行节点，并使用 `开启接收` / `停止接收`。
+请求通过校验后异步创建 Execution 并返回 `202 + execution_id`；同一 Adapter 忙时不排队。
 
-M0 不实现 Adapter CRUD 与 Adapter Runtime。
+页面信息架构固定为：
+
+```text
+编辑
+运行设置
+调用记录
+```
+
+每个 Webhook Adapter 只保留最近 100 条终态调用记录；活跃调用永不由 retention 删除，Task 与 Schedule 历史不受影响。
+
+## 4. 保存与运行节点
+
+- 页面只显示“保存”；
+- 第一次保存必须确定有效在线且语言兼容的运行节点；
+- 只有一个兼容节点时可自动选择；多个节点时由用户明确选择；
+- 后续保存沿用当前运行节点，可在运行设置中查看或修改；
+- 所有运行入口都使用最新已保存内容与 Adapter 当前运行节点。
+
+## 5. 统一运行锁
+
+一个 Adapter 同时最多只有一个 `pending / running` Execution。Task 手动运行、Schedule 与 Webhook 共用这一把锁。
+
+运行中或入口已启用时禁止：
+
+- 修改代码、依赖、运行参数、Credential binding；
+- 修改 Worker、Task 运行方式、Cron、Webhook path 或 Token；
+- 保存与删除 Adapter。
+
+名称和描述仍可修改。前端必须解释禁用原因，后端继续以稳定 409 错误作为最终门禁。
+
+## 6. 实时日志与历史
+
+所有触发方式复用 Execution SSE 与同一个 watcher：
+
+- Task 点击运行后自动展开页面底部实时日志；
+- Schedule 新 Execution 开始时提示并进入对应日志，不切走用户正在查看的历史详情；
+- Webhook 开启后显示“等待 Webhook 请求…”，真实请求创建 Execution 后自动跟踪；
+- 日志工作区支持底部、全屏和恢复到底部；
+- Execution 终态后仍可从执行记录或调用记录查看完整详情。
+
+## 7. Clone 升级
+
+运行中升级使用 Clone：
+
+```text
+复制 Adapter
+→ 修改并保存新 Adapter
+→ 可选验证
+→ 停止旧 Adapter
+→ 运行新 Adapter
+→ 验证后删除旧 Adapter
+```
+
+Clone 复制语言、代码、依赖、运行参数、Credential 引用、触发配置和运行节点；不复制 Execution 历史，新 Adapter 始终保持停止。
+
+Webhook Clone 可以与源 Adapter 使用相同 path，但同一时刻只有一个可以开启接收，因此外部 URL 可在人工停旧、启新的步骤中保持不变。
+
+## 8. 删除
+
+用户操作统一为“删除 Adapter”。运行中必须先停止；删除成功后 Adapter 从活跃 Catalog 消失。后台保留软删除事实，为未来独立设计回收站能力留下边界，但当前产品不提供回收站入口。
+
+## 9. Runtime Contract
+
+三种语言共享：
+
+```text
+Input → handle(context, input) → Output
+```
+
+- Python：`def handle(context, input)`；
+- JavaScript：`export async function handle(context, input)`；
+- Java：固定 `Adapter` 类与 `handle(Context context, Object input)`；
+- `context.config` 提供非敏感运行参数；
+- `context.secrets.get(key)` 提供绑定凭据；
+- `context.logger` 输出实时日志。
+
+Task Starter Code 输出“任务开始 / 任务结束”；Webhook Starter Code 输出“收到 Webhook 请求 / 处理完 Webhook 请求”。
+
+## 10. AI Assistant 边界
+
+AI Assistant 可以读取当前 Working Copy 和最小非敏感上下文，返回完整 Candidate 并提供 Diff。Apply 只更新浏览器 Working Copy，不保存、不运行、不修改 Credential 真值或运行状态。Prompt、Provider 原始响应、reasoning 与对话不落库。
+
+## 11. 安全原则
+
+- Adapter 代码不得硬编码密码、Token 或私钥；
+- Credential 真值不返回浏览器、不写日志、不进入 AI Prompt；
+- Webhook Bearer Token 使用 constant-time compare；
+- Runtime 日志按已注入 Secret 集合脱敏；
+- v1 是可信管理员代码模型，子进程隔离不构成安全沙箱。
+
+## 12. 当前不做
+
+不实现 Adapter 串联、DAG、同步 Webhook invoke、请求队列、自动重试、URL takeover、常驻 Adapter、RBAC、AI 自动执行循环、通用插件框架、统一 Sink 或 M5.5 功能。
+
+## 13. 当前完成判据
+
+不了解 DLR 内部 Revision 实现的技术用户，可以不查文档完成：
+
+```text
+Task / Webhook 创建
+→ 编辑与保存
+→ 选择运行节点
+→ 运行或开启接收
+→ 查看实时日志与历史
+→ 停止
+→ Clone 升级
+→ 删除旧 Adapter
+```

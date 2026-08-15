@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor from "@monaco-editor/react";
-import { Button, ConfigProvider, message, Segmented, Tabs } from "antd";
+import { Button, ConfigProvider, Input, message, Modal, Segmented, Select, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -10,25 +10,47 @@ import AiAssistantPanel from "./components/AiAssistantPanel";
 import CredentialBindingsEditor from "./components/CredentialBindingsEditor";
 import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
+import LiveLogWorkspace from "./components/LiveLogWorkspace";
 import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
 import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
+import type { TaskRunSettingsHandle, TaskRuntimeState } from "./components/TaskRunSettingsPanel";
 import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
 import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
 import WebhookTriggerPanel from "./components/WebhookTriggerPanel";
+import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/WebhookTriggerPanel";
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
+import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
 import { DEPENDENCY_UI, TASK_STARTER_CODE, WEBHOOK_STARTER_CODE } from "./languages";
-import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
+import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
+import { isTerminal } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   Adapter,
   AdapterLanguage,
   AdapterType,
   AiCandidate,
+  Execution,
   VersionDetail,
   VersionSummary,
   Worker,
 } from "./types";
+
+const INITIAL_TASK_RUNTIME_STATE: TaskRuntimeState = {
+  scheduleEnabled: false,
+  loading: true,
+  activeExecution: false,
+  canRun: false,
+  scheduleEnableBlockedReason: "运行设置正在加载",
+};
+
+const INITIAL_WEBHOOK_RUNTIME_STATE: WebhookRuntimeState = {
+  loaded: false,
+  enabled: false,
+  runtimeLocked: false,
+  changingState: false,
+  startBlockedReason: "Webhook 运行设置正在加载",
+};
 
 type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
 
@@ -183,7 +205,7 @@ function AdapterConsole() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // True only after the selected adapter's version list and content loaded successfully.
-  // Save/Publish are gated on it so stale or failed loads can never be persisted.
+  // Save is gated on it so stale or failed loads can never be persisted.
   const [contentReady, setContentReady] = useState(false);
   // Low-frequency Adapter settings live in a drawer, outside the main work area.
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -194,14 +216,28 @@ function AdapterConsole() {
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [diffView, setDiffView] = useState<DiffViewState | null>(null);
+  const [taskRuntimeState, setTaskRuntimeState] = useState<TaskRuntimeState>(INITIAL_TASK_RUNTIME_STATE);
+  const [webhookRuntimeState, setWebhookRuntimeState] = useState<WebhookRuntimeState>(INITIAL_WEBHOOK_RUNTIME_STATE);
+  const taskRuntimeRef = useRef<TaskRunSettingsHandle>(null);
+  const webhookRuntimeRef = useRef<WebhookTriggerHandle>(null);
+  const [liveLogOpen, setLiveLogOpen] = useState(false);
+  const [liveLogFullscreen, setLiveLogFullscreen] = useState(false);
+  const [waitingForWebhook, setWaitingForWebhook] = useState(false);
+  const [saveWorkerPromptOpen, setSaveWorkerPromptOpen] = useState(false);
+  const [saveWorkerId, setSaveWorkerId] = useState<number | null>(null);
+  const [cloneSource, setCloneSource] = useState<Adapter | null>(null);
+  const [cloneName, setCloneName] = useState("");
   // Known version-id -> seq values, cached once a version list has loaded and
-  // kept up to date on save/publish. Unvisited Catalog rows use server-derived
-  // production seq fields, so this cache never causes extra list requests.
+  // kept up to date on save. Unvisited Catalog rows keep internal Revision ids
+  // secondary, so this cache never causes extra list requests.
   const [versionSeqById, setVersionSeqById] = useState<Map<number, number>>(new Map());
   const { preference: themePreference, resolvedTheme: editorTheme, setPreference: setThemePreference } = useMonacoTheme();
   // Monotonic guard: only the newest content-loading request may commit state, so
   // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
   const requestGeneration = useRef(0);
+  const liveWatcher = useExecutionWatcher((watchError) => setError(watchError));
+  const liveWatchRef = useRef(liveWatcher.watch);
+  const refreshedTerminalExecutionId = useRef<number | null>(null);
 
   const dirty =
     snapshot.code !== baseline.code ||
@@ -210,6 +246,18 @@ function AdapterConsole() {
   const selectedAdapterId = selected?.id ?? null;
   const activeExecutionId = selected?.running_execution_id ?? null;
   const selectedTriggerLocked = selected?.runtime_locked === true;
+
+  useEffect(() => {
+    liveWatchRef.current = liveWatcher.watch;
+  });
+
+  const handleTaskRuntimeStateChange = useCallback((state: TaskRuntimeState) => {
+    setTaskRuntimeState(state);
+  }, []);
+
+  const handleWebhookRuntimeStateChange = useCallback((state: WebhookRuntimeState) => {
+    setWebhookRuntimeState(state);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -250,7 +298,7 @@ function AdapterConsole() {
     let cancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-    async function refreshActiveProduction() {
+    async function refreshActiveRuntime() {
       try {
         const refreshed = await api.getAdapter(adapterId);
         if (cancelled) {
@@ -265,8 +313,8 @@ function AdapterConsole() {
           refreshed.runtime_locked === true
         ) {
           timeoutId = setTimeout(
-            () => void refreshActiveProduction(),
-            PRODUCTION_REFRESH_POLICY.pollIntervalMs,
+            () => void refreshActiveRuntime(),
+            RUNTIME_REFRESH_POLICY.pollIntervalMs,
           );
         }
       } catch {
@@ -274,16 +322,16 @@ function AdapterConsole() {
         // last authoritative active pointer and retry quietly.
         if (!cancelled) {
           timeoutId = setTimeout(
-            () => void refreshActiveProduction(),
-            PRODUCTION_REFRESH_POLICY.pollIntervalMs,
+            () => void refreshActiveRuntime(),
+            RUNTIME_REFRESH_POLICY.pollIntervalMs,
           );
         }
       }
     }
 
     timeoutId = setTimeout(
-      () => void refreshActiveProduction(),
-      PRODUCTION_REFRESH_POLICY.pollIntervalMs,
+      () => void refreshActiveRuntime(),
+      RUNTIME_REFRESH_POLICY.pollIntervalMs,
     );
     return () => {
       cancelled = true;
@@ -297,6 +345,59 @@ function AdapterConsole() {
     selectedAdapterId,
     selectedTriggerLocked,
   ]);
+
+  // A Manual click is handed to the watcher immediately. Schedule and
+  // Webhook runs can begin in the background, so reconcile the Adapter's
+  // authoritative active pointer without switching the user's current tab or
+  // closing a historical detail drawer.
+  useEffect(() => {
+    if (
+      selectedAdapterId === null ||
+      activeExecutionId === null ||
+      liveWatcher.execution?.id === activeExecutionId
+    ) {
+      return;
+    }
+    const adapterId = selectedAdapterId;
+    let cancelled = false;
+    void api.getExecution(activeExecutionId).then((execution) => {
+      if (cancelled || execution.adapter_id !== adapterId) {
+        return;
+      }
+      refreshedTerminalExecutionId.current = null;
+      liveWatchRef.current(execution);
+      setWaitingForWebhook(false);
+      setLiveLogOpen(true);
+      setLiveLogFullscreen(false);
+      if (execution.trigger === "schedule") {
+        messageApi.info(`定时 Execution #${execution.id} 已开始，实时日志已在页面底部打开。`);
+      }
+    }).catch((watchError) => {
+      if (!cancelled) {
+        setError(errorMessage(watchError));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeExecutionId, liveWatcher.execution?.id, messageApi, selectedAdapterId]);
+
+  useEffect(() => {
+    const execution = liveWatcher.execution;
+    if (
+      execution === null ||
+      !isTerminal(execution.status) ||
+      execution.adapter_id !== selectedAdapterId ||
+      refreshedTerminalExecutionId.current === execution.id
+    ) {
+      return;
+    }
+    refreshedTerminalExecutionId.current = execution.id;
+    void api.getAdapter(execution.adapter_id).then((refreshed) => {
+      setSelected((current) => (current?.id === refreshed.id ? refreshed : current));
+      setAdapters((current) => current.map((item) => item.id === refreshed.id ? refreshed : item));
+    }).catch((refreshError) => setError(errorMessage(refreshError)));
+  }, [liveWatcher.execution, selectedAdapterId]);
 
   // Catalog, Worker badge and Adapter settings share one Worker collection;
   // no component performs its own request and no Adapter row causes N+1.
@@ -358,6 +459,22 @@ function AdapterConsole() {
     );
   }, []);
 
+  const handleExecutionStarted = useCallback((execution: Execution) => {
+    refreshedTerminalExecutionId.current = null;
+    liveWatchRef.current(execution);
+    setWaitingForWebhook(false);
+    setLiveLogOpen(true);
+    setLiveLogFullscreen(false);
+  }, []);
+
+  const handleWebhookReceivingChange = useCallback((enabled: boolean) => {
+    setWaitingForWebhook(enabled);
+    if (enabled) {
+      setLiveLogOpen(true);
+      setLiveLogFullscreen(false);
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -386,7 +503,7 @@ function AdapterConsole() {
   }
 
   // Cache every known version_id -> seq. Unvisited Catalog rows use the
-  // server-provided published/running seq fields instead of extra requests.
+  // server-provided summaries instead of extra requests.
   function recordVersionSeqs(list: VersionSummary[]) {
     setVersionSeqById((current) => {
       const next = new Map(current);
@@ -418,6 +535,12 @@ function AdapterConsole() {
     setSettingsOpen(false);
     setActiveTabKey("edit");
     setConfigTabKey("requirements");
+    liveWatcher.stop();
+    setLiveLogOpen(false);
+    setLiveLogFullscreen(false);
+    setWaitingForWebhook(false);
+    setTaskRuntimeState(INITIAL_TASK_RUNTIME_STATE);
+    setWebhookRuntimeState(INITIAL_WEBHOOK_RUNTIME_STATE);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
       const list = await api.listVersions(adapter.id);
@@ -501,7 +624,7 @@ function AdapterConsole() {
     }
   }
 
-  async function handleSaveVersion() {
+  async function persistVersion(runtimeWorkerId?: number) {
     if (!selected || busy || !contentReady || selected.runtime_locked === true) {
       return;
     }
@@ -517,7 +640,13 @@ function AdapterConsole() {
     setBusy(true);
     try {
       setError(null);
-      const saved = await api.saveVersion(selected.id, {
+      let saveTarget = selected;
+      if (runtimeWorkerId !== undefined && selected.runtime_worker_id == null) {
+        saveTarget = await api.updateAdapter(selected.id, { runtime_worker_id: runtimeWorkerId });
+        setSelected(saveTarget);
+        setAdapters((current) => current.map((item) => item.id === saveTarget.id ? saveTarget : item));
+      }
+      const saved = await api.saveVersion(saveTarget.id, {
         code: snapshot.code,
         requirements: snapshot.requirements,
         runtime_config: runtimeConfig,
@@ -527,7 +656,7 @@ function AdapterConsole() {
       // (which would invite retrying into a duplicate immutable version). Only
       // latest_version_id is derived from the response; Adapter.updated_at stays
       // the server-owned value until a real Adapter refresh succeeds.
-      const optimistic: Adapter = { ...selected, latest_version_id: saved.id };
+      const optimistic: Adapter = { ...saveTarget, latest_version_id: saved.id };
       setSelected(optimistic);
       setAdapters((current) => current.map((item) => (item.id === optimistic.id ? optimistic : item)));
       setVersions((current) => [saved, ...current]);
@@ -538,7 +667,7 @@ function AdapterConsole() {
       applySnapshot(versionSnapshot(saved));
       const refreshFailures: string[] = [];
       try {
-        const versionList = await api.listVersions(selected.id);
+        const versionList = await api.listVersions(saveTarget.id);
         setVersions(versionList);
       } catch (refreshErr) {
         refreshFailures.push(`刷新版本列表失败：${errorMessage(refreshErr)}`);
@@ -546,16 +675,16 @@ function AdapterConsole() {
       try {
         // Best-effort refresh of the real Adapter (server-owned updated_at);
         // failure is non-fatal because the save itself is already acknowledged.
-        const real = await api.getAdapter(selected.id);
+        const real = await api.getAdapter(saveTarget.id);
         setSelected(real);
         setAdapters((current) => current.map((item) => (item.id === real.id ? real : item)));
       } catch (refreshErr) {
         refreshFailures.push(`刷新 Adapter 失败：${errorMessage(refreshErr)}`);
       }
       if (refreshFailures.length === 0) {
-        messageApi.success(`已保存为 v${saved.seq}`);
+        messageApi.success("Adapter 已保存");
       } else {
-        setError(`版本已保存（v${saved.seq}），但${refreshFailures.join("；")}`);
+        setError(`Adapter 已保存，但${refreshFailures.join("；")}`);
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -564,18 +693,52 @@ function AdapterConsole() {
     }
   }
 
-  async function handleClone() {
+  function handleSaveVersion() {
+    if (!selected || busy || !contentReady || selected.runtime_locked === true) {
+      return;
+    }
+    if (parseRuntimeConfig(snapshot.runtimeConfigText) === null) {
+      setError("Runtime config 必须是合法的 JSON 对象");
+      return;
+    }
+    if (!snapshot.code.trim()) {
+      setError("代码不能为空");
+      return;
+    }
+    if (selected.runtime_worker_id != null) {
+      void persistVersion();
+      return;
+    }
+    const compatibleOnlineWorkers = workers.filter(
+      (worker) => worker.status === "online" && worker.capabilities.includes(selected.language),
+    );
+    if (compatibleOnlineWorkers.length === 1) {
+      void persistVersion(compatibleOnlineWorkers[0].id);
+      return;
+    }
+    setSaveWorkerId(null);
+    setSaveWorkerPromptOpen(true);
+  }
+
+  function handleClone() {
     if (!selected || busy) {
       return;
     }
-    const cloneName = window.prompt("新 Adapter 名称", `${selected.name}-copy`);
-    if (cloneName === null || cloneName.trim() === "") {
+    setCloneSource(selected);
+    setCloneName(`${selected.name}-copy`);
+  }
+
+  async function performClone() {
+    if (cloneSource === null || cloneName.trim() === "" || busy) {
       return;
     }
+    const source = cloneSource;
+    const targetName = cloneName.trim();
+    setCloneSource(null);
     setBusy(true);
     try {
       setError(null);
-      const created = await api.cloneAdapter(selected.id, { name: cloneName.trim() });
+      const created = await api.cloneAdapter(source.id, { name: targetName });
       const list = await refreshAdapters();
       const target = list.find((item) => item.id === created.id) ?? created;
       await loadAdapterContent(target);
@@ -709,7 +872,7 @@ function AdapterConsole() {
     }
     const warning = dirty ? "该 Adapter 存在未保存的编辑器修改。" : "";
     if (
-      !window.confirm(`确定删除 Adapter “${selected.name}” 吗？删除后将只读保留 Revision 与 Execution 历史。${warning}`)
+      !window.confirm(`确定删除 Adapter “${selected.name}” 吗？删除后它会从活跃 Catalog 移除。${warning}`)
     ) {
       return;
     }
@@ -724,6 +887,9 @@ function AdapterConsole() {
       setContentReady(false);
       setSettingsOpen(false);
       setSystemSettingsOpen(false);
+      liveWatcher.stop();
+      setLiveLogOpen(false);
+      setWaitingForWebhook(false);
       applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
       await refreshAdapters();
     } catch (err) {
@@ -743,6 +909,12 @@ function AdapterConsole() {
           : "Control 不可达";
 
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
+  const selectedRuntimeWorker = selected?.runtime_worker_id == null
+    ? null
+    : (workers.find((worker) => worker.id === selected.runtime_worker_id) ?? null);
+  const liveExecution = liveWatcher.execution?.adapter_id === selected?.id
+    ? liveWatcher.execution
+    : null;
 
   const healthDotClass =
     health === "ok"
@@ -802,22 +974,31 @@ function AdapterConsole() {
               {selected.adapter_type === "task" ? (
                 <TaskWorkbenchHeader
                   adapter={selected}
-                  selectedVersion={selectedVersion}
+                  revisionSeq={selectedVersion?.seq ?? null}
+                  runtimeWorker={selectedRuntimeWorker}
+                  runtimeState={taskRuntimeState}
                   dirty={dirty}
                   busy={busy}
                   contentReady={contentReady}
                   onSave={() => void handleSaveVersion()}
                   onOpenSettings={() => setSettingsOpen(true)}
+                  onClone={() => void handleClone()}
+                  onRunOnce={() => taskRuntimeRef.current?.runOnce()}
+                  onStopExecution={() => taskRuntimeRef.current?.stopExecution()}
+                  onToggleSchedule={() => taskRuntimeRef.current?.toggleSchedule()}
                 />
               ) : (
               <WebhookWorkbenchHeader
                 adapter={selected}
-                selectedVersion={selectedVersion}
+                runtimeWorker={selectedRuntimeWorker}
+                runtimeState={webhookRuntimeState}
                 dirty={dirty}
                 busy={busy}
                 contentReady={contentReady}
                 onSave={() => void handleSaveVersion()}
                 onOpenSettings={() => setSettingsOpen(true)}
+                onClone={() => void handleClone()}
+                onToggleReceiving={() => webhookRuntimeRef.current?.toggleReceiving()}
               />
               )}
 
@@ -932,14 +1113,19 @@ function AdapterConsole() {
                     ? {
                         key: "runtime",
                         label: "运行设置",
+                        forceRender: true,
                         children: (
                           <TaskRunSettingsPanel
+                            ref={taskRuntimeRef}
                             key={selected.id}
                             adapter={selected}
                             workers={workers}
                             workersLoading={workersLoading}
                             workersError={workersError}
+                            execution={liveExecution}
                             onAdapterChange={handleTaskAdapterChange}
+                            onExecutionStarted={handleExecutionStarted}
+                            onRuntimeStateChange={handleTaskRuntimeStateChange}
                             onError={setError}
                           />
                         ),
@@ -947,14 +1133,18 @@ function AdapterConsole() {
                     : {
                         key: "runtime",
                         label: "运行设置",
+                        forceRender: true,
                         children: (
                           <WebhookTriggerPanel
+                            ref={webhookRuntimeRef}
                             key={selected.id}
                             adapter={selected}
                             workers={workers}
                             workersLoading={workersLoading}
                             workersError={workersError}
                             onAdapterChange={handleTaskAdapterChange}
+                            onReceivingChange={handleWebhookReceivingChange}
+                            onRuntimeStateChange={handleWebhookRuntimeStateChange}
                             onError={setError}
                           />
                         ),
@@ -974,6 +1164,22 @@ function AdapterConsole() {
                     ),
                   },
                 ]}
+              />
+              <LiveLogWorkspace
+                execution={liveExecution}
+                liveStdout={liveWatcher.liveStdout}
+                liveStderr={liveWatcher.liveStderr}
+                fallbackExhausted={liveWatcher.fallbackExhausted}
+                waitingForWebhook={selected.adapter_type === "webhook" && waitingForWebhook && liveExecution === null}
+                open={liveLogOpen}
+                fullscreen={liveLogFullscreen}
+                onOpen={() => setLiveLogOpen(true)}
+                onClose={() => {
+                  setLiveLogOpen(false);
+                  setLiveLogFullscreen(false);
+                }}
+                onEnterFullscreen={() => setLiveLogFullscreen(true)}
+                onRestoreBottom={() => setLiveLogFullscreen(false)}
               />
             </section>
           )}
@@ -1023,6 +1229,78 @@ function AdapterConsole() {
         panes={diffView?.panes ?? []}
         onClose={() => setDiffView(null)}
       />
+
+      <Modal
+        title="复制 Adapter"
+        open={cloneSource !== null}
+        okText="复制"
+        cancelText="取消"
+        confirmLoading={busy}
+        okButtonProps={{ disabled: cloneName.trim() === "" }}
+        onCancel={() => setCloneSource(null)}
+        onOk={() => void performClone()}
+      >
+        <div className="clone-confirm">
+          <p>将复制当前代码、依赖、运行配置、凭据引用和运行节点。</p>
+          <p>执行历史不会复制；新 Adapter 创建后保持停止，不会自动运行。</p>
+          <label className="settings-field">
+            <span className="settings-field-label">新 Adapter 名称</span>
+            <Input
+              autoFocus
+              data-testid="clone-adapter-name"
+              value={cloneName}
+              onChange={(event) => setCloneName(event.target.value)}
+            />
+          </label>
+        </div>
+      </Modal>
+
+      <Modal
+        title="保存 Adapter"
+        open={saveWorkerPromptOpen}
+        okText="保存"
+        cancelText="取消"
+        okButtonProps={{ disabled: saveWorkerId === null }}
+        onCancel={() => {
+          setSaveWorkerPromptOpen(false);
+          setSaveWorkerId(null);
+        }}
+        onOk={() => {
+          if (saveWorkerId === null) {
+            return;
+          }
+          setSaveWorkerPromptOpen(false);
+          void persistVersion(saveWorkerId);
+        }}
+      >
+        <div className="save-worker-prompt">
+          <p>第一次保存需要确定运行节点。后续可在“运行设置”中查看或修改。</p>
+          <label className="settings-field">
+            <span className="settings-field-label">运行节点 *</span>
+            <Select
+              aria-label="保存 Adapter 运行节点"
+              data-testid="save-worker-select"
+              value={saveWorkerId ?? undefined}
+              placeholder="请选择有效在线且支持当前语言的 Worker"
+              onChange={(value: number) => setSaveWorkerId(value)}
+              options={workers
+                .filter((worker) =>
+                  selected !== null &&
+                  worker.status === "online" &&
+                  worker.capabilities.includes(selected.language),
+                )
+                .map((worker) => ({ value: worker.id, label: worker.name }))}
+            />
+          </label>
+          {workers.filter((worker) =>
+            selected !== null &&
+            worker.status === "online" &&
+            worker.capabilities.includes(selected.language),
+          ).length === 0 && (
+            <p className="settings-danger-hint" role="alert">当前没有可用的兼容运行节点，请先启动或注册 Worker。</p>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

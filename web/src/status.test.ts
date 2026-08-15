@@ -1,71 +1,26 @@
 import { expect, it } from "vitest";
 
-import {
-  hasLastProductionExecutionFailure,
-  productionDisplayState,
-  productionRunningVersionId,
-} from "./status";
-import type { Adapter } from "./types";
+import { isTerminal, statusColor, statusLabel } from "./status";
 
-function adapter(overrides: Partial<Adapter>): Adapter {
-  return {
-    id: 1,
-    name: "adapter-a",
-    description: "",
-    language: "python",
-    adapter_type: "webhook",
-    run_mode: "manual",
-    latest_version_id: 10,
-    published_version_id: 10,
-    production_state: "running",
-    created_at: "2026-08-12T00:00:00Z",
-    updated_at: "2026-08-12T00:00:00Z",
-    ...overrides,
-  };
-}
-
-it("keeps a started production entry healthy and idle after a successful run", () => {
-  const value = adapter({
-    running_execution_id: null,
-    running_version_id: null,
-    last_production_execution_id: 77,
-    last_production_execution_status: "succeeded",
-    last_production_version_id: 10,
-  });
-
-  expect(productionDisplayState(value)).toBe("running");
-  expect(productionRunningVersionId(value)).toBe(10);
+it("labels every current Execution state in Chinese", () => {
+  expect(statusLabel("pending")).toBe("等待中");
+  expect(statusLabel("running")).toBe("运行中");
+  expect(statusLabel("succeeded")).toBe("成功");
+  expect(statusLabel("failed")).toBe("失败");
+  expect(statusLabel("timeout")).toBe("超时");
+  expect(statusLabel("cancelled")).toBe("已取消");
 });
 
-it("keeps a started entry running and idle even when the previous lifecycle failed (M5.1)", () => {
-  // Start no longer creates an Execution: running + no active Execution is the
-  // legal idle state, and a failed/timeout Execution from the previous
-  // lifecycle must not derive a lifecycle-abnormal entry (no Stop → Start loop).
-  for (const lastStatus of ["failed", "timeout", "cancelled"] as const) {
-    expect(
-      productionDisplayState(
-        adapter({ running_execution_id: null, last_production_execution_status: lastStatus }),
-      ),
-    ).toBe("running");
+it("treats only persisted terminal states as terminal", () => {
+  expect(isTerminal("pending")).toBe(false);
+  expect(isTerminal("running")).toBe(false);
+  for (const status of ["succeeded", "failed", "timeout", "cancelled"]) {
+    expect(isTerminal(status)).toBe(true);
   }
-  const failed = adapter({
-    running_execution_id: null,
-    last_production_execution_id: 91,
-    last_production_execution_status: "failed",
-  });
-  expect(hasLastProductionExecutionFailure(failed)).toBe(true);
-  expect(hasLastProductionExecutionFailure(adapter({ running_execution_id: null }))).toBe(false);
 });
 
-it("derives stopping only while a stopped entry still owns an active execution", () => {
-  expect(
-    productionDisplayState(
-      adapter({ production_state: "stopped", running_execution_id: 77 }),
-    ),
-  ).toBe("stopping");
-  expect(
-    productionDisplayState(
-      adapter({ production_state: "stopped", running_execution_id: null }),
-    ),
-  ).toBe("stopped");
+it("keeps status colors stable for Workbench and history", () => {
+  expect(statusColor("running")).toBe("processing");
+  expect(statusColor("succeeded")).toBe("success");
+  expect(statusColor("failed")).toBe("error");
 });

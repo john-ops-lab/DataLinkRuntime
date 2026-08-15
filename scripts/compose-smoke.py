@@ -1,4 +1,4 @@
-"""M5.4.3 end-to-end smoke assertions executed inside the Control container."""
+"""M5.4.4 end-to-end smoke assertions executed inside the Control container."""
 
 from __future__ import annotations
 
@@ -646,4 +646,4 @@ assert after["runtime_worker_id"] == before["runtime_worker_id"]
 assert after_versions == before_versions
 assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
 
-print("M5.4.3 compose smoke passed")
+print("M5.4.4 compose smoke passed")
