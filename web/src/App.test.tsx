@@ -6,8 +6,11 @@ import App, {
   TOKEN_STORAGE_KEY,
 } from "./App";
 import { setAuthToken } from "./api";
+import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
+import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
+import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import { FALLBACK_POLICY } from "./fallback-policy";
-import { PRODUCTION_REFRESH_POLICY } from "./production-refresh-policy";
+import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   Adapter,
@@ -170,8 +173,8 @@ function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
     language: "python",
     adapter_type: "task",
     run_mode: "manual",
+    runtime_worker_id: 1,
     latest_version_id: null,
-    published_version_id: null,
     created_at: "2026-08-11T00:00:00Z",
     updated_at: "2026-08-11T00:00:00Z",
     ...overrides,
@@ -217,7 +220,7 @@ afterEach(() => {
   // Restore the production fallback pace for tests that tightened it.
   FALLBACK_POLICY.pollIntervalMs = 3000;
   FALLBACK_POLICY.maxPolls = 60;
-  PRODUCTION_REFRESH_POLICY.pollIntervalMs = 3000;
+  RUNTIME_REFRESH_POLICY.pollIntervalMs = 3000;
   WORKER_REFRESH_POLICY.pollIntervalMs = 30_000;
 });
 
@@ -375,6 +378,17 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   await screen.findByTestId("disable-task-schedule");
   fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
   await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true));
+  expect(screen.getByTestId("task-active-execution").textContent).toContain(
+    "如需升级，请复制为新的 Adapter，完成修改和测试后停止当前 Adapter，再启动新 Adapter。",
+  );
+  expect(screen.getByTestId("save-version").closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
+    "定时已启用，请先停用定时后再保存",
+  );
+  fireEvent.click(screen.getByTestId("header-clone-adapter"));
+  const cloneDialog = await screen.findByRole("dialog");
+  expect(within(cloneDialog).getByText("执行历史不会复制；新 Adapter 创建后保持停止，不会自动运行。")).toBeTruthy();
+  expect((within(cloneDialog).getByTestId("clone-adapter-name") as HTMLInputElement).value).toBe("adapter-a-copy");
+  fireEvent.click(within(cloneDialog).getByRole("button", { name: /取\s*消/ }));
 
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
   fireEvent.click(screen.getByTestId("disable-task-schedule"));
@@ -392,7 +406,7 @@ it.each([
       latest_version_id: null,
       runtime_worker_id: 1,
     }),
-    expectedReason: "请先保存 Revision，再启用定时。",
+    expectedReason: "请先保存 Adapter，再启用定时。",
   },
   {
     name: "a configured runtime Worker",
@@ -844,7 +858,118 @@ it("saves a new version with the edited content", async () => {
   });
   // The header version selector now shows the acknowledged version.
   expect(screen.getByTestId("task-revision").textContent).toContain("Revision 1");
-  expect(await screen.findByText("已保存为 v1")).toBeTruthy();
+  expect(await screen.findByText("Adapter 已保存")).toBeTruthy();
+});
+
+it("asks for a compatible Worker on first Save when several are available", async () => {
+  let adapter = makeAdapter({ runtime_worker_id: null });
+  const versions: VersionSummary[] = [];
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          { id: 1, name: "worker-a", status: "online", last_heartbeat: "", capabilities: ["python"] },
+          { id: 2, name: "worker-b", status: "online", last_heartbeat: "", capabilities: ["python"] },
+          { id: 3, name: "worker-js", status: "online", last_heartbeat: "", capabilities: ["javascript"] },
+        ],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: versions }) },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        adapter = { ...adapter, runtime_worker_id: JSON.parse(body ?? "{}").runtime_worker_id };
+        return { body: adapter };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions",
+      respond: () => {
+        const saved = makeVersion();
+        versions.push(saved);
+        adapter = { ...adapter, latest_version_id: saved.id };
+        return { status: 201, body: saved };
+      },
+    },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("save-version"));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("第一次保存需要确定运行节点。后续可在“运行设置”中查看或修改。")).toBeTruthy();
+  fireEvent.mouseDown(within(dialog).getByRole("combobox"));
+  fireEvent.click(await screen.findByText("worker-b"));
+  fireEvent.click(within(dialog).getByRole("button", { name: /保\s*存/ }));
+
+  await screen.findByText("Adapter 已保存");
+  const patchCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+  );
+  expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({ runtime_worker_id: 2 });
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/versions" && init?.method === "POST",
+    ),
+  ).toBe(true);
+});
+
+it("automatically selects the only compatible online Worker on first Save", async () => {
+  let adapter = makeAdapter({ runtime_worker_id: null });
+  const versions: VersionSummary[] = [];
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [
+          { id: 4, name: "only-python", status: "online", last_heartbeat: "", capabilities: ["python"] },
+          { id: 5, name: "offline-python", status: "offline", last_heartbeat: "", capabilities: ["python"] },
+        ],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: versions }) },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        adapter = { ...adapter, runtime_worker_id: JSON.parse(body ?? "{}").runtime_worker_id };
+        return { body: adapter };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions",
+      respond: () => {
+        const saved = makeVersion();
+        versions.push(saved);
+        adapter = { ...adapter, latest_version_id: saved.id };
+        return { status: 201, body: saved };
+      },
+    },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("save-version"));
+
+  await screen.findByText("Adapter 已保存");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  const patchCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+  );
+  expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({ runtime_worker_id: 4 });
 });
 
 it("asks for confirmation before discarding unsaved changes on adapter switch", async () => {
@@ -1103,7 +1228,7 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
 
   // The refresh failure is reported as a refresh problem, not a failed save.
   await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("error-banner").textContent).toContain("版本已保存");
+  expect(screen.getByTestId("error-banner").textContent).toContain("Adapter 已保存");
 
   // The saved version is acknowledged: not dirty, selected, and marked latest,
   // so the user is never encouraged to repeat an already-successful save.
@@ -1316,7 +1441,7 @@ it("never fabricates Adapter.updated_at from the saved version; adapter refresh 
   // Adapter refresh is reported separately; the server-owned updated_at is
   // never synthesized from the version's created_at.
   await waitFor(() => expect(screen.getByTestId("task-revision").textContent).toContain("Revision 1"));
-  expect(screen.getByTestId("error-banner").textContent).toContain("版本已保存");
+  expect(screen.getByTestId("error-banner").textContent).toContain("Adapter 已保存");
   expect(screen.getByTestId("error-banner").textContent).toContain("刷新 Adapter 失败");
   expect(screen.queryByTestId("dirty-indicator")).toBeNull();
   expect(valueOf("code-editor")).toBe("saved code");
@@ -1401,6 +1526,264 @@ function consoleWithVersionRoutes(adapter: Adapter, version: VersionDetail): Rou
     },
   ];
 }
+
+it("runs a Task from the Workbench header and follows it in the shared live log", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  const pending = makeExecution();
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 1,
+    target_worker_id: 1,
+    stdout: "任务开始\n任务结束\n",
+    output: { ok: true },
+    output_size: 11,
+    ended_at: "2026-08-15T00:00:02Z",
+    duration_ms: 1000,
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [{ id: 1, name: "task-worker", status: "online", last_heartbeat: "", capabilities: ["python"] }],
+      }),
+    },
+    { method: "POST", match: "/api/adapters/1/executions", respond: () => ({ status: 201, body: pending }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: log\ndata: ${JSON.stringify({ stream: "stdout", chunk: "任务开始\\n" })}\n\nevent: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: succeeded }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  const runButton = await screen.findByTestId("header-task-run-once") as HTMLButtonElement;
+  await waitFor(() => expect(runButton.disabled).toBe(false));
+  fireEvent.click(runButton);
+
+  const workspace = await screen.findByTestId("live-log-workspace");
+  await waitFor(() => {
+    expect(screen.getByTestId("live-log-stdout").textContent).toContain("任务开始");
+    expect(screen.getByTestId("live-log-stdout").textContent).toContain("任务结束");
+  });
+  expect(workspace.textContent).toContain("Execution #5");
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+    ),
+  ).toBe(true);
+  expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
+});
+
+it("announces a background Schedule run without leaving the execution history tab", async () => {
+  const runningAdapter = makeAdapter({
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    run_mode: "schedule",
+    runtime_locked: true,
+    running_execution_id: 5,
+  });
+  const unlockedAdapter = { ...runningAdapter, runtime_locked: false, running_execution_id: null };
+  const running = makeExecution({ trigger: "schedule", status: "running" });
+  const succeeded = makeExecution({
+    trigger: "schedule",
+    status: "succeeded",
+    stdout: "任务开始\n任务结束\n",
+    ended_at: "2026-08-15T00:00:02Z",
+  });
+  let executionReads = 0;
+  stubFetch([
+    ...consoleWithVersionRoutes(runningAdapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [{ id: 1, name: "task-worker", status: "online", last_heartbeat: "", capabilities: ["python"] }],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        body: { adapter_id: 1, enabled: true, cron: "* * * * *", timezone: "UTC", input: {}, next_run_at: "2026-08-15T00:01:00Z", updated_at: "2026-08-15T00:00:00Z" },
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5",
+      respond: () => {
+        executionReads += 1;
+        return { body: executionReads === 1 ? running : succeeded };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: unlockedAdapter }) },
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: () => ({ body: { items: [makeSummary({ id: 5, trigger: "schedule" })], next_before_id: null } }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "执行记录" }));
+
+  await screen.findByText("定时 Execution #5 已开始，实时日志已在页面底部打开。");
+  await screen.findByTestId("live-log-workspace");
+  expect(screen.getByRole("tab", { name: "执行记录" }).getAttribute("aria-selected")).toBe("true");
+  expect(await screen.findAllByTestId("history-row")).toHaveLength(1);
+});
+
+it("keeps Schedule disablement separate from cancelling the current Execution", async () => {
+  const onToggleSchedule = vi.fn();
+  const onStopExecution = vi.fn();
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    run_mode: "schedule",
+    runtime_locked: true,
+    running_execution_id: 92,
+  });
+
+  const commonProps = {
+    revisionSeq: 1,
+    runtimeWorker: null,
+    dirty: false,
+    busy: false,
+    contentReady: true,
+    onSave: vi.fn(),
+    onOpenSettings: vi.fn(),
+    onClone: vi.fn(),
+    onRunOnce: vi.fn(),
+    onStopExecution,
+    onToggleSchedule,
+  };
+  const { rerender } = render(
+    <TaskWorkbenchHeader
+      {...commonProps}
+      adapter={adapter}
+      runtimeState={{
+        scheduleEnabled: true,
+        loading: false,
+        activeExecution: true,
+        canRun: false,
+        scheduleEnableBlockedReason: null,
+      }}
+    />,
+  );
+
+  const disableSchedule = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
+  expect(disableSchedule.textContent).toBe("停用定时");
+  expect(disableSchedule.disabled).toBe(false);
+  expect((screen.getByTestId("header-task-stop") as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(disableSchedule);
+  expect(onToggleSchedule).toHaveBeenCalledOnce();
+  expect(onStopExecution).not.toHaveBeenCalled();
+
+  rerender(
+    <TaskWorkbenchHeader
+      {...commonProps}
+      adapter={adapter}
+      runtimeState={{
+        scheduleEnabled: false,
+        loading: false,
+        activeExecution: true,
+        canRun: false,
+        scheduleEnableBlockedReason: null,
+      }}
+    />,
+  );
+  const lockedEnable = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
+  expect(lockedEnable.textContent).toBe("启用定时");
+  expect(lockedEnable.disabled).toBe(true);
+  expect(lockedEnable.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
+    "当前 Execution 仍在运行，请等待终态或停止当前执行后再启用定时",
+  );
+  fireEvent.click(lockedEnable);
+  expect(onToggleSchedule).toHaveBeenCalledOnce();
+
+  fireEvent.click(screen.getByTestId("header-task-stop"));
+  expect(screen.getByTestId("header-task-stop").textContent).toBe("停止当前执行");
+  expect(onStopExecution).toHaveBeenCalledOnce();
+
+  rerender(
+    <TaskWorkbenchHeader
+      {...commonProps}
+      adapter={{ ...adapter, runtime_locked: false, running_execution_id: null }}
+      runtimeState={{
+        scheduleEnabled: false,
+        loading: false,
+        activeExecution: false,
+        canRun: true,
+        scheduleEnableBlockedReason: null,
+      }}
+    />,
+  );
+  const unlockedEnable = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
+  expect(unlockedEnable.disabled).toBe(false);
+  fireEvent.click(unlockedEnable);
+  expect(onToggleSchedule).toHaveBeenCalledTimes(2);
+});
+
+it("cancels the authoritative Adapter Execution instead of a stale terminal watcher", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    run_mode: "schedule",
+    runtime_locked: true,
+    running_execution_id: 92,
+  });
+  const staleTerminal = makeExecution({ id: 91, status: "succeeded" });
+  const cancelled = makeExecution({ id: 92, status: "cancelled" });
+  const fetchMock = stubFetch([
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        body: { adapter_id: 1, enabled: true, cron: "* * * * *", timezone: "UTC", input: {}, next_run_at: null, updated_at: "2026-08-15T00:00:00Z" },
+      }),
+    },
+    { method: "POST", match: "/api/executions/92/cancel", respond: () => ({ body: cancelled }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: { ...adapter, runtime_locked: false, running_execution_id: null } }) },
+  ]);
+
+  render(
+    <TaskRunSettingsPanel
+      adapter={adapter}
+      workers={[]}
+      workersLoading={false}
+      workersError={null}
+      execution={staleTerminal}
+      onAdapterChange={vi.fn()}
+      onExecutionStarted={vi.fn()}
+      onRuntimeStateChange={vi.fn()}
+      onError={vi.fn()}
+    />,
+  );
+
+  fireEvent.click(await screen.findByTestId("task-stop-run"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/executions/92/cancel" && init?.method === "POST",
+      ),
+    ).toBe(true);
+  });
+  expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/executions/91/cancel")).toBe(false);
+});
 
 it("lists unfiltered Task execution history with cursor pagination and opens detail", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
@@ -1575,7 +1958,6 @@ it("shows the worker badge by online presence, not by registration count", async
 it("refreshes the shared effective Worker status on focus without a page reload", async () => {
   const adapter = makeAdapter({
     latest_version_id: 10,
-    published_version_id: 10,
     runtime_worker_id: 1,
   });
   const worker = {
@@ -2424,55 +2806,19 @@ it("sends at most the latest eight visible role/content messages", async () => {
   ).toBe(true);
 });
 
-it.each(["task", "webhook"] as const)(
-  "keeps archived %s Adapter read-only without a restore action",
-  async (adapterType) => {
-    const archived = makeAdapter({
-      adapter_type: adapterType,
-      archived_at: "2026-08-11T01:00:00Z",
-    });
-    stubFetch([
-      healthRoute({ status: "ok", database: true }),
-      { method: "GET", match: "/api/adapters", respond: () => ({ body: [archived] }) },
-      { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
-      aiBindingsRoute(1),
-      {
-        method: "POST",
-        match: "/api/adapters/1/ai/assist",
-        respond: () => ({ body: { message: "只读候选", candidate: AI_CANDIDATE } }),
-      },
-    ]);
-    render(<App />);
-    await screen.findByTestId("adapter-catalog");
-    fireEvent.click(screen.getByText("已归档"));
-    fireEvent.click(await screen.findByTestId("adapter-item"));
-    await screen.findByTestId("code-editor");
-    expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true);
-    expect((screen.getByTestId("requirements-input") as HTMLTextAreaElement).disabled).toBe(true);
-    fireEvent.click(screen.getByText("运行参数（JSON）"));
-    expect((screen.getByTestId("runtime-config-input") as HTMLTextAreaElement).disabled).toBe(true);
-
-    await openAiAssistant();
-    fireEvent.change(screen.getByTestId("ai-message-input"), {
-      target: { value: "解释并建议" },
-    });
-    fireEvent.click(screen.getByTestId("ai-send"));
-    await screen.findByTestId("ai-archived-apply-blocked");
-    const applyButton = screen.getByTestId("ai-apply-candidate") as HTMLButtonElement;
-    expect(applyButton.disabled).toBe(true);
-    expect(applyButton.closest(".action-with-reason")?.getAttribute("title")).toContain(
-      "只能查看，不能应用",
-    );
-
-    fireEvent.click(screen.getByTestId("adapter-settings"));
-    await screen.findByTestId("archived-settings-readonly");
-    expect((screen.getByTestId("adapter-name") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByTestId("adapter-description") as HTMLInputElement).disabled).toBe(true);
-    expect(screen.queryByTestId("restore-adapter")).toBeNull();
-    expect(screen.queryByTestId("delete-adapter")).toBeNull();
-    expect(screen.queryByTestId("clone-adapter")).toBeNull();
-  },
-);
+it("keeps soft-deleted Adapters out of the active Catalog without Archive/Restore UI", async () => {
+  const deleted = makeAdapter({ archived_at: "2026-08-11T01:00:00Z" });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [deleted] }) },
+  ]);
+  render(<App />);
+  await screen.findByTestId("adapter-catalog");
+  expect(screen.queryByTestId("adapter-item")).toBeNull();
+  expect(screen.queryByText("已归档")).toBeNull();
+  expect(screen.queryByText(/恢复 Adapter/)).toBeNull();
+  expect(screen.getByText("暂无 Adapter")).toBeTruthy();
+});
 
 it("configures one AI model with manual Model ID, refresh, test, and default reasoning", async () => {
   let refreshBody = "";
@@ -2686,6 +3032,8 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
   await screen.findByText("运行设置已保存。");
   fireEvent.click(screen.getByTestId("webhook-start"));
   await screen.findByText("已开启接收。");
+  await waitFor(() => expect(screen.getByTestId("header-webhook-toggle").textContent).toContain("停止接收"));
+  expect(screen.getByTestId("live-log-workspace").textContent).toContain("等待 Webhook 请求…");
 
   const payloads = fetchMock.mock.calls
     .filter(([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT")
@@ -2819,4 +3167,54 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
     public_id: "a8f3c9d2",
     credential_id: 7,
   });
+});
+
+it("keeps Webhook receive disabled until the active call reaches a terminal state", () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+    runtime_locked: true,
+    running_execution_id: 91,
+  });
+  const commonProps = {
+    adapter,
+    runtimeWorker: null,
+    dirty: false,
+    busy: false,
+    contentReady: true,
+    onSave: vi.fn(),
+    onOpenSettings: vi.fn(),
+    onClone: vi.fn(),
+    onToggleReceiving: vi.fn(),
+  };
+  const { rerender } = render(
+    <WebhookWorkbenchHeader
+      {...commonProps}
+      runtimeState={{ loaded: true, enabled: true, runtimeLocked: true, changingState: false, startBlockedReason: null }}
+    />,
+  );
+  expect(screen.getByTestId("header-webhook-toggle").textContent).toBe("停止接收");
+
+  rerender(
+    <WebhookWorkbenchHeader
+      {...commonProps}
+      runtimeState={{ loaded: true, enabled: false, runtimeLocked: true, changingState: false, startBlockedReason: null }}
+    />,
+  );
+  const lockedStart = screen.getByTestId("header-webhook-toggle") as HTMLButtonElement;
+  expect(lockedStart.textContent).toBe("开启接收");
+  expect(lockedStart.disabled).toBe(true);
+  expect(lockedStart.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
+    "已有调用仍在运行，请等待其进入终态后再开启接收或修改运行配置",
+  );
+
+  rerender(
+    <WebhookWorkbenchHeader
+      {...commonProps}
+      adapter={{ ...adapter, runtime_locked: false, running_execution_id: null }}
+      runtimeState={{ loaded: true, enabled: false, runtimeLocked: false, changingState: false, startBlockedReason: null }}
+    />,
+  );
+  expect((screen.getByTestId("header-webhook-toggle") as HTMLButtonElement).disabled).toBe(false);
 });

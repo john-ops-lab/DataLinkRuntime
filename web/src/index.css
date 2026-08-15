@@ -223,7 +223,7 @@ body {
   font-weight: 600;
 }
 
-/* M3.2 生产状态点：与 Header 四层状态同一颜色词汇。 */
+/* Adapter runtime status dot. */
 .catalog-status-dot {
   display: inline-block;
   width: 7px;
@@ -278,6 +278,152 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+/* M5.4.4 Workbench-level live logs: one shared surface for every trigger. */
+.live-log-workspace {
+  flex: 0 0 min(280px, 42vh);
+  min-height: 190px;
+  display: flex;
+  flex-direction: column;
+  background: #0d1117;
+  color: #d1d5db;
+  border-top: 1px solid #30363d;
+  box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.14);
+  z-index: 20;
+}
+
+.live-log-fullscreen {
+  position: fixed;
+  inset: var(--dlr-header-height) 0 0;
+  min-height: 0;
+  z-index: 1200;
+}
+
+.live-log-header {
+  flex: 0 0 auto;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 14px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.live-log-title-group {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #8b949e;
+  font-family: var(--dlr-mono-font);
+  font-size: 0.78rem;
+}
+
+.live-log-title-group strong {
+  color: #f0f6fc;
+  font-size: 0.85rem;
+}
+
+.live-log-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 14px 10px;
+}
+
+.live-log-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-log-tabs > .ant-tabs-nav {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+
+.live-log-tabs > .ant-tabs-content-holder,
+.live-log-tabs .ant-tabs-content,
+.live-log-tabs .ant-tabs-tabpane-active {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.live-log-tabs .ant-tabs-tabpane-active {
+  display: flex;
+  flex-direction: column;
+}
+
+.live-log-tabs .terminal-view,
+.live-log-tabs .output-view {
+  min-height: 0;
+  height: 100%;
+  border: 1px solid #30363d;
+}
+
+.live-log-waiting {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: #c9d1d9;
+}
+
+.live-log-waiting p {
+  margin: 4px 0 0;
+  color: #8b949e;
+  font-size: 0.78rem;
+}
+
+.live-log-waiting-pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2f81f7;
+  box-shadow: 0 0 0 0 rgba(47, 129, 247, 0.65);
+  animation: live-log-pulse 1.8s ease-out infinite;
+}
+
+@keyframes live-log-pulse {
+  70% { box-shadow: 0 0 0 9px rgba(47, 129, 247, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(47, 129, 247, 0); }
+}
+
+.live-log-collapsed {
+  flex: 0 0 auto;
+  padding: 3px 12px;
+  background: #161b22;
+  border-top: 1px solid #30363d;
+}
+
+.live-log-collapsed .ant-btn {
+  color: #c9d1d9;
+  font-family: var(--dlr-mono-font);
+  font-size: 0.76rem;
+}
+
+.task-live-log-handoff {
+  margin-top: 14px;
+}
+
+.save-worker-prompt,
+.clone-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.save-worker-prompt > p,
+.clone-confirm > p {
+  margin: 0;
 }
 
 /* Workbench Header：Adapter 上下文 + 版本与主操作。 */
@@ -356,7 +502,7 @@ body {
   outline-offset: 2px;
 }
 
-/* Header 内的状态提示（Published≠Running / 已归档）与标题行保持间距。 */
+/* Header runtime guidance keeps a consistent distance from the title row. */
 .workbench-context .ant-alert {
   margin-top: 6px;
 }
@@ -1091,27 +1237,6 @@ body {
   margin: 0;
   font-size: 0.75rem;
   color: var(--dlr-text-weak);
-}
-
-/* M3.2 发布确认框。 */
-.publish-confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 0.85rem;
-}
-
-.publish-confirm p {
-  margin: 0;
-}
-
-.publish-gate-ok {
-  color: #389e0d;
-}
-
-.publish-gate-blocked,
-.publish-gate-error {
-  color: #cf1322;
 }
 
 /* --- M3.2 凭据绑定编辑器 ------------------------------------------------- */

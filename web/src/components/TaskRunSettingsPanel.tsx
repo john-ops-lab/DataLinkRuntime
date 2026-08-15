@@ -1,20 +1,35 @@
 /** Task runtime settings and real Manual/Schedule execution actions (M5.4.2). */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from "react";
 import { Alert, Button, Input, Radio, Select, Space, Spin, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
-import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
-import type { Adapter, AdapterSchedule, TaskRunMode, Worker } from "../types";
-import { LogView, OutputView } from "./OutputView";
+import type { Adapter, AdapterSchedule, Execution, TaskRunMode, Worker } from "../types";
+
+export interface TaskRuntimeState {
+  scheduleEnabled: boolean;
+  loading: boolean;
+  activeExecution: boolean;
+  canRun: boolean;
+  scheduleEnableBlockedReason: string | null;
+}
+
+export interface TaskRunSettingsHandle {
+  runOnce: () => void;
+  stopExecution: () => void;
+  toggleSchedule: () => void;
+}
 
 interface TaskRunSettingsPanelProps {
   adapter: Adapter;
   workers: Worker[];
   workersLoading: boolean;
   workersError: string | null;
+  execution: Execution | null;
   onAdapterChange: (adapter: Adapter) => void;
+  onExecutionStarted: (execution: Execution) => void;
+  onRuntimeStateChange: (state: TaskRuntimeState) => void;
   onError: (message: string | null) => void;
 }
 
@@ -37,11 +52,12 @@ function formatTime(value: string | null): string {
   return value === null ? "—" : new Date(value).toLocaleString();
 }
 
-export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
+const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPanelProps>(function TaskRunSettingsPanel(props, ref) {
   const adapterId = props.adapter.id;
   const adapterRunMode = props.adapter.run_mode;
   const onAdapterChange = props.onAdapterChange;
   const onError = props.onError;
+  const onRuntimeStateChange = props.onRuntimeStateChange;
   const [workerOverride, setWorkerOverride] = useState<number | null | undefined>(undefined);
   const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(undefined);
   const [manualInput, setManualInput] = useState("{}");
@@ -54,9 +70,6 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const watcher = useExecutionWatcher((message) => onError(message));
-  const watchRef = useRef(watcher.watch);
-  const refreshedTerminalId = useRef<number | null>(null);
 
   const refreshAdapter = useCallback(async () => {
     const refreshed = await api.getAdapter(adapterId);
@@ -64,10 +77,6 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
     setWorkerOverride(undefined);
     setRunModeOverride(undefined);
   }, [adapterId, onAdapterChange]);
-
-  useEffect(() => {
-    watchRef.current = watcher.watch;
-  });
 
   const loadSchedule = useCallback(async () => {
     setLoadingSchedule(true);
@@ -113,27 +122,6 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
       cancelled = true;
     };
   }, [adapterId, adapterRunMode, onError]);
-
-  useEffect(() => {
-    const executionId = props.adapter.running_execution_id;
-    if (executionId == null || watcher.execution?.id === executionId) {
-      return;
-    }
-    api.getExecution(executionId).then((execution) => watchRef.current(execution)).catch((error) => onError(errorMessage(error)));
-  }, [props.adapter.running_execution_id, onError, watcher.execution?.id]);
-
-  useEffect(() => {
-    const execution = watcher.execution;
-    if (
-      execution === null ||
-      !isTerminal(execution.status) ||
-      refreshedTerminalId.current === execution.id
-    ) {
-      return;
-    }
-    refreshedTerminalId.current = execution.id;
-    void refreshAdapter().catch((error) => onError(errorMessage(error)));
-  }, [onError, refreshAdapter, watcher.execution]);
 
   const workerId =
     workerOverride === undefined ? (props.adapter.runtime_worker_id ?? null) : workerOverride;
@@ -196,8 +184,7 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
     onError(null);
     try {
       const execution = await api.createExecution(adapterId, { input: parsed.value });
-      refreshedTerminalId.current = null;
-      watcher.watch(execution);
+      props.onExecutionStarted(execution);
       await refreshAdapter();
     } catch (error) {
       onError(errorMessage(error));
@@ -207,7 +194,13 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
   }
 
   async function stopExecution() {
-    const executionId = watcher.execution?.id ?? props.adapter.running_execution_id;
+    const watchedExecutionId =
+      props.execution !== null &&
+      props.execution.adapter_id === adapterId &&
+      !isTerminal(props.execution.status)
+        ? props.execution.id
+        : null;
+    const executionId = props.adapter.running_execution_id ?? watchedExecutionId;
     if (executionId == null) {
       return;
     }
@@ -215,7 +208,7 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
     onError(null);
     try {
       const execution = await api.cancelExecution(executionId);
-      watcher.watch(execution);
+      props.onExecutionStarted(execution);
       if (isTerminal(execution.status)) {
         await refreshAdapter();
       }
@@ -226,7 +219,7 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
     }
   }
 
-  const execution = watcher.execution;
+  const execution = props.execution;
   const activeExecution =
     props.adapter.running_execution_id != null ||
     (execution !== null && !isTerminal(execution.status));
@@ -235,7 +228,7 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
   const scheduleFieldsLocked = scheduleEnabled || runtimeLocked;
   const scheduleEnableBlockedReason =
     props.adapter.latest_version_id === null
-      ? "请先保存 Revision，再启用定时。"
+      ? "请先保存 Adapter，再启用定时。"
       : props.adapter.runtime_worker_id == null
         ? "请先保存运行节点，再启用定时。"
         : null;
@@ -249,10 +242,37 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
     !activeExecution &&
     !submitting;
 
+  useEffect(() => {
+    onRuntimeStateChange({
+      scheduleEnabled,
+      loading: loadingSchedule || savingRuntime || savingSchedule || submitting || cancelling,
+      activeExecution,
+      canRun,
+      scheduleEnableBlockedReason,
+    });
+  }, [
+    activeExecution,
+    canRun,
+    cancelling,
+    loadingSchedule,
+    onRuntimeStateChange,
+    savingRuntime,
+    savingSchedule,
+    scheduleEnableBlockedReason,
+    scheduleEnabled,
+    submitting,
+  ]);
+
+  useImperativeHandle(ref, () => ({
+    runOnce: () => void runOnce(),
+    stopExecution: () => void stopExecution(),
+    toggleSchedule: () => void saveSchedule(!scheduleEnabled),
+  }));
+
   return (
     <div className="task-run-settings" data-testid="task-run-settings">
       <section className="task-runtime-config">
-        <Typography.Title level={5}>运行设置</Typography.Title>
+        <Typography.Title level={5}>Task 运行设置</Typography.Title>
         <Space direction="vertical" size="middle" className="schedule-form">
           <label className="settings-field">
             <span className="settings-field-label">运行节点</span>
@@ -374,23 +394,26 @@ export default function TaskRunSettingsPanel(props: TaskRunSettingsPanelProps) {
               {props.adapter.run_mode === "schedule" ? "立即运行一次" : "运行一次"}
             </Button>
           ) : (
-            <Button danger data-testid="task-stop-run" loading={cancelling} onClick={() => void stopExecution()}>停止运行</Button>
+            <Button danger data-testid="task-stop-run" loading={cancelling} onClick={() => void stopExecution()}>
+              {props.adapter.run_mode === "schedule" ? "停止当前执行" : "停止运行"}
+            </Button>
           )}
           {execution !== null && <Tag color={statusColor(execution.status)}>{statusLabel(execution.status)}</Tag>}
         </Space>
-        {props.adapter.latest_version_id === null && <Alert type="info" showIcon message="请先保存 Revision，再运行任务。" />}
+        {props.adapter.latest_version_id === null && <Alert type="info" showIcon message="请先保存 Adapter，再运行任务。" />}
         {props.adapter.runtime_worker_id == null && <Alert type="info" showIcon message="请先保存运行节点。" />}
         {execution !== null && (
-          <div className="execution-body">
-            <Typography.Text>Execution #{execution.id} · Trigger: {execution.trigger}</Typography.Text>
-            <OutputView execution={execution} />
-            <Typography.Text strong>stdout</Typography.Text>
-            <LogView content={watcher.liveStdout} truncated={execution.stdout_truncated} />
-            <Typography.Text strong>stderr</Typography.Text>
-            <LogView content={watcher.liveStderr} truncated={execution.stderr_truncated} />
-          </div>
+          <Alert
+            className="task-live-log-handoff"
+            type={isTerminal(execution.status) ? "success" : "info"}
+            showIcon
+            message={`Execution #${execution.id} · ${statusLabel(execution.status)}`}
+            description="实时 stdout、stderr 与 Output 已在页面底部日志工作区中打开。"
+          />
         )}
       </section>
     </div>
   );
-}
+});
+
+export default TaskRunSettingsPanel;

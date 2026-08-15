@@ -14,24 +14,8 @@ export interface Adapter {
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;
-  // Transitional pre-M5.4 UI fields remain optional until the Task/Webhook
-  // Workbench follow-ups remove their consumers. The M5.4.1 API omits them.
-  published_version_id?: number | null;
-  published_version_seq?: number | null;
-  running_version_seq?: number | null;
-  production_state?: "idle" | "running" | "stopped";
   archived_at?: string | null;
-  /** Derived from the active Production Execution; null when none exists. */
-  running_version_id?: number | null;
   running_execution_id?: number | null;
-  /** M5.1: Locked production version; set by Start, cleared by Stop. */
-  production_version_id?: number | null;
-  production_version_seq?: number | null;
-  /** Minimal summary of the newest Production Execution, including terminal runs. */
-  last_production_execution_id?: number | null;
-  last_production_execution_status?: ExecutionStatus | null;
-  last_production_version_id?: number | null;
-  last_production_version_seq?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -158,22 +142,6 @@ export interface Worker {
   status: string;
   last_heartbeat: string;
   capabilities: string[];
-}
-
-/** The most recent test run of one version on the production Worker. */
-export interface PublishGateLastTest {
-  execution_id: number;
-  status: string;
-  ended_at: string | null;
-}
-
-/** Read-only publish gate evaluation shown in the Publish confirmation. */
-export interface PublishGate {
-  allowed: boolean;
-  /** null exactly when allowed; codes: no_production_worker,
-   * not_tested_on_production_worker, last_test_not_succeeded. */
-  reason: string | null;
-  last_test: PublishGateLastTest | null;
 }
 
 // --- M3.2/M3.3: Secret Store credentials and dependency sources -----------

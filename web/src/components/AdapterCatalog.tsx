@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Button, Drawer, Input, Radio, Segmented, Space } from "antd";
+import { Button, Drawer, Input, Radio, Space } from "antd";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, AdapterLanguage, AdapterType, Worker } from "../types";
@@ -90,8 +90,8 @@ function catalogSubtitle(
   }
   const revision =
     adapter.latest_version_id == null
-      ? "未保存 Revision"
-      : `Revision ${versionLabel(adapter.latest_version_id, null, versionSeqById)}`;
+      ? "未保存"
+      : `已保存 ${versionLabel(adapter.latest_version_id, null, versionSeqById)}`;
   const primary = `${LANGUAGE_LABELS[adapter.language]} · ${runtimeFact} · ${revision}`;
   const fullParts = [primary, ...attention];
   if (workerId === null || workerId === undefined) {
@@ -117,8 +117,6 @@ export default function AdapterCatalog({
 }: AdapterCatalogProps) {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
-  // M3.2：归档 Adapter 默认隐藏，避免污染活跃工作列表。
-  const [view, setView] = useState<"active" | "archived">("active");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [language, setLanguage] = useState<AdapterLanguage>("python");
@@ -148,9 +146,7 @@ export default function AdapterCatalog({
   }
 
   const keyword = search.trim().toLowerCase();
-  const inView = adapters.filter((adapter) =>
-    view === "archived" ? !!adapter.archived_at : !adapter.archived_at,
-  );
+  const inView = adapters.filter((adapter) => !adapter.archived_at);
   const visible =
     keyword === ""
       ? inView
@@ -186,23 +182,11 @@ export default function AdapterCatalog({
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
-        <Segmented
-          block
-          size="small"
-          data-testid="catalog-view"
-          className="catalog-view-switch"
-          value={view}
-          options={[
-            { label: "活跃", value: "active" },
-            { label: "已归档", value: "archived" },
-          ]}
-          onChange={(value) => setView(value as "active" | "archived")}
-        />
       </div>
 
       <div className="catalog-list">
         {visible.length === 0 ? (
-          <p className="catalog-empty">{inView.length === 0 ? (view === "archived" ? "暂无已归档 Adapter" : "暂无 Adapter") : "没有匹配的 Adapter"}</p>
+          <p className="catalog-empty">{inView.length === 0 ? "暂无 Adapter" : "没有匹配的 Adapter"}</p>
         ) : (
           visible.map((adapter) => {
             const runtimeState =
