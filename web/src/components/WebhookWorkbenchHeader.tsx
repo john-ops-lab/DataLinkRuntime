@@ -36,7 +36,9 @@ export default function WebhookWorkbenchHeader(props: Props) {
     ? null
     : !props.runtimeState.loaded
       ? "Webhook 运行设置正在加载"
-      : props.runtimeState.startBlockedReason;
+      : props.runtimeState.runtimeLocked
+        ? "已有调用仍在运行，请等待其进入终态后再开启接收或修改运行配置"
+        : props.runtimeState.startBlockedReason;
 
   return (
     <header className="workbench-header" data-testid="workbench-header">

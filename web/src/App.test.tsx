@@ -6,6 +6,9 @@ import App, {
   TOKEN_STORAGE_KEY,
 } from "./App";
 import { setAuthToken } from "./api";
+import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
+import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
+import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import { FALLBACK_POLICY } from "./fallback-policy";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
@@ -1644,6 +1647,97 @@ it("announces a background Schedule run without leaving the execution history ta
   expect(await screen.findAllByTestId("history-row")).toHaveLength(1);
 });
 
+it("keeps Schedule disablement separate from cancelling the current Execution", async () => {
+  const onToggleSchedule = vi.fn();
+  const onStopExecution = vi.fn();
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    run_mode: "schedule",
+    runtime_locked: true,
+    running_execution_id: 92,
+  });
+
+  render(
+    <TaskWorkbenchHeader
+      adapter={adapter}
+      revisionSeq={1}
+      runtimeWorker={null}
+      runtimeState={{
+        scheduleEnabled: true,
+        loading: false,
+        activeExecution: true,
+        canRun: false,
+        scheduleEnableBlockedReason: null,
+      }}
+      dirty={false}
+      busy={false}
+      contentReady
+      onSave={vi.fn()}
+      onOpenSettings={vi.fn()}
+      onClone={vi.fn()}
+      onRunOnce={vi.fn()}
+      onStopExecution={onStopExecution}
+      onToggleSchedule={onToggleSchedule}
+    />,
+  );
+
+  fireEvent.click(screen.getByTestId("header-task-schedule-toggle"));
+  expect(onToggleSchedule).toHaveBeenCalledOnce();
+  expect(onStopExecution).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByTestId("header-task-stop"));
+  expect(screen.getByTestId("header-task-stop").textContent).toBe("停止当前执行");
+  expect(onStopExecution).toHaveBeenCalledOnce();
+});
+
+it("cancels the authoritative Adapter Execution instead of a stale terminal watcher", async () => {
+  const adapter = makeAdapter({
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    run_mode: "schedule",
+    runtime_locked: true,
+    running_execution_id: 92,
+  });
+  const staleTerminal = makeExecution({ id: 91, status: "succeeded" });
+  const cancelled = makeExecution({ id: 92, status: "cancelled" });
+  const fetchMock = stubFetch([
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        body: { adapter_id: 1, enabled: true, cron: "* * * * *", timezone: "UTC", input: {}, next_run_at: null, updated_at: "2026-08-15T00:00:00Z" },
+      }),
+    },
+    { method: "POST", match: "/api/executions/92/cancel", respond: () => ({ body: cancelled }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: { ...adapter, runtime_locked: false, running_execution_id: null } }) },
+  ]);
+
+  render(
+    <TaskRunSettingsPanel
+      adapter={adapter}
+      workers={[]}
+      workersLoading={false}
+      workersError={null}
+      execution={staleTerminal}
+      onAdapterChange={vi.fn()}
+      onExecutionStarted={vi.fn()}
+      onRuntimeStateChange={vi.fn()}
+      onError={vi.fn()}
+    />,
+  );
+
+  fireEvent.click(await screen.findByTestId("task-stop-run"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/executions/92/cancel" && init?.method === "POST",
+      ),
+    ).toBe(true);
+  });
+  expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/executions/91/cancel")).toBe(false);
+});
+
 it("lists unfiltered Task execution history with cursor pagination and opens detail", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const pageOne = {
@@ -3026,4 +3120,54 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
     public_id: "a8f3c9d2",
     credential_id: 7,
   });
+});
+
+it("keeps Webhook receive disabled until the active call reaches a terminal state", () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+    runtime_locked: true,
+    running_execution_id: 91,
+  });
+  const commonProps = {
+    adapter,
+    runtimeWorker: null,
+    dirty: false,
+    busy: false,
+    contentReady: true,
+    onSave: vi.fn(),
+    onOpenSettings: vi.fn(),
+    onClone: vi.fn(),
+    onToggleReceiving: vi.fn(),
+  };
+  const { rerender } = render(
+    <WebhookWorkbenchHeader
+      {...commonProps}
+      runtimeState={{ loaded: true, enabled: true, runtimeLocked: true, changingState: false, startBlockedReason: null }}
+    />,
+  );
+  expect(screen.getByTestId("header-webhook-toggle").textContent).toBe("停止接收");
+
+  rerender(
+    <WebhookWorkbenchHeader
+      {...commonProps}
+      runtimeState={{ loaded: true, enabled: false, runtimeLocked: true, changingState: false, startBlockedReason: null }}
+    />,
+  );
+  const lockedStart = screen.getByTestId("header-webhook-toggle") as HTMLButtonElement;
+  expect(lockedStart.textContent).toBe("开启接收");
+  expect(lockedStart.disabled).toBe(true);
+  expect(lockedStart.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
+    "已有调用仍在运行，请等待其进入终态后再开启接收或修改运行配置",
+  );
+
+  rerender(
+    <WebhookWorkbenchHeader
+      {...commonProps}
+      adapter={{ ...adapter, runtime_locked: false, running_execution_id: null }}
+      runtimeState={{ loaded: true, enabled: false, runtimeLocked: false, changingState: false, startBlockedReason: null }}
+    />,
+  );
+  expect((screen.getByTestId("header-webhook-toggle") as HTMLButtonElement).disabled).toBe(false);
 });

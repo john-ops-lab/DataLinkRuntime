@@ -194,7 +194,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function stopExecution() {
-    const executionId = props.execution?.id ?? props.adapter.running_execution_id;
+    const watchedExecutionId =
+      props.execution !== null &&
+      props.execution.adapter_id === adapterId &&
+      !isTerminal(props.execution.status)
+        ? props.execution.id
+        : null;
+    const executionId = props.adapter.running_execution_id ?? watchedExecutionId;
     if (executionId == null) {
       return;
     }
@@ -388,7 +394,9 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               {props.adapter.run_mode === "schedule" ? "立即运行一次" : "运行一次"}
             </Button>
           ) : (
-            <Button danger data-testid="task-stop-run" loading={cancelling} onClick={() => void stopExecution()}>停止运行</Button>
+            <Button danger data-testid="task-stop-run" loading={cancelling} onClick={() => void stopExecution()}>
+              {props.adapter.run_mode === "schedule" ? "停止当前执行" : "停止运行"}
+            </Button>
           )}
           {execution !== null && <Tag color={statusColor(execution.status)}>{statusLabel(execution.status)}</Tag>}
         </Space>

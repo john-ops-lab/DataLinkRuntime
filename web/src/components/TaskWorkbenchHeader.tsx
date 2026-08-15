@@ -90,11 +90,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
             保存
           </Button>
         </ActionWithReason>
-        {activeExecution ? (
-          <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
-            停止运行
-          </Button>
-        ) : scheduleMode ? (
+        {scheduleMode ? (
           <>
             <ActionWithReason
               label={props.runtimeState.scheduleEnabled ? "停用定时" : "启用定时"}
@@ -110,12 +106,22 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
                 {props.runtimeState.scheduleEnabled ? "停用定时" : "启用定时"}
               </Button>
             </ActionWithReason>
-            <ActionWithReason label="立即运行一次" reason={runBlockedReason}>
-              <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
-                立即运行一次
+            {activeExecution ? (
+              <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
+                停止当前执行
               </Button>
-            </ActionWithReason>
+            ) : (
+              <ActionWithReason label="立即运行一次" reason={runBlockedReason}>
+                <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
+                  立即运行一次
+                </Button>
+              </ActionWithReason>
+            )}
           </>
+        ) : activeExecution ? (
+          <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
+            停止运行
+          </Button>
         ) : (
           <ActionWithReason label="运行一次" reason={runBlockedReason}>
             <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
