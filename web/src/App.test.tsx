@@ -1658,11 +1658,23 @@ it("keeps Schedule disablement separate from cancelling the current Execution", 
     running_execution_id: 92,
   });
 
-  render(
+  const commonProps = {
+    revisionSeq: 1,
+    runtimeWorker: null,
+    dirty: false,
+    busy: false,
+    contentReady: true,
+    onSave: vi.fn(),
+    onOpenSettings: vi.fn(),
+    onClone: vi.fn(),
+    onRunOnce: vi.fn(),
+    onStopExecution,
+    onToggleSchedule,
+  };
+  const { rerender } = render(
     <TaskWorkbenchHeader
+      {...commonProps}
       adapter={adapter}
-      revisionSeq={1}
-      runtimeWorker={null}
       runtimeState={{
         scheduleEnabled: true,
         loading: false,
@@ -1670,25 +1682,60 @@ it("keeps Schedule disablement separate from cancelling the current Execution", 
         canRun: false,
         scheduleEnableBlockedReason: null,
       }}
-      dirty={false}
-      busy={false}
-      contentReady
-      onSave={vi.fn()}
-      onOpenSettings={vi.fn()}
-      onClone={vi.fn()}
-      onRunOnce={vi.fn()}
-      onStopExecution={onStopExecution}
-      onToggleSchedule={onToggleSchedule}
     />,
   );
 
-  fireEvent.click(screen.getByTestId("header-task-schedule-toggle"));
+  const disableSchedule = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
+  expect(disableSchedule.textContent).toBe("停用定时");
+  expect(disableSchedule.disabled).toBe(false);
+  expect((screen.getByTestId("header-task-stop") as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(disableSchedule);
   expect(onToggleSchedule).toHaveBeenCalledOnce();
   expect(onStopExecution).not.toHaveBeenCalled();
+
+  rerender(
+    <TaskWorkbenchHeader
+      {...commonProps}
+      adapter={adapter}
+      runtimeState={{
+        scheduleEnabled: false,
+        loading: false,
+        activeExecution: true,
+        canRun: false,
+        scheduleEnableBlockedReason: null,
+      }}
+    />,
+  );
+  const lockedEnable = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
+  expect(lockedEnable.textContent).toBe("启用定时");
+  expect(lockedEnable.disabled).toBe(true);
+  expect(lockedEnable.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
+    "当前 Execution 仍在运行，请等待终态或停止当前执行后再启用定时",
+  );
+  fireEvent.click(lockedEnable);
+  expect(onToggleSchedule).toHaveBeenCalledOnce();
 
   fireEvent.click(screen.getByTestId("header-task-stop"));
   expect(screen.getByTestId("header-task-stop").textContent).toBe("停止当前执行");
   expect(onStopExecution).toHaveBeenCalledOnce();
+
+  rerender(
+    <TaskWorkbenchHeader
+      {...commonProps}
+      adapter={{ ...adapter, runtime_locked: false, running_execution_id: null }}
+      runtimeState={{
+        scheduleEnabled: false,
+        loading: false,
+        activeExecution: false,
+        canRun: true,
+        scheduleEnableBlockedReason: null,
+      }}
+    />,
+  );
+  const unlockedEnable = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
+  expect(unlockedEnable.disabled).toBe(false);
+  fireEvent.click(unlockedEnable);
+  expect(onToggleSchedule).toHaveBeenCalledTimes(2);
 });
 
 it("cancels the authoritative Adapter Execution instead of a stale terminal watcher", async () => {

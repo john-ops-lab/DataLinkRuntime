@@ -55,6 +55,11 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           : props.runtimeState.loading || props.busy
             ? "运行操作正在处理中"
             : "当前状态暂不可运行";
+  const scheduleToggleReason = props.runtimeState.scheduleEnabled
+    ? null
+    : activeExecution
+      ? "当前 Execution 仍在运行，请等待终态或停止当前执行后再启用定时"
+      : props.runtimeState.scheduleEnableBlockedReason;
 
   return (
     <header className="workbench-header" data-testid="workbench-header">
@@ -94,13 +99,13 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           <>
             <ActionWithReason
               label={props.runtimeState.scheduleEnabled ? "停用定时" : "启用定时"}
-              reason={props.runtimeState.scheduleEnabled ? null : props.runtimeState.scheduleEnableBlockedReason}
+              reason={scheduleToggleReason}
             >
               <Button
                 danger={props.runtimeState.scheduleEnabled}
                 data-testid="header-task-schedule-toggle"
                 loading={props.runtimeState.loading}
-                disabled={!props.runtimeState.scheduleEnabled && props.runtimeState.scheduleEnableBlockedReason !== null}
+                disabled={scheduleToggleReason !== null}
                 onClick={props.onToggleSchedule}
               >
                 {props.runtimeState.scheduleEnabled ? "停用定时" : "启用定时"}
