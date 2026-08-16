@@ -2338,7 +2338,9 @@ it("manages credentials and package sources from the system settings drawer", as
     {
       method: "POST",
       match: "/api/package-sources/1/test",
-      respond: () => ({ body: { ok: true, status_code: 200, error: null } }),
+      respond: () => ({
+        body: { ok: false, status_code: null, error: "Connection refused" },
+      }),
     },
   ]);
   render(<App />);
@@ -2365,8 +2367,10 @@ it("manages credentials and package sources from the system settings drawer", as
 
   fireEvent.click(screen.getByTestId("test-package-source"));
   await screen.findByTestId("package-source-test-result");
-  expect(screen.getByTestId("package-source-test-result").textContent).toContain("可达");
-  expect(screen.getByTestId("package-source-test-result").getAttribute("role")).toBe("status");
+  expect(screen.getByTestId("package-source-test-result").textContent).toBe(
+    "不可达：Connection refused",
+  );
+  expect(screen.getByTestId("package-source-test-result").getAttribute("role")).toBe("alert");
 });
 
 // --- M4 AI Editor -----------------------------------------------------------

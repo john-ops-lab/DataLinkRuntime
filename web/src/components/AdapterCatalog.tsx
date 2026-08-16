@@ -206,7 +206,7 @@ export default function AdapterCatalog({
         ) : (
           visible.map((adapter) => {
             const runtimeStatus = catalogRuntimeStatus(adapter);
-            const statusDescription = `${adapter.adapter_type === "task" ? "任务" : "Webhook"}状态：${runtimeStatus.label}`;
+            const statusDescription = `${adapter.adapter_type === "task" ? "任务" : "Webhook "}状态：${runtimeStatus.label}`;
             const subtitle = catalogSubtitle(adapter, runtimeStatus, versionSeqById, workersById);
             const runtimeDetail = adapter.running_execution_id == null
               ? null

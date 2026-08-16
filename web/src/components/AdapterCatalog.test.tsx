@@ -61,17 +61,17 @@ it("exposes each Task and Webhook runtime status in the catalog item name", () =
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "webhook-stopped，Python · Webhook状态：已停止 · 未保存 · 运行节点未配置",
+      name: "webhook-stopped，Python · Webhook 状态：已停止 · 未保存 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "webhook-receiving，Python · Webhook状态：接收中 · 未保存 · 运行节点未配置",
+      name: "webhook-receiving，Python · Webhook 状态：接收中 · 未保存 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "webhook-calling，Python · Webhook状态：调用中 · 调用 #61 · 未保存 · 运行节点未配置",
+      name: "webhook-calling，Python · Webhook 状态：调用中 · 调用 #61 · 未保存 · 运行节点未配置",
     }),
   ).toBeTruthy();
 });

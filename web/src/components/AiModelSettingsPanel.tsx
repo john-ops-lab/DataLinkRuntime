@@ -239,10 +239,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     setTesting(true);
     try {
       const result = await api.testAiSetting(payload);
+      const detail = result.message.trim();
       if (result.ok) {
-        setNotice("连接测试通过：模型返回可解析的最小响应。");
+        setNotice(detail === "" ? "连接测试通过：模型返回可解析的最小响应。" : `连接测试通过：${detail}`);
       } else {
-        fail("连接测试失败；请检查模型服务配置与网络。");
+        fail(detail === "" ? "连接测试失败；请检查模型服务配置与网络。" : `连接测试失败：${detail}`);
       }
     } catch (error) {
       fail(errorMessage(error));

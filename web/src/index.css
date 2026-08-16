@@ -627,6 +627,7 @@ body {
 .ai-assistant {
   flex: 0 0 auto;
   min-height: 0;
+  box-sizing: border-box;
   border-left: 1px solid var(--dlr-border);
   background: var(--dlr-workspace-bg);
 }

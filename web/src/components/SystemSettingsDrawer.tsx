@@ -431,9 +431,12 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     });
     try {
       const result = await api.testPackageSource(source.id);
+      const errorDetail = result.error?.trim();
       const text = result.ok
         ? `可达${result.status_code !== null ? `（HTTP ${result.status_code}）` : ""}`
-        : "不可达（请检查 URL、凭据和网络）";
+        : errorDetail
+          ? `不可达：${errorDetail}`
+          : "不可达（请检查 URL、凭据和网络）";
       setTestResults((current) => new Map(current).set(source.id, { ok: result.ok, text }));
     } catch (error) {
       fail(errorMessage(error));
