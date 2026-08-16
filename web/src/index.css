@@ -101,11 +101,13 @@ body {
   background: #ff4d4f;
 }
 
-/* Shell 主体：左侧 Catalog + 中间 Workbench（右侧预留给 M4 Context Panel）。 */
+/* Shell 主体：左侧 Catalog + 中间 Workbench；M4 悬浮助手入口以
+   position:absolute 悬浮在右侧，默认不占用布局、不压缩 Monaco。 */
 .console-body {
   flex: 1;
   min-height: 0;
   display: flex;
+  position: relative;
 }
 
 .error-banner {
@@ -622,33 +624,45 @@ body {
   font-size: 0.8rem;
 }
 
-/* --- M4 AI Assistant（右侧可折叠、浏览器会话） -------------------------- */
+/* --- M4 AI Assistant（右侧悬浮入口 + 可展开对话面板） -------------------- */
 
 .ai-assistant {
-  flex: 0 0 auto;
-  min-height: 0;
+  /* DOM 位置在 Workbench 之前（Tab 顺序：Monaco 会捕获 Tab 焦点），
+     视觉顺序仍保持在最右侧。 */
+  order: 3;
   box-sizing: border-box;
-  border-left: 1px solid var(--dlr-border);
   background: var(--dlr-workspace-bg);
 }
 
+/* 收起态 = 悬浮入口：绝对定位不参与 flex 布局，Monaco 主编辑区不受压缩。 */
 .ai-assistant-collapsed {
-  width: 44px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 12px;
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  z-index: 30;
+  border: none;
+  background: transparent;
 }
 
-.ai-assistant-open {
+.ai-assistant-open.ant-btn {
+  width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
   font-weight: 700;
-  color: #0958d9;
+  box-shadow: 0 4px 12px rgba(9, 88, 217, 0.35);
 }
 
 .ai-assistant-expanded {
+  flex: 0 0 auto;
   width: 390px;
   display: flex;
   flex-direction: column;
+  border-left: 1px solid var(--dlr-border);
 }
 
 .ai-assistant-header {
@@ -737,6 +751,12 @@ body {
   padding-top: 8px;
   border-top: 1px solid var(--dlr-border);
   font-size: 0.78rem;
+}
+
+.ai-candidate-ready {
+  margin-top: 0;
+  color: #0958d9;
+  font-weight: 600;
 }
 
 .ai-candidate > p {
@@ -1356,6 +1376,19 @@ body {
   gap: 12px;
   font-size: 0.8rem;
   color: var(--dlr-text-secondary);
+}
+
+/* M5.5.4：AI Candidate Diff 内的 Apply 区（应用修改 / 关闭）。 */
+.diff-modal-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diff-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* --- Worker 弹层 --------------------------------------------------------- */

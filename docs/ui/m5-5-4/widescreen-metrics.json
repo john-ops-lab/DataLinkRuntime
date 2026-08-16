@@ -1,0 +1,378 @@
+{
+  "1280": {
+    "collapsed": {
+      "viewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "scrollWidth": 1280,
+      "bodyScrollWidth": 1280,
+      "floatingEntry": {
+        "left": 1218,
+        "top": 452,
+        "width": 46,
+        "right": 1264
+      },
+      "expandedPanel": null,
+      "catalog": {
+        "left": 0,
+        "top": 49,
+        "width": 231,
+        "right": 231
+      },
+      "workbench": {
+        "left": 231,
+        "top": 49,
+        "width": 1049,
+        "right": 1280
+      },
+      "editorMain": {
+        "left": 247,
+        "top": 232,
+        "width": 1017,
+        "right": 1264
+      },
+      "headerControls": {
+        "left": 525,
+        "top": 59,
+        "width": 739,
+        "right": 1264
+      },
+      "saveButton": {
+        "left": 1105,
+        "top": 59,
+        "width": 64,
+        "right": 1168
+      },
+      "aiPanelOpen": false
+    },
+    "expanded": {
+      "viewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "scrollWidth": 1280,
+      "bodyScrollWidth": 1280,
+      "floatingEntry": null,
+      "expandedPanel": {
+        "left": 920,
+        "top": 49,
+        "width": 360,
+        "right": 1280
+      },
+      "catalog": {
+        "left": 0,
+        "top": 49,
+        "width": 231,
+        "right": 231
+      },
+      "workbench": {
+        "left": 231,
+        "top": 49,
+        "width": 689,
+        "right": 920
+      },
+      "editorMain": {
+        "left": 247,
+        "top": 232,
+        "width": 657,
+        "right": 904
+      },
+      "headerControls": {
+        "left": 490,
+        "top": 59,
+        "width": 414,
+        "right": 904
+      },
+      "saveButton": {
+        "left": 745,
+        "top": 59,
+        "width": 64,
+        "right": 808
+      },
+      "aiPanelOpen": true
+    }
+  },
+  "1440": {
+    "collapsed": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "scrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "floatingEntry": {
+        "left": 1378,
+        "top": 452,
+        "width": 46,
+        "right": 1424
+      },
+      "expandedPanel": null,
+      "catalog": {
+        "left": 0,
+        "top": 49,
+        "width": 261,
+        "right": 261
+      },
+      "workbench": {
+        "left": 261,
+        "top": 49,
+        "width": 1179,
+        "right": 1440
+      },
+      "editorMain": {
+        "left": 277,
+        "top": 195,
+        "width": 1147,
+        "right": 1424
+      },
+      "headerControls": {
+        "left": 1193,
+        "top": 59,
+        "width": 231,
+        "right": 1424
+      },
+      "saveButton": {
+        "left": 1265,
+        "top": 59,
+        "width": 64,
+        "right": 1328
+      },
+      "aiPanelOpen": false
+    },
+    "expanded": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "scrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "floatingEntry": null,
+      "expandedPanel": {
+        "left": 1050,
+        "top": 49,
+        "width": 390,
+        "right": 1440
+      },
+      "catalog": {
+        "left": 0,
+        "top": 49,
+        "width": 261,
+        "right": 261
+      },
+      "workbench": {
+        "left": 261,
+        "top": 49,
+        "width": 789,
+        "right": 1050
+      },
+      "editorMain": {
+        "left": 277,
+        "top": 196,
+        "width": 757,
+        "right": 1034
+      },
+      "headerControls": {
+        "left": 803,
+        "top": 59,
+        "width": 231,
+        "right": 1034
+      },
+      "saveButton": {
+        "left": 875,
+        "top": 59,
+        "width": 64,
+        "right": 938
+      },
+      "aiPanelOpen": true
+    }
+  },
+  "1680": {
+    "collapsed": {
+      "viewport": {
+        "width": 1680,
+        "height": 900
+      },
+      "scrollWidth": 1680,
+      "bodyScrollWidth": 1680,
+      "floatingEntry": {
+        "left": 1618,
+        "top": 452,
+        "width": 46,
+        "right": 1664
+      },
+      "expandedPanel": null,
+      "catalog": {
+        "left": 0,
+        "top": 49,
+        "width": 261,
+        "right": 261
+      },
+      "workbench": {
+        "left": 261,
+        "top": 49,
+        "width": 1419,
+        "right": 1680
+      },
+      "editorMain": {
+        "left": 277,
+        "top": 195,
+        "width": 1387,
+        "right": 1664
+      },
+      "headerControls": {
+        "left": 1433,
+        "top": 59,
+        "width": 231,
+        "right": 1664
+      },
+      "saveButton": {
+        "left": 1505,
+        "top": 59,
+        "width": 64,
+        "right": 1568
+      },
+      "aiPanelOpen": false
+    },
+    "expanded": {
+      "viewport": {
+        "width": 1680,
+        "height": 900
+      },
+      "scrollWidth": 1680,
+      "bodyScrollWidth": 1680,
+      "floatingEntry": null,
+      "expandedPanel": {
+        "left": 1290,
+        "top": 49,
+        "width": 390,
+        "right": 1680
+      },
+      "catalog": {
+        "left": 0,
+        "top": 49,
+        "width": 261,
+        "right": 261
+      },
+      "workbench": {
+        "left": 261,
+        "top": 49,
+        "width": 1029,
+        "right": 1290
+      },
+      "editorMain": {
+        "left": 277,
+        "top": 195,
+        "width": 997,
+        "right": 1274
+      },
+      "headerControls": {
+        "left": 1043,
+        "top": 59,
+        "width": 231,
+        "right": 1274
+      },
+      "saveButton": {
+        "left": 1115,
+        "top": 59,
+        "width": 64,
+        "right": 1178
+      },
+      "aiPanelOpen": true
+    }
+  },
+  "1920": {
+    "collapsed": {
+      "viewport": {
+        "width": 1920,
+        "height": 900
+      },
+      "scrollWidth": 1920,
+      "bodyScrollWidth": 1920,
+      "floatingEntry": {
+        "left": 1858,
+        "top": 452,
+        "width": 46,
+        "right": 1904
+      },
+      "expandedPanel": null,
+      "catalog": {
+        "left": 0,
+        "top": 49,
+        "width": 261,
+        "right": 261
+      },
+      "workbench": {
+        "left": 261,
+        "top": 49,
+        "width": 1659,
+        "right": 1920
+      },
+      "editorMain": {
+        "left": 277,
+        "top": 195,
+        "width": 1627,
+        "right": 1904
+      },
+      "headerControls": {
+        "left": 1673,
+        "top": 59,
+        "width": 231,
+        "right": 1904
+      },
+      "saveButton": {
+        "left": 1745,
+        "top": 59,
+        "width": 64,
+        "right": 1808
+      },
+      "aiPanelOpen": false
+    },
+    "expanded": {
+      "viewport": {
+        "width": 1920,
+        "height": 900
+      },
+      "scrollWidth": 1920,
+      "bodyScrollWidth": 1920,
+      "floatingEntry": null,
+      "expandedPanel": {
+        "left": 1530,
+        "top": 49,
+        "width": 390,
+        "right": 1920
+      },
+      "catalog": {
+        "left": 0,
+        "top": 49,
+        "width": 261,
+        "right": 261
+      },
+      "workbench": {
+        "left": 261,
+        "top": 49,
+        "width": 1269,
+        "right": 1530
+      },
+      "editorMain": {
+        "left": 277,
+        "top": 195,
+        "width": 1237,
+        "right": 1514
+      },
+      "headerControls": {
+        "left": 1283,
+        "top": 59,
+        "width": 231,
+        "right": 1514
+      },
+      "saveButton": {
+        "left": 1355,
+        "top": 59,
+        "width": 64,
+        "right": 1418
+      },
+      "aiPanelOpen": true
+    }
+  }
+}

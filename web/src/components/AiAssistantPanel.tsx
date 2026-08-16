@@ -4,14 +4,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Spin } from "antd";
 
 import { api } from "../api";
-import { LANGUAGE_LABELS } from "../languages";
+import { DEPENDENCY_UI, LANGUAGE_LABELS } from "../languages";
 import type {
   Adapter,
   AiCandidate,
   AiConversationMessage,
 } from "../types";
 import { userErrorMessage } from "../user-message";
-import ActionWithReason from "./ActionWithReason";
+import VersionDiffModal, { type DiffPane } from "./VersionDiffModal";
 
 export interface AiWorkingCopy {
   code: string;
@@ -32,6 +32,11 @@ interface VisibleMessage {
   candidate: CandidateState | null;
 }
 
+interface CandidateDiffState {
+  messageId: number;
+  panes: DiffPane[];
+}
+
 interface AiAssistantPanelProps {
   open: boolean;
   adapter: Adapter | null;
@@ -43,7 +48,6 @@ interface AiAssistantPanelProps {
   onOpen: () => void;
   onClose: () => void;
   onApply: (candidate: AiCandidate) => void;
-  onOpenDiff: (candidate: AiCandidate) => void;
 }
 
 function errorMessage(error: unknown): string {
@@ -77,6 +81,26 @@ function parseRuntimeConfig(text: string): Record<string, unknown> | null {
   }
 }
 
+// M4 §4.1 Candidate 严格校验的浏览器侧防御：后端保证合法，但前端仍拒绝
+// 任何形状不符的 Candidate，绝不渲染或允许 Apply。
+function isValidAiCandidate(value: unknown): value is AiCandidate {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.summary === "string" &&
+    typeof candidate.code === "string" &&
+    candidate.code.trim() !== "" &&
+    typeof candidate.requirements === "string" &&
+    typeof candidate.runtime_config === "object" &&
+    candidate.runtime_config !== null &&
+    !Array.isArray(candidate.runtime_config) &&
+    Array.isArray(candidate.required_secret_keys) &&
+    candidate.required_secret_keys.every((key) => typeof key === "string")
+  );
+}
+
 function snapshotsEqual(left: AiWorkingCopy, right: AiWorkingCopy): boolean {
   return (
     left.code === right.code &&
@@ -97,12 +121,21 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [boundSecretKeys, setBoundSecretKeys] = useState<Set<string>>(new Set());
   const [bindingsLoading, setBindingsLoading] = useState(false);
   const [bindingsVerified, setBindingsVerified] = useState(false);
+  const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
   const requestGeneration = useRef(0);
   const bindingsGeneration = useRef(0);
   const nextMessageId = useRef(1);
   const conversationRef = useRef<HTMLDivElement>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement>(null);
   const followLatestRef = useRef(true);
   const previousOpenRef = useRef(props.open);
+
+  // 展开时把焦点移入面板（键盘可达、焦点可见）；收起后由浏览器自然回到页面。
+  useEffect(() => {
+    if (props.open) {
+      messageInputRef.current?.focus();
+    }
+  }, [props.open]);
 
   useLayoutEffect(() => {
     if (props.open && !previousOpenRef.current) {
@@ -235,7 +268,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         role: "assistant",
         content: response.message,
         candidate:
-          response.candidate === null
+          response.candidate === null || !isValidAiCandidate(response.candidate)
             ? null
             : { value: response.candidate, baseSnapshot, applied: false },
       };
@@ -251,16 +284,47 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     }
   }
 
-  function discardCandidate(messageId: number) {
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === messageId ? { ...message, candidate: null } : message,
-      ),
-    );
+  function openCandidateDiff(messageId: number, candidateState: CandidateState) {
+    const adapter = props.adapter;
+    if (adapter === null) {
+      return;
+    }
+    const candidate = candidateState.value;
+    setCandidateDiff({
+      messageId,
+      panes: [
+        {
+          key: "code",
+          label: "代码",
+          language: adapter.language,
+          original: props.workingCopy.code,
+          modified: candidate.code,
+        },
+        {
+          key: "requirements",
+          label: DEPENDENCY_UI[adapter.language].label,
+          language: "plaintext",
+          original: props.workingCopy.requirements,
+          modified: candidate.requirements,
+        },
+        {
+          key: "runtime-config",
+          label: "运行参数",
+          language: "json",
+          original: props.workingCopy.runtimeConfigText,
+          modified: JSON.stringify(candidate.runtime_config, null, 2),
+        },
+      ],
+    });
   }
 
   function applyCandidate(messageId: number, candidate: AiCandidate) {
-    if (!props.contentReady || props.busy || props.adapter?.archived_at) {
+    if (
+      !props.contentReady ||
+      props.busy ||
+      props.adapter?.archived_at ||
+      props.adapter?.runtime_locked === true
+    ) {
       return;
     }
     props.onApply(candidate);
@@ -273,27 +337,25 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     );
   }
 
-  if (!props.open) {
-    return (
-      <aside className="ai-assistant ai-assistant-collapsed">
-        <Button
-          type="text"
-          className="ai-assistant-open"
-          data-testid="open-ai-assistant"
-          aria-label="展开 AI 助手"
-          aria-expanded={false}
-          onClick={props.onOpen}
-        >
-          AI
-        </Button>
-      </aside>
-    );
-  }
+  const collapsedEntry = (
+    <aside className="ai-assistant ai-assistant-collapsed">
+      <Button
+        type="primary"
+        className="ai-assistant-open"
+        data-testid="open-ai-assistant"
+        aria-label="展开 AI 助手"
+        aria-expanded={false}
+        onClick={props.onOpen}
+      >
+        AI
+      </Button>
+    </aside>
+  );
 
   const contextVersion =
     props.selectedVersionSeq === null ? "未保存工作副本" : `工作副本 v${props.selectedVersionSeq}`;
 
-  return (
+  const expandedPanel = (
     <aside className="ai-assistant ai-assistant-expanded" data-testid="ai-assistant-panel">
       <div className="ai-assistant-header">
         <div>
@@ -349,15 +411,6 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                 : [...new Set(candidateState.value.required_secret_keys)].filter(
                     (key) => !boundSecretKeys.has(key),
                   );
-            const applyBlockedReason = props.adapter?.archived_at
-              ? "适配器已删除，候选修改只能查看，不能应用"
-              : !props.contentReady
-                ? "工作副本尚未加载完成，请稍后重试"
-                : props.busy
-                  ? "其他操作正在进行，请等待完成"
-                  : candidateState?.applied
-                    ? "该候选修改已应用到当前工作副本"
-                    : null;
             return (
               <article
                 key={message.id}
@@ -368,6 +421,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                 <p>{message.content}</p>
                 {candidateState !== null && (
                   <div className="ai-candidate" data-testid="ai-candidate">
+                    <p className="ai-candidate-ready" data-testid="ai-candidate-ready">
+                      代码已生成
+                    </p>
                     <strong data-testid="ai-candidate-summary">
                       {candidateState.value.summary}
                     </strong>
@@ -405,30 +461,12 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                     <div className="ai-candidate-actions">
                       <Button
                         size="small"
+                        type="primary"
                         data-testid="ai-view-diff"
                         disabled={!props.contentReady || props.busy}
-                        onClick={() => props.onOpenDiff(candidateState.value)}
+                        onClick={() => openCandidateDiff(message.id, candidateState)}
                       >
                         {stale ? "查看与当前工作副本的修改" : "查看修改"}
-                      </Button>
-                      <ActionWithReason label="应用 AI 候选修改" reason={applyBlockedReason}>
-                        <Button
-                          size="small"
-                          type="primary"
-                          data-testid="ai-apply-candidate"
-                          disabled={applyBlockedReason !== null}
-                          onClick={() => applyCandidate(message.id, candidateState.value)}
-                        >
-                          {candidateState.applied ? "已应用" : stale ? "仍然应用" : "应用"}
-                        </Button>
-                      </ActionWithReason>
-                      <Button
-                        size="small"
-                        type="text"
-                        data-testid="ai-discard-candidate"
-                        onClick={() => discardCandidate(message.id)}
-                      >
-                        放弃
                       </Button>
                     </div>
                   </div>
@@ -451,6 +489,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           </p>
         )}
         <textarea
+          ref={messageInputRef}
           rows={4}
           data-testid="ai-message-input"
           aria-label="AI 指令"
@@ -482,5 +521,56 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         </Button>
       </div>
     </aside>
+  );
+
+  const candidateDiffState = candidateDiff;
+  const diffApplyAction = (() => {
+    if (candidateDiffState === null) {
+      return null;
+    }
+    // The open Candidate is looked up live from the conversation so the
+    // applied/stale state stays correct after Apply inside the modal.
+    const candidateState =
+      messages.find((message) => message.id === candidateDiffState.messageId)?.candidate ??
+      null;
+    if (candidateState === null) {
+      return null;
+    }
+    const stale =
+      !candidateState.applied &&
+      !snapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
+    const applyBlockedReason = candidateState.applied
+      ? "该候选修改已应用到当前工作副本"
+      : props.adapter?.archived_at
+        ? "适配器已删除，候选修改只能查看，不能应用"
+        : !props.contentReady
+          ? "工作副本尚未加载完成，请稍后重试"
+          : props.busy
+            ? "其他操作正在进行，请等待完成"
+            : props.adapter?.runtime_locked === true
+              ? "适配器正在运行，不能应用候选修改"
+              : null;
+    return {
+      label: stale ? "仍然应用" : "应用修改",
+      reason: applyBlockedReason,
+      applied: candidateState.applied,
+      stale,
+      onApply: () => applyCandidate(candidateDiffState.messageId, candidateState.value),
+    };
+  })();
+
+  return (
+    <>
+      <VersionDiffModal
+        open={candidateDiff !== null}
+        title="AI 候选修改：与当前工作副本对比"
+        originalTitle="工作副本（当前编辑内容）"
+        modifiedTitle="AI 候选修改"
+        panes={candidateDiff?.panes ?? []}
+        onClose={() => setCandidateDiff(null)}
+        applyAction={diffApplyAction}
+      />
+      {props.open ? expandedPanel : collapsedEntry}
+    </>
   );
 }
