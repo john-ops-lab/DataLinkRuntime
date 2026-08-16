@@ -180,7 +180,11 @@ Provider Adapter 只向上层交付 `final_text`：
 
 ## 5. Web 交互与防覆盖
 
-- AI Panel 位于 Workbench 右侧，桌面宽度 360–420px，可展开/收起。
+- AI 面板位于 Workbench 右侧。默认收起为右侧悬浮入口（绝对定位、不占用布局，
+  不压缩 Monaco 主编辑区），点击展开为 360–420px 对话面板；收起/展开均可键盘
+  操作，展开时面板回到布局流中，不遮挡保存/运行按钮。
+- 聊天卡片中 Candidate 只提供「查看修改」单一路径；Apply 只出现在 Diff 内
+  （「应用修改」/「关闭」），关闭 Diff 即不应用，无额外「放弃」动作。
 - 未选择 Adapter 或 Working Copy 尚未就绪时不可发送。
 - 对话与 Candidate 绑定当前 Adapter；切换 Adapter 时清空会话。
 - 请求使用 generation + adapter id 防护；旧响应不得写入新 Adapter。

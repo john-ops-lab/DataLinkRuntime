@@ -784,40 +784,6 @@ function AdapterConsole() {
     });
   }
 
-  function handleOpenAiCandidateDiff(candidate: AiCandidate) {
-    if (!selected) {
-      return;
-    }
-    setDiffView({
-      title: "AI 候选修改：与当前工作副本对比",
-      originalTitle: "工作副本（当前编辑内容）",
-      modifiedTitle: "AI 候选修改",
-      panes: [
-        {
-          key: "code",
-          label: "代码",
-          language: selected.language,
-          original: snapshot.code,
-          modified: candidate.code,
-        },
-        {
-          key: "requirements",
-          label: DEPENDENCY_UI[selected.language].label,
-          language: "plaintext",
-          original: snapshot.requirements,
-          modified: candidate.requirements,
-        },
-        {
-          key: "runtime-config",
-          label: "运行参数",
-          language: "json",
-          original: snapshot.runtimeConfigText,
-          modified: JSON.stringify(candidate.runtime_config, null, 2),
-        },
-      ],
-    });
-  }
-
   function handleApplyAiCandidate(candidate: AiCandidate) {
     if (
       !selected ||
@@ -962,6 +928,25 @@ function AdapterConsole() {
           onCreate={handleCreateAdapter}
           versionSeqById={versionSeqById}
           workers={workers}
+        />
+
+        {/*
+          M5.5.4：AI 助手放在 Workbench 之前的 DOM 位置，视觉上仍通过 flex
+          order 停留在最右侧。Monaco 会捕获 Tab 焦点，若助手位于编辑器之后，
+          键盘用户将永远无法用 Tab 到达悬浮入口。
+        */}
+        <AiAssistantPanel
+          key={`ai-assistant-${selected?.id ?? "none"}`}
+          open={aiPanelOpen}
+          adapter={selected}
+          selectedVersionId={selectedVersionId}
+          selectedVersionSeq={selectedVersion?.seq ?? null}
+          workingCopy={snapshot}
+          contentReady={contentReady}
+          busy={busy}
+          onOpen={() => setAiPanelOpen(true)}
+          onClose={() => setAiPanelOpen(false)}
+          onApply={handleApplyAiCandidate}
         />
 
         <main className="workbench">
@@ -1182,21 +1167,6 @@ function AdapterConsole() {
             </section>
           )}
         </main>
-
-        <AiAssistantPanel
-          key={`ai-assistant-${selected?.id ?? "none"}`}
-          open={aiPanelOpen}
-          adapter={selected}
-          selectedVersionId={selectedVersionId}
-          selectedVersionSeq={selectedVersion?.seq ?? null}
-          workingCopy={snapshot}
-          contentReady={contentReady}
-          busy={busy}
-          onOpen={() => setAiPanelOpen(true)}
-          onClose={() => setAiPanelOpen(false)}
-          onApply={handleApplyAiCandidate}
-          onOpenDiff={handleOpenAiCandidateDiff}
-        />
       </div>
 
       <AdapterSettingsDrawer

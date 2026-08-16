@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -2425,7 +2428,7 @@ it.each([
   ["javascript", "npm 依赖"],
   ["java", "Maven 依赖"],
 ] as const)(
-  "sends the %s Working Copy, shows all Candidate diffs, and applies browser-only",
+  "sends the %s Working Copy, shows Candidate Diff with Apply, and applies browser-only",
   async (language, dependencyLabel) => {
     const adapter = makeAdapter({ language, latest_version_id: 10 });
     const version = makeVersion({
@@ -2459,11 +2462,17 @@ it.each([
 
     await screen.findByTestId("ai-candidate-summary");
     expect(screen.getByTestId("ai-candidate-summary").textContent).toBe("增加分页处理");
+    // M5.5.4：聊天卡片收敛为单一路径“代码已生成 + [查看修改]”，
+    // 不再同时堆“查看修改 / 应用 / 放弃”。
+    expect(screen.getByTestId("ai-candidate-ready").textContent).toBe("代码已生成");
     expect(screen.getByTestId("ai-required-secret-keys").textContent).toContain("API_TOKEN");
     expect(screen.getByTestId("ai-missing-secret-keys").textContent).toContain("MISSING_TOKEN");
     expect(screen.getByTestId("ai-missing-secret-keys").textContent).not.toContain(
       "：API_TOKEN,",
     );
+    expect(screen.getByTestId("ai-view-diff").textContent).toContain("查看修改");
+    expect(screen.queryByTestId("ai-apply-candidate")).toBeNull();
+    expect(screen.queryByTestId("ai-discard-candidate")).toBeNull();
 
     const payload = JSON.parse(assistBody) as {
       message: string;
@@ -2496,15 +2505,22 @@ it.each([
     );
     fireEvent.click(within(diffModal).getByText("运行参数"));
     expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe("json");
-    fireEvent.click(document.querySelector(".ant-modal-close") as HTMLButtonElement);
 
-    fireEvent.click(screen.getByTestId("ai-apply-candidate"));
+    // Apply 只发生在 Diff 内（M5.5.4 单一路径）。
+    fireEvent.click(screen.getByTestId("diff-apply-candidate"));
     expect(valueOf("code-editor")).toBe("candidate-code\n");
-    expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
+    expect(screen.getByTestId("diff-candidate-applied")).toBeTruthy();
+    expect(
+      (screen.getByTestId("diff-apply-candidate") as HTMLButtonElement).textContent?.replace(/\s/g, ""),
+    ).toBe("已应用");
     expect(valueOf("requirements-input")).toBe("candidate-dependency\n");
     fireEvent.click(screen.getByText("运行参数（JSON）"));
     expect(valueOf("runtime-config-input")).toBe('{\n  "page_size": 100\n}');
     expect(screen.getByTestId("dirty-indicator")).toBeTruthy();
+    expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("diff-close"));
+    await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
 
     expect(
       fetchMock.mock.calls.some(
@@ -2578,7 +2594,8 @@ it("keeps a normal AI Candidate quiet and follows messages only while the user s
   expect(conversation.scrollTop).toBe(10);
   expect(screen.getByTestId("ai-candidate-summary").textContent).toBe("增加分页处理");
   expect(screen.getByTestId("ai-view-diff").textContent).toContain("查看修改");
-  expect(screen.getByTestId("ai-apply-candidate").textContent?.replace(/\s/g, "")).toBe("应用");
+  expect(screen.queryByTestId("ai-apply-candidate")).toBeNull();
+  expect(screen.queryByTestId("ai-discard-candidate")).toBeNull();
   expect(screen.queryByTestId("ai-candidate-stale")).toBeNull();
   expect(screen.queryByTestId("ai-missing-secret-keys")).toBeNull();
 
@@ -2720,9 +2737,13 @@ it("marks a Candidate stale after an in-flight edit and requires explicit still-
   });
   await screen.findByTestId("ai-candidate-stale");
   expect(valueOf("code-editor")).toBe("manual-newer-code\n");
-  expect(screen.getByTestId("ai-apply-candidate").textContent).toContain("仍然应用");
+  // M5.5.4：stale Candidate 走同一条 查看修改 → Diff → 仍然应用 路径。
+  fireEvent.click(screen.getByTestId("ai-view-diff"));
+  await screen.findByTestId("version-diff");
+  expect(screen.getByTestId("diff-candidate-stale")).toBeTruthy();
+  expect(screen.getByTestId("diff-apply-candidate").textContent).toContain("仍然应用");
 
-  fireEvent.click(screen.getByTestId("ai-apply-candidate"));
+  fireEvent.click(screen.getByTestId("diff-apply-candidate"));
   expect(valueOf("code-editor")).toBe("candidate-code\n");
 });
 
@@ -2812,6 +2833,154 @@ it("sends at most the latest eight visible role/content messages", async () => {
       (message) => Object.keys(message).sort().join(",") === "content,role",
     ),
   ).toBe(true);
+});
+
+// --- M5.5.4 回归：悬浮入口 / Candidate → Diff → Apply 单一路径 -------------
+
+it("defaults to the floating entry that does not compress Monaco, and expands/collapses it", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+
+  // 默认只显示悬浮入口：不渲染面板。
+  const entry = await screen.findByTestId("open-ai-assistant");
+  expect(screen.queryByTestId("ai-assistant-panel")).toBeNull();
+  // 收起态必须绝对定位、脱离 flex 布局，隐藏的助手才不会压缩 Monaco 主编辑区；
+  // 展开态保留在布局流中（flex: 0 0 auto），因此不遮挡保存/运行按钮。
+  const appStyles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
+  expect(appStyles).toMatch(/\.ai-assistant-collapsed\s*\{[^}]*position\s*:\s*absolute/s);
+  expect(appStyles).toMatch(/\.ai-assistant-collapsed\s*\{[^}]*right\s*:\s*16px/s);
+  expect(appStyles).toMatch(/\.ai-assistant-expanded\s*\{[^}]*flex\s*:\s*0\s+0\s+auto/s);
+  expect(entry.tagName).toBe("BUTTON");
+
+  // 展开：悬浮入口消失，面板回到布局流中。
+  fireEvent.click(entry);
+  await screen.findByTestId("ai-assistant-panel");
+  expect(screen.queryByTestId("open-ai-assistant")).toBeNull();
+  expect(document.querySelector(".ai-assistant-expanded")).not.toBeNull();
+
+  // 收起：回到悬浮入口。
+  fireEvent.click(screen.getByTestId("close-ai-assistant"));
+  await screen.findByTestId("open-ai-assistant");
+  expect(screen.queryByTestId("ai-assistant-panel")).toBeNull();
+});
+
+it("closing the Candidate Diff applies nothing and keeps the Working Copy untouched", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion({ code: "base-code\n" })),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: () => ({ body: aiResponse("候选已生成", AI_CANDIDATE) }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "改代码" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+
+  fireEvent.click(screen.getByTestId("ai-view-diff"));
+  await screen.findByTestId("version-diff");
+  // 关闭 Diff = 不应用，不需要额外的“放弃”动作。
+  fireEvent.click(screen.getByTestId("diff-close"));
+  await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
+
+  expect(valueOf("code-editor")).toBe("base-code\n");
+  expect(screen.queryByTestId("dirty-indicator")).toBeNull();
+  expect(screen.queryByTestId("ai-candidate-applied")).toBeNull();
+  // 候选仍在卡片上可再次审阅。
+  expect(screen.getByTestId("ai-view-diff")).toBeTruthy();
+});
+
+it("never lets an invalid Candidate be reviewed or applied", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion({ code: "base-code\n" })),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: () => ({
+        body: aiResponse("候选已生成", {
+          summary: "坏候选",
+          code: "   ",
+          requirements: "x",
+          runtime_config: {},
+          required_secret_keys: [],
+        }),
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "改代码" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+
+  // 助手消息仍然展示，但形状不符的 Candidate 被整体丢弃：
+  // 没有候选卡片、没有 查看修改、没有可应用的入口。
+  await screen.findByText("候选已生成");
+  expect(screen.queryByTestId("ai-candidate")).toBeNull();
+  expect(screen.queryByTestId("ai-view-diff")).toBeNull();
+  expect(screen.queryByTestId("diff-apply-candidate")).toBeNull();
+  expect(valueOf("code-editor")).toBe("base-code\n");
+});
+
+it("never surfaces Secret values in the UI or in the Assist request", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const secretValue = "sk-test-super-secret-value-9f3a";
+  const requestBodies: string[] = [];
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: () => ({
+        body: [{ env_key: "API_TOKEN", credential_id: 1, field: "token" }],
+      }),
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: (body) => {
+        requestBodies.push(body ?? "");
+        return { body: aiResponse("候选已生成", AI_CANDIDATE) };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "分页" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+
+  // 浏览器请求只携带工作副本与对话，绝不携带绑定名称或 Secret 真值；
+  // UI 只展示 env_key 名称，夹具中的 Secret 真值永不出现。
+  expect(requestBodies).toHaveLength(1);
+  expect(requestBodies[0]).not.toContain("API_TOKEN");
+  expect(requestBodies[0]).not.toContain("MISSING_TOKEN");
+  expect(requestBodies[0]).not.toContain(secretValue);
+  expect(document.body.textContent).toContain("API_TOKEN");
+  expect(document.body.textContent).not.toContain(secretValue);
+  expect(document.body.textContent).not.toContain("Bearer ");
 });
 
 it("keeps soft-deleted Adapters out of the active Catalog without Archive/Restore UI", async () => {
