@@ -1,6 +1,7 @@
 """M4 AI Editor backend contract tests (all provider traffic is fake)."""
 
 import json
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -682,6 +683,67 @@ def test_models_refresh_network_unreachable_is_distinct_from_unsupported(
     assert error.value.code == "ai_provider_unreachable"
 
 
+def test_dns_resolution_failure_is_distinct_from_generic_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M5.5.3: DNS failures map to ai_provider_dns_failed, never to the
+    generic transport error, so operators can follow the DNS first check."""
+    wrapped = _opener_raising(
+        url_error.URLError(socket.gaierror(socket.EAI_NONAME, "Name or service not known"))
+    )
+    monkeypatch.setattr(providers, "_NO_REDIRECT_OPENER", wrapped)
+    with pytest.raises(providers.AiProviderError) as error:
+        providers.fetch_models("deepseek", "http://fake-provider.invalid", None)
+    assert error.value.code == "ai_provider_dns_failed"
+
+    # A bare gaierror propagating as an OSError is classified the same way.
+    monkeypatch.setattr(
+        providers,
+        "_NO_REDIRECT_OPENER",
+        _opener_raising(socket.gaierror(socket.EAI_NONAME, "Name or service not known")),
+    )
+    with pytest.raises(providers.AiProviderError) as error:
+        providers.fetch_models("deepseek", "http://fake-provider.invalid", None)
+    assert error.value.code == "ai_provider_dns_failed"
+
+
+def test_tcp_refused_is_generic_unreachable_not_dns_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reachable resolver with a refused TCP connection stays in the
+    generic transport category (TCP/TLS layer), never DNS."""
+    monkeypatch.setattr(
+        providers,
+        "_NO_REDIRECT_OPENER",
+        _opener_raising(url_error.URLError(ConnectionRefusedError("connection refused"))),
+    )
+    with pytest.raises(providers.AiProviderError) as error:
+        providers.fetch_models("deepseek", "http://fake-provider.invalid", None)
+    assert error.value.code == "ai_provider_unreachable"
+
+
+def test_dns_failure_api_error_is_chinese_and_actionable(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_failure(*_: object, **__: object) -> object:
+        raise providers.AiProviderError("ai_provider_dns_failed")
+
+    monkeypatch.setattr(providers, "_request_json", fake_failure)
+    response = api_client.post(
+        "/api/ai/models/refresh",
+        json={
+            "provider": "deepseek",
+            "base_url": "http://fake-provider.invalid",
+            "credential_id": None,
+        },
+    )
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["code"] == "ai_provider_dns_failed"
+    assert "域名解析失败" in detail["message"]
+    assert "DNS" in detail["message"]
+
+
 def test_connection_test_and_models_refresh_are_independent(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -737,7 +799,7 @@ def test_refresh_error_messages_are_chinese_and_actionable(
     assert response.status_code == 502
     message = response.json()["detail"]["message"]
     assert "无法连接模型服务" in message
-    assert "检查基础 URL、网络与 DNS" in message
+    assert "TCP 连接或 TLS 握手失败" in message
 
 
 def test_model_normalization_preserves_order_for_large_unique_list() -> None:
@@ -1210,6 +1272,7 @@ def test_assist_requires_configuration(api_client: TestClient) -> None:
     ("code", "status_code"),
     [
         ("ai_provider_unreachable", 502),
+        ("ai_provider_dns_failed", 502),
         ("ai_auth_failed", 502),
         ("ai_model_not_found", 502),
         ("ai_timeout", 504),
