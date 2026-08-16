@@ -24,7 +24,7 @@ export default function WebhookWorkbenchHeader(props: Props) {
   const archived = !!props.adapter.archived_at;
   const locked = props.adapter.runtime_locked === true || props.runtimeState.enabled;
   const saveReason = archived
-    ? "Adapter 已删除，不能继续编辑"
+    ? "适配器已删除，不能继续编辑"
     : locked
       ? "正在接收或存在运行中的调用，请先停止接收并等待当前调用完成"
       : !props.contentReady
@@ -59,9 +59,9 @@ export default function WebhookWorkbenchHeader(props: Props) {
           <Alert
             type="warning"
             showIcon
-            message="Adapter 正在运行，编辑与运行配置已锁定"
-            description="Adapter 正在运行。运行期间不能修改代码或运行配置。如需升级，请复制为新的 Adapter，完成修改和测试后停止当前 Adapter，再启动新 Adapter。"
-            action={<Button size="small" data-testid="header-clone-adapter" onClick={props.onClone}>复制 Adapter</Button>}
+            message="适配器正在运行，编辑与运行配置已锁定"
+            description="适配器正在运行。运行期间不能修改代码或运行配置。如需升级，请复制为新的适配器，完成修改和测试后停止当前适配器，再启动新适配器。"
+            action={<Button size="small" data-testid="header-clone-adapter" onClick={props.onClone}>复制适配器</Button>}
           />
         )}
       </div>

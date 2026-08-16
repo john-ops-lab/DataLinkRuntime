@@ -46,32 +46,32 @@ it("exposes each Task and Webhook runtime status in the catalog item name", () =
 
   expect(
     screen.getByRole("button", {
-      name: "task-idle，Python · 手动运行 · Task 状态：空闲 · Worker 未配置",
+      name: "task-idle，Python · 手动运行 · 任务状态：空闲 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "task-scheduled，Python · 手动运行 · Task 状态：定时运行中 · Worker 未配置",
+      name: "task-scheduled，Python · 手动运行 · 任务状态：定时运行中 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "task-running，Python · 手动运行 · Task 状态：运行中 · Execution #31 · Worker 未配置",
+      name: "task-running，Python · 手动运行 · 任务状态：运行中 · 执行 #31 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "webhook-stopped，Python · Webhook 状态：已停止 · 未保存 · Worker 未配置",
+      name: "webhook-stopped，Python · Webhook状态：已停止 · 未保存 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "webhook-receiving，Python · Webhook 状态：接收中 · 未保存 · Worker 未配置",
+      name: "webhook-receiving，Python · Webhook状态：接收中 · 未保存 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "webhook-calling，Python · Webhook 状态：调用中 · 调用 #61 · 未保存 · Worker 未配置",
+      name: "webhook-calling，Python · Webhook状态：调用中 · 调用 #61 · 未保存 · 运行节点未配置",
     }),
   ).toBeTruthy();
 });

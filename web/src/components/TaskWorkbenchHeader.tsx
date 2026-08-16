@@ -34,11 +34,11 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
       ? "定时已启用"
       : "已停止";
   const saveBlockedReason = archived
-    ? "Adapter 已删除，不能继续编辑"
+    ? "适配器已删除，不能继续编辑"
     : runtimeLocked
       ? scheduleMode && props.runtimeState.scheduleEnabled
         ? "定时已启用，请先停用定时后再保存"
-        : "Adapter 正在运行，请先停止当前运行后再保存"
+        : "适配器正在运行，请先停止当前运行后再保存"
       : !props.contentReady
         ? "版本内容尚未就绪，请等待加载完成或刷新后重试"
         : props.busy
@@ -47,9 +47,9 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
   const runBlockedReason = props.runtimeState.canRun
     ? null
     : activeExecution
-      ? "已有 Execution 正在运行"
+      ? "已有执行正在运行"
       : props.adapter.latest_version_id === null
-        ? "请先保存 Adapter"
+        ? "请先保存适配器"
         : props.adapter.runtime_worker_id == null
           ? "请先在运行设置中选择并保存运行节点"
           : props.runtimeState.loading || props.busy
@@ -58,7 +58,7 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
   const scheduleToggleReason = props.runtimeState.scheduleEnabled
     ? null
     : activeExecution
-      ? "当前 Execution 仍在运行，请等待终态或停止当前执行后再启用定时"
+      ? "当前执行仍在运行，请等待终态或停止当前执行后再启用定时"
       : props.runtimeState.scheduleEnableBlockedReason;
 
   return (
@@ -66,14 +66,14 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
       <div className="workbench-context" data-testid="task-workbench-header">
         <div className="workbench-title-row">
           <h2 className="workbench-title" title={props.adapter.name}>{props.adapter.name}</h2>
-          <Tag color="blue">Task</Tag>
+          <Tag color="blue">任务</Tag>
           <span className="workbench-context-fact">{LANGUAGE_LABELS[props.adapter.language]}</span>
           <Tag color={activeExecution || props.runtimeState.scheduleEnabled ? "processing" : "default"}>{runtimeStatus}</Tag>
           <span className="workbench-context-fact" data-testid="header-runtime-worker">
             运行节点：{props.runtimeWorker?.name ?? "未选择"}
           </span>
           <span className="version-seq" data-testid="task-revision">
-            {props.revisionSeq === null ? "未保存 Revision" : `Revision ${props.revisionSeq}`}
+            {props.revisionSeq === null ? "未保存修订版" : `修订版 ${props.revisionSeq}`}
           </span>
           {props.dirty && <Tag color="warning" data-testid="dirty-indicator">未保存修改</Tag>}
         </div>
@@ -82,9 +82,9 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
             type="warning"
             showIcon
             data-testid="task-active-execution"
-            message="Adapter 正在运行，编辑与运行配置已锁定"
-            description="Adapter 正在运行。运行期间不能修改代码或运行配置。如需升级，请复制为新的 Adapter，完成修改和测试后停止当前 Adapter，再启动新 Adapter。"
-            action={<Button size="small" data-testid="header-clone-adapter" onClick={props.onClone}>复制 Adapter</Button>}
+            message="适配器正在运行，编辑与运行配置已锁定"
+            description="适配器正在运行。运行期间不能修改代码或运行配置。如需升级，请复制为新的适配器，完成修改和测试后停止当前适配器，再启动新适配器。"
+            action={<Button size="small" data-testid="header-clone-adapter" onClick={props.onClone}>复制适配器</Button>}
           />
         )}
       </div>

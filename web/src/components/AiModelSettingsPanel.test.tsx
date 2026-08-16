@@ -159,7 +159,7 @@ it("shows Provider-specific effort options and clears stale values on Provider o
   );
   await chooseOption("ai-reasoning-effort", "high");
 
-  for (const provider of ["Kimi", "MiniMax", "Custom OpenAI-compatible"]) {
+  for (const provider of ["Kimi", "MiniMax", "自定义 OpenAI 兼容服务"]) {
     await chooseOption("ai-provider", provider);
     expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
   }

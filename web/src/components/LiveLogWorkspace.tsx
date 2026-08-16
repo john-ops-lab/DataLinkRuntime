@@ -31,7 +31,7 @@ export default function LiveLogWorkspace(props: Props) {
       <div className="live-log-collapsed" data-testid="live-log-collapsed">
         <Button type="text" onClick={props.onOpen}>
           打开实时日志
-          {props.execution !== null ? ` · Execution #${props.execution.id}` : " · 等待 Webhook 请求…"}
+          {props.execution !== null ? ` · 执行 #${props.execution.id}` : " · 等待 Webhook 请求…"}
         </Button>
       </div>
     );
@@ -49,7 +49,7 @@ export default function LiveLogWorkspace(props: Props) {
           <strong>实时日志</strong>
           {execution !== null ? (
             <>
-              <span>Execution #{execution.id}</span>
+              <span>执行 #{execution.id}</span>
               <Tag color={statusColor(execution.status)}>{statusLabel(execution.status)}</Tag>
             </>
           ) : (
@@ -77,7 +77,7 @@ export default function LiveLogWorkspace(props: Props) {
           <span className="live-log-waiting-pulse" aria-hidden="true" />
           <div>
             <strong>等待 Webhook 请求…</strong>
-            <p>收到真实请求并创建 Execution 后，这里会自动跟踪 stdout、stderr 与最终结果。</p>
+            <p>收到真实请求并创建执行后，这里会自动跟踪 stdout、stderr 与最终结果。</p>
           </div>
         </div>
       ) : (
@@ -118,7 +118,7 @@ export default function LiveLogWorkspace(props: Props) {
               },
               {
                 key: "output",
-                label: "Output",
+                label: "输出",
                 children: <OutputView execution={execution} />,
               },
             ]}

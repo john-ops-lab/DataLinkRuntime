@@ -12,6 +12,7 @@ import type {
   AiReasoningMode,
   Credential,
 } from "../types";
+import { userErrorMessage } from "../user-message";
 
 interface AiModelSettingsPanelProps {
   onError: (message: string) => void;
@@ -31,7 +32,7 @@ const PROVIDER_OPTIONS: { label: string; value: AiProvider }[] = [
   { label: "DeepSeek", value: "deepseek" },
   { label: "Kimi", value: "kimi" },
   { label: "MiniMax", value: "minimax" },
-  { label: "Custom OpenAI-compatible", value: "custom_openai_compatible" },
+  { label: "自定义 OpenAI 兼容服务", value: "custom_openai_compatible" },
 ];
 
 const REASONING_EFFORTS_BY_PROVIDER: Record<
@@ -64,10 +65,7 @@ function normalizeReasoningEffort(
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "AI 设置请求失败";
+  return userErrorMessage(error, "AI 设置请求失败");
 }
 
 function normalizeSetting(setting: AiModelSetting | null): AiModelSettingDraft {
@@ -153,7 +151,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     const baseUrl = form.base_url.trim();
     const model = form.model.trim();
     if (baseUrl === "" || model === "") {
-      fail("Base URL 与 Model ID 均不能为空");
+      fail("基础 URL 与模型 ID 均不能为空");
       return null;
     }
     const reasoningEffort = normalizeReasoningEffort(
@@ -187,7 +185,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     setNotice(null);
     const baseUrl = form.base_url.trim();
     if (baseUrl === "") {
-      fail("刷新模型前请填写 Base URL");
+      fail("刷新模型前请填写基础 URL");
       return;
     }
     setRefreshingModels(true);
@@ -198,9 +196,9 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         credential_id: form.credential_id,
       });
       setModelOptions(response.models);
-      setNotice(`已刷新 ${response.models.length} 个 Model ID；不会自动更改当前选择。`);
+      setNotice(`已刷新 ${response.models.length} 个模型 ID；不会自动更改当前选择。`);
     } catch (error) {
-      fail(`${errorMessage(error)}；仍可手工输入 Model ID。`);
+      fail(`${errorMessage(error)}；仍可手工输入模型 ID。`);
     } finally {
       setRefreshingModels(false);
     }
@@ -220,7 +218,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     try {
       const saved = await api.updateAiSetting(payload);
       setForm(normalizeSetting(saved));
-      setNotice("AI 模型设置已保存。Model ID 仅在管理员再次修改时才会变化。");
+      setNotice("AI 模型设置已保存。模型 ID 仅在管理员再次修改时才会变化。");
     } catch (error) {
       fail(errorMessage(error));
     } finally {
@@ -242,9 +240,9 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     try {
       const result = await api.testAiSetting(payload);
       if (result.ok) {
-        setNotice(result.message?.trim() || "连接测试通过：模型返回可解析的最小响应。");
+        setNotice("连接测试通过：模型返回可解析的最小响应。");
       } else {
-        fail(result.message?.trim() || "连接测试失败");
+        fail("连接测试失败；请检查模型服务配置与网络。");
       }
     } catch (error) {
       fail(errorMessage(error));
@@ -263,12 +261,12 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         type="warning"
         showIcon
         message="外部模型数据边界"
-        description="当前 Working Copy 与非敏感运行参数会发送到这里配置的模型服务。Credential 真值不会返回浏览器；请勿在 Adapter 代码中硬编码 Secret。"
+        description="当前工作副本与非敏感运行参数会发送到这里配置的模型服务。凭据真值不会返回浏览器；请勿在适配器代码中硬编码密钥。"
         data-testid="ai-data-boundary-warning"
       />
 
       <label className="settings-field">
-        <span>Provider</span>
+        <span>模型服务商</span>
         <Select<AiProvider>
           data-testid="ai-provider"
           disabled={actionBusy}
@@ -289,7 +287,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       </label>
 
       <label className="settings-field">
-        <span>Base URL</span>
+        <span>基础 URL</span>
         <Input
           data-testid="ai-base-url"
           disabled={actionBusy}
@@ -305,12 +303,12 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       </label>
 
       <label className="settings-field">
-        <span>API Key Credential（可选，仅 token 类型）</span>
+        <span>API Key 凭据（可选，仅 token 类型）</span>
         <Select<number>
           data-testid="ai-credential"
           disabled={actionBusy}
           allowClear
-          placeholder="无鉴权 / 选择 token Credential"
+          placeholder="无鉴权 / 选择 token 凭据"
           value={form.credential_id ?? undefined}
           options={credentials.map((credential) => ({
             label: credential.name,
@@ -323,7 +321,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       </label>
 
       <label className="settings-field">
-        <span>Model ID</span>
+        <span>模型 ID</span>
         <Input
           data-testid="ai-model-input"
           disabled={actionBusy}
@@ -349,7 +347,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           刷新模型
         </Button>
         <Typography.Text type="secondary">
-          刷新失败不影响手工输入；刷新成功也不会自动切换已保存 Model ID。
+          刷新失败不影响手工输入；刷新成功也不会自动切换已保存模型 ID。
         </Typography.Text>
       </Space>
 

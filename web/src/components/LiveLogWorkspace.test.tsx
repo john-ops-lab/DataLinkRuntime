@@ -51,13 +51,13 @@ function renderWorkspace(overrides: Partial<Parameters<typeof LiveLogWorkspace>[
   return props;
 }
 
-it("shows one shared stdout/stderr/Output workspace and exposes fullscreen controls", () => {
+it("shows one shared stdout/stderr/输出 workspace and exposes fullscreen controls", () => {
   const props = renderWorkspace();
 
-  expect(screen.getByTestId("live-log-workspace").textContent).toContain("Execution #42");
+  expect(screen.getByTestId("live-log-workspace").textContent).toContain("执行 #42");
   expect(screen.getByTestId("live-log-stdout").textContent).toContain("任务开始");
   expect(screen.getByText("stderr")).toBeTruthy();
-  expect(screen.getByText("Output")).toBeTruthy();
+  expect(screen.getByText("输出")).toBeTruthy();
 
   fireEvent.click(screen.getByTestId("live-log-fullscreen"));
   expect(props.onEnterFullscreen).toHaveBeenCalledOnce();
@@ -69,15 +69,15 @@ it("shows the Webhook waiting state without inventing an Execution", () => {
   renderWorkspace({ execution: null, liveStdout: "", waitingForWebhook: true });
 
   expect(screen.getByTestId("live-log-workspace").textContent).toContain("等待 Webhook 请求…");
-  expect(screen.queryByText(/Execution #/)).toBeNull();
-  expect(screen.getByRole("status").textContent).toContain("收到真实请求并创建 Execution 后");
+  expect(screen.queryByText(/执行 #/)).toBeNull();
+  expect(screen.getByRole("status").textContent).toContain("收到真实请求并创建执行后");
 });
 
 it("collapses without losing the active Execution context", () => {
   const props = renderWorkspace({ open: false });
 
   expect(screen.queryByTestId("live-log-workspace")).toBeNull();
-  expect(screen.getByTestId("live-log-collapsed").textContent).toContain("Execution #42");
+  expect(screen.getByTestId("live-log-collapsed").textContent).toContain("执行 #42");
   fireEvent.click(screen.getByText(/打开实时日志/));
   expect(props.onOpen).toHaveBeenCalledOnce();
 });

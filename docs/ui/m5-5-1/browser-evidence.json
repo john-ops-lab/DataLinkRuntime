@@ -1,0 +1,75 @@
+{
+  "login": {
+    "1280": {
+      "viewport": {
+        "width": 1280,
+        "height": 900
+      },
+      "layout": {
+        "left": 48,
+        "width": 1184,
+        "right": 1232
+      },
+      "gap": 76.796875,
+      "scrollWidth": 1280
+    },
+    "1440": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "layout": {
+        "left": 120,
+        "width": 1200,
+        "right": 1320
+      },
+      "gap": 86.390625,
+      "scrollWidth": 1440
+    },
+    "1680": {
+      "viewport": {
+        "width": 1680,
+        "height": 900
+      },
+      "layout": {
+        "left": 240,
+        "width": 1200,
+        "right": 1440
+      },
+      "gap": 96,
+      "scrollWidth": 1680
+    },
+    "1920": {
+      "viewport": {
+        "width": 1920,
+        "height": 900
+      },
+      "layout": {
+        "left": 360,
+        "width": 1200,
+        "right": 1560
+      },
+      "gap": 96,
+      "scrollWidth": 1920
+    }
+  },
+  "workbench": {
+    "task": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "title": "UX 中文任务",
+      "scrollWidth": 1441
+    },
+    "webhook": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "title": "UX 中文 Webhook",
+      "path": "ux-browser-hook",
+      "scrollWidth": 1441
+    }
+  }
+}

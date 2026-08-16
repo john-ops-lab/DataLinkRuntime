@@ -3,13 +3,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Spin } from "antd";
 
-import { ApiError, api } from "../api";
+import { api } from "../api";
 import { LANGUAGE_LABELS } from "../languages";
 import type {
   Adapter,
   AiCandidate,
   AiConversationMessage,
 } from "../types";
+import { userErrorMessage } from "../user-message";
 import ActionWithReason from "./ActionWithReason";
 
 export interface AiWorkingCopy {
@@ -46,10 +47,7 @@ interface AiAssistantPanelProps {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "AI 请求失败";
+  return userErrorMessage(error, "AI 请求失败");
 }
 
 function hasOnlyFiniteJsonNumbers(value: unknown): boolean {
@@ -282,7 +280,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           type="text"
           className="ai-assistant-open"
           data-testid="open-ai-assistant"
-          aria-label="展开 AI Assistant"
+          aria-label="展开 AI 助手"
           aria-expanded={false}
           onClick={props.onOpen}
         >
@@ -293,19 +291,19 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   }
 
   const contextVersion =
-    props.selectedVersionSeq === null ? "未保存 Working Copy" : `Working Copy v${props.selectedVersionSeq}`;
+    props.selectedVersionSeq === null ? "未保存工作副本" : `工作副本 v${props.selectedVersionSeq}`;
 
   return (
     <aside className="ai-assistant ai-assistant-expanded" data-testid="ai-assistant-panel">
       <div className="ai-assistant-header">
         <div>
-          <strong>AI Assistant</strong>
-          <p>Candidate 仅写入浏览器，不会自动保存、测试或发布。</p>
+          <strong>AI 助手</strong>
+          <p>候选修改仅写入浏览器，不会自动保存、测试或运行。</p>
         </div>
         <Button
           type="text"
           data-testid="close-ai-assistant"
-          aria-label="收起 AI Assistant"
+          aria-label="收起 AI 助手"
           aria-expanded={true}
           onClick={props.onClose}
         >
@@ -315,7 +313,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
 
       <div className="ai-assistant-context" data-testid="ai-current-context">
         {props.adapter === null ? (
-          <span>请先选择一个 Adapter。</span>
+          <span>请先选择一个适配器。</span>
         ) : (
           <>
             <strong>{props.adapter.name}</strong>
@@ -336,7 +334,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       >
         {messages.length === 0 ? (
           <p className="ai-conversation-empty">
-            描述你希望解释或修改的内容。每次请求都以当前 Working Copy 为唯一代码快照。
+            描述你希望解释或修改的内容。每次请求都以当前工作副本为唯一代码快照。
           </p>
         ) : (
           messages.map((message) => {
@@ -352,13 +350,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                     (key) => !boundSecretKeys.has(key),
                   );
             const applyBlockedReason = props.adapter?.archived_at
-              ? "Adapter 已删除，Candidate 只能查看，不能应用"
+              ? "适配器已删除，候选修改只能查看，不能应用"
               : !props.contentReady
-                ? "Working Copy 尚未加载完成，请稍后重试"
+                ? "工作副本尚未加载完成，请稍后重试"
                 : props.busy
                   ? "其他操作正在进行，请等待完成"
                   : candidateState?.applied
-                    ? "该 Candidate 已应用到当前 Working Copy"
+                    ? "该候选修改已应用到当前工作副本"
                     : null;
             return (
               <article
@@ -390,18 +388,18 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                     )}
                     {stale && (
                       <div className="ai-stale-warning" role="alert" data-testid="ai-candidate-stale">
-                        <strong>⚠ AI 生成期间 Working Copy 已发生修改。</strong>
-                        <span>该 Candidate 基于较早的编辑内容生成。</span>
+                        <strong>⚠ AI 生成期间工作副本已发生修改。</strong>
+                        <span>该候选修改基于较早的编辑内容生成。</span>
                       </div>
                     )}
                     {props.adapter?.archived_at && (
                       <p className="ai-secret-warning" role="alert" data-testid="ai-archived-apply-blocked">
-                        已删除 Adapter 为只读，不能应用 Candidate。
+                        已删除适配器为只读，不能应用候选修改。
                       </p>
                     )}
                     {candidateState.applied && (
                       <p className="ai-candidate-applied" role="status" data-testid="ai-candidate-applied">
-                        已应用到浏览器 Working Copy；请继续人工保存、测试与发布。
+                        已应用到浏览器工作副本；请继续人工保存、测试与运行。
                       </p>
                     )}
                     <div className="ai-candidate-actions">
@@ -411,9 +409,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                         disabled={!props.contentReady || props.busy}
                         onClick={() => props.onOpenDiff(candidateState.value)}
                       >
-                        {stale ? "查看与当前 Working Copy 的修改" : "查看修改"}
+                        {stale ? "查看与当前工作副本的修改" : "查看修改"}
                       </Button>
-                      <ActionWithReason label="应用 AI Candidate" reason={applyBlockedReason}>
+                      <ActionWithReason label="应用 AI 候选修改" reason={applyBlockedReason}>
                         <Button
                           size="small"
                           type="primary"
@@ -441,7 +439,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         )}
         {sending && (
           <div className="ai-loading" data-testid="ai-loading">
-            <Spin size="small" /> 正在生成 Candidate…
+            <Spin size="small" /> 正在生成候选修改…
           </div>
         )}
       </div>

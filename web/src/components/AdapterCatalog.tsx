@@ -50,7 +50,7 @@ function catalogRuntimeStatus(adapter: Adapter): {
       return {
         dot: "running",
         label: "运行中",
-        fact: `Execution #${adapter.running_execution_id} 运行中`,
+        fact: `执行 #${adapter.running_execution_id} 运行中`,
       };
     }
     const label = adapter.runtime_locked ? "定时运行中" : "空闲";
@@ -80,16 +80,16 @@ function catalogSubtitle(
     if (workerId != null) {
       const worker = workersById.get(workerId);
       if (worker !== undefined && worker.status !== "online") {
-        attention.push("Worker 离线");
+        attention.push("运行节点离线");
       }
     }
     const primary = `${LANGUAGE_LABELS[adapter.language]} · ${mode} · ${runtimeStatus.fact}`;
     const fullParts = [primary, ...attention];
     if (workerId == null) {
-      fullParts.push("Worker 未配置");
+      fullParts.push("运行节点未配置");
     } else {
       const worker = workersById.get(workerId);
-      fullParts.push(worker === undefined ? `Worker #${workerId}` : `Worker ${worker.name}`);
+      fullParts.push(worker === undefined ? `运行节点 #${workerId}` : `运行节点 ${worker.name}`);
     }
     if (adapter.description.trim() !== "") {
       fullParts.push(adapter.description.trim());
@@ -101,7 +101,7 @@ function catalogSubtitle(
   if (workerId !== null && workerId !== undefined) {
     const worker = workersById.get(workerId);
     if (worker !== undefined && worker.status !== "online") {
-      attention.push("Worker 离线");
+      attention.push("运行节点离线");
     }
   }
   const revision =
@@ -111,10 +111,10 @@ function catalogSubtitle(
   const primary = `${LANGUAGE_LABELS[adapter.language]} · ${runtimeStatus.fact} · ${revision}`;
   const fullParts = [primary, ...attention];
   if (workerId === null || workerId === undefined) {
-    fullParts.push("Worker 未配置");
+    fullParts.push("运行节点未配置");
   } else {
     const worker = workersById.get(workerId);
-    fullParts.push(worker === undefined ? `Worker #${workerId}` : `Worker ${worker.name}`);
+    fullParts.push(worker === undefined ? `运行节点 #${workerId}` : `运行节点 ${worker.name}`);
   }
   if (adapter.description.trim() !== "") {
     fullParts.push(adapter.description.trim());
@@ -173,7 +173,7 @@ export default function AdapterCatalog({
   return (
     <aside className="catalog" data-testid="adapter-catalog">
       <div className="catalog-header">
-        <h2 className="catalog-title">Adapters</h2>
+        <h2 className="catalog-title">适配器</h2>
         <Button
           size="small"
           type="primary"
@@ -192,7 +192,7 @@ export default function AdapterCatalog({
       <div className="catalog-search">
         <Input
           data-testid="adapter-search"
-          placeholder="搜索 Adapter"
+          placeholder="搜索适配器"
           allowClear
           size="small"
           value={search}
@@ -202,16 +202,16 @@ export default function AdapterCatalog({
 
       <div className="catalog-list">
         {visible.length === 0 ? (
-          <p className="catalog-empty">{inView.length === 0 ? "暂无 Adapter" : "没有匹配的 Adapter"}</p>
+          <p className="catalog-empty">{inView.length === 0 ? "暂无适配器" : "没有匹配的适配器"}</p>
         ) : (
           visible.map((adapter) => {
             const runtimeStatus = catalogRuntimeStatus(adapter);
-            const statusDescription = `${adapter.adapter_type === "task" ? "Task" : "Webhook"} 状态：${runtimeStatus.label}`;
+            const statusDescription = `${adapter.adapter_type === "task" ? "任务" : "Webhook"}状态：${runtimeStatus.label}`;
             const subtitle = catalogSubtitle(adapter, runtimeStatus, versionSeqById, workersById);
             const runtimeDetail = adapter.running_execution_id == null
               ? null
               : adapter.adapter_type === "task"
-                ? `Execution #${adapter.running_execution_id}`
+                ? `执行 #${adapter.running_execution_id}`
                 : `调用 #${adapter.running_execution_id}`;
             const accessibleRuntimeFact = [statusDescription, runtimeDetail].filter(Boolean).join(" · ");
             return (
@@ -245,7 +245,7 @@ export default function AdapterCatalog({
       </div>
 
       <Drawer
-        title="新建 Adapter"
+        title="新建适配器"
         width={360}
         open={creating}
         destroyOnHidden
@@ -254,28 +254,28 @@ export default function AdapterCatalog({
         <form className="create-form" onSubmit={(event) => void handleCreate(event)}>
           <Input
             data-testid="new-adapter-name"
-            aria-label="Adapter 名称"
+            aria-label="适配器名称"
             placeholder="名称"
             value={name}
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
           />
-          <div className="settings-field" role="radiogroup" aria-label="Adapter 类型">
-            <span className="settings-field-label">Adapter 类型</span>
+          <div className="settings-field" role="radiogroup" aria-label="适配器类型">
+            <span className="settings-field-label">适配器类型</span>
             <Radio.Group
               data-testid="new-adapter-type"
               value={adapterType}
               disabled={busy}
               onChange={(event) => setAdapterType(event.target.value as AdapterType)}
             >
-              <Radio value="task">任务型 Adapter</Radio>
-              <Radio value="webhook">Webhook Adapter</Radio>
+              <Radio value="task">任务型适配器</Radio>
+              <Radio value="webhook">Webhook 适配器</Radio>
             </Radio.Group>
           </div>
           <div
             className="settings-field"
             role="radiogroup"
-            aria-label="Adapter 开发语言"
+            aria-label="适配器开发语言"
           >
             <span className="settings-field-label">开发语言</span>
             <Radio.Group
@@ -291,7 +291,7 @@ export default function AdapterCatalog({
           </div>
           <Input
             data-testid="new-adapter-description"
-            aria-label="Adapter 描述"
+            aria-label="适配器描述"
             placeholder="描述（可选）"
             value={description}
             disabled={busy}
