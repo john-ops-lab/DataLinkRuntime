@@ -20,7 +20,19 @@ it("treats only persisted terminal states as terminal", () => {
 });
 
 it("keeps status colors stable for Workbench and history", () => {
+  expect(statusColor("pending")).toBe("default");
   expect(statusColor("running")).toBe("processing");
   expect(statusColor("succeeded")).toBe("success");
   expect(statusColor("failed")).toBe("error");
+  expect(statusColor("timeout")).toBe("warning");
+  expect(statusColor("cancelled")).toBe("default");
+});
+
+it("falls back gracefully for unknown statuses", () => {
+  expect(statusLabel("unknown-status")).toBe("unknown-status");
+  expect(statusColor("unknown-status")).toBe("default");
+  expect(isTerminal("unknown-status")).toBe(false);
+  expect(statusLabel("")).toBe("");
+  expect(statusColor("")).toBe("default");
+  expect(isTerminal("")).toBe(false);
 });
