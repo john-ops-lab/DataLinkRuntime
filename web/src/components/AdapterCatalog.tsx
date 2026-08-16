@@ -208,6 +208,12 @@ export default function AdapterCatalog({
             const runtimeStatus = catalogRuntimeStatus(adapter);
             const statusDescription = `${adapter.adapter_type === "task" ? "Task" : "Webhook"} 状态：${runtimeStatus.label}`;
             const subtitle = catalogSubtitle(adapter, runtimeStatus, versionSeqById, workersById);
+            const runtimeDetail = adapter.running_execution_id == null
+              ? null
+              : adapter.adapter_type === "task"
+                ? `Execution #${adapter.running_execution_id}`
+                : `调用 #${adapter.running_execution_id}`;
+            const accessibleRuntimeFact = [statusDescription, runtimeDetail].filter(Boolean).join(" · ");
             return (
               <button
                 key={adapter.id}
@@ -216,7 +222,7 @@ export default function AdapterCatalog({
                 className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
                 disabled={busy}
                 title={`${adapter.name}${adapter.description ? ` — ${adapter.description}` : ""}\n${subtitle.full}`}
-                aria-label={`${adapter.name}，${statusDescription}，${subtitle.full}`}
+                aria-label={`${adapter.name}，${subtitle.full.replace(runtimeStatus.fact, accessibleRuntimeFact)}`}
                 onClick={() => onSelect(adapter)}
               >
                 <span className="catalog-item-name">
