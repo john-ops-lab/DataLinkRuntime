@@ -51,6 +51,15 @@ it.each(["python", "javascript", "java"] as const)(
 );
 
 it.each(["python", "javascript", "java"] as const)(
+  "%s webhook starter is not polluted by Task log semantics",
+  (language) => {
+    const starter = WEBHOOK_STARTER_CODE[language];
+    expect(starter).not.toContain("任务开始");
+    expect(starter).not.toContain("任务结束");
+  },
+);
+
+it.each(["python", "javascript", "java"] as const)(
   "%s dependency UI config has non-empty label and placeholder",
   (language) => {
     const ui = DEPENDENCY_UI[language];
