@@ -167,3 +167,73 @@ Webhook 主链路真实跑通 `create → Save + Worker + Token → 可读 path 
 ```bash
 ./scripts/compose-smoke.sh
 ```
+
+## 容器网络与 DNS 排障
+
+### 默认行为
+
+平台不在 Compose 配置中硬编码任何机器特定 DNS。`control` / `worker` 的
+出站网络走 Compose 内置 DNS（容器内 `127.0.0.11`），由 Docker 转发到宿主
+机 `resolv.conf` 的配置；fresh deployment 无需了解内部细节即可启动。只有
+两类外部连接需要域名解析：
+
+- `control` 访问 AI Provider 的 Base URL（AI 设置中的模型服务）；
+- `worker` 按 Adapter 语言下载依赖（PyPI / npm / Maven，兼容配置在
+  `.env.example` 中可选填写）。
+
+### 何时需要覆盖 DNS
+
+仅当容器内无法解析外部域名（企业网络 / VPN / 防火墙拦截了 Docker 的 DNS
+转发）时，才需要显式覆盖。覆盖是可选、按部署定制的，不修改
+`docker-compose.yml`：
+
+```bash
+cp docker-compose.dns.example.yml docker-compose.dns.yml
+# 编辑 docker-compose.dns.yml，把占位地址替换为你所在网络实际可用的 DNS
+docker compose -f docker-compose.yml -f docker-compose.dns.yml up -d --build
+```
+
+### 分层检查顺序（DNS → TCP → TLS/HTTP）
+
+排障时按层级从下往上定位，不要跳过：
+
+1. **DNS 解析失败**：AI 设置返回错误码 `ai_provider_dns_failed`（文案含
+   「域名解析失败」）。在容器内直接验证解析：
+   ```bash
+   docker compose exec control python -c "import socket; socket.getaddrinfo('api.example.com', 443)"
+   ```
+   失败说明 DNS 层故障：优先使用上面的 DNS 覆盖文件；企业网络请确认该
+   DNS 允许出站解析，VPN 请确认路由未拦截 DNS 流量。
+2. **TCP 连接失败**：错误码 `ai_provider_unreachable`（文案含
+   「TCP 连接或 TLS 握手失败」）。验证到目标端口的三次握手：
+   ```bash
+   docker compose exec control python -c \
+     "import socket; socket.create_connection(('api.example.com', 443), timeout=5)"
+   ```
+   失败说明网络层故障：检查容器出站防火墙 / 代理 / VPN 路由，与 DNS 无关。
+3. **TLS / HTTP 失败**：仍在 `ai_provider_unreachable`（TLS 握手失败）或
+   其他错误码（`ai_auth_failed` 表示凭据被拒绝、`ai_model_not_found` 表示
+   模型 ID 不存在、`ai_timeout` 表示请求超时）。这一步说明网络与解析都已
+   正常，问题在服务端接口、证书链或鉴权。
+
+上述三个层级可以在容器内（与 `control` 相同的 DNS 环境）一次跑完：
+
+```bash
+# 在 control 容器内运行分层诊断（DNS → TCP → TLS → HTTP）
+docker compose exec -T control python - < scripts/diag-network.py --url https://api.example.com
+```
+
+脚本按层级停止并输出失败层与退出码（2=DNS、3=TCP、4=TLS、5=HTTP）；
+宿主机上也可直接 `python3 scripts/diag-network.py --host api.example.com --port 443`。
+
+### Docker Desktop / VPN / 企业网络检查清单
+
+- Docker Desktop：确认「Settings → Resources → Network」未限制出站，且
+  宿主 DNS 正常（`scutil --dns` / `nslookup` 能解析目标域名）。
+- VPN：确认 VPN 未把 Docker 虚拟机流量全部黑洞（可临时断开 VPN 复现对比）；
+  若 VPN 自带 DNS，把该 DNS 写入 `docker-compose.dns.yml`。
+- 企业网络：确认代理配置；`control` 出站不走宿主代理环境变量（镜像内
+  `HTTP_PROXY` 未设置），如有企业代理要求请在部署层注入并保持平台
+  配置文件中不含代理凭据。
+- 平台自身不暴露 Token / Credential / Provider API Key：所有诊断命令只
+  使用域名、端口与 URL，绝不读取或回显密钥。

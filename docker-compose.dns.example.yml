@@ -1,0 +1,25 @@
+# 可选：容器 DNS 服务器覆盖示例（M5.5.3）。
+#
+# 默认情况下本平台不使用任何机器特定的 DNS 硬编码：Compose 网络走 Docker
+# 内置 DNS（127.0.0.11），由 Docker 转发到宿主机的 resolv.conf 配置，fresh
+# deployment 无需了解内部细节即可启动。
+#
+# 仅在以下场景需要本覆盖：容器内无法解析外部域名（如企业网络 / VPN /
+# 防火墙拦截了宿主 DNS 转发），并且你确认用其他 DNS 服务器可以解析时使用。
+#
+# 启用方式（不修改 docker-compose.yml）：
+#   cp docker-compose.dns.example.yml docker-compose.dns.yml
+#   docker compose -f docker-compose.yml -f docker-compose.dns.yml up -d --build
+#
+# 把下面的占位地址替换为你所在网络实际可用的 DNS 服务器（请勿照抄示例值）。
+# 只对需要出站访问外部的服务（control / worker）覆盖；postgres 与 web 不需要。
+services:
+  control:
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+  worker:
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8

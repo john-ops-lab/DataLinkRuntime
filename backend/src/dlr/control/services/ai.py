@@ -48,7 +48,12 @@ _PROVIDER_ERRORS: dict[str, tuple[int, str]] = {
     ),
     "ai_provider_unreachable": (
         502,
-        "无法连接模型服务：请检查基础 URL、网络与 DNS 是否可达，确认无误后重试",
+        "无法连接模型服务：TCP 连接或 TLS 握手失败，请检查网络连通性、防火墙与代理设置后重试",
+    ),
+    "ai_provider_dns_failed": (
+        502,
+        "模型服务域名解析失败：容器无法把域名解析为 IP 地址，请在容器内检查 DNS 配置"
+        "（企业网络 / VPN 下可参考 README「容器网络与 DNS 排障」）后重试",
     ),
     "ai_auth_failed": (
         502,

@@ -6,6 +6,7 @@ separation and model-list normalization. It is not a plugin framework.
 """
 
 import json
+import socket
 from dataclasses import dataclass
 from http import client as http_client
 from typing import Literal, cast
@@ -162,6 +163,19 @@ def load_json_strict(value: str | bytes) -> object:
     )
 
 
+def _is_dns_resolution_failure(error: BaseException) -> bool:
+    """True only for hostname resolution failures (``socket.gaierror``).
+
+    ``urllib`` wraps most low-level errors in ``URLError``; DNS failures reach
+    the caller as ``URLError(reason=gaierror)`` while other transport errors
+    (connection refused, TLS handshake) carry a different reason. The plain
+    ``gaierror`` case is kept for direct OSError propagation.
+    """
+    return isinstance(error, socket.gaierror) or isinstance(
+        getattr(error, "reason", None), socket.gaierror
+    )
+
+
 def _request_json(
     method: str,
     url: str,
@@ -198,7 +212,12 @@ def _request_json(
         raise AiProviderError("ai_provider_unreachable") from None
     except TimeoutError:
         raise AiProviderError("ai_timeout") from None
-    except (url_error.URLError, http_client.HTTPException, OSError, ValueError):
+    except (url_error.URLError, http_client.HTTPException, OSError, ValueError) as error:
+        # M5.5.3: keep DNS resolution failures distinguishable from generic
+        # transport failures so deployment docs can guide the operator to the
+        # right layer (DNS vs TCP/TLS) instead of a single catch-all message.
+        if _is_dns_resolution_failure(error):
+            raise AiProviderError("ai_provider_dns_failed") from None
         raise AiProviderError("ai_provider_unreachable") from None
     if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
         raise AiProviderError("ai_response_invalid")

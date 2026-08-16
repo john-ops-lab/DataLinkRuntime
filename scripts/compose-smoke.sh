@@ -28,6 +28,10 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> smoke project: $COMPOSE_PROJECT_NAME (web port: $DLR_WEB_HOST_PORT)"
+# M5.5.3: the optional DNS override file must always parse; default compose
+# config must not depend on it (no machine-specific DNS hardcoding).
+docker compose -f docker-compose.yml config -q
+docker compose -f docker-compose.yml -f docker-compose.dns.example.yml config -q
 docker compose build
 docker compose up -d
 
