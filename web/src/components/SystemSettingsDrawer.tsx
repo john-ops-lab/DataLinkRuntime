@@ -17,16 +17,14 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
-import { ApiError, api } from "../api";
+import { api } from "../api";
 import { CREDENTIAL_TYPE_FIELDS, CREDENTIAL_TYPE_LABELS, credentialFields } from "../credential-fields";
 import type { Credential, CredentialType, PackageSource } from "../types";
+import { userErrorMessage } from "../user-message";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "请求失败";
+  return userErrorMessage(error);
 }
 
 // --- 凭据管理 ---------------------------------------------------------------
@@ -181,7 +179,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
           刷新
         </Button>
       </Space>
-      <Typography.Text type="secondary">这里只展示凭据元数据；Secret 真值不会回显到浏览器。</Typography.Text>
+      <Typography.Text type="secondary">这里只展示凭据元数据；密钥真值不会回显到浏览器。</Typography.Text>
       {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
 
@@ -360,7 +358,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     const name = form.name.trim();
     const indexUrl = form.index_url.trim();
     if (name === "" || indexUrl === "") {
-      fail("包源名称与 index URL 均不能为空");
+      fail("包源名称与索引 URL 均不能为空");
       return;
     }
     setNotice(null);
@@ -433,9 +431,12 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     });
     try {
       const result = await api.testPackageSource(source.id);
+      const errorDetail = result.error?.trim();
       const text = result.ok
         ? `可达${result.status_code !== null ? `（HTTP ${result.status_code}）` : ""}`
-        : `不可达${result.error !== null ? `：${result.error}` : ""}`;
+        : errorDetail
+          ? `不可达：${errorDetail}`
+          : "不可达（请检查 URL、凭据和网络）";
       setTestResults((current) => new Map(current).set(source.id, { ok: result.ok, text }));
     } catch (error) {
       fail(errorMessage(error));
@@ -466,7 +467,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
         </span>
       ),
     },
-    { title: "Repository URL", dataIndex: "index_url" },
+    { title: "仓库 URL", dataIndex: "index_url" },
     {
       title: "凭据",
       dataIndex: "credential_name",
@@ -553,7 +554,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
         </Button>
       </Space>
       <Typography.Text type="secondary">
-        每种类型最多一个默认源；Worker 会先尝试本地缓存，再使用对应语言的默认依赖源。
+        每种类型最多一个默认源；运行节点会先尝试本地缓存，再使用对应语言的默认依赖源。
       </Typography.Text>
       {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
@@ -583,8 +584,8 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           />
           <Input
             data-testid="package-source-url"
-            aria-label="依赖源 Repository URL"
-            placeholder="Repository URL"
+            aria-label="依赖源仓库 URL"
+            placeholder="仓库 URL"
             value={form.index_url}
             onChange={(event) => setForm((current) => ({ ...current, index_url: event.target.value }))}
           />

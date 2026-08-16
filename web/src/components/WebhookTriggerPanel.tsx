@@ -5,13 +5,14 @@ import { Alert, Button, Input, Select, Space, Spin, Tag, Typography } from "antd
 
 import { ApiError, api } from "../api";
 import type { Adapter, AdapterWebhook, Credential, Worker } from "../types";
+import { userErrorMessage } from "../user-message";
 
 const PATH_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
 function errorMessage(error: unknown, publicId: string): string {
   if (error instanceof ApiError) {
     if (error.code === "webhook_path_in_use") {
-      return `Webhook 地址 ${publicId} 当前正在被另一个运行中的 Adapter 使用，请先停止旧 Adapter 后再启动当前 Adapter。`;
+      return `Webhook 地址 ${publicId} 当前正在被另一个运行中的适配器使用，请先停止旧适配器后再启动当前适配器。`;
     }
     if (error.code === "webhook_credential_type_invalid") {
       return "Webhook 只能绑定 token 类型的凭据";
@@ -19,9 +20,9 @@ function errorMessage(error: unknown, publicId: string): string {
     if (error.code === "webhook_path_invalid") {
       return "Webhook 路径只允许 3–64 位小写字母、数字和连字符，且必须以字母或数字开头。";
     }
-    return `${error.message} (${error.code})`;
+    return userErrorMessage(error);
   }
-  return "请求失败";
+  return userErrorMessage(error);
 }
 
 interface Props {
@@ -120,11 +121,11 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   const canConfigure = !archived && !runtimeLocked && !saving && !changingState;
   const startBlockedReason =
     props.adapter.latest_version_id === null
-      ? "请先保存 Adapter。"
+      ? "请先保存适配器。"
       : workerId === null
         ? "请先选择并保存运行节点。"
         : credentialId === null
-          ? "请先选择并保存 Token Credential。"
+          ? "请先选择并保存 Token 凭据。"
           : dirty
             ? "运行设置有未保存修改，请先保存。"
             : null;
@@ -231,8 +232,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
             data-testid="webhook-runtime-locked"
             message="运行配置已锁定"
             description={enabled
-              ? "请先停止接收；如果仍有 active Execution，需等待其进入终态后才能修改。"
-              : "已有调用仍在运行；进入终态后刷新即可修改 URL、Token、Worker、代码和依赖。"}
+              ? "请先停止接收；如果仍有活跃执行，需等待其进入终态后才能修改。"
+              : "已有调用仍在运行；进入终态后刷新即可修改 URL、Token、运行节点、代码和依赖。"}
           />
         )}
         <div className="settings-field">
@@ -241,7 +242,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
             <Input data-testid="webhook-prefix" readOnly value={gatewayPrefix} />
             <Input
               data-testid="webhook-public-id"
-              aria-label="Webhook path"
+              aria-label="Webhook 路径"
               value={publicId}
               disabled={!canConfigure}
               onChange={(event) => { setPublicId(event.target.value); setNotice(null); }}
@@ -265,7 +266,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           <Input data-testid="webhook-url" readOnly value={fullUrl} onFocus={(event) => event.target.select()} />
         </div>
         <label className="settings-field">
-          <span className="settings-field-label">Token Credential</span>
+          <span className="settings-field-label">Token 凭据</span>
           <Select
             data-testid="webhook-credential"
             value={credentialId ?? undefined}
@@ -281,7 +282,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           <Select
             data-testid="webhook-runtime-worker"
             value={workerId ?? undefined}
-            placeholder="选择支持当前语言的 Worker"
+            placeholder="选择支持当前语言的运行节点"
             loading={props.workersLoading}
             disabled={!canConfigure || props.workersLoading}
             options={compatibleWorkers.map((worker) => ({

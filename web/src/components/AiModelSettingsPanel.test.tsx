@@ -159,7 +159,7 @@ it("shows Provider-specific effort options and clears stale values on Provider o
   );
   await chooseOption("ai-reasoning-effort", "high");
 
-  for (const provider of ["Kimi", "MiniMax", "Custom OpenAI-compatible"]) {
+  for (const provider of ["Kimi", "MiniMax", "自定义 OpenAI 兼容服务"]) {
     await chooseOption("ai-provider", provider);
     expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
   }
@@ -201,6 +201,9 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
   await chooseOption("ai-reasoning-effort", "xhigh");
   fireEvent.click(screen.getByTestId("ai-test-connection"));
   await waitFor(() => expect(testSetting).toHaveBeenCalledTimes(1));
+  expect((await screen.findByTestId("ai-settings-notice")).textContent).toBe(
+    "连接测试通过：Connection successful",
+  );
   expect(testSetting).toHaveBeenLastCalledWith({
     provider: "openai",
     base_url: "https://models.example.com/v1",
@@ -238,4 +241,26 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
     target: { value: "edited-after-save" },
   });
   expect(screen.queryByTestId("ai-settings-notice")).toBeNull();
+});
+
+it("keeps the AI connection failure detail after the Chinese primary message", async () => {
+  mockLoad(modelSetting());
+  const onError = vi.fn();
+  vi.spyOn(api, "testAiSetting").mockResolvedValue({
+    ok: false,
+    message: "Authentication failed for the selected model",
+  });
+
+  render(<AiModelSettingsPanel onError={onError} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.click(screen.getByTestId("ai-test-connection"));
+
+  await waitFor(() => {
+    expect(onError).toHaveBeenCalledWith(
+      "连接测试失败：Authentication failed for the selected model",
+    );
+  });
+  expect(screen.getByTestId("ai-settings-error").textContent).toBe(
+    "连接测试失败：Authentication failed for the selected model",
+  );
 });

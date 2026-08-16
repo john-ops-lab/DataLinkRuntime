@@ -99,9 +99,9 @@ export function openExecutionEvents(
         headers,
         signal: controller.signal,
       });
-    } catch (error) {
+    } catch {
       if (!closed) {
-        handlers.onError?.(error instanceof Error ? error.message : "实时事件连接失败");
+        handlers.onError?.("实时事件连接失败");
         fallbackUnlessClosed();
       }
       return;
@@ -135,9 +135,9 @@ export function openExecutionEvents(
           dispatch(event, handlers);
         }
       }
-    } catch (error) {
+    } catch {
       if (!closed) {
-        handlers.onError?.(error instanceof Error ? error.message : "实时事件读取失败");
+        handlers.onError?.("实时事件读取失败");
       }
     }
     // The server only closes the stream after a terminal status, and a

@@ -7,12 +7,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, api } from "../api";
+import { api } from "../api";
 import { FALLBACK_POLICY } from "../fallback-policy";
 import { openExecutionEvents } from "../sse";
 import type { ExecutionEventsHandle } from "../sse";
 import { isTerminal } from "../status";
 import type { Execution } from "../types";
+import { userErrorMessage } from "../user-message";
 
 export interface ExecutionWatcher {
   execution: Execution | null;
@@ -27,10 +28,7 @@ export interface ExecutionWatcher {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "请求失败";
+  return userErrorMessage(error);
 }
 
 export function useExecutionWatcher(onError: (message: string) => void): ExecutionWatcher {

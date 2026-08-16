@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button, Empty, Input, Select, Space, Spin, Typography } from "antd";
 
-import { ApiError, api } from "../api";
+import { api } from "../api";
 import { credentialFields } from "../credential-fields";
 import type { Credential } from "../types";
+import { userErrorMessage } from "../user-message";
 
 interface BindingRow {
   env_key: string;
@@ -22,10 +23,7 @@ interface CredentialBindingsEditorProps {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "请求失败";
+  return userErrorMessage(error);
 }
 
 function toRows(bindings: { env_key: string; credential_id: number; field: string }[]): BindingRow[] {

@@ -26,7 +26,7 @@ export default function AdapterSettingsDrawer(props: Props) {
   const archived = !!adapter?.archived_at;
   return (
     <Drawer
-      title={`${adapter?.adapter_type === "webhook" ? "Webhook" : "Task"} Adapter 设置`}
+      title={`${adapter?.adapter_type === "webhook" ? "Webhook" : "任务"}适配器设置`}
       width={400}
       open={props.open}
       destroyOnHidden
@@ -53,24 +53,24 @@ export default function AdapterSettingsDrawer(props: Props) {
               type="info"
               showIcon
               data-testid="archived-settings-readonly"
-              message="已删除 Adapter 仅支持查看"
-              description="该 Adapter 已从活跃 Catalog 移除。"
+              message="已删除适配器仅支持查看"
+              description="该适配器已从活跃列表移除。"
             />
           ) : (
             <Space direction="vertical" className="settings-lifecycle-actions">
-              <Button data-testid="clone-adapter" disabled={props.busy} onClick={props.onClone}>复制 Adapter</Button>
+              <Button data-testid="clone-adapter" disabled={props.busy} onClick={props.onClone}>复制适配器</Button>
               <ActionWithReason
-                label="删除 Adapter"
-                reason={adapter.runtime_locked === true ? "请先停止 Adapter，再删除" : props.busy ? "其他操作正在进行" : null}
+                label="删除适配器"
+                reason={adapter.runtime_locked === true ? "请先停止适配器，再删除" : props.busy ? "其他操作正在进行" : null}
               >
-                <Button danger data-testid="delete-adapter" disabled={props.busy || adapter.runtime_locked === true} onClick={props.onDelete}>删除 Adapter</Button>
+                <Button danger data-testid="delete-adapter" disabled={props.busy || adapter.runtime_locked === true} onClick={props.onDelete}>删除适配器</Button>
               </ActionWithReason>
             </Space>
           )}
           {adapter.runtime_locked === true && (
-            <Alert type="warning" showIcon message={adapter.adapter_type === "webhook" ? "接收中或调用活跃期间不能删除 Adapter。" : "定时启用或 Execution 活跃期间不能删除 Adapter。"} />
+            <Alert type="warning" showIcon message={adapter.adapter_type === "webhook" ? "接收中或调用活跃期间不能删除适配器。" : "定时启用或执行活跃期间不能删除适配器。"} />
           )}
-          {!archived && <p className="settings-danger-hint">删除后 Adapter 会从活跃 Catalog 消失；运行历史按平台保留策略处理。</p>}
+          {!archived && <p className="settings-danger-hint">删除后适配器会从活跃列表消失；运行历史按平台保留策略处理。</p>}
         </div>
       )}
     </Drawer>

@@ -6,6 +6,7 @@ import { Alert, Button, Input, Radio, Select, Space, Spin, Tag, Typography } fro
 import { ApiError, api } from "../api";
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { Adapter, AdapterSchedule, Execution, TaskRunMode, Worker } from "../types";
+import { userErrorMessage } from "../user-message";
 
 export interface TaskRuntimeState {
   scheduleEnabled: boolean;
@@ -34,10 +35,7 @@ interface TaskRunSettingsPanelProps {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "请求失败";
+  return userErrorMessage(error);
 }
 
 function parseInput(text: string): { ok: true; value: unknown } | { ok: false } {
@@ -228,7 +226,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const scheduleFieldsLocked = scheduleEnabled || runtimeLocked;
   const scheduleEnableBlockedReason =
     props.adapter.latest_version_id === null
-      ? "请先保存 Adapter，再启用定时。"
+      ? "请先保存适配器，再启用定时。"
       : props.adapter.runtime_worker_id == null
         ? "请先保存运行节点，再启用定时。"
         : null;
@@ -272,14 +270,14 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   return (
     <div className="task-run-settings" data-testid="task-run-settings">
       <section className="task-runtime-config">
-        <Typography.Title level={5}>Task 运行设置</Typography.Title>
+        <Typography.Title level={5}>任务运行设置</Typography.Title>
         <Space direction="vertical" size="middle" className="schedule-form">
           <label className="settings-field">
             <span className="settings-field-label">运行节点</span>
             <Select
               data-testid="task-runtime-worker"
               value={workerId ?? undefined}
-              placeholder="请选择支持当前语言的 Worker"
+              placeholder="请选择支持当前语言的运行节点"
               loading={props.workersLoading}
               disabled={runtimeLocked || savingRuntime || props.workersLoading}
               onChange={(value: number) => setWorkerOverride(value)}
@@ -309,7 +307,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               showIcon
               data-testid="task-runtime-locked"
               message="运行配置已锁定"
-              description="定时启用或 Execution 活跃期间，不能修改代码、Worker、运行方式、Cron、依赖、运行参数或凭据。"
+              description="定时启用或执行活跃期间，不能修改代码、运行节点、运行方式、Cron、依赖、运行参数或凭据。"
             />
           )}
           <Button
@@ -334,11 +332,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 <Input data-testid="task-schedule-cron" value={cron} disabled={scheduleFieldsLocked} onChange={(event) => setCron(event.target.value)} />
               </label>
               <label className="settings-field">
-                <span className="settings-field-label">Timezone（IANA）</span>
+                <span className="settings-field-label">时区（IANA）</span>
                 <Input data-testid="task-schedule-timezone" value={timezone} disabled={scheduleFieldsLocked} onChange={(event) => setTimezone(event.target.value)} />
               </label>
               <label className="settings-field">
-                <span className="settings-field-label">Input（JSON）</span>
+                <span className="settings-field-label">输入（JSON）</span>
                 <Input.TextArea data-testid="task-schedule-input" rows={4} value={scheduleInput} disabled={scheduleFieldsLocked} onChange={(event) => setScheduleInput(event.target.value)} />
               </label>
               <div className="settings-field">
@@ -384,7 +382,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         <Typography.Title level={5}>{props.adapter.run_mode === "schedule" ? "立即运行一次" : "手动运行"}</Typography.Title>
         {props.adapter.run_mode === "manual" && (
           <label className="settings-field">
-            <span className="settings-field-label">Input（JSON）</span>
+            <span className="settings-field-label">输入（JSON）</span>
             <Input.TextArea data-testid="task-manual-input" rows={4} value={manualInput} disabled={activeExecution} onChange={(event) => setManualInput(event.target.value)} />
           </label>
         )}
@@ -400,15 +398,15 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
           )}
           {execution !== null && <Tag color={statusColor(execution.status)}>{statusLabel(execution.status)}</Tag>}
         </Space>
-        {props.adapter.latest_version_id === null && <Alert type="info" showIcon message="请先保存 Adapter，再运行任务。" />}
+        {props.adapter.latest_version_id === null && <Alert type="info" showIcon message="请先保存适配器，再运行任务。" />}
         {props.adapter.runtime_worker_id == null && <Alert type="info" showIcon message="请先保存运行节点。" />}
         {execution !== null && (
           <Alert
             className="task-live-log-handoff"
             type={isTerminal(execution.status) ? "success" : "info"}
             showIcon
-            message={`Execution #${execution.id} · ${statusLabel(execution.status)}`}
-            description="实时 stdout、stderr 与 Output 已在页面底部日志工作区中打开。"
+            message={`执行 #${execution.id} · ${statusLabel(execution.status)}`}
+            description="实时 stdout、stderr 与输出已在页面底部日志工作区中打开。"
           />
         )}
       </section>

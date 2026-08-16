@@ -4,19 +4,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
-import { ApiError, api } from "../api";
+import { api } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { ExecutionSummary } from "../types";
+import { userErrorMessage } from "../user-message";
 import { LogView, OutputView } from "./OutputView";
 
 const PAGE_SIZE = 50;
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "请求失败";
+  return userErrorMessage(error);
 }
 
 /** M3.2/M5.2/M5.3：触发列区分测试运行、生产启动、定时与事件触发；未知值原样展示。 */
@@ -177,19 +175,19 @@ export default function ExecutionHistoryPanel(props: {
       render: (status: string) => <Tag color={statusColor(status)}>{statusLabel(status)}</Tag>,
     },
     {
-      title: "Execution",
+      title: "执行",
       dataIndex: "id",
       width: 110,
       render: (id: number) => `#${id}`,
     },
     {
-      title: "Version",
+      title: "版本",
       dataIndex: "version_seq",
       width: 90,
       render: (seq: number) => `v${seq}`,
     },
     {
-      title: "Worker",
+      title: "运行节点",
       dataIndex: "worker_name",
       width: 130,
       ellipsis: true,
@@ -256,7 +254,7 @@ export default function ExecutionHistoryPanel(props: {
             },
             tabIndex: 0,
             "aria-haspopup": "dialog",
-            "aria-label": `打开 Execution #${summary.id} 详情，版本 v${summary.version_seq}，Worker ${summary.worker_name ?? "未知"}`,
+            "aria-label": `打开执行 #${summary.id} 详情，版本 v${summary.version_seq}，运行节点 ${summary.worker_name ?? "未知"}`,
             "data-testid": "history-row",
           })}
         />
@@ -272,7 +270,7 @@ export default function ExecutionHistoryPanel(props: {
       )}
 
       <Drawer
-        title={requestedExecutionId !== null ? `Execution #${requestedExecutionId}` : "执行详情"}
+        title={requestedExecutionId !== null ? `执行 #${requestedExecutionId}` : "执行详情"}
         width={560}
         open={drawerOpen}
         onClose={() => {
@@ -291,7 +289,7 @@ export default function ExecutionHistoryPanel(props: {
                 type="warning"
                 showIcon
                 message="实时连接已断开，状态可能已过期"
-                description="已按权威结果轮询至上限仍未等到终态，请刷新或稍后重新查看该 Execution。"
+                description="已按权威结果轮询至上限仍未等到终态，请刷新或稍后重新查看该执行。"
               />
             )}
             <Descriptions
@@ -313,7 +311,7 @@ export default function ExecutionHistoryPanel(props: {
                 },
                 {
                   key: "worker",
-                  label: "Worker",
+                  label: "运行节点",
                   children: activeSummary?.worker_name ? (
                     <>
                       {activeSummary.worker_name}
@@ -349,14 +347,14 @@ export default function ExecutionHistoryPanel(props: {
               items={[
                 {
                   key: "input",
-                  label: "Input",
+                  label: "输入",
                   children: (
                     <pre className="output-view" data-testid="detail-input">
                       {JSON.stringify(visibleDetail.input, null, 2)}
                     </pre>
                   ),
                 },
-                { key: "output", label: "Output", children: <OutputView execution={visibleDetail} /> },
+                { key: "output", label: "输出", children: <OutputView execution={visibleDetail} /> },
                 {
                   key: "stdout",
                   label: "stdout",

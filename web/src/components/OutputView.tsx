@@ -14,7 +14,7 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
         <Alert
           type="warning"
           showIcon
-          message="Output 超过平台保存上限，未保存完整内容"
+          message="输出超过平台保存上限，未保存完整内容"
           description={`实际大小：${execution.output_size ?? "未知"} 字节；以下为内容预览（非完整 JSON）`}
         />
         <pre className="terminal-view" data-testid="output-preview">

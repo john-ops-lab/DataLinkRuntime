@@ -3,7 +3,7 @@ import Editor from "@monaco-editor/react";
 import { Button, ConfigProvider, Input, message, Modal, Segmented, Select, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
-import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
+import { api, onUnauthorized, setAuthToken } from "./api";
 import AdapterCatalog from "./components/AdapterCatalog";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
 import AiAssistantPanel from "./components/AiAssistantPanel";
@@ -35,6 +35,7 @@ import type {
   VersionSummary,
   Worker,
 } from "./types";
+import { userErrorMessage } from "./user-message";
 
 const INITIAL_TASK_RUNTIME_STATE: TaskRuntimeState = {
   scheduleEnabled: false,
@@ -143,10 +144,7 @@ function useMonacoTheme(): {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    return `${error.message} (${error.code})`;
-  }
-  return "请求失败";
+  return userErrorMessage(error);
 }
 
 type WorkbenchTabKey = "edit" | "runtime" | "history";
@@ -370,7 +368,7 @@ function AdapterConsole() {
       setLiveLogOpen(true);
       setLiveLogFullscreen(false);
       if (execution.trigger === "schedule") {
-        messageApi.info(`定时 Execution #${execution.id} 已开始，实时日志已在页面底部打开。`);
+        messageApi.info(`定时执行 #${execution.id} 已开始，实时日志已在页面底部打开。`);
       }
     }).catch((watchError) => {
       if (!cancelled) {
@@ -630,7 +628,7 @@ function AdapterConsole() {
     }
     const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
     if (runtimeConfig === null) {
-      setError("Runtime config 必须是合法的 JSON 对象");
+      setError("运行参数必须是合法的 JSON 对象");
       return;
     }
     if (!snapshot.code.trim()) {
@@ -679,12 +677,12 @@ function AdapterConsole() {
         setSelected(real);
         setAdapters((current) => current.map((item) => (item.id === real.id ? real : item)));
       } catch (refreshErr) {
-        refreshFailures.push(`刷新 Adapter 失败：${errorMessage(refreshErr)}`);
+        refreshFailures.push(`刷新适配器失败：${errorMessage(refreshErr)}`);
       }
       if (refreshFailures.length === 0) {
-        messageApi.success("Adapter 已保存");
+        messageApi.success("适配器已保存");
       } else {
-        setError(`Adapter 已保存，但${refreshFailures.join("；")}`);
+        setError(`适配器已保存，但${refreshFailures.join("；")}`);
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -698,7 +696,7 @@ function AdapterConsole() {
       return;
     }
     if (parseRuntimeConfig(snapshot.runtimeConfigText) === null) {
-      setError("Runtime config 必须是合法的 JSON 对象");
+      setError("运行参数必须是合法的 JSON 对象");
       return;
     }
     if (!snapshot.code.trim()) {
@@ -757,9 +755,9 @@ function AdapterConsole() {
     const baseLabel =
       selectedVersion !== null ? `基准版本 v${selectedVersion.seq}` : "基准版本（无已保存版本）";
     setDiffView({
-      title: "版本差异：Working Copy vs 基准版本",
+      title: "版本差异：工作副本与基准版本",
       originalTitle: baseLabel,
-      modifiedTitle: "Working Copy（当前编辑内容）",
+      modifiedTitle: "工作副本（当前编辑内容）",
       panes: [
         {
           key: "code",
@@ -791,9 +789,9 @@ function AdapterConsole() {
       return;
     }
     setDiffView({
-      title: "AI Candidate：与当前 Working Copy 对比",
-      originalTitle: "Working Copy（当前编辑内容）",
-      modifiedTitle: "AI Candidate",
+      title: "AI 候选修改：与当前工作副本对比",
+      originalTitle: "工作副本（当前编辑内容）",
+      modifiedTitle: "AI 候选修改",
       panes: [
         {
           key: "code",
@@ -852,12 +850,12 @@ function AdapterConsole() {
       setDescription(refreshed.description);
       try {
         await refreshAdapters();
-        messageApi.success("Adapter 信息已保存");
+        messageApi.success("适配器信息已保存");
       } catch {
         setAdapters((current) =>
           current.map((item) => (item.id === refreshed.id ? refreshed : item)),
         );
-        setError("Adapter 信息已保存，但列表刷新失败；请手动刷新确认。");
+        setError("适配器信息已保存，但列表刷新失败；请手动刷新确认。");
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -870,9 +868,9 @@ function AdapterConsole() {
     if (!selected || busy) {
       return;
     }
-    const warning = dirty ? "该 Adapter 存在未保存的编辑器修改。" : "";
+    const warning = dirty ? "该适配器存在未保存的编辑器修改。" : "";
     if (
-      !window.confirm(`确定删除 Adapter “${selected.name}” 吗？删除后它会从活跃 Catalog 移除。${warning}`)
+      !window.confirm(`确定删除适配器“${selected.name}”吗？删除后它会从活跃列表移除。${warning}`)
     ) {
       return;
     }
@@ -901,12 +899,12 @@ function AdapterConsole() {
 
   const healthText =
     health === "loading"
-      ? "Control 检查中…"
+      ? "控制服务检查中…"
       : health === "ok"
-        ? "Control 健康"
+        ? "控制服务正常"
         : health === "degraded"
-          ? "Control 降级"
-          : "Control 不可达";
+          ? "控制服务降级"
+          : "控制服务不可达";
 
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
   const selectedRuntimeWorker = selected?.runtime_worker_id == null
@@ -968,7 +966,7 @@ function AdapterConsole() {
 
         <main className="workbench">
           {selected === null ? (
-            <div className="workbench-empty">请选择一个 Adapter 进行管理。</div>
+            <div className="workbench-empty">请选择一个适配器进行管理。</div>
           ) : (
             <section className="detail">
               {selected.adapter_type === "task" ? (
@@ -1031,7 +1029,7 @@ function AdapterConsole() {
                             disabled={busy || !contentReady}
                             onClick={handleOpenWorkingDiff}
                           >
-                            查看 Diff
+                            查看差异
                           </Button>
                         </div>
                         <div className="editor-main" data-testid="editor-main" data-monaco-theme={editorTheme}>
@@ -1231,7 +1229,7 @@ function AdapterConsole() {
       />
 
       <Modal
-        title="复制 Adapter"
+        title="复制适配器"
         open={cloneSource !== null}
         okText="复制"
         cancelText="取消"
@@ -1242,9 +1240,9 @@ function AdapterConsole() {
       >
         <div className="clone-confirm">
           <p>将复制当前代码、依赖、运行配置、凭据引用和运行节点。</p>
-          <p>执行历史不会复制；新 Adapter 创建后保持停止，不会自动运行。</p>
+          <p>执行历史不会复制；新适配器创建后保持停止，不会自动运行。</p>
           <label className="settings-field">
-            <span className="settings-field-label">新 Adapter 名称</span>
+            <span className="settings-field-label">新适配器名称</span>
             <Input
               autoFocus
               data-testid="clone-adapter-name"
@@ -1256,7 +1254,7 @@ function AdapterConsole() {
       </Modal>
 
       <Modal
-        title="保存 Adapter"
+        title="保存适配器"
         open={saveWorkerPromptOpen}
         okText="保存"
         cancelText="取消"
@@ -1278,10 +1276,10 @@ function AdapterConsole() {
           <label className="settings-field">
             <span className="settings-field-label">运行节点 *</span>
             <Select
-              aria-label="保存 Adapter 运行节点"
+              aria-label="保存适配器运行节点"
               data-testid="save-worker-select"
               value={saveWorkerId ?? undefined}
-              placeholder="请选择有效在线且支持当前语言的 Worker"
+              placeholder="请选择在线且支持当前语言的运行节点"
               onChange={(value: number) => setSaveWorkerId(value)}
               options={workers
                 .filter((worker) =>
@@ -1297,7 +1295,7 @@ function AdapterConsole() {
             worker.status === "online" &&
             worker.capabilities.includes(selected.language),
           ).length === 0 && (
-            <p className="settings-danger-hint" role="alert">当前没有可用的兼容运行节点，请先启动或注册 Worker。</p>
+            <p className="settings-danger-hint" role="alert">当前没有可用的兼容运行节点，请先启动或注册运行节点。</p>
           )}
         </div>
       </Modal>

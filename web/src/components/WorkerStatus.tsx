@@ -21,7 +21,7 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
       {loading && <Spin size="small" />}
       {error !== null && <span className="history-error" role="alert">{error}</span>}
       {!loading && error === null && workers.length === 0 && (
-        <Empty description="暂无已注册 Worker" />
+        <Empty description="暂无已注册运行节点" />
       )}
       {!loading && workers.length > 0 && (
         <List
@@ -33,7 +33,9 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
                 title={
                   <span>
                     {worker.name}{" "}
-                    <Tag color={worker.status === "online" ? "green" : "red"}>{worker.status}</Tag>
+                    <Tag color={worker.status === "online" ? "green" : "red"}>
+                      {worker.status === "online" ? "在线" : "离线"}
+                    </Tag>
                   </span>
                 }
                 description={`最近心跳：${formatTime(worker.last_heartbeat)}`}
@@ -57,12 +59,12 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
   return (
     <Popover
       content={content}
-      title="Workers"
+      title="运行节点"
       trigger="click"
     >
       <Button size="small" data-testid="worker-status">
         <Badge status={hasOnlineWorker ? "success" : allOffline ? "error" : "default"} />
-        Workers · {loading ? "加载中" : error !== null ? "状态未知" : `${onlineCount}/${workers.length} 在线`}
+        运行节点 · {loading ? "加载中" : error !== null ? "状态未知" : `${onlineCount}/${workers.length} 在线`}
       </Button>
     </Popover>
   );
