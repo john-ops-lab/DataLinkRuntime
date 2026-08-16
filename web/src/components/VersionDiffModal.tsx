@@ -104,6 +104,32 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
             language={current.language}
             original={current.original}
             modified={current.modified}
+            // M5.5.6：Modal destroyOnHidden 卸载 DiffEditor 时，@monaco-editor/react
+            // 默认先 dispose 内部 model 再 dispose DiffEditorWidget，触发
+            // "TextModel got disposed before DiffEditorWidget model got reset"
+            // 的 BugIndicatingError（页面 error 事件）。固定 model path 并在
+            // 卸载时保留 model（由 Monaco model 缓存复用），消除卸载时序竞争，
+            // 也不会累积无 uri 的孤儿 model。
+            //
+            // 代价：keepCurrent*Model 使 model 在卸载后留在 Monaco 缓存，而库内
+            // 同步内容/语言的 effect 首次渲染跳过；重新打开时 getOrCreateModel
+            // 命中缓存旧 model，首屏会展示上一次会话内容（两处 Diff 模态共用
+            // 同一对 uri 时还会互相串内容）。因此 onMount（setModel 之后）显式
+            // 把当前 pane 的内容与语言写入 model，保证每次打开首屏即为本次
+            // 会话的最新审阅内容；Tabs 切换仍由库的依赖 effect 正常刷新。
+            originalModelPath="dlr-diff-original"
+            modifiedModelPath="dlr-diff-modified"
+            keepCurrentOriginalModel
+            keepCurrentModifiedModel
+            onMount={(editor, monaco) => {
+              const model = editor.getModel();
+              if (model !== null) {
+                model.original.setValue(current.original);
+                model.modified.setValue(current.modified);
+                monaco.editor.setModelLanguage(model.original, current.language);
+                monaco.editor.setModelLanguage(model.modified, current.language);
+              }
+            }}
             options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false } }}
           />
         </div>

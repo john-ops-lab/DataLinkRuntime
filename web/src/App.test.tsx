@@ -2316,6 +2316,46 @@ it("shows a JavaScript working copy diff with the matching Monaco mode and depen
   expect(within(screen.getByTestId("version-diff")).getByText("npm 依赖")).toBeTruthy();
 });
 
+it("reopens the diff with the latest working copy content, never the previous session snapshot", async () => {
+  // M5.5.6：Monaco model 缓存（固定 path + keepCurrent*Model）在真实浏览器中
+  // 会在重新打开时命中旧 model；组件契约要求每次打开向 DiffEditor 传入
+  // 当次会话的最新内容与语言（真实缓存行为另由浏览器证据覆盖）。
+  const adapter = makeAdapter({ language: "python", latest_version_id: 10 });
+  stubFetch(consoleWithVersionRoutes(adapter, makeVersion({ code: "base-v1\n" })));
+  render(<App />);
+  await selectFirstAdapter();
+
+  // 第一次打开：内容 A
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "first-session-code\n" } });
+  fireEvent.click(screen.getByTestId("working-diff"));
+  await screen.findByTestId("version-diff");
+  expect(screen.getByTestId("diff-editor").getAttribute("data-modified")).toBe("first-session-code\n");
+
+  // 关闭后编辑为内容 B，再打开：必须展示 B，而不是上一次会话的 A
+  fireEvent.click(document.querySelector(".ant-modal-close") as Element);
+  await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
+  fireEvent.change(screen.getByTestId("code-editor"), {
+    target: { value: "second-session-code\n" },
+  });
+  fireEvent.click(screen.getByTestId("working-diff"));
+  await screen.findByTestId("version-diff");
+  expect(screen.getByTestId("diff-editor").getAttribute("data-original")).toBe("base-v1\n");
+  expect(screen.getByTestId("diff-editor").getAttribute("data-modified")).toBe(
+    "second-session-code\n",
+  );
+  expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe("python");
+
+  // 切 pane（依赖）再切回代码：内容保持当前会话，语言随 pane 变化
+  const diffModal = screen.getByTestId("version-diff");
+  fireEvent.click(within(diffModal).getByText("Python 依赖"));
+  expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe("plaintext");
+  fireEvent.click(within(diffModal).getByText("代码"));
+  expect(screen.getByTestId("diff-editor").getAttribute("data-modified")).toBe(
+    "second-session-code\n",
+  );
+  expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe("python");
+});
+
 it("gives repeated Credential Binding controls stable row-specific accessible names", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   stubFetch([
