@@ -224,7 +224,8 @@ docker compose exec -T control python - < scripts/diag-network.py --url https://
 ```
 
 脚本按层级停止并输出失败层与退出码（2=DNS、3=TCP、4=TLS、5=HTTP）；
-宿主机上也可直接 `python3 scripts/diag-network.py --host api.example.com --port 443`。
+宿主机上也可直接 `python3 scripts/diag-network.py --host api.example.com --port 443`
+（`--host` 模式只检查 DNS/TCP，加 `--tls` 可额外检查 TLS 握手；不做 HTTP 探测）。
 
 ### Docker Desktop / VPN / 企业网络检查清单
 

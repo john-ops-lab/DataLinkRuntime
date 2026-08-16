@@ -200,6 +200,7 @@ M4 对外提供以下稳定错误码：
 ```text
 ai_not_configured
 ai_credential_invalid
+ai_provider_dns_failed
 ai_provider_unreachable
 ai_auth_failed
 ai_model_not_found
@@ -210,6 +211,9 @@ ai_request_invalid
 ai_base_url_invalid
 ai_working_copy_invalid
 ```
+
+`ai_provider_dns_failed`（M5.5.3）仅表示模型服务域名解析失败（DNS 层），与表示 TCP 连接 /
+TLS 握手失败的通用传输错误 `ai_provider_unreachable` 区分，便于部署排障按层级定位。
 
 其中非法 Unicode 等通用 AI 请求边界错误返回 HTTP 422 `ai_request_invalid`；无法安全解析的
 Base URL 返回 HTTP 422 `ai_base_url_invalid`；Working Copy 的 runtime_config 含非有限或

@@ -14,8 +14,9 @@ Exit codes: 0 = all layers passed, 2 = DNS, 3 = TCP, 4 = TLS, 5 = HTTP,
 sent or printed; only the configured URL and its hostname/port are used.
 
 Examples:
-    # host-based check (any layer after DNS is skipped once DNS fails)
+    # host-based check: DNS + TCP only (--tls adds the TLS handshake layer)
     python3 scripts/diag-network.py --host api.deepseek.com --port 443
+    python3 scripts/diag-network.py --host api.deepseek.com --port 8443 --tls
 
     # URL-based check with a real HTTP probe
     python3 scripts/diag-network.py --url https://api.deepseek.com/v1/models
@@ -125,25 +126,45 @@ def main(argv: list[str]) -> None:
         description="DLR 分层网络 / DNS 诊断：DNS -> TCP -> TLS -> HTTP",
     )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--host", help="仅检查到主机的 DNS 与 TCP（可加 --port）")
+    group.add_argument(
+        "--host",
+        help="仅检查到主机的 DNS 与 TCP（可加 --port 与 --tls；不做 HTTP 探测）",
+    )
     group.add_argument("--url", help="检查完整 URL：DNS/TCP 与 https 时含 TLS/HTTP")
-    parser.add_argument("--port", type=int, help="TCP 端口（与 --host 配合，默认 443）")
+    parser.add_argument(
+        "--port",
+        type=int,
+        help="TCP 端口（与 --host 配合，默认 443；仅用于 DNS/TCP/TLS 层）",
+    )
+    parser.add_argument(
+        "--tls",
+        action="store_true",
+        help="与 --host 配合：在 DNS/TCP 之外额外执行 TLS 握手检查",
+    )
     args = parser.parse_args(argv)
 
     if args.url is not None:
+        if args.tls:
+            parser.error("--tls 仅与 --host 配合使用，--url 模式按 URL 的 scheme 自动决定 TLS")
         scheme, host, port, url = _parse_url(args.url)
-    else:
-        host = args.host
-        port = args.port if args.port is not None else 443
-        scheme = "https" if port == 443 else "http"
-        url = f"{scheme}://{host}:{port}"
+        check_dns(host, port)
+        check_tcp(host, port)
+        if scheme == "https":
+            check_tls(host, port)
+        check_http(url)
+        print("[ OK ] 全部网络层级检查通过")
+        return
 
+    # --host mode is deliberately limited to DNS/TCP (+ optional TLS): probing
+    # an arbitrary port with an HTTP request would mislead the operator into
+    # the wrong layer for non-HTTP services (e.g. a database port).
+    host = args.host
+    port = args.port if args.port is not None else 443
     check_dns(host, port)
     check_tcp(host, port)
-    if scheme == "https":
+    if args.tls:
         check_tls(host, port)
-    check_http(url)
-    print("[ OK ] 全部网络层级检查通过")
+    print("[ OK ] DNS 与 TCP 检查通过" + ("（含 TLS 握手）" if args.tls else ""))
 
 
 if __name__ == "__main__":
