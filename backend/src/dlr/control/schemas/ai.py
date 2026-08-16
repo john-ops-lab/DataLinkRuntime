@@ -173,17 +173,72 @@ class AiRecentMessage(_StrictSchema):
     content: str
 
 
+class AiSelectionContext(_StrictSchema):
+    """M5.5.5: exact Monaco selection snapshot added to the AI context.
+
+    The browser captures the text and the 1-based Monaco line range at the
+    moment the administrator clicks "加入对话上下文"; later cursor movement
+    must never change this snapshot. It is an explicit, administrator-provided
+    excerpt of the current Working Copy only, never a path to other files.
+    """
+
+    text: str
+    start_line: int
+    end_line: int
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def validate_text(cls, value: object) -> str:
+        try:
+            return _non_blank(value, "text")
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_request_invalid",
+                    "message": "AI request contains an invalid selection context",
+                },
+            ) from None
+
+    @field_validator("start_line", "end_line", mode="before")
+    @classmethod
+    def validate_line(cls, value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_request_invalid",
+                    "message": "AI request contains an invalid selection context",
+                },
+            ) from None
+        return value
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "AiSelectionContext":
+        if self.end_line < self.start_line:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_request_invalid",
+                    "message": "AI request contains an invalid selection context",
+                },
+            )
+        return self
+
+
 class AiAssistRequest(_StrictSchema):
     message: str
     working_copy: AiWorkingCopy
     recent_messages: list[AiRecentMessage] = Field(default_factory=list, max_length=8)
     base_version_id: int | None = None
+    selected_context: AiSelectionContext | None = None
 
     @model_validator(mode="before")
     @classmethod
     def reject_unicode_surrogates(cls, value: object) -> object:
         # Runs before nested schemas so Working Copy strings, runtime_config
-        # keys/values and recent conversation content share one safe boundary.
+        # keys/values, recent conversation content and the selected context
+        # share one safe boundary.
         return _reject_request_surrogates(value)
 
     @field_validator("message", mode="before")

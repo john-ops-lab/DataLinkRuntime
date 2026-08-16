@@ -14,6 +14,7 @@ import type {
   AiConversationMessage,
   AiModelSetting,
   AiModelSettingDraft,
+  AiSelectionContext,
   Credential,
   CredentialBinding,
   CredentialType,
@@ -315,6 +316,7 @@ export const api = {
       };
       recent_messages: AiConversationMessage[];
       base_version_id?: number | null;
+      selected_context?: AiSelectionContext | null;
     },
   ): Promise<AiAssistResponse> =>
     request(`/api/adapters/${adapterId}/ai/assist`, {

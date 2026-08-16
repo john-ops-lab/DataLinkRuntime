@@ -51,7 +51,16 @@ def detect_language(payload: dict[str, Any]) -> str:
     return "python"
 
 
-def candidate_for(language: str) -> dict[str, Any]:
+def detect_selected_context(payload: dict[str, Any]) -> bool:
+    """M5.5.5: acknowledge the structured selection block if it reached us.
+
+    The selected_context key lives inside the serialized system prompt, so
+    its quotes are JSON-escaped (\"selected_context\"); match the bare key.
+    """
+    return "selected_context" in json.dumps(payload, ensure_ascii=False)
+
+
+def candidate_for(language: str, selected: bool) -> dict[str, Any]:
     code = {
         "python": (
             "def handle(context, input):\n    return {'ai_smoke': 'python', 'input': input}\n"
@@ -70,8 +79,9 @@ def candidate_for(language: str) -> dict[str, Any]:
             "}\n"
         ),
     }[language]
+    suffix = " with selected context." if selected else "."
     return {
-        "message": f"Generated a local smoke Candidate for {language}.",
+        "message": f"Generated a local smoke Candidate for {language}{suffix}",
         "candidate": {
             "summary": f"Exercise the {language} AI assist contract",
             "code": code,
@@ -140,8 +150,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         METRICS.increment_completions()
+        # Optional artificial latency for UI verification (default off):
+        # SMOKE_CHAT_DELAY_SECONDS keeps the request lifecycle observable.
+        delay_seconds = float(os.environ.get("SMOKE_CHAT_DELAY_SECONDS", "0"))
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
         language = detect_language(request_payload)
-        content = json.dumps(candidate_for(language), ensure_ascii=False)
+        selected = detect_selected_context(request_payload)
+        content = json.dumps(candidate_for(language, selected), ensure_ascii=False)
         self._write_json(
             200,
             {

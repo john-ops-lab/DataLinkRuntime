@@ -9,6 +9,7 @@ import type {
   Adapter,
   AiCandidate,
   AiConversationMessage,
+  AiSelectionContext,
 } from "../types";
 import { userErrorMessage } from "../user-message";
 import VersionDiffModal, { type DiffPane } from "./VersionDiffModal";
@@ -45,10 +46,25 @@ interface AiAssistantPanelProps {
   workingCopy: AiWorkingCopy;
   contentReady: boolean;
   busy: boolean;
+  /** M5.5.5: the confirmed Monaco selection snapshot of the current session. */
+  selectedContext: AiSelectionContext | null;
   onOpen: () => void;
   onClose: () => void;
   onApply: (candidate: AiCandidate) => void;
+  onClearSelectedContext: () => void;
 }
+
+/** M5.5.5: DLR-known request lifecycle stages. Reasoning/CoT is never
+ * requested, parsed, or displayed — these stages only reflect what the
+ * browser itself knows about the in-flight assist request. */
+type ProgressStage = "preparing" | "requesting" | "validating" | "succeeded";
+
+const PROGRESS_TEXT: Record<ProgressStage, string> = {
+  preparing: "正在准备当前代码上下文…",
+  requesting: "正在请求 AI 模型…",
+  validating: "正在校验返回结果…",
+  succeeded: "已生成修改，等待查看 Diff",
+};
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error, "AI 请求失败");
@@ -122,6 +138,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [bindingsLoading, setBindingsLoading] = useState(false);
   const [bindingsVerified, setBindingsVerified] = useState(false);
   const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
+  const [progressStage, setProgressStage] = useState<ProgressStage | null>(null);
   const requestGeneration = useRef(0);
   const bindingsGeneration = useRef(0);
   const nextMessageId = useRef(1);
@@ -220,7 +237,18 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     setDraft("");
     setPanelError(null);
     setSending(true);
+    setProgressStage("preparing");
     try {
+      // M5.5.5: stages only reflect DLR's own request lifecycle. "preparing"
+      // is committed for at least one frame so the platform stage is visible
+      // before the network request begins.
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      if (generation !== requestGeneration.current) {
+        return;
+      }
+      setProgressStage("requesting");
       const response = await api.assistAdapter(requestAdapterId, {
         message,
         working_copy: {
@@ -230,12 +258,18 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         },
         recent_messages: recentMessages,
         base_version_id: props.selectedVersionId,
+        // The confirmed selection snapshot captured at click time; later
+        // cursor movement never changes it.
+        ...(props.selectedContext === null
+          ? {}
+          : { selected_context: props.selectedContext }),
       });
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
       if (generation !== requestGeneration.current) {
         return;
       }
+      setProgressStage("validating");
       // Bindings can change in the Workbench while this panel stays open.
       // Refresh after generation so the Candidate warning reflects the
       // current names, while a failed check is reported as unknown.
@@ -273,9 +307,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
             : { value: response.candidate, baseSnapshot, applied: false },
       };
       setMessages((current) => [...current, assistantMessage]);
+      setProgressStage("succeeded");
     } catch (error) {
       if (generation === requestGeneration.current) {
         setPanelError(errorMessage(error));
+        // M5.5.5: failures converge to an explicit error state; no progress
+        // line lingers or keeps claiming an unfinished stage.
+        setProgressStage(null);
       }
     } finally {
       if (generation === requestGeneration.current) {
@@ -384,6 +422,27 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         )}
       </div>
 
+      {props.adapter !== null && props.selectedContext !== null && (
+        <div className="ai-selection-context" data-testid="ai-selection-context">
+          <span data-testid="ai-selection-label">
+            已添加选中文本：第 {props.selectedContext.start_line}
+            {props.selectedContext.end_line > props.selectedContext.start_line
+              ? `–${props.selectedContext.end_line}`
+              : ""}{" "}
+            行（{LANGUAGE_LABELS[props.adapter.language]}）
+          </span>
+          <Button
+            size="small"
+            type="text"
+            data-testid="ai-clear-selection"
+            aria-label="清除已添加的选中文本"
+            onClick={props.onClearSelectedContext}
+          >
+            清除
+          </Button>
+        </div>
+      )}
+
       <div
         ref={conversationRef}
         className="ai-conversation"
@@ -475,9 +534,15 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
             );
           })
         )}
-        {sending && (
-          <div className="ai-loading" data-testid="ai-loading">
-            <Spin size="small" /> 正在生成候选修改…
+        {sending && progressStage !== null && (
+          <div className="ai-loading" data-testid="ai-loading" role="status" aria-live="polite">
+            <Spin size="small" />
+            <span data-testid="ai-progress-stage">{PROGRESS_TEXT[progressStage]}</span>
+          </div>
+        )}
+        {!sending && progressStage === "succeeded" && (
+          <div className="ai-progress-done" data-testid="ai-progress-done" role="status">
+            {PROGRESS_TEXT.succeeded}
           </div>
         )}
       </div>

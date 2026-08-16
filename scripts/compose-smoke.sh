@@ -13,6 +13,9 @@ export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
 export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-env-secret-$$}
 export DLR_MASTER_KEY=${DLR_MASTER_KEY:-smoke-master-key-$$}
 export SMOKE_STORED_SECRET=${SMOKE_STORED_SECRET:-smoke-stored-secret-$$}
+# M5.5.5: the selected code sent to the fake Provider must never reach
+# service logs (requests are not logged; this assertion pins that contract).
+export SMOKE_SELECTED_TEXT=${SMOKE_SELECTED_TEXT:-smoke-selected-sentinel-$$}
 AI_FAKE_CONTAINER_ID=""
 AI_FAKE_DISABLED_CONTAINER_ID=""
 
@@ -145,6 +148,7 @@ docker compose exec -T \
   -e DLR_ADMIN_TOKEN \
   -e DLR_WORKER_TOKEN \
   -e SMOKE_STORED_SECRET \
+  -e SMOKE_SELECTED_TEXT \
   -e AI_FAKE_BASE_URL \
   -e AI_FAKE_DISABLED_BASE_URL \
   control python - < scripts/compose-smoke.py
@@ -152,6 +156,11 @@ docker compose exec -T \
 echo "==> verifying secrets did not enter service logs"
 if docker compose logs control worker web | grep -F "$SMOKE_STORED_SECRET" >/dev/null; then
   echo "ERROR: stored secret appeared in service logs" >&2
+  exit 1
+fi
+# M5.5.5: the administrator-selected code is request payload, never a log line.
+if docker compose logs control worker web | grep -F "$SMOKE_SELECTED_TEXT" >/dev/null; then
+  echo "ERROR: selected code appeared in service logs" >&2
   exit 1
 fi
 

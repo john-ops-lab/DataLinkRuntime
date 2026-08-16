@@ -628,6 +628,10 @@ working_copy = {
 ai_revision = save(ai_adapter["id"], working_copy["code"], runtime_config={"before_ai": True})
 before = request("GET", f"/adapters/{ai_adapter['id']}")
 before_versions = request("GET", f"/adapters/{ai_adapter['id']}/versions")
+# M5.5.5：选区上下文以结构化快照（精确文本 + 1-based 行范围）随请求发送。
+selected_text = os.environ.get(
+    "SMOKE_SELECTED_TEXT", "def handle(context, input):"
+)
 assisted = request(
     "POST",
     f"/adapters/{ai_adapter['id']}/ai/assist",
@@ -636,9 +640,17 @@ assisted = request(
         "working_copy": working_copy,
         "recent_messages": [],
         "base_version_id": ai_revision["id"],
+        "selected_context": {
+            "text": selected_text,
+            "start_line": 1,
+            "end_line": 1,
+        },
     },
 )
 assert assisted["candidate"] is not None, assisted
+# 选区块真实到达 Provider（fake 在 message 中回显确认），且 Provider 的
+# hidden reasoning 哨兵永不返回浏览器。
+assert "with selected context" in assisted["message"], assisted
 assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in json.dumps(assisted)
 after = request("GET", f"/adapters/{ai_adapter['id']}")
 after_versions = request("GET", f"/adapters/{ai_adapter['id']}/versions")

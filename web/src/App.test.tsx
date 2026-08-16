@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { useEffect } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -28,7 +29,46 @@ import type {
 // The Monaco editor is replaced by a plain textarea so tests exercise the DLR
 // business integration (value / change / save) instead of the editor itself.
 // readOnly is honored so the mutation-time interaction lock is testable; the
-// theme prop is mirrored so theme switching stays assertable.
+// theme prop is mirrored so theme switching stays assertable. The onMount
+// selection harness lets M5.5.5 tests drive Monaco-style selections.
+const { monacoHarness } = vi.hoisted(() => {
+  interface FakeSelection {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  }
+  const state: { selection: FakeSelection | null; text: string } = {
+    selection: null,
+    text: "",
+  };
+  const listeners = new Set<() => void>();
+  return {
+    monacoHarness: {
+      setSelection(selection: FakeSelection | null) {
+        state.selection = selection;
+        listeners.forEach((listener) => listener());
+      },
+      getSelection: (): FakeSelection | null => state.selection,
+      setText(text: string) {
+        state.text = text;
+      },
+      getText: (): string => state.text,
+      subscribe(listener: () => void): () => void {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+      reset() {
+        state.selection = null;
+        state.text = "";
+        listeners.clear();
+      },
+    },
+  };
+});
+
 vi.mock("@monaco-editor/react", () => ({
   default: function Editor(props: {
     value?: string;
@@ -36,7 +76,32 @@ vi.mock("@monaco-editor/react", () => ({
     options?: { readOnly?: boolean };
     theme?: string;
     language?: string;
+    onMount?: (editor: unknown, monaco: unknown) => void;
   }) {
+    // Register the fake editor once per mount, mirroring real Monaco.
+    useEffect(() => {
+      const fakeEditor = {
+        getSelection: () => {
+          const selection = monacoHarness.getSelection();
+          if (selection === null) {
+            return null;
+          }
+          return {
+            ...selection,
+            isEmpty: () =>
+              selection.startLineNumber === selection.endLineNumber &&
+              selection.startColumn === selection.endColumn,
+          };
+        },
+        getModel: () => ({
+          getValueInRange: () => monacoHarness.getText(),
+        }),
+        onDidChangeCursorSelection: (listener: () => void) =>
+          monacoHarness.subscribe(listener),
+      };
+      props.onMount?.(fakeEditor, {});
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- mock: mount-once semantics
+    }, []);
     return (
       <textarea
         data-testid="code-editor"
@@ -218,6 +283,7 @@ afterEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   setAuthToken(null);
+  monacoHarness.reset();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   // Restore the production fallback pace for tests that tightened it.
@@ -2455,6 +2521,11 @@ it.each([
     await selectFirstAdapter();
     await openAiAssistant();
 
+    // M5.5.5：选区快照随请求发送，且不改变 Candidate → Diff → Apply 路径。
+    selectInEditor(`selected-${language}`, 2, 3);
+    fireEvent.click(screen.getByTestId("add-ai-selection"));
+    expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 2–3 行");
+
     fireEvent.change(screen.getByTestId("ai-message-input"), {
       target: { value: "增加分页" },
     });
@@ -2483,6 +2554,7 @@ it.each([
       };
       recent_messages: unknown[];
       base_version_id: number;
+      selected_context: { text: string; start_line: number; end_line: number };
     };
     expect(payload).toEqual({
       message: "增加分页",
@@ -2493,6 +2565,7 @@ it.each([
       },
       recent_messages: [],
       base_version_id: 10,
+      selected_context: { text: `selected-${language}`, start_line: 2, end_line: 3 },
     });
 
     fireEvent.click(screen.getByTestId("ai-view-diff"));
@@ -3394,4 +3467,401 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
     />,
   );
   expect((screen.getByTestId("header-webhook-toggle") as HTMLButtonElement).disabled).toBe(false);
+});
+
+// --- M5.5.5：Monaco 选区上下文与平台阶段进度 --------------------------------
+
+function selectInEditor(text: string, startLine: number, endLine: number) {
+  act(() => {
+    monacoHarness.setText(text);
+    monacoHarness.setSelection({
+      startLineNumber: startLine,
+      startColumn: 1,
+      endLineNumber: endLine,
+      endColumn: 2,
+    });
+  });
+}
+
+it("adds the exact Monaco selection snapshot and sends it unchanged after cursor moves", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const requestBodies: string[] = [];
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: (body) => {
+        requestBodies.push(body ?? "");
+        return { body: aiResponse("已生成修改候选", AI_CANDIDATE) };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  // 空选区：入口禁用，不提供无意义操作。
+  const addButton = screen.getByTestId("add-ai-selection") as HTMLButtonElement;
+  expect(addButton.disabled).toBe(true);
+  expect(screen.queryByTestId("ai-selection-context")).toBeNull();
+
+  // 非空选区：入口可用；点击后出现行号标记。
+  selectInEditor("def handle(context, input):\n    return input\n", 2, 3);
+  expect(addButton.disabled).toBe(false);
+  fireEvent.click(addButton);
+  expect(screen.getByTestId("ai-selection-label").textContent).toBe(
+    "已添加选中文本：第 2–3 行（Python）",
+  );
+
+  // 光标随后移动（选区收起）：按钮回到禁用，但已确认的快照不受影响。
+  act(() => {
+    monacoHarness.setSelection({
+      startLineNumber: 2,
+      startColumn: 1,
+      endLineNumber: 2,
+      endColumn: 1,
+    });
+  });
+  expect(addButton.disabled).toBe(true);
+  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 2–3 行");
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "解释选中代码" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+
+  const payload = JSON.parse(requestBodies[0]) as {
+    selected_context: { text: string; start_line: number; end_line: number };
+  };
+  expect(payload.selected_context).toEqual({
+    text: "def handle(context, input):\n    return input\n",
+    start_line: 2,
+    end_line: 3,
+  });
+});
+
+it("rejects whitespace-only selections and supports clear and replace", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const requestBodies: string[] = [];
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: (body) => {
+        requestBodies.push(body ?? "");
+        return { body: aiResponse("候选已生成", AI_CANDIDATE) };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+  const addButton = screen.getByTestId("add-ai-selection") as HTMLButtonElement;
+
+  // 纯空白选区不产生上下文（文本必须非空才有意义）：入口可用但点击被拒绝。
+  act(() => {
+    monacoHarness.setText("   ");
+    monacoHarness.setSelection({
+      startLineNumber: 1,
+      startColumn: 1,
+      endLineNumber: 1,
+      endColumn: 4,
+    });
+  });
+  expect(addButton.disabled).toBe(false);
+  fireEvent.click(addButton);
+  expect(screen.queryByTestId("ai-selection-context")).toBeNull();
+
+  // 加入 → 清除：标记消失，发送时不携带 selected_context。
+  selectInEditor("first selection\n", 1, 1);
+  fireEvent.click(screen.getByTestId("add-ai-selection"));
+  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 1 行");
+  fireEvent.click(screen.getByTestId("ai-clear-selection"));
+  expect(screen.queryByTestId("ai-selection-context")).toBeNull();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "不带选区" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+  const clearedPayload = JSON.parse(requestBodies[0]) as {
+    selected_context?: unknown;
+  };
+  expect(clearedPayload.selected_context).toBeUndefined();
+
+  // 替换：新选区直接覆盖旧快照。
+  selectInEditor("replacement selection\n", 4, 5);
+  fireEvent.click(screen.getByTestId("add-ai-selection"));
+  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 4–5 行");
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "带替换选区" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await waitFor(() => expect(requestBodies).toHaveLength(2));
+  const replacedPayload = JSON.parse(requestBodies[1]) as {
+    selected_context: { text: string; start_line: number; end_line: number };
+  };
+  expect(replacedPayload.selected_context).toEqual({
+    text: "replacement selection\n",
+    start_line: 4,
+    end_line: 5,
+  });
+});
+
+it("clears the selection context on Adapter switch and never cross-talks", async () => {
+  const adapterA = makeAdapter({ id: 1, name: "adapter-a" });
+  const adapterB = makeAdapter({ id: 2, name: "adapter-b" });
+  const requestBodies: string[] = [];
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [adapterA, adapterB] }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [] }) },
+    aiBindingsRoute(1),
+    aiBindingsRoute(2),
+    {
+      method: "POST",
+      match: "/api/adapters/2/ai/assist",
+      respond: (body) => {
+        requestBodies.push(body ?? "");
+        return { body: aiResponse("B 的回复", AI_CANDIDATE) };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  selectInEditor("adapter-a selection\n", 1, 1);
+  fireEvent.click(screen.getByTestId("add-ai-selection"));
+  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 1 行");
+
+  // 切换 Adapter：旧选区标记立即消失，按钮回到禁用（不串线）。
+  fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
+  await screen.findByRole("heading", { name: "adapter-b" });
+  expect(screen.queryByTestId("ai-selection-context")).toBeNull();
+  expect((screen.getByTestId("add-ai-selection") as HTMLButtonElement).disabled).toBe(true);
+
+  // B 中新选区 → 标记属于 B；发送只携带 B 的选区快照。
+  selectInEditor("adapter-b selection\n", 7, 8);
+  fireEvent.click(screen.getByTestId("add-ai-selection"));
+  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 7–8 行");
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "B 的请求" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+  const payload = JSON.parse(requestBodies[0]) as {
+    selected_context: { text: string; start_line: number; end_line: number };
+  };
+  expect(payload.selected_context).toEqual({
+    text: "adapter-b selection\n",
+    start_line: 7,
+    end_line: 8,
+  });
+});
+
+it("shows DLR lifecycle stage progress and converges on success without reasoning", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  let resolveAssist: ((response: AiAssistResponse) => void) | undefined;
+  const pendingAssist = new Promise<AiAssistResponse>((resolve) => {
+    resolveAssist = resolve;
+  });
+  let resolveBindings: ((body: unknown[]) => void) | undefined;
+  const pendingBindings = new Promise<unknown[]>((resolve) => {
+    resolveBindings = resolve;
+  });
+  let bindingReads = 0;
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: async () => {
+        bindingReads += 1;
+        if (bindingReads === 1) {
+          return { body: [] };
+        }
+        // 第二次读取（响应校验阶段）挂起，用于观察“正在校验返回结果”。
+        return { body: await pendingBindings };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: async () => ({ body: await pendingAssist }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "生成候选" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+
+  // 阶段 1：点击后先展示“正在准备当前代码上下文”。
+  expect(screen.getByTestId("ai-progress-stage").textContent).toBe("正在准备当前代码上下文…");
+  // 阶段 2：请求挂起期间展示“正在请求 AI 模型”。
+  await screen.findByText("正在请求 AI 模型…");
+  expect(screen.queryByTestId("ai-progress-done")).toBeNull();
+
+  // 阶段 3：Provider 返回后、结果校验期间展示“正在校验返回结果”。
+  await act(async () => {
+    resolveAssist?.(aiResponse("候选已生成", AI_CANDIDATE));
+    await pendingAssist;
+  });
+  await screen.findByText("正在校验返回结果…");
+  expect(screen.queryByTestId("ai-candidate-summary")).toBeNull();
+
+  // 阶段 4：校验完成 → 收敛到成功态“已生成修改，等待查看 Diff”+ Candidate。
+  await act(async () => {
+    resolveBindings?.([]);
+    await pendingBindings;
+  });
+  await screen.findByTestId("ai-candidate-summary");
+  expect(screen.getByTestId("ai-progress-done").textContent).toBe("已生成修改，等待查看 Diff");
+  expect(screen.queryByTestId("ai-progress-stage")).toBeNull();
+  // Provider hidden reasoning 永远不进入对话渲染。
+  expect(document.body.textContent).not.toContain("reasoning");
+});
+
+it("converges to an explicit error state when the request fails", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: () => ({
+        status: 502,
+        body: {
+          detail: {
+            code: "ai_provider_unreachable",
+            message: "无法连接模型服务：请检查网络连通性后重试",
+          },
+        },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "触发失败" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+
+  // 失败必须收敛到明确错误状态：进度行与成功态都不复存在。
+  await screen.findByTestId("ai-panel-error");
+  expect(screen.getByTestId("ai-panel-error").textContent).toContain("无法连接模型服务");
+  expect(screen.queryByTestId("ai-progress-stage")).toBeNull();
+  expect(screen.queryByTestId("ai-progress-done")).toBeNull();
+  expect(screen.queryByTestId("ai-candidate")).toBeNull();
+});
+
+it("does not let the old session progress overwrite the new Adapter session", async () => {
+  const adapterA = makeAdapter({ id: 1, name: "adapter-a" });
+  const adapterB = makeAdapter({ id: 2, name: "adapter-b" });
+  let resolveAssistA: ((response: AiAssistResponse) => void) | undefined;
+  const pendingAssistA = new Promise<AiAssistResponse>((resolve) => {
+    resolveAssistA = resolve;
+  });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [adapterA, adapterB] }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [] }) },
+    aiBindingsRoute(1),
+    aiBindingsRoute(2),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: async () => ({ body: await pendingAssistA }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "A 的请求" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-progress-stage");
+
+  // 请求挂起时切换 Adapter：旧进度必须消失，不得覆盖新会话。
+  fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
+  await screen.findByRole("heading", { name: "adapter-b" });
+  expect(screen.queryByTestId("ai-progress-stage")).toBeNull();
+  expect(screen.queryByTestId("ai-loading")).toBeNull();
+
+  // 旧响应晚到：不得在 B 会话渲染 Candidate 或成功进度。
+  await act(async () => {
+    resolveAssistA?.(aiResponse("A 的旧响应", AI_CANDIDATE));
+    await pendingAssistA;
+  });
+  expect(screen.queryByText("A 的旧响应")).toBeNull();
+  expect(screen.queryByTestId("ai-candidate")).toBeNull();
+  expect(screen.queryByTestId("ai-progress-done")).toBeNull();
+});
+
+it("keeps Candidate stale and Apply gating unchanged when a selection is present", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  let resolveAssist: ((response: AiAssistResponse) => void) | undefined;
+  const pendingAssist = new Promise<AiAssistResponse>((resolve) => {
+    resolveAssist = resolve;
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion({ code: "base-code\n" })),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: async () => ({ body: await pendingAssist }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  selectInEditor("selected fragment\n", 1, 1);
+  fireEvent.click(screen.getByTestId("add-ai-selection"));
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "修改代码" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-loading");
+  fireEvent.change(screen.getByTestId("code-editor"), {
+    target: { value: "manual-newer-code\n" },
+  });
+
+  await act(async () => {
+    resolveAssist?.(aiResponse("候选已生成", AI_CANDIDATE));
+    await pendingAssist;
+  });
+  // 选区上下文不放松 stale 判定：工作副本变化仍要求“仍然应用”。
+  await screen.findByTestId("ai-candidate-stale");
+  fireEvent.click(screen.getByTestId("ai-view-diff"));
+  await screen.findByTestId("version-diff");
+  expect(screen.getByTestId("diff-candidate-stale")).toBeTruthy();
+  expect(screen.getByTestId("diff-apply-candidate").textContent).toContain("仍然应用");
+  fireEvent.click(screen.getByTestId("diff-apply-candidate"));
+  expect(valueOf("code-editor")).toBe("candidate-code\n");
 });
