@@ -40,20 +40,42 @@ function versionLabel(
   return seq === undefined ? `#${versionId}` : `v${seq}`;
 }
 
+function catalogRuntimeStatus(adapter: Adapter): {
+  dot: "running" | "stopped";
+  label: string;
+  fact: string;
+} {
+  if (adapter.adapter_type === "task") {
+    if (adapter.running_execution_id != null) {
+      return {
+        dot: "running",
+        label: "运行中",
+        fact: `Execution #${adapter.running_execution_id} 运行中`,
+      };
+    }
+    const label = adapter.runtime_locked ? "定时运行中" : "空闲";
+    return { dot: adapter.runtime_locked ? "running" : "stopped", label, fact: label };
+  }
+  if (adapter.running_execution_id != null) {
+    return {
+      dot: "running",
+      label: "调用中",
+      fact: `调用 #${adapter.running_execution_id} 运行中`,
+    };
+  }
+  const label = adapter.runtime_locked ? "接收中" : "已停止";
+  return { dot: adapter.runtime_locked ? "running" : "stopped", label, fact: label };
+}
+
 function catalogSubtitle(
   adapter: Adapter,
+  runtimeStatus: ReturnType<typeof catalogRuntimeStatus>,
   versionSeqById: Map<number, number>,
   workersById: Map<number, Worker>,
 ): { primary: string; attention: string[]; full: string } {
   if (adapter.adapter_type === "task") {
     const attention: string[] = [];
     const mode = adapter.run_mode === "schedule" ? "定时运行" : "手动运行";
-    const runtimeFact =
-      adapter.running_execution_id != null
-        ? `Execution #${adapter.running_execution_id} 运行中`
-        : adapter.runtime_locked
-          ? "定时运行中"
-          : "空闲";
     const workerId = adapter.runtime_worker_id;
     if (workerId != null) {
       const worker = workersById.get(workerId);
@@ -61,7 +83,7 @@ function catalogSubtitle(
         attention.push("Worker 离线");
       }
     }
-    const primary = `${LANGUAGE_LABELS[adapter.language]} · ${mode} · ${runtimeFact}`;
+    const primary = `${LANGUAGE_LABELS[adapter.language]} · ${mode} · ${runtimeStatus.fact}`;
     const fullParts = [primary, ...attention];
     if (workerId == null) {
       fullParts.push("Worker 未配置");
@@ -75,12 +97,6 @@ function catalogSubtitle(
     return { primary, attention, full: fullParts.join(" · ") };
   }
   const attention: string[] = [];
-  const runtimeFact =
-    adapter.running_execution_id != null
-      ? `调用 #${adapter.running_execution_id} 运行中`
-      : adapter.runtime_locked
-        ? "接收中"
-        : "已停止";
   const workerId = adapter.runtime_worker_id;
   if (workerId !== null && workerId !== undefined) {
     const worker = workersById.get(workerId);
@@ -92,7 +108,7 @@ function catalogSubtitle(
     adapter.latest_version_id == null
       ? "未保存"
       : `已保存 ${versionLabel(adapter.latest_version_id, null, versionSeqById)}`;
-  const primary = `${LANGUAGE_LABELS[adapter.language]} · ${runtimeFact} · ${revision}`;
+  const primary = `${LANGUAGE_LABELS[adapter.language]} · ${runtimeStatus.fact} · ${revision}`;
   const fullParts = [primary, ...attention];
   if (workerId === null || workerId === undefined) {
     fullParts.push("Worker 未配置");
@@ -189,13 +205,15 @@ export default function AdapterCatalog({
           <p className="catalog-empty">{inView.length === 0 ? "暂无 Adapter" : "没有匹配的 Adapter"}</p>
         ) : (
           visible.map((adapter) => {
-            const runtimeState =
-              adapter.running_execution_id != null
-                ? "running"
-                : adapter.runtime_locked
-                  ? "running"
-                  : "stopped";
-            const subtitle = catalogSubtitle(adapter, versionSeqById, workersById);
+            const runtimeStatus = catalogRuntimeStatus(adapter);
+            const statusDescription = `${adapter.adapter_type === "task" ? "Task" : "Webhook"} 状态：${runtimeStatus.label}`;
+            const subtitle = catalogSubtitle(adapter, runtimeStatus, versionSeqById, workersById);
+            const runtimeDetail = adapter.running_execution_id == null
+              ? null
+              : adapter.adapter_type === "task"
+                ? `Execution #${adapter.running_execution_id}`
+                : `调用 #${adapter.running_execution_id}`;
+            const accessibleRuntimeFact = [statusDescription, runtimeDetail].filter(Boolean).join(" · ");
             return (
               <button
                 key={adapter.id}
@@ -204,15 +222,13 @@ export default function AdapterCatalog({
                 className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
                 disabled={busy}
                 title={`${adapter.name}${adapter.description ? ` — ${adapter.description}` : ""}\n${subtitle.full}`}
-                aria-label={`${adapter.name}，${subtitle.full}`}
+                aria-label={`${adapter.name}，${subtitle.full.replace(runtimeStatus.fact, accessibleRuntimeFact)}`}
                 onClick={() => onSelect(adapter)}
               >
                 <span className="catalog-item-name">
                   <span
-                    className={`catalog-status-dot catalog-status-${runtimeState}`}
-                    title={adapter.adapter_type === "task"
-                      ? `Task 状态：${adapter.running_execution_id != null ? "运行中" : adapter.runtime_locked ? "定时运行中" : "空闲"}`
-                      : `Webhook 状态：${adapter.running_execution_id != null ? "调用中" : adapter.runtime_locked ? "接收中" : "已停止"}`}
+                    className={`catalog-status-dot catalog-status-${runtimeStatus.dot}`}
+                    title={statusDescription}
                   />
                   {adapter.name}
                 </span>
