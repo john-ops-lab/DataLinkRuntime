@@ -104,6 +104,16 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
             language={current.language}
             original={current.original}
             modified={current.modified}
+            // M5.5.6：Modal destroyOnHidden 卸载 DiffEditor 时，@monaco-editor/react
+            // 默认先 dispose 内部 model 再 dispose DiffEditorWidget，触发
+            // "TextModel got disposed before DiffEditorWidget model got reset"
+            // 的 BugIndicatingError（页面 error 事件）。固定 model path 并在
+            // 卸载时保留 model（由 Monaco model 缓存复用），消除卸载时序竞争，
+            // 也不会累积无 uri 的孤儿 model。
+            originalModelPath="dlr-diff-original"
+            modifiedModelPath="dlr-diff-modified"
+            keepCurrentOriginalModel
+            keepCurrentModifiedModel
             options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false } }}
           />
         </div>
