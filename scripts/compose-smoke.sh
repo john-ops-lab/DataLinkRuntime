@@ -104,6 +104,7 @@ CONTROL_NETWORK=$(docker inspect --format '{{range $network, $_ := .NetworkSetti
 AI_FAKE_CONTAINER_ID=$(docker run -d \
   --name "$AI_FAKE_CONTAINER_NAME" \
   --network "$CONTROL_NETWORK" \
+  -e SMOKE_SELECTED_TEXT \
   --volume "$PWD/scripts/ai-fake-provider.py:/tmp/dlr-ai-fake-provider.py:ro" \
   --entrypoint python \
   "$CONTROL_IMAGE" /tmp/dlr-ai-fake-provider.py --port 18080)

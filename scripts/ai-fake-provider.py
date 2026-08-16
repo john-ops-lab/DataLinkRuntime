@@ -52,12 +52,22 @@ def detect_language(payload: dict[str, Any]) -> str:
 
 
 def detect_selected_context(payload: dict[str, Any]) -> bool:
-    """M5.5.5: acknowledge the structured selection block if it reached us.
+    """M5.5.5: prove the structured selection block actually reached us.
 
-    The selected_context key lives inside the serialized system prompt, so
-    its quotes are JSON-escaped (\"selected_context\"); match the bare key.
+    The context dict is serialized inside the system prompt, so a real
+    selected_context KEY appears with JSON-escaped quotes (\\"selected_context\\").
+    The prose explanation in the system prompt contains the bare word
+    selected_context without quotes, so the key match cannot be a false
+    positive. When SMOKE_SELECTED_TEXT is configured (compose-smoke.sh), the
+    actual selected text must also be present: if the backend silently dropped
+    the selection, the sentinel would be nowhere in the payload.
     """
-    return "selected_context" in json.dumps(payload, ensure_ascii=False)
+    encoded = json.dumps(payload, ensure_ascii=False)
+    has_key = '\\"selected_context\\"' in encoded
+    sentinel = os.environ.get("SMOKE_SELECTED_TEXT", "")
+    if sentinel:
+        return has_key and sentinel in encoded
+    return has_key
 
 
 def candidate_for(language: str, selected: bool) -> dict[str, Any]:

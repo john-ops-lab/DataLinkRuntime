@@ -307,7 +307,10 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
             : { value: response.candidate, baseSnapshot, applied: false },
       };
       setMessages((current) => [...current, assistantMessage]);
-      setProgressStage("succeeded");
+      // M5.5.5: the success stage claims "waiting to view the Diff" only when
+      // a Candidate is actually rendered; a plain-text reply converges
+      // silently to the assistant message itself.
+      setProgressStage(assistantMessage.candidate === null ? null : "succeeded");
     } catch (error) {
       if (generation === requestGeneration.current) {
         setPanelError(errorMessage(error));

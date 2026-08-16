@@ -706,5 +706,8 @@ manual_assist = request(
 )
 assert manual_assist["candidate"] is not None, manual_assist
 assert manual_assist["model"] == "manual-smoke-model", manual_assist
+# 反向判别：不带选区的请求不得触发 fake 的 "with selected context" 回显，
+# 证明检测只对真实携带选区的请求生效。
+assert "with selected context" not in manual_assist["message"], manual_assist
 
 print("M5.4.4 compose smoke passed")

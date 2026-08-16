@@ -3822,6 +3822,34 @@ it("does not let the old session progress overwrite the new Adapter session", as
   expect(screen.queryByTestId("ai-progress-done")).toBeNull();
 });
 
+it("does not claim a ready Diff for a plain-text reply without a Candidate", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: () => ({ body: aiResponse("这是纯文本说明，不生成候选", null) }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "解释一下" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByText("这是纯文本说明，不生成候选");
+
+  // candidate=null：没有可查看的 Diff，成功收敛行不得出现。
+  expect(screen.queryByTestId("ai-progress-done")).toBeNull();
+  expect(screen.queryByTestId("ai-candidate")).toBeNull();
+  // 进度行也必须收敛消失（不残留任何阶段）。
+  expect(screen.queryByTestId("ai-progress-stage")).toBeNull();
+});
+
 it("keeps Candidate stale and Apply gating unchanged when a selection is present", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   let resolveAssist: ((response: AiAssistResponse) => void) | undefined;

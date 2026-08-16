@@ -189,9 +189,10 @@ class AiSelectionContext(_StrictSchema):
     @field_validator("text", mode="before")
     @classmethod
     def validate_text(cls, value: object) -> str:
-        try:
-            return _non_blank(value, "text")
-        except ValueError:
+        # Strip is used only to decide "blank"; the returned value keeps the
+        # exact administrator-selected text, including leading indentation
+        # and trailing newlines, which are meaningful in code.
+        if not isinstance(value, str) or not value.strip():
             raise HTTPException(
                 status_code=422,
                 detail={
@@ -199,6 +200,7 @@ class AiSelectionContext(_StrictSchema):
                     "message": "AI request contains an invalid selection context",
                 },
             ) from None
+        return value
 
     @field_validator("start_line", "end_line", mode="before")
     @classmethod

@@ -99,7 +99,8 @@ POST /api/adapters/{adapter_id}/ai/assist
 基准 Version 元数据，不把客户端字段当作版本事实来源。
 
 `selected_context`（M5.5.5）可空；非空时是管理员点击「加入对话上下文」瞬间从 Monaco
-捕获的**精确选区快照**：`text` 必须是本次实际选中的非空文本，`start_line / end_line`
+捕获的**精确选区快照**：`text` 必须是本次实际选中的非空文本，且**原样保留**（前导缩进与
+行尾换行不被裁剪，缩进敏感代码选区必须与所见一致），`start_line / end_line`
 是 1-based Monaco 行号且 `1 ≤ start_line ≤ end_line`。浏览器必须在点击瞬间冻结该快照，
 管理员随后移动光标不得改变已发送的选区；空选区、纯空白文本或非法行号返回 HTTP 422
 `ai_request_invalid` 且不回显非法原值。选区只作为结构化文本块进入本轮 Prompt，不包含
@@ -236,6 +237,8 @@ Provider Adapter 只向上层交付 `final_text`：
 - 进度只由浏览器侧请求生命周期驱动：组装请求、网络请求、结果校验、提交完成；
   不展示 token-by-token chain-of-thought，不在 Prompt 中要求 Provider 输出思考过程，
   不解析 Provider 私有 reasoning 字段。
+- 成功收敛态「已生成修改，等待查看 Diff」只在确实生成 Candidate 时展示；
+  Provider 只返回纯文本说明（candidate=null）时进度静默收敛到回复本身，不误导。
 - 请求失败时进度立即收敛到明确错误状态（错误提示出现、进度行消失）。
 - 请求取消 / Adapter 切换后旧进度不得继续覆盖新会话（generation + Adapter key 双重隔离）。
 

@@ -1023,7 +1023,9 @@ def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
         )
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
-    selected = "    return input\n"
+    # 选区文本刻意包含前导缩进与行尾换行，且**不是** Working Copy 的子串，
+    # 确保下面的断言只能由 selected_context 自身命中（防止巧合通过）。
+    selected = "    items = input.get('items', [])  # exact selection\n"
     request_body = assist_body()
     request_body["base_version_id"] = version["id"]
     request_body["selected_context"] = selection_body(text=selected, start_line=2, end_line=3)
@@ -1041,9 +1043,12 @@ def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     system_prompt = messages[0]["content"]
     assert isinstance(system_prompt, str)
-    # The exact selected text and the structured line range both travel.
+    # The exact selected text (leading indentation and trailing newline kept
+    # verbatim) and the structured line range both travel. The prompt embeds
+    # the context JSON, so the newline appears in JSON-escaped form.
     encoded_selection = json.dumps(selected, ensure_ascii=False)[1:-1]
     assert encoded_selection in system_prompt
+    assert "\\n" in encoded_selection
     assert '"start_line": 2' in system_prompt
     assert '"end_line": 3' in system_prompt
     # The binding name is present; the Credential truth is not.
@@ -1053,20 +1058,22 @@ def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
 
 
 @pytest.mark.parametrize(
-    ("overrides",),
+    ("overrides", "echo_sentinel"),
     [
-        ({"text": "   "},),
-        ({"start_line": 0},),
-        ({"end_line": 0},),
-        ({"start_line": 3, "end_line": 2},),
-        ({"start_line": -1},),
-        ({"start_line": "1"},),
+        # 空白文本：仅断言稳定错误码（空白本身无法作为回显哨兵）。
+        ({"text": "   "}, None),
+        ({"start_line": 0}, "0"),
+        ({"end_line": -424243}, "-424243"),
+        ({"start_line": 424244, "end_line": 424243}, "424244"),
+        ({"start_line": -424245}, "-424245"),
+        ({"start_line": "STRING_ECHO_SENTINEL"}, "STRING_ECHO_SENTINEL"),
     ],
 )
 def test_assist_rejects_invalid_selection_context_without_echo(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     overrides: dict[str, object],
+    echo_sentinel: str | None,
 ) -> None:
     adapter = create_adapter(api_client, "invalid-selection")
     configure(api_client)
@@ -1075,7 +1082,9 @@ def test_assist_rejects_invalid_selection_context_without_echo(
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "ai_request_invalid"
-    assert "ai_selection" not in response.text.lower()
+    # 稳定错误文案是固定字符串；真正要证明的是非法原值本身不被回显。
+    if echo_sentinel is not None:
+        assert echo_sentinel not in response.text
 
 
 def test_assist_selection_does_not_persist_or_log_selected_code(
