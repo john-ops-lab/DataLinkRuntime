@@ -85,13 +85,26 @@ POST /api/adapters/{adapter_id}/ai/assist
     {"role": "user", "content": "..."},
     {"role": "assistant", "content": "..."}
   ],
-  "base_version_id": 12
+  "base_version_id": 12,
+  "selected_context": {
+    "text": "...管理员在 Monaco 中实际选中的精确文本...",
+    "start_line": 12,
+    "end_line": 28
+  }
 }
 ```
 
 `recent_messages` 最多 8 条，只允许 `user / assistant` 可见消息；旧 Candidate、旧代码快照
 和 reasoning 不进入历史。`base_version_id` 可空；非空时只用于补充属于当前 Adapter 的
 基准 Version 元数据，不把客户端字段当作版本事实来源。
+
+`selected_context`（M5.5.5）可空；非空时是管理员点击「加入对话上下文」瞬间从 Monaco
+捕获的**精确选区快照**：`text` 必须是本次实际选中的非空文本，且**原样保留**（前导缩进与
+行尾换行不被裁剪，缩进敏感代码选区必须与所见一致），`start_line / end_line`
+是 1-based Monaco 行号且 `1 ≤ start_line ≤ end_line`。浏览器必须在点击瞬间冻结该快照，
+管理员随后移动光标不得改变已发送的选区；空选区、纯空白文本或非法行号返回 HTTP 422
+`ai_request_invalid` 且不回显非法原值。选区只作为结构化文本块进入本轮 Prompt，不包含
+文件路径、不触发任何文件读取，也不持久化。
 
 Control 必须根据 `adapter_id` 自行读取并补充：
 
@@ -102,7 +115,8 @@ Control 必须根据 `adapter_id` 自行读取并补充：
 - `context.config / context.secrets.get(key) / context.logger` 与 JSON I/O 语义。
 
 Control 不读取或发送绑定 Credential 的真值。浏览器提交的 Working Copy 是本轮唯一权威
-代码快照，但无权借请求修改 Adapter.language 或任何生命周期字段。
+代码快照，但无权借请求修改 Adapter.language 或任何生命周期字段；选区上下文同样只影响
+AI 生成建议，不改变 Working Copy 基线、Candidate schema、stale 判定或 Diff / Apply 语义。
 
 响应：
 
@@ -197,6 +211,37 @@ Provider Adapter 只向上层交付 `final_text`：
 - 已归档 Adapter 只读，不允许 Apply。
 - Apply 只替换浏览器 snapshot 并进入既有 dirty 状态，不调用 Save / Test / Publish API。
 
+### 5.1 Monaco 选区上下文（M5.5.5）
+
+- 编辑工具栏提供「加入对话上下文」按钮，仅在当前存在**非空选区**且 Working Copy
+  就绪时可用；空选区/纯空白文本不产生任何操作。
+- 点击瞬间从 Monaco 读取本次实际选择的精确文本与 1-based 行号作为快照；AI 面板展示
+  「已添加选中文本：第 12–28 行（语言）」标记（语言展示名来自稳定映射，不伪造文件路径）。
+- 标记可一键「清除」；再次选择并点击「加入对话上下文」即替换旧快照。
+- 选区上下文属于当前 Adapter / 当前会话：切换 Adapter 时标记与快照立即清理，
+  旧选区绝不串到新 Adapter；选区不持久化到数据库、localStorage 或普通日志。
+- 发送请求时使用已确认的快照；后续光标移动不会悄悄改变请求内容。
+- 选区上下文不引入 Secret 真值：Control 仍只向 Prompt 注入绑定 `env_key` 名称；
+  选区只影响 AI 生成建议，不改变 stale 判定、Candidate schema、Diff/Apply 与
+  Save/Test/Run 人工门禁。
+
+### 5.2 平台阶段进度（M5.5.5）
+
+请求进行中，AI 面板展示 DLR 自身已知的请求生命周期阶段，而非模型推理：
+
+```text
+正在准备当前代码上下文… → 正在请求 AI 模型… → 正在校验返回结果…
+→ 已生成修改，等待查看 Diff（成功收敛）
+```
+
+- 进度只由浏览器侧请求生命周期驱动：组装请求、网络请求、结果校验、提交完成；
+  不展示 token-by-token chain-of-thought，不在 Prompt 中要求 Provider 输出思考过程，
+  不解析 Provider 私有 reasoning 字段。
+- 成功收敛态「已生成修改，等待查看 Diff」只在确实生成 Candidate 时展示；
+  Provider 只返回纯文本说明（candidate=null）时进度静默收敛到回复本身，不误导。
+- 请求失败时进度立即收敛到明确错误状态（错误提示出现、进度行消失）。
+- 请求取消 / Adapter 切换后旧进度不得继续覆盖新会话（generation + Adapter key 双重隔离）。
+
 ## 6. 稳定错误与日志边界
 
 M4 对外提供以下稳定错误码：
@@ -233,9 +278,9 @@ Provider 原始错误不得把 Authorization、请求体、Prompt、Working Copy
 
 | 层 | 必须证明 |
 |---|---|
-| Backend | 设置 CRUD 不回显 Secret；token Credential/null 校验；五类 Provider fixture 归一；reasoning 隔离；default 不发 override；unsupported 稳定报错；models 归一；Prompt 只含 env_key；三语言 Contract；Candidate 严格校验；Assist 生命周期零副作用 |
-| Web | Panel 收放；发送当前 Working Copy；三语言 Diff；Apply dirty 且零生命周期 API；缺绑定提示；stale 明确覆盖；Adapter 切换丢弃旧响应并清空会话；Archived 禁 Apply；Model 刷新 + 手输；reasoning 默认值 |
-| Compose smoke | 在隔离 Compose 网络启动临时本地 fake Provider，完成 settings→`/v1/models`→真实最小 `/v1/chat/completions`→Python/JavaScript/Java Assist，并逐个断言 Version / Execution 数量、published pointer、production state 不变；不访问公网 AI，fake 不进入正式 Compose |
+| Backend | 设置 CRUD 不回显 Secret；token Credential/null 校验；五类 Provider fixture 归一；reasoning 隔离；default 不发 override；unsupported 稳定报错；models 归一；Prompt 只含 env_key；三语言 Contract；Candidate 严格校验；Assist 生命周期零副作用；选区精确文本与行号入 Prompt 且 Secret 真值不入 Prompt；非法选区（空白/行号越界/倒序/代理项）稳定 422 不回显；选区不落库不落日志 |
+| Web | Panel 收放；发送当前 Working Copy；三语言 Diff；Apply dirty 且零生命周期 API；缺绑定提示；stale 明确覆盖；Adapter 切换丢弃旧响应并清空会话；Archived 禁 Apply；Model 刷新 + 手输；reasoning 默认值；非空选区一键加入与行号标记；空选区/纯空白不触发；清除/替换；Adapter 切换隔离旧选区；发送使用快照不受光标影响；四阶段平台进度与失败收敛；旧进度不覆盖新会话 |
+| Compose smoke | 在隔离 Compose 网络启动临时本地 fake Provider，完成 settings→`/v1/models`→真实最小 `/v1/chat/completions`→Python/JavaScript/Java Assist，并逐个断言 Version / Execution 数量、published pointer、production state 不变；选区快照随请求到达 fake Provider，reasoning 哨兵与选区文本不出现在响应与服务日志；不访问公网 AI，fake 不进入正式 Compose |
 
 标准门禁：backend ruff / format / mypy / pytest，web lint / typecheck / tests / build，以及
 `./scripts/compose-smoke.sh` 全绿。构建成功不能替代上述真实行为验证。

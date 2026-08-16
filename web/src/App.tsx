@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor from "@monaco-editor/react";
+import type * as monaco from "monaco-editor";
 import { Button, ConfigProvider, Input, message, Modal, Segmented, Select, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
@@ -30,6 +31,7 @@ import type {
   AdapterLanguage,
   AdapterType,
   AiCandidate,
+  AiSelectionContext,
   Execution,
   VersionDetail,
   VersionSummary,
@@ -213,6 +215,13 @@ function AdapterConsole() {
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  // M5.5.5：Monaco 非空选区一键加入 AI 上下文。
+  // editorRef 只在点击“加入对话上下文”时读取本次实际选择；editorHasSelection
+  // 只驱动按钮可用性（空选区不提供无意义操作）；aiSelectedContext 是已确认的
+  // 快照，属于当前 Adapter / 当前会话，光标后续移动不会改变它。
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const [editorHasSelection, setEditorHasSelection] = useState(false);
+  const [aiSelectedContext, setAiSelectedContext] = useState<AiSelectionContext | null>(null);
   const [diffView, setDiffView] = useState<DiffViewState | null>(null);
   const [taskRuntimeState, setTaskRuntimeState] = useState<TaskRuntimeState>(INITIAL_TASK_RUNTIME_STATE);
   const [webhookRuntimeState, setWebhookRuntimeState] = useState<WebhookRuntimeState>(INITIAL_WEBHOOK_RUNTIME_STATE);
@@ -539,6 +548,10 @@ function AdapterConsole() {
     setWaitingForWebhook(false);
     setTaskRuntimeState(INITIAL_TASK_RUNTIME_STATE);
     setWebhookRuntimeState(INITIAL_WEBHOOK_RUNTIME_STATE);
+    // M5.5.5：选区上下文只属于当前 Adapter/会话；切换时立即清理，
+    // 旧 Adapter 的选区不会串到新 Adapter。
+    setAiSelectedContext(null);
+    setEditorHasSelection(false);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
       const list = await api.listVersions(adapter.id);
@@ -803,6 +816,29 @@ function AdapterConsole() {
     });
   }
 
+  // M5.5.5：把 Monaco 当前选区作为精确快照加入 AI 上下文。文本与行号在点击
+  // 瞬间从编辑器读取，之后光标移动不会偷偷改变已加入的上下文。
+  function handleAddSelectedContext() {
+    const editor = editorRef.current;
+    if (editor === null || busy || !contentReady) {
+      return;
+    }
+    const selection = editor.getSelection();
+    const model = editor.getModel();
+    if (selection === null || model === null || selection.isEmpty()) {
+      return;
+    }
+    const text = model.getValueInRange(selection);
+    if (text.trim() === "") {
+      return;
+    }
+    setAiSelectedContext({
+      text,
+      start_line: selection.startLineNumber,
+      end_line: selection.endLineNumber,
+    });
+  }
+
   async function handleUpdateDetails() {
     if (!selected || busy) {
       return;
@@ -944,9 +980,11 @@ function AdapterConsole() {
           workingCopy={snapshot}
           contentReady={contentReady}
           busy={busy}
+          selectedContext={aiSelectedContext}
           onOpen={() => setAiPanelOpen(true)}
           onClose={() => setAiPanelOpen(false)}
           onApply={handleApplyAiCandidate}
+          onClearSelectedContext={() => setAiSelectedContext(null)}
         />
 
         <main className="workbench">
@@ -1016,6 +1054,14 @@ function AdapterConsole() {
                           >
                             查看差异
                           </Button>
+                          <Button
+                            size="small"
+                            data-testid="add-ai-selection"
+                            disabled={busy || !contentReady || !editorHasSelection}
+                            onClick={handleAddSelectedContext}
+                          >
+                            加入对话上下文
+                          </Button>
                         </div>
                         <div className="editor-main" data-testid="editor-main" data-monaco-theme={editorTheme}>
                           <Editor
@@ -1023,6 +1069,17 @@ function AdapterConsole() {
                             theme={editorTheme}
                             language={selected.language}
                             value={snapshot.code}
+                            onMount={(editor) => {
+                              editorRef.current = editor;
+                              const updateSelectionState = () => {
+                                const selection = editor.getSelection();
+                                setEditorHasSelection(
+                                  selection !== null && !selection.isEmpty(),
+                                );
+                              };
+                              updateSelectionState();
+                              editor.onDidChangeCursorSelection(updateSelectionState);
+                            }}
                             onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
                             options={{
                               minimap: { enabled: false },

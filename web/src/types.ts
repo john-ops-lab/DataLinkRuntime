@@ -228,6 +228,15 @@ export interface AiConversationMessage {
   content: string;
 }
 
+/** M5.5.5: exact Monaco selection snapshot added to the AI context.
+ * Captured at click time; later cursor movement never changes it.
+ * Line numbers are 1-based Monaco line numbers. */
+export interface AiSelectionContext {
+  text: string;
+  start_line: number;
+  end_line: number;
+}
+
 export interface AiAssistResponse {
   message: string;
   candidate: AiCandidate | null;

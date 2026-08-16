@@ -126,6 +126,14 @@ def assist_body(code: str = "def handle(context, input):\n    return input\n") -
     }
 
 
+def selection_body(
+    text: str = "def handle(context, input):",
+    start_line: int = 1,
+    end_line: int = 1,
+) -> dict[str, object]:
+    return {"text": text, "start_line": start_line, "end_line": end_line}
+
+
 def test_ai_provider_timeout_settings_default_and_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -971,6 +979,149 @@ def test_assist_prompt_uses_language_contract_and_secret_names_only(
     assert "sensitive-user" not in system_prompt
 
 
+def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M5.5.5: the exact selected text and line range reach the Provider as a
+    structured block, while Credential truth still never joins the Prompt."""
+    adapter = create_adapter(api_client, "selection-context")
+    version = save_version(api_client, adapter["id"])
+    business_credential = create_credential(
+        api_client,
+        name="selection-business",
+        credential_type="password",
+        fields={"username": "selection-user", "password": BUSINESS_SECRET},
+    )
+    binding = api_client.put(
+        f"/api/adapters/{adapter['id']}/credential-bindings",
+        json={
+            "bindings": [
+                {
+                    "env_key": "SELECTION_SECRET",
+                    "credential_id": business_credential["id"],
+                    "field": "password",
+                }
+            ]
+        },
+    )
+    assert binding.status_code == 200
+    configure(api_client)
+    captured: dict[str, object] = {}
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        captured["payload"] = payload or {}
+        return fake_chat_response(
+            valid_output(),
+            reasoning_content="provider-reasoning-sentinel",
+            reasoning_details=[{"text": "provider-reasoning-details-sentinel"}],
+        )
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    # 选区文本刻意包含前导缩进与行尾换行，且**不是** Working Copy 的子串，
+    # 确保下面的断言只能由 selected_context 自身命中（防止巧合通过）。
+    selected = "    items = input.get('items', [])  # exact selection\n"
+    request_body = assist_body()
+    request_body["base_version_id"] = version["id"]
+    request_body["selected_context"] = selection_body(text=selected, start_line=2, end_line=3)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=request_body)
+    assert response.status_code == 200, response.text
+    assert response.json()["candidate"] is not None
+    # Reasoning from the Provider never reaches the browser, with or without
+    # the selection context.
+    assert "reasoning" not in response.text
+    assert "provider-reasoning-sentinel" not in response.text
+
+    captured_payload = captured["payload"]
+    assert isinstance(captured_payload, dict)
+    messages = captured_payload["messages"]
+    assert isinstance(messages, list) and isinstance(messages[0], dict)
+    system_prompt = messages[0]["content"]
+    assert isinstance(system_prompt, str)
+    # The exact selected text (leading indentation and trailing newline kept
+    # verbatim) and the structured line range both travel. The prompt embeds
+    # the context JSON, so the newline appears in JSON-escaped form.
+    encoded_selection = json.dumps(selected, ensure_ascii=False)[1:-1]
+    assert encoded_selection in system_prompt
+    assert "\\n" in encoded_selection
+    assert '"start_line": 2' in system_prompt
+    assert '"end_line": 3' in system_prompt
+    # The binding name is present; the Credential truth is not.
+    assert "SELECTION_SECRET" in system_prompt
+    assert BUSINESS_SECRET not in system_prompt
+    assert "selection-user" not in system_prompt
+
+
+@pytest.mark.parametrize(
+    ("overrides", "echo_sentinel"),
+    [
+        # 空白文本：仅断言稳定错误码（空白本身无法作为回显哨兵）。
+        ({"text": "   "}, None),
+        ({"start_line": 0}, "0"),
+        ({"end_line": -424243}, "-424243"),
+        ({"start_line": 424244, "end_line": 424243}, "424244"),
+        ({"start_line": -424245}, "-424245"),
+        ({"start_line": "STRING_ECHO_SENTINEL"}, "STRING_ECHO_SENTINEL"),
+    ],
+)
+def test_assist_rejects_invalid_selection_context_without_echo(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    echo_sentinel: str | None,
+) -> None:
+    adapter = create_adapter(api_client, "invalid-selection")
+    configure(api_client)
+    body = assist_body()
+    body["selected_context"] = {**selection_body(), **overrides}
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "ai_request_invalid"
+    # 稳定错误文案是固定字符串；真正要证明的是非法原值本身不被回显。
+    if echo_sentinel is not None:
+        assert echo_sentinel not in response.text
+
+
+def test_assist_selection_does_not_persist_or_log_selected_code(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """M5.5.5: selected code never lands in the database or normal logs."""
+    adapter = create_adapter(api_client, "selection-isolation")
+    version = save_version(api_client, adapter["id"])
+    configure(api_client)
+    selected_sentinel = "SELECTION_SENTINEL_MUST_NOT_PERSIST"
+
+    def fake_request(*_: object, **__: object) -> object:
+        return fake_chat_response(valid_output())
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    body = assist_body()
+    body["base_version_id"] = version["id"]
+    body["selected_context"] = selection_body(text=selected_sentinel, start_line=1, end_line=1)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 200, response.text
+
+    with session_factory() as session:
+        versions = session.scalar(select(func.count()).select_from(AdapterVersion))
+        executions = session.scalar(select(func.count()).select_from(Execution))
+        assert versions is not None and executions is not None
+        assert (versions, executions) == (1, 0)
+        stored = session.execute(
+            select(AdapterVersion.code).where(AdapterVersion.id == version["id"])
+        ).scalar_one()
+    assert selected_sentinel not in stored
+    assert selected_sentinel not in "".join(record.message for record in caplog.records)
+    assert selected_sentinel not in response.text
+
+
 @pytest.mark.parametrize(
     "provider_output",
     [
@@ -1195,6 +1346,7 @@ def test_assist_request_rejects_non_finite_runtime_config(
         "working_copy.runtime_config.key",
         "working_copy.runtime_config.value",
         "recent_messages.content",
+        "selected_context.text",
     ],
 )
 def test_assist_request_rejects_unicode_surrogates_without_echo(
@@ -1215,8 +1367,12 @@ def test_assist_request_rejects_unicode_surrogates_without_echo(
         working_copy["runtime_config"] = {"invalid-\ud800": "value"}
     elif target == "working_copy.runtime_config.value":
         working_copy["runtime_config"] = {"key": ["invalid-\ud800"]}
-    else:
+    elif target == "recent_messages.content":
         payload["recent_messages"] = [{"role": "user", "content": "invalid-\ud800"}]
+    else:
+        payload["selected_context"] = selection_body(
+            text="invalid-\ud800", start_line=1, end_line=1
+        )
 
     response = api_client.post(
         f"/api/adapters/{adapter['id']}/ai/assist",

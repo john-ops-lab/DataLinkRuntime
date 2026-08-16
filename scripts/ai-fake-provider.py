@@ -51,7 +51,26 @@ def detect_language(payload: dict[str, Any]) -> str:
     return "python"
 
 
-def candidate_for(language: str) -> dict[str, Any]:
+def detect_selected_context(payload: dict[str, Any]) -> bool:
+    """M5.5.5: prove the structured selection block actually reached us.
+
+    The context dict is serialized inside the system prompt, so a real
+    selected_context KEY appears with JSON-escaped quotes (\\"selected_context\\").
+    The prose explanation in the system prompt contains the bare word
+    selected_context without quotes, so the key match cannot be a false
+    positive. When SMOKE_SELECTED_TEXT is configured (compose-smoke.sh), the
+    actual selected text must also be present: if the backend silently dropped
+    the selection, the sentinel would be nowhere in the payload.
+    """
+    encoded = json.dumps(payload, ensure_ascii=False)
+    has_key = '\\"selected_context\\"' in encoded
+    sentinel = os.environ.get("SMOKE_SELECTED_TEXT", "")
+    if sentinel:
+        return has_key and sentinel in encoded
+    return has_key
+
+
+def candidate_for(language: str, selected: bool) -> dict[str, Any]:
     code = {
         "python": (
             "def handle(context, input):\n    return {'ai_smoke': 'python', 'input': input}\n"
@@ -70,8 +89,9 @@ def candidate_for(language: str) -> dict[str, Any]:
             "}\n"
         ),
     }[language]
+    suffix = " with selected context." if selected else "."
     return {
-        "message": f"Generated a local smoke Candidate for {language}.",
+        "message": f"Generated a local smoke Candidate for {language}{suffix}",
         "candidate": {
             "summary": f"Exercise the {language} AI assist contract",
             "code": code,
@@ -140,8 +160,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         METRICS.increment_completions()
+        # Optional artificial latency for UI verification (default off):
+        # SMOKE_CHAT_DELAY_SECONDS keeps the request lifecycle observable.
+        delay_seconds = float(os.environ.get("SMOKE_CHAT_DELAY_SECONDS", "0"))
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
         language = detect_language(request_payload)
-        content = json.dumps(candidate_for(language), ensure_ascii=False)
+        selected = detect_selected_context(request_payload)
+        content = json.dumps(candidate_for(language, selected), ensure_ascii=False)
         self._write_json(
             200,
             {
