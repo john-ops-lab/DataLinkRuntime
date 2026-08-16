@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import type { AiModelSetting, AiModelSettingDraft } from "../types";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
 
@@ -262,5 +262,88 @@ it("keeps the AI connection failure detail after the Chinese primary message", a
   });
   expect(screen.getByTestId("ai-settings-error").textContent).toBe(
     "连接测试失败：Authentication failed for the selected model",
+  );
+});
+
+it("刷新失败后仍可手工输入模型 ID，错误主信息中文且可行动", async () => {
+  mockLoad(modelSetting({ base_url: "https://models.example.com/v1" }));
+  const refresh = vi.spyOn(api, "refreshAiModels").mockRejectedValue(
+    new ApiError(
+      502,
+      "ai_provider_unreachable",
+      "无法连接模型服务：请检查基础 URL、网络与 DNS 是否可达，确认无误后重试",
+    ),
+  );
+
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.click(screen.getByTestId("ai-refresh-models"));
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+
+  const error = screen.getByTestId("ai-settings-error");
+  expect(error.textContent).toContain("无法连接模型服务");
+  expect(error.textContent).toContain("仍可手工输入模型 ID");
+  expect(error.textContent).toContain("错误码：ai_provider_unreachable");
+
+  // 刷新失败不锁定输入：Model ID 仍可手工填写。
+  const input = screen.getByTestId("ai-model-input") as HTMLInputElement;
+  expect(input.disabled).toBe(false);
+  fireEvent.change(input, { target: { value: "manual-after-failure" } });
+  expect(input.value).toBe("manual-after-failure");
+});
+
+it("刷新成功但列表为空时给出可行动提示", async () => {
+  mockLoad(modelSetting({ base_url: "https://models.example.com/v1" }));
+  const refresh = vi.spyOn(api, "refreshAiModels").mockResolvedValue({ models: [] });
+
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.click(screen.getByTestId("ai-refresh-models"));
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+
+  expect(screen.getByTestId("ai-settings-notice").textContent).toBe(
+    "刷新成功，但未发现可用模型；可手工填写模型 ID。",
+  );
+});
+
+it("模型列表接口不兼容时展示专属中文提示，不重复手工填写建议", async () => {
+  mockLoad(modelSetting({ base_url: "https://models.example.com/v1" }));
+  const message = "无法自动获取模型列表：该服务未提供兼容的模型列表接口，可手工填写模型 ID";
+  const refresh = vi
+    .spyOn(api, "refreshAiModels")
+    .mockRejectedValue(new ApiError(502, "ai_models_not_supported", message));
+
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.click(screen.getByTestId("ai-refresh-models"));
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+
+  // 服务端文案已含手工填写建议，前端不重复追加"仍可手工输入模型 ID"。
+  expect(screen.getByTestId("ai-settings-error").textContent).toBe(
+    `${message}（错误码：ai_models_not_supported）`,
+  );
+});
+
+it("测试连接与模型刷新是独立操作，互不代替", async () => {
+  mockLoad(modelSetting({ base_url: "https://models.example.com/v1" }));
+  const testSetting = vi
+    .spyOn(api, "testAiSetting")
+    .mockResolvedValue({ ok: true, message: "模型服务返回了可解析的最小响应" });
+  const refresh = vi.spyOn(api, "refreshAiModels").mockResolvedValue({ models: ["model-1"] });
+
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+
+  // 测试连接只走 chat/completions 路径，不触发模型列表刷新。
+  fireEvent.click(screen.getByTestId("ai-test-connection"));
+  await waitFor(() => expect(testSetting).toHaveBeenCalledTimes(1));
+  expect(refresh).not.toHaveBeenCalled();
+
+  // 刷新模型只走 /v1/models 路径，不触发连接测试，也不改变已选模型。
+  fireEvent.click(screen.getByTestId("ai-refresh-models"));
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  expect(testSetting).toHaveBeenCalledTimes(1);
+  expect((screen.getByTestId("ai-model-input") as HTMLInputElement).value).toBe(
+    "reasoning-model",
   );
 });

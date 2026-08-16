@@ -22,6 +22,7 @@ ADMIN_TOKEN = os.environ["DLR_ADMIN_TOKEN"]
 WORKER_TOKEN = os.environ["DLR_WORKER_TOKEN"]
 STORED_SECRET = os.environ["SMOKE_STORED_SECRET"]
 AI_FAKE_BASE_URL = os.environ["AI_FAKE_BASE_URL"]
+AI_FAKE_DISABLED_BASE_URL = os.environ["AI_FAKE_DISABLED_BASE_URL"]
 
 
 def request(
@@ -645,5 +646,53 @@ assert after["latest_version_id"] == before["latest_version_id"]
 assert after["runtime_worker_id"] == before["runtime_worker_id"]
 assert after_versions == before_versions
 assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
+
+# M5.5.2：模型刷新与连接测试相互独立；不支持的 /v1/models 有专属可行动中文错误。
+disabled_models = request(
+    "POST",
+    "/ai/models/refresh",
+    {
+        "provider": setting["provider"],
+        "base_url": AI_FAKE_DISABLED_BASE_URL,
+        "credential_id": None,
+    },
+    expected=502,
+)
+assert disabled_models["detail"]["code"] == "ai_models_not_supported", disabled_models
+assert "无法自动获取模型列表" in disabled_models["detail"]["message"], disabled_models
+assert "可手工填写模型 ID" in disabled_models["detail"]["message"], disabled_models
+
+# Test Connection 走 chat/completions，不因模型列表接口缺失而被判为不可用。
+disabled_test = request(
+    "POST",
+    "/ai/settings/test",
+    {
+        **setting,
+        "base_url": AI_FAKE_DISABLED_BASE_URL,
+        "model": "manual-smoke-model",
+    },
+)
+assert disabled_test["ok"] is True, disabled_test
+
+# 刷新失败不影响手工 Model ID 路径：保存手工模型后仍可正常 assist。
+manual = {
+    **setting,
+    "base_url": AI_FAKE_DISABLED_BASE_URL,
+    "model": "manual-smoke-model",
+}
+request("PUT", "/ai/settings", manual)
+assert request("GET", "/ai/settings")["model"] == "manual-smoke-model"
+manual_assist = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "Generate the deterministic python smoke Candidate with the manual model id.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "base_version_id": ai_revision["id"],
+    },
+)
+assert manual_assist["candidate"] is not None, manual_assist
+assert manual_assist["model"] == "manual-smoke-model", manual_assist
 
 print("M5.4.4 compose smoke passed")

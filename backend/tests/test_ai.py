@@ -4,6 +4,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib import error as url_error
 
 import pytest
 from fastapi.testclient import TestClient
@@ -528,6 +529,217 @@ def test_models_refresh_normalizes_ids_and_failure_keeps_manual_model(
     assert api_client.get("/api/ai/settings").json()["model"] == "keep-this-manual-model"
 
 
+@pytest.mark.parametrize("provider", ["openai", "deepseek", "custom_openai_compatible"])
+def test_models_refresh_standard_success_for_openai_compatible_providers(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    """Standard OpenAI ``data`` list normalizes for DeepSeek and compatible providers."""
+
+    def fake_request(*_: object, **__: object) -> object:
+        return {
+            "data": [
+                {"id": "deepseek-chat", "object": "model"},
+                {"id": "deepseek-reasoner", "object": "model"},
+            ]
+        }
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(
+        "/api/ai/models/refresh",
+        json={
+            "provider": provider,
+            "base_url": "http://fake-provider.invalid",
+            "credential_id": None,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"models": ["deepseek-chat", "deepseek-reasoner"]}
+
+
+def test_models_refresh_empty_list_is_success_without_options(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_request(*_: object, **__: object) -> object:
+        return {"data": []}
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(
+        "/api/ai/models/refresh",
+        json={
+            "provider": "deepseek",
+            "base_url": "http://fake-provider.invalid",
+            "credential_id": None,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"models": []}
+
+
+def _opener_raising(error: BaseException) -> object:
+    """Open a fake urlopen opener that deterministically raises one error."""
+
+    class FakeOpener:
+        def open(self, *_: object, **__: object) -> object:
+            raise error
+
+    return FakeOpener()
+
+
+def _opener_mapping(url_errors: dict[str, BaseException], default_body: bytes) -> object:
+    """Fake opener: raise per-URL errors, otherwise return a fixed JSON body."""
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def read(self, _limit: int) -> bytes:
+            return default_body
+
+    class FakeOpener:
+        def open(self, request: object, *_: object, **__: object) -> FakeResponse:
+            url = getattr(request, "full_url", "")
+            error = url_errors.get(url)
+            if error is not None:
+                raise error
+            return FakeResponse()
+
+    return FakeOpener()
+
+
+def test_models_refresh_unsupported_endpoint_has_actionable_chinese_error(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(api_client, model="keep-this-manual-model")
+    monkeypatch.setattr(
+        providers,
+        "_NO_REDIRECT_OPENER",
+        _opener_raising(
+            url_error.HTTPError(
+                "http://fake-provider.invalid/v1/models", 404, "Not Found", {}, None
+            )
+        ),
+    )
+    response = api_client.post(
+        "/api/ai/models/refresh",
+        json={
+            "provider": "deepseek",
+            "base_url": "http://fake-provider.invalid",
+            "credential_id": None,
+        },
+    )
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["code"] == "ai_models_not_supported"
+    assert "无法自动获取模型列表" in detail["message"]
+    assert "可手工填写模型 ID" in detail["message"]
+    # The Provider is not marked unusable: the saved manual model survives.
+    assert api_client.get("/api/ai/settings").json()["model"] == "keep-this-manual-model"
+
+
+def test_models_refresh_incompatible_shape_is_not_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        providers,
+        "_NO_REDIRECT_OPENER",
+        _opener_mapping({}, json.dumps({"models": "not-a-list"}).encode()),
+    )
+    with pytest.raises(providers.AiProviderError) as error:
+        providers.fetch_models("deepseek", "http://fake-provider.invalid", None)
+    assert error.value.code == "ai_models_not_supported"
+
+
+def test_models_refresh_method_not_allowed_is_not_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        providers,
+        "_NO_REDIRECT_OPENER",
+        _opener_raising(
+            url_error.HTTPError(
+                "http://fake-provider.invalid/v1/models", 405, "Method Not Allowed", {}, None
+            )
+        ),
+    )
+    with pytest.raises(providers.AiProviderError) as error:
+        providers.fetch_models("deepseek", "http://fake-provider.invalid", None)
+    assert error.value.code == "ai_models_not_supported"
+
+
+def test_models_refresh_network_unreachable_is_distinct_from_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        providers,
+        "_NO_REDIRECT_OPENER",
+        _opener_raising(url_error.URLError("network unreachable")),
+    )
+    with pytest.raises(providers.AiProviderError) as error:
+        providers.fetch_models("deepseek", "http://fake-provider.invalid", None)
+    assert error.value.code == "ai_provider_unreachable"
+
+
+def test_connection_test_and_models_refresh_are_independent(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Provider without a usable /v1/models still passes Test Connection."""
+    configure(api_client)
+    monkeypatch.setattr(
+        providers,
+        "_NO_REDIRECT_OPENER",
+        _opener_mapping(
+            {
+                "http://fake-provider.invalid/v1/models": url_error.HTTPError(
+                    "http://fake-provider.invalid/v1/models", 404, "Not Found", {}, None
+                ),
+            },
+            json.dumps(fake_chat_response("OK")).encode(),
+        ),
+    )
+    refreshed = api_client.post(
+        "/api/ai/models/refresh",
+        json={
+            "provider": "custom_openai_compatible",
+            "base_url": "http://fake-provider.invalid",
+            "credential_id": None,
+        },
+    )
+    assert refreshed.status_code == 502
+    assert refreshed.json()["detail"]["code"] == "ai_models_not_supported"
+    assert "可手工填写模型 ID" in refreshed.json()["detail"]["message"]
+
+    tested = api_client.post(
+        "/api/ai/settings/test",
+        json=setting_payload(base_url="http://fake-provider.invalid", model="manual-model-id"),
+    )
+    assert tested.status_code == 200
+    assert tested.json()["ok"] is True
+
+
+def test_refresh_error_messages_are_chinese_and_actionable(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_failure(*_: object, **__: object) -> object:
+        raise providers.AiProviderError("ai_provider_unreachable")
+
+    monkeypatch.setattr(providers, "_request_json", fake_failure)
+    response = api_client.post(
+        "/api/ai/models/refresh",
+        json={
+            "provider": "deepseek",
+            "base_url": "http://fake-provider.invalid",
+            "credential_id": None,
+        },
+    )
+    assert response.status_code == 502
+    message = response.json()["detail"]["message"]
+    assert "无法连接模型服务" in message
+    assert "检查基础 URL、网络与 DNS" in message
+
+
 def test_model_normalization_preserves_order_for_large_unique_list() -> None:
     items = [{"id": f"model-{index}"} for index in range(10_000)]
     models = providers.normalize_models({"data": [*items, items[0], items[-1]]})
@@ -578,8 +790,10 @@ def test_models_refresh_rejects_unicode_surrogate_model_id(
             "credential_id": None,
         },
     )
+    # A model list the discovery contract cannot normalize is an incompatible
+    # /v1/models response, never a raw unsafe echo.
     assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "ai_response_invalid"
+    assert response.json()["detail"]["code"] == "ai_models_not_supported"
     assert "ud800" not in response.text.lower()
 
 
@@ -604,7 +818,7 @@ def test_connection_test_makes_minimal_model_request_without_saving(
         json=setting_payload(base_url="http://fake-provider.invalid/v1", model="test-model"),
     )
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "message": "Connection successful"}
+    assert response.json() == {"ok": True, "message": "模型服务返回了可解析的最小响应"}
     assert calls[0]["method"] == "POST"
     assert calls[0]["url"] == "http://fake-provider.invalid/v1/chat/completions"
     assert calls[0]["payload"]["model"] == "test-model"  # type: ignore[index]

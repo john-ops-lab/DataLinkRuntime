@@ -170,6 +170,7 @@ def _request_json(
     *,
     not_found_code: str,
     reasoning_explicit: bool = False,
+    model_discovery: bool = False,
 ) -> object:
     """Bounded JSON HTTP request with fully sanitized failure mapping."""
     try:
@@ -189,6 +190,11 @@ def _request_json(
             raise AiProviderError(not_found_code) from None
         if reasoning_explicit and error.code in (400, 422):
             raise AiProviderError("ai_reasoning_unsupported") from None
+        # A responding Provider that rejects the discovery request (missing or
+        # unsupported /v1/models) is not unreachable; the two failures get
+        # distinct actionable messages.
+        if model_discovery and error.code in (400, 405, 422):
+            raise AiProviderError("ai_models_not_supported") from None
         raise AiProviderError("ai_provider_unreachable") from None
     except TimeoutError:
         raise AiProviderError("ai_timeout") from None
@@ -320,10 +326,21 @@ def normalize_models(response: object) -> list[str]:
 
 
 def fetch_models(provider: AiProvider, base_url: str, api_key: str | None) -> list[str]:
+    """GET /v1/models with model-discovery semantics.
+
+    A missing/unsupported endpoint and an incompatible response shape both
+    mean "cannot auto-discover model IDs" (``ai_models_not_supported``), which
+    stays distinct from an unreachable network and never marks the Provider
+    itself as unusable: manual Model ID entry remains available.
+    """
     response = _request_json(
         "GET",
         _endpoint(base_url, "/v1/models"),
         _headers(api_key),
-        not_found_code="ai_provider_unreachable",
+        not_found_code="ai_models_not_supported",
+        model_discovery=True,
     )
-    return normalize_models(response)
+    try:
+        return normalize_models(response)
+    except AiProviderError:
+        raise AiProviderError("ai_models_not_supported") from None

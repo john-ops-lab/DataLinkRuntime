@@ -19,6 +19,7 @@ import type { ColumnsType } from "antd/es/table";
 
 import { api } from "../api";
 import { CREDENTIAL_TYPE_FIELDS, CREDENTIAL_TYPE_LABELS, credentialFields } from "../credential-fields";
+import { notifyCredentialCatalogChanged, subscribeCredentialCatalog } from "../credential-catalog";
 import type { Credential, CredentialType, PackageSource } from "../types";
 import { userErrorMessage } from "../user-message";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
@@ -135,6 +136,9 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
       } else {
         setPanelError(`${operation}，但刷新列表失败；请手动刷新确认，避免重复提交。`);
       }
+      // 跨设置同步（UX-003）：让 AI 模型 / 绑定 / 依赖源等选择器无需 F5 即可
+      // 看到新凭据。只通知变化，不携带任何 Secret 数据。
+      notifyCredentialCatalogChanged();
     } catch (error) {
       fail(errorMessage(error));
     } finally {
@@ -155,6 +159,8 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
       } else {
         setPanelError("凭据已删除，但刷新列表失败；请手动刷新确认。");
       }
+      // 删除同样属于凭据元数据变化，通知所有选择器失效旧引用。
+      notifyCredentialCatalogChanged();
     } catch (error) {
       fail(errorMessage(error));
     }
@@ -350,6 +356,18 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 挂载时拉取包源与凭据列表的初始加载是有意的异步同步
     void load();
   }, [load]);
+
+  // 凭据增删改后仅刷新凭据选择器（UX-003）；已打开的包源表单不会被清空。
+  useEffect(
+    () =>
+      subscribeCredentialCatalog(() => {
+        void api
+          .listCredentials()
+          .then((credentialList) => setCredentials(credentialList))
+          .catch((error) => fail(errorMessage(error)));
+      }),
+    [fail],
+  );
 
   async function handleSubmit() {
     if (submitting) {
