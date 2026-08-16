@@ -31,4 +31,5 @@ it("keeps status colors stable for Workbench and history", () => {
 it("falls back gracefully for unknown statuses", () => {
   expect(statusLabel("unknown-status")).toBe("unknown-status");
   expect(statusColor("unknown-status")).toBe("default");
+  expect(isTerminal("unknown-status")).toBe(false);
 });
