@@ -14,10 +14,14 @@ export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-env-secret-$$}
 export DLR_MASTER_KEY=${DLR_MASTER_KEY:-smoke-master-key-$$}
 export SMOKE_STORED_SECRET=${SMOKE_STORED_SECRET:-smoke-stored-secret-$$}
 AI_FAKE_CONTAINER_ID=""
+AI_FAKE_DISABLED_CONTAINER_ID=""
 
 cleanup() {
   if [ -n "$AI_FAKE_CONTAINER_ID" ]; then
     docker rm -f "$AI_FAKE_CONTAINER_ID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$AI_FAKE_DISABLED_CONTAINER_ID" ]; then
+    docker rm -f "$AI_FAKE_DISABLED_CONTAINER_ID" >/dev/null 2>&1 || true
   fi
   docker compose -p "$COMPOSE_PROJECT_NAME" down --volumes --remove-orphans
 }
@@ -109,12 +113,36 @@ while ! docker compose exec -T -e AI_FAKE_BASE_URL control python -c \
   elapsed=$((elapsed + 2))
 done
 
+echo "==> starting second fake Provider without /v1/models (M5.5.2 independence path)"
+AI_FAKE_DISABLED_CONTAINER_NAME="${COMPOSE_PROJECT_NAME}-ai-fake-disabled"
+export AI_FAKE_DISABLED_BASE_URL="http://${AI_FAKE_DISABLED_CONTAINER_NAME}:18080"
+AI_FAKE_DISABLED_CONTAINER_ID=$(docker run -d \
+  --name "$AI_FAKE_DISABLED_CONTAINER_NAME" \
+  --network "$CONTROL_NETWORK" \
+  -e SMOKE_DISABLE_MODELS=1 \
+  --volume "$PWD/scripts/ai-fake-provider.py:/tmp/dlr-ai-fake-provider.py:ro" \
+  --entrypoint python \
+  "$CONTROL_IMAGE" /tmp/dlr-ai-fake-provider.py --port 18080)
+
+elapsed=0
+while ! docker compose exec -T -e AI_FAKE_DISABLED_BASE_URL control python -c \
+  'import os, urllib.request; urllib.request.urlopen(os.environ["AI_FAKE_DISABLED_BASE_URL"] + "/healthz", timeout=2).read()' \
+  >/dev/null 2>&1; do
+  if [ "$elapsed" -ge 60 ]; then
+    docker logs --tail 50 "$AI_FAKE_DISABLED_CONTAINER_ID"
+    exit 1
+  fi
+  sleep 2
+  elapsed=$((elapsed + 2))
+done
+
 echo "==> running M5.4.4 Task, Webhook, runtime-lock and Clone regression chain"
 docker compose exec -T \
   -e DLR_ADMIN_TOKEN \
   -e DLR_WORKER_TOKEN \
   -e SMOKE_STORED_SECRET \
   -e AI_FAKE_BASE_URL \
+  -e AI_FAKE_DISABLED_BASE_URL \
   control python - < scripts/compose-smoke.py
 
 echo "==> verifying secrets did not enter service logs"

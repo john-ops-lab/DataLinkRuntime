@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -106,6 +107,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/models":
             METRICS.increment_models()
+            # Smoke mode for M5.5.2: emulate a Provider that answers but does
+            # not expose a compatible /v1/models endpoint. Test Connection
+            # must stay independent of model discovery.
+            if os.environ.get("SMOKE_DISABLE_MODELS") == "1":
+                self._write_json(
+                    404,
+                    {"error": {"message": "model list disabled for smoke"}},
+                )
+                return
             self._write_json(
                 200,
                 {

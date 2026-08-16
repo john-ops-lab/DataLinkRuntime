@@ -4,6 +4,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useSt
 import { Alert, Button, Input, Select, Space, Spin, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
+import { subscribeCredentialCatalog } from "../credential-catalog";
 import type { Adapter, AdapterWebhook, Credential, Worker } from "../types";
 import { userErrorMessage } from "../user-message";
 
@@ -99,6 +100,19 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     // publicId changes are local edits and must not reload the form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adapterId]);
+
+  // 凭据增删改后仅刷新 token 凭据选项（UX-003）；不会重载 Webhook 配置，
+  // 未保存的本地编辑保持不变。
+  useEffect(
+    () =>
+      subscribeCredentialCatalog(() => {
+        void api
+          .listCredentials()
+          .then((credentialList) => setCredentials(credentialList))
+          .catch((error) => onError(errorMessage(error, "")));
+      }),
+    [onError],
+  );
 
   const archived = !!props.adapter.archived_at;
   const enabled = saved?.enabled === true;

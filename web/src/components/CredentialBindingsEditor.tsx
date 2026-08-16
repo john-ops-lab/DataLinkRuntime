@@ -5,6 +5,7 @@ import { Button, Empty, Input, Select, Space, Spin, Typography } from "antd";
 
 import { api } from "../api";
 import { credentialFields } from "../credential-fields";
+import { subscribeCredentialCatalog } from "../credential-catalog";
 import type { Credential } from "../types";
 import { userErrorMessage } from "../user-message";
 
@@ -66,6 +67,18 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 挂载时拉取凭据与绑定的初始加载是有意的异步同步
     void load();
   }, [load]);
+
+  // 凭据增删改后仅刷新凭据选项（UX-003）；未保存的绑定行保持原样。
+  useEffect(
+    () =>
+      subscribeCredentialCatalog(() => {
+        void api
+          .listCredentials()
+          .then((credentialList) => setCredentials(credentialList))
+          .catch((error) => onError(errorMessage(error)));
+      }),
+    [onError],
+  );
 
   function updateRow(index: number, patch: Partial<BindingRow>) {
     setNotice(null);

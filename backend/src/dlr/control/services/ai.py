@@ -42,16 +42,32 @@ _RUNTIME_CONTRACTS = {
 }
 
 _PROVIDER_ERRORS: dict[str, tuple[int, str]] = {
-    "ai_credential_invalid": (422, "AI API credential is missing, invalid, or not a token"),
-    "ai_provider_unreachable": (502, "The AI provider could not be reached"),
-    "ai_auth_failed": (502, "The AI provider rejected the configured credential"),
-    "ai_model_not_found": (502, "The configured AI model was not found"),
-    "ai_timeout": (504, "The AI provider request timed out"),
+    "ai_credential_invalid": (
+        422,
+        "凭据无效：所选凭据不存在或不是 token 类型，请检查凭据配置后重试",
+    ),
+    "ai_provider_unreachable": (
+        502,
+        "无法连接模型服务：请检查基础 URL、网络与 DNS 是否可达，确认无误后重试",
+    ),
+    "ai_auth_failed": (
+        502,
+        "模型服务拒绝了所选凭据：请检查 API Key 是否正确、有效且属于当前服务商",
+    ),
+    "ai_model_not_found": (502, "模型 ID 不存在：请检查模型 ID 是否正确，或改用其他可用模型 ID"),
+    "ai_timeout": (504, "模型服务请求超时：请检查网络连接，稍后重试"),
     "ai_reasoning_unsupported": (
         422,
-        "The selected provider or model does not support this reasoning configuration",
+        "所选服务商或模型不支持该推理配置：请调整推理策略，或改用支持推理的模型",
     ),
-    "ai_response_invalid": (502, "The AI provider returned an invalid response"),
+    "ai_response_invalid": (
+        502,
+        "模型服务返回了无法解析的响应：请确认该服务兼容 OpenAI 接口后重试",
+    ),
+    "ai_models_not_supported": (
+        502,
+        "无法自动获取模型列表：该服务未提供兼容的模型列表接口，可手工填写模型 ID",
+    ),
 }
 
 
@@ -216,7 +232,7 @@ def test_connection(session: Session, data: AiSettingDraft) -> AiConnectionTestR
         providers.chat(data, api_key, messages, structured=False)
     except providers.AiProviderError as error:
         _raise_provider_error(error)
-    return AiConnectionTestResponse(ok=True, message="Connection successful")
+    return AiConnectionTestResponse(ok=True, message="模型服务返回了可解析的最小响应")
 
 
 def _setting_draft(setting: AiModelSetting) -> AiSettingDraft:

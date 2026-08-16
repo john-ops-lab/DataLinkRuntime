@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, Button, Collapse, Input, Select, Space, Spin, Typography } from "antd";
 
 import { ApiError, api } from "../api";
+import { subscribeCredentialCatalog } from "../credential-catalog";
 import type {
   AiModelSetting,
   AiModelSettingDraft,
@@ -116,6 +117,15 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     [onError],
   );
 
+  const loadCredentials = useCallback(async () => {
+    try {
+      const credentialList = await api.listCredentials();
+      setCredentials(credentialList.filter((credential) => credential.type === "token"));
+    } catch (error) {
+      fail(errorMessage(error));
+    }
+  }, [fail]);
+
   const load = useCallback(async () => {
     setLoading(true);
     const [settingResult, credentialsResult] = await Promise.allSettled([
@@ -135,7 +145,9 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     }
 
     if (credentialsResult.status === "fulfilled") {
-      setCredentials(credentialsResult.value.filter((credential) => credential.type === "token"));
+      setCredentials(
+        credentialsResult.value.filter((credential) => credential.type === "token"),
+      );
     } else {
       fail(errorMessage(credentialsResult.reason));
     }
@@ -146,6 +158,13 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- tab mount intentionally loads global settings
     void load();
   }, [load]);
+
+  // 凭据增删改后无需 F5 即可看到最新 token 凭据（UX-003）；只刷新元数据，
+  // 已填写的表单字段不受影响。
+  useEffect(
+    () => subscribeCredentialCatalog(() => void loadCredentials()),
+    [loadCredentials],
+  );
 
   function currentPayload(): AiModelSettingDraft | null {
     const baseUrl = form.base_url.trim();
@@ -196,9 +215,18 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         credential_id: form.credential_id,
       });
       setModelOptions(response.models);
-      setNotice(`已刷新 ${response.models.length} 个模型 ID；不会自动更改当前选择。`);
+      setNotice(
+        response.models.length === 0
+          ? "刷新成功，但未发现可用模型；可手工填写模型 ID。"
+          : `已刷新 ${response.models.length} 个模型 ID；不会自动更改当前选择。`,
+      );
     } catch (error) {
-      fail(`${errorMessage(error)}；仍可手工输入模型 ID。`);
+      if (error instanceof ApiError && error.code === "ai_models_not_supported") {
+        // 服务端文案已包含"可手工填写模型 ID"，不再重复追加。
+        fail(errorMessage(error));
+      } else {
+        fail(`${errorMessage(error)}；仍可手工输入模型 ID。`);
+      }
     } finally {
       setRefreshingModels(false);
     }
