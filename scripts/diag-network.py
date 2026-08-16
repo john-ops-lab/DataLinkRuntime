@@ -121,8 +121,22 @@ def _parse_url(url: str) -> tuple[str, str, int, str]:
     return parts.scheme, host, port, url
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """Exit code 1 on usage/argument errors.
+
+    ``argparse`` defaults to exit code 2, which would collide with this
+    script's DNS-layer exit code. Keeping 1 = usage/argument error lets
+    operators write layer-based exit-code checks without misreading a
+    mistyped command line as a DNS failure.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
 def main(argv: list[str]) -> None:
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         description="DLR 分层网络 / DNS 诊断：DNS -> TCP -> TLS -> HTTP",
     )
     group = parser.add_mutually_exclusive_group(required=True)
@@ -146,6 +160,8 @@ def main(argv: list[str]) -> None:
     if args.url is not None:
         if args.tls:
             parser.error("--tls 仅与 --host 配合使用，--url 模式按 URL 的 scheme 自动决定 TLS")
+        if args.port is not None:
+            parser.error("--port 仅与 --host 配合使用，--url 的端口取自 URL")
         scheme, host, port, url = _parse_url(args.url)
         check_dns(host, port)
         check_tcp(host, port)
