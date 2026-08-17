@@ -61,6 +61,8 @@ export interface Execution {
   stderr: string;
   stderr_truncated: boolean;
   error: string | null;
+  /** Locale captured at Execution creation for platform log rendering. */
+  locale?: SystemLocale;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -177,6 +179,8 @@ export interface CredentialBinding {
 export interface PackageSource {
   id: number;
   name: string;
+  /** Stable system preset identity; user-created sources have no preset ID. */
+  preset_id?: string | null;
   kind: "pypi" | "npm" | "maven";
   index_url: string;
   is_default: boolean;
@@ -195,6 +199,7 @@ export interface ReachabilityResult {
 
 /** Canonical fresh-deployment default for one dependency kind (M5.5.8). */
 export interface DefaultPackageSourceInfo {
+  preset_id?: string;
   kind: "pypi" | "npm" | "maven";
   name: string;
   index_url: string;

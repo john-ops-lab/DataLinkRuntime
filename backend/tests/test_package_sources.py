@@ -424,7 +424,7 @@ def test_classify_install_error_distinguishes_layers() -> None:
             assert hint is not None and expected in hint, log
 
 
-def test_install_error_hint_is_appended_to_preparation_error(
+def test_install_error_hint_code_is_carried_without_localizing_exception_message(
     tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_run_logged(command: list[str], timeout_seconds: int) -> str:
@@ -447,7 +447,8 @@ def test_install_error_hint_is_appended_to_preparation_error(
             timeout_seconds=60,
             index_url="https://mirror.example.com/simple/",
         )
-    assert "域名解析失败" in str(error.value)
+    assert "域名解析失败" not in str(error.value)
+    assert error.value.hint_code == "dns"
     assert "Could not resolve host" in error.value.install_log
 
 

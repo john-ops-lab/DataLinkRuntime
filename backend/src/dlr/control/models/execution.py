@@ -82,6 +82,7 @@ class Execution(Base):
             "trigger IN ('manual', 'schedule', 'webhook')",
             name="ck_executions_trigger",
         ),
+        CheckConstraint("locale IN ('zh-CN', 'en')", name="ck_executions_locale"),
         # Supports the claim query: pending rows ordered by (created_at, id).
         Index("ix_executions_claim", "status", "created_at", "id"),
         # One active Execution per Adapter across every trigger source.
@@ -163,6 +164,11 @@ class Execution(Base):
     )
     # Failure/timeout summary.
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Locale captured when the Execution was created. Worker platform messages
+    # must not change when the deployment locale changes mid-run.
+    locale: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="zh-CN", server_default=text("'zh-CN'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

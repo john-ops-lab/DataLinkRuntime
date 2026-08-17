@@ -49,6 +49,7 @@ from dlr.control.services.adapter import (
     domain_error,
 )
 from dlr.control.services.execution import compact_json_bytes
+from dlr.control.services.locale import get_system_locale
 
 logger = logging.getLogger("dlr.control.schedule")
 
@@ -161,17 +162,28 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
     try:
         cron = validate_cron(data.cron)
     except ValueError as exc:
-        raise domain_error(422, "schedule_invalid_cron", str(exc)) from None
+        raise domain_error(
+            422,
+            "schedule_invalid_cron",
+            str(exc),
+            {"reason": str(exc)},
+        ) from None
     try:
         tz_name = validate_timezone(data.timezone)
     except ValueError as exc:
-        raise domain_error(422, "schedule_invalid_timezone", str(exc)) from None
+        raise domain_error(
+            422,
+            "schedule_invalid_timezone",
+            str(exc),
+            {"reason": str(exc)},
+        ) from None
     # Same big-field contract as Execution input: reject before persisting.
     if len(compact_json_bytes(data.input)) > settings.execution_input_max_bytes:
         raise domain_error(
             413,
             "execution_input_too_large",
             f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
+            {"max_bytes": settings.execution_input_max_bytes},
         )
     if data.enabled and adapter.latest_version_id is None:
         raise domain_error(
@@ -285,6 +297,7 @@ def process_due_schedule(
                     target_worker_id=adapter.runtime_worker_id,
                     input=schedule.input,
                     scheduled_for=due_point,
+                    locale=get_system_locale(session),
                 )
             )
             session.flush()

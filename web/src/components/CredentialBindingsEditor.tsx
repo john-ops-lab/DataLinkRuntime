@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, Button, Empty, Input, Select, Space, Spin, Typography } from "antd";
 
 import { api } from "../api";
-import { credentialFields } from "../credential-fields";
+import { credentialFieldLabel, credentialFields } from "../credential-fields";
 import { subscribeCredentialCatalog } from "../credential-catalog";
 import type { Credential } from "../types";
 import { userErrorMessage } from "../user-message";
@@ -190,7 +190,10 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
             const credential = credentials.find((candidate) => candidate.id === row.credential_id);
             const fieldOptions =
               credential !== undefined
-                ? credentialFields(credential.type).map((field) => ({ label: field, value: field }))
+                ? credentialFields(credential.type).map((field) => ({
+                    label: credentialFieldLabel(field),
+                    value: field,
+                  }))
                 : [];
             return (
               <Space

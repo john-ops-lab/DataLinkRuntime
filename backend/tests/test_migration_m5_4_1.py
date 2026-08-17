@@ -1,4 +1,4 @@
-"""Fresh-schema assertions for the current M5.5.11 Alembic head."""
+"""Fresh-schema assertions for the current M5.6 Alembic head."""
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -50,8 +50,15 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
                 "AND column_name = 'timeout_seconds'"
             )
         )
+        execution_locale_nullable = connection.scalar(
+            text(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'executions' "
+                "AND column_name = 'locale'"
+            )
+        )
 
-    assert revision == "0017_m5_6_1_system_locale"
+    assert revision == "0019_m5_6_3_preset_ids"
     assert {
         "adapter_type",
         "run_mode",
@@ -75,3 +82,4 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
     assert "UNIQUE" in webhook_index and "WHERE enabled" in webhook_index
     assert webhook_credential_nullable == "YES"
     assert timeout_nullable == "NO"
+    assert execution_locale_nullable == "NO"

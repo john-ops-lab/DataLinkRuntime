@@ -23,6 +23,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from urllib import parse as url_parse
 
+from dlr.worker import i18n
+
 logger = logging.getLogger("dlr.worker.venv")
 
 DependencyLogCallback = Callable[[str], None]
@@ -31,6 +33,11 @@ _build_locks: dict[tuple[int, int], threading.Lock] = {}
 _build_locks_guard = threading.Lock()
 
 _URI_USERINFO_PATTERN = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#@]+@")
+
+# DLR-owned marker inserted between third-party install outputs.
+OFFLINE_CACHE_FALLBACK_MARKER = (
+    "[offline cache insufficient; retrying with the configured package source]"
+)
 
 # Environment variables the dependency subprocess is allowed to inherit.
 # Everything else (platform tokens, database URL, runtime secrets) is
@@ -168,13 +175,8 @@ def dependency_failure_label(dependencies: Iterable[str], install_log: str) -> s
 # --- actionable install-error classification (M5.5.8) --------------------------
 
 
-def classify_dependency_install_error(log: str) -> str | None:
-    """Map common dependency-install failure lines to an actionable hint.
-
-    Category order matters: DNS first, then transport, then TLS, then
-    authentication, then repository/package availability. Returns a Chinese
-    hint naming the failing layer, or None when the log matches nothing.
-    """
+def dependency_source_hint_code(log: str) -> str | None:
+    """Classify a dependency-source failure without exposing raw tool text."""
     lowered = log.lower()
     if any(
         marker in lowered
@@ -188,10 +190,7 @@ def classify_dependency_install_error(log: str) -> str | None:
             "dns lookup failed",
         )
     ):
-        return (
-            "依赖源域名解析失败（DNS）：请检查容器的 DNS 配置；企业网络 / VPN 下"
-            "可设置 DLR_DNS_SERVERS 指定可用 DNS（详见 README「容器网络与 DNS 排障」）"
-        )
+        return "dns"
     if any(
         marker in lowered
         for marker in (
@@ -207,7 +206,7 @@ def classify_dependency_install_error(log: str) -> str | None:
             "host unreachable",
         )
     ):
-        return "依赖源网络不可达：请检查容器出站网络、防火墙与代理设置后重试"
+        return "network"
     if any(
         marker in lowered
         for marker in (
@@ -218,7 +217,7 @@ def classify_dependency_install_error(log: str) -> str | None:
             "unable to get local issuer certificate",
         )
     ):
-        return "依赖源 TLS 握手或证书校验失败：请确认源地址证书有效，或按部署要求配置可信 CA"
+        return "tls"
     if any(
         marker in lowered
         for marker in (
@@ -234,7 +233,7 @@ def classify_dependency_install_error(log: str) -> str | None:
             "credentials rejected",
         )
     ):
-        return "依赖源认证失败：请检查该依赖源绑定的凭据是否正确、有效"
+        return "auth"
     if any(
         marker in lowered
         for marker in (
@@ -249,7 +248,7 @@ def classify_dependency_install_error(log: str) -> str | None:
             "cannot find a version",
         )
     ):
-        return "包或制品不存在：请检查依赖名称与版本是否真实存在于该依赖源"
+        return "package"
     if any(
         marker in lowered
         for marker in (
@@ -264,8 +263,15 @@ def classify_dependency_install_error(log: str) -> str | None:
             "requested url returned error: 404",
         )
     ):
-        return "依赖源仓库不存在或不可用：请检查仓库地址是否正确，或改用其他镜像源"
+        return "source"
     return None
+
+
+def classify_dependency_install_error(
+    log: str, locale: i18n.WorkerLocale = i18n.DEFAULT_WORKER_LOCALE
+) -> str | None:
+    """Return a localized actionable hint for a known source failure."""
+    return i18n.source_hint(locale, dependency_source_hint_code(log))
 
 
 def _run_install_logged(command: list[str], timeout_seconds: int) -> str:
@@ -273,11 +279,14 @@ def _run_install_logged(command: list[str], timeout_seconds: int) -> str:
     try:
         return _run_logged(command, timeout_seconds)
     except DependencyPreparationError as error:
-        hint = classify_dependency_install_error(error.install_log)
-        message = error.args[0]
-        if hint is not None and hint not in message:
-            raise DependencyPreparationError(f"{message}；{hint}", error.install_log) from error
-        raise
+        # Keep the exception message locale-neutral. The executor owns the
+        # user-facing localized hint and the raw install log remains separate.
+        raise DependencyPreparationError(
+            error.args[0],
+            error.install_log,
+            dependency=error.dependency,
+            hint_code=error.hint_code,
+        ) from error
 
 
 class DependencyPreparationError(Exception):
@@ -288,10 +297,12 @@ class DependencyPreparationError(Exception):
         message: str,
         install_log: str,
         dependency: str | None = None,
+        hint_code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.install_log = install_log
         self.dependency = dependency
+        self.hint_code = hint_code or dependency_source_hint_code(install_log)
 
 
 def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
@@ -408,10 +419,7 @@ def prepare_version_venv(
                             ),
                         ) from offline_error
                     install_log += offline_error.install_log
-                    install_log += (
-                        "\n[offline cache insufficient; retrying with the configured "
-                        "package source]\n"
-                    )
+                    install_log += f"\n{OFFLINE_CACHE_FALLBACK_MARKER}\n"
                     try:
                         install_log += _run_install_logged(
                             base_command + ["--index-url", index_url], timeout_seconds

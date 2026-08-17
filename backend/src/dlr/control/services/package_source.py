@@ -50,10 +50,16 @@ DEFAULT_SOURCE_URL: dict[str, str] = {
 def default_source_info(kind: str) -> DefaultPackageSourceInfo:
     if kind not in DEFAULT_SOURCE_URL:
         raise domain_error(
-            422, "package_source_kind_invalid", f"Unknown package source kind: {kind}"
+            422,
+            "package_source_kind_invalid",
+            f"Unknown package source kind: {kind}",
+            {"kind": kind},
         )
     return DefaultPackageSourceInfo(
-        kind=kind, name=DEFAULT_SOURCE_NAME[kind], index_url=DEFAULT_SOURCE_URL[kind]
+        preset_id=DOMESTIC_DEFAULTS[kind].preset_id,
+        kind=kind,
+        name=DEFAULT_SOURCE_NAME[kind],
+        index_url=DEFAULT_SOURCE_URL[kind],
     )
 
 
@@ -90,7 +96,10 @@ def _ensure_default_sources(session: Session, kind: str) -> tuple[PackageSource,
     defaults = defaults_for_kind(kind)
     if len(defaults) != 2:
         raise domain_error(
-            422, "package_source_kind_invalid", f"Unknown package source kind: {kind}"
+            422,
+            "package_source_kind_invalid",
+            f"Unknown package source kind: {kind}",
+            {"kind": kind},
         )
 
     has_existing_default = (
@@ -109,6 +118,7 @@ def _ensure_default_sources(session: Session, kind: str) -> tuple[PackageSource,
                 name=_available_default_name(session, default.name),
                 kind=default.kind,
                 index_url=default.index_url,
+                preset_id=default.preset_id,
                 # A pre-existing user default wins during migration-like
                 # initialization; restore_default_source explicitly selects
                 # the domestic row below.
@@ -154,6 +164,11 @@ def _validate_credential_kind(kind: str, credential: Credential) -> None:
             "package_source_credential_incompatible",
             f"{kind} sources require {'password or token' if kind == 'npm' else 'password'} "
             "credentials",
+            {
+                "kind": kind,
+                "allowed_types": ["password", "token"] if kind == "npm" else ["password"],
+                "actual_type": credential.type,
+            },
         )
 
 
@@ -182,6 +197,7 @@ def package_source_response(session: Session, source: PackageSource) -> PackageS
     return PackageSourceResponse(
         id=source.id,
         name=source.name,
+        preset_id=source.preset_id,
         kind=source.kind,
         index_url=source.index_url,
         is_default=source.is_default,
@@ -196,7 +212,10 @@ def create_package_source(session: Session, data: PackageSourceCreate) -> Packag
     existing = session.scalar(select(PackageSource).where(PackageSource.name == data.name))
     if existing is not None:
         raise domain_error(
-            409, "package_source_name_conflict", "Package source name already exists"
+            409,
+            "package_source_name_conflict",
+            "Package source name already exists",
+            {"name": data.name},
         )
     if data.credential_id is not None:
         _validate_credential_kind(data.kind, _get_credential(session, data.credential_id))
@@ -217,7 +236,10 @@ def create_package_source(session: Session, data: PackageSourceCreate) -> Packag
     except IntegrityError:
         session.rollback()
         raise domain_error(
-            409, "package_source_name_conflict", "Package source name already exists"
+            409,
+            "package_source_name_conflict",
+            "Package source name already exists",
+            {"name": data.name},
         ) from None
     session.refresh(source)
     return source
@@ -239,11 +261,18 @@ def update_package_source(
         )
         if conflict is not None:
             raise domain_error(
-                409, "package_source_name_conflict", "Package source name already exists"
+                409,
+                "package_source_name_conflict",
+                "Package source name already exists",
+                {"name": data.name},
             )
         source.name = data.name
+        # An explicit rename turns a built-in row into an administrator-owned
+        # display name; never hide it behind the localized preset label.
+        source.preset_id = None
     if data.index_url is not None:
         source.index_url = data.index_url
+        source.preset_id = None
     next_kind = data.kind if data.kind is not None else source.kind
     next_credential_id = (
         data.credential_id if "credential_id" in data.model_fields_set else source.credential_id
@@ -252,6 +281,7 @@ def update_package_source(
         _validate_credential_kind(next_kind, _get_credential(session, next_credential_id))
     if data.kind is not None:
         source.kind = data.kind
+        source.preset_id = None
     if "credential_id" in data.model_fields_set:
         source.credential_id = data.credential_id
     if data.is_default is not None:
@@ -265,7 +295,10 @@ def update_package_source(
     except IntegrityError:
         session.rollback()
         raise domain_error(
-            409, "package_source_name_conflict", "Package source name already exists"
+            409,
+            "package_source_name_conflict",
+            "Package source name already exists",
+            {"name": data.name},
         ) from None
     session.refresh(source)
     return source

@@ -108,6 +108,12 @@ class PackageSource(Base):
             "kind IN ('pypi', 'npm', 'maven')",
             name="ck_package_sources_kind",
         ),
+        CheckConstraint(
+            "preset_id IS NULL OR preset_id IN ("
+            "'pypi.aliyun', 'pypi.official', 'npm.npmmirror', 'npm.official', "
+            "'maven.aliyun', 'maven.central')",
+            name="ck_package_sources_preset_id",
+        ),
         # At most one default source for each kind.
         Index(
             "uq_package_sources_default",
@@ -123,6 +129,9 @@ class PackageSource(Base):
         String(16), nullable=False, default="pypi", server_default=text("'pypi'")
     )
     index_url: Mapped[str] = mapped_column(Text, nullable=False)
+    # Stable identity for a genuine platform preset; user-created sources are
+    # NULL even when their URL happens to equal a preset URL.
+    preset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_default: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )

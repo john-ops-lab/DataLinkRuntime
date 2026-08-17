@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Spin } from "antd";
 
 import { api } from "../api";
-import { DEPENDENCY_UI, LANGUAGE_LABELS } from "../languages";
+import { dependencyUiFor, LANGUAGE_LABELS } from "../languages";
 import type {
   Adapter,
   AiCandidate,
@@ -399,7 +399,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         },
         {
           key: "requirements",
-          label: DEPENDENCY_UI[adapter.language].label,
+          label: dependencyUiFor(adapter.language).label,
           language: "plaintext",
           original: props.workingCopy.requirements,
           modified: candidate.requirements,
