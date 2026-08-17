@@ -48,6 +48,8 @@ interface AiAssistantPanelProps {
   busy: boolean;
   /** M5.5.5: the confirmed Monaco selection snapshot of the current session. */
   selectedContext: AiSelectionContext | null;
+  /** M5.5.9: Monaco 主题透传，Diff 弹窗与主编辑器保持同一主题。 */
+  theme: string;
   onOpen: () => void;
   onClose: () => void;
   onApply: (candidate: AiCandidate) => void;
@@ -635,6 +637,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         originalTitle="工作副本（当前编辑内容）"
         modifiedTitle="AI 候选修改"
         panes={candidateDiff?.panes ?? []}
+        theme={props.theme}
         onClose={() => setCandidateDiff(null)}
         applyAction={diffApplyAction}
       />

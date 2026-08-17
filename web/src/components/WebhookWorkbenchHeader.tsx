@@ -1,6 +1,6 @@
 /** Webhook Adapter header: identity, receive state and explicit actions. */
 
-import { Alert, Button, Tag } from "antd";
+import { Button, Tag } from "antd";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, Worker } from "../types";
@@ -11,12 +11,10 @@ interface Props {
   adapter: Adapter;
   runtimeWorker: Worker | null;
   runtimeState: WebhookRuntimeState;
-  dirty: boolean;
   busy: boolean;
   contentReady: boolean;
   onSave: () => void;
   onOpenSettings: () => void;
-  onClone: () => void;
   onToggleReceiving: () => void;
 }
 
@@ -53,16 +51,12 @@ export default function WebhookWorkbenchHeader(props: Props) {
           <span className="workbench-context-fact" data-testid="header-runtime-worker">
             运行节点：{props.runtimeWorker?.name ?? "未选择"}
           </span>
-          {props.dirty && <Tag color="warning" data-testid="dirty-indicator">未保存修改</Tag>}
         </div>
+        {/* M5.5.9：运行中只保留低干扰提示，不再展示大块说明或“复制适配器”升级引导。 */}
         {locked && (
-          <Alert
-            type="warning"
-            showIcon
-            message="适配器正在运行，编辑与运行配置已锁定"
-            description="适配器正在运行。运行期间不能修改代码或运行配置。如需升级，请复制为新的适配器，完成修改和测试后停止当前适配器，再启动新适配器。"
-            action={<Button size="small" data-testid="header-clone-adapter" onClick={props.onClone}>复制适配器</Button>}
-          />
+          <p className="runtime-lock-hint" data-testid="webhook-active-execution">
+            适配器正在运行，编辑与运行配置已锁定。
+          </p>
         )}
       </div>
       <div className="workbench-controls">

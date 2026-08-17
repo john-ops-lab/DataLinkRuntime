@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     String,
     Text,
@@ -38,10 +39,19 @@ class Adapter(Base):
             "run_mode IN ('manual', 'schedule')",
             name="ck_adapters_run_mode",
         ),
+        # M5.5.9: names must be unique among active Adapters only; soft-deleted
+        # names are reusable. This partial index is the database final defense
+        # for concurrent create/rename (service pre-checks are authoritative).
+        Index(
+            "uq_adapters_active_name",
+            "name",
+            unique=True,
+            postgresql_where=text("archived_at IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=text("''")
     )

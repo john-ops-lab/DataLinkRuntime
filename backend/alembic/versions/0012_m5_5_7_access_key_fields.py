@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "0012_m5_5_7_access_key_fields"
-down_revision: str | None = "0011_m5_4_3_webhook_final_model"
+down_revision: str | None = "0012_m5_5_9_active_name_unique"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -28,6 +28,8 @@ interface TaskRunSettingsPanelProps {
   workersLoading: boolean;
   workersError: string | null;
   execution: Execution | null;
+  /** M5.5.9：编辑页存在未保存修改时禁止启动运行。 */
+  dirty: boolean;
   onAdapterChange: (adapter: Adapter) => void;
   onExecutionStarted: (execution: Execution) => void;
   onRuntimeStateChange: (state: TaskRuntimeState) => void;
@@ -172,6 +174,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function runOnce() {
+    // M5.5.9：未保存修改时不得启动运行，先保存。
+    if (props.dirty) {
+      onError("请先保存当前修改，再运行。");
+      return;
+    }
     const text = props.adapter.run_mode === "schedule" ? scheduleInput : manualInput;
     const parsed = parseInput(text);
     if (!parsed.ok) {
@@ -234,6 +241,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     worker.capabilities.includes(props.adapter.language),
   );
   const canRun =
+    !props.dirty &&
     !props.adapter.archived_at &&
     props.adapter.latest_version_id !== null &&
     props.adapter.runtime_worker_id != null &&

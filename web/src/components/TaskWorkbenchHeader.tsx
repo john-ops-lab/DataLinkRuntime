@@ -1,6 +1,6 @@
 /** Task Adapter header: identity, runtime context and type-specific actions. */
 
-import { Alert, Button, Tag } from "antd";
+import { Button, Tag } from "antd";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, Worker } from "../types";
@@ -9,7 +9,6 @@ import type { TaskRuntimeState } from "./TaskRunSettingsPanel";
 
 interface TaskWorkbenchHeaderProps {
   adapter: Adapter;
-  revisionSeq: number | null;
   runtimeWorker: Worker | null;
   runtimeState: TaskRuntimeState;
   dirty: boolean;
@@ -17,7 +16,6 @@ interface TaskWorkbenchHeaderProps {
   contentReady: boolean;
   onSave: () => void;
   onOpenSettings: () => void;
-  onClone: () => void;
   onRunOnce: () => void;
   onStopExecution: () => void;
   onToggleSchedule: () => void;
@@ -44,17 +42,20 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         : props.busy
           ? "其他操作正在进行，请等待完成"
           : null;
-  const runBlockedReason = props.runtimeState.canRun
-    ? null
-    : activeExecution
-      ? "已有执行正在运行"
-      : props.adapter.latest_version_id === null
-        ? "请先保存适配器"
-        : props.adapter.runtime_worker_id == null
-          ? "请先在运行设置中选择并保存运行节点"
-          : props.runtimeState.loading || props.busy
-            ? "运行操作正在处理中"
-            : "当前状态暂不可运行";
+  // M5.5.9：存在未保存修改时不得直接运行，先保存。
+  const runBlockedReason = props.dirty
+    ? "请先保存当前修改，再运行。"
+    : props.runtimeState.canRun
+      ? null
+      : activeExecution
+        ? "已有执行正在运行"
+        : props.adapter.latest_version_id === null
+          ? "请先保存适配器"
+          : props.adapter.runtime_worker_id == null
+            ? "请先在运行设置中选择并保存运行节点"
+            : props.runtimeState.loading || props.busy
+              ? "运行操作正在处理中"
+              : "当前状态暂不可运行";
   const scheduleToggleReason = props.runtimeState.scheduleEnabled
     ? null
     : activeExecution
@@ -72,20 +73,12 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           <span className="workbench-context-fact" data-testid="header-runtime-worker">
             运行节点：{props.runtimeWorker?.name ?? "未选择"}
           </span>
-          <span className="version-seq" data-testid="task-revision">
-            {props.revisionSeq === null ? "未保存修订版" : `修订版 ${props.revisionSeq}`}
-          </span>
-          {props.dirty && <Tag color="warning" data-testid="dirty-indicator">未保存修改</Tag>}
         </div>
+        {/* M5.5.9：运行中只保留低干扰提示，不再展示大块说明或“复制适配器”升级引导。 */}
         {runtimeLocked && (
-          <Alert
-            type="warning"
-            showIcon
-            data-testid="task-active-execution"
-            message="适配器正在运行，编辑与运行配置已锁定"
-            description="适配器正在运行。运行期间不能修改代码或运行配置。如需升级，请复制为新的适配器，完成修改和测试后停止当前适配器，再启动新适配器。"
-            action={<Button size="small" data-testid="header-clone-adapter" onClick={props.onClone}>复制适配器</Button>}
-          />
+          <p className="runtime-lock-hint" data-testid="task-active-execution">
+            适配器正在运行，编辑与运行配置已锁定。
+          </p>
         )}
       </div>
       <div className="workbench-controls">
