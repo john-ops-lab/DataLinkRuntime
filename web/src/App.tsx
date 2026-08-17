@@ -28,8 +28,8 @@ import WorkerStatus from "./components/WorkerStatus";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
 import { applySystemLocale, currentSystemLocale, isSystemLocale, resolveSystemLocale } from "./i18n";
 import {
-  DEPENDENCY_NOTE,
-  DEPENDENCY_UI,
+  dependencyNoteFor,
+  dependencyUiFor,
   starterCodeFor,
 } from "./languages";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
@@ -868,7 +868,7 @@ function AdapterConsole() {
         },
         {
           key: "requirements",
-          label: DEPENDENCY_UI[selected.language].label,
+          label: dependencyUiFor(selected.language).label,
           language: "plaintext",
           original: baseline.requirements,
           modified: snapshot.requirements,
@@ -1219,7 +1219,7 @@ function AdapterConsole() {
                             items={[
                               {
                                 key: "requirements",
-                                label: DEPENDENCY_UI[selected.language].label,
+                                label: dependencyUiFor(selected.language).label,
                                 children: (
                                   <>
                                     <textarea
@@ -1227,7 +1227,7 @@ function AdapterConsole() {
                                       rows={4}
                                       value={snapshot.requirements}
                                       disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
-                                      placeholder={DEPENDENCY_UI[selected.language].placeholder}
+                                      placeholder={dependencyUiFor(selected.language).placeholder}
                                       onChange={(event) =>
                                         setSnapshot((current) => ({
                                           ...current,
@@ -1236,7 +1236,7 @@ function AdapterConsole() {
                                       }
                                     />
                                     <Typography.Text type="secondary" data-testid="dependency-note">
-                                      {DEPENDENCY_NOTE}
+                                      {dependencyNoteFor()}
                                     </Typography.Text>
                                   </>
                                 ),

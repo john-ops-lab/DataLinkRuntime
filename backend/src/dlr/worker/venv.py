@@ -279,16 +279,14 @@ def _run_install_logged(command: list[str], timeout_seconds: int) -> str:
     try:
         return _run_logged(command, timeout_seconds)
     except DependencyPreparationError as error:
-        hint = classify_dependency_install_error(error.install_log)
-        message = error.args[0]
-        if hint is not None and hint not in message:
-            raise DependencyPreparationError(
-                f"{message}；{hint}",
-                error.install_log,
-                dependency=error.dependency,
-                hint_code=error.hint_code,
-            ) from error
-        raise
+        # Keep the exception message locale-neutral. The executor owns the
+        # user-facing localized hint and the raw install log remains separate.
+        raise DependencyPreparationError(
+            error.args[0],
+            error.install_log,
+            dependency=error.dependency,
+            hint_code=error.hint_code,
+        ) from error
 
 
 class DependencyPreparationError(Exception):

@@ -139,7 +139,6 @@ def _platform_message(
     level: str,
     message: str,
     secret_values: Iterable[str],
-    locale: i18n.WorkerLocale = i18n.DEFAULT_WORKER_LOCALE,
 ) -> str:
     """One redacted platform Runtime status line (e.g. timeout / cancel)."""
     return _timestamped_line(f"[{level}] {redact_secrets(message, secret_values)}") + "\n"
@@ -544,7 +543,6 @@ def run(
             level,
             f"{i18n.text(locale, 'dependency.log_prefix')} {safe_message}",
             dependency_secret_values,
-            locale,
         )
         dependency_log.append(line)
         if dependency_uploader is not None:
@@ -651,22 +649,33 @@ def run(
             failure_message = f"{failure_message}: {hint}"
         elif not index_url and preparation.dependency is not None:
             failure_message = i18n.text(locale, f"dependency.no_source_{language}")
+        result_error = failure_detail
+        if "locale" in payload:
+            if runtime_name is not None:
+                runtime_error = i18n.text(
+                    locale,
+                    "runtime.unavailable",
+                    runtime=runtime_name,
+                )
+                result_error = f"{result_error}: {runtime_error}"
+            elif hint is not None:
+                result_error = f"{result_error}: {hint}"
+            elif not index_url and preparation.dependency is not None:
+                result_error = f"{result_error}: {failure_message}"
         unified_log += _platform_message(
             "ERROR",
             failure_message,
             dependency_secret_values,
-            locale,
         )
         unified_log += _platform_message(
             "ERROR",
             i18n.text(locale, "dependency.script_not_started"),
             dependency_secret_values,
-            locale,
         )
         stdout, stdout_truncated = _cap_stream(unified_log.encode())
         return {
             "status": "failed",
-            "error": redact_secrets(failure_detail, dependency_secret_values),
+            "error": redact_secrets(result_error, dependency_secret_values),
             "stdout": stdout,
             "stdout_truncated": stdout_truncated,
             "stderr": "",
@@ -738,7 +747,6 @@ def run(
             if legacy_terminal_text
             else i18n.text(locale, "execution.cancelled"),
             secret_values,
-            locale,
         )
     elif timed_out:
         unified_log += _platform_message(
@@ -747,7 +755,6 @@ def run(
             if legacy_terminal_text
             else i18n.text(locale, "execution.timed_out", timeout=timeout),
             secret_values,
-            locale,
         )
     elif returncode != 0:
         unified_log += _platform_message(
@@ -756,7 +763,6 @@ def run(
             if legacy_terminal_text
             else i18n.text(locale, "execution.process_exited", returncode=returncode),
             secret_values,
-            locale,
         )
     elif output_raw is None:
         unified_log += _platform_message(
@@ -765,7 +771,6 @@ def run(
             if legacy_terminal_text
             else i18n.text(locale, "execution.no_output"),
             secret_values,
-            locale,
         )
     else:
         try:
@@ -777,7 +782,6 @@ def run(
                 if legacy_terminal_text
                 else i18n.text(locale, "execution.invalid_output", detail=error),
                 secret_values,
-                locale,
             )
 
     stdout, stdout_truncated = _cap_stream(unified_log.encode())

@@ -6,7 +6,7 @@ import {
   applySystemLocale,
   DEFAULT_SYSTEM_LOCALE,
 } from "./i18n";
-import { starterCodeFor } from "./languages";
+import { dependencyNoteFor, dependencyUiFor, starterCodeFor } from "./languages";
 import { packageSourcePresetLabel } from "./package-source-catalog";
 import { userErrorMessage } from "./user-message";
 
@@ -60,6 +60,15 @@ describe("Wave 2 C error and starter contracts", () => {
     await applySystemLocale("en");
     expect(existingCode).toContain("任务开始");
     expect(starterCodeFor("python", "task", "en")).toContain("Task started");
+  });
+
+  it("localizes dependency labels, placeholders and notes for English consumers", () => {
+    expect(dependencyUiFor("python", "en")).toEqual({
+      label: "Python dependencies",
+      placeholder: "e.g. requests==2.32.3 (one dependency per line)",
+    });
+    expect(dependencyNoteFor("en")).toContain("The Worker installs these dependencies");
+    expect(dependencyNoteFor("en")).not.toContain("Worker 执行前会安装这些依赖");
   });
 
   it("keeps stable Credential IDs and dependency preset IDs separate from display text", async () => {

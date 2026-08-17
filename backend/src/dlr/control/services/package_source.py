@@ -19,7 +19,6 @@ from dlr.control.package_source_defaults import (
     DEFAULT_PACKAGE_SOURCES,
     PackageSourceDefault,
     defaults_for_kind,
-    preset_id_for_source,
 )
 from dlr.control.schemas.package_source import (
     DefaultPackageSourceInfo,
@@ -119,6 +118,7 @@ def _ensure_default_sources(session: Session, kind: str) -> tuple[PackageSource,
                 name=_available_default_name(session, default.name),
                 kind=default.kind,
                 index_url=default.index_url,
+                preset_id=default.preset_id,
                 # A pre-existing user default wins during migration-like
                 # initialization; restore_default_source explicitly selects
                 # the domestic row below.
@@ -197,7 +197,7 @@ def package_source_response(session: Session, source: PackageSource) -> PackageS
     return PackageSourceResponse(
         id=source.id,
         name=source.name,
-        preset_id=preset_id_for_source(source.kind, source.index_url),
+        preset_id=source.preset_id,
         kind=source.kind,
         index_url=source.index_url,
         is_default=source.is_default,
@@ -267,8 +267,12 @@ def update_package_source(
                 {"name": data.name},
             )
         source.name = data.name
+        # An explicit rename turns a built-in row into an administrator-owned
+        # display name; never hide it behind the localized preset label.
+        source.preset_id = None
     if data.index_url is not None:
         source.index_url = data.index_url
+        source.preset_id = None
     next_kind = data.kind if data.kind is not None else source.kind
     next_credential_id = (
         data.credential_id if "credential_id" in data.model_fields_set else source.credential_id
@@ -277,6 +281,7 @@ def update_package_source(
         _validate_credential_kind(next_kind, _get_credential(session, next_credential_id))
     if data.kind is not None:
         source.kind = data.kind
+        source.preset_id = None
     if "credential_id" in data.model_fields_set:
         source.credential_id = data.credential_id
     if data.is_default is not None:

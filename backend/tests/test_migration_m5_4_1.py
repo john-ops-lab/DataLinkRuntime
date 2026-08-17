@@ -58,7 +58,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0018_m5_6_2_execution_locale"
+    assert revision == "0019_m5_6_3_preset_ids"
     assert {
         "adapter_type",
         "run_mode",

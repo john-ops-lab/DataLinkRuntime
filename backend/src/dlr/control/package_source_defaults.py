@@ -65,15 +65,3 @@ DEFAULT_PACKAGE_SOURCES: Final[tuple[PackageSourceDefault, ...]] = (
 def defaults_for_kind(kind: str) -> tuple[PackageSourceDefault, ...]:
     """Return the domestic and official defaults for one dependency kind."""
     return tuple(source for source in DEFAULT_PACKAGE_SOURCES if source.kind == kind)
-
-
-def preset_id_for_source(kind: str, index_url: str) -> str | None:
-    """Return a stable preset ID without using the mutable display name."""
-    return next(
-        (
-            source.preset_id
-            for source in DEFAULT_PACKAGE_SOURCES
-            if source.kind == kind and source.index_url == index_url
-        ),
-        None,
-    )

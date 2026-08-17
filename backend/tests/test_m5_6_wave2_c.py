@@ -281,6 +281,39 @@ def test_user_traceback_and_output_are_not_translated(tmp_path: Path) -> None:
     assert "Traceback" in result["stdout"]
 
 
+def test_english_dependency_error_keeps_localized_hint_and_raw_tool_detail(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fail_prepare(*args: object, **kwargs: object) -> Path:
+        raise venv.DependencyPreparationError(
+            "uv pip install failed",
+            "ERROR: Could not resolve host: mirror.example.com",
+            dependency="missing==1.0",
+        )
+
+    monkeypatch.setattr(venv, "prepare_version_venv", fail_prepare)
+    result = executor.run(
+        {
+            "execution_id": 707,
+            "adapter_id": 708,
+            "version_id": 709,
+            "language": "python",
+            "code": "def handle(context, input):\n    return input\n",
+            "requirements": "missing==1.0",
+            "runtime_config": {},
+            "input": None,
+            "execution_timeout_seconds": 10,
+            "locale": "en",
+        },
+        _runtime_settings(tmp_path),
+    )
+    assert result["status"] == "failed"
+    assert "Dependency source DNS resolution failed" in result["error"]
+    assert "域名解析失败" not in result["error"]
+    assert "Could not resolve host" in result["stdout"]
+
+
 def test_dependency_source_presets_have_stable_ids_and_user_names_are_unchanged(
     api_client: TestClient,
 ) -> None:
@@ -293,12 +326,24 @@ def test_dependency_source_presets_have_stable_ids_and_user_names_are_unchanged(
         "maven.aliyun",
     }
 
+    restored = api_client.post("/api/package-sources/defaults/pypi")
+    assert restored.status_code == 200
+    builtin = restored.json()
+    assert builtin["preset_id"] == "pypi.aliyun"
+    renamed = api_client.patch(
+        f"/api/package-sources/{builtin['id']}",
+        json={"name": "改名后的系统源"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "改名后的系统源"
+    assert renamed.json()["preset_id"] is None
+
     created = api_client.post(
         "/api/package-sources",
         json={
             "name": "我的私有源",
             "kind": "pypi",
-            "index_url": "https://packages.example.test/simple/",
+            "index_url": "https://mirrors.aliyun.com/pypi/simple/",
         },
     )
     assert created.status_code == 201
