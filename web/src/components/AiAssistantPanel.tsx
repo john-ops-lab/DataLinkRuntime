@@ -446,15 +446,38 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const ENTRY_MARGIN = 8;
   const DRAG_THRESHOLD_PX = 4;
 
+  /** The positioned containing block of the floating entry (the nearest
+   * positioned ancestor, e.g. .console-body), or the viewport when none
+   * exists. The inline left/top and the clamp bounds live in this space. */
+  function entryContainerRect(button: HTMLElement): { left: number; top: number; width: number; height: number } {
+    const host = button.closest(".ai-assistant-collapsed") as HTMLElement | null;
+    const container = host?.offsetParent ?? null;
+    if (container instanceof Element) {
+      return container.getBoundingClientRect();
+    }
+    return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  }
+
   function handleEntryPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
     if (event.button !== 0 && event.pointerType === "mouse") {
       return;
     }
+    // The drag must start from the button's actual rendered position (the CSS
+    // default right:16px center, or a previous drag offset), never from
+    // (0,0): otherwise the first drag would teleport the button to the
+    // top-left corner instead of following the pointer. getBoundingClientRect
+    // is viewport-relative, so it is converted into containing-block
+    // coordinates, which is the space the inline left/top lives in.
+    const containerRect = entryContainerRect(event.currentTarget);
+    const rect = event.currentTarget.getBoundingClientRect();
     dragStateRef.current = {
       pointerId: event.pointerId,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startOffset: entryOffset ?? { x: 0, y: 0 },
+      startOffset: {
+        x: rect.left - containerRect.left,
+        y: rect.top - containerRect.top,
+      },
       moved: false,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -471,9 +494,11 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       return;
     }
     dragState.moved = true;
-    // Clamp inside the visible viewport: the button never leaves the page.
-    const maxX = Math.max(ENTRY_MARGIN, window.innerWidth - ENTRY_SIZE - ENTRY_MARGIN);
-    const maxY = Math.max(ENTRY_MARGIN, window.innerHeight - ENTRY_SIZE - ENTRY_MARGIN);
+    // Clamp inside the visible containing block: the button never leaves the
+    // work area (top/bottom edge included; no translate residue shifts it).
+    const containerRect = entryContainerRect(event.currentTarget);
+    const maxX = Math.max(ENTRY_MARGIN, containerRect.width - ENTRY_SIZE - ENTRY_MARGIN);
+    const maxY = Math.max(ENTRY_MARGIN, containerRect.height - ENTRY_SIZE - ENTRY_MARGIN);
     const x = Math.min(maxX, Math.max(ENTRY_MARGIN, dragState.startOffset.x + deltaX));
     const y = Math.min(maxY, Math.max(ENTRY_MARGIN, dragState.startOffset.y + deltaY));
     setEntryOffset({ x, y });
@@ -493,14 +518,25 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   }
 
   const collapsedEntry = (
-    <aside className="ai-assistant ai-assistant-collapsed">
+    <aside
+      className="ai-assistant ai-assistant-collapsed"
+      // M5.5.13: after a drag, the inline left/top (on the positioned aside
+      // itself) is the authoritative viewport position; transform: none drops
+      // the default translateY(-50%) so the clamped coordinates match the
+      // actual rendered position exactly (otherwise the button renders 23px
+      // higher than clamped and could leave the viewport at the top edge).
+      style={
+        entryOffset === null
+          ? undefined
+          : { left: entryOffset.x, top: entryOffset.y, transform: "none" }
+      }
+    >
       <Button
         type="primary"
         className="ai-assistant-open"
         data-testid="open-ai-assistant"
         aria-label="展开 AI 助手"
         aria-expanded={false}
-        style={entryOffset === null ? undefined : { left: entryOffset.x, top: entryOffset.y }}
         onPointerDown={handleEntryPointerDown}
         onPointerMove={handleEntryPointerMove}
         onPointerUp={handleEntryPointerUp}

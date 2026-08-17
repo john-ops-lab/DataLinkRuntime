@@ -691,7 +691,10 @@ body {
 
 /* 收起态 = 悬浮入口：绝对定位不参与 flex 布局，Monaco 主编辑区不受压缩。
    M5.5.13：支持在可视工作区内拖动（pointer events + touch-action:none），
-   位置不持久化，刷新后恢复本默认位置。 */
+   位置不持久化，刷新后恢复本默认位置。默认垂直居中由 top:50% +
+   translateY(-50%) 实现；拖动定位生效后组件会内联覆盖 left/top 并置
+   transform: none，因此钳制坐标即实际渲染坐标，不会因残留 translate
+   偏离 23px 或把按钮顶出视口。 */
 .ai-assistant-collapsed {
   position: absolute;
   top: 50%;

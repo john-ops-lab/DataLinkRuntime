@@ -5056,23 +5056,47 @@ it("drags the floating entry within the viewport without clicking, and click sti
   render(<App />);
   await selectFirstAdapter();
   const entry = (await screen.findByTestId("open-ai-assistant")) as HTMLButtonElement;
-  expect(entry.style.left).toBe("");
+  // 内联定位作用于绝对定位的悬浮宿主（aside），按钮本身不带定位样式。
+  const entryHost = entry.closest(".ai-assistant-collapsed") as HTMLElement;
+  expect(entryHost).not.toBeNull();
+  expect(entryHost.style.left).toBe("");
 
-  // 拖动超过阈值：位置内联更新，合成 click 被吞掉（不展开面板）。
+  // jsdom 无布局：注入按钮的“实际渲染位置”，固化修复后的语义——首次拖动必须
+  // 从 getBoundingClientRect() 的当前位置跟随指针，而不是从 (0,0) 瞬移到左上角。
+  let renderedLeft = 180;
+  let renderedTop = 280;
+  entry.getBoundingClientRect = () =>
+    ({
+      left: renderedLeft,
+      top: renderedTop,
+      width: 46,
+      height: 46,
+      right: renderedLeft + 46,
+      bottom: renderedTop + 46,
+      x: renderedLeft,
+      y: renderedTop,
+      toJSON: () => ({}),
+    }) as DOMRect;
+
+  // 拖动超过阈值：位置从实际渲染位置跟随指针，合成 click 被吞掉（不展开面板）。
   firePointer(entry, "pointerdown", { pointerId: 1, clientX: 200, clientY: 300, button: 0, pointerType: "mouse" });
   firePointer(entry, "pointermove", { pointerId: 1, clientX: 260, clientY: 330 });
   firePointer(entry, "pointerup", { pointerId: 1 });
   fireEvent.click(entry);
   expect(screen.queryByTestId("ai-assistant-panel")).toBeNull();
-  expect(entry.style.left).toBe("60px");
-  expect(entry.style.top).toBe("30px");
+  expect(entryHost.style.left).toBe("240px");
+  expect(entryHost.style.top).toBe("310px");
+  // 拖动定位生效时必须禁用默认 translateY(-50%)，钳制坐标即实际渲染坐标。
+  expect(entryHost.style.transform).toBe("none");
+  renderedLeft = 240;
+  renderedTop = 310;
 
   // 拖动不会拖出页面：极限坐标被钳制在视口内。
   firePointer(entry, "pointerdown", { pointerId: 2, clientX: 260, clientY: 330, button: 0, pointerType: "mouse" });
   firePointer(entry, "pointermove", { pointerId: 2, clientX: 100000, clientY: 100000 });
   firePointer(entry, "pointerup", { pointerId: 2 });
-  const clampedX = Number.parseInt(entry.style.left, 10);
-  const clampedY = Number.parseInt(entry.style.top, 10);
+  const clampedX = Number.parseInt(entryHost.style.left, 10);
+  const clampedY = Number.parseInt(entryHost.style.top, 10);
   expect(clampedX).toBeLessThanOrEqual(window.innerWidth - 54);
   expect(clampedY).toBeLessThanOrEqual(window.innerHeight - 54);
   expect(clampedX).toBeGreaterThanOrEqual(8);
@@ -5082,7 +5106,7 @@ it("drags the floating entry within the viewport without clicking, and click sti
   render(<App />);
   await selectFirstAdapter();
   const fresh = (await screen.findByTestId("open-ai-assistant")) as HTMLButtonElement;
-  expect(fresh.style.left).toBe("");
+  expect((fresh.closest(".ai-assistant-collapsed") as HTMLElement).style.left).toBe("");
 
   // 普通点击（无拖动）仍展开 AI 面板。
   fireEvent.click(fresh);
