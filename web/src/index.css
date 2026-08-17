@@ -549,6 +549,28 @@ body {
   color: var(--dlr-text-secondary);
 }
 
+/* M5.5.12：Webhook 接收中锁定字段的只读展示——可读、不可编辑、带锁图标，
+   不把文本灰到难以阅读。 */
+.webhook-locked-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--dlr-text);
+  background: var(--dlr-surface-muted, rgba(128, 128, 128, 0.06));
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  word-break: break-all;
+}
+
+.webhook-lock-glyph {
+  flex: none;
+  color: var(--dlr-text-secondary);
+}
+
 .version-menu-item {
   display: inline-flex;
   align-items: center;

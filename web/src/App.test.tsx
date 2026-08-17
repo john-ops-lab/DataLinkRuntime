@@ -3911,7 +3911,7 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
       method: "PATCH",
       match: "/api/adapters/1",
       respond: (body) => {
-        adapter = { ...adapter, runtime_worker_id: JSON.parse(body ?? "{}").runtime_worker_id };
+        adapter = { ...adapter, ...JSON.parse(body ?? "{}") };
         return { body: adapter };
       },
     },
@@ -3931,13 +3931,43 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
   await screen.findByTestId("webhook-run-settings");
 
-  expect(valueOf("webhook-prefix")).toBe(`${window.location.origin}/api/hooks/`);
-  expect((screen.getByTestId("webhook-prefix") as HTMLInputElement).readOnly).toBe(true);
+  // M5.5.12：URL 只展示一次——完整地址只读 + 复制，不再拆成前缀 + 路径双框。
+  expect(screen.queryByTestId("webhook-prefix")).toBeNull();
+  expect((screen.getByTestId("webhook-url") as HTMLInputElement).readOnly).toBe(true);
+  expect(screen.getByTestId("webhook-url")).toHaveProperty(
+    "value",
+    `${window.location.origin}/api/hooks/a8f3c9d2`,
+  );
+  // 运行设置只保留五类字段，无“接收状态”输入、无页面内启停按钮、无手工刷新。
+  expect(screen.getByText("Webhook 路径")).toBeDefined();
+  expect(screen.getByText("完整地址")).toBeDefined();
+  expect(screen.getByText("访问凭据")).toBeDefined();
+  expect(screen.getByText("运行节点")).toBeDefined();
+  expect(screen.getByText("单次执行超时（一次运行的最长时间）")).toBeDefined();
+  expect(screen.queryByText("接收状态")).toBeNull();
+  expect(screen.queryByTestId("webhook-start")).toBeNull();
+  expect(screen.queryByTestId("webhook-stop")).toBeNull();
+  expect(screen.queryByText("刷新")).toBeNull();
+
   fireEvent.change(screen.getByTestId("webhook-public-id"), { target: { value: "receive-sys1-data" } });
   fireEvent.click(screen.getByTestId("webhook-save"));
-  await screen.findByText("运行设置已保存。");
-  fireEvent.click(screen.getByTestId("webhook-start"));
-  await screen.findByText("已开启接收。");
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+      ),
+    ).toBe(true);
+  });
+  // M5.5.11：保存运行配置同时下发 Adapter 级单次执行超时（默认 300 秒）。
+  const patchCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+  );
+  expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+    runtime_worker_id: 3,
+    timeout_seconds: 300,
+  });
+  // 开启接收只保留在 Header 右上角。
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
   await waitFor(() => expect(screen.getByTestId("header-webhook-toggle").textContent).toContain("停止接收"));
   expect(screen.getByTestId("live-log-workspace").textContent).toContain("等待 Webhook 请求…");
 
@@ -3960,15 +3990,28 @@ it("rejects an invalid path locally and renders the stable path-in-use message",
     latest_version_id: 10,
     runtime_worker_id: 3,
   });
+  let webhook = makeWebhook();
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter),
+    ...webhookConsoleRoutes(adapter, webhook),
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: () => ({ body: adapter }),
+    },
     {
       method: "PUT",
       match: "/api/adapters/1/webhook",
-      respond: () => ({
-        status: 409,
-        body: { detail: { code: "webhook_path_in_use", message: "conflict" } },
-      }),
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}");
+        if (payload.enabled) {
+          return {
+            status: 409,
+            body: { detail: { code: "webhook_path_in_use", message: "conflict" } },
+          };
+        }
+        webhook = { ...webhook, ...payload, hook_path: `/api/hooks/${payload.public_id}` };
+        return { body: webhook };
+      },
     },
   ]);
   render(<App />);
@@ -3980,10 +4023,19 @@ it("rejects an invalid path locally and renders the stable path-in-use message",
   expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
   expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 
-  fireEvent.change(screen.getByTestId("webhook-public-id"), { target: { value: "a8f3c9d2" } });
-  fireEvent.click(screen.getByTestId("webhook-start"));
+  // 未保存修改时 Header 的“开启接收”也必须被禁用；保存后才允许开始接收。
+  fireEvent.change(screen.getByTestId("webhook-public-id"), { target: { value: "receive-sys1-data" } });
+  fireEvent.click(screen.getByTestId("webhook-save"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+      ),
+    ).toBe(true);
+  });
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
   expect((await screen.findByRole("alert")).textContent).toContain(
-    "Webhook 地址 a8f3c9d2 当前正在被另一个运行中的适配器使用",
+    "Webhook 地址 receive-sys1-data 当前正在被另一个运行中的适配器使用",
   );
 });
 
@@ -4024,8 +4076,8 @@ it("preserves an unchanged legacy Webhook path but validates it once edited", as
   expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
 
   fireEvent.change(screen.getByTestId("webhook-public-id"), { target: { value: legacyPath } });
-  fireEvent.click(screen.getByTestId("webhook-start"));
-  await screen.findByText("已开启接收。");
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+  await waitFor(() => expect(screen.getByTestId("header-webhook-toggle").textContent).toContain("停止接收"));
   const startCall = fetchMock.mock.calls.find(
     ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
   );
@@ -4060,11 +4112,38 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
   await screen.findByTestId("webhook-run-settings");
-  expect((screen.getByTestId("webhook-public-id") as HTMLInputElement).disabled).toBe(true);
+  // 接收中：配置锁定但信息可读（锁图标 + 文本，不隐藏、不灰到不可读），
+  // 运行设置内不再有第二块黄色锁定 Alert。
+  expect(screen.getByTestId("webhook-path-locked").textContent).toContain("a8f3c9d2");
+  expect(screen.getByTestId("webhook-credential-locked").textContent).toContain("hook-token");
+  expect(screen.getByTestId("webhook-worker-locked").textContent).toContain("hook-worker");
+  expect(screen.getByTestId("webhook-timeout-locked").textContent).toContain("5 分钟");
+  expect(screen.queryByTestId("webhook-runtime-locked")).toBeNull();
   expect(document.body.textContent).not.toContain("real-hook-secret");
-  fireEvent.click(screen.getByTestId("webhook-stop"));
-  await screen.findByText("已停止接收；已有调用会继续运行到终态。");
-  expect(screen.getByTestId("webhook-runtime-locked")).toBeDefined();
+  // 完整 Webhook 地址运行中仍允许复制。
+  expect((screen.getByTestId("webhook-copy") as HTMLButtonElement).disabled).toBe(false);
+
+  // 有 active Webhook Execution：点击“停止接收”必须弹出三选一。
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+  expect(await screen.findByTestId("webhook-stop-dialog-text")).toBeDefined();
+  expect(screen.getByTestId("webhook-stop-end").textContent).toBe("直接结束当前调用");
+  expect(screen.getByTestId("webhook-stop-wait").textContent).toBe("等待调用结束");
+  expect(screen.getByTestId("webhook-stop-cancel").textContent?.replace(/\s/g, "")).toBe("取消");
+
+  // “等待调用结束”：立即停止接收新请求，不取消当前调用，配置锁保持。
+  fireEvent.click(screen.getByTestId("webhook-stop-wait"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+      ),
+    ).toBe(true);
+  });
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/executions/91/cancel" && init?.method === "POST",
+    ),
+  ).toBe(false);
   const stopCall = fetchMock.mock.calls.find(
     ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
   );
@@ -4072,6 +4151,326 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
     enabled: false,
     public_id: "a8f3c9d2",
     credential_id: 7,
+  });
+  // 已停止接收，但当前调用仍在执行：只保留一行低干扰锁定提示。
+  expect(screen.getByTestId("webhook-path-locked")).toBeDefined();
+  await waitFor(() =>
+    expect(screen.getByTestId("webhook-active-execution").textContent).toContain(
+      "当前调用仍在执行，运行配置已锁定",
+    ),
+  );
+});
+
+it("stops receiving directly without a dialog when there is no active call", async () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+  });
+  let webhook = makeWebhook({ enabled: true });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, webhook),
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        webhook = { ...webhook, ...JSON.parse(body ?? "{}") };
+        return { body: webhook };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+      ),
+    ).toBe(true);
+  });
+  // 无 active 调用：直接停止，不弹选择框。
+  expect(screen.queryByTestId("webhook-stop-dialog-text")).toBeNull();
+  const stopCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+  );
+  expect(JSON.parse(String(stopCall?.[1]?.body)).enabled).toBe(false);
+  expect(screen.getByTestId("header-webhook-toggle").textContent).toBe("开启接收");
+});
+
+it("ends the active call immediately when the user chooses 直接结束当前调用", async () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+    runtime_locked: true,
+    running_execution_id: 91,
+  });
+  let webhook = makeWebhook({ enabled: true });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, webhook),
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        webhook = { ...webhook, ...JSON.parse(body ?? "{}") };
+        return { body: webhook };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/executions/91/cancel",
+      respond: () => ({
+        body: {
+          id: 91,
+          adapter_id: 1,
+          version_id: 10,
+          worker_id: 3,
+          target_worker_id: 3,
+          trigger: "webhook",
+          scheduled_for: null,
+          status: "cancelled",
+          input: {},
+          output: null,
+          output_size: null,
+          output_truncated: false,
+          output_preview: null,
+          stdout: "",
+          stdout_truncated: false,
+          stderr: "",
+          stderr_truncated: false,
+          error: null,
+          created_at: "2026-08-15T00:00:00Z",
+          started_at: "2026-08-15T00:00:00Z",
+          ended_at: "2026-08-15T00:00:00Z",
+          duration_ms: 1200,
+        },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+  await screen.findByTestId("webhook-stop-dialog-text");
+  fireEvent.click(screen.getByTestId("webhook-stop-end"));
+
+  // “直接结束”：立即停止接收，并复用已有 Execution cancel 机制。
+  await screen.findByText("已停止接收，当前调用已结束。");
+  const stopCalls = fetchMock.mock.calls.filter(
+    ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+  );
+  expect(stopCalls.length).toBe(1);
+  expect(JSON.parse(String(stopCalls[0]?.[1]?.body))).toEqual({
+    enabled: false,
+    public_id: "a8f3c9d2",
+    credential_id: 7,
+  });
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/executions/91/cancel" && init?.method === "POST",
+    ),
+  ).toBe(true);
+  // 绝无任何重新开启接收的请求。
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) =>
+        String(url) === "/api/adapters/1/webhook" &&
+        init?.method === "PUT" &&
+        JSON.parse(String(init?.body)).enabled === true,
+    ),
+  ).toBe(false);
+});
+
+it("keeps receiving and the active call when the user cancels the dialog", async () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+    runtime_locked: true,
+    running_execution_id: 91,
+  });
+  let webhook = makeWebhook({ enabled: true });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, webhook),
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        webhook = { ...webhook, ...JSON.parse(body ?? "{}") };
+        return { body: webhook };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+  await screen.findByTestId("webhook-stop-dialog-text");
+  fireEvent.click(screen.getByTestId("webhook-stop-cancel"));
+
+  // 取消：保持接收状态和 active Execution 不变，不发任何启停请求。
+  expect(screen.queryByTestId("webhook-stop-dialog-text")).toBeNull();
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+    ),
+  ).toBe(false);
+  expect(screen.getByTestId("header-webhook-toggle").textContent).toBe("停止接收");
+});
+
+it("keeps the true stopped state with an actionable error when cancel fails", async () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+    runtime_locked: true,
+    running_execution_id: 91,
+  });
+  let webhook = makeWebhook({ enabled: true });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, webhook),
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        webhook = { ...webhook, ...JSON.parse(body ?? "{}") };
+        return { body: webhook };
+      },
+    },
+    {
+      method: "POST",
+      match: "/api/executions/91/cancel",
+      respond: () => ({
+        status: 500,
+        body: { detail: { code: "internal_error", message: "cancel exploded" } },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+  await screen.findByTestId("webhook-stop-dialog-text");
+  fireEvent.click(screen.getByTestId("webhook-stop-end"));
+
+  // cancel 失败：状态必须真实（已停止接收、调用仍在执行），绝不偷偷重新开启。
+  const banner = await screen.findByTestId("error-banner");
+  expect(banner.textContent).toContain("已停止接收，但取消当前调用失败");
+  expect(banner.textContent).toContain("当前调用仍在执行");
+  const webhookPuts = fetchMock.mock.calls.filter(
+    ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+  );
+  expect(webhookPuts.length).toBe(1);
+  expect(JSON.parse(String(webhookPuts[0]?.[1]?.body)).enabled).toBe(false);
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT" &&
+        JSON.parse(String(init?.body)).enabled === true,
+    ),
+  ).toBe(false);
+  // 锁定字段仍可读，Header 只保留一行低干扰提示。
+  expect(screen.getByTestId("webhook-path-locked").textContent).toContain("a8f3c9d2");
+  await waitFor(() =>
+    expect(screen.getByTestId("webhook-active-execution").textContent).toContain(
+      "当前调用仍在执行，运行配置已锁定",
+    ),
+  );
+});
+
+it("blocks receiving while runtime settings have unsaved changes", async () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+  });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter),
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: () => ({ body: adapter }),
+    },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}");
+        return { body: { ...makeWebhook(), ...payload, hook_path: `/api/hooks/${payload.public_id}` } };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  fireEvent.change(screen.getByTestId("webhook-public-id"), { target: { value: "receive-sys1-data" } });
+  const startButton = screen.getByTestId("header-webhook-toggle") as HTMLButtonElement;
+  expect(startButton.disabled).toBe(true);
+  expect(startButton.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
+    "运行设置有未保存修改，请先保存",
+  );
+  // 保存运行配置后未保存门禁解除，Header 才能开启接收。
+  fireEvent.click(screen.getByTestId("webhook-save"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
+      ),
+    ).toBe(true);
+  });
+  expect((screen.getByTestId("header-webhook-toggle") as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("saves the Adapter-level single-run timeout from Webhook run settings (M5.5.11)", async () => {
+  let adapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+  });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter),
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        adapter = { ...adapter, ...JSON.parse(body ?? "{}") };
+        return { body: adapter };
+      },
+    },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}");
+        return { body: { ...makeWebhook(), ...payload, hook_path: `/api/hooks/${payload.public_id}` } };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  fireEvent.click(screen.getByLabelText("10 分钟"));
+  fireEvent.click(screen.getByTestId("webhook-save"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+      ),
+    ).toBe(true);
+  });
+  const patchCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+  );
+  expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+    runtime_worker_id: 3,
+    timeout_seconds: 600,
   });
 });
 
