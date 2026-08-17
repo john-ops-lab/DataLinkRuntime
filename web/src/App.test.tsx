@@ -2358,14 +2358,37 @@ it("cancels the authoritative Adapter Execution instead of a stale terminal watc
 it("lists unfiltered Task execution history with cursor pagination and opens detail", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const pageOne = {
-    items: [makeSummary({ id: 6, version_seq: 7, worker_id: 3, worker_name: "worker-main" })],
+    items: [makeSummary({
+      id: 6,
+      version_seq: 7,
+      worker_id: 3,
+      worker_name: "worker-main",
+      started_at: "2026-08-15T00:00:01Z",
+      ended_at: "2026-08-15T00:00:02Z",
+      duration_ms: 1000,
+    })],
     next_before_id: 6,
   };
   const pageTwo = {
-    items: [makeSummary({ id: 4, version_seq: 6, worker_id: 4, worker_name: "worker-alt", status: "failed" })],
+    items: [makeSummary({
+      id: 4,
+      version_seq: 6,
+      worker_id: 4,
+      worker_name: "worker-alt",
+      status: "failed",
+      started_at: "2026-08-15T00:00:03Z",
+      ended_at: null,
+    })],
     next_before_id: null,
   };
-  const detail = makeExecution({ id: 6, worker_id: 3, status: "succeeded", input: { k: 1 }, output: { ok: true } });
+  const detail = makeExecution({
+    id: 6,
+    worker_id: 3,
+    status: "succeeded",
+    input: { k: 1 },
+    output: { ok: true },
+    stdout: Array.from({ length: 501 }, (_, index) => `line-${index}`).join("\n"),
+  });
   const secondDetail = makeExecution({ id: 4, worker_id: 4, status: "failed", input: { k: 2 } });
   const fetchMock = stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
@@ -2406,6 +2429,9 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   fireEvent.keyDown(firstRow, { key: "Enter" });
   const detailInput = await screen.findByTestId("detail-input");
   expect(detailInput.textContent).toContain('"k": 1');
+  const firstRowText = firstRow.textContent ?? "";
+  expect(firstRowText).toContain("2026");
+  expect(firstRowText).not.toContain("—");
   const drawer = document.querySelector(".ant-drawer-content");
   if (!(drawer instanceof HTMLElement)) {
     throw new Error("Execution detail drawer not found");
@@ -2416,6 +2442,16 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   expect(within(drawer).queryByText("v7")).toBeNull();
   expect(within(drawer).queryByText("#10")).toBeNull();
   expect(within(drawer).queryByText("#3")).toBeNull();
+  expect(within(drawer).getByRole("tab", { name: "执行日志" })).toBeTruthy();
+  expect(within(drawer).queryByRole("tab", { name: "实时日志" })).toBeNull();
+  fireEvent.click(within(drawer).getByRole("tab", { name: "执行日志" }));
+  expect(within(drawer).queryByTestId("detail-log-pause")).toBeNull();
+  expect(within(drawer).getByTestId("detail-log-maximize")).toBeTruthy();
+  const historyLogLines = (within(drawer).getByTestId("detail-log").textContent ?? "").split("\n");
+  expect(historyLogLines).not.toContain("line-0");
+  expect(historyLogLines).toContain("line-1");
+  expect(historyLogLines).toContain("line-500");
+  expect(historyLogLines).toHaveLength(500);
 
   fireEvent.click(drawer.querySelector(".ant-drawer-close") as HTMLButtonElement);
   secondRow.focus();
