@@ -7,6 +7,21 @@ import { Button, Drawer, Dropdown, Input, Radio, Space } from "antd";
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, AdapterLanguage, AdapterType, Worker } from "../types";
 
+type AdapterTypeFilter = "task-manual" | "task-schedule" | "webhook";
+
+const ADAPTER_TYPE_FILTERS: ReadonlyArray<{ value: AdapterTypeFilter; label: string }> = [
+  { value: "task-manual", label: "任务型（手动）" },
+  { value: "task-schedule", label: "任务型（定时）" },
+  { value: "webhook", label: "Webhook" },
+];
+
+function matchesTypeFilter(adapter: Adapter, filter: AdapterTypeFilter): boolean {
+  if (filter === "webhook") {
+    return adapter.adapter_type === "webhook";
+  }
+  return adapter.adapter_type === "task" && adapter.run_mode === filter.replace("task-", "");
+}
+
 interface AdapterCatalogProps {
   adapters: Adapter[];
   selectedId: number | null;
@@ -133,6 +148,8 @@ export default function AdapterCatalog({
 }: AdapterCatalogProps) {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
+  const [typeFilters, setTypeFilters] = useState<AdapterTypeFilter[]>([]);
+  const [typeFilterOpen, setTypeFilterOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [language, setLanguage] = useState<AdapterLanguage>("python");
@@ -163,12 +180,71 @@ export default function AdapterCatalog({
 
   const keyword = search.trim().toLowerCase();
   const inView = adapters.filter((adapter) => !adapter.archived_at);
-  const visible =
-    keyword === ""
+  const typeFiltered =
+    typeFilters.length === 0
       ? inView
-      : inView.filter((adapter) =>
-          [adapter.name, adapter.description].some((value) => value.toLowerCase().includes(keyword)),
-        );
+      : inView.filter((adapter) => typeFilters.some((filter) => matchesTypeFilter(adapter, filter)));
+  const visible = keyword === ""
+    ? typeFiltered
+    : typeFiltered.filter((adapter) =>
+        [adapter.name, adapter.description].some((value) => value.toLowerCase().includes(keyword)),
+      );
+  const typeFilterLabel = typeFilters.length === 0 ? "类型" : `类型（${typeFilters.length}）`;
+  const typeFilterPanel = (
+    <div
+      className="catalog-type-filter-menu"
+      data-testid="adapter-type-filter-menu"
+      role="group"
+      aria-label="适配器类型筛选"
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <div className="catalog-type-filter-actions">
+        <Button
+          type="link"
+          size="small"
+          data-testid="adapter-type-select-all"
+          onClick={() => setTypeFilters(ADAPTER_TYPE_FILTERS.map((option) => option.value))}
+        >
+          全选
+        </Button>
+        <Button
+          type="link"
+          size="small"
+          data-testid="adapter-type-clear"
+          onClick={() => setTypeFilters([])}
+        >
+          清空
+        </Button>
+        <Button
+          type="link"
+          size="small"
+          data-testid="adapter-filter-clear-all"
+          onClick={() => {
+            setTypeFilters([]);
+            setSearch("");
+          }}
+        >
+          清空全部
+        </Button>
+      </div>
+      {ADAPTER_TYPE_FILTERS.map((option) => (
+        <label className="catalog-type-filter-option" key={option.value}>
+          <input
+            type="checkbox"
+            checked={typeFilters.includes(option.value)}
+            aria-label={option.label}
+            onChange={() => {
+              setTypeFilters((current) => current.includes(option.value)
+                ? current.filter((value) => value !== option.value)
+                : [...current, option.value]);
+            }}
+          />
+          <span>{option.label}</span>
+        </label>
+      ))}
+    </div>
+  );
 
   return (
     <aside className="catalog" data-testid="adapter-catalog">
@@ -190,14 +266,35 @@ export default function AdapterCatalog({
       </div>
 
       <div className="catalog-search">
-        <Input
-          data-testid="adapter-search"
-          placeholder="搜索适配器"
-          allowClear
-          size="small"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-        />
+        <Space.Compact className="catalog-search-control" style={{ width: "100%" }}>
+          <Input
+            data-testid="adapter-search"
+            aria-label="搜索适配器"
+            placeholder="搜索适配器"
+            allowClear
+            size="small"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <Dropdown
+            open={typeFilterOpen}
+            onOpenChange={setTypeFilterOpen}
+            trigger={["click"]}
+            popupRender={() => typeFilterPanel}
+          >
+            <Button
+              type="text"
+              size="small"
+              className="catalog-type-filter-trigger"
+              data-testid="adapter-type-filter"
+              aria-label={`类型筛选，${typeFilters.length === 0 ? "全部类型" : `已选 ${typeFilters.length} 项`}`}
+              aria-haspopup="true"
+              aria-expanded={typeFilterOpen}
+            >
+              {typeFilterLabel}
+            </Button>
+          </Dropdown>
+        </Space.Compact>
       </div>
 
       <div className="catalog-list">
