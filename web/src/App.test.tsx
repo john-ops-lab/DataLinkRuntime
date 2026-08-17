@@ -118,15 +118,24 @@ vi.mock("@monaco-editor/react", () => ({
     language?: string;
     original?: string;
     modified?: string;
+    theme?: string;
   }) {
     return (
       <div
         data-testid="diff-editor"
+        data-monaco-theme={props.theme ?? ""}
         data-monaco-language={props.language ?? ""}
         data-original={props.original ?? ""}
         data-modified={props.modified ?? ""}
       />
     );
+  },
+  // M5.5.9：App 通过 loader.init() 兜底重设全局 Monaco 主题。
+  loader: {
+    init: () =>
+      Promise.resolve({
+        editor: { setTheme: () => undefined },
+      }),
   },
 }));
 
@@ -447,17 +456,36 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   await screen.findByTestId("disable-task-schedule");
   fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
   await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true));
+  // M5.5.9：运行中只保留低干扰提示；不再展示大块黄色说明、复制引导或修订号。
   expect(screen.getByTestId("task-active-execution").textContent).toContain(
-    "如需升级，请复制为新的适配器，完成修改和测试后停止当前适配器，再启动新适配器。",
+    "适配器正在运行，编辑与运行配置已锁定。",
   );
+  expect(document.body.textContent).not.toContain("如需升级，请复制为新的适配器");
+  expect(screen.queryByTestId("header-clone-adapter")).toBeNull();
+  expect(document.body.textContent).not.toContain("修订版");
   expect(screen.getByTestId("save-version").closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
     "定时已启用，请先停用定时后再保存",
   );
-  fireEvent.click(screen.getByTestId("header-clone-adapter"));
-  const cloneDialog = await screen.findByRole("dialog");
+  // 复制适配器仍可从设置抽屉进入。
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  fireEvent.click(await screen.findByTestId("clone-adapter"));
+  const dialogs = await screen.findAllByRole("dialog");
+  const cloneDialog = dialogs.find(
+    (dialog) => within(dialog).queryByTestId("clone-adapter-name") !== null,
+  );
+  if (!cloneDialog) {
+    throw new Error("clone dialog not found");
+  }
   expect(within(cloneDialog).getByText("执行历史不会复制；新适配器创建后保持停止，不会自动运行。")).toBeTruthy();
   expect((within(cloneDialog).getByTestId("clone-adapter-name") as HTMLInputElement).value).toBe("adapter-a-copy");
   fireEvent.click(within(cloneDialog).getByRole("button", { name: /取\s*消/ }));
+  // 关闭设置抽屉后继续验证解锁（抽屉 destroyOnHidden，内容随关闭卸载）。
+  const drawerClose = document.querySelector(".ant-drawer-close");
+  if (!(drawerClose instanceof HTMLElement)) {
+    throw new Error("settings drawer close button not found");
+  }
+  fireEvent.click(drawerClose);
+  await waitFor(() => expect(screen.queryByTestId("clone-adapter")).toBeNull());
 
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
   fireEvent.click(screen.getByTestId("disable-task-schedule"));
@@ -832,35 +860,49 @@ it("shows the browser-only starter code when the adapter has no versions", async
   ).toBe(false);
 });
 
-it("blocks saving when runtime config is not a JSON object", async () => {
+it("removes the 运行参数（JSON） entry from the edit page and saves the inherited config", async () => {
+  const adapter = makeAdapter();
+  const versions: VersionSummary[] = [];
   const fetchMock = stubFetch([
     healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: versions }) },
     {
-      method: "GET",
-      match: "/api/adapters",
-      respond: () => ({ body: [makeAdapter()] }),
-    },
-    {
-      method: "GET",
+      method: "POST",
       match: "/api/adapters/1/versions",
-      respond: () => ({ body: [] }),
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}") as {
+          code: string;
+          requirements: string;
+          runtime_config: Record<string, unknown>;
+        };
+        const saved = makeVersion({ code: payload.code, runtime_config: payload.runtime_config });
+        versions.push(saved);
+        adapter.latest_version_id = saved.id;
+        return { status: 201, body: saved };
+      },
     },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
   ]);
   render(<App />);
   await selectFirstAdapter();
 
-  // M3.2：运行参数位于次级配置 Tabs，需先激活对应页签。
-  fireEvent.click(screen.getByText("运行参数（JSON）"));
-  fireEvent.change(screen.getByTestId("runtime-config-input"), { target: { value: "[1, 2" } });
+  // M5.5.9：运行参数（JSON）退出用户主流程，编辑页只保留依赖与凭据绑定。
+  expect(screen.queryByText("运行参数（JSON）")).toBeNull();
+  expect(screen.queryByTestId("runtime-config-input")).toBeNull();
+
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "def f():\n    pass\n" } });
   fireEvent.click(screen.getByTestId("save-version"));
 
-  await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("error-banner").textContent).toContain("运行参数");
-  expect(
-    fetchMock.mock.calls.some(
-      ([url, init]) => String(url).endsWith("/versions") && init?.method === "POST",
-    ),
-  ).toBe(false);
+  await screen.findByText("适配器已保存");
+  const saveCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url).endsWith("/versions") && init?.method === "POST",
+  );
+  expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
+    code: "def f():\n    pass\n",
+    requirements: "",
+    runtime_config: {},
+  });
 });
 
 it("saves a new version with the edited content", async () => {
@@ -912,24 +954,17 @@ it("saves a new version with the edited content", async () => {
   fireEvent.change(screen.getByTestId("requirements-input"), {
     target: { value: "requests==2.32.0" },
   });
-  // M3.2：运行参数位于次级配置 Tabs，需先激活对应页签。
-  fireEvent.click(screen.getByText("运行参数（JSON）"));
-  fireEvent.change(screen.getByTestId("runtime-config-input"), {
-    target: { value: '{"batch": 10}' },
-  });
   fireEvent.click(screen.getByTestId("save-version"));
 
-  await waitFor(() => expect(screen.getByTestId("task-revision").textContent).toContain("修订版 1"));
+  await screen.findByText("适配器已保存");
   const saveCall = fetchMock.mock.calls.find(
     ([url, init]) => String(url).endsWith("/versions") && init?.method === "POST",
   );
   expect(JSON.parse(String(saveCall?.[1]?.body))).toEqual({
     code: "def handle(context, input):\n    return {'done': True}\n",
     requirements: "requests==2.32.0",
-    runtime_config: { batch: 10 },
+    runtime_config: {},
   });
-  // The header version selector now shows the acknowledged version.
-  expect(screen.getByTestId("task-revision").textContent).toContain("修订版 1");
   expect(await screen.findByText("适配器已保存")).toBeTruthy();
 });
 
@@ -1063,7 +1098,7 @@ it("asks for confirmation before discarding unsaved changes on adapter switch", 
   await selectFirstAdapter();
 
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited" } });
-  await screen.findByTestId("dirty-indicator");
+  await waitFor(() => expect(valueOf("code-editor")).toBe("edited"));
 
   fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
   expect(confirmSpy).toHaveBeenCalled();
@@ -1092,8 +1127,8 @@ it("shows failed API responses as errors instead of pretending success", async (
   expect(screen.queryAllByTestId("adapter-item")).toHaveLength(0);
 });
 
-it("shows the domain error code when creating a duplicate adapter", async () => {
-  stubFetch([
+it("blocks duplicate adapter creation with a clear Chinese prompt and no request", async () => {
+  const fetchMock = stubFetch([
     healthRoute({ status: "ok", database: true }),
     {
       method: "GET",
@@ -1117,13 +1152,18 @@ it("shows the domain error code when creating a duplicate adapter", async () => 
   render(<App />);
   await selectFirstAdapter();
 
+  // M5.5.9：创建同名活跃适配器被前端预检拦截并给出明确中文提示，不发请求。
   fireEvent.click(screen.getByTestId("show-create-form"));
   await screen.findByTestId("new-adapter-name");
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "adapter-a" } });
   fireEvent.click(screen.getByTestId("create-adapter"));
 
-  await screen.findByTestId("error-banner");
-  expect(screen.getByTestId("error-banner").textContent).toContain("adapter_name_conflict");
+  await screen.findByText("已存在同名适配器，请使用其他名称。");
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters" && init?.method === "POST",
+    ),
+  ).toBe(false);
 });
 
 // --- Review regressions: atomic content loading ------------------------------
@@ -1305,14 +1345,55 @@ it("acknowledges a successful Save locally even when the follow-up refresh fails
 
   // The saved version is acknowledged: not dirty, selected, and marked latest,
   // so the user is never encouraged to repeat an already-successful save.
-  expect(screen.queryByTestId("dirty-indicator")).toBeNull();
-  expect(screen.getByTestId("task-revision").textContent).toContain("修订版 1");
   expect(valueOf("code-editor")).toBe("saved code");
+  // 未保存修改已清除：运行按钮不再被“请先保存当前修改，再运行。”门禁拦截。
+  await waitFor(() => {
+    expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(false);
+  });
+  expect(
+    (screen.getByTestId("header-task-run-once") as HTMLButtonElement)
+      .closest(".action-with-reason")
+      ?.getAttribute("data-disabled-reason") ?? "",
+  ).not.toContain("请先保存当前修改");
 });
 
 // --- Review regressions: create form only closes on real success -------------
 
-it("keeps the create form and its inputs when creation fails with a duplicate name", async () => {
+it("blocks renaming to an existing active adapter name with a clear prompt (M5.5.9)", async () => {
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [makeAdapter(), makeAdapter({ id: 2, name: "adapter-b" })] }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  await screen.findByTestId("adapter-name");
+  // 精确同名与 trim 后同名都被前端预检拦截，不发 PATCH。
+  fireEvent.change(screen.getByTestId("adapter-name"), { target: { value: "adapter-b" } });
+  fireEvent.click(screen.getByTestId("update-details"));
+  expect(await screen.findByText("已存在同名适配器，请使用其他名称。")).toBeTruthy();
+
+  fireEvent.change(screen.getByTestId("adapter-name"), { target: { value: "  adapter-b  " } });
+  fireEvent.click(screen.getByTestId("update-details"));
+  // 第二次点击再次给出提示（trim 后仍冲突）。
+  await waitFor(() =>
+    expect(screen.getAllByText("已存在同名适配器，请使用其他名称。").length).toBeGreaterThanOrEqual(2),
+  );
+  expect(valueOf("adapter-name")).toBe("  adapter-b  ");
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+    ),
+  ).toBe(false);
+});
+
+it("keeps the create form and its inputs when the backend rejects a duplicate name", async () => {
   stubFetch([
     healthRoute({ status: "ok", database: true }),
     {
@@ -1339,16 +1420,17 @@ it("keeps the create form and its inputs when creation fails with a duplicate na
 
   fireEvent.click(screen.getByTestId("show-create-form"));
   await screen.findByTestId("new-adapter-name");
-  fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "adapter-a" } });
+  // 并发场景：本地列表尚未刷新，后端权威校验拒绝同名。
+  fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "race-dup" } });
   fireEvent.change(screen.getByTestId("new-adapter-description"), {
     target: { value: "keep me" },
   });
   fireEvent.click(screen.getByTestId("create-adapter"));
 
-  await screen.findByTestId("error-banner");
+  await screen.findByText("已存在同名适配器，请使用其他名称。");
   // The form stays open with the user's input still editable.
   expect(screen.getByTestId("new-adapter-name")).toBeTruthy();
-  expect(valueOf("new-adapter-name")).toBe("adapter-a");
+  expect(valueOf("new-adapter-name")).toBe("race-dup");
   expect(valueOf("new-adapter-description")).toBe("keep me");
 });
 
@@ -1377,7 +1459,7 @@ it("keeps the create form open when creation is cancelled by the discard confirm
   render(<App />);
   await selectFirstAdapter();
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited" } });
-  await screen.findByTestId("dirty-indicator");
+  await waitFor(() => expect(valueOf("code-editor")).toBe("edited"));
 
   const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
   fireEvent.click(screen.getByTestId("show-create-form"));
@@ -1433,8 +1515,6 @@ it("locks editing while Save is in flight so the saved snapshot stays consistent
   ]);
   render(<App />);
   await selectFirstAdapter();
-  // M3.2：激活运行参数页签使其进入 DOM，随后验证 Save 期间的编辑锁。
-  fireEvent.click(screen.getByText("运行参数（JSON）"));
 
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited code" } });
   fireEvent.click(screen.getByTestId("save-version"));
@@ -1444,7 +1524,6 @@ it("locks editing while Save is in flight so the saved snapshot stays consistent
     expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true);
   });
   expect((screen.getByTestId("requirements-input") as HTMLTextAreaElement).disabled).toBe(true);
-  expect((screen.getByTestId("runtime-config-input") as HTMLTextAreaElement).disabled).toBe(true);
   expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getAllByTestId("adapter-item")[0] as HTMLButtonElement).disabled).toBe(true);
 
@@ -1452,7 +1531,7 @@ it("locks editing while Save is in flight so the saved snapshot stays consistent
   const savedVersion = makeVersion({ code: "edited code", requirements: "", runtime_config: {} });
   versions.push(savedVersion);
   resolveSave?.(savedVersion);
-  await waitFor(() => expect(screen.getByTestId("task-revision").textContent).toContain("修订版 1"));
+  await screen.findByText("适配器已保存");
 
   const saveCall = fetchMock.mock.calls.find(
     ([url, init]) => String(url).endsWith("/versions") && init?.method === "POST",
@@ -1460,7 +1539,6 @@ it("locks editing while Save is in flight so the saved snapshot stays consistent
   const sentPayload = JSON.parse(String(saveCall?.[1]?.body)) as { code: string };
   expect(sentPayload.code).toBe("edited code");
   expect(valueOf("code-editor")).toBe("edited code");
-  expect(screen.queryByTestId("dirty-indicator")).toBeNull();
 });
 
 it("never fabricates Adapter.updated_at from the saved version; adapter refresh failure is non-fatal", async () => {
@@ -1510,13 +1588,13 @@ it("never fabricates Adapter.updated_at from the saved version; adapter refresh 
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "saved code" } });
   fireEvent.click(screen.getByTestId("save-version"));
 
-  // The save is still acknowledged (latest badge, not dirty) while the failed
-  // Adapter refresh is reported separately; the server-owned updated_at is
-  // never synthesized from the version's created_at.
-  await waitFor(() => expect(screen.getByTestId("task-revision").textContent).toContain("修订版 1"));
-  expect(screen.getByTestId("error-banner").textContent).toContain("适配器已保存");
+  // The save is still acknowledged (not dirty) while the failed Adapter
+  // refresh is reported separately; the server-owned updated_at is never
+  // synthesized from the version's created_at.
+  await waitFor(() =>
+    expect(screen.getByTestId("error-banner").textContent).toContain("适配器已保存"),
+  );
   expect(screen.getByTestId("error-banner").textContent).toContain("刷新适配器失败");
-  expect(screen.queryByTestId("dirty-indicator")).toBeNull();
   expect(valueOf("code-editor")).toBe("saved code");
   expect(
     fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/1"),
@@ -1654,6 +1732,70 @@ it("runs a Task from the Workbench header and follows it in the shared live log"
   expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
 });
 
+it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  const versions: VersionSummary[] = [
+    { id: 10, adapter_id: 1, seq: 1, created_at: "2026-08-15T00:00:00Z" },
+  ];
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: versions }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}") as { code: string };
+        const saved = makeVersion({ id: 11, seq: 2, code: payload.code });
+        versions.push({ id: saved.id, adapter_id: 1, seq: saved.seq, created_at: saved.created_at });
+        adapter.latest_version_id = saved.id;
+        return { status: 201, body: saved };
+      },
+    },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+
+  // 等待内容加载完成（save 可用），避免加载完成时覆盖编辑快照。
+  await waitFor(() =>
+    expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false),
+  );
+  const runButton = await screen.findByTestId("header-task-run-once") as HTMLButtonElement;
+  await waitFor(() => expect(runButton.disabled).toBe(false));
+
+  // 未保存修改：运行被门禁拦截并提示先保存，不发执行请求。
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "unsaved edit" } });
+  await waitFor(() => {
+    const freshButton = screen.getByTestId("header-task-run-once") as HTMLButtonElement;
+    expect(freshButton.disabled).toBe(true);
+  });
+  expect(
+    (screen.getByTestId("header-task-run-once") as HTMLButtonElement)
+      .closest(".action-with-reason")
+      ?.getAttribute("aria-label"),
+  ).toContain("请先保存当前修改，再运行。");
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+    ),
+  ).toBe(false);
+
+  // 保存后门禁解除，可直接运行。
+  fireEvent.click(screen.getByTestId("save-version"));
+  await screen.findByText("适配器已保存");
+  await waitFor(() => {
+    const freshButton = screen.getByTestId("header-task-run-once") as HTMLButtonElement;
+    expect(freshButton.disabled).toBe(false);
+  });
+  expect(
+    (screen.getByTestId("header-task-run-once") as HTMLButtonElement)
+      .closest(".action-with-reason")
+      ?.getAttribute("aria-label") ?? "",
+  ).not.toContain("请先保存当前修改");
+});
+
 it("announces a background Schedule run without leaving the execution history tab", async () => {
   const runningAdapter = makeAdapter({
     latest_version_id: 10,
@@ -1732,14 +1874,12 @@ it("keeps Schedule disablement separate from cancelling the current Execution", 
   });
 
   const commonProps = {
-    revisionSeq: 1,
     runtimeWorker: null,
     dirty: false,
     busy: false,
     contentReady: true,
     onSave: vi.fn(),
     onOpenSettings: vi.fn(),
-    onClone: vi.fn(),
     onRunOnce: vi.fn(),
     onStopExecution,
     onToggleSchedule,
@@ -1840,6 +1980,7 @@ it("cancels the authoritative Adapter Execution instead of a stale terminal watc
       workersLoading={false}
       workersError={null}
       execution={staleTerminal}
+      dirty={false}
       onAdapterChange={vi.fn()}
       onExecutionStarted={vi.fn()}
       onRuntimeStateChange={vi.fn()}
@@ -2299,6 +2440,55 @@ it("follows the browser color scheme when the Monaco theme preference is 跟随�
   });
 });
 
+it("keeps a manual dark Monaco theme across adapter switches and tab switches (M5.5.9)", async () => {
+  localStorage.setItem(EDITOR_THEME_STORAGE_KEY, "dark");
+  const versionA = makeVersion({ code: "code-a\n" });
+  const versionB = makeVersion({ id: 20, adapter_id: 2, code: "code-b\n" });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({
+        body: [
+          makeAdapter({ latest_version_id: 10 }),
+          makeAdapter({ id: 2, name: "adapter-b", latest_version_id: 20 }),
+        ],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [{ id: 10, adapter_id: 1, seq: 1, created_at: "2026-08-15T00:00:00Z" }] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: versionA }) },
+    { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [{ id: 20, adapter_id: 2, seq: 1, created_at: "2026-08-15T00:00:00Z" }] }) },
+    { method: "GET", match: "/api/adapters/2/versions/20", respond: () => ({ body: versionB }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  expect(monacoTheme()).toBe("vs-dark");
+
+  // 切换 Tab（运行设置 → 编辑）保持深色。
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
+  expect(monacoTheme()).toBe("vs-dark");
+
+  // 切换 Adapter（Monaco remount）保持深色。
+  fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
+  await screen.findByRole("heading", { name: "adapter-b" });
+  expect(monacoTheme()).toBe("vs-dark");
+  expect(valueOf("code-editor")).toBe("code-b\n");
+});
+
+it("passes the active Monaco theme into the working-copy diff modal (M5.5.9)", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  render(<App />);
+  await selectFirstAdapter();
+  expect(monacoTheme()).toBe("vs-dark");
+
+  fireEvent.click(screen.getByTestId("working-diff"));
+  await screen.findByTestId("version-diff");
+  expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-theme")).toBe("vs-dark");
+});
+
 it("shows a JavaScript working copy diff with the matching Monaco mode and dependency label", async () => {
   const adapter = makeAdapter({ language: "javascript", latest_version_id: 10 });
   stubFetch(consoleWithVersionRoutes(adapter, makeVersion({ code: "baseline-code\n" })));
@@ -2627,9 +2817,17 @@ it.each([
       (screen.getByTestId("diff-apply-candidate") as HTMLButtonElement).textContent?.replace(/\s/g, ""),
     ).toBe("已应用");
     expect(valueOf("requirements-input")).toBe("candidate-dependency\n");
-    fireEvent.click(screen.getByText("运行参数（JSON）"));
-    expect(valueOf("runtime-config-input")).toBe('{\n  "page_size": 100\n}');
-    expect(screen.getByTestId("dirty-indicator")).toBeTruthy();
+    // M5.5.9：运行参数（JSON）已退出编辑页；候选参数只随工作副本进入保存。
+    expect(screen.queryByText("运行参数（JSON）")).toBeNull();
+    // 候选已应用 = 工作副本变 dirty：运行按钮被“请先保存当前修改”门禁拦截。
+    await waitFor(() => {
+      expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(true);
+    });
+    expect(
+      (screen.getByTestId("header-task-run-once") as HTMLButtonElement)
+        .closest(".action-with-reason")
+        ?.getAttribute("aria-label"),
+    ).toContain("请先保存当前修改，再运行。");
     expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("diff-close"));
@@ -2748,32 +2946,6 @@ it("keeps a normal AI Candidate quiet and follows messages only while the user s
   } else {
     Object.defineProperty(HTMLElement.prototype, "scrollHeight", inheritedScrollHeight);
   }
-});
-
-it("rejects a runtime config whose JSON number overflows instead of silently sending null", async () => {
-  const adapter = makeAdapter({ latest_version_id: 10 });
-  const fetchMock = stubFetch([
-    ...consoleWithVersionRoutes(adapter, makeVersion()),
-    aiBindingsRoute(1),
-  ]);
-  render(<App />);
-  await selectFirstAdapter();
-  fireEvent.click(screen.getByText("运行参数（JSON）"));
-  fireEvent.change(screen.getByTestId("runtime-config-input"), {
-    target: { value: '{"overflow":1e400}' },
-  });
-  await openAiAssistant();
-  fireEvent.change(screen.getByTestId("ai-message-input"), {
-    target: { value: "检查参数" },
-  });
-  fireEvent.click(screen.getByTestId("ai-send"));
-
-  expect((await screen.findByTestId("ai-panel-error")).textContent).toContain(
-    "必须是合法的 JSON 对象",
-  );
-  expect(
-    fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/adapters/1/ai/assist")),
-  ).toBe(false);
 });
 
 it("refreshes bindings for a new Candidate while the AI panel remains open", async () => {
@@ -3010,7 +3182,15 @@ it("closing the Candidate Diff applies nothing and keeps the Working Copy untouc
   await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
 
   expect(valueOf("code-editor")).toBe("base-code\n");
-  expect(screen.queryByTestId("dirty-indicator")).toBeNull();
+  // 关闭 Diff = 未应用：工作副本保持干净，运行门禁不拦截。
+  await waitFor(() => {
+    expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(false);
+  });
+  expect(
+    (screen.getByTestId("header-task-run-once") as HTMLButtonElement)
+      .closest(".action-with-reason")
+      ?.getAttribute("aria-label") ?? "",
+  ).not.toContain("请先保存当前修改");
   expect(screen.queryByTestId("ai-candidate-applied")).toBeNull();
   // 候选仍在卡片上可再次审阅。
   expect(screen.getByTestId("ai-view-diff")).toBeTruthy();
@@ -3470,12 +3650,10 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
   const commonProps = {
     adapter,
     runtimeWorker: null,
-    dirty: false,
     busy: false,
     contentReady: true,
     onSave: vi.fn(),
     onOpenSettings: vi.fn(),
-    onClone: vi.fn(),
     onToggleReceiving: vi.fn(),
   };
   const { rerender } = render(

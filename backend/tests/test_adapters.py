@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
-from dlr.control.schemas.adapter import VersionCreate
+from dlr.control.schemas.adapter import AdapterCreate, VersionCreate
+from dlr.control.services.adapter import create_adapter as service_create_adapter
 from dlr.control.services.adapter import save_version as service_save_version
 
 STARTER_CODE = "def handle(context, input):\n    return input\n"
@@ -168,6 +169,30 @@ def test_create_adapter_duplicate_name_conflict(api_client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "adapter_name_conflict"
 
 
+def test_create_adapter_name_conflict_ignores_surrounding_whitespace(
+    api_client: TestClient,
+) -> None:
+    create_adapter(api_client, name="padded")
+    response = api_client.post(
+        "/api/adapters",
+        json={"name": "  padded  ", "language": "python", "adapter_type": "task"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "adapter_name_conflict"
+
+
+def test_create_adapter_reuses_soft_deleted_name(api_client: TestClient) -> None:
+    created = create_adapter(api_client, name="reusable")
+    assert api_client.delete(f"/api/adapters/{created['id']}").status_code == 204
+
+    response = api_client.post(
+        "/api/adapters",
+        json={"name": "reusable", "language": "python", "adapter_type": "task"},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["name"] == "reusable"
+
+
 def test_get_adapter(api_client: TestClient) -> None:
     created = create_adapter(api_client)
     response = api_client.get(f"/api/adapters/{created['id']}")
@@ -236,6 +261,16 @@ def test_patch_adapter_name_conflict(api_client: TestClient) -> None:
     response = api_client.patch(f"/api/adapters/{other['id']}", json={"name": "taken"})
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "adapter_name_conflict"
+
+
+def test_patch_adapter_can_rename_to_a_soft_deleted_name(api_client: TestClient) -> None:
+    retired = create_adapter(api_client, name="retired")
+    assert api_client.delete(f"/api/adapters/{retired['id']}").status_code == 204
+    third = create_adapter(api_client, name="third")
+
+    response = api_client.patch(f"/api/adapters/{third['id']}", json={"name": "retired"})
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "retired"
 
 
 def test_patch_adapter_cannot_change_forbidden_fields(api_client: TestClient) -> None:
@@ -498,3 +533,51 @@ def test_concurrent_saves_keep_seq_unique_and_latest_correct(
 
     listed = api_client.get(f"/api/adapters/{adapter_id}/versions").json()
     assert [version["seq"] for version in listed] == [2, 1]
+
+
+def test_concurrent_create_same_name_only_one_succeeds(
+    session_factory: sessionmaker[Session],
+) -> None:
+    """Two independent sessions creating the same name at the same moment.
+
+    The service pre-check passes in both sessions; the partial unique index
+    (active Adapters only) is the final defense and exactly one commit wins,
+    the loser is mapped to the stable 409 adapter_name_conflict.
+    """
+    from fastapi import HTTPException
+
+    start = threading.Barrier(2)
+    outcomes: list[str] = []
+
+    def worker(tag: str) -> None:
+        session = session_factory()
+        try:
+            start.wait(timeout=5)
+            created = service_create_adapter(
+                session,
+                AdapterCreate(
+                    name="race-name",
+                    description="",
+                    language="python",
+                    adapter_type="task",
+                ),
+            )
+            outcomes.append(f"{tag}:ok:{created.id}")
+        except HTTPException as exc:
+            outcomes.append(f"{tag}:{exc.detail.get('code')}")
+        except BaseException as exc:  # noqa: BLE001 - collect to assert below
+            outcomes.append(f"{tag}:error:{type(exc).__name__}")
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=worker, args=(tag,)) for tag in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    successes = [entry for entry in outcomes if ":ok:" in entry]
+    conflicts = [entry for entry in outcomes if ":adapter_name_conflict" in entry]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert all(":error:" not in entry for entry in outcomes)

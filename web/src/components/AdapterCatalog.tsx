@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Button, Drawer, Input, Radio, Space } from "antd";
+import { Button, Drawer, Dropdown, Input, Radio, Space } from "antd";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, AdapterLanguage, AdapterType, Worker } from "../types";
@@ -29,6 +29,9 @@ interface AdapterCatalogProps {
   // Loaded once by App and shared with Worker status/settings/Catalog. This
   // keeps Worker names visible without a per-Adapter request.
   workers: Worker[];
+  // M5.5.9：列表项三点菜单——“设置”直接进入该 Adapter 设置；“复制”进入 Clone 流程。
+  onOpenSettings: (adapter: Adapter) => void;
+  onClone: (adapter: Adapter) => void;
 }
 
 function versionLabel(
@@ -73,6 +76,8 @@ function catalogSubtitle(
   versionSeqById: Map<number, number>,
   workersById: Map<number, Worker>,
 ): { primary: string; attention: string[]; full: string } {
+  // M5.5.9：目录行直接展示 Adapter 类型，便于快速扫描。
+  const typeLabel = adapter.adapter_type === "task" ? "[任务]" : "[Webhook]";
   if (adapter.adapter_type === "task") {
     const attention: string[] = [];
     const mode = adapter.run_mode === "schedule" ? "定时运行" : "手动运行";
@@ -83,7 +88,7 @@ function catalogSubtitle(
         attention.push("运行节点离线");
       }
     }
-    const primary = `${LANGUAGE_LABELS[adapter.language]} · ${mode} · ${runtimeStatus.fact}`;
+    const primary = `${typeLabel} ${LANGUAGE_LABELS[adapter.language]} · ${mode} · ${runtimeStatus.fact}`;
     const fullParts = [primary, ...attention];
     if (workerId == null) {
       fullParts.push("运行节点未配置");
@@ -108,7 +113,7 @@ function catalogSubtitle(
     adapter.latest_version_id == null
       ? "未保存"
       : `已保存 ${versionLabel(adapter.latest_version_id, null, versionSeqById)}`;
-  const primary = `${LANGUAGE_LABELS[adapter.language]} · ${runtimeStatus.fact} · ${revision}`;
+  const primary = `${typeLabel} ${LANGUAGE_LABELS[adapter.language]} · ${runtimeStatus.fact} · ${revision}`;
   const fullParts = [primary, ...attention];
   if (workerId === null || workerId === undefined) {
     fullParts.push("运行节点未配置");
@@ -130,6 +135,8 @@ export default function AdapterCatalog({
   onCreate,
   versionSeqById,
   workers,
+  onOpenSettings,
+  onClone,
 }: AdapterCatalogProps) {
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
@@ -215,30 +222,61 @@ export default function AdapterCatalog({
                 : `调用 #${adapter.running_execution_id}`;
             const accessibleRuntimeFact = [statusDescription, runtimeDetail].filter(Boolean).join(" · ");
             return (
-              <button
-                key={adapter.id}
-                type="button"
-                data-testid="adapter-item"
-                className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
-                disabled={busy}
-                title={`${adapter.name}${adapter.description ? ` — ${adapter.description}` : ""}\n${subtitle.full}`}
-                aria-label={`${adapter.name}，${subtitle.full.replace(runtimeStatus.fact, accessibleRuntimeFact)}`}
-                onClick={() => onSelect(adapter)}
-              >
-                <span className="catalog-item-name">
-                  <span
-                    className={`catalog-status-dot catalog-status-${runtimeStatus.dot}`}
-                    title={statusDescription}
-                  />
-                  {adapter.name}
-                </span>
-                <span className="catalog-item-sub" title={subtitle.full}>
-                  <span>{subtitle.primary}</span>
-                  {subtitle.attention.map((item) => (
-                    <span className="catalog-item-attention" key={item}> · {item}</span>
-                  ))}
-                </span>
-              </button>
+              <div key={adapter.id} className="catalog-row">
+                <button
+                  type="button"
+                  data-testid="adapter-item"
+                  className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
+                  disabled={busy}
+                  title={`${adapter.name}${adapter.description ? ` — ${adapter.description}` : ""}\n${subtitle.full}`}
+                  aria-label={`${adapter.name}，${subtitle.full.replace(runtimeStatus.fact, accessibleRuntimeFact)}`}
+                  onClick={() => onSelect(adapter)}
+                >
+                  <span className="catalog-item-name">
+                    <span
+                      className={`catalog-status-dot catalog-status-${runtimeStatus.dot}`}
+                      title={statusDescription}
+                    />
+                    {adapter.name}
+                  </span>
+                  <span className="catalog-item-sub" title={subtitle.full}>
+                    <span>{subtitle.primary}</span>
+                    {subtitle.attention.map((item) => (
+                      <span className="catalog-item-attention" key={item}> · {item}</span>
+                    ))}
+                  </span>
+                </button>
+                {/* M5.5.9：三点菜单只提供“设置/复制”；点击菜单按钮不触发行选择，
+                    再次点击或点击空白处由 Dropdown 关闭，键盘可达（原生 Button）。 */}
+                <Dropdown
+                  trigger={["click"]}
+                  placement="bottomRight"
+                  menu={{
+                    items: [
+                      { key: "settings", label: "设置" },
+                      { key: "clone", label: "复制" },
+                    ],
+                    onClick: ({ key }) => {
+                      if (key === "settings") {
+                        onOpenSettings(adapter);
+                      } else if (key === "clone") {
+                        onClone(adapter);
+                      }
+                    },
+                  }}
+                >
+                  <Button
+                    size="small"
+                    type="text"
+                    className="catalog-item-menu"
+                    disabled={busy}
+                    aria-label={`${adapter.name} 更多操作`}
+                    data-testid="adapter-item-menu"
+                  >
+                    ···
+                  </Button>
+                </Dropdown>
+              </div>
             );
           })
         )}

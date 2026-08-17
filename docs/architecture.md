@@ -58,7 +58,7 @@ API 响应附带 `runtime_locked` 与 `running_execution_id`，供 Web 直接展
 
 ### 3.2 AdapterVersion / Revision
 
-每次保存创建一条不可变记录：`code / requirements / runtime_config / seq / created_at`，并更新 `latest_version_id`。用户界面只提供“保存”，Revision 序号只作为次级排障信息。
+每次保存创建一条不可变记录：`code / requirements / runtime_config / seq / created_at`，并更新 `latest_version_id`。用户界面只提供“保存”；M5.5.9 起 Revision 序号不再向普通用户展示（Header 收敛，底层审计事实不变）。
 
 运行入口始终绑定创建 Execution 当时的 `latest_version_id`，因此之后再次保存不会改变已经在运行的 Execution。
 

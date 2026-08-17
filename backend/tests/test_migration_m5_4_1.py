@@ -43,7 +43,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0011_m5_4_3_webhook_final_model"
+    assert revision == "0012_m5_5_9_active_name_unique"
     assert {
         "adapter_type",
         "run_mode",

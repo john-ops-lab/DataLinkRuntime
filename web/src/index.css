@@ -172,15 +172,32 @@ body {
 }
 
 /* 高密度行式导航：不为每条 Adapter 建 Card。 */
+.catalog-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .catalog-item {
-  width: 100%;
-  display: block;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   padding: 6px 8px;
   border: none;
   border-radius: 4px;
   background: none;
   cursor: pointer;
+}
+
+.catalog-item-menu {
+  flex: 0 0 auto;
+  color: var(--dlr-text-secondary);
+}
+
+.catalog-item-menu:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
 }
 
 .catalog-item:hover:not(:disabled) {
@@ -514,6 +531,14 @@ body {
 /* Header runtime guidance keeps a consistent distance from the title row. */
 .workbench-context .ant-alert {
   margin-top: 6px;
+}
+
+/* M5.5.9：运行中只保留低干扰提示。 */
+.runtime-lock-hint {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--dlr-text-secondary);
 }
 
 .version-menu-item {
