@@ -186,6 +186,20 @@ export interface ReachabilityResult {
   error: string | null;
 }
 
+/** Canonical fresh-deployment default for one dependency kind (M5.5.8). */
+export interface DefaultPackageSourceInfo {
+  kind: "pypi" | "npm" | "maven";
+  name: string;
+  index_url: string;
+}
+
+/** Canonical defaults for all three dependency kinds. */
+export interface PackageSourceDefaults {
+  pypi: DefaultPackageSourceInfo;
+  npm: DefaultPackageSourceInfo;
+  maven: DefaultPackageSourceInfo;
+}
+
 // --- M4: AI Editor ----------------------------------------------------------
 
 export type AiProvider =

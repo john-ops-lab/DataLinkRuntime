@@ -31,10 +31,30 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> smoke project: $COMPOSE_PROJECT_NAME (web port: $DLR_WEB_HOST_PORT)"
-# M5.5.3: the optional DNS override file must always parse; default compose
-# config must not depend on it (no machine-specific DNS hardcoding).
+# M5.5.8: the optional DNS override file must always parse, and the default
+# compose config must stay valid without any DNS-related .env variables.
 docker compose -f docker-compose.yml config -q
 docker compose -f docker-compose.yml -f docker-compose.dns.example.yml config -q
+# M5.5.8: default DNS fallback is present and overridable/disableable via .env.
+docker compose -f docker-compose.yml config | grep -q "1.1.1.1"
+docker compose -f docker-compose.yml config | grep -q "127.0.0.11"
+if DLR_DNS_FALLBACK_1= DLR_DNS_FALLBACK_2= docker compose -f docker-compose.yml config \
+  | grep -q "1.1.1.1"; then
+  echo "ERROR: disabled DNS fallback still in config" >&2
+  exit 1
+fi
+# M5.5.8: the README-standard `cp .env.example .env` path must keep the public
+# DNS fallback. .env.example deliberately ships no active DLR_DNS_FALLBACK_*
+# assignments because an empty-but-set value overrides the compose default.
+env_example_check=$(mktemp -d)
+cp .env.example "$env_example_check/.env"
+if ! docker compose --env-file "$env_example_check/.env" -f docker-compose.yml config \
+  | grep -q "1.1.1.1"; then
+  echo "ERROR: .env.example copied per README loses the public DNS fallback" >&2
+  rm -rf "$env_example_check"
+  exit 1
+fi
+rm -rf "$env_example_check"
 docker compose build
 docker compose up -d
 
@@ -93,6 +113,15 @@ wrong_token_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer ${DLR_WORKER_TOKEN}" \
   "http://localhost:${DLR_WEB_HOST_PORT}/api/adapters")
 [ "$wrong_token_status" = "401" ]
+
+echo "==> verifying the default DNS fallback wiring (host-side)"
+for service in control worker; do
+  container_id=$(docker compose ps -q "$service")
+  dns_list=$(docker inspect --format '{{.HostConfig.Dns}}' "$container_id")
+  echo "$dns_list" | grep -q "127.0.0.11" || { echo "ERROR: $service missing embedded DNS" >&2; exit 1; }
+  echo "$dns_list" | grep -q "1.1.1.1" || { echo "ERROR: $service missing DNS fallback 1.1.1.1" >&2; exit 1; }
+  echo "$dns_list" | grep -q "8.8.8.8" || { echo "ERROR: $service missing DNS fallback 8.8.8.8" >&2; exit 1; }
+done
 
 echo "==> starting isolated local OpenAI-compatible fake Provider"
 AI_FAKE_CONTAINER_NAME="${COMPOSE_PROJECT_NAME}-ai-fake"

@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 
 import {
+  DEPENDENCY_NOTE,
   DEPENDENCY_UI,
   STARTER_CODE,
   TASK_STARTER_CODE,
@@ -69,14 +70,22 @@ it.each(["python", "javascript", "java"] as const)(
 );
 
 it.each([
-  ["python", "Python", "requests=="],
-  ["javascript", "npm", "axios@"],
-  ["java", "Maven", "okhttp"],
+  ["python", "Python 依赖", "requests==2.32.3"],
+  ["javascript", "JavaScript 依赖", "axios@1.7.7"],
+  ["java", "Java 依赖", "org.apache.commons:commons-lang3:3.17.0"],
 ] as const)(
-  "%s dependency UI label and placeholder match the language",
-  (language, labelMarker, placeholderMarker) => {
+  "%s dependency UI label and placeholder follow the M5.5.8 wording",
+  (language, label, placeholderMarker) => {
     const ui = DEPENDENCY_UI[language];
-    expect(ui.label).toContain(labelMarker);
+    expect(ui.label).toBe(label);
     expect(ui.placeholder).toContain(placeholderMarker);
+    // 三种语言统一提示"回车换行，每行写一个依赖"。
+    expect(ui.placeholder).toContain("回车换行，每行写一个依赖");
   },
 );
+
+it("dependency note explains install timing, System Settings source and empty behavior", () => {
+  expect(DEPENDENCY_NOTE).toContain("Worker 执行前会安装这些依赖");
+  expect(DEPENDENCY_NOTE).toContain("系统设置");
+  expect(DEPENDENCY_NOTE).toContain("不填写则平台不会额外检查依赖是否齐全");
+});

@@ -100,11 +100,12 @@ DLR 不主动发送 reasoning override。
 `DLR_AI_PROVIDER_TIMEOUT_SECONDS` 在 10～600 秒范围内调整；该参数仅控制请求 deadline，
 不新增 streaming 或输出 token 参数管理。
 
-管理员配置的模型服务会收到当前 Working Copy、非敏感运行参数、已绑定 Secret 的
-`env_key` 名称以及有限的最近对话；不会收到这些业务 Credential 的真值。所选模型 API
-Key 只作为 Provider HTTP Authorization 使用，不进入 Prompt。对话、Prompt、Provider
-Response 与 reasoning 不落库、不写普通应用日志。模型返回的 Candidate 经本地 Schema
-校验后仍需人工 Apply，且 Apply 不调用任何生命周期 API。
+使用 AI 功能时，当前 Adapter 的代码、普通配置以及有限的最近对话会发送到你配置的
+模型服务，用于生成修改建议；已绑定 Secret 的名称会被转发（供模型生成可用的代码），
+但密码、Token、密钥等敏感凭据的真值不会发送给模型，浏览器与 AI 设置 API 也不会返回
+这些真值。所选模型 API Key 只作为请求鉴权使用，不进入 Prompt。对话、Prompt、Provider
+Response 与 reasoning 不落库、不写普通应用日志。模型返回的候选修改经本地 Schema
+校验后仍需人工查看并应用，应用不会保存、测试或运行 Adapter。
 
 ## 本地开发
 
@@ -162,7 +163,9 @@ Webhook 主链路真实跑通 `create → Save + Worker + Token → 可读 path 
 额外启动一个临时、仅位于 smoke 网络中的 OpenAI-compatible fake Provider，验证设置、
 模型刷新、连接测试与三语言 AI Assist，并证明 AI 不改变保存、Execution 或运行配置事实；
 不访问任何公网 AI，也不把 fake Provider 加入正式 Compose 拓扑。整个过程
-使用独立 Compose project 和卷，结束后自动清理：
+使用独立 Compose project 和卷，结束后自动清理；另外验证 fresh deployment
+自带的三种默认依赖源、恢复默认接口，以及默认 DNS fallback 的容器配置与
+Docker 内部服务名解析不回归：
 
 ```bash
 ./scripts/compose-smoke.sh
@@ -170,28 +173,40 @@ Webhook 主链路真实跑通 `create → Save + Worker + Token → 可读 path 
 
 ## 容器网络与 DNS 排障
 
-### 默认行为
+### 默认行为（M5.5.8）
 
-平台不在 Compose 配置中硬编码任何机器特定 DNS。`control` / `worker` 的
-出站网络走 Compose 内置 DNS（容器内 `127.0.0.11`），由 Docker 转发到宿主
-机 `resolv.conf` 的配置；fresh deployment 无需了解内部细节即可启动。只有
-两类外部连接需要域名解析：
+`control` / `worker` 的 DNS 列表默认为
+`127.0.0.11 → 1.1.1.1 → 8.8.8.8`：第一项是 Docker 内置解析器（负责
+`postgres` / `control` 等内部服务名解析），后两项是公共 DNS 回退，仅当
+内置解析器无法解析公网域名（企业网络 / VPN / 防火墙拦截宿主 DNS 转发）
+时才被尝试。仅两类外部连接需要公网域名解析：
 
 - `control` 访问 AI Provider 的 Base URL（AI 设置中的模型服务）；
-- `worker` 按 Adapter 语言下载依赖（PyPI / npm / Maven，兼容配置在
-  `.env.example` 中可选填写）。
+- `worker` 按 Adapter 语言下载依赖（PyPI / npm / Maven，默认源在
+  系统设置中配置，兼容配置在 `.env.example` 中可选填写）。
 
-### 何时需要覆盖 DNS
+### 覆盖或关闭 DNS 回退
 
-仅当容器内无法解析外部域名（企业网络 / VPN / 防火墙拦截了 Docker 的 DNS
-转发）时，才需要显式覆盖。覆盖是可选、按部署定制的，不修改
-`docker-compose.yml`：
+- **企业 / VPN / 私有 DNS**：在 `.env` 中指定自有 DNS，例如
+  ```bash
+  DLR_DNS_FALLBACK_1=10.0.0.53
+  DLR_DNS_FALLBACK_2=
+  ```
+- **完全关闭公共 DNS 回退**（回到纯 Docker 内置解析器转发宿主机
+  `resolv.conf` 的旧默认行为）：两个回退都留空：
+  ```bash
+  DLR_DNS_FALLBACK_1=
+  DLR_DNS_FALLBACK_2=
+  ```
+- **整体替换 DNS 列表**（不修改 `docker-compose.yml`，需 Compose v2.24+）：
+  ```bash
+  cp docker-compose.dns.example.yml docker-compose.dns.yml
+  # 编辑 docker-compose.dns.yml，替换为你所在网络实际可用的 DNS
+  docker compose -f docker-compose.yml -f docker-compose.dns.yml up -d --build
+  ```
 
-```bash
-cp docker-compose.dns.example.yml docker-compose.dns.yml
-# 编辑 docker-compose.dns.yml，把占位地址替换为你所在网络实际可用的 DNS
-docker compose -f docker-compose.yml -f docker-compose.dns.yml up -d --build
-```
+无论哪种方式，`127.0.0.11`（Docker 内置解析器）都必须保留在列表首位，
+否则容器内无法解析内部服务名。
 
 ### 分层检查顺序（DNS → TCP → TLS/HTTP）
 

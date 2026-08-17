@@ -17,6 +17,16 @@ services:
     build:
       context: .
       dockerfile: docker/control.Dockerfile
+    # M5.5.8: DNS fallback for containers that need external services. The
+    # Docker embedded resolver (127.0.0.11) stays first so internal service
+    # names keep resolving; 1.1.1.1 / 8.8.8.8 are only fallbacks when the
+    # host DNS cannot resolve a public domain (enterprise / VPN). Override
+    # via .env (e.g. DLR_DNS_FALLBACK_1=10.0.0.53) or set both fallbacks to
+    # empty to disable the public fallback entirely.
+    dns:
+      - ${DLR_DNS_PRIMARY:-127.0.0.11}
+      - ${DLR_DNS_FALLBACK_1-1.1.1.1}
+      - ${DLR_DNS_FALLBACK_2-8.8.8.8}
     environment:
       DATABASE_URL: postgresql+psycopg://dlr:dlr@postgres:5432/dlr
       # M2 static shared tokens; must come from the environment / .env file,
@@ -58,6 +68,11 @@ services:
     # would kill it before _graceful_offline() can run. 30s covers the worst
     # case claim wait plus a buffer for the offline notification.
     stop_grace_period: 30s
+    # Same M5.5.8 DNS fallback as control (embedded resolver first).
+    dns:
+      - ${DLR_DNS_PRIMARY:-127.0.0.11}
+      - ${DLR_DNS_FALLBACK_1-1.1.1.1}
+      - ${DLR_DNS_FALLBACK_2-8.8.8.8}
     environment:
       DLR_WORKER_READY_FILE: /tmp/dlr-worker.ready
       DLR_CONTROL_URL: http://control:8000
