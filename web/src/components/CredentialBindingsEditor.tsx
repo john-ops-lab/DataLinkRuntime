@@ -1,7 +1,7 @@
-/** 凭据绑定编辑器：env_key → 凭据字段（M3.2，全量替换保存语义）。 */
+/** 凭据绑定编辑器：代码中的凭据名 → 凭据字段（M3.2，全量替换保存语义）。 */
 
 import { useCallback, useEffect, useState } from "react";
-import { Button, Empty, Input, Select, Space, Spin, Typography } from "antd";
+import { Alert, Button, Empty, Input, Select, Space, Spin, Typography } from "antd";
 
 import { api } from "../api";
 import { credentialFields } from "../credential-fields";
@@ -21,6 +21,8 @@ interface CredentialBindingsEditorProps {
   onError: (message: string | null) => void;
   /** 保存成功后通知父组件（如刷新 Diff 基线）。 */
   onSaved?: () => void;
+  /** 打开「系统设置 → 凭据管理」的入口（M5.5.7：不在编辑页重复实现新建表单）。 */
+  onOpenSettings?: () => void;
 }
 
 function errorMessage(error: unknown): string {
@@ -103,11 +105,11 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
     }
     const envKeys = rows.map((row) => row.env_key.trim());
     if (envKeys.some((envKey) => envKey === "")) {
-      props.onError("每行绑定都必须填写环境变量名（env_key）");
+      props.onError("每行绑定都必须填写代码中的凭据名");
       return;
     }
     if (new Set(envKeys).size !== envKeys.length) {
-      props.onError("环境变量名（env_key）不能重复");
+      props.onError("代码中的凭据名不能重复");
       return;
     }
     if (rows.some((row) => row.credential_id === null || row.field === "")) {
@@ -139,6 +141,12 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   }
 
   const dirty = JSON.stringify(rows) !== JSON.stringify(baseline);
+  // M5.5.7：只要用户改过“代码中的凭据名”，就提示代码引用需要同步修改，
+  // 不允许 UI 改名后代码静默失效。
+  const envKeyRenamed = rows.some((row, index) => {
+    const baselineRow = baseline[index];
+    return baselineRow !== undefined && row.env_key.trim() !== baselineRow.env_key.trim();
+  });
 
   if (loading) {
     return <Spin />;
@@ -146,9 +154,33 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
 
   return (
     <div className="binding-editor" data-testid="credential-bindings">
-      <Typography.Text type="secondary">
-        绑定将凭据字段以 DLR_SECRET_{"{env_key}"} 注入该 Adapter 的执行环境；保存为全量替换。
-      </Typography.Text>
+      <Typography.Paragraph type="secondary" className="binding-editor-help">
+        代码中的凭据名用于脚本读取绑定后的敏感信息，例如{" "}
+        <code>context.secrets.get(&quot;PASSWORD&quot;)</code>；绑定将凭据字段以{" "}
+        <code>DLR_SECRET_{"{env_key}"}</code> 注入该 Adapter 的执行环境，保存为全量替换。
+      </Typography.Paragraph>
+      <Typography.Paragraph type="secondary" className="binding-editor-help">
+        如需新增凭据，请前往「系统设置 → 凭据管理」新建。
+        {props.onOpenSettings !== undefined && (
+          <Button
+            size="small"
+            type="link"
+            data-testid="open-settings-for-credentials"
+            onClick={props.onOpenSettings}
+          >
+            打开系统设置
+          </Button>
+        )}
+      </Typography.Paragraph>
+      {envKeyRenamed && (
+        <Alert
+          type="warning"
+          showIcon
+          role="alert"
+          data-testid="binding-rename-hint"
+          message="修改代码中的凭据名后，代码中的引用也需要保持一致。"
+        />
+      )}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
       {rows.length === 0 ? (
         <Empty description="暂无凭据绑定" />
@@ -170,8 +202,8 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
               >
                 <Input
                   data-testid="binding-env-key"
-                  aria-label={`绑定 ${index + 1} 环境变量`}
-                  placeholder="env_key（如 DB_PASSWORD）"
+                  aria-label={`绑定 ${index + 1} 代码中的凭据名`}
+                  placeholder="代码中的凭据名（如 DB_PASSWORD）"
                   value={row.env_key}
                   disabled={props.disabled || saving}
                   onChange={(event) => updateRow(index, { env_key: event.target.value })}

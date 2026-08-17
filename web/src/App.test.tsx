@@ -135,7 +135,10 @@ const STARTER_CODE = "def handle(context, input):\n    return input\n";
 const TASK_STARTER_CODE =
   "def handle(context, input):\n" +
   "    context.logger.info(\"任务开始\")\n" +
+  "    # 读取“凭据绑定”中配置的密码，不要把真实密码直接写进代码\n" +
+  "    password = context.secrets.get(\"PASSWORD\")\n" +
   "    try:\n" +
+  "        # 在这里使用 password 调用目标系统，但不要打印 password\n" +
   "        return {\"message\": \"hello from DLR\", \"input\": input}\n" +
   "    finally:\n" +
   "        context.logger.info(\"任务结束\")\n";
@@ -143,7 +146,10 @@ const TASK_STARTER_CODE =
 const WEBHOOK_STARTER_CODE =
   "def handle(context, input):\n" +
   "    context.logger.info(\"收到 Webhook 请求\")\n" +
+  "    # 读取“凭据绑定”中配置的令牌，不要把真实 Token 直接写进代码\n" +
+  "    token = context.secrets.get(\"TOKEN\")\n" +
   "    try:\n" +
+  "        # 在这里使用 token 校验或调用目标系统，但不要打印 token\n" +
   "        return {\"received\": True, \"data\": input}\n" +
   "    finally:\n" +
   "        context.logger.info(\"处理完 Webhook 请求\")\n";
@@ -2395,15 +2401,68 @@ it("gives repeated Credential Binding controls stable row-specific accessible na
   await selectFirstAdapter();
   fireEvent.click(screen.getByText("凭据绑定"));
   await screen.findByRole("group", { name: "绑定 1" });
-  expect(screen.getByRole("textbox", { name: "绑定 1 环境变量" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "绑定 1 代码中的凭据名" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "绑定 1 凭据" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "绑定 1 字段" })).toBeTruthy();
 
+  // M5.5.7：凭据区域提供“去系统设置新建凭据”的说明与入口。
+  expect(screen.getByText("如需新增凭据，请前往「系统设置 → 凭据管理」新建。")).toBeTruthy();
+  const openSettings = screen.getByTestId("open-settings-for-credentials");
+  expect(openSettings).toBeTruthy();
+
   fireEvent.click(screen.getByTestId("add-binding"));
   expect(screen.getByRole("group", { name: "绑定 2" })).toBeTruthy();
-  expect(screen.getByRole("textbox", { name: "绑定 2 环境变量" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "绑定 2 代码中的凭据名" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "绑定 2 凭据" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "绑定 2 字段" })).toBeTruthy();
+});
+
+it("warns when the code-side credential name is changed", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({
+        body: [
+          {
+            id: 1,
+            name: "runtime-secret",
+            type: "password",
+            created_at: "2026-08-11T00:00:00Z",
+            updated_at: "2026-08-11T00:00:00Z",
+          },
+        ],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: () => ({
+        body: [
+          {
+            env_key: "DB_PASSWORD",
+            credential_id: 1,
+            credential_name: "runtime-secret",
+            field: "password",
+          },
+        ],
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByText("凭据绑定"));
+  await screen.findByRole("group", { name: "绑定 1" });
+  expect(screen.queryByTestId("binding-rename-hint")).toBeNull();
+  fireEvent.change(screen.getByRole("textbox", { name: "绑定 1 代码中的凭据名" }), {
+    target: { value: "DB_PASSWORD_NEW" },
+  });
+  expect(screen.getByTestId("binding-rename-hint").textContent).toContain(
+    "修改代码中的凭据名后，代码中的引用也需要保持一致。",
+  );
 });
 
 it("manages credentials and package sources from the system settings drawer", async () => {

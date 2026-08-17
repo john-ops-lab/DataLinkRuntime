@@ -1,4 +1,4 @@
-"""Fresh-schema assertions for the current M5.4.3 Alembic head."""
+"""Fresh-schema assertions for the current M5.5.7 Alembic head."""
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -43,7 +43,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0011_m5_4_3_webhook_final_model"
+    assert revision == "0012_m5_5_7_access_key_fields"
     assert {
         "adapter_type",
         "run_mode",

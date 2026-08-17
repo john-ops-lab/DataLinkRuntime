@@ -22,6 +22,31 @@ it.each(["python", "javascript", "java"] as const)(
 );
 
 it.each(["python", "javascript", "java"] as const)(
+  "%s Task starter really reads the PASSWORD binding and never leaks it",
+  (language) => {
+    const starter = TASK_STARTER_CODE[language];
+    expect(starter).toContain('context.secrets.get("PASSWORD")');
+    // 代码里只有“读取”示例，绝无真实密码、打印或返回 Secret。
+    expect(starter).not.toMatch(/password\s*=\s*["']/i);
+    expect(starter).not.toMatch(/print\(/i);
+    expect(starter).not.toMatch(/console\.log/i);
+    expect(starter).toContain("不要把真实密码直接写进代码");
+  },
+);
+
+it.each(["python", "javascript", "java"] as const)(
+  "%s Webhook starter really reads the TOKEN binding and never leaks it",
+  (language) => {
+    const starter = WEBHOOK_STARTER_CODE[language];
+    expect(starter).toContain('context.secrets.get("TOKEN")');
+    expect(starter).not.toMatch(/token\s*=\s*["']/i);
+    expect(starter).not.toMatch(/print\(/i);
+    expect(starter).not.toMatch(/console\.log/i);
+    expect(starter).toContain("不要把真实 Token 直接写进代码");
+  },
+);
+
+it.each(["python", "javascript", "java"] as const)(
   "%s legacy starter is not polluted by Task log semantics",
   (language) => {
     expect(STARTER_CODE[language]).not.toContain("任务开始");

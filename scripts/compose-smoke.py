@@ -194,6 +194,71 @@ with SessionLocal() as session:
     row = session.get(Worker, stale["id"])
     assert row is not None and row.status == "online"
 
+# M5.5.7: the demo Credentials are bootstrapped on fresh deployments with
+# random values, metadata-only APIs, and brand-new Task/Webhook Adapters
+# default-bind PASSWORD/TOKEN to them while the Webhook receiving Token
+# Credential stays explicitly chosen (M5.4 lifecycle unchanged). The Control
+# background bootstrap retries until the migrated schema exists, so poll for
+# the rows instead of assuming they are present on the first request.
+deadline = time.monotonic() + 60
+credential_names: dict[str, dict[str, Any]] = {}
+while time.monotonic() < deadline:
+    credentials = request("GET", "/credentials")
+    credential_names = {credential["name"]: credential for credential in credentials}
+    if {"demo-passwd", "demo-token"} <= set(credential_names):
+        break
+    time.sleep(2)
+assert {"demo-passwd", "demo-token"} <= set(credential_names), credential_names
+assert credential_names["demo-passwd"]["type"] == "password"
+assert credential_names["demo-token"]["type"] == "token"
+for credential in credentials:
+    assert "ciphertext" not in credential
+    assert set(credential) == {"id", "name", "type", "created_at", "updated_at"}
+demo_task = create_adapter("smoke-m557-demo-task", "python", "task")
+demo_task_bindings = request("GET", f"/adapters/{demo_task['id']}/credential-bindings")
+assert demo_task_bindings == [
+    {
+        "env_key": "PASSWORD",
+        "credential_id": credential_names["demo-passwd"]["id"],
+        "field": "password",
+        "credential_name": "demo-passwd",
+        "credential_type": "password",
+    }
+], demo_task_bindings
+demo_webhook = create_adapter("smoke-m557-demo-webhook", "python", "webhook")
+demo_webhook_bindings = request("GET", f"/adapters/{demo_webhook['id']}/credential-bindings")
+assert demo_webhook_bindings == [
+    {
+        "env_key": "TOKEN",
+        "credential_id": credential_names["demo-token"]["id"],
+        "field": "token",
+        "credential_name": "demo-token",
+        "credential_type": "token",
+    }
+], demo_webhook_bindings
+demo_webhook_row = request("GET", f"/adapters/{demo_webhook['id']}/webhook")
+assert demo_webhook_row["credential_id"] is None, demo_webhook_row
+# The default demo binding really resolves at claim time: the Starter Code
+# contract (context.secrets.get("PASSWORD")) reads the bound 32-hex value,
+# and the Worker redaction contract keeps it out of stdout/output.
+choose_worker(demo_task["id"], runtime_worker_id)
+save(
+    demo_task["id"],
+    "import os\n\n"
+    "def handle(context, input):\n"
+    "    password = context.secrets.get('PASSWORD')\n"
+    "    print('demo password: ' + str(password), flush=True)\n"
+    "    return {'bound': password is not None, 'length': len(password or ''), "
+    "'leaked': password}\n",
+)
+demo_run = create_execution(demo_task["id"], {})
+demo_finished = wait_terminal(demo_run["id"])
+assert demo_finished["status"] == "succeeded", demo_finished
+assert demo_finished["output"]["bound"] is True
+assert demo_finished["output"]["length"] == 32, demo_finished
+assert demo_finished["output"]["leaked"] == "[REDACTED]", demo_finished
+assert "demo password: [REDACTED]" in demo_finished["stdout"], demo_finished
+
 # Task foundation: immutable Revisions, fixed runtime Worker, latest execution,
 # unified active lock, metadata exception, clone and soft delete.
 task = create_adapter("smoke-m541-task", "python", "task")
