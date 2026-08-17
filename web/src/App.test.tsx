@@ -445,6 +445,64 @@ it("persists the Task run mode and reveals Schedule settings", async () => {
   });
 });
 
+it("loads an existing disabled Schedule before saving a manual-to-schedule switch", async () => {
+  const manual = makeAdapter({
+    adapter_type: "task",
+    run_mode: "manual",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+  });
+  const scheduled = { ...manual, run_mode: "schedule" as const };
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [manual] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        body: {
+          adapter_id: 1,
+          enabled: false,
+          cron: "0 9 * * *",
+          timezone: "UTC",
+          input: { preserved: true },
+          next_run_at: null,
+          updated_at: "2026-08-15T00:00:00Z",
+        },
+      }),
+    },
+    { method: "PATCH", match: "/api/adapters/1", respond: () => ({ body: scheduled }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(await screen.findByLabelText("定时运行"));
+
+  // 初始 manual 模式没有加载 Schedule；切换表单态后必须先读取并展示
+  // 已存在的停用配置，不能把 null 当成“确认未配置”。
+  await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("0 9 * * *"));
+  expect(valueOf("task-schedule-timezone")).toBe("UTC");
+  expect(valueOf("task-schedule-input")).toContain('"preserved": true');
+
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+      ),
+    ).toBe(true);
+  });
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+    ),
+  ).toBe(false);
+});
+
 it("switches manual/schedule fields immediately and keeps run-once out of run settings (M5.5.11)", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
   stubFetch([

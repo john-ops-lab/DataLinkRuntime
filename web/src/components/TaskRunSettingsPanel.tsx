@@ -75,7 +75,6 @@ function presetMinutesFor(seconds: number): number | undefined {
 
 const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPanelProps>(function TaskRunSettingsPanel(props, ref) {
   const adapterId = props.adapter.id;
-  const adapterRunMode = props.adapter.run_mode;
   const onAdapterChange = props.onAdapterChange;
   const onError = props.onError;
   const onRuntimeStateChange = props.onRuntimeStateChange;
@@ -102,6 +101,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   // 保存流程（PATCH + PUT）完成后递增，使保存前发出的 Schedule GET 响应
   // 成为陈旧信号，不能覆盖刚保存成功的表单值。
   const scheduleLoadEpoch = useRef(0);
+  const runMode = runModeOverride ?? props.adapter.run_mode;
 
   const refreshAdapter = useCallback(async () => {
     const refreshed = await api.getAdapter(adapterId);
@@ -137,7 +137,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }, [adapterId, onError]);
 
   useEffect(() => {
-    if (adapterRunMode !== "schedule") {
+    if (runMode !== "schedule") {
       return;
     }
     let cancelled = false;
@@ -163,11 +163,10 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     return () => {
       cancelled = true;
     };
-  }, [adapterId, adapterRunMode, onError]);
+  }, [adapterId, onError, runMode]);
 
   const workerId =
     workerOverride === undefined ? (props.adapter.runtime_worker_id ?? null) : workerOverride;
-  const runMode = runModeOverride ?? props.adapter.run_mode;
 
   // M5.5.11: 表单显示值 = 表单覆盖 ?? Adapter 权威值 ?? 默认 300 秒。
   const effectiveTimeoutSeconds =
@@ -408,7 +407,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               data-testid="task-run-mode"
               value={runMode}
               disabled={runtimeLocked || savingRuntime}
-              onChange={(event) => setRunModeOverride(event.target.value as TaskRunMode)}
+              onChange={(event) => {
+                const nextRunMode = event.target.value as TaskRunMode;
+                setRunModeOverride(nextRunMode);
+                // 初始 manual 模式尚未读取 Schedule；切换时先进入加载态，
+                // 防止 effect 发起 GET 前保存默认值覆盖已有的停用配置。
+                setLoadingSchedule(nextRunMode === "schedule");
+              }}
             >
               <Radio value="manual">手动运行</Radio>
               <Radio value="schedule">定时运行</Radio>
