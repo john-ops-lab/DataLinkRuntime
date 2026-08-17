@@ -1,4 +1,4 @@
-/** 执行记录 Tab：游标分页历史列表 + 详情抽屉（M3 §5/§9，M3.2 实时日志/自动打开）。 */
+/** 执行记录 Tab：游标分页历史列表 + 详情抽屉（M3 §5/§9，SSE 自动打开）。 */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag } from "antd";
@@ -8,7 +8,7 @@ import { api } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { ExecutionSummary } from "../types";
-import { unifiedLogContent } from "../unified-log";
+import { HISTORY_LOG_MAX_LINES, unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import { LogView, OutputView } from "./OutputView";
 
@@ -51,7 +51,7 @@ export default function ExecutionHistoryPanel(props: {
   adapterId: number;
   /** Server-side filter; Webhook call history excludes legacy manual runs. */
   trigger?: "webhook";
-  /** Start 成功后自动打开该 Execution 的详情抽屉（含实时日志）。 */
+  /** Start 成功后自动打开该 Execution 的详情抽屉（含执行日志）。 */
   autoOpenExecutionId?: number | null;
   recordLabel?: "执行记录" | "调用记录";
 }) {
@@ -66,7 +66,7 @@ export default function ExecutionHistoryPanel(props: {
   // Only the newest detail request may commit UI state: rapid clicks (A slow,
   // B fast) must never let a stale A response overwrite the B detail.
   const detailRequestRef = useRef(0);
-  // 详情抽屉的实时日志与收敛行为与测试运行面板共享同一 hook。
+  // 详情抽屉的日志与收敛行为与测试运行面板共享同一 hook。
   const watcher = useExecutionWatcher(setLoadError);
   const detail = watcher.execution;
 
@@ -195,6 +195,18 @@ export default function ExecutionHistoryPanel(props: {
       ),
     },
     {
+      title: "开始时间",
+      dataIndex: "started_at",
+      width: 160,
+      render: (value: string | null) => formatTime(value),
+    },
+    {
+      title: "结束时间",
+      dataIndex: "ended_at",
+      width: 160,
+      render: (value: string | null) => formatTime(value),
+    },
+    {
       title: "耗时",
       dataIndex: "duration_ms",
       width: 100,
@@ -228,7 +240,7 @@ export default function ExecutionHistoryPanel(props: {
           columns={columns}
           dataSource={items}
           pagination={false}
-          scroll={{ x: 836 }}
+          scroll={{ x: 1000 }}
           locale={{ emptyText: <Empty description={`暂无${props.recordLabel ?? "执行记录"}`} /> }}
           onRow={(summary) => ({
             onClick: () => void openExecution(summary.id, summary),
@@ -274,7 +286,7 @@ export default function ExecutionHistoryPanel(props: {
               <Alert
                 type="warning"
                 showIcon
-                message="实时连接已断开，状态可能已过期"
+                message="日志连接已断开，状态可能已过期"
                 description="已按权威结果轮询至上限仍未等到终态，请刷新或稍后重新查看该执行。"
               />
             )}
@@ -314,7 +326,6 @@ export default function ExecutionHistoryPanel(props: {
             <div className="execution-version-debug" data-testid="execution-run-id">
               运行 ID：{visibleDetail.id}
             </div>
-            {visibleDetail.error && <pre className="terminal-view error-text" role="alert">{visibleDetail.error}</pre>}
             <Tabs
               size="small"
               items={[
@@ -329,14 +340,17 @@ export default function ExecutionHistoryPanel(props: {
                 },
                 { key: "output", label: "输出", children: <OutputView execution={visibleDetail} /> },
                 {
-                  // M5.5.10：stdout/stderr 视图统一为一个按实际顺序的实时日志。
+                  // M5.5.10：stdout/stderr 视图统一为一个按实际顺序的执行日志。
                   key: "log",
-                  label: "实时日志",
+                  label: "执行日志",
                   children: (
                     <LogView
                       testId="detail-log"
-                      content={unifiedLogContent(watcher.liveStdout, watcher.liveStderr)}
+                      content={unifiedLogContent(watcher.liveStdout, watcher.liveStderr, visibleDetail.error)}
                       truncated={visibleDetail.stdout_truncated || visibleDetail.stderr_truncated}
+                      maxLines={HISTORY_LOG_MAX_LINES}
+                      mode="history"
+                      followControls={false}
                     />
                   ),
                 },

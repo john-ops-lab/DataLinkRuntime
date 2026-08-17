@@ -444,6 +444,33 @@ body {
   min-width: 0;
 }
 
+/* 日志区使用深色终端表面；disabled 也保持同一套对比和焦点语义，避免
+ * Ant 默认白色按钮在无选区时像一个异常空框。 */
+.live-log-workspace .log-toolbar .ant-btn {
+  color: #c9d1d9;
+  border-color: #484f58;
+  background: #21262d;
+}
+
+.live-log-workspace .log-toolbar .ant-btn:hover:not(:disabled) {
+  color: #fff;
+  border-color: #58a6ff;
+  background: #30363d;
+}
+
+.live-log-workspace .log-toolbar .ant-btn:focus-visible {
+  color: #fff;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.35);
+}
+
+.live-log-workspace .log-toolbar .ant-btn:disabled {
+  color: #6e7681;
+  border-color: #30363d;
+  background: #161b22;
+  cursor: not-allowed;
+}
+
 .task-live-log-handoff {
   margin-top: 14px;
 }
@@ -1192,6 +1219,33 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* 历史日志不应把详情抽屉撑长；滚动只发生在日志区域内部。 */
+.history-log-pane {
+  flex: 0 0 clamp(180px, 42vh, 360px);
+  height: clamp(180px, 42vh, 360px);
+  min-height: 0;
+}
+
+/* 最大化在原组件上切换布局，保留日志内容、选区、跟随状态和 SSE 订阅。 */
+.log-pane-maximized {
+  position: fixed;
+  inset: 16px;
+  z-index: 1000;
+  box-sizing: border-box;
+  flex: none;
+  height: auto;
+  min-height: 0;
+  padding: 12px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45), 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.log-pane-maximized .terminal-view {
+  min-height: 0;
 }
 
 /* M5.5.10：统一日志视图——所有输出源按实际顺序在一处展示。 */
