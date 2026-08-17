@@ -523,19 +523,26 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       return;
     }
     setTesting(source.id);
+    setTestResults((current) => {
+      const next = new Map(current);
+      next.delete(source.id);
+      return next;
+    });
     try {
       const result = await api.testPackageSource(source.id);
       const errorDetail = result.error?.trim() || null;
-      const authFailure = result.status_code === 401 || result.status_code === 403 ||
-        /auth|unauthori|forbidden|认证/i.test(errorDetail ?? "");
-      const timeout = result.status_code === 408 || result.status_code === 504 ||
-        /timeout|timed out|time out|超时/i.test(errorDetail ?? "");
-      const status: PackageSourceTestStatus = authFailure
-        ? "认证失败"
-        : timeout
-          ? "超时"
-          : result.ok
-            ? "可达"
+      const authFailure = !result.ok &&
+        (result.status_code === 401 || result.status_code === 403 ||
+          /auth|unauthori|forbidden|认证/i.test(errorDetail ?? ""));
+      const timeout = !result.ok &&
+        (result.status_code === 408 || result.status_code === 504 ||
+          /timeout|timed out|time out|超时/i.test(errorDetail ?? ""));
+      const status: PackageSourceTestStatus = result.ok
+        ? "可达"
+        : authFailure
+          ? "认证失败"
+          : timeout
+            ? "超时"
             : "不可达";
       const detail = result.ok
         ? result.status_code === null

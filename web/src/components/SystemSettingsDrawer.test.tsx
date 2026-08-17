@@ -392,3 +392,39 @@ it("M5.5.8：已有默认源时不显示该类型的回退提示", async () => {
   expect(screen.queryByTestId("no-default-source-pypi")).toBeNull();
   expect(screen.getByTestId("no-default-source-npm")).toBeTruthy();
 });
+
+it("依赖源 HTTP 应答保持可达语义，测试请求失败会清除旧状态", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([
+    {
+      id: 1,
+      name: "private-nexus",
+      kind: "pypi",
+      index_url: "https://nexus.example.com/simple/",
+      is_default: true,
+      credential_id: 7,
+      credential_name: "nexus-credential",
+      created_at: "2026-08-17T00:00:00Z",
+      updated_at: "2026-08-17T00:00:00Z",
+    },
+  ]);
+  const testSource = vi
+    .spyOn(api, "testPackageSource")
+    .mockResolvedValueOnce({ ok: true, status_code: 401, error: null })
+    .mockRejectedValueOnce(new Error("probe failed"));
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  await screen.findByTestId("package-sources-panel");
+
+  const result = screen.getByTestId("package-source-test-result");
+  fireEvent.click(screen.getByTestId("test-package-source"));
+  await waitFor(() => expect(result.textContent).toContain("可达"));
+  expect(result.getAttribute("role")).toBe("status");
+
+  fireEvent.click(screen.getByTestId("test-package-source"));
+  await waitFor(() => expect(result.textContent).toContain("未测试"));
+  expect(testSource).toHaveBeenCalledTimes(2);
+});
