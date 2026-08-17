@@ -125,13 +125,29 @@ def test_claim_returns_payload_and_marks_running(api_client: TestClient) -> None
     assert payload["runtime_config"] == {"stage": "s1"}
     assert payload["input"] == {"n": 7}
     assert payload["latest_version_id"] == execution["version_id"]
-    assert payload["execution_timeout_seconds"] == settings.execution_timeout_seconds
+    # M5.5.11: the Adapter-level timeout (default 300s) is authoritative.
+    adapter = api_client.get(f"/api/adapters/{execution['adapter_id']}").json()
+    assert payload["execution_timeout_seconds"] == adapter["timeout_seconds"]
 
     fetched = api_client.get(f"/api/executions/{execution['id']}").json()
     assert fetched["status"] == "running"
     assert fetched["worker_id"] == worker["id"]
     assert fetched["started_at"] is not None
     assert fetched["ended_at"] is None
+
+
+def test_claim_payload_uses_custom_adapter_timeout(api_client: TestClient) -> None:
+    """M5.5.11: the claimed payload carries the Adapter's timeout, not the
+    platform-wide default."""
+    adapter = create_adapter(api_client, name="timeout-payload", timeout_seconds=7200)
+    save_version(api_client, adapter["id"])
+    worker = register_worker(api_client)
+    execution = create_execution(api_client, adapter["id"], {"input": {}})
+
+    payload = claim(api_client, worker["id"]).json()
+
+    assert payload["execution_id"] == execution["id"]
+    assert payload["execution_timeout_seconds"] == 7200
 
 
 def test_claim_without_pending_task_returns_204(api_client: TestClient) -> None:

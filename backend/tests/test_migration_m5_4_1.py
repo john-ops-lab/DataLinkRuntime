@@ -1,4 +1,4 @@
-"""Fresh-schema assertions for the current M5.5.7 Alembic head."""
+"""Fresh-schema assertions for the current M5.5.11 Alembic head."""
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -42,11 +42,20 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
                 "AND column_name = 'credential_id'"
             )
         )
+        # M5.5.11: the single-run execution timeout is a NOT NULL Adapter column.
+        timeout_nullable = connection.scalar(
+            text(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'adapters' "
+                "AND column_name = 'timeout_seconds'"
+            )
+        )
 
-    assert revision == "0014_m5_5_7_access_key_fields"
+    assert revision == "0015_m5_5_11_execution_timeout"
     assert {
         "adapter_type",
         "run_mode",
+        "timeout_seconds",
         "latest_version_id",
         "runtime_worker_id",
         "archived_at",
@@ -65,3 +74,4 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
     assert webhook_index is not None
     assert "UNIQUE" in webhook_index and "WHERE enabled" in webhook_index
     assert webhook_credential_nullable == "YES"
+    assert timeout_nullable == "NO"

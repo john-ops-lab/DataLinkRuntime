@@ -255,6 +255,86 @@ def test_task_run_mode_rejects_null(api_client: TestClient) -> None:
     assert api_client.get(f"/api/adapters/{created['id']}").json()["run_mode"] == "manual"
 
 
+# --- M5.5.11 single-run execution timeout -----------------------------------
+
+
+def test_create_adapter_timeout_defaults_to_300_seconds(api_client: TestClient) -> None:
+    body = create_adapter(api_client, name="timeout-default")
+    assert body["timeout_seconds"] == 300
+
+
+def test_create_adapter_accepts_custom_timeout(api_client: TestClient) -> None:
+    body = create_adapter(api_client, name="timeout-custom", timeout_seconds=600)
+    assert body["timeout_seconds"] == 600
+
+
+def test_create_adapter_rejects_out_of_range_timeout(api_client: TestClient) -> None:
+    for bad in (0, -1, 86401):
+        response = api_client.post(
+            "/api/adapters",
+            json={
+                "name": f"timeout-bad-{bad}",
+                "language": "python",
+                "adapter_type": "task",
+                "timeout_seconds": bad,
+            },
+        )
+        assert response.status_code == 422, bad
+
+
+def test_patch_adapter_updates_timeout_while_unlocked(api_client: TestClient) -> None:
+    created = create_adapter(api_client, name="timeout-patch")
+    assert created["timeout_seconds"] == 300
+
+    response = api_client.patch(
+        f"/api/adapters/{created['id']}",
+        json={"timeout_seconds": 1800},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["timeout_seconds"] == 1800
+
+
+def test_patch_adapter_timeout_bounds_and_null_rejected(api_client: TestClient) -> None:
+    created = create_adapter(api_client, name="timeout-bounds")
+    for bad in (0, 86401, None):
+        response = api_client.patch(
+            f"/api/adapters/{created['id']}",
+            json={"timeout_seconds": bad},
+        )
+        assert response.status_code == 422, bad
+    assert api_client.get(f"/api/adapters/{created['id']}").json()["timeout_seconds"] == 300
+
+
+def test_patch_adapter_timeout_rejected_while_runtime_locked(api_client: TestClient) -> None:
+    """An enabled Schedule locks the timeout exactly like the runtime Worker."""
+    created = create_adapter(api_client, name="timeout-locked")
+    save_version(api_client, created["id"])
+    mode = api_client.patch(f"/api/adapters/{created['id']}", json={"run_mode": "schedule"})
+    assert mode.status_code == 200, mode.text
+    configured = api_client.put(
+        f"/api/adapters/{created['id']}/schedule",
+        json={"enabled": True, "cron": "*/5 * * * *", "timezone": "UTC", "input": {}},
+    )
+    assert configured.status_code == 200, configured.text
+
+    response = api_client.patch(
+        f"/api/adapters/{created['id']}",
+        json={"timeout_seconds": 600},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "adapter_runtime_locked"
+    assert api_client.get(f"/api/adapters/{created['id']}").json()["timeout_seconds"] == 300
+
+
+def test_clone_copies_timeout_seconds(api_client: TestClient) -> None:
+    source = create_adapter(api_client, name="timeout-source", timeout_seconds=3600)
+    save_version(api_client, source["id"])
+
+    cloned = api_client.post(f"/api/adapters/{source['id']}/clone", json={"name": "copy"})
+    assert cloned.status_code == 201, cloned.text
+    assert cloned.json()["timeout_seconds"] == 3600
+
+
 def test_patch_adapter_name_conflict(api_client: TestClient) -> None:
     create_adapter(api_client, name="taken")
     other = create_adapter(api_client, name="other")

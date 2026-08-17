@@ -135,6 +135,8 @@ export const api = {
       description?: string;
       runtime_worker_id?: number | null;
       run_mode?: TaskRunMode;
+      /** M5.5.11: single-run execution timeout in seconds (1..86400). */
+      timeout_seconds?: number;
     },
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}`, { method: "PATCH", body: JSON.stringify(payload) }),

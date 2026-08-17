@@ -7,6 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MAX_ADAPTER_NAME_LENGTH = 128
 
+# M5.5.11 single-run execution timeout contract (seconds, backend-authoritative).
+DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300
+MIN_EXECUTION_TIMEOUT_SECONDS = 1
+MAX_EXECUTION_TIMEOUT_SECONDS = 24 * 60 * 60  # 24 hours; no "unlimited" option.
+
 
 def _validate_name(value: object) -> str:
     """Trim an incoming adapter name and enforce the M1 length contract."""
@@ -29,6 +34,12 @@ class AdapterCreate(BaseModel):
     description: str = ""
     language: Literal["python", "javascript", "java"]
     adapter_type: Literal["task", "webhook"]
+    # M5.5.11: default single-run execution timeout (5 minutes).
+    timeout_seconds: int = Field(
+        default=DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+        ge=MIN_EXECUTION_TIMEOUT_SECONDS,
+        le=MAX_EXECUTION_TIMEOUT_SECONDS,
+    )
 
     @field_validator("name", mode="before")
     @classmethod
@@ -39,7 +50,8 @@ class AdapterCreate(BaseModel):
 class AdapterUpdate(BaseModel):
     """Request body for PATCH /api/adapters/{adapter_id}.
 
-    Only metadata, the Task run mode and the runtime Worker pointer are editable;
+    Only metadata, the Task run mode, the runtime Worker pointer and the
+    M5.5.11 single-run execution timeout are editable;
     adapter type, language, Revision pointers and timestamps are intentionally absent.
     Sending ``runtime_worker_id: null`` explicitly clears it
     (omitting the field leaves it unchanged).
@@ -51,6 +63,11 @@ class AdapterUpdate(BaseModel):
     description: str | None = None
     runtime_worker_id: int | None = None
     run_mode: Literal["manual", "schedule"] | None = None
+    timeout_seconds: int | None = Field(
+        default=None,
+        ge=MIN_EXECUTION_TIMEOUT_SECONDS,
+        le=MAX_EXECUTION_TIMEOUT_SECONDS,
+    )
 
     @field_validator("name", mode="before")
     @classmethod
@@ -64,6 +81,14 @@ class AdapterUpdate(BaseModel):
     def reject_null_run_mode(cls, value: object) -> object:
         if value is None:
             raise ValueError("run_mode must be manual or schedule")
+        return value
+
+    @field_validator("timeout_seconds", mode="before")
+    @classmethod
+    def reject_null_timeout_seconds(cls, value: object) -> object:
+        """An explicit null cannot mean "unchanged"; require a real value."""
+        if value is None:
+            raise ValueError("timeout_seconds must be between 1 and 86400 seconds (max 24 hours)")
         return value
 
 
@@ -100,6 +125,7 @@ class AdapterResponse(BaseModel):
     language: str
     adapter_type: str
     run_mode: str
+    timeout_seconds: int
     latest_version_id: int | None
     runtime_worker_id: int | None
     runtime_locked: bool = False
