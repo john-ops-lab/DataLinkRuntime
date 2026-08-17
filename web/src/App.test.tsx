@@ -256,6 +256,7 @@ function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
     language: "python",
     adapter_type: "task",
     run_mode: "manual",
+    timeout_seconds: 300,
     runtime_worker_id: 1,
     latest_version_id: null,
     created_at: "2026-08-11T00:00:00Z",
@@ -395,22 +396,370 @@ it("persists the Task run mode and reveals Schedule settings", async () => {
       match: "/api/adapters/1/schedule",
       respond: () => ({ status: 404, body: { detail: { code: "schedule_not_configured", message: "Schedule is not configured" } } }),
     },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}");
+        return {
+          body: {
+            adapter_id: 1,
+            enabled: payload.enabled,
+            cron: payload.cron,
+            timezone: payload.timezone,
+            input: payload.input,
+            next_run_at: null,
+            updated_at: "2026-08-15T00:00:00Z",
+          },
+        };
+      },
+    },
   ]);
 
   render(<App />);
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
   fireEvent.click(await screen.findByLabelText("定时运行"));
+  // M5.5.11：选择“定时运行”后立即呈现 Cron / Timezone / Input / 定时状态。
+  await screen.findByTestId("task-schedule-cron");
   fireEvent.click(screen.getByTestId("save-task-runtime"));
 
-  await screen.findByTestId("task-schedule-cron");
+  await screen.findByTestId("task-schedule-next-run");
   const patchCall = fetchMock.mock.calls.find(
     ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
   );
   expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
     runtime_worker_id: 1,
     run_mode: "schedule",
+    timeout_seconds: 300,
   });
+  // 统一保存同时把 Cron/Timezone/Input 以停用状态落库（Schedule 尚未启用）。
+  const putCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+  );
+  expect(JSON.parse(String(putCall?.[1]?.body))).toEqual({
+    enabled: false,
+    cron: "*/5 * * * *",
+    timezone: "Asia/Shanghai",
+    input: {},
+  });
+});
+
+it("loads an existing disabled Schedule before saving a manual-to-schedule switch", async () => {
+  const manual = makeAdapter({
+    adapter_type: "task",
+    run_mode: "manual",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+  });
+  const scheduled = { ...manual, run_mode: "schedule" as const };
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [manual] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        body: {
+          adapter_id: 1,
+          enabled: false,
+          cron: "0 9 * * *",
+          timezone: "UTC",
+          input: { preserved: true },
+          next_run_at: null,
+          updated_at: "2026-08-15T00:00:00Z",
+        },
+      }),
+    },
+    { method: "PATCH", match: "/api/adapters/1", respond: () => ({ body: scheduled }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.click(await screen.findByLabelText("定时运行"));
+
+  // 初始 manual 模式没有加载 Schedule；切换表单态后必须先读取并展示
+  // 已存在的停用配置，不能把 null 当成“确认未配置”。
+  await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("0 9 * * *"));
+  expect(valueOf("task-schedule-timezone")).toBe("UTC");
+  expect(valueOf("task-schedule-input")).toContain('"preserved": true');
+
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+      ),
+    ).toBe(true);
+  });
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+    ),
+  ).toBe(false);
+});
+
+it("switches manual/schedule fields immediately and keeps run-once out of run settings (M5.5.11)", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ status: 404, body: { detail: { code: "schedule_not_configured", message: "Schedule is not configured" } } }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+
+  // 手动模式：只显示手动配置（输入）与超时，不显示定时字段。
+  expect(await screen.findByTestId("task-manual-input")).toBeTruthy();
+  expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
+  // 默认超时 5 分钟（300 秒）预设选中。
+  const preset = screen.getByTestId("task-timeout-preset");
+  expect(preset.querySelector(".ant-radio-wrapper-checked")?.textContent).toContain("5 分钟");
+  expect(preset.textContent).toContain("自定义");
+  // M5.5.11：运行设置内部不得重复“运行一次”。
+  expect(screen.queryByTestId("task-run-once")).toBeNull();
+  expect(screen.queryByText("立即运行一次")).toBeNull();
+  expect(screen.queryByText("手动运行", { selector: "h5" })).toBeNull();
+
+  // 选择“定时运行”后立即显示 Cron / Timezone / Input / 定时状态。
+  fireEvent.click(screen.getByLabelText("定时运行"));
+  await screen.findByTestId("task-schedule-cron");
+  expect(screen.getByTestId("task-schedule-timezone")).toBeTruthy();
+  expect(screen.getByTestId("task-schedule-input")).toBeTruthy();
+  expect(screen.getByTestId("task-schedule-next-run")).toBeTruthy();
+  expect(screen.queryByTestId("task-manual-input")).toBeNull();
+
+  // 切回手动：手动字段回来，定时字段消失。
+  fireEvent.click(screen.getByLabelText("手动运行"));
+  await screen.findByTestId("task-manual-input");
+  expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
+});
+
+it("saves a custom timeout in seconds and rejects values beyond 24h (M5.5.11)", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}");
+        return { body: { ...adapter, ...payload } };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+
+  // 自定义 7200 秒（2 小时）并保存：PATCH 携带秒值。
+  fireEvent.click(await screen.findByLabelText("自定义"));
+  fireEvent.change(await screen.findByTestId("task-timeout-custom"), {
+    target: { value: "7200" },
+  });
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+  await waitFor(() => {
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+    );
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+      runtime_worker_id: 1,
+      run_mode: "manual",
+      timeout_seconds: 7200,
+    });
+  });
+  // 等待第一次保存完全结束（loading 复位），再继续第二次交互。
+  await waitFor(() => {
+    expect(
+      (screen.getByTestId("save-task-runtime") as HTMLButtonElement).className,
+    ).not.toContain("ant-btn-loading");
+  });
+
+  // 超过 24 小时（86400 秒）的值在输入层被钳制到 86400（最大 24 小时）。
+  const callsBefore = fetchMock.mock.calls.length;
+  fireEvent.change(screen.getByTestId("task-timeout-custom"), {
+    target: { value: "86401" },
+  });
+  fireEvent.blur(screen.getByTestId("task-timeout-custom"));
+  await waitFor(() => {
+    expect((screen.getByTestId("task-timeout-custom") as HTMLInputElement).value).toBe("86400");
+  });
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+  await waitFor(() => {
+    const patchCall = fetchMock.mock.calls
+      .slice(callsBefore)
+      .find(([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH");
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+      runtime_worker_id: 1,
+      run_mode: "manual",
+      timeout_seconds: 86400,
+    });
+  });
+});
+
+it("saves the timeout only without overwriting an existing Schedule (M5.5.11)", async () => {
+  const adapter = makeAdapter({
+    run_mode: "schedule",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+  });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        body: { adapter_id: 1, enabled: false, cron: "0 9 * * *", timezone: "UTC", input: { real: true }, next_run_at: null, updated_at: "2026-08-15T00:00:00Z" },
+      }),
+    },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}");
+        return { body: { ...adapter, ...payload } };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+
+  // 等真实 Schedule 加载完成（表单值 = 线上值）。
+  await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("0 9 * * *"));
+  // 只修改超时，不改定时字段。
+  fireEvent.click(screen.getByLabelText("10 分钟"));
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+
+  await waitFor(() => {
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+    );
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+      runtime_worker_id: 1,
+      run_mode: "schedule",
+      timeout_seconds: 600,
+    });
+  });
+  // 定时字段未被修改：不得整体 PUT 覆盖线上 Schedule。
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+    ),
+  ).toBe(false);
+});
+
+it("skips the Schedule PUT while Schedule is still loading or failed to load (M5.5.11)", async () => {
+  const adapter = makeAdapter({
+    run_mode: "schedule",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+  });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ status: 500, body: { detail: { code: "boom", message: "boom" } } }),
+    },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}");
+        return { body: { ...adapter, ...payload } };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+
+  // Schedule 加载失败（表单仍是默认值）：保存超时时不得把默认值 PUT 上去。
+  fireEvent.click(await screen.findByLabelText("10 分钟"));
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+
+  await waitFor(() => {
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+    );
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+      runtime_worker_id: 1,
+      run_mode: "schedule",
+      timeout_seconds: 600,
+    });
+  });
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
+    ),
+  ).toBe(false);
+  await screen.findByText(
+    "运行配置已保存；但 Schedule 尚未加载完成（或加载失败），定时字段未保存，请刷新后重试。",
+  );
+});
+
+it("locks the run config save and timeout while Schedule is enabled (M5.5.11)", async () => {
+  const adapter = makeAdapter({
+    run_mode: "schedule",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    runtime_locked: true,
+  });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({
+        body: { adapter_id: 1, enabled: true, cron: "*/5 * * * *", timezone: "Asia/Shanghai", input: {}, next_run_at: "2026-08-15T01:00:00Z", updated_at: "2026-08-15T00:00:00Z" },
+      }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+
+  await screen.findByTestId("task-schedule-cron");
+  expect((screen.getByTestId("save-task-runtime") as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    (screen.getByTestId("task-timeout-preset").querySelector("input") as HTMLInputElement).disabled,
+  ).toBe(true);
+  expect(screen.getByTestId("task-runtime-locked")).toBeTruthy();
+  // 锁定期间任何 PATCH 都不应发出。
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
+    ),
+  ).toBe(false);
 });
 
 it("locks Task editing while Schedule is enabled and unlocks after disable", async () => {

@@ -121,6 +121,7 @@ def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
         description=data.description,
         language=data.language,
         adapter_type=data.adapter_type,
+        timeout_seconds=data.timeout_seconds,
     )
     session.add(adapter)
     try:
@@ -231,6 +232,18 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
         if data.run_mode is not None:
             adapter.run_mode = data.run_mode
 
+    # M5.5.11: the single-run execution timeout is runtime configuration:
+    # every active/pending Execution and an enabled Schedule must be gone
+    # before it can change (same lock contract as the runtime Worker).
+    timeout_changed = (
+        "timeout_seconds" in data.model_fields_set
+        and data.timeout_seconds != adapter.timeout_seconds
+    )
+    if timeout_changed:
+        adapter_runtime.require_runtime_unlocked(session, adapter)
+        if data.timeout_seconds is not None:
+            adapter.timeout_seconds = data.timeout_seconds
+
     if data.name is not None and data.name != adapter.name:
         if _active_name_conflict(session, data.name, exclude_id=adapter.id):
             raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
@@ -338,6 +351,8 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
         adapter_type=source.adapter_type,
         run_mode=source.run_mode,
         runtime_worker_id=source.runtime_worker_id,
+        # M5.5.11: the clone copies the source's single-run execution timeout.
+        timeout_seconds=source.timeout_seconds,
     )
     session.add(clone)
     try:

@@ -12,11 +12,11 @@ import urllib.request
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, select, update
 
 from dlr.common.config import settings
 from dlr.control.db import SessionLocal
-from dlr.control.models import AdapterVersion, Execution, Worker
+from dlr.control.models import AdapterSchedule, AdapterVersion, Execution, Worker
 
 BASE = "http://web/api"
 ADMIN_TOKEN = os.environ["DLR_ADMIN_TOKEN"]
@@ -437,6 +437,68 @@ assert len(clone_versions) == 1 and clone_versions[0]["seq"] == 1
 assert request("GET", f"/adapters/{clone['id']}/executions")["items"] == []
 clone_schedule = request("GET", f"/adapters/{clone['id']}/schedule")
 assert clone_schedule["enabled"] is False and clone_schedule["next_run_at"] is None
+
+# M5.5.11: Adapter-level single-run execution timeout. A short timeout really
+# kills the user-code process and marks the Execution timeout; the timeout is
+# copied by Clone and shared by manual and schedule runs.
+timeout_task = create_adapter("smoke-m5511-timeout", "python", "task")
+assert timeout_task["timeout_seconds"] == 300, timeout_task
+request("PATCH", f"/adapters/{timeout_task['id']}", {"timeout_seconds": 2})
+assert request("GET", f"/adapters/{timeout_task['id']}")["timeout_seconds"] == 2
+choose_worker(timeout_task["id"], runtime_worker_id)
+save(
+    timeout_task["id"],
+    "import time\n\n"
+    "def handle(context, input):\n"
+    "    time.sleep(60)\n"
+    "    return {'never': True}\n",
+)
+timeout_run = create_execution(timeout_task["id"], {})
+# Runtime lock semantics: the timeout is runtime configuration and cannot
+# change while the Execution is pending/running.
+assert_locked(
+    request(
+        "PATCH",
+        f"/adapters/{timeout_task['id']}",
+        {"timeout_seconds": 300},
+        expected=409,
+    )
+)
+timed_out = wait_terminal(timeout_run["id"], timeout=30)
+assert timed_out["status"] == "timeout", timed_out
+assert "timed out after 2s" in timed_out["error"], timed_out
+assert timed_out["ended_at"] is not None and timed_out["duration_ms"] is not None
+# Clone copies the authoritative timeout.
+timeout_clone = request(
+    "POST",
+    f"/adapters/{timeout_task['id']}/clone",
+    {"name": "smoke-m5511-timeout-clone"},
+    expected=201,
+)
+assert timeout_clone["timeout_seconds"] == 2, timeout_clone
+# Task schedule runs share the same Adapter-level timeout.
+request("PATCH", f"/adapters/{timeout_task['id']}", {"run_mode": "schedule"})
+request(
+    "PUT",
+    f"/adapters/{timeout_task['id']}/schedule",
+    {"enabled": True, "cron": "* * * * *", "timezone": "UTC", "input": {}},
+)
+with SessionLocal() as session:
+    session.execute(
+        update(AdapterSchedule)
+        .where(AdapterSchedule.adapter_id == timeout_task["id"])
+        .values(next_run_at=func.now() - timedelta(seconds=1))
+    )
+    session.commit()
+scheduled_timeout = wait_schedule_execution(timeout_task["id"], timeout=40)
+assert scheduled_timeout["status"] == "timeout", scheduled_timeout
+assert scheduled_timeout["trigger"] == "schedule", scheduled_timeout
+assert "timed out after 2s" in scheduled_timeout["error"], scheduled_timeout
+request(
+    "PUT",
+    f"/adapters/{timeout_task['id']}/schedule",
+    {"enabled": False, "cron": "* * * * *", "timezone": "UTC", "input": {}},
+)
 
 # Removed lifecycle routes cannot participate in new business behavior.
 assert request("POST", f"/adapters/{task_id}/versions/{v2['id']}/publish", expected=404)

@@ -39,6 +39,14 @@ class Adapter(Base):
             "run_mode IN ('manual', 'schedule')",
             name="ck_adapters_run_mode",
         ),
+        # M5.5.11: the authoritative single-run execution timeout in seconds.
+        # Every Execution of this Adapter (manual, schedule, webhook) is
+        # killed and marked ``timeout`` after this duration. No "unlimited"
+        # option exists: 1 second .. 24 hours only.
+        CheckConstraint(
+            "timeout_seconds BETWEEN 1 AND 86400",
+            name="ck_adapters_timeout_seconds",
+        ),
         # M5.5.9: names must be unique among active Adapters only; soft-deleted
         # names are reusable. This partial index is the database final defense
         # for concurrent create/rename (service pre-checks are authoritative).
@@ -63,6 +71,13 @@ class Adapter(Base):
     # the singleton AdapterSchedule configuration.
     run_mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="manual", server_default=text("'manual'")
+    )
+    # M5.5.11: Adapter-level authoritative single-run execution timeout in
+    # seconds. Defaults to 5 minutes; 1..86400 (24h) enforced by the check
+    # constraint above. Task manual and Task schedule runs share it, and the
+    # Worker receives it in every task payload.
+    timeout_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=300, server_default=text("300")
     )
     # Circular reference with adapter_versions: these foreign keys use
     # use_alter so DDL is emitted after both tables exist.

@@ -1240,19 +1240,21 @@ body {
   gap: 4px;
 }
 
-/* --- M5.4.2 Task 运行台：工业化、信息优先的三段控制面 ------------------- */
+/* --- M5.5.11 Task 运行设置：单页动态表单 ---------------------------------- */
 
 .task-run-settings {
-  display: grid;
-  grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   padding: 14px;
-  align-items: start;
+  align-items: stretch;
+  max-width: 760px;
 }
 
 .task-runtime-config,
 .task-schedule-config,
-.task-run-once {
+.task-manual-config,
+.task-execution-status {
   min-width: 0;
   padding: 16px;
   border: 1px solid var(--dlr-border);
@@ -1264,7 +1266,6 @@ body {
 }
 
 .task-runtime-config {
-  grid-row: span 2;
   border-top: 3px solid #1677ff;
 }
 
@@ -1272,7 +1273,11 @@ body {
   border-top: 3px solid #d48806;
 }
 
-.task-run-once {
+.task-manual-config {
+  border-top: 3px solid #722ed1;
+}
+
+.task-execution-status {
   border-top: 3px solid #389e0d;
 }
 
@@ -1281,24 +1286,13 @@ body {
   width: 100%;
 }
 
-.task-run-once > .settings-field {
-  margin-bottom: 12px;
+.task-run-settings .settings-field-hint {
+  display: block;
+  font-size: 0.78rem;
 }
 
-.task-run-once .execution-body {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px dashed var(--dlr-border);
-}
-
-@media (max-width: 1200px) {
-  .task-run-settings {
-    grid-template-columns: 1fr;
-  }
-
-  .task-runtime-config {
-    grid-row: auto;
-  }
+.task-run-config-save {
+  align-self: flex-start;
 }
 
 .settings-field-label {

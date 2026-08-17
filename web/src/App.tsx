@@ -1325,7 +1325,7 @@ function AdapterConsole() {
         onOk={() => void performClone()}
       >
         <div className="clone-confirm">
-          <p>将复制当前代码、依赖、运行配置、凭据引用和运行节点。</p>
+          <p>将复制当前代码、依赖、运行配置（含单次执行超时）、凭据引用和运行节点。</p>
           <p>执行历史不会复制；新适配器创建后保持停止，不会自动运行。</p>
           <label className="settings-field">
             <span className="settings-field-label">新适配器名称</span>

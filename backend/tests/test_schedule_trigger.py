@@ -199,6 +199,30 @@ def test_due_schedule_uses_latest_revision_and_runtime_worker(
     assert rows[0].input == {"scheduled": True}
 
 
+def test_scheduled_execution_payload_carries_adapter_timeout(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """M5.5.11: Task schedule runs share the Adapter-level execution timeout."""
+    from test_workers import claim
+
+    adapter, _, worker = setup_task(api_client, "schedule-timeout")
+    assert (
+        api_client.patch(
+            f"/api/adapters/{adapter['id']}",
+            json={"timeout_seconds": 2700},
+        ).status_code
+        == 200
+    )
+    assert put_schedule(api_client, adapter["id"]).status_code == 200
+    set_cursor(session_factory, adapter["id"], BASE - timedelta(minutes=1))
+    with session_factory() as session:
+        assert scheduler_tick(session, now=BASE) == 1
+
+    payload = claim(api_client, worker["id"]).json()
+    assert payload["execution_timeout_seconds"] == 2700
+
+
 def test_disabled_save_then_reenabled_schedule_runs_new_latest_revision(
     api_client: TestClient,
     session_factory: sessionmaker[Session],

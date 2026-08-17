@@ -90,7 +90,14 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
         runtime_config=version.runtime_config,
         input=execution.input,
         latest_version_id=adapter.latest_version_id,
-        execution_timeout_seconds=settings.execution_timeout_seconds,
+        # M5.5.11: the Adapter-level timeout is authoritative for every
+        # Execution (manual, schedule and webhook). The platform setting is
+        # only a defensive fallback for rows predating the migration.
+        execution_timeout_seconds=(
+            adapter.timeout_seconds
+            if adapter.timeout_seconds is not None
+            else settings.execution_timeout_seconds
+        ),
         secrets=secrets_service.resolve_adapter_secrets(session, execution.adapter_id),
         index_url=package_source_service.resolve_default_index_url(
             session,

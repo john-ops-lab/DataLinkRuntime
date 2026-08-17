@@ -1,7 +1,14 @@
-/** Task runtime settings and real Manual/Schedule execution actions (M5.4.2). */
+/** Task 运行设置：单页动态表单（M5.5.11）。
+ *
+ * 本页只负责配置，不承担“运行一次”操作（“运行一次”仅在右上角全局操作区，
+ * 并受 #55 的未保存门禁约束）。固定结构为“运行节点 + 运行方式”，切换
+ * “手动运行 / 定时运行”后立即呈现对应字段；单次执行超时是 Adapter 级配置，
+ * 手动与定时共用（默认 300 秒，1/5/10/30/60 分钟预设 + 自定义，最大 24 小时，
+ * 不提供“无限制”），页面底部统一保存运行配置。
+ */
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from "react";
-import { Alert, Button, Input, Radio, Select, Space, Spin, Tag, Typography } from "antd";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { Alert, Button, Input, InputNumber, Radio, Select, Space, Spin, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
 import { isTerminal, statusColor, statusLabel } from "../status";
@@ -36,6 +43,16 @@ interface TaskRunSettingsPanelProps {
   onError: (message: string | null) => void;
 }
 
+// M5.5.11 单次执行超时合同（秒为权威值）。
+const DEFAULT_TIMEOUT_SECONDS = 300;
+const MAX_TIMEOUT_SECONDS = 24 * 60 * 60; // 24 小时
+const TIMEOUT_PRESET_MINUTES = [1, 5, 10, 30, 60] as const;
+
+const TIMEOUT_HINT =
+  "一次运行超过该时间后，系统将自动停止任务并标记为“超时”。最大 24 小时，不提供“无限制”。";
+const TIMEOUT_NOT =
+  "此配置不是：Cron 间隔、Webhook HTTP 等待超时、AI 请求超时、依赖安装超时。";
+
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
@@ -52,30 +69,47 @@ function formatTime(value: string | null): string {
   return value === null ? "—" : new Date(value).toLocaleString();
 }
 
+function presetMinutesFor(seconds: number): number | undefined {
+  return TIMEOUT_PRESET_MINUTES.find((minutes) => minutes * 60 === seconds);
+}
+
 const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPanelProps>(function TaskRunSettingsPanel(props, ref) {
   const adapterId = props.adapter.id;
-  const adapterRunMode = props.adapter.run_mode;
   const onAdapterChange = props.onAdapterChange;
   const onError = props.onError;
   const onRuntimeStateChange = props.onRuntimeStateChange;
   const [workerOverride, setWorkerOverride] = useState<number | null | undefined>(undefined);
   const [runModeOverride, setRunModeOverride] = useState<TaskRunMode | undefined>(undefined);
+  // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
+  const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
+  const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
   const [manualInput, setManualInput] = useState("{}");
   const [schedule, setSchedule] = useState<AdapterSchedule | null>(null);
   const [cron, setCron] = useState("*/5 * * * *");
   const [timezone, setTimezone] = useState("Asia/Shanghai");
   const [scheduleInput, setScheduleInput] = useState("{}");
   const [loadingSchedule, setLoadingSchedule] = useState(props.adapter.run_mode === "schedule");
+  // 用户是否实际修改过定时字段（cron/timezone/input）。未修改时统一保存
+  // 不得用表单值整体 PUT，避免把线上真实 Schedule 冲掉。
+  const [scheduleTouched, setScheduleTouched] = useState(false);
+  // 初始 Schedule GET 非 404 失败时置位：此时表单仍是默认值，禁止 PUT。
+  const [scheduleLoadFailed, setScheduleLoadFailed] = useState(false);
   const [savingRuntime, setSavingRuntime] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // 保存流程（PATCH + PUT）完成后递增，使保存前发出的 Schedule GET 响应
+  // 成为陈旧信号，不能覆盖刚保存成功的表单值。
+  const scheduleLoadEpoch = useRef(0);
+  const runMode = runModeOverride ?? props.adapter.run_mode;
 
   const refreshAdapter = useCallback(async () => {
     const refreshed = await api.getAdapter(adapterId);
     onAdapterChange(refreshed);
     setWorkerOverride(undefined);
     setRunModeOverride(undefined);
+    setTimeoutOverride(null);
+    setTimeoutCustomMode(false);
   }, [adapterId, onAdapterChange]);
 
   const loadSchedule = useCallback(async () => {
@@ -86,10 +120,15 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
       setScheduleInput(JSON.stringify(loaded.input, null, 2));
+      setScheduleLoadFailed(false);
+      setScheduleTouched(false);
     } catch (error) {
       if (error instanceof ApiError && error.status === 404 && error.code === "schedule_not_configured") {
         setSchedule(null);
+        setScheduleLoadFailed(false);
       } else {
+        // 加载失败时表单仍是默认值：标记后统一保存会跳过 Schedule PUT。
+        setScheduleLoadFailed(true);
         onError(errorMessage(error));
       }
     } finally {
@@ -98,21 +137,24 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }, [adapterId, onError]);
 
   useEffect(() => {
-    if (adapterRunMode !== "schedule") {
+    if (runMode !== "schedule") {
       return;
     }
     let cancelled = false;
+    const epoch = scheduleLoadEpoch.current;
     api.getSchedule(adapterId).then((loaded) => {
-      if (cancelled) return;
+      if (cancelled || scheduleLoadEpoch.current !== epoch) return;
       setSchedule(loaded);
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
       setScheduleInput(JSON.stringify(loaded.input, null, 2));
+      setScheduleLoadFailed(false);
+      setScheduleTouched(false);
     }).catch((error) => {
-      if (
-        !cancelled &&
-        !(error instanceof ApiError && error.status === 404 && error.code === "schedule_not_configured")
-      ) {
+      // 404 = Schedule 尚未配置：保持空状态即可。保存流程里 PATCH 先于 PUT，
+      // 迟到的 404 响应是陈旧信号，必须忽略，不能覆盖刚保存成功的 Schedule。
+      if (!cancelled && !(error instanceof ApiError && error.status === 404)) {
+        setScheduleLoadFailed(true);
         onError(errorMessage(error));
       }
     }).finally(() => {
@@ -121,14 +163,47 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     return () => {
       cancelled = true;
     };
-  }, [adapterId, adapterRunMode, onError]);
+  }, [adapterId, onError, runMode]);
 
   const workerId =
     workerOverride === undefined ? (props.adapter.runtime_worker_id ?? null) : workerOverride;
-  const runMode = runModeOverride ?? props.adapter.run_mode;
 
-  async function saveRuntimeSettings() {
+  // M5.5.11: 表单显示值 = 表单覆盖 ?? Adapter 权威值 ?? 默认 300 秒。
+  const effectiveTimeoutSeconds =
+    timeoutOverride ?? props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS;
+  const effectiveCustom =
+    timeoutCustomMode || presetMinutesFor(effectiveTimeoutSeconds) === undefined;
+
+  function resolveTimeoutSeconds(): number | null {
+    const minutes = presetMinutesFor(effectiveTimeoutSeconds);
+    if (!effectiveCustom && minutes !== undefined) {
+      return minutes * 60;
+    }
+    if (!Number.isInteger(effectiveTimeoutSeconds) || effectiveTimeoutSeconds < 1 || effectiveTimeoutSeconds > MAX_TIMEOUT_SECONDS) {
+      onError(`单次执行超时必须是 1–${MAX_TIMEOUT_SECONDS} 秒（最大 24 小时）。`);
+      return null;
+    }
+    return effectiveTimeoutSeconds;
+  }
+
+  async function saveRunConfig() {
     if (savingRuntime || props.adapter.runtime_locked) {
+      return;
+    }
+    if (workerId === null) {
+      onError("请先选择运行节点。");
+      return;
+    }
+    const timeoutSeconds = resolveTimeoutSeconds();
+    if (timeoutSeconds === null) {
+      return;
+    }
+    const scheduleDraft =
+      runMode === "schedule"
+        ? parseInput(scheduleInput)
+        : null;
+    if (scheduleDraft !== null && !scheduleDraft.ok) {
+      onError("Schedule Input 必须是合法 JSON");
       return;
     }
     setSavingRuntime(true);
@@ -137,11 +212,38 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       const refreshed = await api.updateAdapter(adapterId, {
         runtime_worker_id: workerId,
         run_mode: runMode,
+        timeout_seconds: timeoutSeconds,
       });
       onAdapterChange(refreshed);
       setWorkerOverride(undefined);
       setRunModeOverride(undefined);
-      if (refreshed.run_mode === "schedule") setLoadingSchedule(true);
+      setTimeoutOverride(null);
+      setTimeoutCustomMode(false);
+      if (refreshed.run_mode === "schedule") {
+        // 只在两种情况下整体 PUT Schedule：用户实际修改过定时字段，或确认
+        // 从未配置过（GET 已返回 404）。加载中/加载失败时表单仍是默认值，
+        // 此时 PUT 会静默冲掉线上真实配置，必须跳过并明确提示。
+        const scheduleUnknown =
+          schedule === null && (loadingSchedule || scheduleLoadFailed);
+        const shouldPutSchedule = scheduleTouched || (schedule === null && !scheduleUnknown);
+        if (shouldPutSchedule) {
+          const saved = await api.putSchedule(adapterId, {
+            enabled: schedule?.enabled === true,
+            cron,
+            timezone,
+            input: scheduleDraft?.ok === true ? scheduleDraft.value : null,
+          });
+          // 保存成功后的值立即落回表单，并作废任何在途的 Schedule GET。
+          scheduleLoadEpoch.current += 1;
+          setSchedule(saved);
+          setCron(saved.cron);
+          setTimezone(saved.timezone);
+          setScheduleInput(JSON.stringify(saved.input, null, 2));
+          setScheduleTouched(false);
+        } else if (scheduleUnknown) {
+          onError("运行配置已保存；但 Schedule 尚未加载完成（或加载失败），定时字段未保存，请刷新后重试。");
+        }
+      }
     } catch (error) {
       onError(errorMessage(error));
     } finally {
@@ -275,6 +377,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     toggleSchedule: () => void saveSchedule(!scheduleEnabled),
   }));
 
+  const scheduleVisible = runMode === "schedule";
+
   return (
     <div className="task-run-settings" data-testid="task-run-settings">
       <section className="task-runtime-config">
@@ -303,11 +407,59 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               data-testid="task-run-mode"
               value={runMode}
               disabled={runtimeLocked || savingRuntime}
-              onChange={(event) => setRunModeOverride(event.target.value as TaskRunMode)}
+              onChange={(event) => {
+                const nextRunMode = event.target.value as TaskRunMode;
+                setRunModeOverride(nextRunMode);
+                // 初始 manual 模式尚未读取 Schedule；切换时先进入加载态，
+                // 防止 effect 发起 GET 前保存默认值覆盖已有的停用配置。
+                setLoadingSchedule(nextRunMode === "schedule");
+              }}
             >
               <Radio value="manual">手动运行</Radio>
               <Radio value="schedule">定时运行</Radio>
             </Radio.Group>
+          </div>
+          <div className="settings-field">
+            <span className="settings-field-label">单次执行超时（一次运行的最长时间）</span>
+            <Radio.Group
+              data-testid="task-timeout-preset"
+              value={effectiveCustom ? "custom" : presetMinutesFor(effectiveTimeoutSeconds)}
+              disabled={runtimeLocked || savingRuntime}
+              onChange={(event) => {
+                const value = event.target.value as number | "custom";
+                if (value === "custom") {
+                  setTimeoutCustomMode(true);
+                } else {
+                  setTimeoutOverride(value * 60);
+                  setTimeoutCustomMode(false);
+                }
+              }}
+            >
+              {TIMEOUT_PRESET_MINUTES.map((minutes) => (
+                <Radio key={minutes} value={minutes}>
+                  {minutes} 分钟
+                </Radio>
+              ))}
+              <Radio value="custom">自定义</Radio>
+            </Radio.Group>
+            {effectiveCustom && (
+              <InputNumber
+                data-testid="task-timeout-custom"
+                min={1}
+                max={MAX_TIMEOUT_SECONDS}
+                precision={0}
+                value={effectiveTimeoutSeconds}
+                addonAfter="秒"
+                disabled={runtimeLocked || savingRuntime}
+                onChange={(value) => setTimeoutOverride(value ?? null)}
+              />
+            )}
+            <Typography.Text type="secondary" className="settings-field-hint">
+              {TIMEOUT_HINT}
+            </Typography.Text>
+            <Typography.Text type="secondary" className="settings-field-hint">
+              {TIMEOUT_NOT}
+            </Typography.Text>
           </div>
           {runtimeLocked && (
             <Alert
@@ -315,40 +467,31 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               showIcon
               data-testid="task-runtime-locked"
               message="运行配置已锁定"
-              description="定时启用或执行活跃期间，不能修改代码、运行节点、运行方式、Cron、依赖、运行参数或凭据。"
+              description="定时启用或执行活跃期间，不能修改代码、运行节点、运行方式、单次执行超时、Cron、依赖、运行参数或凭据。"
             />
           )}
-          <Button
-            type="primary"
-            data-testid="save-task-runtime"
-            loading={savingRuntime}
-            disabled={runtimeLocked || workerId === null}
-            onClick={() => void saveRuntimeSettings()}
-          >
-            保存运行设置
-          </Button>
         </Space>
       </section>
 
-      {props.adapter.run_mode === "schedule" && (
+      {scheduleVisible && (
         <section className="task-schedule-config">
           <Typography.Title level={5}>定时配置</Typography.Title>
           {loadingSchedule ? <Spin /> : (
             <Space direction="vertical" size="middle" className="schedule-form">
               <label className="settings-field">
                 <span className="settings-field-label">Cron（5 字段）</span>
-                <Input data-testid="task-schedule-cron" value={cron} disabled={scheduleFieldsLocked} onChange={(event) => setCron(event.target.value)} />
+                <Input data-testid="task-schedule-cron" value={cron} disabled={scheduleFieldsLocked} onChange={(event) => { setCron(event.target.value); setScheduleTouched(true); }} />
               </label>
               <label className="settings-field">
                 <span className="settings-field-label">时区（IANA）</span>
-                <Input data-testid="task-schedule-timezone" value={timezone} disabled={scheduleFieldsLocked} onChange={(event) => setTimezone(event.target.value)} />
+                <Input data-testid="task-schedule-timezone" value={timezone} disabled={scheduleFieldsLocked} onChange={(event) => { setTimezone(event.target.value); setScheduleTouched(true); }} />
               </label>
               <label className="settings-field">
                 <span className="settings-field-label">输入（JSON）</span>
-                <Input.TextArea data-testid="task-schedule-input" rows={4} value={scheduleInput} disabled={scheduleFieldsLocked} onChange={(event) => setScheduleInput(event.target.value)} />
+                <Input.TextArea data-testid="task-schedule-input" rows={4} value={scheduleInput} disabled={scheduleFieldsLocked} onChange={(event) => { setScheduleInput(event.target.value); setScheduleTouched(true); }} />
               </label>
               <div className="settings-field">
-                <span className="settings-field-label">状态</span>
+                <span className="settings-field-label">定时状态</span>
                 <Space>
                   <Tag color={scheduleEnabled ? "green" : "default"}>{scheduleEnabled ? "定时运行中" : "已停用"}</Tag>
                   <span data-testid="task-schedule-next-run">下一次执行：{formatTime(schedule?.next_run_at ?? null)}</span>
@@ -356,9 +499,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 </Space>
               </div>
               <Space>
-                {!scheduleEnabled && (
-                  <Button data-testid="save-task-schedule" disabled={runtimeLocked} onClick={() => void saveSchedule(false)}>保存配置</Button>
-                )}
                 <Button
                   type={scheduleEnabled ? "default" : "primary"}
                   danger={scheduleEnabled}
@@ -386,38 +526,49 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         </section>
       )}
 
-      <section className="task-run-once">
-        <Typography.Title level={5}>{props.adapter.run_mode === "schedule" ? "立即运行一次" : "手动运行"}</Typography.Title>
-        {props.adapter.run_mode === "manual" && (
+      {runMode === "manual" && (
+        <section className="task-manual-config">
+          <Typography.Title level={5}>手动运行配置</Typography.Title>
           <label className="settings-field">
             <span className="settings-field-label">输入（JSON）</span>
             <Input.TextArea data-testid="task-manual-input" rows={4} value={manualInput} disabled={activeExecution} onChange={(event) => setManualInput(event.target.value)} />
           </label>
-        )}
-        <Space>
-          {!activeExecution ? (
-            <Button type="primary" data-testid="task-run-once" loading={submitting} disabled={!canRun} onClick={() => void runOnce()}>
-              {props.adapter.run_mode === "schedule" ? "立即运行一次" : "运行一次"}
-            </Button>
-          ) : (
-            <Button danger data-testid="task-stop-run" loading={cancelling} onClick={() => void stopExecution()}>
-              {props.adapter.run_mode === "schedule" ? "停止当前执行" : "停止运行"}
-            </Button>
+        </section>
+      )}
+
+      {(execution !== null || activeExecution) && (
+        <section className="task-execution-status">
+          <Typography.Title level={5}>当前执行</Typography.Title>
+          <Space>
+            {activeExecution && (
+              <Button danger data-testid="task-stop-run" loading={cancelling} onClick={() => void stopExecution()}>
+                停止运行
+              </Button>
+            )}
+            {execution !== null && <Tag color={statusColor(execution.status)}>{statusLabel(execution.status)}</Tag>}
+          </Space>
+          {execution !== null && (
+            <Alert
+              className="task-live-log-handoff"
+              type={isTerminal(execution.status) ? "success" : "info"}
+              showIcon
+              message={`运行状态：${statusLabel(execution.status)}`}
+              description="实时日志与输出请在「实时日志」标签中查看。"
+            />
           )}
-          {execution !== null && <Tag color={statusColor(execution.status)}>{statusLabel(execution.status)}</Tag>}
-        </Space>
-        {props.adapter.latest_version_id === null && <Alert type="info" showIcon message="请先保存适配器，再运行任务。" />}
-        {props.adapter.runtime_worker_id == null && <Alert type="info" showIcon message="请先保存运行节点。" />}
-        {execution !== null && (
-          <Alert
-            className="task-live-log-handoff"
-            type={isTerminal(execution.status) ? "success" : "info"}
-            showIcon
-            message={`运行状态：${statusLabel(execution.status)}`}
-            description="实时日志与输出请在「实时日志」标签中查看。"
-          />
-        )}
-      </section>
+        </section>
+      )}
+
+      <Button
+        type="primary"
+        className="task-run-config-save"
+        data-testid="save-task-runtime"
+        loading={savingRuntime}
+        disabled={runtimeLocked || workerId === null}
+        onClick={() => void saveRunConfig()}
+      >
+        保存运行配置
+      </Button>
     </div>
   );
 });
