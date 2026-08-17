@@ -181,10 +181,11 @@ def save_setting(session: Session, data: AiSettingDraft) -> AiModelSetting:
     _validate_base_url(data.base_url)
     _validate_reasoning(data)
     _resolve_api_key(session, data.credential_id)
+    normalized_base_url = providers.normalize_base_url(data.base_url)
     statement = insert(AiModelSetting).values(
         id=_SINGLETON_ID,
         provider=data.provider,
-        base_url=data.base_url,
+        base_url=normalized_base_url,
         model=data.model,
         credential_id=data.credential_id,
         reasoning_mode=data.reasoning_mode,

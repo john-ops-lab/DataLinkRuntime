@@ -13,6 +13,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -372,6 +373,13 @@ interface PackageSourceFormState {
   credential_id: number | null;
 }
 
+type PackageSourceTestStatus = "可达" | "不可达" | "超时" | "认证失败";
+
+interface PackageSourceTestResult {
+  status: PackageSourceTestStatus;
+  detail: string | null;
+}
+
 const EMPTY_SOURCE_FORM: PackageSourceFormState = {
   name: "",
   kind: "pypi",
@@ -391,7 +399,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
   const [restoring, setRestoring] = useState<"pypi" | "npm" | "maven" | null>(null);
-  const [testResults, setTestResults] = useState<Map<number, { ok: boolean; text: string }>>(new Map());
+  const [testResults, setTestResults] = useState<Map<number, PackageSourceTestResult>>(new Map());
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -515,20 +523,28 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       return;
     }
     setTesting(source.id);
-    setTestResults((current) => {
-      const next = new Map(current);
-      next.delete(source.id);
-      return next;
-    });
     try {
       const result = await api.testPackageSource(source.id);
-      const errorDetail = result.error?.trim();
-      const text = result.ok
-        ? `可达${result.status_code !== null ? `（HTTP ${result.status_code}）` : ""}`
-        : errorDetail
-          ? `不可达：${errorDetail}`
-          : "不可达（请检查 URL、凭据和网络）";
-      setTestResults((current) => new Map(current).set(source.id, { ok: result.ok, text }));
+      const errorDetail = result.error?.trim() || null;
+      const authFailure = result.status_code === 401 || result.status_code === 403 ||
+        /auth|unauthori|forbidden|认证/i.test(errorDetail ?? "");
+      const timeout = result.status_code === 408 || result.status_code === 504 ||
+        /timeout|timed out|time out|超时/i.test(errorDetail ?? "");
+      const status: PackageSourceTestStatus = authFailure
+        ? "认证失败"
+        : timeout
+          ? "超时"
+          : result.ok
+            ? "可达"
+            : "不可达";
+      const detail = result.ok
+        ? result.status_code === null
+          ? null
+          : `HTTP ${result.status_code}`
+        : errorDetail ?? "请检查 URL、凭据和网络";
+      setTestResults((current) =>
+        new Map(current).set(source.id, { status, detail }),
+      );
     } catch (error) {
       fail(errorMessage(error));
     } finally {
@@ -548,7 +564,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     if (
       !window.confirm(
         `确定把 ${canonical.name}（${canonical.index_url}）恢复为 ${kindLabel(kind)} 的默认依赖源吗？` +
-          "已有源会被更新或设为默认；绑定的凭据保持不变。",
+          "会补齐国内与官方默认源并选中国内源；已有自定义源和绑定凭据保持不变。",
       )
     ) {
       return;
@@ -583,18 +599,30 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     {
       title: "名称",
       dataIndex: "name",
+      width: 190,
       render: (name: string, source) => (
-        <span data-testid="package-source-row">
-          {name}
-          {source.is_default && (
-            <Tag color="green" data-testid="default-source-badge">
-              默认
-            </Tag>
-          )}
-        </span>
+        <Tooltip title={name}>
+          <span className="package-source-cell" data-testid="package-source-row">
+            {name}
+            {source.is_default && (
+              <Tag color="green" data-testid="default-source-badge">
+                默认
+              </Tag>
+            )}
+          </span>
+        </Tooltip>
       ),
     },
-    { title: "仓库 URL", dataIndex: "index_url" },
+    {
+      title: "仓库 URL",
+      dataIndex: "index_url",
+      width: 300,
+      render: (url: string) => (
+        <Tooltip title={url}>
+          <span className="package-source-cell">{url}</span>
+        </Tooltip>
+      ),
+    },
     {
       title: "凭据",
       dataIndex: "credential_name",
@@ -603,11 +631,12 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     },
     {
       title: "可达性",
-      width: 160,
+      width: 190,
       render: (_, source) => {
         const result = testResults.get(source.id);
+        const testingThisSource = testing === source.id;
         return (
-          <Space>
+          <div className="package-source-test-cell">
             <Button
               size="small"
               data-testid="test-package-source"
@@ -617,16 +646,27 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             >
               测试
             </Button>
-            {result !== undefined && (
+            <Tooltip title={result?.detail ?? undefined}>
               <Typography.Text
-                type={result.ok ? "success" : "danger"}
-                role={result.ok ? "status" : "alert"}
+                className={`package-source-test-status${testingThisSource ? " is-loading" : ""}`}
+                type={
+                  result === undefined || testingThisSource
+                    ? undefined
+                    : result.status === "可达"
+                      ? "success"
+                      : "danger"
+                }
+                role={
+                  result === undefined || testingThisSource || result.status === "可达"
+                    ? "status"
+                    : "alert"
+                }
                 data-testid="package-source-test-result"
               >
-                {result.text}
+                {testingThisSource ? "测试中" : result?.status ?? "未测试"}
               </Typography.Text>
-            )}
-          </Space>
+            </Tooltip>
+          </div>
         );
       },
     },
@@ -807,6 +847,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           size="small"
           pagination={false}
           dataSource={sources}
+          className="package-source-table"
+          tableLayout="fixed"
+          scroll={{ x: 1060 }}
           columns={columns}
         />
       )}
