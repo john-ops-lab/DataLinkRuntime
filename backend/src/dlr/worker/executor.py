@@ -523,59 +523,108 @@ def run(
     secret_values = _env_secret_values() + [value for value in payload_secrets.values() if value]
     dependency_secret_values = secret_values + venv_manager.package_index_secret_values(index_url)
 
+    dependency_log: list[str] = []
+    dependency_uploader = _ProgressUploader(progress_callback) if progress_callback else None
+
+    def emit_dependency_log(message: str, level: str = "INFO") -> None:
+        """Format and upload one redacted dependency-stage line."""
+        safe_message = venv_manager.redact_package_index_log(message, index_url)
+        safe_message = redact_secrets(safe_message, dependency_secret_values)
+        line = _platform_message(
+            level,
+            f"[依赖检查] {safe_message}",
+            dependency_secret_values,
+        )
+        dependency_log.append(line)
+        if dependency_uploader is not None:
+            dependency_uploader.submit(line, "")
+
+    runtime_path: Path | None = None
+    preparation_error: venv_manager.DependencyPreparationError | None = None
     try:
-        if language == "python":
-            runtime_path = venv_manager.prepare_version_venv(
-                config.runtime_root,
-                adapter_id,
-                version_id,
-                str(payload.get("requirements") or ""),
-                timeout_seconds=config.dep_install_timeout_seconds,
-                index_url=index_url,
+        try:
+            if language == "python":
+                runtime_path = venv_manager.prepare_version_venv(
+                    config.runtime_root,
+                    adapter_id,
+                    version_id,
+                    str(payload.get("requirements") or ""),
+                    timeout_seconds=config.dep_install_timeout_seconds,
+                    index_url=index_url,
+                    dependency_log=emit_dependency_log,
+                )
+            elif language == "javascript":
+                runtime_path = nodeenv.prepare_version_node(
+                    config.runtime_root,
+                    adapter_id,
+                    version_id,
+                    str(payload["code"]),
+                    str(payload.get("requirements") or ""),
+                    timeout_seconds=config.dep_install_timeout_seconds,
+                    registry_url=index_url,
+                    dependency_log=emit_dependency_log,
+                )
+            elif language == "java":
+                runtime_path = javaenv.prepare_version_java(
+                    config.runtime_root,
+                    adapter_id,
+                    version_id,
+                    str(payload["code"]),
+                    str(payload.get("requirements") or ""),
+                    timeout_seconds=config.dep_install_timeout_seconds,
+                    repository_url=index_url,
+                    dependency_log=emit_dependency_log,
+                )
+            else:
+                return {
+                    "status": "failed",
+                    "error": f"unsupported Adapter language: {language}",
+                    "stdout": "",
+                    "stderr": "",
+                }
+        except venv_manager.DependencyPreparationError as error:
+            preparation_error = error
+            if error.dependency is not None:
+                emit_dependency_log(
+                    f"{error.dependency} 安装失败，停止本次运行",
+                    level="ERROR",
+                )
+            else:
+                emit_dependency_log("依赖准备失败，停止本次运行", level="ERROR")
+    finally:
+        if dependency_uploader is not None:
+            dependency_uploader.drain(PROGRESS_DRAIN_SECONDS)
+
+    if preparation_error is not None:
+        preparation = preparation_error
+        safe_install_log = venv_manager.redact_package_index_log(preparation.install_log, index_url)
+        safe_error = venv_manager.redact_package_index_log(str(preparation), index_url)
+        failure_detail = f"{language} dependency preparation failed"
+        if preparation.dependency is not None:
+            safe_dependency = venv_manager.redact_package_index_log(
+                preparation.dependency, index_url
             )
-        elif language == "javascript":
-            runtime_path = nodeenv.prepare_version_node(
-                config.runtime_root,
-                adapter_id,
-                version_id,
-                str(payload["code"]),
-                str(payload.get("requirements") or ""),
-                timeout_seconds=config.dep_install_timeout_seconds,
-                registry_url=index_url,
-            )
-        elif language == "java":
-            runtime_path = javaenv.prepare_version_java(
-                config.runtime_root,
-                adapter_id,
-                version_id,
-                str(payload["code"]),
-                str(payload.get("requirements") or ""),
-                timeout_seconds=config.dep_install_timeout_seconds,
-                repository_url=index_url,
-            )
-        else:
-            return {
-                "status": "failed",
-                "error": f"unsupported Adapter language: {language}",
-                "stdout": "",
-                "stderr": "",
-            }
-    except venv_manager.DependencyPreparationError as error:
-        safe_install_log = venv_manager.redact_package_index_log(error.install_log, index_url)
-        safe_error = venv_manager.redact_package_index_log(str(error), index_url)
+            failure_detail += f" (failed dependency: {safe_dependency})"
+        failure_detail += f": {safe_error}"
         # M5.5.10: the dependency failure lives in the unified log stream
         # (stdout channel) with the same line format as every other source.
-        unified_log = _timestamped_text(redact_secrets(safe_install_log, dependency_secret_values))
+        unified_log = "".join(dependency_log)
+        unified_log += _timestamped_text(redact_secrets(safe_install_log, dependency_secret_values))
         unified_log += _platform_message(
             "ERROR",
-            f"{language} dependency preparation failed: {safe_error}",
+            failure_detail,
+            dependency_secret_values,
+        )
+        unified_log += _platform_message(
+            "ERROR",
+            "[系统] 本次执行未开始脚本逻辑",
             dependency_secret_values,
         )
         stdout, stdout_truncated = _cap_stream(unified_log.encode())
         return {
             "status": "failed",
             "error": redact_secrets(
-                f"{language} dependency preparation failed: {safe_error}",
+                failure_detail,
                 dependency_secret_values,
             ),
             "stdout": stdout,
@@ -584,6 +633,8 @@ def run(
             "stderr_truncated": False,
         }
 
+    assert runtime_path is not None
+    dependency_log_text = "".join(dependency_log)
     workspace = Path(tempfile.mkdtemp(prefix=f"dlr-exec-{execution_id}-"))
     output_raw: bytes | None = None
     timed_out = False
@@ -627,9 +678,10 @@ def run(
                 env=child_env(payload_secrets),
                 cwd=str(workspace),
             )
-            returncode, timed_out, cancelled, unified_log = _wait_with_progress(
+            returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
                 process, stdout_path, timeout, progress_callback, secret_values
             )
+            unified_log = dependency_log_text + runtime_log
 
         if not timed_out and not cancelled and returncode == 0:
             output_file = workspace / "output.json"

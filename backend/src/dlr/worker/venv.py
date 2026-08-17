@@ -19,11 +19,13 @@ import re
 import shutil
 import subprocess
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from urllib import parse as url_parse
 
 logger = logging.getLogger("dlr.worker.venv")
+
+DependencyLogCallback = Callable[[str], None]
 
 _build_locks: dict[tuple[int, int], threading.Lock] = {}
 _build_locks_guard = threading.Lock()
@@ -136,6 +138,31 @@ def _redact_sensitive(text: str, sensitive_values: Iterable[str] = ()) -> str:
 def redact_package_index_log(text: str, index_url: str | None) -> str:
     """Redact one dependency log using the effective package index URL."""
     return _redact_sensitive(text, package_index_secret_values(index_url))
+
+
+def dependency_specs(requirements: str) -> list[str]:
+    """Return package declaration lines suitable for user-facing status logs.
+
+    The complete requirements file is still passed to uv unchanged. Pure pip
+    option lines are intentionally omitted here: they configure the joint
+    install but are not standalone packages that can truthfully be reported as
+    installed.
+    """
+    return [
+        line.strip()
+        for line in requirements.splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and not line.lstrip().startswith("-")
+    ]
+
+
+def dependency_failure_label(dependencies: Iterable[str], install_log: str) -> str | None:
+    """Identify a declared package when an ecosystem tool names it in output."""
+    declarations = list(dependencies)
+    lowered_log = install_log.casefold()
+    for dependency in declarations:
+        if dependency.casefold() in lowered_log:
+            return dependency
+    return declarations[0] if len(declarations) == 1 else None
 
 
 # --- actionable install-error classification (M5.5.8) --------------------------
@@ -256,9 +283,15 @@ def _run_install_logged(command: list[str], timeout_seconds: int) -> str:
 class DependencyPreparationError(Exception):
     """venv creation or dependency installation failed."""
 
-    def __init__(self, message: str, install_log: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        install_log: str,
+        dependency: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.install_log = install_log
+        self.dependency = dependency
 
 
 def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
@@ -323,12 +356,17 @@ def prepare_version_venv(
     *,
     timeout_seconds: int,
     index_url: str | None = None,
+    dependency_log: DependencyLogCallback | None = None,
 ) -> Path:
     """Return the venv Python path, building the venv on first use."""
     directory = version_dir(runtime_root, adapter_id, version_id)
     python_path = venv_python(directory)
+    dependencies = dependency_specs(requirements)
     with _lock_for(adapter_id, version_id):
         if (directory / ".ready").exists() and python_path.exists():
+            if dependency_log is not None:
+                for dependency in dependencies:
+                    dependency_log(f"{dependency} 已安装，检查通过")
             return python_path
         # Incomplete leftovers (no .ready marker) are rebuilt from scratch.
         if directory.exists():
@@ -340,6 +378,9 @@ def prepare_version_venv(
         try:
             install_log += _run_logged(["uv", "venv", str(directory / ".venv")], timeout_seconds)
             if requirements.strip():
+                if dependency_log is not None:
+                    for dependency in dependencies:
+                        dependency_log(f"{dependency} 未安装，开始安装")
                 base_command = [
                     "uv",
                     "pip",
@@ -362,15 +403,30 @@ def prepare_version_venv(
                             "a package source in System Settings (or set DLR_PYPI_INDEX_URL "
                             "on the Worker)",
                             offline_error.install_log,
+                            dependency=dependency_failure_label(
+                                dependencies, offline_error.install_log
+                            ),
                         ) from offline_error
                     install_log += offline_error.install_log
                     install_log += (
                         "\n[offline cache insufficient; retrying with the configured "
                         "package source]\n"
                     )
-                    install_log += _run_install_logged(
-                        base_command + ["--index-url", index_url], timeout_seconds
-                    )
+                    try:
+                        install_log += _run_install_logged(
+                            base_command + ["--index-url", index_url], timeout_seconds
+                        )
+                    except DependencyPreparationError as source_error:
+                        raise DependencyPreparationError(
+                            str(source_error),
+                            install_log + source_error.install_log,
+                            dependency=dependency_failure_label(
+                                dependencies, install_log + source_error.install_log
+                            ),
+                        ) from source_error
+                if dependency_log is not None:
+                    for dependency in dependencies:
+                        dependency_log(f"{dependency} 安装成功")
         except DependencyPreparationError:
             # Leave no half-built venv behind; next attempt rebuilds cleanly.
             shutil.rmtree(directory, ignore_errors=True)

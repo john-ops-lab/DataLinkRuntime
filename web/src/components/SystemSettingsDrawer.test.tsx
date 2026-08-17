@@ -420,11 +420,13 @@ it("依赖源 HTTP 应答保持可达语义，测试请求失败会清除旧状�
   await screen.findByTestId("package-sources-panel");
 
   const result = screen.getByTestId("package-source-test-result");
-  fireEvent.click(screen.getByTestId("test-package-source"));
+  const testButton = screen.getByTestId("test-package-source") as HTMLButtonElement;
+  fireEvent.click(testButton);
   await waitFor(() => expect(result.textContent).toContain("可达"));
   expect(result.getAttribute("role")).toBe("status");
 
-  fireEvent.click(screen.getByTestId("test-package-source"));
+  await waitFor(() => expect(testButton.disabled).toBe(false));
+  fireEvent.click(testButton);
   await waitFor(() => expect(result.textContent).toContain("未测试"));
   expect(testSource).toHaveBeenCalledTimes(2);
 });
