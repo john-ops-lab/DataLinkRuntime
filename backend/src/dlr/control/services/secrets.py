@@ -17,6 +17,7 @@ Security contract:
 import base64
 import json
 import re
+import secrets as stdlib_secrets
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -29,6 +30,7 @@ from dlr.common.config import settings
 from dlr.control.models import Adapter, AdapterWebhook, Execution
 from dlr.control.models.platform import (
     CREDENTIAL_FIELDS,
+    LEGACY_ACCESS_KEY_FIELDS,
     AdapterCredentialBinding,
     Credential,
 )
@@ -76,7 +78,13 @@ def encrypt_fields(fields: dict[str, str]) -> str:
 
 
 def decrypt_fields(ciphertext: str) -> dict[str, str]:
-    """Decrypt one credential's field map; corrupt data is a server error."""
+    """Decrypt one credential's field map; corrupt data is a server error.
+
+    Access-key credentials encrypted before the M5.5.7 field rename
+    (``access_key`` / ``secret_key``) are transparently mapped to the
+    standardized ``access_key_id`` / ``access_key_secret`` names on read, so
+    legacy bindings never break. Plaintext is only ever held in memory.
+    """
     try:
         value = json.loads(_fernet().decrypt(ciphertext.encode()))
     except (InvalidToken, ValueError) as error:
@@ -87,7 +95,12 @@ def decrypt_fields(ciphertext: str) -> dict[str, str]:
         ) from error
     if not isinstance(value, dict):
         raise domain_error(500, "secret_store_decrypt_failed", "Credential ciphertext is malformed")
-    return {str(key): str(item) for key, item in value.items()}
+    fields = {str(key): str(item) for key, item in value.items()}
+    if "access_key" in fields or "secret_key" in fields:
+        for legacy, current in LEGACY_ACCESS_KEY_FIELDS.items():
+            if legacy in fields and current not in fields:
+                fields[current] = fields.pop(legacy)
+    return fields
 
 
 def _validate_fields(credential_type: str, fields: dict[str, str]) -> None:
@@ -215,6 +228,50 @@ def delete_credential(session: Session, credential_id: int) -> None:
             "Credential is still referenced (Adapter binding, Webhook or platform setting) "
             "and cannot be deleted",
         ) from None
+
+
+# --- demo credential bootstrap -------------------------------------------------
+
+# M5.5.7 demo Credentials referenced by the default Adapter bindings and by
+# the three-language Starter Code. Values are generated fresh per deployment;
+# nothing fixed or predictable ever lives in the repository, image or Compose.
+DEMO_PASSWORD_CREDENTIAL_NAME = "demo-passwd"
+DEMO_TOKEN_CREDENTIAL_NAME = "demo-token"
+
+
+def bootstrap_demo_credentials(session: Session) -> None:
+    """Create the demo Credentials with fresh random values (idempotent).
+
+    Called at Control startup. Values are random per deployment, encrypted
+    at rest and never returned by any API, so nothing readable or
+    predictable is exposed. Without a configured Master Key the bootstrap is
+    skipped; new Adapters then simply start without demo bindings.
+    """
+    if not settings.master_key:
+        return
+    specs = (
+        (
+            DEMO_PASSWORD_CREDENTIAL_NAME,
+            "password",
+            {"username": "demo", "password": stdlib_secrets.token_hex(16)},
+        ),
+        (
+            DEMO_TOKEN_CREDENTIAL_NAME,
+            "token",
+            {"token": stdlib_secrets.token_hex(16)},
+        ),
+    )
+    for name, credential_type, fields in specs:
+        existing = session.scalar(select(Credential.id).where(Credential.name == name))
+        if existing is not None:
+            continue
+        session.add(Credential(name=name, type=credential_type, ciphertext=encrypt_fields(fields)))
+    session.commit()
+
+
+def demo_credential_id(session: Session, name: str) -> int | None:
+    """Resolve one demo Credential id by name, or None when absent."""
+    return session.scalar(select(Credential.id).where(Credential.name == name))
 
 
 # --- adapter bindings ----------------------------------------------------------------

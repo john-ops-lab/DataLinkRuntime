@@ -3,7 +3,8 @@
 export const CREDENTIAL_TYPE_FIELDS: Record<string, readonly string[]> = {
   password: ["username", "password"],
   token: ["token"],
-  access_key: ["access_key", "secret_key"],
+  // M5.5.7：访问密钥字段统一为 access_key_id + access_key_secret。
+  access_key: ["access_key_id", "access_key_secret"],
   secret: ["value"],
 };
 

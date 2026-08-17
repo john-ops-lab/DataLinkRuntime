@@ -64,24 +64,30 @@ async function createCredential(
   secret: string,
   type: "token" | "password" = "token",
 ): Promise<void> {
-  fireEvent.click(screen.getByTestId("new-credential"));
-  fireEvent.change(screen.getByTestId("credential-name"), { target: { value: name } });
-  const typeDropdown = await openSelect("credential-type");
-  clickOption(typeDropdown, type === "token" ? "令牌（token）" : "密码（username + password）");
-  if (type === "token") {
-    fireEvent.change(screen.getByTestId("credential-field-token"), {
-      target: { value: secret },
-    });
-  } else {
-    fireEvent.change(screen.getByTestId("credential-field-username"), {
-      target: { value: "service-user" },
-    });
-    fireEvent.change(screen.getByTestId("credential-field-password"), {
-      target: { value: secret },
-    });
+  // M5.5.7：创建前有一次性的“保存后无法回读”明文提醒，测试中确认通过。
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  try {
+    fireEvent.click(screen.getByTestId("new-credential"));
+    fireEvent.change(screen.getByTestId("credential-name"), { target: { value: name } });
+    const typeDropdown = await openSelect("credential-type");
+    clickOption(typeDropdown, type === "token" ? "令牌（token）" : "密码（username + password）");
+    if (type === "token") {
+      fireEvent.change(screen.getByTestId("credential-field-token"), {
+        target: { value: secret },
+      });
+    } else {
+      fireEvent.change(screen.getByTestId("credential-field-username"), {
+        target: { value: "service-user" },
+      });
+      fireEvent.change(screen.getByTestId("credential-field-password"), {
+        target: { value: secret },
+      });
+    }
+    fireEvent.click(screen.getByTestId("submit-credential"));
+    await screen.findByText("凭据已创建");
+  } finally {
+    confirm.mockRestore();
   }
-  fireEvent.click(screen.getByTestId("submit-credential"));
-  await screen.findByText("凭据已创建");
 }
 
 afterEach(() => {
@@ -254,6 +260,71 @@ it("订阅在组件卸载后自动取消，不会影响其他面板", async () =
   });
   // 卸载后的订阅不会触发请求；重新挂载会按初始加载拉取最新元数据。
   expect(listCredentials.mock.calls.length).toBe(callsBefore);
+});
+
+it("凭据管理页展示四类凭据说明（访问密钥为 access_key_id + access_key_secret）", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  await screen.findByTestId("credential-type-guide");
+  expect(screen.getByTestId("credential-type-guide-password").textContent).toContain(
+    "username + password",
+  );
+  expect(screen.getByTestId("credential-type-guide-password").textContent).toContain("数据库");
+  expect(screen.getByTestId("credential-type-guide-token").textContent).toContain("token");
+  expect(screen.getByTestId("credential-type-guide-token").textContent).toContain("Webhook Token");
+  expect(screen.getByTestId("credential-type-guide-access_key").textContent).toContain(
+    "access_key_id + access_key_secret",
+  );
+  expect(screen.getByTestId("credential-type-guide-access_key").textContent).toContain("AWS");
+  expect(screen.getByTestId("credential-type-guide-secret").textContent).toContain("通用密钥");
+  expect(screen.getByTestId("credential-type-guide-secret").textContent).toContain(
+    "api_key、client_secret、signing_secret、private_key",
+  );
+  expect(
+    screen.getByText(
+      "不同凭据类型是常见敏感信息结构的模板，帮助你快速选择正确字段。无法确定时，优先选择最接近的类型；仍不匹配时可使用「通用密钥」。",
+    ),
+  ).toBeTruthy();
+});
+
+it("新建凭据提交前有一次性明文提醒，取消则不创建", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  const createCredentialApi = vi
+    .spyOn(api, "createCredential")
+    .mockResolvedValue(credentialMetadata(1, "never-saved", "token"));
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByTestId("new-credential"));
+  fireEvent.change(screen.getByTestId("credential-name"), { target: { value: "never-saved" } });
+  fireEvent.change(screen.getByTestId("credential-field-username"), {
+    target: { value: "service-user" },
+  });
+  fireEvent.change(screen.getByTestId("credential-field-password"), {
+    target: { value: "plain-secret-53" },
+  });
+  fireEvent.click(screen.getByTestId("submit-credential"));
+
+  // 提醒必须出现在创建之前，且包含不可回读的明确文案。
+  expect(confirm).toHaveBeenCalledWith(
+    expect.stringContaining(
+      "保存后密码、Token、密钥等敏感内容无法再次通过浏览器查看，请先妥善保存或复制。",
+    ),
+  );
+  expect(createCredentialApi).not.toHaveBeenCalled();
+  confirm.mockRestore();
+
+  // 确认后才会真正创建。
+  const confirmAgain = vi.spyOn(window, "confirm").mockReturnValue(true);
+  fireEvent.click(screen.getByTestId("submit-credential"));
+  await screen.findByText("凭据已创建");
+  expect(createCredentialApi).toHaveBeenCalledTimes(1);
+  confirmAgain.mockRestore();
 });
 
 it("M5.5.8：无默认源时展示明确回退提示，恢复默认调用对应接口", async () => {

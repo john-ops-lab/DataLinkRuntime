@@ -1202,6 +1202,7 @@ function AdapterConsole() {
                                     adapterId={selected.id}
                                     disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
                                     onError={setError}
+                                    onOpenSettings={() => setSystemSettingsOpen(true)}
                                   />
                                 ),
                               },

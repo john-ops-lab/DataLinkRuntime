@@ -1350,6 +1350,29 @@ body {
 
 /* --- M3.2 系统设置面板（凭据管理 / Python 包源） -------------------- */
 
+/* M5.5.7：四类凭据说明区。 */
+.credential-type-guide {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  background: var(--dlr-workspace-bg);
+}
+
+.credential-type-guide h5 {
+  margin-top: 0;
+}
+
+.credential-type-guide-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.credential-type-guide-list li {
+  font-size: 0.85rem;
+  line-height: 1.7;
+}
+
 .settings-panel {
   display: flex;
   flex-direction: column;

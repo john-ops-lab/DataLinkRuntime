@@ -35,8 +35,18 @@ from dlr.control.db import Base
 CREDENTIAL_FIELDS: dict[str, tuple[str, ...]] = {
     "password": ("username", "password"),
     "token": ("token",),
-    "access_key": ("access_key", "secret_key"),
+    "access_key": ("access_key_id", "access_key_secret"),
     "secret": ("value",),
+}
+
+# M5.5.7: field names of the ``access_key`` type were standardized to
+# ``access_key_id`` / ``access_key_secret``. The type name stays
+# ``access_key``; this map only carries legacy field spellings accepted on
+# read (credentials encrypted before the rename), so existing bindings keep
+# working without exposing any plaintext.
+LEGACY_ACCESS_KEY_FIELDS: dict[str, str] = {
+    "access_key": "access_key_id",
+    "secret_key": "access_key_secret",
 }
 
 

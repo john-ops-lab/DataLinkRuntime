@@ -35,6 +35,40 @@ function errorMessage(error: unknown): string {
 
 // --- 凭据管理 ---------------------------------------------------------------
 
+// M5.5.7：四类凭据的常驻用户说明，帮助用户在新建前选择正确的类型。
+// 与 credential-fields.ts / 后端 CREDENTIAL_FIELDS 保持一致。
+const CREDENTIAL_TYPE_GUIDE: Array<{
+  type: CredentialType;
+  fields: string;
+  scenarios: string;
+  hint: string;
+}> = [
+  {
+    type: "password",
+    fields: "username + password",
+    scenarios: "数据库、SSH、FTP/SFTP、HTTP Basic、设备账号登录",
+    hint: "目标系统需要「用户名 + 密码」时选择",
+  },
+  {
+    type: "token",
+    fields: "token",
+    scenarios: "API Token、Bearer Token、PAT、Webhook Token",
+    hint: "目标系统直接提供一串 Token 时选择",
+  },
+  {
+    type: "access_key",
+    fields: "access_key_id + access_key_secret",
+    scenarios: "阿里云、AWS、腾讯云、对象存储、云平台 API 请求签名",
+    hint: "目标系统提供 AK/SK、AccessKey ID/Secret 等成对密钥时选择",
+  },
+  {
+    type: "secret",
+    fields: "value（可存放 api_key、client_secret、signing_secret、private_key 等）",
+    scenarios: "第三方 API Key、OAuth Client Secret、签名密钥、加密密钥",
+    hint: "前三种不匹配时的兜底类型，避免与「访问密钥」混淆",
+  },
+];
+
 interface CredentialFormState {
   /** null = 新建；数字 = 更新该凭据的名称/值。 */
   editingId: number | null;
@@ -125,6 +159,16 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
       }
       fields[key] = value;
     }
+    // M5.5.7：创建前一次性明文提醒。保存后 Secret 真值无法再通过浏览器
+    // 查看，因此必须在最终提交前明确告知用户先妥善保存或复制。
+    if (form.editingId === null) {
+      const confirmed = window.confirm(
+        "保存后密码、Token、密钥等敏感内容无法再次通过浏览器查看，请先妥善保存或复制。\n\n确定创建该凭据吗？",
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
     setNotice(null);
     setSubmitting(true);
     try {
@@ -175,6 +219,20 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
 
   return (
     <div className="settings-panel" data-testid="credentials-panel">
+      <div className="credential-type-guide" data-testid="credential-type-guide">
+        <Typography.Title level={5}>凭据类型说明</Typography.Title>
+        <Typography.Paragraph type="secondary">
+          不同凭据类型是常见敏感信息结构的模板，帮助你快速选择正确字段。无法确定时，优先选择最接近的类型；仍不匹配时可使用「通用密钥」。
+        </Typography.Paragraph>
+        <ul className="credential-type-guide-list">
+          {CREDENTIAL_TYPE_GUIDE.map((item) => (
+            <li key={item.type} data-testid={`credential-type-guide-${item.type}`}>
+              <strong>{CREDENTIAL_TYPE_LABELS[item.type] ?? item.type}</strong>（字段：
+              {item.fields}）：常见场景为 {item.scenarios}。{item.hint}。
+            </li>
+          ))}
+        </ul>
+      </div>
       <Space className="settings-panel-toolbar">
         <Button type="primary" data-testid="new-credential" onClick={openCreate}>
           新建凭据

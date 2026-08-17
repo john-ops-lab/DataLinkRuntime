@@ -77,6 +77,42 @@ def adapter_responses(session: Session, adapters: list[Adapter]) -> list[Adapter
     return [_adapter_response(adapter, states[adapter.id]) for adapter in adapters]
 
 
+def _add_default_demo_binding(session: Session, adapter: Adapter) -> None:
+    """Bind the M5.5.7 demo Credential to a brand-new Adapter.
+
+    Task Adapters get ``PASSWORD`` -> ``demo-passwd.password`` and Webhook
+    Adapters ``TOKEN`` -> ``demo-token.token``, mirroring the Starter Code
+    default. The binding is only created when the demo Credential exists, so
+    deployments without a Secret Store or with the demo rows deleted simply
+    start without bindings. The lazy import keeps the secrets service (which
+    imports ``domain_error`` from here) cycle-free.
+    """
+    from dlr.control.services.secrets import (
+        DEMO_PASSWORD_CREDENTIAL_NAME,
+        DEMO_TOKEN_CREDENTIAL_NAME,
+        demo_credential_id,
+    )
+
+    demo = {
+        "task": (DEMO_PASSWORD_CREDENTIAL_NAME, "PASSWORD", "password"),
+        "webhook": (DEMO_TOKEN_CREDENTIAL_NAME, "TOKEN", "token"),
+    }.get(adapter.adapter_type)
+    if demo is None:
+        return
+    demo_name, env_key, field = demo
+    demo_id = demo_credential_id(session, demo_name)
+    if demo_id is None:
+        return
+    session.add(
+        AdapterCredentialBinding(
+            adapter_id=adapter.id,
+            env_key=env_key,
+            credential_id=demo_id,
+            field=field,
+        )
+    )
+
+
 def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
     if _active_name_conflict(session, data.name):
         raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
@@ -98,6 +134,7 @@ def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
                     credential_id=None,
                 )
             )
+        _add_default_demo_binding(session, adapter)
         session.commit()
     except IntegrityError:
         session.rollback()
