@@ -7,7 +7,9 @@ import zhCN from "antd/locale/zh_CN";
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
 import AdapterCatalog from "./components/AdapterCatalog";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
-import AiAssistantPanel from "./components/AiAssistantPanel";
+import AiAssistantPanel, {
+  type AiContextSnippetEntry,
+} from "./components/AiAssistantPanel";
 import CredentialBindingsEditor from "./components/CredentialBindingsEditor";
 import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
@@ -31,7 +33,7 @@ import type {
   AdapterLanguage,
   AdapterType,
   AiCandidate,
-  AiSelectionContext,
+  AiContextSnippet,
   Execution,
   VersionDetail,
   VersionSummary,
@@ -89,6 +91,7 @@ interface EditorSnapshot {
   requirements: string;
   runtimeConfigText: string;
 }
+
 
 function versionSnapshot(detail: VersionDetail): EditorSnapshot {
   return {
@@ -233,13 +236,14 @@ function AdapterConsole() {
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  // M5.5.5：Monaco 非空选区一键加入 AI 上下文。
-  // editorRef 只在点击“加入对话上下文”时读取本次实际选择；editorHasSelection
-  // 只驱动按钮可用性（空选区不提供无意义操作）；aiSelectedContext 是已确认的
-  // 快照，属于当前 Adapter / 当前会话，光标后续移动不会改变它。
+  // M5.5.13：已确认的多上下文片段（Monaco 代码选区 / 实时日志脱敏文本选区），
+  // 属于当前 Adapter / 当前会话，光标后续移动不会改变已加入的快照。
+  // editorRef 只在点击「加入对话上下文」时读取本次实际选择；editorHasSelection
+  // 只驱动按钮可用性（空选区不提供无意义操作）。
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [editorHasSelection, setEditorHasSelection] = useState(false);
-  const [aiSelectedContext, setAiSelectedContext] = useState<AiSelectionContext | null>(null);
+  const nextSnippetId = useRef(1);
+  const [aiContextSnippets, setAiContextSnippets] = useState<AiContextSnippetEntry[]>([]);
   const [diffView, setDiffView] = useState<DiffViewState | null>(null);
   const [taskRuntimeState, setTaskRuntimeState] = useState<TaskRuntimeState>(INITIAL_TASK_RUNTIME_STATE);
   const [webhookRuntimeState, setWebhookRuntimeState] = useState<WebhookRuntimeState>(INITIAL_WEBHOOK_RUNTIME_STATE);
@@ -571,9 +575,9 @@ function AdapterConsole() {
     setWaitingForWebhook(false);
     setTaskRuntimeState(INITIAL_TASK_RUNTIME_STATE);
     setWebhookRuntimeState(INITIAL_WEBHOOK_RUNTIME_STATE);
-    // M5.5.5：选区上下文只属于当前 Adapter/会话；切换时立即清理，
-    // 旧 Adapter 的选区不会串到新 Adapter。
-    setAiSelectedContext(null);
+    // M5.5.13：上下文片段只属于当前 Adapter/会话；切换时立即清理，
+    // 旧 Adapter 的片段不会串到新 Adapter。
+    setAiContextSnippets([]);
     setEditorHasSelection(false);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
@@ -874,8 +878,9 @@ function AdapterConsole() {
     });
   }
 
-  // M5.5.5：把 Monaco 当前选区作为精确快照加入 AI 上下文。文本与行号在点击
-  // 瞬间从编辑器读取，之后光标移动不会偷偷改变已加入的上下文。
+  // M5.5.13：把 Monaco 当前选区作为精确快照追加进 AI 上下文，并自动展开
+  // AI 面板。文本与行号在点击瞬间从编辑器读取，之后光标移动不会偷偷改变
+  // 已加入的上下文；新片段追加，不覆盖已有片段。
   function handleAddSelectedContext() {
     const editor = editorRef.current;
     if (editor === null || busy || !contentReady) {
@@ -890,11 +895,36 @@ function AdapterConsole() {
     if (text.trim() === "") {
       return;
     }
-    setAiSelectedContext({
+    appendContextSnippet({
+      source: "code",
       text,
       start_line: selection.startLineNumber,
       end_line: selection.endLineNumber,
     });
+  }
+
+  /** 追加一个上下文片段（代码或实时日志脱敏文本），并自动展开 AI 面板。 */
+  function appendContextSnippet(snippet: AiContextSnippet) {
+    setAiContextSnippets((current) => [
+      ...current,
+      { id: nextSnippetId.current++, ...snippet },
+    ]);
+    setAiPanelOpen(true);
+  }
+
+  /** 实时日志 Tab：选中浏览器可见的已脱敏日志文本后加入上下文。 */
+  function handleAddLogContext(snippet: AiContextSnippet) {
+    appendContextSnippet(snippet);
+  }
+
+  /** 删除某一片段（其余片段保持加入顺序）。 */
+  function handleRemoveContextSnippet(id: number) {
+    setAiContextSnippets((current) => current.filter((snippet) => snippet.id !== id));
+  }
+
+  /** 清空全部上下文片段。 */
+  function handleClearContextSnippets() {
+    setAiContextSnippets([]);
   }
 
   async function handleUpdateDetails() {
@@ -1048,12 +1078,13 @@ function AdapterConsole() {
           workingCopy={snapshot}
           contentReady={contentReady}
           busy={busy}
-          selectedContext={aiSelectedContext}
+          contextSnippets={aiContextSnippets}
           theme={editorTheme}
           onOpen={() => setAiPanelOpen(true)}
           onClose={() => setAiPanelOpen(false)}
           onApply={handleApplyAiCandidate}
-          onClearSelectedContext={() => setAiSelectedContext(null)}
+          onRemoveContextSnippet={handleRemoveContextSnippet}
+          onClearContextSnippets={handleClearContextSnippets}
         />
 
         <main className="workbench">
@@ -1274,6 +1305,7 @@ function AdapterConsole() {
                           waitingForWebhook &&
                           liveExecution === null
                         }
+                        onAddContext={handleAddLogContext}
                       />
                     ),
                   },

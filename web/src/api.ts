@@ -12,9 +12,9 @@ import type {
   AiAssistResponse,
   AiConnectionTestResult,
   AiConversationMessage,
+  AiContextSnippet,
   AiModelSetting,
   AiModelSettingDraft,
-  AiSelectionContext,
   Credential,
   CredentialBinding,
   CredentialType,
@@ -327,7 +327,8 @@ export const api = {
       };
       recent_messages: AiConversationMessage[];
       base_version_id?: number | null;
-      selected_context?: AiSelectionContext | null;
+      /** M5.5.13: ordered exact context snippets (code and/or masked log). */
+      context_snippets?: AiContextSnippet[];
     },
   ): Promise<AiAssistResponse> =>
     request(`/api/adapters/${adapterId}/ai/assist`, {

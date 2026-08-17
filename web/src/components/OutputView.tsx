@@ -40,6 +40,23 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
 /** M5.5.10 unified log helpers live in ../unified-log (shared with the
  * Workbench live-log Tab and the execution history detail). */
 
+/** M5.5.13: 1-based line number of a selection boundary inside an element's
+ * visible text (works with text-node ranges). */
+function lineNumberAtOffset(
+  element: HTMLElement,
+  range: Range,
+  boundary: "start" | "end",
+): number {
+  const probe = document.createRange();
+  probe.selectNodeContents(element);
+  if (boundary === "start") {
+    probe.setEnd(range.startContainer, range.startOffset);
+  } else {
+    probe.setEnd(range.endContainer, range.endOffset);
+  }
+  return probe.toString().split("\n").length;
+}
+
 /**
  * Terminal-style unified log pane (M5.5.10).
  *
@@ -48,18 +65,70 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
  * - clicking 暂停 or scrolling up stays at the current position and new
  *   content never yanks the view back to the bottom;
  * - clicking 继续跟随 resumes following the tail.
+ *
+ * M5.5.13: when onAddContext is provided, the toolbar offers 加入对话上下文
+ * which reads ONLY the current browser selection inside the pre (the already
+ * masked, browser-visible text). Raw logs are never read here.
  */
 export function LogView(props: {
   content: string;
   truncated: boolean;
   emptyHint?: string;
   testId?: string;
+  /** 实时日志选区 → AI 上下文（只使用浏览器可见的已脱敏文本）。 */
+  addContextLabel?: string;
+  onAddContext?: (text: string, startLine: number, endLine: number) => void;
 }) {
   const preRef = useRef<HTMLPreElement | null>(null);
   // The user owns the scroll position once they scroll up or pause; only
   // auto-follow while they stay near the bottom (M5.5.10 §三).
   const followTail = useRef(true);
   const [paused, setPaused] = useState(false);
+  const [hasSelection, setHasSelection] = useState(false);
+
+  // Track whether the current document selection lives inside this log pane,
+  // so 加入对话上下文 is only offered for real in-pane selections.
+  useEffect(() => {
+    function updateSelectionState() {
+      const element = preRef.current;
+      const selection = window.getSelection();
+      if (element === null || selection === null || selection.isCollapsed) {
+        setHasSelection(false);
+        return;
+      }
+      const anchor = selection.anchorNode;
+      const focus = selection.focusNode;
+      setHasSelection(
+        (anchor !== null && element.contains(anchor)) ||
+          (focus !== null && element.contains(focus)),
+      );
+    }
+    document.addEventListener("selectionchange", updateSelectionState);
+    updateSelectionState();
+    return () => {
+      document.removeEventListener("selectionchange", updateSelectionState);
+    };
+  }, []);
+
+  function handleAddContext() {
+    const element = preRef.current;
+    const selection = window.getSelection();
+    if (element === null || selection === null || selection.isCollapsed || selection.rangeCount === 0) {
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    if (!element.contains(range.commonAncestorContainer)) {
+      return;
+    }
+    const text = selection.toString();
+    if (text.trim() === "") {
+      return;
+    }
+    // 1-based line range of the selection inside the pane's visible text.
+    const startLine = lineNumberAtOffset(element, range, "start");
+    const endLine = lineNumberAtOffset(element, range, "end");
+    props.onAddContext?.(text, startLine, endLine);
+  }
 
   useEffect(() => {
     const element = preRef.current;
@@ -104,6 +173,17 @@ export function LogView(props: {
             }}
           >
             暂停跟随
+          </Button>
+        )}
+        {props.onAddContext !== undefined && (
+          <Button
+            size="small"
+            data-testid={props.testId ? `${props.testId}-add-context` : "log-add-context"}
+            disabled={!hasSelection}
+            title="把当前选中的日志文本加入 AI 对话上下文（仅使用浏览器可见的已脱敏文本）"
+            onClick={handleAddContext}
+          >
+            {props.addContextLabel ?? "加入对话上下文"}
           </Button>
         )}
         {props.truncated && (

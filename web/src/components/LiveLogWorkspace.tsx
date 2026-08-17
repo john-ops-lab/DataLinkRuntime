@@ -9,7 +9,7 @@
 import { Alert, Tabs, Tag } from "antd";
 
 import { isTerminal, statusColor, statusLabel } from "../status";
-import type { Execution } from "../types";
+import type { AiContextSnippet, Execution } from "../types";
 import { unifiedLogContent } from "../unified-log";
 import { LogView, OutputView } from "./OutputView";
 
@@ -19,11 +19,21 @@ interface Props {
   liveStderr: string;
   fallbackExhausted: boolean;
   waitingForWebhook: boolean;
+  /** M5.5.13: user selected masked browser-visible log text to add to the AI
+   * context. Only the already-rendered (masked) text ever leaves this view. */
+  onAddContext?: (snippet: AiContextSnippet) => void;
 }
 
 export default function LiveLogWorkspace(props: Props) {
   const execution = props.execution;
   const content = unifiedLogContent(props.liveStdout, props.liveStderr);
+
+  function handleAddContext(text: string, startLine: number, endLine: number) {
+    if (props.onAddContext === undefined) {
+      return;
+    }
+    props.onAddContext({ source: "log", text, start_line: startLine, end_line: endLine });
+  }
 
   return (
     <section className="live-log-workspace" data-testid="live-log-workspace" aria-label="实时日志">
@@ -78,6 +88,8 @@ export default function LiveLogWorkspace(props: Props) {
                     content={content}
                     truncated={execution.stdout_truncated || execution.stderr_truncated}
                     emptyHint="暂无日志"
+                    addContextLabel="加入对话上下文"
+                    onAddContext={handleAddContext}
                   />
                 ),
               },

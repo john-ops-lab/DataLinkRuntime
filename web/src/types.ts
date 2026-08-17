@@ -244,10 +244,12 @@ export interface AiConversationMessage {
   content: string;
 }
 
-/** M5.5.5: exact Monaco selection snapshot added to the AI context.
- * Captured at click time; later cursor movement never changes it.
- * Line numbers are 1-based Monaco line numbers. */
-export interface AiSelectionContext {
+/** M5.5.13: one exact browser-captured context snippet added to the AI
+ * context. ``source`` distinguishes a Monaco code selection from a selection
+ * of the browser-visible, already-masked live-log text. Captured at click
+ * time; later cursor movement never changes it. Line numbers are 1-based. */
+export interface AiContextSnippet {
+  source: "code" | "log";
   text: string;
   start_line: number;
   end_line: number;

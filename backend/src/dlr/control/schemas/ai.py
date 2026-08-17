@@ -173,31 +173,60 @@ class AiRecentMessage(_StrictSchema):
     content: str
 
 
-class AiSelectionContext(_StrictSchema):
-    """M5.5.5: exact Monaco selection snapshot added to the AI context.
+class AiContextSnippet(_StrictSchema):
+    """M5.5.13: one exact browser-captured context snippet added to the AI
+    context (Monaco code selection or a selection of the browser-visible,
+    already-masked live-log text).
 
-    The browser captures the text and the 1-based Monaco line range at the
-    moment the administrator clicks "加入对话上下文"; later cursor movement
-    must never change this snapshot. It is an explicit, administrator-provided
-    excerpt of the current Working Copy only, never a path to other files.
+    The browser captures the text and the 1-based line range at the moment
+    the administrator clicks "加入对话上下文"; later cursor movement must
+    never change this snapshot. ``source`` distinguishes a Working Copy code
+    selection from a masked live-log selection. Snippets are explicit,
+    administrator-provided excerpts only, never a path to other files.
     """
 
+    source: Literal["code", "log"]
     text: str
     start_line: int
     end_line: int
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def validate_source(cls, value: object) -> str:
+        # Validated here (instead of relying on Literal's default error) so
+        # an invalid source yields the stable code and never echoes the raw
+        # offending value in a FastAPI validation detail.
+        if value not in ("code", "log"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_request_invalid",
+                    "message": "AI request contains an invalid context snippet",
+                },
+            ) from None
+        return value
 
     @field_validator("text", mode="before")
     @classmethod
     def validate_text(cls, value: object) -> str:
         # Strip is used only to decide "blank"; the returned value keeps the
         # exact administrator-selected text, including leading indentation
-        # and trailing newlines, which are meaningful in code.
+        # and trailing newlines, which are meaningful in code. Log snippets
+        # are already-masked browser-visible text; raw logs never join.
         if not isinstance(value, str) or not value.strip():
             raise HTTPException(
                 status_code=422,
                 detail={
                     "code": "ai_request_invalid",
-                    "message": "AI request contains an invalid selection context",
+                    "message": "AI request contains an invalid context snippet",
+                },
+            ) from None
+        if len(value) > 50_000:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_request_invalid",
+                    "message": "AI request contains an invalid context snippet",
                 },
             ) from None
         return value
@@ -210,19 +239,19 @@ class AiSelectionContext(_StrictSchema):
                 status_code=422,
                 detail={
                     "code": "ai_request_invalid",
-                    "message": "AI request contains an invalid selection context",
+                    "message": "AI request contains an invalid context snippet",
                 },
             ) from None
         return value
 
     @model_validator(mode="after")
-    def validate_range(self) -> "AiSelectionContext":
+    def validate_range(self) -> "AiContextSnippet":
         if self.end_line < self.start_line:
             raise HTTPException(
                 status_code=422,
                 detail={
                     "code": "ai_request_invalid",
-                    "message": "AI request contains an invalid selection context",
+                    "message": "AI request contains an invalid context snippet",
                 },
             )
         return self
@@ -233,13 +262,30 @@ class AiAssistRequest(_StrictSchema):
     working_copy: AiWorkingCopy
     recent_messages: list[AiRecentMessage] = Field(default_factory=list, max_length=8)
     base_version_id: int | None = None
-    selected_context: AiSelectionContext | None = None
+    # M5.5.13: ordered multi-snippet context (code + code, code + log, ...).
+    # The browser sends the snippets in the order the administrator added
+    # them; they are never persisted and never leak across Adapter switches.
+    context_snippets: list[AiContextSnippet] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_snippet_count(self) -> "AiAssistRequest":
+        # Validated here (instead of a Field max_length) so an over-limit
+        # list yields the stable code and never echoes the raw payload.
+        if len(self.context_snippets) > 20:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_request_invalid",
+                    "message": "AI request contains an invalid context snippet",
+                },
+            )
+        return self
 
     @model_validator(mode="before")
     @classmethod
     def reject_unicode_surrogates(cls, value: object) -> object:
         # Runs before nested schemas so Working Copy strings, runtime_config
-        # keys/values, recent conversation content and the selected context
+        # keys/values, recent conversation content and the context snippets
         # share one safe boundary.
         return _reject_request_surrogates(value)
 

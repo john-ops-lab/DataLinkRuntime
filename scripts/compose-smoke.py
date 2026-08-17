@@ -781,9 +781,15 @@ working_copy = {
 ai_revision = save(ai_adapter["id"], working_copy["code"], runtime_config={"before_ai": True})
 before = request("GET", f"/adapters/{ai_adapter['id']}")
 before_versions = request("GET", f"/adapters/{ai_adapter['id']}/versions")
-# M5.5.5：选区上下文以结构化快照（精确文本 + 1-based 行范围）随请求发送。
+# M5.5.13：上下文以有序多片段快照（代码 + 已脱敏日志文本，各带 source 与
+# 1-based 行范围）随请求发送；日志片段只携带浏览器可见的 [REDACTED] 文本。
 selected_text = os.environ.get(
     "SMOKE_SELECTED_TEXT", "def handle(context, input):"
+)
+log_text = os.environ.get(
+    "SMOKE_LOG_TEXT",
+    "[2026-08-17 10:21:03] [ERROR] token [REDACTED] failed\n"
+    "[2026-08-17 10:21:08] retry ok\n",
 )
 assisted = request(
     "POST",
@@ -793,17 +799,27 @@ assisted = request(
         "working_copy": working_copy,
         "recent_messages": [],
         "base_version_id": ai_revision["id"],
-        "selected_context": {
-            "text": selected_text,
-            "start_line": 1,
-            "end_line": 1,
-        },
+        "context_snippets": [
+            {
+                "source": "code",
+                "text": selected_text,
+                "start_line": 1,
+                "end_line": 1,
+            },
+            {
+                "source": "log",
+                "text": log_text,
+                "start_line": 1,
+                "end_line": 2,
+            },
+        ],
     },
 )
 assert assisted["candidate"] is not None, assisted
-# 选区块真实到达 Provider（fake 在 message 中回显确认），且 Provider 的
-# hidden reasoning 哨兵永不返回浏览器。
+# 选区块与脱敏日志片段真实到达 Provider（fake 在 message 中回显确认），且
+# Provider 的 hidden reasoning 哨兵永不返回浏览器。
 assert "with selected context" in assisted["message"], assisted
+assert "with log snippet" in assisted["message"], assisted
 assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in json.dumps(assisted)
 after = request("GET", f"/adapters/{ai_adapter['id']}")
 after_versions = request("GET", f"/adapters/{ai_adapter['id']}/versions")
@@ -859,8 +875,8 @@ manual_assist = request(
 )
 assert manual_assist["candidate"] is not None, manual_assist
 assert manual_assist["model"] == "manual-smoke-model", manual_assist
-# 反向判别：不带选区的请求不得触发 fake 的 "with selected context" 回显，
-# 证明检测只对真实携带选区的请求生效。
+# 反向判别：不带上下文片段的请求不得触发 fake 的 "with selected context"
+# 回显，证明检测只对真实携带 context_snippets 的请求生效。
 assert "with selected context" not in manual_assist["message"], manual_assist
 
 print("M5.4.4 compose smoke passed")

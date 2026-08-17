@@ -86,11 +86,20 @@ POST /api/adapters/{adapter_id}/ai/assist
     {"role": "assistant", "content": "..."}
   ],
   "base_version_id": 12,
-  "selected_context": {
-    "text": "...管理员在 Monaco 中实际选中的精确文本...",
-    "start_line": 12,
-    "end_line": 28
-  }
+  "context_snippets": [
+    {
+      "source": "code",
+      "text": "...管理员在 Monaco 中实际选中的精确文本...",
+      "start_line": 12,
+      "end_line": 28
+    },
+    {
+      "source": "log",
+      "text": "...浏览器可见的已脱敏实时日志选中文本...",
+      "start_line": 1,
+      "end_line": 4
+    }
+  ]
 }
 ```
 
@@ -98,13 +107,20 @@ POST /api/adapters/{adapter_id}/ai/assist
 和 reasoning 不进入历史。`base_version_id` 可空；非空时只用于补充属于当前 Adapter 的
 基准 Version 元数据，不把客户端字段当作版本事实来源。
 
-`selected_context`（M5.5.5）可空；非空时是管理员点击「加入对话上下文」瞬间从 Monaco
-捕获的**精确选区快照**：`text` 必须是本次实际选中的非空文本，且**原样保留**（前导缩进与
-行尾换行不被裁剪，缩进敏感代码选区必须与所见一致），`start_line / end_line`
-是 1-based Monaco 行号且 `1 ≤ start_line ≤ end_line`。浏览器必须在点击瞬间冻结该快照，
-管理员随后移动光标不得改变已发送的选区；空选区、纯空白文本或非法行号返回 HTTP 422
-`ai_request_invalid` 且不回显非法原值。选区只作为结构化文本块进入本轮 Prompt，不包含
-文件路径、不触发任何文件读取，也不持久化。
+`context_snippets`（M5.5.13）可空，最多 20 条，按管理员加入顺序排列；每条是管理员点击
+「加入对话上下文」瞬间捕获的**精确快照**：
+
+- `source` 为 `"code"`（Monaco 代码选区）或 `"log"`（实时日志选区）；
+- `text` 必须是本次实际选中的非空文本，且**原样保留**（前导缩进与行尾换行不被裁剪）；
+  日志片段的 `text` 只能来自浏览器已经过脱敏处理的可见文本（如 `[REDACTED]`），
+  Control 不读取原始日志、不解密任何 Secret 真值；
+- `start_line / end_line` 是 1-based 行号且 `1 ≤ start_line ≤ end_line`；
+- 单条 `text` 上限 50,000 字符。
+
+浏览器必须在点击瞬间冻结快照，管理员随后移动光标不得改变已发送的片段；空选区、纯空白
+文本、非法行号、未知 `source` 或超出条数/长度上限返回 HTTP 422 `ai_request_invalid`
+且不回显非法原值。片段只作为结构化文本块进入本轮 Prompt，不包含文件路径、不触发任何
+文件读取，也不持久化；片段不跨 Adapter 串线，Adapter 切换时浏览器立即清空。
 
 Control 必须根据 `adapter_id` 自行读取并补充：
 
@@ -115,7 +131,7 @@ Control 必须根据 `adapter_id` 自行读取并补充：
 - `context.config / context.secrets.get(key) / context.logger` 与 JSON I/O 语义。
 
 Control 不读取或发送绑定 Credential 的真值。浏览器提交的 Working Copy 是本轮唯一权威
-代码快照，但无权借请求修改 Adapter.language 或任何生命周期字段；选区上下文同样只影响
+代码快照，但无权借请求修改 Adapter.language 或任何生命周期字段；上下文片段同样只影响
 AI 生成建议，不改变 Working Copy 基线、Candidate schema、stale 判定或 Diff / Apply 语义。
 
 响应：
@@ -211,19 +227,27 @@ Provider Adapter 只向上层交付 `final_text`：
 - 已归档 Adapter 只读，不允许 Apply。
 - Apply 只替换浏览器 snapshot 并进入既有 dirty 状态，不调用 Save / Test / Publish API。
 
-### 5.1 Monaco 选区上下文（M5.5.5）
+### 5.1 上下文片段（M5.5.13）
 
 - 编辑工具栏提供「加入对话上下文」按钮，仅在当前存在**非空选区**且 Working Copy
-  就绪时可用；空选区/纯空白文本不产生任何操作。
+  就绪时可用；空选区/纯空白文本不产生任何操作。点击后 AI 面板**自动展开**。
 - 点击瞬间从 Monaco 读取本次实际选择的精确文本与 1-based 行号作为快照；AI 面板展示
-  「已添加选中文本：第 12–28 行（语言）」标记（语言展示名来自稳定映射，不伪造文件路径）。
-- 标记可一键「清除」；再次选择并点击「加入对话上下文」即替换旧快照。
-- 选区上下文属于当前 Adapter / 当前会话：切换 Adapter 时标记与快照立即清理，
-  旧选区绝不串到新 Adapter；选区不持久化到数据库、localStorage 或普通日志。
-- 发送请求时使用已确认的快照；后续光标移动不会悄悄改变请求内容。
-- 选区上下文不引入 Secret 真值：Control 仍只向 Prompt 注入绑定 `env_key` 名称；
-  选区只影响 AI 生成建议，不改变 stale 判定、Candidate schema、Diff/Apply 与
-  Save/Test/Run 人工门禁。
+  「代码 第 12–28 行」标记（语言展示名来自稳定映射，不伪造文件路径）。
+- 实时日志 Tab 的「统一日志」同样提供「加入对话上下文」：选中可见日志文本（普通日志 /
+  stderr / 错误日志 / Traceback 均在同一统一视图）后点击，只读取浏览器已渲染的
+  **已脱敏可见文本**（如 `[REDACTED]`）与选中行的行号；不读取原始日志、不绕过脱敏。
+  面板展示「实时日志 10:21:03–10:21:08」时间范围标记（由选中首尾行的统一时间前缀推导，
+  无时间前缀时退回行号范围）。
+- 同一会话支持**多个上下文片段**（代码 + 代码、代码 + 日志、日志 + 日志），新片段追加
+  不覆盖旧片段；每片段独立展示来源与范围，可单独删除某一片段，也可一键清空全部。
+- 发送请求时按加入顺序携带全部片段快照；后续光标移动不会悄悄改变请求内容。
+- 片段属于当前 Adapter / 当前会话：切换 Adapter 时标记与快照立即清理，旧片段绝不串到
+  新 Adapter；片段不持久化到数据库、localStorage 或普通日志。
+- 片段不引入 Secret 真值：日志片段只携带浏览器可见脱敏文本，Control 仍只向 Prompt
+  注入绑定 `env_key` 名称；片段只影响 AI 生成建议，不改变 stale 判定、Candidate schema、
+  Diff/Apply 与 Save/Test/Run 人工门禁。
+- 引导文案不暴露「工作副本 / 唯一代码快照」等内部术语，明确引导使用「凭据绑定」：
+  绑定的 Secret 不进入 AI Prompt，但硬编码在代码中的敏感信息会随代码上下文发送。
 
 ### 5.2 平台阶段进度（M5.5.5）
 
@@ -278,9 +302,9 @@ Provider 原始错误不得把 Authorization、请求体、Prompt、Working Copy
 
 | 层 | 必须证明 |
 |---|---|
-| Backend | 设置 CRUD 不回显 Secret；token Credential/null 校验；五类 Provider fixture 归一；reasoning 隔离；default 不发 override；unsupported 稳定报错；models 归一；Prompt 只含 env_key；三语言 Contract；Candidate 严格校验；Assist 生命周期零副作用；选区精确文本与行号入 Prompt 且 Secret 真值不入 Prompt；非法选区（空白/行号越界/倒序/代理项）稳定 422 不回显；选区不落库不落日志 |
-| Web | Panel 收放；发送当前 Working Copy；三语言 Diff；Apply dirty 且零生命周期 API；缺绑定提示；stale 明确覆盖；Adapter 切换丢弃旧响应并清空会话；Archived 禁 Apply；Model 刷新 + 手输；reasoning 默认值；非空选区一键加入与行号标记；空选区/纯空白不触发；清除/替换；Adapter 切换隔离旧选区；发送使用快照不受光标影响；四阶段平台进度与失败收敛；旧进度不覆盖新会话 |
-| Compose smoke | 在隔离 Compose 网络启动临时本地 fake Provider，完成 settings→`/v1/models`→真实最小 `/v1/chat/completions`→Python/JavaScript/Java Assist，并逐个断言 Version / Execution 数量、published pointer、production state 不变；选区快照随请求到达 fake Provider，reasoning 哨兵与选区文本不出现在响应与服务日志；不访问公网 AI，fake 不进入正式 Compose |
+| Backend | 设置 CRUD 不回显 Secret；token Credential/null 校验；五类 Provider fixture 归一；reasoning 隔离；default 不发 override；unsupported 稳定报错；models 归一；Prompt 只含 env_key；三语言 Contract；Candidate 严格校验；Assist 生命周期零副作用；代码/日志多片段按序入 Prompt 且 Secret 真值不入 Prompt；日志片段仅承载脱敏可见文本；非法片段（空白/行号越界/倒序/未知 source/超条数/超长度/代理项）稳定 422 不回显；片段不落库不落日志 |
+| Web | Panel 收放；发送当前 Working Copy；三语言 Diff；Apply 成功后自动关 Diff 且零生命周期 API，失败/锁定/校验拒绝时保留 Diff；Apply dirty 且零生命周期 API；缺绑定提示；stale 明确覆盖；Adapter 切换丢弃旧响应并清空会话；Archived 禁 Apply；Model 刷新 + 手输；reasoning 默认值；非空选区一键加入并自动展开面板与行号标记；实时日志选区（已脱敏可见文本）加入并显示时间范围；多片段追加/单删/清空；Adapter 切换隔离旧片段；发送使用快照不受光标影响；悬浮入口可拖动且不误触点击、刷新恢复默认位置、不持久化坐标；四阶段平台进度与失败收敛；旧进度不覆盖新会话；顶部主蓝色与新引导文案（凭据绑定引导 + 硬编码敏感信息可能随代码发送的区分） |
+| Compose smoke | 在隔离 Compose 网络启动临时本地 fake Provider，完成 settings→`/v1/models`→真实最小 `/v1/chat/completions`→Python/JavaScript/Java Assist，并逐个断言 Version / Execution 数量、published pointer、production state 不变；代码 + 脱敏日志多片段快照随请求到达 fake Provider，reasoning 哨兵与片段文本不出现在响应与服务日志；不访问公网 AI，fake 不进入正式 Compose |
 
 标准门禁：backend ruff / format / mypy / pytest，web lint / typecheck / tests / build，以及
 `./scripts/compose-smoke.sh` 全绿。构建成功不能替代上述真实行为验证。
