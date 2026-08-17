@@ -21,7 +21,7 @@ def test_fresh_schema_has_active_only_name_uniqueness(test_engine: Engine) -> No
             )
         )
 
-    assert revision == "0012_m5_5_9_active_name_unique"
+    assert revision == "0013_m5_5_8_dep_source_defaults"
     assert index_definition is not None
     assert "UNIQUE" in index_definition
     assert "archived_at IS NULL" in index_definition
