@@ -20,8 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.execute(
-        "UPDATE adapter_credential_bindings "
-        "SET field = 'access_key_id' WHERE field = 'access_key'"
+        "UPDATE adapter_credential_bindings SET field = 'access_key_id' WHERE field = 'access_key'"
     )
     op.execute(
         "UPDATE adapter_credential_bindings "
@@ -31,8 +30,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
-        "UPDATE adapter_credential_bindings "
-        "SET field = 'access_key' WHERE field = 'access_key_id'"
+        "UPDATE adapter_credential_bindings SET field = 'access_key' WHERE field = 'access_key_id'"
     )
     op.execute(
         "UPDATE adapter_credential_bindings "
