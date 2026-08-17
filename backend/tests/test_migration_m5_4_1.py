@@ -43,7 +43,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0012_m5_5_7_access_key_fields"
+    assert revision == "0014_m5_5_7_access_key_fields"
     assert {
         "adapter_type",
         "run_mode",

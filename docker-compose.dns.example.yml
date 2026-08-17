@@ -1,25 +1,31 @@
-# 可选：容器 DNS 服务器覆盖示例（M5.5.3）。
+# 可选：容器 DNS 覆盖示例（M5.5.8）。
 #
-# 默认情况下本平台不使用任何机器特定的 DNS 硬编码：Compose 网络走 Docker
-# 内置 DNS（127.0.0.11），由 Docker 转发到宿主机的 resolv.conf 配置，fresh
-# deployment 无需了解内部细节即可启动。
+# 默认（docker-compose.yml 内建）：
+#   control / worker 的 DNS 列表为 [127.0.0.11, 1.1.1.1, 8.8.8.8]——
+#   第一项是 Docker 内置解析器（负责 postgres / control 等内部服务名），
+#   后两项是公共 DNS 回退（仅当宿主 DNS 无法解析公网域名时才被使用）。
 #
-# 仅在以下场景需要本覆盖：容器内无法解析外部域名（如企业网络 / VPN /
-# 防火墙拦截了宿主 DNS 转发），并且你确认用其他 DNS 服务器可以解析时使用。
+# 多数场景不需要本文件：直接在 .env 中设置即可：
+#   DLR_DNS_FALLBACK_1=10.0.0.53     # 企业 / VPN / 私有 DNS
+#   DLR_DNS_FALLBACK_2=              # 留空可只保留一个回退
+#   两个回退都留空 = 完全关闭公共 DNS 回退（回到纯 Docker 内置解析器）。
 #
-# 启用方式（不修改 docker-compose.yml）：
+# 若你想用本覆盖文件显式替换整个 DNS 列表（不修改 docker-compose.yml）：
 #   cp docker-compose.dns.example.yml docker-compose.dns.yml
+#   编辑下面的地址为你所在网络实际可用的 DNS（请勿照抄示例值）
 #   docker compose -f docker-compose.yml -f docker-compose.dns.yml up -d --build
 #
-# 把下面的占位地址替换为你所在网络实际可用的 DNS 服务器（请勿照抄示例值）。
-# 只对需要出站访问外部的服务（control / worker）覆盖；postgres 与 web 不需要。
+# !override 需要 Docker Compose v2.24+；列表项按顺序生效，127.0.0.11
+# （Docker 内置解析器）必须保持第一位，否则容器内无法解析内部服务名。
 services:
   control:
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    dns: !override
+      - 127.0.0.11
+      - 10.0.0.53
+      - 10.0.0.54
 
   worker:
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    dns: !override
+      - 127.0.0.11
+      - 10.0.0.53
+      - 10.0.0.54

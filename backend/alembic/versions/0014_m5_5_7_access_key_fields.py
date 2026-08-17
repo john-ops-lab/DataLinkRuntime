@@ -12,8 +12,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0012_m5_5_7_access_key_fields"
-down_revision: str | None = "0012_m5_5_9_active_name_unique"
+revision: str = "0014_m5_5_7_access_key_fields"
+down_revision: str | None = "0013_m5_5_8_dep_source_defaults"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

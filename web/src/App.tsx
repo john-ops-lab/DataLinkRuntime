@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
-import { Button, ConfigProvider, Input, message, Modal, Segmented, Select, Tabs } from "antd";
+import { Button, ConfigProvider, Input, message, Modal, Segmented, Select, Tabs, Typography } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -22,7 +22,7 @@ import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/Web
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
-import { DEPENDENCY_UI, TASK_STARTER_CODE, WEBHOOK_STARTER_CODE } from "./languages";
+import { DEPENDENCY_NOTE, DEPENDENCY_UI, TASK_STARTER_CODE, WEBHOOK_STARTER_CODE } from "./languages";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { isTerminal } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
@@ -1174,19 +1174,24 @@ function AdapterConsole() {
                                 key: "requirements",
                                 label: DEPENDENCY_UI[selected.language].label,
                                 children: (
-                                  <textarea
-                                    data-testid="requirements-input"
-                                    rows={4}
-                                    value={snapshot.requirements}
-                                    disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
-                                    placeholder={DEPENDENCY_UI[selected.language].placeholder}
-                                    onChange={(event) =>
-                                      setSnapshot((current) => ({
-                                        ...current,
-                                        requirements: event.target.value,
-                                      }))
-                                    }
-                                  />
+                                  <>
+                                    <textarea
+                                      data-testid="requirements-input"
+                                      rows={4}
+                                      value={snapshot.requirements}
+                                      disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
+                                      placeholder={DEPENDENCY_UI[selected.language].placeholder}
+                                      onChange={(event) =>
+                                        setSnapshot((current) => ({
+                                          ...current,
+                                          requirements: event.target.value,
+                                        }))
+                                      }
+                                    />
+                                    <Typography.Text type="secondary" data-testid="dependency-note">
+                                      {DEPENDENCY_NOTE}
+                                    </Typography.Text>
+                                  </>
                                 ),
                               },
                               {

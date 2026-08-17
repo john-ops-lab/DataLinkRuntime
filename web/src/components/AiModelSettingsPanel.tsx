@@ -287,10 +287,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   return (
     <div className="settings-panel ai-model-settings" data-testid="ai-model-settings-panel">
       <Alert
-        type="warning"
+        type="info"
         showIcon
-        message="外部模型数据边界"
-        description="当前工作副本与非敏感运行参数会发送到这里配置的模型服务。凭据真值不会返回浏览器；请勿在适配器代码中硬编码密钥。"
+        message="AI 使用说明"
+        description="使用 AI 功能时，当前 Adapter 的代码和普通配置会发送到你配置的模型服务，用于生成建议。密码、Token、密钥等敏感凭据不会发送给模型。请不要把密码或密钥直接写在 Adapter 代码中。"
         data-testid="ai-data-boundary-warning"
       />
 

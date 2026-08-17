@@ -7,8 +7,14 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 
 import { api } from "../api";
-import type { Credential, CredentialType } from "../types";
+import type { Credential, CredentialType, PackageSourceDefaults } from "../types";
 import SystemSettingsDrawer from "./SystemSettingsDrawer";
+
+const CANONICAL_DEFAULTS: PackageSourceDefaults = {
+  pypi: { kind: "pypi", name: "阿里云 PyPI 镜像", index_url: "https://mirrors.aliyun.com/pypi/simple/" },
+  npm: { kind: "npm", name: "npmmirror npm 镜像", index_url: "https://registry.npmmirror.com/" },
+  maven: { kind: "maven", name: "阿里云 Maven 公共仓库", index_url: "https://maven.aliyun.com/repository/public" },
+};
 
 function credentialMetadata(id: number, name: string, type: CredentialType): Credential {
   return {
@@ -91,6 +97,7 @@ afterEach(() => {
 it("跨 Tab 同步：新建/更新凭据后 AI 模型凭据选择器无需 F5 即可看到（Secret 真值不可见）", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
   vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
   const stored: Credential[] = [];
   const listCredentials = vi
     .spyOn(api, "listCredentials")
@@ -164,6 +171,7 @@ it("跨 Tab 同步：新建/更新凭据后 AI 模型凭据选择器无需 F5 �
 it("跨 Tab 同步：依赖源新建表单中的凭据选择器在凭据增删后同步", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
   vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
   vi.spyOn(api, "createPackageSource").mockResolvedValue({
     id: 1,
     name: "sources-sync",
@@ -234,6 +242,7 @@ it("跨 Tab 同步：依赖源新建表单中的凭据选择器在凭据增删�
 it("订阅在组件卸载后自动取消，不会影响其他面板", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
   vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
   const stored: Credential[] = [credentialMetadata(1, "pre-existing", "token")];
   const listCredentials = vi
     .spyOn(api, "listCredentials")
@@ -316,4 +325,70 @@ it("新建凭据提交前有一次性明文提醒，取消则不创建", async (
   await screen.findByText("凭据已创建");
   expect(createCredentialApi).toHaveBeenCalledTimes(1);
   confirmAgain.mockRestore();
+});
+
+it("M5.5.8：无默认源时展示明确回退提示，恢复默认调用对应接口", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  const restorePypi = vi
+    .spyOn(api, "restorePackageSourceDefault")
+    .mockResolvedValue({
+      id: 7,
+      name: "阿里云 PyPI 镜像",
+      kind: "pypi",
+      index_url: "https://mirrors.aliyun.com/pypi/simple/",
+      is_default: true,
+      credential_id: null,
+      credential_name: null,
+      created_at: "2026-08-17T00:00:00Z",
+      updated_at: "2026-08-17T00:00:00Z",
+    });
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  await screen.findByTestId("package-sources-panel");
+
+  // 三种语言都展示恢复默认入口与明确的清空回退提示。
+  for (const kind of ["pypi", "npm", "maven"] as const) {
+    expect(screen.getByTestId(`restore-default-${kind}`)).toBeTruthy();
+    expect(screen.getByTestId(`no-default-source-${kind}`).textContent).toContain(
+      "不会静默使用未配置的地址",
+    );
+  }
+  expect(screen.getByTestId("no-default-source-pypi").textContent).toContain("本地缓存");
+
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  fireEvent.click(screen.getByTestId("restore-default-pypi"));
+  await screen.findByText("PyPI 已恢复默认依赖源");
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(restorePypi).toHaveBeenCalledWith("pypi");
+  confirm.mockRestore();
+});
+
+it("M5.5.8：已有默认源时不显示该类型的回退提示", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([
+    {
+      id: 1,
+      name: "阿里云 PyPI 镜像",
+      kind: "pypi",
+      index_url: "https://mirrors.aliyun.com/pypi/simple/",
+      is_default: true,
+      credential_id: null,
+      credential_name: null,
+      created_at: "2026-08-17T00:00:00Z",
+      updated_at: "2026-08-17T00:00:00Z",
+    },
+  ]);
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  await screen.findByTestId("package-sources-panel");
+
+  expect(screen.queryByTestId("no-default-source-pypi")).toBeNull();
+  expect(screen.getByTestId("no-default-source-npm")).toBeTruthy();
 });

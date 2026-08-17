@@ -14,7 +14,7 @@ from dlr.common.config import settings
 
 MIGRATION_DATABASE = "dlr_test_migration_m5_5_7"
 LEGACY_REVISION = "0011_m5_4_3_webhook_final_model"
-FINAL_REVISION = "0012_m5_5_7_access_key_fields"
+FINAL_REVISION = "0014_m5_5_7_access_key_fields"
 
 
 def _base_url() -> URL:

@@ -20,7 +20,12 @@ import type { ColumnsType } from "antd/es/table";
 import { api } from "../api";
 import { CREDENTIAL_TYPE_FIELDS, CREDENTIAL_TYPE_LABELS, credentialFields } from "../credential-fields";
 import { notifyCredentialCatalogChanged, subscribeCredentialCatalog } from "../credential-catalog";
-import type { Credential, CredentialType, PackageSource } from "../types";
+import type {
+  Credential,
+  CredentialType,
+  PackageSource,
+  PackageSourceDefaults,
+} from "../types";
 import { userErrorMessage } from "../user-message";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
 
@@ -353,6 +358,12 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
 
 // --- Python 包源 -------------------------------------------------------------
 
+type PackageSourceKind = "pypi" | "npm" | "maven";
+
+function kindLabel(kind: PackageSourceKind): string {
+  return { pypi: "PyPI", npm: "npm", maven: "Maven" }[kind];
+}
+
 interface PackageSourceFormState {
   name: string;
   kind: "pypi" | "npm" | "maven";
@@ -373,11 +384,13 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   const { onError } = props;
   const [sources, setSources] = useState<PackageSource[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [defaults, setDefaults] = useState<PackageSourceDefaults | null>(null);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<PackageSourceFormState>(EMPTY_SOURCE_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
+  const [restoring, setRestoring] = useState<"pypi" | "npm" | "maven" | null>(null);
   const [testResults, setTestResults] = useState<Map<number, { ok: boolean; text: string }>>(new Map());
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -394,12 +407,14 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   const load = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     try {
-      const [sourceList, credentialList] = await Promise.all([
+      const [sourceList, credentialList, defaultsResult] = await Promise.all([
         api.listPackageSources(),
         api.listCredentials(),
+        api.getPackageSourceDefaults(),
       ]);
       setSources(sourceList);
       setCredentials(credentialList);
+      setDefaults(defaultsResult);
       setPanelError(null);
       return true;
     } catch (error) {
@@ -521,6 +536,42 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     }
   }
 
+  async function handleRestoreDefault(kind: "pypi" | "npm" | "maven") {
+    if (restoring !== null) {
+      return;
+    }
+    const canonical = defaults?.[kind];
+    if (canonical === undefined) {
+      fail("默认依赖源信息未加载，请刷新后重试");
+      return;
+    }
+    if (
+      !window.confirm(
+        `确定把 ${canonical.name}（${canonical.index_url}）恢复为 ${kindLabel(kind)} 的默认依赖源吗？` +
+          "已有源会被更新或设为默认；绑定的凭据保持不变。",
+      )
+    ) {
+      return;
+    }
+    setRestoring(kind);
+    setPanelError(null);
+    setNotice(null);
+    try {
+      await api.restorePackageSourceDefault(kind);
+      if (await load()) {
+        setNotice(`${kindLabel(kind)} 已恢复默认依赖源`);
+      } else {
+        setPanelError(`${kindLabel(kind)} 已恢复默认依赖源，但刷新列表失败；请手动刷新确认。`);
+      }
+    } catch (error) {
+      fail(errorMessage(error));
+    } finally {
+      setRestoring(null);
+    }
+  }
+
+  const kinds: ("pypi" | "npm" | "maven")[] = ["pypi", "npm", "maven"];
+
   const columns: ColumnsType<PackageSource> = [
     {
       title: "类型",
@@ -632,6 +683,47 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       <Typography.Text type="secondary">
         每种类型最多一个默认源；运行节点会先尝试本地缓存，再使用对应语言的默认依赖源。
       </Typography.Text>
+
+      <div className="settings-package-source-defaults" data-testid="package-source-defaults">
+        {defaults !== null && (
+          <Space wrap>
+            {kinds.map((kind) => {
+              const canonical = defaults[kind];
+              return (
+                <Button
+                  key={kind}
+                  size="small"
+                  data-testid={`restore-default-${kind}`}
+                  loading={restoring === kind}
+                  disabled={restoring !== null}
+                  onClick={() => void handleRestoreDefault(kind)}
+                  title={`恢复为平台默认：${canonical.index_url}`}
+                >
+                  恢复默认 {kindLabel(kind)}
+                </Button>
+              );
+            })}
+          </Space>
+        )}
+        {kinds.map((kind) => {
+          const hasDefault = sources.some((source) => source.kind === kind && source.is_default);
+          if (hasDefault) {
+            return null;
+          }
+          return (
+            <Typography.Text
+              key={kind}
+              type="warning"
+              data-testid={`no-default-source-${kind}`}
+              className="settings-package-source-fallback"
+            >
+              {kindLabel(kind)} 未配置默认依赖源：Worker 将只使用本地缓存，缓存不足时安装会明确失败，
+              不会静默使用未配置的地址；可点击上方「恢复默认 {kindLabel(kind)}」使用平台默认镜像，
+              或新建并设为默认。
+            </Typography.Text>
+          );
+        })}
+      </div>
       {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
 

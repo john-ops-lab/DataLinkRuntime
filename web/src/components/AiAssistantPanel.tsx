@@ -460,7 +460,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       >
         {messages.length === 0 ? (
           <p className="ai-conversation-empty">
-            描述你希望解释或修改的内容。每次请求都以当前工作副本为唯一代码快照。
+            描述你希望解释或修改的内容。每次请求都基于当前编辑器中的代码与配置，不包含任何凭据。
           </p>
         ) : (
           messages.map((message) => {

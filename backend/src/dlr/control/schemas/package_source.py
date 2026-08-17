@@ -80,3 +80,19 @@ class ReachabilityResponse(BaseModel):
     ok: bool
     status_code: int | None = None
     error: str | None = None
+
+
+class DefaultPackageSourceInfo(BaseModel):
+    """Canonical fresh-deployment default for one dependency kind."""
+
+    kind: str
+    name: str
+    index_url: str
+
+
+class PackageSourceDefaultsResponse(BaseModel):
+    """Canonical defaults for all three dependency kinds (M5.5.8)."""
+
+    pypi: DefaultPackageSourceInfo
+    npm: DefaultPackageSourceInfo
+    maven: DefaultPackageSourceInfo

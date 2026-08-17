@@ -21,6 +21,7 @@ import type {
   Execution,
   ExecutionHistoryPage,
   PackageSource,
+  PackageSourceDefaults,
   ReachabilityResult,
   VersionDetail,
   VersionSummary,
@@ -287,6 +288,14 @@ export const api = {
   /** Control-side reachability probe against the saved source's index URL. */
   testPackageSource: (sourceId: number): Promise<ReachabilityResult> =>
     request(`/api/package-sources/${sourceId}/test`, { method: "POST" }),
+
+  /** Canonical fresh-deployment defaults for every dependency kind (M5.5.8). */
+  getPackageSourceDefaults: (): Promise<PackageSourceDefaults> =>
+    request("/api/package-sources/defaults"),
+
+  /** Reset one kind back to its canonical default source (restore default). */
+  restorePackageSourceDefault: (kind: "pypi" | "npm" | "maven"): Promise<PackageSource> =>
+    request(`/api/package-sources/defaults/${kind}`, { method: "POST" }),
 
   // --- M4: AI Editor ---------------------------------------------------------
 

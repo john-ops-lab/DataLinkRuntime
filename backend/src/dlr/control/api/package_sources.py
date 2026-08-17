@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from dlr.control import db
 from dlr.control.schemas.package_source import (
     PackageSourceCreate,
+    PackageSourceDefaultsResponse,
     PackageSourceResponse,
     PackageSourceUpdate,
     ReachabilityResponse,
@@ -24,6 +25,24 @@ DbSession = Annotated[Session, Depends(db.get_session)]
 def list_package_sources(session: DbSession) -> list[PackageSourceResponse]:
     sources = package_source_service.list_package_sources(session)
     return [package_source_service.package_source_response(session, source) for source in sources]
+
+
+@router.get("/api/package-sources/defaults", response_model=PackageSourceDefaultsResponse)
+def get_package_source_defaults() -> PackageSourceDefaultsResponse:
+    """Canonical fresh-deployment defaults for every dependency kind."""
+    return package_source_service.list_default_sources()
+
+
+@router.post(
+    "/api/package-sources/defaults/{kind}",
+    status_code=200,
+    response_model=PackageSourceResponse,
+)
+def restore_package_source_default(kind: str, session: DbSession) -> PackageSourceResponse:
+    """Reset one kind to its canonical default source (restore default)."""
+    return package_source_service.package_source_response(
+        session, package_source_service.restore_default_source(session, kind)
+    )
 
 
 @router.post("/api/package-sources", status_code=201, response_model=PackageSourceResponse)
