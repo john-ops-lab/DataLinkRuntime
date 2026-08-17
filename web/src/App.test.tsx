@@ -3206,9 +3206,10 @@ it("manages credentials and package sources from the system settings drawer", as
   fireEvent.click(screen.getByTestId("test-package-source"));
   await screen.findByTestId("package-source-test-result");
   expect(screen.getByTestId("package-source-test-result").textContent).toBe(
-    "不可达：Connection refused",
+    "不可达",
   );
   expect(screen.getByTestId("package-source-test-result").getAttribute("role")).toBe("alert");
+  expect(document.body.textContent).not.toContain("Connection refused");
 });
 
 // --- M4 AI Editor -----------------------------------------------------------
@@ -5354,9 +5355,8 @@ it("shows the M5.5.13 credential guidance copy and the primary-blue assistant he
   expect(empty.textContent).toContain("避免敏感凭据随代码发送给 AI");
   expect(empty.textContent).not.toContain("工作副本");
   expect(empty.textContent).not.toContain("唯一代码快照");
-  const guidance = screen.getByTestId("ai-credential-guidance");
-  expect(guidance.textContent).toContain("Secret 不会发送给 AI");
-  expect(guidance.textContent).toContain("硬编码在代码中的敏感信息会随代码上下文发送");
+  // UX-FINAL-002：底部重复提示已移除；上方空状态仍保留安全引导。
+  expect(screen.queryByTestId("ai-credential-guidance")).toBeNull();
   // 面板上下文行不使用内部术语“工作副本”。
   expect(screen.getByTestId("ai-current-context").textContent).not.toContain("工作副本");
   // 顶部使用主操作蓝色（CSS 断言）。

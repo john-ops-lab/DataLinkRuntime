@@ -1066,15 +1066,6 @@ body {
   font-size: 0.75rem;
 }
 
-/* M5.5.13：凭据安全引导（绑定 Secret 不进 Prompt / 硬编码敏感信息会随代码发送）。 */
-.ai-composer-hint {
-  align-self: stretch;
-  margin: 0;
-  color: var(--dlr-text-weak);
-  font-size: 0.7rem;
-  line-height: 1.5;
-}
-
 /* M3.2：次级配置区 textarea 关闭 resize，避免破坏工作台布局。 */
 .version-fields textarea {
   resize: none;
@@ -1626,6 +1617,38 @@ body {
 .settings-package-source-fallback {
   display: block;
   font-size: 0.8rem;
+}
+
+.package-source-table .ant-table-cell {
+  overflow: hidden;
+}
+
+.package-source-cell {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.package-source-test-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.package-source-test-status {
+  display: inline-block;
+  width: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.package-source-test-status.is-loading {
+  color: var(--dlr-text-weak);
 }
 
 .ai-model-settings {

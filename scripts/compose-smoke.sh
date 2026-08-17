@@ -21,6 +21,7 @@ export SMOKE_SELECTED_TEXT=${SMOKE_SELECTED_TEXT:-smoke-selected-sentinel-$$}
 export SMOKE_LOG_TEXT=${SMOKE_LOG_TEXT:-smoke-log-sentinel-$$}
 AI_FAKE_CONTAINER_ID=""
 AI_FAKE_DISABLED_CONTAINER_ID=""
+AO_DOCKER_LABEL="ao.session=${AO_SESSION_ID:-compose-smoke}"
 
 cleanup() {
   if [ -n "$AI_FAKE_CONTAINER_ID" ]; then
@@ -134,6 +135,7 @@ CONTROL_IMAGE=$(docker inspect --format '{{.Config.Image}}' "$CONTROL_CONTAINER_
 CONTROL_NETWORK=$(docker inspect --format '{{range $network, $_ := .NetworkSettings.Networks}}{{println $network}}{{end}}' \
   "$CONTROL_CONTAINER_ID" | head -n 1)
 AI_FAKE_CONTAINER_ID=$(docker run -d \
+  --label "$AO_DOCKER_LABEL" \
   --name "$AI_FAKE_CONTAINER_NAME" \
   --network "$CONTROL_NETWORK" \
   -e SMOKE_SELECTED_TEXT \
@@ -158,6 +160,7 @@ echo "==> starting second fake Provider without /v1/models (M5.5.2 independence 
 AI_FAKE_DISABLED_CONTAINER_NAME="${COMPOSE_PROJECT_NAME}-ai-fake-disabled"
 export AI_FAKE_DISABLED_BASE_URL="http://${AI_FAKE_DISABLED_CONTAINER_NAME}:18080"
 AI_FAKE_DISABLED_CONTAINER_ID=$(docker run -d \
+  --label "$AO_DOCKER_LABEL" \
   --name "$AI_FAKE_DISABLED_CONTAINER_NAME" \
   --network "$CONTROL_NETWORK" \
   -e SMOKE_DISABLE_MODELS=1 \

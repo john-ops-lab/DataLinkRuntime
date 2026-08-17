@@ -6,11 +6,13 @@ separation and model-list normalization. It is not a plugin framework.
 """
 
 import json
+import re
 import socket
 from dataclasses import dataclass
 from http import client as http_client
 from typing import Literal, cast
 from urllib import error as url_error
+from urllib import parse as url_parse
 from urllib import request as url_request
 
 from dlr.common.config import settings
@@ -123,12 +125,27 @@ def validate_reasoning(
         raise AiProviderError("ai_reasoning_unsupported")
 
 
+def normalize_base_url(base_url: str) -> str:
+    """Return one safe OpenAI-compatible root without a trailing ``/v1``.
+
+    Providers conventionally expose the same endpoints below ``/v1`` while
+    users commonly paste either the service root or the versioned root. URL
+    parsing keeps the scheme delimiter intact while collapsing repeated path
+    slashes and repeated trailing ``v1`` segments.
+    """
+    parts = url_parse.urlsplit(base_url.strip())
+    path = re.sub(r"/{2,}", "/", parts.path).rstrip("/")
+    path_parts = [part for part in path.split("/") if part]
+    while path_parts and path_parts[-1].lower() == "v1":
+        path_parts.pop()
+    normalized_path = "/" + "/".join(path_parts) if path_parts else ""
+    return url_parse.urlunsplit((parts.scheme, parts.netloc, normalized_path, "", ""))
+
+
 def _endpoint(base_url: str, path: str) -> str:
-    """Append an OpenAI path while accepting base URLs with or without /v1."""
-    root = base_url.rstrip("/")
-    if root.endswith("/v1") and path.startswith("/v1/"):
-        return root + path[len("/v1") :]
-    return root + path
+    """Append one normalized OpenAI endpoint path to a provider root."""
+    root = normalize_base_url(base_url)
+    return f"{root}/{path.lstrip('/')}"
 
 
 def _headers(api_key: str | None) -> dict[str, str]:

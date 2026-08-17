@@ -737,9 +737,6 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
             {panelError}
           </p>
         )}
-        <p className="ai-composer-hint" data-testid="ai-credential-guidance">
-          凭据绑定中的 Secret 不会发送给 AI；硬编码在代码中的敏感信息会随代码上下文发送。
-        </p>
         <textarea
           ref={messageInputRef}
           rows={4}

@@ -180,22 +180,26 @@ assert "127.0.0.11" in resolv, f"embedded resolver missing from resolv.conf:\n{r
 for host, port in (("postgres", 5432), ("control", 8000)):
     socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
 
-# M5.5.8: a fresh deployment starts with the three canonical default
-# dependency sources; deleting one and restoring lands on the canonical URL.
+# M5.5.15: a fresh deployment starts with domestic + official sources for each
+# kind, with the domestic source selected; deleting one and restoring is safe.
 defaults = request("GET", "/package-sources/defaults")
 assert defaults["pypi"]["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
 assert defaults["npm"]["index_url"] == "https://registry.npmmirror.com/"
 assert defaults["maven"]["index_url"] == "https://maven.aliyun.com/repository/public"
 sources = request("GET", "/package-sources")
-assert len(sources) == 3, sources
-assert all(source["is_default"] for source in sources), sources
-removed = sources[0]
+assert len(sources) == 6, sources
+for kind in ("pypi", "npm", "maven"):
+    kind_sources = [source for source in sources if source["kind"] == kind]
+    assert len(kind_sources) == 2, kind_sources
+    assert sum(source["is_default"] for source in kind_sources) == 1, kind_sources
+    assert next(source for source in kind_sources if source["is_default"])["index_url"] == defaults[kind]["index_url"]
+removed = next(source for source in sources if source["kind"] == "pypi" and source["is_default"])
 request("DELETE", f"/package-sources/{removed['id']}", expected=204)
-assert len(request("GET", "/package-sources")) == 2
+assert len(request("GET", "/package-sources")) == 5
 restored = request("POST", f"/package-sources/defaults/{removed['kind']}")
 assert restored["index_url"] == defaults[removed["kind"]]["index_url"], restored
 assert restored["is_default"] is True, restored
-assert len(request("GET", "/package-sources")) == 3
+assert len(request("GET", "/package-sources")) == 6
 
 # A stored-online Worker whose heartbeat expired is unavailable without its
 # stored status being rewritten.

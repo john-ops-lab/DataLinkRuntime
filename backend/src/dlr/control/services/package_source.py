@@ -15,6 +15,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.control.models.platform import Credential, PackageSource
+from dlr.control.package_source_defaults import (
+    DEFAULT_PACKAGE_SOURCES,
+    PackageSourceDefault,
+    defaults_for_kind,
+)
 from dlr.control.schemas.package_source import (
     DefaultPackageSourceInfo,
     PackageSourceCreate,
@@ -28,17 +33,17 @@ from dlr.control.services.adapter import domain_error
 # Control-side reachability probes must stay fast and bounded.
 REACHABILITY_TIMEOUT_SECONDS = 5.0
 
-# Canonical fresh-deployment defaults (M5.5.8). Seeded only when the
-# package_sources table is empty so existing deployments keep their sources.
+# The domestic defaults remain the API's canonical single-value summary. The
+# full domestic + official set is shared with migrations through the module
+# above; no frontend or test copy is authoritative.
+DOMESTIC_DEFAULTS: dict[str, PackageSourceDefault] = {
+    source.kind: source for source in DEFAULT_PACKAGE_SOURCES if source.is_domestic
+}
 DEFAULT_SOURCE_NAME: dict[str, str] = {
-    "pypi": "阿里云 PyPI 镜像",
-    "npm": "npmmirror npm 镜像",
-    "maven": "阿里云 Maven 公共仓库",
+    kind: source.name for kind, source in DOMESTIC_DEFAULTS.items()
 }
 DEFAULT_SOURCE_URL: dict[str, str] = {
-    "pypi": "https://mirrors.aliyun.com/pypi/simple/",
-    "npm": "https://registry.npmmirror.com/",
-    "maven": "https://maven.aliyun.com/repository/public",
+    kind: source.index_url for kind, source in DOMESTIC_DEFAULTS.items()
 }
 
 
@@ -61,45 +66,77 @@ def list_default_sources() -> PackageSourceDefaultsResponse:
     )
 
 
-def restore_default_source(session: Session, kind: str) -> PackageSource:
-    """Reset one kind to its canonical default source.
+def _available_default_name(session: Session, preferred_name: str) -> str:
+    """Choose a deterministic unused name without touching user-owned rows."""
+    name = preferred_name
+    suffix = 1
+    while session.scalar(select(PackageSource.id).where(PackageSource.name == name)) is not None:
+        suffix += 1
+        name = f"{preferred_name}（平台默认 {suffix}）"
+    return name
 
-    When a default source of that kind already exists its index URL is
-    restored to the canonical value (name and bound credential are kept);
-    otherwise a new default source is created. Deleting every source and
-    restoring later always lands on the canonical URL, never an unknown one.
+
+def _canonical_source(session: Session, default: PackageSourceDefault) -> PackageSource | None:
+    return session.scalar(
+        select(PackageSource).where(
+            PackageSource.kind == default.kind,
+            PackageSource.index_url == default.index_url,
+        )
+    )
+
+
+def _ensure_default_sources(session: Session, kind: str) -> tuple[PackageSource, ...]:
+    """Ensure both system rows exist while preserving every existing field."""
+    defaults = defaults_for_kind(kind)
+    if len(defaults) != 2:
+        raise domain_error(
+            422, "package_source_kind_invalid", f"Unknown package source kind: {kind}"
+        )
+
+    has_existing_default = (
+        session.scalar(
+            select(PackageSource.id).where(
+                PackageSource.kind == kind, PackageSource.is_default.is_(True)
+            )
+        )
+        is not None
+    )
+    sources: list[PackageSource] = []
+    for default in defaults:
+        source = _canonical_source(session, default)
+        if source is None:
+            source = PackageSource(
+                name=_available_default_name(session, default.name),
+                kind=default.kind,
+                index_url=default.index_url,
+                # A pre-existing user default wins during migration-like
+                # initialization; restore_default_source explicitly selects
+                # the domestic row below.
+                is_default=default.is_domestic and not has_existing_default,
+                credential_id=None,
+            )
+            session.add(source)
+            session.flush()
+        sources.append(source)
+    return tuple(sources)
+
+
+def restore_default_source(session: Session, kind: str) -> PackageSource:
+    """Restore both system defaults and select the domestic source.
+
+    Existing custom rows are never renamed, retargeted or deleted. If an
+    administrator used a system default name for a custom URL, the restored
+    canonical row receives a deterministic suffix instead of overwriting that
+    row. Only the per-kind selected-default flag changes, as requested by the
+    explicit restore action.
     """
-    canonical = default_source_info(kind)
-    default = session.scalar(
-        select(PackageSource).where(PackageSource.kind == kind, PackageSource.is_default.is_(True))
-    )
-    if default is not None:
-        if default.index_url != canonical.index_url:
-            default.index_url = canonical.index_url
-            session.commit()
-            session.refresh(default)
-        return default
-    # Reuse an existing non-default source of the same kind when present so
-    # restoring never duplicates names the admin may already have created.
-    existing = session.scalar(select(PackageSource).where(PackageSource.kind == kind))
-    if existing is not None:
-        existing.index_url = canonical.index_url
-        _clear_other_defaults(session, kind, keep_id=existing.id)
-        existing.is_default = True
-        session.commit()
-        session.refresh(existing)
-        return existing
-    source = PackageSource(
-        name=canonical.name,
-        kind=kind,
-        index_url=canonical.index_url,
-        is_default=True,
-        credential_id=None,
-    )
-    session.add(source)
+    sources = _ensure_default_sources(session, kind)
+    domestic = next(source for source in sources if source.index_url == DEFAULT_SOURCE_URL[kind])
+    _clear_other_defaults(session, kind, keep_id=domestic.id)
+    domestic.is_default = True
     session.commit()
-    session.refresh(source)
-    return source
+    session.refresh(domestic)
+    return domestic
 
 
 def _get_credential(session: Session, credential_id: int) -> Credential:
