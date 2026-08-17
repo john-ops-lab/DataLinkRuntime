@@ -17,6 +17,7 @@ from dlr.control.api import (
     events,
     executions,
     health,
+    locale,
     package_sources,
     schedules,
     webhooks,
@@ -76,6 +77,8 @@ def create_app() -> FastAPI:
     """Create the Control Node FastAPI application."""
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
     app.include_router(health.router)
+    app.include_router(locale.public_router)
+    app.include_router(locale.router)
     app.include_router(auth.router)
     app.include_router(adapters.router)
     app.include_router(ai.router)

@@ -3,6 +3,11 @@
 export type AdapterLanguage = "python" | "javascript" | "java";
 export type AdapterType = "task" | "webhook";
 export type TaskRunMode = "manual" | "schedule";
+export type SystemLocale = "zh-CN" | "en";
+
+export interface SystemLocaleResponse {
+  locale: SystemLocale;
+}
 
 export interface Adapter {
   id: number;

@@ -13,9 +13,11 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "antd": "^5.29.3",
+    "i18next": "^25.6.2",
     "monaco-editor": "^0.56.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-i18next": "^15.7.3"
   },
   "devDependencies": {
     "@testing-library/react": "^16.0.0",

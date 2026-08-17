@@ -1,4 +1,5 @@
 import { ApiError } from "./api";
+import type { SystemLocale } from "./types";
 
 const HAS_CHINESE = /[\u3400-\u9fff]/;
 
@@ -7,11 +8,24 @@ const HAS_CHINESE = /[\u3400-\u9fff]/;
  * domain code as secondary troubleshooting information. Raw upstream English
  * messages are deliberately not promoted into the Console UI.
  */
-export function userErrorMessage(error: unknown, fallback = "请求失败"): string {
+export function userErrorMessage(
+  error: unknown,
+  fallback = "请求失败",
+  locale: SystemLocale = "zh-CN",
+): string {
   if (!(error instanceof ApiError)) {
     return fallback;
   }
 
-  const primary = HAS_CHINESE.test(error.message) ? error.message : fallback;
-  return `${primary}（错误码：${error.code}）`;
+  const primary =
+    locale === "en"
+      ? HAS_CHINESE.test(error.message)
+        ? fallback
+        : error.message
+      : HAS_CHINESE.test(error.message)
+        ? error.message
+        : fallback;
+  return locale === "en"
+    ? `${primary} (Error code: ${error.code})`
+    : `${primary}（错误码：${error.code}）`;
 }

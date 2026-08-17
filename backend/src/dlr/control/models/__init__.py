@@ -9,6 +9,7 @@ from dlr.control.models.platform import (
     PackageSource,
 )
 from dlr.control.models.schedule import AdapterSchedule
+from dlr.control.models.system import SystemSetting
 from dlr.control.models.webhook import AdapterWebhook
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "Credential",
     "Execution",
     "PackageSource",
+    "SystemSetting",
     "Worker",
 ]

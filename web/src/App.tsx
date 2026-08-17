@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { Button, ConfigProvider, Input, message, Modal, Segmented, Select, Tabs, Typography } from "antd";
+import enUS from "antd/locale/en_US";
 import zhCN from "antd/locale/zh_CN";
+import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
 import AdapterCatalog from "./components/AdapterCatalog";
@@ -24,6 +26,7 @@ import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/Web
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
+import { applySystemLocale, isSystemLocale, resolveSystemLocale } from "./i18n";
 import { DEPENDENCY_NOTE, DEPENDENCY_UI, TASK_STARTER_CODE, WEBHOOK_STARTER_CODE } from "./languages";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { isTerminal } from "./status";
@@ -111,6 +114,11 @@ export const TOKEN_STORAGE_KEY = "dlr-admin-token";
 type EditorThemePreference = "dark" | "light" | "system";
 
 export const EDITOR_THEME_STORAGE_KEY = "dlr-editor-theme";
+
+export const ANT_DESIGN_LOCALES = {
+  "zh-CN": zhCN,
+  en: enUS,
+} as const;
 
 function readEditorThemePreference(): EditorThemePreference {
   const stored = window.localStorage.getItem(EDITOR_THEME_STORAGE_KEY);
@@ -1425,6 +1433,7 @@ function AdapterConsole() {
 // the M3.1 login page keeps the M2 auth contract unchanged.
 
 export default function App() {
+  const { i18n, t } = useTranslation("common");
   const [authed, setAuthed] = useState<boolean>(() => {
     const stored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
     if (stored !== null) {
@@ -1433,13 +1442,29 @@ export default function App() {
     }
     return false;
   });
-  const [notice, setNotice] = useState<string | null>(null);
+  const [noticeKey, setNoticeKey] = useState<"auth.sessionRejected" | null>(null);
+
+  const refreshSystemLocale = useCallback(async () => {
+    try {
+      const response = await api.getSystemLocale();
+      if (isSystemLocale(response.locale)) {
+        await applySystemLocale(response.locale);
+      }
+    } catch {
+      // The cached locale is only a first-paint fallback; keep it when the
+      // public bootstrap read is temporarily unavailable.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSystemLocale();
+  }, [refreshSystemLocale]);
 
   useEffect(() => {
     onUnauthorized(() => {
       sessionStorage.removeItem(TOKEN_STORAGE_KEY);
       setAuthToken(null);
-      setNotice("会话 Token 已被拒绝，请重新登录。");
+      setNoticeKey("auth.sessionRejected");
       setAuthed(false);
     });
   }, []);
@@ -1452,14 +1477,25 @@ export default function App() {
       setAuthToken(null);
       throw err;
     }
+    await refreshSystemLocale();
     sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
-    setNotice(null);
+    setNoticeKey(null);
     setAuthed(true);
   }
 
+  const systemLocale = resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
+  const antdLocale = ANT_DESIGN_LOCALES[systemLocale];
+
   return (
-    <ConfigProvider locale={zhCN} theme={{ token: { colorBgLayout: "#f5f6f8", borderRadius: 4 } }}>
-      {authed ? <AdapterConsole /> : <LoginPage notice={notice} onSubmit={handleLogin} />}
+    <ConfigProvider locale={antdLocale} theme={{ token: { colorBgLayout: "#f5f6f8", borderRadius: 4 } }}>
+      {authed ? (
+        <AdapterConsole />
+      ) : (
+        <LoginPage
+          notice={noticeKey === null ? null : t(noticeKey)}
+          onSubmit={handleLogin}
+        />
+      )}
     </ConfigProvider>
   );
 }

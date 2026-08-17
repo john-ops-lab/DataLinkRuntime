@@ -1578,6 +1578,19 @@ body {
   gap: 10px;
 }
 
+.settings-locale-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--dlr-border);
+}
+
+.settings-locale-control .settings-field {
+  width: 220px;
+}
+
 .settings-panel-toolbar {
   display: flex;
 }
