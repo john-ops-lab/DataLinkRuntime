@@ -8,6 +8,7 @@ import { api } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { ExecutionSummary } from "../types";
+import { unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import { LogView, OutputView } from "./OutputView";
 
@@ -17,19 +18,16 @@ function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
 
-/** M3.2/M5.2/M5.3：触发列区分测试运行、生产启动、定时与事件触发；未知值原样展示。 */
+/** M5.5.10：用户侧触发方式只保留主动/定时/Webhook 三种；历史兼容值原样兜底。 */
 function triggerLabel(trigger: string): string {
-  if (trigger === "manual") {
-    return "测试运行";
-  }
-  if (trigger === "production") {
-    return "生产启动";
+  if (trigger === "manual" || trigger === "production") {
+    return "主动触发";
   }
   if (trigger === "schedule") {
     return "定时触发";
   }
   if (trigger === "webhook") {
-    return "Webhook";
+    return "Webhook 触发";
   }
   return trigger;
 }
@@ -175,18 +173,6 @@ export default function ExecutionHistoryPanel(props: {
       render: (status: string) => <Tag color={statusColor(status)}>{statusLabel(status)}</Tag>,
     },
     {
-      title: "执行",
-      dataIndex: "id",
-      width: 110,
-      render: (id: number) => `#${id}`,
-    },
-    {
-      title: "版本",
-      dataIndex: "version_seq",
-      width: 90,
-      render: (seq: number) => `v${seq}`,
-    },
-    {
       title: "运行节点",
       dataIndex: "worker_name",
       width: 130,
@@ -254,7 +240,7 @@ export default function ExecutionHistoryPanel(props: {
             },
             tabIndex: 0,
             "aria-haspopup": "dialog",
-            "aria-label": `打开执行 #${summary.id} 详情，版本 v${summary.version_seq}，运行节点 ${summary.worker_name ?? "未知"}`,
+            "aria-label": `打开执行详情，运行节点 ${summary.worker_name ?? "未知"}`,
             "data-testid": "history-row",
           })}
         />
@@ -270,8 +256,8 @@ export default function ExecutionHistoryPanel(props: {
       )}
 
       <Drawer
-        title={requestedExecutionId !== null ? `执行 #${requestedExecutionId}` : "执行详情"}
-        width={560}
+        title="执行详情"
+        width={640}
         open={drawerOpen}
         onClose={() => {
           detailRequestRef.current += 1; // invalidate any in-flight detail load
@@ -298,31 +284,14 @@ export default function ExecutionHistoryPanel(props: {
               items={[
                 { key: "status", label: "状态", children: <Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag> },
                 {
-                  key: "version",
-                  label: "版本",
-                  children: activeSummary !== null ? (
-                    <>
-                      v{activeSummary.version_seq}
-                      <span className="execution-version-debug">#{visibleDetail.version_id}</span>
-                    </>
-                  ) : (
-                    `#${visibleDetail.version_id}`
-                  ),
-                },
-                {
                   key: "worker",
                   label: "运行节点",
                   children: activeSummary?.worker_name ? (
-                    <>
-                      {activeSummary.worker_name}
-                      {visibleDetail.worker_id !== null && (
-                        <span className="execution-version-debug">#{visibleDetail.worker_id}</span>
-                      )}
-                    </>
+                    activeSummary.worker_name
                   ) : visibleDetail.worker_id === null ? (
                     "—"
                   ) : (
-                    `#${visibleDetail.worker_id}`
+                    `运行节点 #${visibleDetail.worker_id}`
                   ),
                 },
                 { key: "trigger", label: "触发方式", children: triggerLabel(visibleDetail.trigger) },
@@ -341,6 +310,10 @@ export default function ExecutionHistoryPanel(props: {
                 { key: "duration", label: "耗时", children: formatDuration(visibleDetail.duration_ms) },
               ]}
             />
+            {/* M5.5.10：内部 Execution ID 只作为次级技术信息展示（易理解名称“运行 ID”）。 */}
+            <div className="execution-version-debug" data-testid="execution-run-id">
+              运行 ID：{visibleDetail.id}
+            </div>
             {visibleDetail.error && <pre className="terminal-view error-text" role="alert">{visibleDetail.error}</pre>}
             <Tabs
               size="small"
@@ -356,14 +329,16 @@ export default function ExecutionHistoryPanel(props: {
                 },
                 { key: "output", label: "输出", children: <OutputView execution={visibleDetail} /> },
                 {
-                  key: "stdout",
-                  label: "stdout",
-                  children: <LogView testId="detail-stdout" content={watcher.liveStdout} truncated={visibleDetail.stdout_truncated} />,
-                },
-                {
-                  key: "stderr",
-                  label: "stderr",
-                  children: <LogView testId="detail-stderr" content={watcher.liveStderr} truncated={visibleDetail.stderr_truncated} />,
+                  // M5.5.10：stdout/stderr 视图统一为一个按实际顺序的实时日志。
+                  key: "log",
+                  label: "实时日志",
+                  children: (
+                    <LogView
+                      testId="detail-log"
+                      content={unifiedLogContent(watcher.liveStdout, watcher.liveStderr)}
+                      truncated={visibleDetail.stdout_truncated || visibleDetail.stderr_truncated}
+                    />
+                  ),
                 },
               ]}
             />

@@ -579,7 +579,8 @@ def test_credentialed_index_failure_is_redacted_before_execution_persistence(
     assert "https://[REDACTED]@mirror.example.com/simple/" in install_log
 
     # The executor applies the same policy defensively, and Control persists
-    # only the already-redacted result as Execution.stderr.
+    # only the already-redacted result in the unified Execution log (M5.5.10
+    # stdout channel; legacy stderr storage stays untouched).
     result = executor.run(claimed, runtime_settings(tmp_path))
     assert result["status"] == "failed"
     response = report(api_client, worker["id"], execution["id"], result)
@@ -593,9 +594,9 @@ def test_credentialed_index_failure_is_redacted_before_execution_persistence(
         raw_userinfo,
         encoded_userinfo,
     ):
-        assert sensitive not in persisted["stderr"]
+        assert sensitive not in persisted["stdout"]
         assert sensitive not in (persisted["error"] or "")
-    assert "https://[REDACTED]@mirror.example.com/simple/" in persisted["stderr"]
+    assert "https://[REDACTED]@mirror.example.com/simple/" in persisted["stdout"]
 
 
 def test_venv_cache_miss_without_source_fails_with_operator_hint(

@@ -1,7 +1,7 @@
-/** Result viewers: formatted Output plus terminal-style stdout/stderr (M3 §8). */
+/** Result viewers: formatted Output plus the unified terminal log (M3 §8). */
 
-import { useEffect, useRef } from "react";
-import { Alert } from "antd";
+import { useEffect, useRef, useState } from "react";
+import { Alert, Button } from "antd";
 
 import type { Execution } from "../types";
 
@@ -37,7 +37,18 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
   );
 }
 
-/** Terminal-style log pane; follows the tail unless the user scrolled up. */
+/** M5.5.10 unified log helpers live in ../unified-log (shared with the
+ * Workbench live-log Tab and the execution history detail). */
+
+/**
+ * Terminal-style unified log pane (M5.5.10).
+ *
+ * Scroll contract:
+ * - follows the newest lines by default;
+ * - clicking 暂停 or scrolling up stays at the current position and new
+ *   content never yanks the view back to the bottom;
+ * - clicking 继续跟随 resumes following the tail.
+ */
 export function LogView(props: {
   content: string;
   truncated: boolean;
@@ -45,9 +56,10 @@ export function LogView(props: {
   testId?: string;
 }) {
   const preRef = useRef<HTMLPreElement | null>(null);
-  // The user owns the scroll position once they scroll up; only auto-follow
-  // while they stay near the bottom (simple strategy per M3 spec §8.2).
+  // The user owns the scroll position once they scroll up or pause; only
+  // auto-follow while they stay near the bottom (M5.5.10 §三).
   const followTail = useRef(true);
+  const [paused, setPaused] = useState(false);
 
   useEffect(() => {
     const element = preRef.current;
@@ -61,14 +73,43 @@ export function LogView(props: {
     if (element === null) {
       return;
     }
-    followTail.current = element.scrollTop + element.clientHeight >= element.scrollHeight - 24;
+    const nearBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 24;
+    followTail.current = nearBottom;
+    setPaused(!nearBottom);
+  }
+
+  function resumeFollowing() {
+    followTail.current = true;
+    setPaused(false);
+    const element = preRef.current;
+    if (element !== null) {
+      element.scrollTop = element.scrollHeight;
+    }
   }
 
   return (
     <div className="log-pane">
-      {props.truncated && (
-        <Alert type="warning" showIcon banner message="日志超过平台保存上限，部分内容已被截断" />
-      )}
+      <div className="log-toolbar">
+        {paused ? (
+          <Button size="small" data-testid={props.testId ? `${props.testId}-resume` : "log-resume"} onClick={resumeFollowing}>
+            继续跟随
+          </Button>
+        ) : (
+          <Button
+            size="small"
+            data-testid={props.testId ? `${props.testId}-pause` : "log-pause"}
+            onClick={() => {
+              followTail.current = false;
+              setPaused(true);
+            }}
+          >
+            暂停跟随
+          </Button>
+        )}
+        {props.truncated && (
+          <Alert type="warning" showIcon banner message="日志超过平台保存上限，部分内容已被截断" />
+        )}
+      </div>
       <pre
         ref={preRef}
         className="terminal-view"

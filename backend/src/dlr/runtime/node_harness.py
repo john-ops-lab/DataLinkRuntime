@@ -13,9 +13,9 @@ const context = {
   config,
   secrets: { get(key) { return process.env[`DLR_SECRET_${key}`] ?? null; } },
   logger: {
-    info(...args) { console.log(...args); },
-    warn(...args) { console.warn(...args); },
-    error(...args) { console.error(...args); },
+    info(...args) { console.log("[INFO]", ...args); },
+    warn(...args) { console.warn("[WARN]", ...args); },
+    error(...args) { console.error("[ERROR]", ...args); },
   },
 };
 

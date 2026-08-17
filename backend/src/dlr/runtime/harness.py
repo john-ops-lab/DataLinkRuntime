@@ -49,8 +49,10 @@ def _build_logger() -> logging.Logger:
     logger = logging.getLogger("dlr.adapter")
     logger.setLevel(logging.INFO)
     if not logger.handlers:
+        # M5.5.10: no own timestamp (the Worker adds the unified per-line
+        # timestamp at capture time); only the level marker stays.
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
         logger.addHandler(handler)
     logger.propagate = False
     return logger

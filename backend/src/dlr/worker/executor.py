@@ -1,15 +1,23 @@
 """Execute one claimed task in a fresh subprocess inside the version venv.
 
-Every Execution gets a brand-new process; stdout/stderr stream to temp
-files (never unbounded in-memory pipes) and are capped per the big-field
+Every Execution gets a brand-new process; stdout/stderr stream to one shared
+temp file (never unbounded in-memory pipes) and are capped per the big-field
 contract before reporting. The adapter subprocess only inherits basic
 platform variables plus ``DLR_SECRET_*`` — never worker/admin tokens or
 ``DATABASE_URL``.
 
+M5.5.10 unified live log: the subprocess is started with
+``stderr=subprocess.STDOUT``, so the captured stream is the actual byte-level
+order of stdout, stderr, ``context.logger`` output, tracebacks and third-party
+tooling. Every line is prefixed with a capture-time ``[YYYY-MM-DD HH:mm:ss]``
+timestamp (plus an optional ``[LEVEL]`` marker) and reported through the
+``stdout`` channel; the ``stderr`` channel stays empty for new runs while the
+API/SSE contracts keep accepting legacy per-stream chunks unchanged.
+
 M3 adds an optional progress callback: while the subprocess runs, newly
-appended stdout/stderr bytes are uploaded about once per second. Progress is
-best effort — failures are logged and never change the Execution outcome,
-and the final result report stays the authoritative source of truth.
+appended bytes are uploaded about once per second. Progress is best effort —
+failures are logged and never change the Execution outcome, and the final
+result report stays the authoritative source of truth.
 
 M3.2 turns the callback into a cancel channel: it returns whether Control
 requested cancellation, and is invoked once per poll slice even without new
@@ -49,6 +57,9 @@ PROGRESS_POLL_SECONDS = 1.0
 # the persisted live log normally includes the tail; progress is best effort,
 # so a wedged upload must never delay the final result for longer than this.
 PROGRESS_DRAIN_SECONDS = 1.0
+
+# M5.5.10: every unified-log line carries one capture-time prefix.
+LOG_LINE_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # Receives already redacted (stdout_chunk, stderr_chunk) and returns whether
 # Control requested cancellation of this Execution (M3.2); see run().
@@ -112,6 +123,69 @@ def redact_secrets(text: str, secret_values: Iterable[str] | None = None) -> str
 def _max_secret_length(secret_values: Iterable[str]) -> int:
     """Length of the longest secret value (0 when none)."""
     return max((len(value) for value in secret_values if value), default=0)
+
+
+# --- M5.5.10 unified log line formatting -----------------------------------
+# One timestamped, optionally level-tagged line format shared by every output
+# source (stdout / stderr / logger / traceback / platform messages), so the
+# live view and the persisted stream use exactly the same contract.
+
+
+def _timestamped_line(text: str) -> str:
+    return f"[{time.strftime(LOG_LINE_TIME_FORMAT)}] {text}"
+
+
+def _platform_message(level: str, message: str, secret_values: Iterable[str]) -> str:
+    """One redacted platform Runtime status line (e.g. timeout / cancel)."""
+    return _timestamped_line(f"[{level}] {redact_secrets(message, secret_values)}") + "\n"
+
+
+class _LineTimestampBuffer:
+    """Prefix every complete line with a capture-time timestamp.
+
+    The subprocess stream is read in ~1s slices, so a line only becomes
+    complete at its trailing newline; the partial tail is buffered until the
+    next read (or ``flush()`` at the end). A pathological single line without
+    any newline cannot stall the live log forever: past ``MAX_PARTIAL_LINE``
+    the buffer is released as-is and the next slice starts a fresh
+    timestamped line.
+    """
+
+    MAX_PARTIAL_LINE = 64 * 1024
+
+    def __init__(self) -> None:
+        self._partial = ""
+
+    def push(self, text: str) -> str:
+        if not text:
+            return ""
+        lines = (self._partial + text).split("\n")
+        self._partial = lines.pop()
+        if len(self._partial) > self.MAX_PARTIAL_LINE:
+            # Unreasonably long line: release it so the live log keeps
+            # flowing; the next read simply starts a new timestamped line.
+            lines.append(self._partial)
+            self._partial = ""
+        return "".join(_timestamped_line(line) + "\n" for line in lines)
+
+    def flush(self) -> str:
+        if not self._partial:
+            return ""
+        tail = self._partial
+        self._partial = ""
+        return _timestamped_line(tail)
+
+
+def _timestamped_text(text: str) -> str:
+    """Timestamp an already-redacted whole text (e.g. a dependency log)."""
+    buffer = _LineTimestampBuffer()
+    return buffer.push(text) + buffer.flush()
+
+
+def _finalize_stream(path: Path, secret_values: Iterable[str]) -> str:
+    """Build the full timestamped stream text from a finished log file."""
+    raw = path.read_bytes().decode("utf-8", errors="replace")
+    return _timestamped_text(redact_secrets(raw, secret_values))
 
 
 class _SecretHoldback:
@@ -327,43 +401,59 @@ class _StreamTailer:
 
 def _wait_with_progress(
     process: subprocess.Popen[bytes],
-    stdout_path: Path,
-    stderr_path: Path,
+    stream_path: Path,
     timeout: int,
     progress_callback: ProgressCallback | None,
     secret_values: Iterable[str] = (),
-) -> tuple[int, bool, bool]:
-    """Wait for the adapter subprocess, uploading live log chunks.
+) -> tuple[int, bool, bool, str]:
+    """Wait for the adapter subprocess, uploading unified live-log chunks.
 
-    Returns ``(returncode, timed_out, cancelled)``. Without a callback this
-    degrades to the plain M2 blocking wait (no cancel channel). Callback
+    Returns ``(returncode, timed_out, cancelled, final_text)``. The subprocess
+    writes stdout and stderr into the same ``stream_path`` (M5.5.10), so the
+    captured text is the actual byte-level order of every output source;
+    ``final_text`` is the complete redacted, line-timestamped stream text and
+    equals the concatenation of every live chunk uploaded via the callback.
+    Without a callback this degrades to the plain M2 blocking wait (no cancel
+    channel); the final text is still built from the file. Callback
     invocations receive redacted text and happen on a background uploader
-    thread: a slow or failing upload can never delay the deadline checks,
-    and progress never fails the Execution. When the callback reports a
-    cancel request the process group is killed at the next poll slice.
+    thread: a slow or failing upload can never delay the deadline checks, and
+    progress never fails the Execution. When the callback reports a cancel
+    request the process group is killed at the next poll slice.
     """
     if progress_callback is None:
         try:
-            return process.wait(timeout=timeout), False, False
+            returncode = process.wait(timeout=timeout)
+            return (
+                returncode,
+                False,
+                False,
+                _finalize_stream(stream_path, secret_values),
+            )
         except subprocess.TimeoutExpired:
             _kill_process_group(process)
-            return -1, True, False
+            return -1, True, False, ""
 
     deadline = time.monotonic() + timeout
-    stdout_tailer = _StreamTailer(stdout_path)
-    stderr_tailer = _StreamTailer(stderr_path)
-    stdout_guard = _SecretHoldback(secret_values)
-    stderr_guard = _SecretHoldback(secret_values)
+    tailer = _StreamTailer(stream_path)
+    guard = _SecretHoldback(secret_values)
+    line_buffer = _LineTimestampBuffer()
     uploader = _ProgressUploader(progress_callback)
+    final_text = ""
 
     def emit(final: bool = False) -> None:
-        stdout_chunk = stdout_guard.push(stdout_tailer.read_new())
-        stderr_chunk = stderr_guard.push(stderr_tailer.read_new())
+        nonlocal final_text
+        text = guard.push(tailer.read_new())
         if final:
             # Process is gone: release the hold-back tails as well.
-            stdout_chunk += stdout_guard.flush()
-            stderr_chunk += stderr_guard.flush()
-        uploader.submit(stdout_chunk, stderr_chunk)
+            text += guard.flush()
+        text = line_buffer.push(text)
+        if final:
+            text += line_buffer.flush()
+        if text:
+            final_text += text
+        # Empty submissions are kept: they double as the cancel poll so a
+        # subprocess without any output can still observe a cancel request.
+        uploader.submit(text, "")
 
     try:
         while True:
@@ -372,7 +462,7 @@ def _wait_with_progress(
                 _kill_process_group(process)
                 emit(final=True)
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
-                return -1, True, False
+                return -1, True, False, final_text
             # Wait at most one poll slice, and never past the execution
             # deadline; uploads run off-thread and can never delay this loop.
             wait_slice = min(PROGRESS_POLL_SECONDS, remaining)
@@ -380,7 +470,7 @@ def _wait_with_progress(
                 returncode = process.wait(timeout=wait_slice)
                 emit(final=True)  # final drain so the live view matches the end state
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
-                return returncode, False, False
+                return returncode, False, False, final_text
             except subprocess.TimeoutExpired:
                 pass
             emit()
@@ -388,10 +478,9 @@ def _wait_with_progress(
                 _kill_process_group(process)
                 emit(final=True)
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
-                return -1, False, True
+                return -1, False, True, final_text
     finally:
-        stdout_tailer.close()
-        stderr_tailer.close()
+        tailer.close()
 
 
 def run(
@@ -401,10 +490,10 @@ def run(
 ) -> dict[str, Any]:
     """Run one task payload to completion; always returns a report dict.
 
-    ``progress_callback`` receives redacted live stdout/stderr chunks while
-    the subprocess runs and returns the Control-side cancel flag; a cancel
-    request kills the subprocess and yields a ``cancelled`` report. It never
-    influences any other part of the final report.
+    ``progress_callback`` receives redacted, line-timestamped unified log
+    chunks while the subprocess runs and returns the Control-side cancel
+    flag; a cancel request kills the subprocess and yields a ``cancelled``
+    report. It never influences any other part of the final report.
     """
     execution_id = int(payload["execution_id"])
     adapter_id = int(payload["adapter_id"])
@@ -474,16 +563,25 @@ def run(
     except venv_manager.DependencyPreparationError as error:
         safe_install_log = venv_manager.redact_package_index_log(error.install_log, index_url)
         safe_error = venv_manager.redact_package_index_log(str(error), index_url)
-        stderr, stderr_truncated = _cap_stream(safe_install_log.encode())
+        # M5.5.10: the dependency failure lives in the unified log stream
+        # (stdout channel) with the same line format as every other source.
+        unified_log = _timestamped_text(redact_secrets(safe_install_log, dependency_secret_values))
+        unified_log += _platform_message(
+            "ERROR",
+            f"{language} dependency preparation failed: {safe_error}",
+            dependency_secret_values,
+        )
+        stdout, stdout_truncated = _cap_stream(unified_log.encode())
         return {
             "status": "failed",
             "error": redact_secrets(
                 f"{language} dependency preparation failed: {safe_error}",
                 dependency_secret_values,
             ),
-            "stdout": "",
-            "stderr": redact_secrets(stderr, dependency_secret_values),
-            "stderr_truncated": stderr_truncated,
+            "stdout": stdout,
+            "stdout_truncated": stdout_truncated,
+            "stderr": "",
+            "stderr_truncated": False,
         }
 
     workspace = Path(tempfile.mkdtemp(prefix=f"dlr-exec-{execution_id}-"))
@@ -516,36 +614,60 @@ def run(
             json.dumps(payload.get("runtime_config") or {}), encoding="utf-8"
         )
 
-        stdout_path = workspace / ".stdout"
-        stderr_path = workspace / ".stderr"
-        with stdout_path.open("wb") as out_file, stderr_path.open("wb") as err_file:
+        stdout_path = workspace / ".log"
+        with stdout_path.open("wb") as out_file:
+            # M5.5.10 unified stream: stderr merges into the same file at the
+            # OS level, so the captured text keeps the actual byte order of
+            # stdout, stderr, logger and traceback output.
             process = subprocess.Popen(  # noqa: S603 - fixed harness command
                 command,
                 stdout=out_file,
-                stderr=err_file,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
                 env=child_env(payload_secrets),
                 cwd=str(workspace),
             )
-            returncode, timed_out, cancelled = _wait_with_progress(
-                process, stdout_path, stderr_path, timeout, progress_callback, secret_values
+            returncode, timed_out, cancelled, unified_log = _wait_with_progress(
+                process, stdout_path, timeout, progress_callback, secret_values
             )
 
-        stdout_raw = stdout_path.read_bytes()
-        stderr_raw = stderr_path.read_bytes()
         if not timed_out and not cancelled and returncode == 0:
             output_file = workspace / "output.json"
             output_raw = output_file.read_bytes() if output_file.exists() else None
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
-    stdout, stdout_truncated = _cap_stream(stdout_raw)
-    stderr, stderr_truncated = _cap_stream(stderr_raw)
+    # M5.5.10: terminal platform messages are appended to the unified stream
+    # (redacted, timestamped) so the log alone explains the outcome.
+    if cancelled:
+        unified_log += _platform_message("ERROR", "execution cancelled", secret_values)
+    elif timed_out:
+        unified_log += _platform_message(
+            "ERROR", f"execution timed out after {timeout}s", secret_values
+        )
+    elif returncode != 0:
+        unified_log += _platform_message(
+            "ERROR", f"adapter process exited with code {returncode}", secret_values
+        )
+    elif output_raw is None:
+        unified_log += _platform_message("ERROR", "adapter produced no output.json", secret_values)
+    else:
+        try:
+            output_value = json.loads(output_raw)
+        except ValueError as error:
+            unified_log += _platform_message(
+                "ERROR", f"invalid output.json: {error}", secret_values
+            )
+
+    stdout, stdout_truncated = _cap_stream(unified_log.encode())
     base: dict[str, Any] = {
-        "stdout": redact_secrets(stdout, secret_values),
+        "stdout": stdout,
         "stdout_truncated": stdout_truncated,
-        "stderr": redact_secrets(stderr, secret_values),
-        "stderr_truncated": stderr_truncated,
+        # New runs report the unified log through the stdout channel; the
+        # stderr channel stays empty while the API/SSE contracts keep
+        # accepting legacy per-stream chunks unchanged.
+        "stderr": "",
+        "stderr_truncated": False,
     }
 
     if cancelled:

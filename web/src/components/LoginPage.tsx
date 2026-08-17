@@ -49,7 +49,7 @@ export default function LoginPage(props: LoginPageProps) {
           </div>
           <p className="login-brand-tagline">轻量数据适配运行平台</p>
           <p className="login-brand-sub">
-            适配器（Adapter）在线编辑、保存版本、测试运行、实时日志与执行记录，全部在浏览器中完成；
+            适配器（Adapter）在线编辑、保存版本、手动运行、实时日志与执行记录，全部在浏览器中完成；
             一台服务器 + Docker Compose 即可运行完整平台。
           </p>
           <div className="login-features">

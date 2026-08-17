@@ -48,23 +48,16 @@ function catalogRuntimeStatus(adapter: Adapter): {
   label: string;
   fact: string;
 } {
+  // M5.5.10：主界面不展示内部 Execution #N，只保留用户可见状态。
   if (adapter.adapter_type === "task") {
     if (adapter.running_execution_id != null) {
-      return {
-        dot: "running",
-        label: "运行中",
-        fact: `执行 #${adapter.running_execution_id} 运行中`,
-      };
+      return { dot: "running", label: "运行中", fact: "运行中" };
     }
     const label = adapter.runtime_locked ? "定时运行中" : "空闲";
     return { dot: adapter.runtime_locked ? "running" : "stopped", label, fact: label };
   }
   if (adapter.running_execution_id != null) {
-    return {
-      dot: "running",
-      label: "调用中",
-      fact: `调用 #${adapter.running_execution_id} 运行中`,
-    };
+    return { dot: "running", label: "调用中", fact: "调用中" };
   }
   const label = adapter.runtime_locked ? "接收中" : "已停止";
   return { dot: adapter.runtime_locked ? "running" : "stopped", label, fact: label };
@@ -215,12 +208,7 @@ export default function AdapterCatalog({
             const runtimeStatus = catalogRuntimeStatus(adapter);
             const statusDescription = `${adapter.adapter_type === "task" ? "任务" : "Webhook "}状态：${runtimeStatus.label}`;
             const subtitle = catalogSubtitle(adapter, runtimeStatus, versionSeqById, workersById);
-            const runtimeDetail = adapter.running_execution_id == null
-              ? null
-              : adapter.adapter_type === "task"
-                ? `执行 #${adapter.running_execution_id}`
-                : `调用 #${adapter.running_execution_id}`;
-            const accessibleRuntimeFact = [statusDescription, runtimeDetail].filter(Boolean).join(" · ");
+            const accessibleRuntimeFact = statusDescription;
             return (
               <div key={adapter.id} className="catalog-row">
                 <button

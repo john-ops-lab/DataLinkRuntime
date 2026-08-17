@@ -413,8 +413,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             className="task-live-log-handoff"
             type={isTerminal(execution.status) ? "success" : "info"}
             showIcon
-            message={`执行 #${execution.id} · ${statusLabel(execution.status)}`}
-            description="实时 stdout、stderr 与输出已在页面底部日志工作区中打开。"
+            message={`运行状态：${statusLabel(execution.status)}`}
+            description="实时日志与输出请在「实时日志」标签中查看。"
           />
         )}
       </section>

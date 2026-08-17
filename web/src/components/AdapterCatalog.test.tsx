@@ -69,7 +69,7 @@ it("exposes each Task and Webhook runtime status and type in the catalog item na
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "task-running，[任务] Python · 手动运行 · 任务状态：运行中 · 执行 #31 · 运行节点未配置",
+      name: "task-running，[任务] Python · 手动运行 · 任务状态：运行中 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
@@ -84,7 +84,7 @@ it("exposes each Task and Webhook runtime status and type in the catalog item na
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "webhook-calling，[Webhook] Python · Webhook 状态：调用中 · 调用 #61 · 未保存 · 运行节点未配置",
+      name: "webhook-calling，[Webhook] Python · Webhook 状态：调用中 · 未保存 · 运行节点未配置",
     }),
   ).toBeTruthy();
 });
