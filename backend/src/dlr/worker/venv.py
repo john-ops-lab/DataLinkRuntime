@@ -141,17 +141,28 @@ def redact_package_index_log(text: str, index_url: str | None) -> str:
 
 
 def dependency_specs(requirements: str) -> list[str]:
-    """Return user-declared dependency lines in their original order.
+    """Return package declaration lines suitable for user-facing status logs.
 
-    M3.3 defines the requirements field as one declaration per line. Keeping
-    the original line lets each language-specific installer preserve its
-    existing declaration syntax while the Worker reports a useful label.
+    The complete requirements file is still passed to uv unchanged. Pure pip
+    option lines are intentionally omitted here: they configure the joint
+    install but are not standalone packages that can truthfully be reported as
+    installed.
     """
     return [
         line.strip()
         for line in requirements.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
+        if line.strip() and not line.lstrip().startswith("#") and not line.lstrip().startswith("-")
     ]
+
+
+def dependency_failure_label(dependencies: Iterable[str], install_log: str) -> str | None:
+    """Identify a declared package when an ecosystem tool names it in output."""
+    declarations = list(dependencies)
+    lowered_log = install_log.casefold()
+    for dependency in declarations:
+        if dependency.casefold() in lowered_log:
+            return dependency
+    return declarations[0] if len(declarations) == 1 else None
 
 
 # --- actionable install-error classification (M5.5.8) --------------------------
@@ -366,11 +377,10 @@ def prepare_version_venv(
         install_log = ""
         try:
             install_log += _run_logged(["uv", "venv", str(directory / ".venv")], timeout_seconds)
-            for number, dependency in enumerate(dependencies, start=1):
+            if requirements.strip():
                 if dependency_log is not None:
-                    dependency_log(f"{dependency} 未安装，开始安装")
-                dependency_file = directory / f".dependency-{number}.txt"
-                dependency_file.write_text(f"{dependency}\n", encoding="utf-8")
+                    for dependency in dependencies:
+                        dependency_log(f"{dependency} 未安装，开始安装")
                 base_command = [
                     "uv",
                     "pip",
@@ -378,43 +388,45 @@ def prepare_version_venv(
                     "--python",
                     str(python_path),
                     "-r",
-                    str(dependency_file),
+                    str(directory / "requirements.txt"),
                 ]
+                # Offline-first: a warm local cache must not need any network.
                 try:
-                    # Offline-first: a warm local cache must not need any network.
+                    install_log += _run_install_logged(
+                        base_command + ["--offline"], timeout_seconds
+                    )
+                except DependencyPreparationError as offline_error:
+                    if not index_url:
+                        raise DependencyPreparationError(
+                            "dependencies are not available from the local cache and no "
+                            "package source is configured; ask the platform admin to add "
+                            "a package source in System Settings (or set DLR_PYPI_INDEX_URL "
+                            "on the Worker)",
+                            offline_error.install_log,
+                            dependency=dependency_failure_label(
+                                dependencies, offline_error.install_log
+                            ),
+                        ) from offline_error
+                    install_log += offline_error.install_log
+                    install_log += (
+                        "\n[offline cache insufficient; retrying with the configured "
+                        "package source]\n"
+                    )
                     try:
                         install_log += _run_install_logged(
-                            base_command + ["--offline"], timeout_seconds
+                            base_command + ["--index-url", index_url], timeout_seconds
                         )
-                    except DependencyPreparationError as offline_error:
-                        if not index_url:
-                            raise DependencyPreparationError(
-                                "dependencies are not available from the local cache and no "
-                                "package source is configured; ask the platform admin to add "
-                                "a package source in System Settings (or set DLR_PYPI_INDEX_URL "
-                                "on the Worker)",
-                                offline_error.install_log,
-                                dependency=dependency,
-                            ) from offline_error
-                        install_log += offline_error.install_log
-                        install_log += (
-                            "\n[offline cache insufficient; retrying with the configured "
-                            "package source]\n"
-                        )
-                        try:
-                            install_log += _run_install_logged(
-                                base_command + ["--index-url", index_url], timeout_seconds
-                            )
-                        except DependencyPreparationError as source_error:
-                            raise DependencyPreparationError(
-                                str(source_error),
-                                install_log + source_error.install_log,
-                                dependency=dependency,
-                            ) from source_error
-                finally:
-                    dependency_file.unlink(missing_ok=True)
+                    except DependencyPreparationError as source_error:
+                        raise DependencyPreparationError(
+                            str(source_error),
+                            install_log + source_error.install_log,
+                            dependency=dependency_failure_label(
+                                dependencies, install_log + source_error.install_log
+                            ),
+                        ) from source_error
                 if dependency_log is not None:
-                    dependency_log(f"{dependency} 安装成功")
+                    for dependency in dependencies:
+                        dependency_log(f"{dependency} 安装成功")
         except DependencyPreparationError:
             # Leave no half-built venv behind; next attempt rebuilds cleanly.
             shutil.rmtree(directory, ignore_errors=True)

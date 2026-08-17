@@ -1,5 +1,6 @@
 """M3.3 regression tests for language dispatch and Worker capabilities."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -204,6 +205,7 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[list[str]] = []
+    npm_packages: list[dict[str, object]] = []
 
     def fake_run(command: list[str], _timeout: int) -> str:
         calls.append(command)
@@ -214,6 +216,9 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
         if command[0] == "javac":
             classes = Path(command[command.index("-d") + 1])
             (classes / "Adapter.class").write_bytes(b"fixture")
+        if command[0] == "npm":
+            package_path = Path(command[command.index("--prefix") + 1]) / "package.json"
+            npm_packages.append(json.loads(package_path.read_text(encoding="utf-8")))
         return ""
 
     monkeypatch.setattr(venv, "_run_logged", fake_run)
@@ -225,7 +230,9 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
         tmp_path / "python",
         30,
         1,
-        "requests==2.32.3",
+        "--extra-index-url https://mirror.example.test/simple/\n"
+        "-c constraints.txt\n"
+        "requests==2.32.3\nurllib3==2.2.3",
         timeout_seconds=5,
         dependency_log=python_logs.append,
     )
@@ -234,7 +241,9 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
         tmp_path / "python",
         30,
         1,
-        "requests==2.32.3",
+        "--extra-index-url https://mirror.example.test/simple/\n"
+        "-c constraints.txt\n"
+        "requests==2.32.3\nurllib3==2.2.3",
         timeout_seconds=5,
         dependency_log=python_ready_logs.append,
     )
@@ -245,7 +254,7 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
         31,
         1,
         "export function handle(context, input) { return input; }",
-        "axios@1.7.7",
+        "axios@1.7.7\nlodash@4.17.21",
         timeout_seconds=5,
         registry_url=None,
         dependency_log=javascript_logs.append,
@@ -256,7 +265,7 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
         31,
         1,
         "export function handle(context, input) { return input; }",
-        "axios@1.7.7",
+        "axios@1.7.7\nlodash@4.17.21",
         timeout_seconds=5,
         registry_url=None,
         dependency_log=javascript_ready_logs.append,
@@ -268,7 +277,7 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
         32,
         1,
         "public class Adapter { public Object handle(Context c, Object i) { return i; } }",
-        "com.example:fixture:1.0.0",
+        "com.example:fixture:1.0.0\ncom.example:other:2.0.0",
         timeout_seconds=5,
         repository_url=None,
         dependency_log=java_logs.append,
@@ -279,7 +288,7 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
         32,
         1,
         "public class Adapter { public Object handle(Context c, Object i) { return i; } }",
-        "com.example:fixture:1.0.0",
+        "com.example:fixture:1.0.0\ncom.example:other:2.0.0",
         timeout_seconds=5,
         repository_url=None,
         dependency_log=java_ready_logs.append,
@@ -287,25 +296,51 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
 
     assert python_logs == [
         "requests==2.32.3 未安装，开始安装",
+        "urllib3==2.2.3 未安装，开始安装",
         "requests==2.32.3 安装成功",
+        "urllib3==2.2.3 安装成功",
     ]
-    assert python_ready_logs == ["requests==2.32.3 已安装，检查通过"]
+    assert python_ready_logs == [
+        "requests==2.32.3 已安装，检查通过",
+        "urllib3==2.2.3 已安装，检查通过",
+    ]
     assert javascript_logs == [
         "axios@1.7.7 未安装，开始安装",
+        "lodash@4.17.21 未安装，开始安装",
         "axios@1.7.7 安装成功",
+        "lodash@4.17.21 安装成功",
     ]
-    assert javascript_ready_logs == ["axios@1.7.7 已安装，检查通过"]
+    assert javascript_ready_logs == [
+        "axios@1.7.7 已安装，检查通过",
+        "lodash@4.17.21 已安装，检查通过",
+    ]
     assert java_logs == [
         "com.example:fixture:1.0.0 未安装，开始安装",
+        "com.example:other:2.0.0 未安装，开始安装",
         "com.example:fixture:1.0.0 安装成功",
+        "com.example:other:2.0.0 安装成功",
     ]
-    assert java_ready_logs == ["com.example:fixture:1.0.0 已安装，检查通过"]
-    install_commands = [
-        command
-        for command in calls
-        if (command[0] == "uv" and "install" in command) or command[0] in {"npm", "mvn"}
+    assert java_ready_logs == [
+        "com.example:fixture:1.0.0 已安装，检查通过",
+        "com.example:other:2.0.0 已安装，检查通过",
     ]
-    assert len(install_commands) == 3
+
+    uv_installs = [command for command in calls if command[0] == "uv" and "install" in command]
+    npm_installs = [command for command in calls if command[0] == "npm"]
+    maven_installs = [command for command in calls if command[0] == "mvn"]
+    assert len(uv_installs) == 1, "uv must resolve all Python requirements jointly"
+    assert len(npm_installs) == 1, "npm must install the complete manifest once"
+    assert len(maven_installs) == 1, "Maven must mediate the complete dependency graph once"
+    assert "--extra-index-url" in (
+        tmp_path / "python" / "adapters" / "30" / "versions" / "1" / "requirements.txt"
+    ).read_text(encoding="utf-8")
+    assert npm_packages == [
+        {
+            "private": True,
+            "type": "module",
+            "dependencies": {"axios": "1.7.7", "lodash": "4.17.21"},
+        }
+    ]
 
 
 def test_dependency_auth_is_kept_out_of_generated_manifests() -> None:

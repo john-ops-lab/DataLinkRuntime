@@ -130,34 +130,36 @@ def prepare_version_java(
                 if settings_path is not None:
                     base.extend(["-s", str(settings_path)])
                 base.extend(["dependency:copy-dependencies", f"-DoutputDirectory={deps}"])
-                for dependency_parts in dependencies:
-                    dependency = ":".join(dependency_parts)
-                    if dependency_log is not None:
-                        dependency_log(f"{dependency} 未安装，开始安装")
-                    (directory / "pom.xml").write_text(_pom([dependency_parts]), encoding="utf-8")
+                if dependency_log is not None:
+                    for group, artifact, version in dependencies:
+                        dependency_log(f"{group}:{artifact}:{version} 未安装，开始安装")
+                try:
+                    venv._run_install_logged(base + ["-o"], timeout_seconds)
+                except venv.DependencyPreparationError as offline_error:
+                    if not repository_url:
+                        raise venv.DependencyPreparationError(
+                            "Maven dependencies are not available from the local "
+                            "repository and no Maven dependency source is configured",
+                            offline_error.install_log,
+                            dependency=venv.dependency_failure_label(
+                                (":".join(parts) for parts in dependencies),
+                                offline_error.install_log,
+                            ),
+                        ) from offline_error
                     try:
-                        try:
-                            venv._run_install_logged(base + ["-o"], timeout_seconds)
-                        except venv.DependencyPreparationError as offline_error:
-                            if not repository_url:
-                                raise venv.DependencyPreparationError(
-                                    "Maven dependencies are not available from the local "
-                                    "repository and no Maven dependency source is configured",
-                                    offline_error.install_log,
-                                    dependency=dependency,
-                                ) from offline_error
-                            try:
-                                venv._run_install_logged(base, timeout_seconds)
-                            except venv.DependencyPreparationError as source_error:
-                                raise venv.DependencyPreparationError(
-                                    str(source_error),
-                                    offline_error.install_log + source_error.install_log,
-                                    dependency=dependency,
-                                ) from source_error
-                    finally:
-                        (directory / "pom.xml").write_text(_pom(dependencies), encoding="utf-8")
-                    if dependency_log is not None:
-                        dependency_log(f"{dependency} 安装成功")
+                        venv._run_install_logged(base, timeout_seconds)
+                    except venv.DependencyPreparationError as source_error:
+                        combined_log = offline_error.install_log + source_error.install_log
+                        raise venv.DependencyPreparationError(
+                            str(source_error),
+                            combined_log,
+                            dependency=venv.dependency_failure_label(
+                                (":".join(parts) for parts in dependencies), combined_log
+                            ),
+                        ) from source_error
+                if dependency_log is not None:
+                    for group, artifact, version in dependencies:
+                        dependency_log(f"{group}:{artifact}:{version} 安装成功")
             venv._run_logged(
                 [
                     "javac",

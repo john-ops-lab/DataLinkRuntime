@@ -111,56 +111,45 @@ def prepare_version_node(
                     "--ignore-scripts",
                     "--no-audit",
                     "--no-fund",
-                    "--no-save",
                     "--prefix",
                     str(directory),
                 ]
                 if npmrc is not None:
                     command.extend(["--userconfig", str(npmrc)])
-                for name, version in dependencies.items():
-                    dependency = f"{name}@{version}"
-                    if dependency_log is not None:
-                        dependency_log(f"{dependency} 未安装，开始安装")
-                    (directory / "package.json").write_text(
-                        json.dumps(
-                            {
-                                "private": True,
-                                "type": "module",
-                                "dependencies": {name: version},
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
+                if dependency_log is not None:
+                    for name, version in dependencies.items():
+                        dependency_log(f"{name}@{version} 未安装，开始安装")
+                try:
+                    venv._run_install_logged(command + ["--offline"], timeout_seconds)
+                except venv.DependencyPreparationError as offline_error:
+                    if not registry_url:
+                        raise venv.DependencyPreparationError(
+                            "npm dependencies are not available from the local cache and "
+                            "no npm dependency source is configured",
+                            offline_error.install_log,
+                            dependency=venv.dependency_failure_label(
+                                (f"{name}@{version}" for name, version in dependencies.items()),
+                                offline_error.install_log,
+                            ),
+                        ) from offline_error
+                    assert clean_registry is not None
                     try:
-                        try:
-                            venv._run_install_logged(command + ["--offline"], timeout_seconds)
-                        except venv.DependencyPreparationError as offline_error:
-                            if not registry_url:
-                                raise venv.DependencyPreparationError(
-                                    "npm dependencies are not available from the local cache and "
-                                    "no npm dependency source is configured",
-                                    offline_error.install_log,
-                                    dependency=dependency,
-                                ) from offline_error
-                            assert clean_registry is not None
-                            try:
-                                venv._run_install_logged(
-                                    command + ["--registry", clean_registry], timeout_seconds
-                                )
-                            except venv.DependencyPreparationError as source_error:
-                                raise venv.DependencyPreparationError(
-                                    str(source_error),
-                                    offline_error.install_log + source_error.install_log,
-                                    dependency=dependency,
-                                ) from source_error
-                    finally:
-                        (directory / "package.json").write_text(
-                            json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8"
+                        venv._run_install_logged(
+                            command + ["--registry", clean_registry], timeout_seconds
                         )
-                    if dependency_log is not None:
-                        dependency_log(f"{dependency} 安装成功")
+                    except venv.DependencyPreparationError as source_error:
+                        combined_log = offline_error.install_log + source_error.install_log
+                        raise venv.DependencyPreparationError(
+                            str(source_error),
+                            combined_log,
+                            dependency=venv.dependency_failure_label(
+                                (f"{name}@{version}" for name, version in dependencies.items()),
+                                combined_log,
+                            ),
+                        ) from source_error
+                if dependency_log is not None:
+                    for name, version in dependencies.items():
+                        dependency_log(f"{name}@{version} 安装成功")
             except venv.DependencyPreparationError:
                 shutil.rmtree(directory, ignore_errors=True)
                 raise
