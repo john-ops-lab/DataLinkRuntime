@@ -1,6 +1,7 @@
 """Adapter and immutable Revision domain service (M5.4.1)."""
 
 import secrets as stdlib_secrets
+from collections.abc import Mapping
 from datetime import datetime
 
 from fastapi import HTTPException
@@ -20,9 +21,22 @@ from dlr.control.schemas.adapter import (
 from dlr.control.services import adapter_runtime, worker_availability
 
 
-def domain_error(status_code: int, code: str, message: str) -> HTTPException:
-    """Build the stable domain error format (detail object with a code)."""
-    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+def domain_error(
+    status_code: int,
+    code: str,
+    message: str,
+    params: Mapping[str, object] | None = None,
+) -> HTTPException:
+    """Build a compatible machine error with optional structured params.
+
+    ``message`` remains the legacy fallback for old clients. New clients use
+    ``code`` and ``params`` as the stable contract and never branch on text.
+    Empty params are omitted so existing response shapes remain compatible.
+    """
+    detail: dict[str, object] = {"code": code, "message": message}
+    if params:
+        detail["params"] = dict(params)
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 def list_adapters(session: Session) -> list[Adapter]:
@@ -115,7 +129,12 @@ def _add_default_demo_binding(session: Session, adapter: Adapter) -> None:
 
 def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
     if _active_name_conflict(session, data.name):
-        raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
+        raise domain_error(
+            409,
+            "adapter_name_conflict",
+            "Adapter name already exists",
+            {"name": data.name},
+        )
     adapter = Adapter(
         name=data.name,
         description=data.description,
@@ -139,7 +158,12 @@ def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise domain_error(409, "adapter_name_conflict", "Adapter name already exists") from None
+        raise domain_error(
+            409,
+            "adapter_name_conflict",
+            "Adapter name already exists",
+            {"name": data.name},
+        ) from None
     session.refresh(adapter)
     return adapter
 
@@ -150,6 +174,7 @@ def _require_worker_capability(worker: Worker, language: str) -> None:
             409,
             "worker_capability_missing",
             f"Worker does not support {language}",
+            {"language": language},
         )
 
 
@@ -196,6 +221,7 @@ def resolve_runtime_worker(session: Session, adapter: Adapter, *, now: datetime)
         409,
         "worker_capability_missing",
         f"No online Worker supports {adapter.language}",
+        {"language": adapter.language},
     )
 
 
@@ -246,7 +272,12 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
 
     if data.name is not None and data.name != adapter.name:
         if _active_name_conflict(session, data.name, exclude_id=adapter.id):
-            raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
+            raise domain_error(
+                409,
+                "adapter_name_conflict",
+                "Adapter name already exists",
+                {"name": data.name},
+            )
         adapter.name = data.name
     if data.description is not None:
         adapter.description = data.description
@@ -255,7 +286,12 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise domain_error(409, "adapter_name_conflict", "Adapter name already exists") from None
+        raise domain_error(
+            409,
+            "adapter_name_conflict",
+            "Adapter name already exists",
+            {"name": data.name},
+        ) from None
     session.refresh(adapter)
     return adapter
 
@@ -343,7 +379,12 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(source)
     if _active_name_conflict(session, data.name):
-        raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
+        raise domain_error(
+            409,
+            "adapter_name_conflict",
+            "Adapter name already exists",
+            {"name": data.name},
+        )
     clone = Adapter(
         name=data.name,
         description=data.description if data.description is not None else source.description,
@@ -359,7 +400,12 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
         session.flush()
     except IntegrityError:
         session.rollback()
-        raise domain_error(409, "adapter_name_conflict", "Adapter name already exists") from None
+        raise domain_error(
+            409,
+            "adapter_name_conflict",
+            "Adapter name already exists",
+            {"name": data.name},
+        ) from None
 
     if source.latest_version_id is not None:
         source_version = session.get(AdapterVersion, source.latest_version_id)

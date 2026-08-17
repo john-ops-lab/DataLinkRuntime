@@ -20,7 +20,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from dlr.worker import executor
+from dlr.worker import executor, i18n
 from dlr.worker import venv as venv_manager
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 
@@ -257,7 +257,10 @@ class Agent:
             logger.exception("unexpected executor failure for execution %s", execution_id)
             result = {
                 "status": "failed",
-                "error": "worker internal error while executing task",
+                "error": i18n.text(
+                    i18n.resolve_locale(task.get("locale")),
+                    "runtime.worker_internal_error",
+                ),
                 "stdout": "",
                 "stderr": "",
             }

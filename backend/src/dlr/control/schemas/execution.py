@@ -44,6 +44,7 @@ class ExecutionResponse(BaseModel):
     stderr: str
     stderr_truncated: bool
     error: str | None
+    locale: str
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None

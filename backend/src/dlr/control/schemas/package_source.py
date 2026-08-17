@@ -61,6 +61,8 @@ class PackageSourceResponse(BaseModel):
 
     id: int
     name: str
+    # Stable system preset identity; null for user-created sources.
+    preset_id: str | None = None
     kind: str
     index_url: str
     is_default: bool
@@ -85,6 +87,7 @@ class ReachabilityResponse(BaseModel):
 class DefaultPackageSourceInfo(BaseModel):
     """Canonical fresh-deployment default for one dependency kind."""
 
+    preset_id: str
     kind: str
     name: str
     index_url: str

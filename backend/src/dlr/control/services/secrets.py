@@ -111,11 +111,15 @@ def _validate_fields(credential_type: str, fields: dict[str, str]) -> None:
             422,
             "credential_fields_invalid",
             f"Credential type '{credential_type}' requires fields {sorted(expected)}",
+            {"credential_type": credential_type, "fields": sorted(expected)},
         )
     for key, value in fields.items():
         if not value:
             raise domain_error(
-                422, "credential_fields_invalid", f"Credential field '{key}' must not be empty"
+                422,
+                "credential_fields_invalid",
+                f"Credential field '{key}' must not be empty",
+                {"credential_type": credential_type, "field": key},
             )
 
 
@@ -321,10 +325,14 @@ def set_adapter_bindings(
                 422,
                 "binding_env_key_invalid",
                 "env_key must be an environment variable name (letters, digits, underscore)",
+                {"env_key": env_key},
             )
         if env_key in seen_env_keys:
             raise domain_error(
-                422, "binding_env_key_invalid", f"env_key '{env_key}' is bound twice"
+                422,
+                "binding_env_key_invalid",
+                f"env_key '{env_key}' is bound twice",
+                {"env_key": env_key},
             )
         seen_env_keys.add(env_key)
         credential = session.get(Credential, credential_id)
@@ -335,6 +343,7 @@ def set_adapter_bindings(
                 422,
                 "binding_field_invalid",
                 f"Credential type '{credential.type}' has no field '{field}'",
+                {"credential_type": credential.type, "field": field},
             )
 
     session.execute(

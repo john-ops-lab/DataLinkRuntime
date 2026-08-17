@@ -43,7 +43,7 @@ from dlr.common.bigfields import truncate_utf8
 from dlr.common.config import settings
 from dlr.runtime import harness
 from dlr.runtime.node_harness import SOURCE as NODE_HARNESS_SOURCE
-from dlr.worker import javaenv, nodeenv
+from dlr.worker import i18n, javaenv, nodeenv
 from dlr.worker import venv as venv_manager
 
 logger = logging.getLogger("dlr.worker.executor")
@@ -135,7 +135,12 @@ def _timestamped_line(text: str) -> str:
     return f"[{time.strftime(LOG_LINE_TIME_FORMAT)}] {text}"
 
 
-def _platform_message(level: str, message: str, secret_values: Iterable[str]) -> str:
+def _platform_message(
+    level: str,
+    message: str,
+    secret_values: Iterable[str],
+    locale: i18n.WorkerLocale = i18n.DEFAULT_WORKER_LOCALE,
+) -> str:
     """One redacted platform Runtime status line (e.g. timeout / cancel)."""
     return _timestamped_line(f"[{level}] {redact_secrets(message, secret_values)}") + "\n"
 
@@ -500,6 +505,10 @@ def run(
     version_id = int(payload["version_id"])
     language = str(payload.get("language") or "python")
     timeout = int(payload.get("execution_timeout_seconds") or config.execution_timeout_seconds)
+    locale = i18n.resolve_locale(payload.get("locale"))
+    # Payloads created before M5.6 have no locale. Keep their terminal error
+    # text compatible; Control-created payloads always carry the field.
+    legacy_terminal_text = "locale" not in payload
 
     # M3.2: bound credentials from the TaskPayload, injected as DLR_SECRET_*
     # and added to the redaction set alongside the platform DLR_SECRET_*.
@@ -530,10 +539,12 @@ def run(
         """Format and upload one redacted dependency-stage line."""
         safe_message = venv_manager.redact_package_index_log(message, index_url)
         safe_message = redact_secrets(safe_message, dependency_secret_values)
+        safe_message = i18n.localize_dependency_event(safe_message, locale)
         line = _platform_message(
             level,
-            f"[依赖检查] {safe_message}",
+            f"{i18n.text(locale, 'dependency.log_prefix')} {safe_message}",
             dependency_secret_values,
+            locale,
         )
         dependency_log.append(line)
         if dependency_uploader is not None:
@@ -578,7 +589,7 @@ def run(
             else:
                 return {
                     "status": "failed",
-                    "error": f"unsupported Adapter language: {language}",
+                    "error": i18n.text(locale, "runtime.unsupported_language", language=language),
                     "stdout": "",
                     "stderr": "",
                 }
@@ -586,11 +597,17 @@ def run(
             preparation_error = error
             if error.dependency is not None:
                 emit_dependency_log(
-                    f"{error.dependency} 安装失败，停止本次运行",
+                    i18n.text(
+                        locale,
+                        "dependency.install_failed",
+                        dependency=error.dependency,
+                    ),
                     level="ERROR",
                 )
             else:
-                emit_dependency_log("依赖准备失败，停止本次运行", level="ERROR")
+                emit_dependency_log(
+                    i18n.text(locale, "dependency.preparation_failed"), level="ERROR"
+                )
     finally:
         if dependency_uploader is not None:
             dependency_uploader.drain(PROGRESS_DRAIN_SECONDS)
@@ -598,6 +615,7 @@ def run(
     if preparation_error is not None:
         preparation = preparation_error
         safe_install_log = venv_manager.redact_package_index_log(preparation.install_log, index_url)
+        safe_install_log = i18n.localize_dependency_log_marker(safe_install_log, locale)
         safe_error = venv_manager.redact_package_index_log(str(preparation), index_url)
         failure_detail = f"{language} dependency preparation failed"
         if preparation.dependency is not None:
@@ -610,23 +628,45 @@ def run(
         # (stdout channel) with the same line format as every other source.
         unified_log = "".join(dependency_log)
         unified_log += _timestamped_text(redact_secrets(safe_install_log, dependency_secret_values))
+        hint_code = preparation.hint_code or venv_manager.dependency_source_hint_code(
+            preparation.install_log
+        )
+        hint = i18n.source_hint(locale, hint_code)
+        failure_message = i18n.text(locale, "dependency.preparation_failed")
+        runtime_name = next(
+            (
+                runtime
+                for runtime in ("Node.js", "npm", "java", "javac", "Maven")
+                if f"{runtime} Runtime is unavailable" in str(preparation)
+            ),
+            None,
+        )
+        if runtime_name is not None:
+            failure_message = i18n.text(
+                locale,
+                "runtime.unavailable",
+                runtime=runtime_name,
+            )
+        elif hint is not None:
+            failure_message = f"{failure_message}: {hint}"
+        elif not index_url and preparation.dependency is not None:
+            failure_message = i18n.text(locale, f"dependency.no_source_{language}")
         unified_log += _platform_message(
             "ERROR",
-            failure_detail,
+            failure_message,
             dependency_secret_values,
+            locale,
         )
         unified_log += _platform_message(
             "ERROR",
-            "[系统] 本次执行未开始脚本逻辑",
+            i18n.text(locale, "dependency.script_not_started"),
             dependency_secret_values,
+            locale,
         )
         stdout, stdout_truncated = _cap_stream(unified_log.encode())
         return {
             "status": "failed",
-            "error": redact_secrets(
-                failure_detail,
-                dependency_secret_values,
-            ),
+            "error": redact_secrets(failure_detail, dependency_secret_values),
             "stdout": stdout,
             "stdout_truncated": stdout_truncated,
             "stderr": "",
@@ -692,23 +732,52 @@ def run(
     # M5.5.10: terminal platform messages are appended to the unified stream
     # (redacted, timestamped) so the log alone explains the outcome.
     if cancelled:
-        unified_log += _platform_message("ERROR", "execution cancelled", secret_values)
+        unified_log += _platform_message(
+            "ERROR",
+            "execution cancelled"
+            if legacy_terminal_text
+            else i18n.text(locale, "execution.cancelled"),
+            secret_values,
+            locale,
+        )
     elif timed_out:
         unified_log += _platform_message(
-            "ERROR", f"execution timed out after {timeout}s", secret_values
+            "ERROR",
+            f"execution timed out after {timeout}s"
+            if legacy_terminal_text
+            else i18n.text(locale, "execution.timed_out", timeout=timeout),
+            secret_values,
+            locale,
         )
     elif returncode != 0:
         unified_log += _platform_message(
-            "ERROR", f"adapter process exited with code {returncode}", secret_values
+            "ERROR",
+            f"adapter process exited with code {returncode}"
+            if legacy_terminal_text
+            else i18n.text(locale, "execution.process_exited", returncode=returncode),
+            secret_values,
+            locale,
         )
     elif output_raw is None:
-        unified_log += _platform_message("ERROR", "adapter produced no output.json", secret_values)
+        unified_log += _platform_message(
+            "ERROR",
+            "adapter produced no output.json"
+            if legacy_terminal_text
+            else i18n.text(locale, "execution.no_output"),
+            secret_values,
+            locale,
+        )
     else:
         try:
             output_value = json.loads(output_raw)
         except ValueError as error:
             unified_log += _platform_message(
-                "ERROR", f"invalid output.json: {error}", secret_values
+                "ERROR",
+                f"invalid output.json: {error}"
+                if legacy_terminal_text
+                else i18n.text(locale, "execution.invalid_output", detail=error),
+                secret_values,
+                locale,
             )
 
     stdout, stdout_truncated = _cap_stream(unified_log.encode())

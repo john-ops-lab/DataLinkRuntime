@@ -5,5 +5,40 @@
     "zh-CN": "简体中文",
     "en": "English"
   },
-  "localeUpdateFailed": "The language setting could not be updated. Try again."
+  "localeUpdateFailed": "The language setting could not be updated. Try again.",
+  "credentialTypes": {
+    "password": "Password",
+    "token": "Token",
+    "access_key": "Access Key",
+    "secret": "Generic Secret"
+  },
+  "credentialFields": {
+    "username": "Username",
+    "password": "Password",
+    "token": "Token",
+    "access_key_id": "Access Key ID",
+    "access_key_secret": "Access Key Secret",
+    "value": "Value"
+  },
+  "packageSources": {
+    "kinds": {
+      "pypi": "PyPI",
+      "npm": "npm",
+      "maven": "Maven"
+    },
+    "presets": {
+      "pypi": {
+        "aliyun": "Aliyun PyPI mirror",
+        "official": "Official PyPI"
+      },
+      "npm": {
+        "npmmirror": "npmmirror npm mirror",
+        "official": "Official npm registry"
+      },
+      "maven": {
+        "aliyun": "Aliyun Maven public repository",
+        "central": "Maven Central"
+      }
+    }
+  }
 }

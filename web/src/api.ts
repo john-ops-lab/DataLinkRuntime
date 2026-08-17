@@ -58,11 +58,18 @@ export function handleUnauthorized(): void {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly params: Record<string, unknown>;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    params: Record<string, unknown> = {},
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.params = params;
   }
 }
 
@@ -71,6 +78,7 @@ export class ApiError extends Error {
 async function parseError(response: Response): Promise<ApiError> {
   let code = "unknown_error";
   let message = `Request failed with status ${response.status}`;
+  let params: Record<string, unknown> = {};
   try {
     const body: unknown = await response.json();
     if (typeof body === "object" && body !== null) {
@@ -83,12 +91,15 @@ async function parseError(response: Response): Promise<ApiError> {
         if (typeof record.message === "string") {
           message = record.message;
         }
+        if (typeof record.params === "object" && record.params !== null && !Array.isArray(record.params)) {
+          params = record.params as Record<string, unknown>;
+        }
       }
     }
   } catch {
     // keep the fallback message when the body is not JSON
   }
-  return new ApiError(response.status, code, message);
+  return new ApiError(response.status, code, message, params);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

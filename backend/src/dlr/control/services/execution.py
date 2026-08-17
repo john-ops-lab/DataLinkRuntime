@@ -23,6 +23,7 @@ from dlr.control.schemas.execution import (
 from dlr.control.services import adapter_runtime, worker_availability
 from dlr.control.services.adapter import domain_error, resolve_runtime_worker
 from dlr.control.services.execution_cancellation import lock_execution, request_cancellation
+from dlr.control.services.locale import get_system_locale
 
 # Statuses after which an Execution never changes again.
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
@@ -51,6 +52,7 @@ def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -
             413,
             "execution_input_too_large",
             f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
+            {"max_bytes": settings.execution_input_max_bytes},
         )
     if adapter.latest_version_id is None:
         raise domain_error(409, "adapter_has_no_version", "Adapter has no saved Revision yet")
@@ -68,6 +70,7 @@ def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -
         status="pending",
         input=data.input,
         target_worker_id=worker.id,
+        locale=get_system_locale(session),
     )
     session.add(execution)
     try:

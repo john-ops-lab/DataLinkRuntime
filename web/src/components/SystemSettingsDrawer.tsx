@@ -20,9 +20,15 @@ import type { ColumnsType } from "antd/es/table";
 import { useTranslation } from "react-i18next";
 
 import { api } from "../api";
-import { CREDENTIAL_TYPE_FIELDS, CREDENTIAL_TYPE_LABELS, credentialFields } from "../credential-fields";
+import {
+  CREDENTIAL_TYPE_FIELDS,
+  credentialFieldLabel,
+  credentialFields,
+  credentialTypeLabel,
+} from "../credential-fields";
 import { notifyCredentialCatalogChanged, subscribeCredentialCatalog } from "../credential-catalog";
 import { applySystemLocale, isSystemLocale, resolveSystemLocale } from "../i18n";
+import { packageSourceKindLabel, packageSourcePresetLabel } from "../package-source-catalog";
 import type {
   Credential,
   CredentialType,
@@ -231,7 +237,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
         <ul className="credential-type-guide-list">
           {CREDENTIAL_TYPE_GUIDE.map((item) => (
             <li key={item.type} data-testid={`credential-type-guide-${item.type}`}>
-              <strong>{CREDENTIAL_TYPE_LABELS[item.type] ?? item.type}</strong>（字段：
+              <strong>{credentialTypeLabel(item.type)}</strong>（字段：
               {item.fields}）：常见场景为 {item.scenarios}。{item.hint}。
             </li>
           ))}
@@ -272,7 +278,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
             value={form.type}
             disabled={form.editingId !== null}
             options={Object.keys(CREDENTIAL_TYPE_FIELDS).map((type) => ({
-              label: `${CREDENTIAL_TYPE_LABELS[type] ?? type}（${credentialFields(type).join(" + ")}）`,
+              label: `${credentialTypeLabel(type)}（${credentialFields(type).join(" + ")}）`,
               value: type,
             }))}
             onChange={(value) => handleTypeChange(value)}
@@ -282,7 +288,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
               key={key}
               data-testid={`credential-field-${key}`}
               aria-label={`凭据字段 ${key}`}
-              placeholder={key}
+               placeholder={credentialFieldLabel(key)}
               value={form.fields[key] ?? ""}
               autoComplete="new-password"
               onChange={(event) =>
@@ -328,7 +334,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
               title: "类型",
               dataIndex: "type",
               width: 120,
-              render: (type: string) => `${CREDENTIAL_TYPE_LABELS[type] ?? type}`,
+               render: (type: string) => credentialTypeLabel(type),
             },
             {
               title: "操作",
@@ -365,7 +371,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
 type PackageSourceKind = "pypi" | "npm" | "maven";
 
 function kindLabel(kind: PackageSourceKind): string {
-  return { pypi: "PyPI", npm: "npm", maven: "Maven" }[kind];
+  return packageSourceKindLabel(kind);
 }
 
 interface PackageSourceFormState {
@@ -603,17 +609,16 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       title: "类型",
       dataIndex: "kind",
       width: 90,
-      render: (kind: PackageSource["kind"]) =>
-        ({ pypi: "PyPI", npm: "npm", maven: "Maven" })[kind],
+      render: (kind: PackageSource["kind"]) => packageSourceKindLabel(kind),
     },
     {
       title: "名称",
       dataIndex: "name",
       width: 190,
-      render: (name: string, source) => (
-        <Tooltip title={name}>
+      render: (_name: string, source) => (
+        <Tooltip title={packageSourcePresetLabel(source)}>
           <span className="package-source-cell" data-testid="package-source-row">
-            {name}
+            {packageSourcePresetLabel(source)}
             {source.is_default && (
               <Tag color="green" data-testid="default-source-badge">
                 默认

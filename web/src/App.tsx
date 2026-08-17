@@ -26,8 +26,12 @@ import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/Web
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
-import { applySystemLocale, isSystemLocale, resolveSystemLocale } from "./i18n";
-import { DEPENDENCY_NOTE, DEPENDENCY_UI, TASK_STARTER_CODE, WEBHOOK_STARTER_CODE } from "./languages";
+import { applySystemLocale, currentSystemLocale, isSystemLocale, resolveSystemLocale } from "./i18n";
+import {
+  DEPENDENCY_NOTE,
+  DEPENDENCY_UI,
+  starterCodeFor,
+} from "./languages";
 import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { isTerminal } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
@@ -285,6 +289,12 @@ function AdapterConsole() {
   // Monotonic guard: only the newest content-loading request may commit state, so
   // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
   const requestGeneration = useRef(0);
+  // A no-version Adapter still has a browser-only starter snapshot. Keep the
+  // locale chosen when it was first created/loaded so navigation cannot rewrite
+  // that Working Copy after a system-locale switch.
+  const starterLocaleByAdapter = useRef(
+    new Map<number, ReturnType<typeof currentSystemLocale>>(),
+  );
   const liveWatcher = useExecutionWatcher((watchError) => setError(watchError));
   const liveWatchRef = useRef(liveWatcher.watch);
   const refreshedTerminalExecutionId = useRef<number | null>(null);
@@ -565,7 +575,10 @@ function AdapterConsole() {
     return window.confirm("存在未保存的修改，确定放弃吗？");
   }
 
-  async function loadAdapterContent(adapter: Adapter) {
+  async function loadAdapterContent(
+    adapter: Adapter,
+    starterLocaleOverride?: ReturnType<typeof currentSystemLocale>,
+  ) {
     const generation = ++requestGeneration.current;
     // Reset content state synchronously so the previous adapter's snapshot can never
     // appear (or be saved) under the newly selected adapter.
@@ -597,11 +610,13 @@ function AdapterConsole() {
       recordVersionSeqs(list);
       if (adapter.latest_version_id === null) {
         setSelectedVersionId(null);
+        const starterLocale =
+          starterLocaleOverride ??
+          starterLocaleByAdapter.current.get(adapter.id) ??
+          currentSystemLocale();
+        starterLocaleByAdapter.current.set(adapter.id, starterLocale);
         applySnapshot({
-          code:
-            adapter.adapter_type === "task"
-              ? TASK_STARTER_CODE[adapter.language]
-              : WEBHOOK_STARTER_CODE[adapter.language],
+          code: starterCodeFor(adapter.language, adapter.adapter_type, starterLocale),
           requirements: "",
           runtimeConfigText: "{}",
         });
@@ -655,6 +670,7 @@ function AdapterConsole() {
       messageApi.error("已存在同名适配器，请使用其他名称。");
       return false;
     }
+    const starterLocale = currentSystemLocale();
     setBusy(true);
     try {
       setError(null);
@@ -665,7 +681,8 @@ function AdapterConsole() {
         adapter_type: adapterType,
       });
       await refreshAdapters();
-      await loadAdapterContent(created);
+      starterLocaleByAdapter.current.set(created.id, starterLocale);
+      await loadAdapterContent(created, starterLocale);
       return true;
     } catch (err) {
       if (err instanceof ApiError && err.code === "adapter_name_conflict") {
@@ -985,6 +1002,7 @@ function AdapterConsole() {
     try {
       setError(null);
       await api.deleteAdapter(selected.id);
+      starterLocaleByAdapter.current.delete(selected.id);
       requestGeneration.current += 1;
       setSelected(null);
       setSelectedVersionId(null);

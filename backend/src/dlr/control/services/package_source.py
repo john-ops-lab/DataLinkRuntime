@@ -19,6 +19,7 @@ from dlr.control.package_source_defaults import (
     DEFAULT_PACKAGE_SOURCES,
     PackageSourceDefault,
     defaults_for_kind,
+    preset_id_for_source,
 )
 from dlr.control.schemas.package_source import (
     DefaultPackageSourceInfo,
@@ -50,10 +51,16 @@ DEFAULT_SOURCE_URL: dict[str, str] = {
 def default_source_info(kind: str) -> DefaultPackageSourceInfo:
     if kind not in DEFAULT_SOURCE_URL:
         raise domain_error(
-            422, "package_source_kind_invalid", f"Unknown package source kind: {kind}"
+            422,
+            "package_source_kind_invalid",
+            f"Unknown package source kind: {kind}",
+            {"kind": kind},
         )
     return DefaultPackageSourceInfo(
-        kind=kind, name=DEFAULT_SOURCE_NAME[kind], index_url=DEFAULT_SOURCE_URL[kind]
+        preset_id=DOMESTIC_DEFAULTS[kind].preset_id,
+        kind=kind,
+        name=DEFAULT_SOURCE_NAME[kind],
+        index_url=DEFAULT_SOURCE_URL[kind],
     )
 
 
@@ -90,7 +97,10 @@ def _ensure_default_sources(session: Session, kind: str) -> tuple[PackageSource,
     defaults = defaults_for_kind(kind)
     if len(defaults) != 2:
         raise domain_error(
-            422, "package_source_kind_invalid", f"Unknown package source kind: {kind}"
+            422,
+            "package_source_kind_invalid",
+            f"Unknown package source kind: {kind}",
+            {"kind": kind},
         )
 
     has_existing_default = (
@@ -154,6 +164,11 @@ def _validate_credential_kind(kind: str, credential: Credential) -> None:
             "package_source_credential_incompatible",
             f"{kind} sources require {'password or token' if kind == 'npm' else 'password'} "
             "credentials",
+            {
+                "kind": kind,
+                "allowed_types": ["password", "token"] if kind == "npm" else ["password"],
+                "actual_type": credential.type,
+            },
         )
 
 
@@ -182,6 +197,7 @@ def package_source_response(session: Session, source: PackageSource) -> PackageS
     return PackageSourceResponse(
         id=source.id,
         name=source.name,
+        preset_id=preset_id_for_source(source.kind, source.index_url),
         kind=source.kind,
         index_url=source.index_url,
         is_default=source.is_default,
@@ -196,7 +212,10 @@ def create_package_source(session: Session, data: PackageSourceCreate) -> Packag
     existing = session.scalar(select(PackageSource).where(PackageSource.name == data.name))
     if existing is not None:
         raise domain_error(
-            409, "package_source_name_conflict", "Package source name already exists"
+            409,
+            "package_source_name_conflict",
+            "Package source name already exists",
+            {"name": data.name},
         )
     if data.credential_id is not None:
         _validate_credential_kind(data.kind, _get_credential(session, data.credential_id))
@@ -217,7 +236,10 @@ def create_package_source(session: Session, data: PackageSourceCreate) -> Packag
     except IntegrityError:
         session.rollback()
         raise domain_error(
-            409, "package_source_name_conflict", "Package source name already exists"
+            409,
+            "package_source_name_conflict",
+            "Package source name already exists",
+            {"name": data.name},
         ) from None
     session.refresh(source)
     return source
@@ -239,7 +261,10 @@ def update_package_source(
         )
         if conflict is not None:
             raise domain_error(
-                409, "package_source_name_conflict", "Package source name already exists"
+                409,
+                "package_source_name_conflict",
+                "Package source name already exists",
+                {"name": data.name},
             )
         source.name = data.name
     if data.index_url is not None:
@@ -265,7 +290,10 @@ def update_package_source(
     except IntegrityError:
         session.rollback()
         raise domain_error(
-            409, "package_source_name_conflict", "Package source name already exists"
+            409,
+            "package_source_name_conflict",
+            "Package source name already exists",
+            {"name": data.name},
         ) from None
     session.refresh(source)
     return source

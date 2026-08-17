@@ -103,6 +103,7 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
             session,
             {"python": "pypi", "javascript": "npm", "java": "maven"}[adapter.language],
         ),
+        locale=execution.locale,
     )
 
 

@@ -17,7 +17,7 @@ from dlr.control.services.webhook import upsert_webhook
 
 MIGRATION_DATABASE = "dlr_test_migration_m5_4_3"
 LEGACY_REVISION = "0010_m5_4_2_task_run_mode"
-FINAL_REVISION = "0015_m5_5_11_execution_timeout"
+FINAL_REVISION = "0018_m5_6_2_execution_locale"
 LEGACY_PUBLIC_ID = "Legacy_Path_ABC123"
 
 

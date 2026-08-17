@@ -55,6 +55,7 @@ from dlr.control.services.adapter import (
     domain_error,
 )
 from dlr.control.services.execution import compact_json_bytes
+from dlr.control.services.locale import get_system_locale
 from dlr.control.services.secrets import decrypt_fields
 
 logger = logging.getLogger("dlr.control.webhook")
@@ -193,6 +194,7 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
             "webhook_path_invalid",
             "Webhook path must use 3-64 lowercase letters, digits or hyphens "
             "and start with a letter or digit",
+            {"path": data.public_id},
         )
     if adapter_runtime.adapter_runtime_locked(session, adapter):
         disable_only = (
@@ -217,6 +219,7 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
                 "webhook_credential_type_invalid",
                 f"Webhook requires a '{WEBHOOK_CREDENTIAL_TYPE}' Credential, "
                 f"got '{credential.type}'",
+                {"expected_type": WEBHOOK_CREDENTIAL_TYPE, "actual_type": credential.type},
             )
 
     if data.enabled and not webhook.enabled:
@@ -242,6 +245,7 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
                 409,
                 "worker_capability_missing",
                 f"The runtime Worker does not support {adapter.language}",
+                {"language": adapter.language},
             )
         if adapter_runtime.active_execution(session, adapter.id) is not None:
             raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
@@ -257,6 +261,7 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
                 409,
                 "webhook_path_in_use",
                 f"Webhook path '{data.public_id}' is used by another running Adapter",
+                {"path": data.public_id},
             )
 
     webhook.enabled = data.enabled
@@ -272,6 +277,7 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
                 409,
                 "webhook_path_in_use",
                 f"Webhook path '{data.public_id}' is used by another running Adapter",
+                {"path": data.public_id},
             ) from None
         raise
     session.refresh(webhook)
@@ -372,6 +378,7 @@ def receive_webhook(
             413,
             "execution_input_too_large",
             f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
+            {"max_bytes": settings.execution_input_max_bytes},
         )
     try:
         payload: Any = json.loads(
@@ -387,6 +394,7 @@ def receive_webhook(
             413,
             "execution_input_too_large",
             f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
+            {"max_bytes": settings.execution_input_max_bytes},
         )
 
     execution = Execution(
@@ -396,6 +404,7 @@ def receive_webhook(
         status="pending",
         target_worker_id=adapter.runtime_worker_id,
         input=payload,
+        locale=get_system_locale(session),
     )
     # Keep at most 100 accepted calls total. With one active Execution per
     # Adapter, retaining the newest 99 terminal Webhook rows before inserting
