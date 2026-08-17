@@ -23,6 +23,7 @@ import type {
   PackageSource,
   PackageSourceDefaults,
   ReachabilityResult,
+  SystemLocaleResponse,
   VersionDetail,
   VersionSummary,
   Worker,
@@ -114,6 +115,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /** Public bootstrap read; the response contains no other system settings. */
+  getSystemLocale: (): Promise<SystemLocaleResponse> => request("/api/locale"),
+
+  /** Administrator-only deployment locale update. */
+  updateSystemLocale: (locale: SystemLocaleResponse["locale"]): Promise<SystemLocaleResponse> =>
+    request("/api/locale", { method: "PUT", body: JSON.stringify({ locale }) }),
+
   verifyAdminToken: (): Promise<{ status: string }> => request("/api/auth/admin/verify"),
 
   listAdapters: (): Promise<Adapter[]> => request("/api/adapters"),

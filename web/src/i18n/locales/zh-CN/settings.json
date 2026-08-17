@@ -1,0 +1,9 @@
+{
+  "title": "系统设置",
+  "language": "语言",
+  "localeOptions": {
+    "zh-CN": "简体中文",
+    "en": "English"
+  },
+  "localeUpdateFailed": "语言设置更新失败，请重试"
+}

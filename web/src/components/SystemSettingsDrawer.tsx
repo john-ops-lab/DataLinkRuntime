@@ -17,15 +17,18 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import { useTranslation } from "react-i18next";
 
 import { api } from "../api";
 import { CREDENTIAL_TYPE_FIELDS, CREDENTIAL_TYPE_LABELS, credentialFields } from "../credential-fields";
 import { notifyCredentialCatalogChanged, subscribeCredentialCatalog } from "../credential-catalog";
+import { applySystemLocale, isSystemLocale, resolveSystemLocale } from "../i18n";
 import type {
   Credential,
   CredentialType,
   PackageSource,
   PackageSourceDefaults,
+  SystemLocale,
 } from "../types";
 import { userErrorMessage } from "../user-message";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
@@ -876,15 +879,68 @@ interface SystemSettingsDrawerProps {
 // Console banner while the Drawer is open.
 function keepErrorInline(): void {}
 
+function SystemLocaleControl() {
+  const { i18n, t } = useTranslation("settings");
+  const currentLocale = resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
+  const [updating, setUpdating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleChange(nextLocale: SystemLocale) {
+    if (updating || nextLocale === currentLocale) {
+      return;
+    }
+    setUpdating(true);
+    setError(null);
+    try {
+      const response = await api.updateSystemLocale(nextLocale);
+      if (!isSystemLocale(response.locale)) {
+        throw new Error("Invalid locale response");
+      }
+      await applySystemLocale(response.locale);
+    } catch (err) {
+      setError(userErrorMessage(err, t("localeUpdateFailed"), currentLocale));
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  return (
+    <div className="settings-locale-control" data-testid="system-locale-control">
+      <label className="settings-field">
+        <span className="settings-field-label">{t("language")}</span>
+        <Select
+          aria-label={t("language")}
+          data-testid="system-locale-select"
+          value={currentLocale}
+          loading={updating}
+          disabled={updating}
+          options={[
+            { value: "zh-CN", label: t("localeOptions.zh-CN") },
+            { value: "en", label: t("localeOptions.en") },
+          ]}
+          onChange={(value: string) => {
+            if (isSystemLocale(value)) {
+              void handleChange(value);
+            }
+          }}
+        />
+      </label>
+      {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
 export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
+  const { t } = useTranslation("settings");
   return (
     <Drawer
-      title="系统设置"
+      title={t("title")}
       width={720}
       open={props.open}
       destroyOnHidden
       onClose={props.onClose}
     >
+      <SystemLocaleControl />
       <Tabs
         items={[
           {
