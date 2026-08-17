@@ -317,34 +317,40 @@ def test_restore_default_creates_missing_default_source(api_client: TestClient) 
     assert body["is_default"] is True
 
     sources = api_client.get("/api/package-sources").json()
-    assert len(sources) == 1 and sources[0]["id"] == body["id"]
+    assert len(sources) == 2
+    assert {source["id"] for source in sources} >= {body["id"]}
+    assert any(source["index_url"] == "https://pypi.org/simple/" for source in sources)
 
 
-def test_restore_default_resets_existing_default_url(api_client: TestClient) -> None:
+def test_restore_default_preserves_existing_custom_source(api_client: TestClient) -> None:
     source = create_source(api_client, name="custom", is_default=True)
     assert source["index_url"] == "https://mirror.example.com/simple/"
 
     restored = api_client.post("/api/package-sources/defaults/pypi")
     assert restored.status_code == 200, restored.text
-    assert restored.json()["id"] == source["id"]
+    assert restored.json()["id"] != source["id"]
     assert restored.json()["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
     assert restored.json()["is_default"] is True
 
-    sources = api_client.get("/api/package-sources").json()
-    assert len(sources) == 1, "restore reuses the existing row, never duplicates"
+    sources = {item["name"]: item for item in api_client.get("/api/package-sources").json()}
+    assert sources["custom"]["index_url"] == "https://mirror.example.com/simple/"
+    assert sources["custom"]["is_default"] is False
+    assert len(sources) == 3, "restore creates the domestic and official defaults"
 
 
-def test_restore_default_promotes_existing_non_default_source(api_client: TestClient) -> None:
+def test_restore_default_preserves_existing_non_default_source(api_client: TestClient) -> None:
     create_source(api_client, name="plain-mirror", is_default=False)
 
     restored = api_client.post("/api/package-sources/defaults/pypi")
     assert restored.status_code == 200, restored.text
-    assert restored.json()["name"] == "plain-mirror"
+    assert restored.json()["name"] == "阿里云 PyPI 镜像"
     assert restored.json()["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
     assert restored.json()["is_default"] is True
 
-    sources = api_client.get("/api/package-sources").json()
-    assert len(sources) == 1, "restore never creates a duplicate name"
+    sources = {item["name"]: item for item in api_client.get("/api/package-sources").json()}
+    assert sources["plain-mirror"]["index_url"] == "https://mirror.example.com/simple/"
+    assert sources["plain-mirror"]["is_default"] is False
+    assert len(sources) == 3
 
 
 def test_restore_default_rejects_unknown_kind(api_client: TestClient) -> None:

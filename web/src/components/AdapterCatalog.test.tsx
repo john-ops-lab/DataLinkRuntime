@@ -153,3 +153,44 @@ it("does not select the row when clicking the three-dot button", () => {
   fireEvent.click(screen.getByTestId("adapter-item"));
   expect(onSelect).toHaveBeenCalledTimes(1);
 });
+
+it("combines the keyword search with the embedded multi-select type filter", async () => {
+  const adapters = [
+    makeAdapter(1, "manual-sync", { description: "sync source" }),
+    makeAdapter(2, "scheduled-sync", { run_mode: "schedule" }),
+    makeAdapter(3, "incoming-sync", { adapter_type: "webhook" }),
+  ];
+  renderCatalog(adapters);
+
+  const filterButton = screen.getByTestId("adapter-type-filter") as HTMLButtonElement;
+  filterButton.focus();
+  expect(document.activeElement).toBe(filterButton);
+  fireEvent.click(filterButton);
+  const menu = await screen.findByTestId("adapter-type-filter-menu");
+  expect(menu.getAttribute("aria-label")).toBe("适配器类型筛选");
+
+  fireEvent.click(within(menu).getByRole("checkbox", { name: "任务型（手动）" }));
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(1);
+
+  fireEvent.change(screen.getByTestId("adapter-search"), { target: { value: "manual" } });
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(1);
+  fireEvent.change(screen.getByTestId("adapter-search"), { target: { value: "" } });
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(1);
+
+  fireEvent.click(within(menu).getByRole("checkbox", { name: "Webhook" }));
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(2);
+
+  fireEvent.click(within(menu).getByTestId("adapter-type-select-all"));
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(3);
+  expect((within(menu).getByRole("checkbox", { name: "任务型（定时）" }) as HTMLInputElement).checked).toBe(true);
+
+  fireEvent.click(within(menu).getByTestId("adapter-type-clear"));
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(3);
+  expect((within(menu).getByRole("checkbox", { name: "Webhook" }) as HTMLInputElement).checked).toBe(false);
+
+  fireEvent.change(screen.getByTestId("adapter-search"), { target: { value: "scheduled" } });
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(1);
+  fireEvent.click(within(menu).getByTestId("adapter-filter-clear-all"));
+  expect((screen.getByTestId("adapter-search") as HTMLInputElement).value).toBe("");
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(3);
+});

@@ -204,6 +204,15 @@ def test_ai_setting_singleton_crud_never_echoes_api_key(
         assert session.scalar(select(func.count()).select_from(AiModelSetting)) == 1
 
 
+def test_ai_setting_persists_one_normalized_provider_root(api_client: TestClient) -> None:
+    saved = configure(
+        api_client,
+        provider="minimax",
+        base_url="https://minimax.example.com//v1//",
+    )
+    assert saved["base_url"] == "https://minimax.example.com"
+
+
 def test_ai_setting_credential_is_nullable_and_token_only(api_client: TestClient) -> None:
     assert configure(api_client, credential_id=None)["credential_id"] is None
 
@@ -296,6 +305,43 @@ def test_reasoning_default_sends_no_enable_disable_override(provider: Any) -> No
     assert "reasoning_effort" not in payload
     # MiniMax's output separation hint is not a reasoning enable/disable switch.
     assert (payload.get("reasoning_split") is True) == (provider == "minimax")
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://minimax.example.com",
+        "https://minimax.example.com/",
+        "https://minimax.example.com/v1",
+        "https://minimax.example.com/v1/",
+        "https://minimax.example.com//v1//",
+        "https://minimax.example.com/v1/v1",
+    ],
+)
+def test_openai_compatible_endpoint_normalization_is_shared_for_chat_and_models(
+    monkeypatch: pytest.MonkeyPatch, base_url: str
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(
+        method: str,
+        url: str,
+        _headers: dict[str, str],
+        _payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        calls.append((method, url))
+        return fake_chat_response("OK") if method == "POST" else {"data": [{"id": "model"}]}
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    draft = AiSettingDraft(**setting_payload(provider="minimax", base_url=base_url))
+    assert providers.normalize_base_url(base_url) == "https://minimax.example.com"
+    assert providers.chat(draft, None, [{"role": "user", "content": "OK"}], structured=False)
+    assert providers.fetch_models("minimax", base_url, None) == ["model"]
+    assert calls == [
+        ("POST", "https://minimax.example.com/v1/chat/completions"),
+        ("GET", "https://minimax.example.com/v1/models"),
+    ]
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh"])

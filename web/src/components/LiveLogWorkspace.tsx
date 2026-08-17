@@ -10,7 +10,7 @@ import { Alert, Tabs, Tag } from "antd";
 
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { AiContextSnippet, Execution } from "../types";
-import { unifiedLogContent } from "../unified-log";
+import { LIVE_LOG_MAX_LINES, unifiedLogContent } from "../unified-log";
 import { LogView, OutputView } from "./OutputView";
 
 interface Props {
@@ -88,6 +88,8 @@ export default function LiveLogWorkspace(props: Props) {
                     content={content}
                     truncated={execution.stdout_truncated || execution.stderr_truncated}
                     emptyHint="暂无日志"
+                    maxLines={LIVE_LOG_MAX_LINES}
+                    mode="live"
                     addContextLabel="加入对话上下文"
                     onAddContext={handleAddContext}
                   />

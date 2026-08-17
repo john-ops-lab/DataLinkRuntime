@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, Button } from "antd";
 
 import type { Execution } from "../types";
+import { tailLogLines } from "../unified-log";
 
 /** Full output as formatted JSON; truncated output shows size + preview. */
 export function OutputView(props: { execution: Execution; testId?: string }) {
@@ -75,16 +76,28 @@ export function LogView(props: {
   truncated: boolean;
   emptyHint?: string;
   testId?: string;
+  maxLines?: number;
+  mode?: "live" | "history";
+  followControls?: boolean;
   /** 实时日志选区 → AI 上下文（只使用浏览器可见的已脱敏文本）。 */
   addContextLabel?: string;
   onAddContext?: (text: string, startLine: number, endLine: number) => void;
 }) {
   const preRef = useRef<HTMLPreElement | null>(null);
-  // The user owns the scroll position once they scroll up or pause; only
-  // auto-follow while they stay near the bottom (M5.5.10 §三).
-  const followTail = useRef(true);
+  const followControls = props.followControls ?? true;
+  const mode = props.mode ?? "live";
+  // The user owns the live scroll position once they scroll up or pause; a
+  // history view never follows because it is a completed audit snapshot.
+  const followTail = useRef(followControls);
   const [paused, setPaused] = useState(false);
   const [hasSelection, setHasSelection] = useState(false);
+  const [maximized, setMaximized] = useState(false);
+  const displayContent =
+    props.maxLines === undefined ? props.content : tailLogLines(props.content, props.maxLines);
+
+  function rangeIsInside(element: HTMLElement, range: Range): boolean {
+    return element.contains(range.startContainer) && element.contains(range.endContainer);
+  }
 
   // Track whether the current document selection lives inside this log pane,
   // so 加入对话上下文 is only offered for real in-pane selections.
@@ -96,11 +109,20 @@ export function LogView(props: {
         setHasSelection(false);
         return;
       }
+      if (selection.rangeCount === 0) {
+        setHasSelection(false);
+        return;
+      }
+      const range = selection.getRangeAt(0);
       const anchor = selection.anchorNode;
       const focus = selection.focusNode;
       setHasSelection(
-        (anchor !== null && element.contains(anchor)) ||
-          (focus !== null && element.contains(focus)),
+        anchor !== null &&
+          focus !== null &&
+          element.contains(anchor) &&
+          element.contains(focus) &&
+          rangeIsInside(element, range) &&
+          selection.toString().trim() !== "",
       );
     }
     document.addEventListener("selectionchange", updateSelectionState);
@@ -108,16 +130,21 @@ export function LogView(props: {
     return () => {
       document.removeEventListener("selectionchange", updateSelectionState);
     };
-  }, []);
+  }, [displayContent]);
 
   function handleAddContext() {
     const element = preRef.current;
     const selection = window.getSelection();
-    if (element === null || selection === null || selection.isCollapsed || selection.rangeCount === 0) {
+    if (
+      element === null ||
+      selection === null ||
+      selection.isCollapsed ||
+      selection.rangeCount === 0
+    ) {
       return;
     }
     const range = selection.getRangeAt(0);
-    if (!element.contains(range.commonAncestorContainer)) {
+    if (!rangeIsInside(element, range)) {
       return;
     }
     const text = selection.toString();
@@ -135,9 +162,12 @@ export function LogView(props: {
     if (element !== null && followTail.current) {
       element.scrollTop = element.scrollHeight;
     }
-  }, [props.content]);
+  }, [displayContent]);
 
   function handleScroll() {
+    if (!followControls) {
+      return;
+    }
     const element = preRef.current;
     if (element === null) {
       return;
@@ -156,25 +186,38 @@ export function LogView(props: {
     }
   }
 
+  const paneClassName = [
+    "log-pane",
+    mode === "history" ? "history-log-pane" : "live-log-pane",
+    maximized ? "log-pane-maximized" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className="log-pane">
+    <div className={paneClassName} data-log-view-mode={mode}>
       <div className="log-toolbar">
-        {paused ? (
-          <Button size="small" data-testid={props.testId ? `${props.testId}-resume` : "log-resume"} onClick={resumeFollowing}>
-            继续跟随
-          </Button>
-        ) : (
-          <Button
-            size="small"
-            data-testid={props.testId ? `${props.testId}-pause` : "log-pause"}
-            onClick={() => {
-              followTail.current = false;
-              setPaused(true);
-            }}
-          >
-            暂停跟随
-          </Button>
-        )}
+        {followControls &&
+          (paused ? (
+            <Button
+              size="small"
+              data-testid={props.testId ? `${props.testId}-resume` : "log-resume"}
+              onClick={resumeFollowing}
+            >
+              继续跟随
+            </Button>
+          ) : (
+            <Button
+              size="small"
+              data-testid={props.testId ? `${props.testId}-pause` : "log-pause"}
+              onClick={() => {
+                followTail.current = false;
+                setPaused(true);
+              }}
+            >
+              暂停跟随
+            </Button>
+          ))}
         {props.onAddContext !== undefined && (
           <Button
             size="small"
@@ -186,6 +229,18 @@ export function LogView(props: {
             {props.addContextLabel ?? "加入对话上下文"}
           </Button>
         )}
+        <Button
+          size="small"
+          data-testid={
+            props.testId
+              ? `${props.testId}-${maximized ? "restore" : "maximize"}`
+              : `log-${maximized ? "restore" : "maximize"}`
+          }
+          aria-label={maximized ? "恢复日志大小" : "最大化日志"}
+          onClick={() => setMaximized((current) => !current)}
+        >
+          {maximized ? "恢复" : "最大化"}
+        </Button>
         {props.truncated && (
           <Alert type="warning" showIcon banner message="日志超过平台保存上限，部分内容已被截断" />
         )}
@@ -196,7 +251,7 @@ export function LogView(props: {
         data-testid={props.testId ?? "log-view"}
         onScroll={handleScroll}
       >
-        {props.content === "" ? (props.emptyHint ?? "暂无日志") : props.content}
+        {displayContent === "" ? (props.emptyHint ?? "暂无日志") : displayContent}
       </pre>
     </div>
   );

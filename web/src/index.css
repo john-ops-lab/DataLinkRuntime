@@ -158,6 +158,55 @@ body {
   padding: 0 12px 8px;
 }
 
+.catalog-search-control > .ant-input-affix-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+
+.catalog-type-filter-trigger {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  color: var(--dlr-text-secondary);
+}
+
+.catalog-type-filter-trigger:hover,
+.catalog-type-filter-trigger:focus-visible {
+  color: #0958d9;
+  background: #e6f4ff;
+}
+
+.catalog-type-filter-menu {
+  min-width: 188px;
+  padding: 8px;
+  background: var(--dlr-workspace-bg);
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(16, 24, 40, 0.12);
+}
+
+.catalog-type-filter-actions {
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--dlr-border);
+}
+
+.catalog-type-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 2px;
+  cursor: pointer;
+  color: var(--dlr-text);
+}
+
+.catalog-type-filter-option input {
+  margin: 0;
+  accent-color: #1677ff;
+}
+
 .catalog-list {
   flex: 1;
   min-height: 0;
@@ -444,6 +493,33 @@ body {
   min-width: 0;
 }
 
+/* 日志区使用深色终端表面；disabled 也保持同一套对比和焦点语义，避免
+ * Ant 默认白色按钮在无选区时像一个异常空框。 */
+.live-log-workspace .log-toolbar .ant-btn {
+  color: #c9d1d9;
+  border-color: #484f58;
+  background: #21262d;
+}
+
+.live-log-workspace .log-toolbar .ant-btn:hover:not(:disabled) {
+  color: #fff;
+  border-color: #58a6ff;
+  background: #30363d;
+}
+
+.live-log-workspace .log-toolbar .ant-btn:focus-visible {
+  color: #fff;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.35);
+}
+
+.live-log-workspace .log-toolbar .ant-btn:disabled {
+  color: #6e7681;
+  border-color: #30363d;
+  background: #161b22;
+  cursor: not-allowed;
+}
+
 .task-live-log-handoff {
   margin-top: 14px;
 }
@@ -564,6 +640,22 @@ body {
   border: 1px solid var(--dlr-border);
   border-radius: 6px;
   word-break: break-all;
+}
+
+/* Webhook 完整地址始终可读、可复制，但不作为可编辑字段呈现。 */
+.webhook-url-control .ant-input {
+  color: var(--dlr-text);
+  background: var(--dlr-surface-muted, rgba(128, 128, 128, 0.06));
+  cursor: text;
+}
+
+.webhook-url-control .ant-input:hover {
+  border-color: var(--dlr-border-strong);
+}
+
+.webhook-url-control .ant-input:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
 }
 
 .webhook-lock-glyph {
@@ -974,15 +1066,6 @@ body {
   font-size: 0.75rem;
 }
 
-/* M5.5.13：凭据安全引导（绑定 Secret 不进 Prompt / 硬编码敏感信息会随代码发送）。 */
-.ai-composer-hint {
-  align-self: stretch;
-  margin: 0;
-  color: var(--dlr-text-weak);
-  font-size: 0.7rem;
-  line-height: 1.5;
-}
-
 /* M3.2：次级配置区 textarea 关闭 resize，避免破坏工作台布局。 */
 .version-fields textarea {
   resize: none;
@@ -1192,6 +1275,33 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* 历史日志不应把详情抽屉撑长；滚动只发生在日志区域内部。 */
+.history-log-pane {
+  flex: 0 0 clamp(180px, 42vh, 360px);
+  height: clamp(180px, 42vh, 360px);
+  min-height: 0;
+}
+
+/* 最大化在原组件上切换布局，保留日志内容、选区、跟随状态和 SSE 订阅。 */
+.log-pane-maximized {
+  position: fixed;
+  inset: 16px;
+  z-index: 1000;
+  box-sizing: border-box;
+  flex: none;
+  height: auto;
+  min-height: 0;
+  padding: 12px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45), 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.log-pane-maximized .terminal-view {
+  min-height: 0;
 }
 
 /* M5.5.10：统一日志视图——所有输出源按实际顺序在一处展示。 */
@@ -1507,6 +1617,38 @@ body {
 .settings-package-source-fallback {
   display: block;
   font-size: 0.8rem;
+}
+
+.package-source-table .ant-table-cell {
+  overflow: hidden;
+}
+
+.package-source-cell {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.package-source-test-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.package-source-test-status {
+  display: inline-block;
+  width: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.package-source-test-status.is-loading {
+  color: var(--dlr-text-weak);
 }
 
 .ai-model-settings {

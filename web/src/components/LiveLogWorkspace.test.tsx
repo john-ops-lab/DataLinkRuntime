@@ -197,8 +197,65 @@ it("keeps 加入对话上下文 disabled without an in-pane selection and ignore
   act(() => {
     document.dispatchEvent(new Event("selectionchange"));
   });
+  expect(addButton.disabled).toBe(true);
   fireEvent.click(addButton);
   expect(onAddContext).not.toHaveBeenCalled();
   emptySpy.mockRestore();
   whitespaceSpy.mockRestore();
+});
+
+it("keeps 加入对话上下文 disabled when a selection crosses outside the log pane", () => {
+  const onAddContext = vi.fn();
+  renderWorkspace({ onAddContext });
+  const pre = screen.getByTestId("live-log");
+  const textNode = pre.firstChild as Text;
+  const outside = document.createTextNode("outside pane");
+  document.body.append(outside);
+  const range = document.createRange();
+  range.setStart(textNode, 0);
+  range.setEnd(outside, outside.length);
+  const selectionSpy = vi.spyOn(window, "getSelection").mockReturnValue({
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => range,
+    toString: () => range.toString(),
+    anchorNode: textNode,
+    focusNode: outside,
+  } as unknown as Selection);
+
+  act(() => {
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  expect((screen.getByTestId("live-log-add-context") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByTestId("live-log-add-context"));
+  expect(onAddContext).not.toHaveBeenCalled();
+
+  selectionSpy.mockRestore();
+  outside.remove();
+});
+
+it("keeps only the newest 2000 live-log lines", () => {
+  const lines = Array.from({ length: 2005 }, (_, index) => `line-${index}`).join("\n");
+  renderWorkspace({ liveStdout: lines });
+
+  const content = screen.getByTestId("live-log").textContent ?? "";
+  const displayedLines = content.split("\n");
+  expect(displayedLines).not.toContain("line-0");
+  expect(displayedLines).not.toContain("line-4");
+  expect(displayedLines).toContain("line-5");
+  expect(displayedLines).toContain("line-2004");
+  expect(displayedLines).toHaveLength(2000);
+});
+
+it("maximizes and restores the live log without replacing its content", () => {
+  renderWorkspace({ liveStdout: "line-1\nline-2\n" });
+
+  const log = screen.getByTestId("live-log");
+  expect(screen.getByTestId("live-log-maximize")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("live-log-maximize"));
+  expect(screen.getByTestId("live-log-restore")).toBeTruthy();
+  expect(screen.getByTestId("live-log").textContent).toBe(log.textContent);
+
+  fireEvent.click(screen.getByTestId("live-log-restore"));
+  expect(screen.getByTestId("live-log-maximize")).toBeTruthy();
 });
