@@ -581,8 +581,14 @@ def test_credentialed_index_failure_is_redacted_before_execution_persistence(
     # The executor applies the same policy defensively, and Control persists
     # only the already-redacted result in the unified Execution log (M5.5.10
     # stdout channel; legacy stderr storage stays untouched).
-    result = executor.run(claimed, runtime_settings(tmp_path))
+    uploaded: list[str] = []
+    result = executor.run(
+        claimed,
+        runtime_settings(tmp_path),
+        progress_callback=lambda stdout, _stderr: uploaded.append(stdout) or False,
+    )
     assert result["status"] == "failed"
+    live_log = "".join(uploaded)
     response = report(api_client, worker["id"], execution["id"], result)
     assert response.status_code == 200, response.text
     persisted = api_client.get(f"/api/executions/{execution['id']}").json()
@@ -594,6 +600,7 @@ def test_credentialed_index_failure_is_redacted_before_execution_persistence(
         raw_userinfo,
         encoded_userinfo,
     ):
+        assert sensitive not in live_log
         assert sensitive not in persisted["stdout"]
         assert sensitive not in (persisted["error"] or "")
     assert "https://[REDACTED]@mirror.example.com/simple/" in persisted["stdout"]
@@ -637,7 +644,9 @@ def test_executor_prefers_payload_index_url(
         *,
         timeout_seconds: int,
         index_url: str | None = None,
+        dependency_log: venv_manager.DependencyLogCallback | None = None,
     ) -> Path:
+        assert dependency_log is not None
         captured["index_url"] = index_url
         return Path(sys.executable)
 

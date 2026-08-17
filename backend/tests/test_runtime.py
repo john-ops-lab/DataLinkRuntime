@@ -200,6 +200,99 @@ def test_executor_dependency_failure_reports_failed(tmp_path: object) -> None:
     assert "dependency preparation failed" in (result["error"] or "")
 
 
+def test_executor_dependency_logs_use_live_channel_before_user_script(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    progress: list[str] = []
+
+    def fake_prepare(
+        _runtime_root: Path,
+        _adapter_id: int,
+        _version_id: int,
+        _requirements: str,
+        *,
+        timeout_seconds: int,
+        index_url: str | None = None,
+        dependency_log: venv_manager.DependencyLogCallback | None = None,
+    ) -> Path:
+        assert timeout_seconds == 120
+        assert index_url is None
+        assert dependency_log is not None
+        dependency_log("requests==2.32.3 未安装，开始安装")
+        dependency_log("requests==2.32.3 安装成功")
+        return Path(sys.executable)
+
+    monkeypatch.setattr(venv_manager, "prepare_version_venv", fake_prepare)
+    result = executor.run(
+        make_payload(
+            code=(
+                "def handle(context, input):\n"
+                "    print('user-script-started', flush=True)\n"
+                "    return {}\n"
+            ),
+            requirements="requests==2.32.3",
+        ),
+        runtime_settings(tmp_path),
+        progress_callback=lambda stdout, _stderr: progress.append(stdout) or False,
+    )
+
+    assert result["status"] == "succeeded"
+    assert "[依赖检查] requests==2.32.3 未安装，开始安装" in result["stdout"]
+    assert "[依赖检查] requests==2.32.3 安装成功" in result["stdout"]
+    assert result["stdout"].index("安装成功") < result["stdout"].index("user-script-started")
+    delivered = "".join(progress)
+    assert "[依赖检查] requests==2.32.3 未安装，开始安装" in delivered
+    assert "user-script-started" in delivered
+
+
+def test_executor_dependency_failure_skips_user_script_and_reports_dependency(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = Path(str(tmp_path)) / "user-script-started"
+
+    def fake_prepare(
+        _runtime_root: Path,
+        _adapter_id: int,
+        _version_id: int,
+        _requirements: str,
+        *,
+        timeout_seconds: int,
+        index_url: str | None = None,
+        dependency_log: venv_manager.DependencyLogCallback | None = None,
+    ) -> Path:
+        assert timeout_seconds == 120
+        assert index_url is None
+        assert dependency_log is not None
+        dependency_log("missing-package==1.0 未安装，开始安装")
+        raise venv_manager.DependencyPreparationError(
+            "package source rejected",
+            "token=private-value",
+            dependency="missing-package==1.0",
+        )
+
+    monkeypatch.setattr(venv_manager, "prepare_version_venv", fake_prepare)
+    result = executor.run(
+        make_payload(
+            code=(
+                "from pathlib import Path\n"
+                f"def handle(context, input):\n    Path({str(marker)!r}).write_text('started')\n"
+                "    return {}\n"
+            ),
+            requirements="missing-package==1.0",
+        ),
+        runtime_settings(tmp_path),
+    )
+
+    assert result["status"] == "failed"
+    assert not marker.exists(), "user code must not run after dependency preparation fails"
+    assert "missing-package==1.0" in result["stdout"]
+    assert "安装失败，停止本次运行" in result["stdout"]
+    assert "本次执行未开始脚本逻辑" in result["stdout"]
+    assert "user-script-started" not in result["stdout"]
+    assert "private-value" not in result["stdout"]
+    assert "missing-package==1.0" in (result["error"] or "")
+
+
 # --- big-field strategy ---------------------------------------------------------
 
 

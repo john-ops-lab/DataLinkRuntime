@@ -200,6 +200,114 @@ def test_dependency_declaration_parsers() -> None:
         javaenv.parse_requirements("invalid")
 
 
+def test_dependency_logs_are_unified_and_ready_environments_skip_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], _timeout: int) -> str:
+        calls.append(command)
+        if command[:2] == ["uv", "venv"]:
+            python = Path(command[2]) / "bin" / "python"
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.touch()
+        if command[0] == "javac":
+            classes = Path(command[command.index("-d") + 1])
+            (classes / "Adapter.class").write_bytes(b"fixture")
+        return ""
+
+    monkeypatch.setattr(venv, "_run_logged", fake_run)
+    monkeypatch.setattr(nodeenv.shutil, "which", lambda command: f"/fake/{command}")
+    monkeypatch.setattr(javaenv.shutil, "which", lambda command: f"/fake/{command}")
+
+    python_logs: list[str] = []
+    venv.prepare_version_venv(
+        tmp_path / "python",
+        30,
+        1,
+        "requests==2.32.3",
+        timeout_seconds=5,
+        dependency_log=python_logs.append,
+    )
+    python_ready_logs: list[str] = []
+    venv.prepare_version_venv(
+        tmp_path / "python",
+        30,
+        1,
+        "requests==2.32.3",
+        timeout_seconds=5,
+        dependency_log=python_ready_logs.append,
+    )
+
+    javascript_logs: list[str] = []
+    nodeenv.prepare_version_node(
+        tmp_path / "javascript",
+        31,
+        1,
+        "export function handle(context, input) { return input; }",
+        "axios@1.7.7",
+        timeout_seconds=5,
+        registry_url=None,
+        dependency_log=javascript_logs.append,
+    )
+    javascript_ready_logs: list[str] = []
+    nodeenv.prepare_version_node(
+        tmp_path / "javascript",
+        31,
+        1,
+        "export function handle(context, input) { return input; }",
+        "axios@1.7.7",
+        timeout_seconds=5,
+        registry_url=None,
+        dependency_log=javascript_ready_logs.append,
+    )
+
+    java_logs: list[str] = []
+    javaenv.prepare_version_java(
+        tmp_path / "java",
+        32,
+        1,
+        "public class Adapter { public Object handle(Context c, Object i) { return i; } }",
+        "com.example:fixture:1.0.0",
+        timeout_seconds=5,
+        repository_url=None,
+        dependency_log=java_logs.append,
+    )
+    java_ready_logs: list[str] = []
+    javaenv.prepare_version_java(
+        tmp_path / "java",
+        32,
+        1,
+        "public class Adapter { public Object handle(Context c, Object i) { return i; } }",
+        "com.example:fixture:1.0.0",
+        timeout_seconds=5,
+        repository_url=None,
+        dependency_log=java_ready_logs.append,
+    )
+
+    assert python_logs == [
+        "requests==2.32.3 未安装，开始安装",
+        "requests==2.32.3 安装成功",
+    ]
+    assert python_ready_logs == ["requests==2.32.3 已安装，检查通过"]
+    assert javascript_logs == [
+        "axios@1.7.7 未安装，开始安装",
+        "axios@1.7.7 安装成功",
+    ]
+    assert javascript_ready_logs == ["axios@1.7.7 已安装，检查通过"]
+    assert java_logs == [
+        "com.example:fixture:1.0.0 未安装，开始安装",
+        "com.example:fixture:1.0.0 安装成功",
+    ]
+    assert java_ready_logs == ["com.example:fixture:1.0.0 已安装，检查通过"]
+    install_commands = [
+        command
+        for command in calls
+        if (command[0] == "uv" and "install" in command) or command[0] in {"npm", "mvn"}
+    ]
+    assert len(install_commands) == 3
+
+
 def test_dependency_auth_is_kept_out_of_generated_manifests() -> None:
     npm_url, npm_auth = nodeenv._npm_auth("https://npm-token:@registry.example.com/npm/")
     assert npm_url == "https://registry.example.com/npm/"
