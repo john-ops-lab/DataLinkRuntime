@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import Editor from "@monaco-editor/react";
+import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { Button, ConfigProvider, Input, message, Modal, Segmented, Select, Tabs } from "antd";
 import zhCN from "antd/locale/zh_CN";
 
-import { api, onUnauthorized, setAuthToken } from "./api";
+import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
 import AdapterCatalog from "./components/AdapterCatalog";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
 import AiAssistantPanel from "./components/AiAssistantPanel";
@@ -151,8 +151,9 @@ function errorMessage(error: unknown): string {
 
 type WorkbenchTabKey = "edit" | "runtime" | "history";
 
-// 编辑页次级配置区（语言依赖 | 运行参数（JSON） | 凭据绑定）。
-type ConfigTabKey = "requirements" | "runtime-config" | "bindings";
+// 编辑页次级配置区（语言依赖 | 凭据绑定）。M5.5.9：运行参数（JSON）已退出
+// 用户主流程；普通、非敏感配置由代码本身表达。
+type ConfigTabKey = "requirements" | "bindings";
 
 /** Working Copy / AI Candidate diff modal state. */
 interface DiffViewState {
@@ -174,6 +175,22 @@ function parseRuntimeConfig(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+// M5.5.9：活跃 Adapter 名称唯一的前端预检。trim 后精确匹配（与 Backend 一致），
+// 已软删除（archived_at）或自身（excludeId）不参与冲突。
+function activeNameConflict(
+  adapters: Adapter[],
+  name: string,
+  excludeId: number | null,
+): boolean {
+  const trimmed = name.trim();
+  return adapters.some(
+    (adapter) =>
+      !adapter.archived_at &&
+      adapter.id !== excludeId &&
+      adapter.name === trimmed,
+  );
 }
 
 function AdapterConsole() {
@@ -239,6 +256,21 @@ function AdapterConsole() {
   // secondary, so this cache never causes extra list requests.
   const [versionSeqById, setVersionSeqById] = useState<Map<number, number>>(new Map());
   const { preference: themePreference, resolvedTheme: editorTheme, setPreference: setThemePreference } = useMonacoTheme();
+  // M5.5.9：Monaco 主题稳定。手工选择深色/浅色必须跨刷新/切换/remount 保持；
+  // 除主编辑器外（Diff 弹窗等）任何组件都不允许把全局主题改回默认。这里在
+  // 每次 resolvedTheme 变化后通过 loader 重新落一次全局主题，作为最后防线，
+  // 避免其他组件 setTheme 竞态把用户的手工选择覆盖掉。
+  useEffect(() => {
+    let cancelled = false;
+    void loader.init().then((monacoInstance) => {
+      if (!cancelled) {
+        monacoInstance.editor.setTheme(editorTheme);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [editorTheme]);
   // Monotonic guard: only the newest content-loading request may commit state, so
   // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
   const requestGeneration = useRef(0);
@@ -615,6 +647,11 @@ function AdapterConsole() {
     if (!confirmDiscard()) {
       return false;
     }
+    // M5.5.9：前端预检同名（活跃）适配器，给出明确中文提示。
+    if (activeNameConflict(adapters, createdName, null)) {
+      messageApi.error("已存在同名适配器，请使用其他名称。");
+      return false;
+    }
     setBusy(true);
     try {
       setError(null);
@@ -628,7 +665,11 @@ function AdapterConsole() {
       await loadAdapterContent(created);
       return true;
     } catch (err) {
-      setError(errorMessage(err));
+      if (err instanceof ApiError && err.code === "adapter_name_conflict") {
+        messageApi.error("已存在同名适配器，请使用其他名称。");
+      } else {
+        setError(errorMessage(err));
+      }
       return false;
     } finally {
       setBusy(false);
@@ -731,12 +772,29 @@ function AdapterConsole() {
     setSaveWorkerPromptOpen(true);
   }
 
-  function handleClone() {
-    if (!selected || busy) {
+  function handleClone(source?: Adapter) {
+    const cloneTarget = source ?? selected;
+    if (!cloneTarget || busy) {
       return;
     }
-    setCloneSource(selected);
-    setCloneName(`${selected.name}-copy`);
+    setCloneSource(cloneTarget);
+    setCloneName(`${cloneTarget.name}-copy`);
+  }
+
+  // M5.5.9：目录三点菜单“设置”——选中该 Adapter（尊重 busy/未保存确认）并打开设置。
+  function handleCatalogOpenSettings(adapter: Adapter) {
+    if (busy) {
+      return;
+    }
+    if (selected?.id === adapter.id) {
+      setSettingsOpen(true);
+      return;
+    }
+    if (!confirmDiscard()) {
+      return;
+    }
+    void loadAdapterContent(adapter);
+    setSettingsOpen(true);
   }
 
   async function performClone() {
@@ -745,6 +803,11 @@ function AdapterConsole() {
     }
     const source = cloneSource;
     const targetName = cloneName.trim();
+    // M5.5.9：前端预检同名（活跃）适配器。
+    if (activeNameConflict(adapters, targetName, null)) {
+      messageApi.error("已存在同名适配器，请使用其他名称。");
+      return;
+    }
     setCloneSource(null);
     setBusy(true);
     try {
@@ -754,7 +817,11 @@ function AdapterConsole() {
       const target = list.find((item) => item.id === created.id) ?? created;
       await loadAdapterContent(target);
     } catch (err) {
-      setError(errorMessage(err));
+      if (err instanceof ApiError && err.code === "adapter_name_conflict") {
+        messageApi.error("已存在同名适配器，请使用其他名称。");
+      } else {
+        setError(errorMessage(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -843,6 +910,11 @@ function AdapterConsole() {
     if (!selected || busy) {
       return;
     }
+    // M5.5.9：重命名预检——trim 后与活跃同名拒绝。
+    if (name.trim() !== "" && activeNameConflict(adapters, name, selected.id)) {
+      messageApi.error("已存在同名适配器，请使用其他名称。");
+      return;
+    }
     setBusy(true);
     try {
       setError(null);
@@ -860,7 +932,11 @@ function AdapterConsole() {
         setError("适配器信息已保存，但列表刷新失败；请手动刷新确认。");
       }
     } catch (err) {
-      setError(errorMessage(err));
+      if (err instanceof ApiError && err.code === "adapter_name_conflict") {
+        messageApi.error("已存在同名适配器，请使用其他名称。");
+      } else {
+        setError(errorMessage(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -964,6 +1040,8 @@ function AdapterConsole() {
           onCreate={handleCreateAdapter}
           versionSeqById={versionSeqById}
           workers={workers}
+          onOpenSettings={handleCatalogOpenSettings}
+          onClone={(adapter) => void handleClone(adapter)}
         />
 
         {/*
@@ -981,6 +1059,7 @@ function AdapterConsole() {
           contentReady={contentReady}
           busy={busy}
           selectedContext={aiSelectedContext}
+          theme={editorTheme}
           onOpen={() => setAiPanelOpen(true)}
           onClose={() => setAiPanelOpen(false)}
           onApply={handleApplyAiCandidate}
@@ -995,7 +1074,6 @@ function AdapterConsole() {
               {selected.adapter_type === "task" ? (
                 <TaskWorkbenchHeader
                   adapter={selected}
-                  revisionSeq={selectedVersion?.seq ?? null}
                   runtimeWorker={selectedRuntimeWorker}
                   runtimeState={taskRuntimeState}
                   dirty={dirty}
@@ -1003,7 +1081,6 @@ function AdapterConsole() {
                   contentReady={contentReady}
                   onSave={() => void handleSaveVersion()}
                   onOpenSettings={() => setSettingsOpen(true)}
-                  onClone={() => void handleClone()}
                   onRunOnce={() => taskRuntimeRef.current?.runOnce()}
                   onStopExecution={() => taskRuntimeRef.current?.stopExecution()}
                   onToggleSchedule={() => taskRuntimeRef.current?.toggleSchedule()}
@@ -1013,12 +1090,10 @@ function AdapterConsole() {
                 adapter={selected}
                 runtimeWorker={selectedRuntimeWorker}
                 runtimeState={webhookRuntimeState}
-                dirty={dirty}
                 busy={busy}
                 contentReady={contentReady}
                 onSave={() => void handleSaveVersion()}
                 onOpenSettings={() => setSettingsOpen(true)}
-                onClone={() => void handleClone()}
                 onToggleReceiving={() => webhookRuntimeRef.current?.toggleReceiving()}
               />
               )}
@@ -1115,24 +1190,6 @@ function AdapterConsole() {
                                 ),
                               },
                               {
-                                key: "runtime-config",
-                                label: "运行参数（JSON）",
-                                children: (
-                                  <textarea
-                                    data-testid="runtime-config-input"
-                                    rows={4}
-                                    value={snapshot.runtimeConfigText}
-                                    disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
-                                    onChange={(event) =>
-                                      setSnapshot((current) => ({
-                                        ...current,
-                                        runtimeConfigText: event.target.value,
-                                      }))
-                                    }
-                                  />
-                                ),
-                              },
-                              {
                                 key: "bindings",
                                 label: "凭据绑定",
                                 children: (
@@ -1163,6 +1220,7 @@ function AdapterConsole() {
                             workersLoading={workersLoading}
                             workersError={workersError}
                             execution={liveExecution}
+                            dirty={dirty}
                             onAdapterChange={handleTaskAdapterChange}
                             onExecutionStarted={handleExecutionStarted}
                             onRuntimeStateChange={handleTaskRuntimeStateChange}
@@ -1252,6 +1310,7 @@ function AdapterConsole() {
         originalTitle={diffView?.originalTitle ?? ""}
         modifiedTitle={diffView?.modifiedTitle ?? ""}
         panes={diffView?.panes ?? []}
+        theme={editorTheme}
         onClose={() => setDiffView(null)}
       />
 

@@ -58,7 +58,7 @@
 ## 6. 前端交互
 
 - WorkbenchHeader 四层状态（未发布 / 待启动 / 已启动 / 已停止，异常与归档叠加展示）：保存为新版本、发布（确认框含门禁信息与 Diff 入口）、启动、停止（等待 / 终止选择）；Published != Running 时显著提示。发布确认只说明“当前运行不会自动切换；需人工停止后再启动”，不把 Publish 称为“热切换”；真正的切换拦截发生在旧生产入口尚未停止或旧 Execution 尚未终态时尝试 Start。Start 成功后自动切"执行记录"Tab 并打开该 Execution 实时日志（TestRunPanel 的 SSE/fallback 逻辑抽成共享 hook，不引入状态框架）。
-- 编辑页次级配置 Tabs：Python 依赖 | 运行参数（JSON）| 凭据绑定；textarea 关闭 resize。
+- 编辑页次级配置 Tabs：Python 依赖 | 凭据绑定。M5.5.9 起“运行参数（JSON）”退出用户主流程，普通、非敏感配置由代码本身表达（底层 `runtime_config` 作为不可变 Revision 字段保留，Diff/AI 工作副本仍携带）。
 - Header 新增"系统设置"抽屉：凭据管理 + Python 包源（含可达性测试）。
 - Monaco DiffEditor 两个入口：Working Copy vs 基准版本、发布目标 vs 当前生产版本（覆盖 code/依赖/参数/绑定引用）。
 - Adapter 设置提供 production Worker 选择器并明确在线/离线；切换后显示“需重新测试”，测试和 Start 对离线目标明确拒绝。Catalog 状态点 + 活跃/已归档切换，二级信息以生产状态、Running Version、production Worker 与 Published/Running mismatch 为主；Worker 列表一次加载后映射，不能按 Adapter 做 N+1。执行记录区分"测试运行/生产启动"标签。

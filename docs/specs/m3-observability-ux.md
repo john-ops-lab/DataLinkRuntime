@@ -33,7 +33,7 @@ M3 完成后，DLR 应第一次具备“日常开发 Adapter、测试 Adapter、
 
 - Execution 必须继续绑定不可变 `version_id`。
 - 测试运行显式绑定当前在 Web 中选中的已保存 Version，而不是偷偷改用 latest。
-- Monaco Working Copy 存在未保存修改（dirty）时，禁止点击“运行测试”，提示“当前修改尚未保存，请先保存为新版本后再运行测试”。
+- Monaco Working Copy 存在未保存修改（dirty）时，禁止点击“运行测试”，提示“请先保存当前修改，再运行。”（M5.5.9 统一文案）。
 - M3 不新增 Draft、临时 Version、临时代码执行通道。
 - 历史 Version 可以直接测试；Execution 绑定对应历史 `version_id`。
 

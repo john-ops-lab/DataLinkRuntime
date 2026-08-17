@@ -34,6 +34,8 @@ interface VersionDiffModalProps {
   originalTitle: string;
   modifiedTitle: string;
   panes: DiffPane[];
+  /** M5.5.9：与主编辑器一致的主题，避免 Diff 弹窗把全局 Monaco 主题改回默认。 */
+  theme: string;
   onClose: () => void;
   /** 传入时渲染 "[应用修改] [关闭]" 底部操作；否则不渲染底部。 */
   applyAction?: DiffApplyAction | null;
@@ -104,6 +106,7 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
             language={current.language}
             original={current.original}
             modified={current.modified}
+            theme={props.theme}
             // M5.5.6：Modal destroyOnHidden 卸载 DiffEditor 时，@monaco-editor/react
             // 默认先 dispose 内部 model 再 dispose DiffEditorWidget，触发
             // "TextModel got disposed before DiffEditorWidget model got reset"

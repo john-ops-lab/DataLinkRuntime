@@ -45,6 +45,18 @@ def _require_not_archived(adapter: Adapter) -> None:
         raise domain_error(409, "adapter_deleted", "Adapter is deleted")
 
 
+def _active_name_conflict(session: Session, name: str, *, exclude_id: int | None = None) -> bool:
+    """M5.5.9: a name conflicts only with a currently active Adapter.
+
+    Soft-deleted Adapter names are reusable. ``name`` is already trimmed by the
+    request schema; the case rule is exact-match (consistent front/back).
+    """
+    query = select(Adapter).where(Adapter.name == name, Adapter.archived_at.is_(None))
+    if exclude_id is not None:
+        query = query.where(Adapter.id != exclude_id)
+    return session.scalar(query) is not None
+
+
 def _adapter_response(
     adapter: Adapter,
     runtime_state: adapter_runtime.AdapterRuntimeState,
@@ -66,8 +78,7 @@ def adapter_responses(session: Session, adapters: list[Adapter]) -> list[Adapter
 
 
 def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
-    existing = session.scalar(select(Adapter).where(Adapter.name == data.name))
-    if existing is not None:
+    if _active_name_conflict(session, data.name):
         raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
     adapter = Adapter(
         name=data.name,
@@ -184,10 +195,7 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
             adapter.run_mode = data.run_mode
 
     if data.name is not None and data.name != adapter.name:
-        conflict = session.scalar(
-            select(Adapter).where(Adapter.name == data.name, Adapter.id != adapter_id)
-        )
-        if conflict is not None:
+        if _active_name_conflict(session, data.name, exclude_id=adapter.id):
             raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
         adapter.name = data.name
     if data.description is not None:
@@ -284,8 +292,7 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
     if source is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(source)
-    existing = session.scalar(select(Adapter).where(Adapter.name == data.name))
-    if existing is not None:
+    if _active_name_conflict(session, data.name):
         raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
     clone = Adapter(
         name=data.name,
