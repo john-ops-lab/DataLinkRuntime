@@ -127,7 +127,7 @@ def prepare_version_java(
                     base.extend(["-s", str(settings_path)])
                 base.extend(["dependency:copy-dependencies", f"-DoutputDirectory={deps}"])
                 try:
-                    venv._run_logged(base + ["-o"], timeout_seconds)
+                    venv._run_install_logged(base + ["-o"], timeout_seconds)
                 except venv.DependencyPreparationError as offline_error:
                     if not repository_url:
                         raise venv.DependencyPreparationError(
@@ -135,7 +135,7 @@ def prepare_version_java(
                             "no Maven dependency source is configured",
                             offline_error.install_log,
                         ) from offline_error
-                    venv._run_logged(base, timeout_seconds)
+                    venv._run_install_logged(base, timeout_seconds)
             venv._run_logged(
                 [
                     "javac",

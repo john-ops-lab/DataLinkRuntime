@@ -295,6 +295,156 @@ def test_claim_payload_embeds_basic_auth(
         )
 
 
+# --- canonical defaults and restore (M5.5.8) -----------------------------------
+
+
+def test_canonical_defaults_endpoint_returns_all_three_kinds(api_client: TestClient) -> None:
+    defaults = api_client.get("/api/package-sources/defaults")
+    assert defaults.status_code == 200
+    body = defaults.json()
+    assert body["pypi"]["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
+    assert body["npm"]["index_url"] == "https://registry.npmmirror.com/"
+    assert body["maven"]["index_url"] == "https://maven.aliyun.com/repository/public"
+    assert all(body[kind]["name"] for kind in ("pypi", "npm", "maven"))
+
+
+def test_restore_default_creates_missing_default_source(api_client: TestClient) -> None:
+    restored = api_client.post("/api/package-sources/defaults/pypi")
+    assert restored.status_code == 200, restored.text
+    body = restored.json()
+    assert body["kind"] == "pypi"
+    assert body["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
+    assert body["is_default"] is True
+
+    sources = api_client.get("/api/package-sources").json()
+    assert len(sources) == 1 and sources[0]["id"] == body["id"]
+
+
+def test_restore_default_resets_existing_default_url(api_client: TestClient) -> None:
+    source = create_source(api_client, name="custom", is_default=True)
+    assert source["index_url"] == "https://mirror.example.com/simple/"
+
+    restored = api_client.post("/api/package-sources/defaults/pypi")
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["id"] == source["id"]
+    assert restored.json()["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
+    assert restored.json()["is_default"] is True
+
+    sources = api_client.get("/api/package-sources").json()
+    assert len(sources) == 1, "restore reuses the existing row, never duplicates"
+
+
+def test_restore_default_promotes_existing_non_default_source(api_client: TestClient) -> None:
+    create_source(api_client, name="plain-mirror", is_default=False)
+
+    restored = api_client.post("/api/package-sources/defaults/pypi")
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["name"] == "plain-mirror"
+    assert restored.json()["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
+    assert restored.json()["is_default"] is True
+
+    sources = api_client.get("/api/package-sources").json()
+    assert len(sources) == 1, "restore never creates a duplicate name"
+
+
+def test_restore_default_rejects_unknown_kind(api_client: TestClient) -> None:
+    response = api_client.post("/api/package-sources/defaults/cargo")
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "package_source_kind_invalid"
+
+
+# --- actionable install-error classification (M5.5.8) --------------------------
+
+
+def test_classify_install_error_distinguishes_layers() -> None:
+    cases = [
+        (
+            "Could not resolve host: registry.npmmirror.com",
+            "域名解析失败",
+        ),
+        (
+            "ERROR: Temporary failure in name resolution",
+            "域名解析失败",
+        ),
+        (
+            "Failed to connect to mirror.example.com port 443 after 30000 ms: Connection timed out",
+            "网络不可达",
+        ),
+        (
+            "curl: (7) Failed to connect to mirrors.aliyun.com port 80: Connection refused",
+            "网络不可达",
+        ),
+        (
+            "urllib3 HTTPSConnectionPool: Max retries exceeded ... Caused by SSLError "
+            "(SSLCertVerificationError) certificate verify failed",
+            "TLS 握手或证书校验失败",
+        ),
+        (
+            "ERROR: HTTP error 401 while getting https://mirror.example.com/simple/pkg/",
+            "认证失败",
+        ),
+        (
+            "npm ERR! code E403\nnpm ERR! 403 Forbidden - GET https://registry.example.com/private",
+            "认证失败",
+        ),
+        (
+            "ERROR: Could not find a version that satisfies the requirement missing-pkg==1.0 "
+            "(from versions: none)",
+            "包或制品不存在",
+        ),
+        (
+            "npm ERR! 404 Not Found - GET https://registry.example.com/not-a-package",
+            "包或制品不存在",
+        ),
+        (
+            "Could not find artifact org.example:no-such-artifact:1.0 in mirror (https://maven.example.com)",
+            "包或制品不存在",
+        ),
+        (
+            "Invalid index URL 'https:///simple/': Cannot parse",
+            "仓库不存在或不可用",
+        ),
+        (
+            "ERROR: HTTP error 404 while getting https://mirror.example.com/simple/",
+            "仓库不存在或不可用",
+        ),
+        ("random unrelated output", None),
+    ]
+    for log, expected in cases:
+        hint = venv_manager.classify_dependency_install_error(log)
+        if expected is None:
+            assert hint is None, log
+        else:
+            assert hint is not None and expected in hint, log
+
+
+def test_install_error_hint_is_appended_to_preparation_error(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run_logged(command: list[str], timeout_seconds: int) -> str:
+        if "venv" in command and "install" not in command:
+            return ""
+        if "--offline" in command:
+            raise venv_manager.DependencyPreparationError("offline install failed", "offline log")
+        raise venv_manager.DependencyPreparationError(
+            "uv pip install failed",
+            "ERROR: Could not resolve host: mirror.example.com",
+        )
+
+    monkeypatch.setattr(venv_manager, "_run_logged", fake_run_logged)
+    with pytest.raises(venv_manager.DependencyPreparationError) as error:
+        venv_manager.prepare_version_venv(
+            tmp_path,  # type: ignore[arg-type]
+            20,
+            4,
+            "requests",
+            timeout_seconds=60,
+            index_url="https://mirror.example.com/simple/",
+        )
+    assert "域名解析失败" in str(error.value)
+    assert "Could not resolve host" in error.value.install_log
+
+
 # --- offline-first venv strategy ----------------------------------------------------
 
 

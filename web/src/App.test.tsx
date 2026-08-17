@@ -826,7 +826,7 @@ it("creates a JavaScript adapter with the language starter and Monaco mode", asy
   expect(JSON.parse(createBody).adapter_type).toBe("webhook");
   expect((editor as HTMLTextAreaElement).value).toContain("export async function handle");
   expect(editor.getAttribute("data-monaco-language")).toBe("javascript");
-  expect(screen.getByText("npm 依赖")).toBeTruthy();
+  expect(screen.getByText("JavaScript 依赖")).toBeTruthy();
 
   fireEvent.click(screen.getByTestId("show-create-form"));
   expect((screen.getByRole("radio", { name: "Python" }) as HTMLInputElement).checked).toBe(true);
@@ -2503,7 +2503,7 @@ it("shows a JavaScript working copy diff with the matching Monaco mode and depen
   expect(diff.getAttribute("data-monaco-language")).toBe("javascript");
   expect(diff.getAttribute("data-original")).toBe("baseline-code\n");
   expect(diff.getAttribute("data-modified")).toBe("edited-code\n");
-  expect(within(screen.getByTestId("version-diff")).getByText("npm 依赖")).toBeTruthy();
+  expect(within(screen.getByTestId("version-diff")).getByText("JavaScript 依赖")).toBeTruthy();
 });
 
 it("reopens the diff with the latest working copy content, never the previous session snapshot", async () => {
@@ -2635,6 +2635,17 @@ it("manages credentials and package sources from the system settings drawer", as
       }),
     },
     {
+      method: "GET",
+      match: "/api/package-sources/defaults",
+      respond: () => ({
+        body: {
+          pypi: { kind: "pypi", name: "阿里云 PyPI 镜像", index_url: "https://mirrors.aliyun.com/pypi/simple/" },
+          npm: { kind: "npm", name: "npmmirror npm 镜像", index_url: "https://registry.npmmirror.com/" },
+          maven: { kind: "maven", name: "阿里云 Maven 公共仓库", index_url: "https://maven.aliyun.com/repository/public" },
+        },
+      }),
+    },
+    {
       method: "POST",
       match: "/api/package-sources/1/test",
       respond: () => ({
@@ -2654,10 +2665,14 @@ it("manages credentials and package sources from the system settings drawer", as
   expect(screen.getByRole("combobox", { name: "凭据类型" })).toBeTruthy();
   expect(screen.getByLabelText("凭据字段 username")).toBeTruthy();
   expect(screen.getByLabelText("凭据字段 password")).toBeTruthy();
-  // 依赖源页签：默认源标记 + 可达性测试。
+  // 依赖源页签：默认源标记 + 可达性测试 + 恢复默认入口。
   fireEvent.click(screen.getByText("依赖源"));
   await screen.findByTestId("package-source-row");
   expect(screen.getByTestId("default-source-badge")).toBeTruthy();
+  // PyPI 已有默认源时不显示清空回退提示；npm / Maven 无默认源时显示明确回退。
+  expect(screen.queryByTestId("no-default-source-pypi")).toBeNull();
+  expect(screen.getByTestId("no-default-source-npm").textContent).toContain("不会静默使用未配置的地址");
+  expect(screen.getByTestId("restore-default-pypi")).toBeTruthy();
   fireEvent.click(screen.getByTestId("new-package-source"));
   expect(screen.getByRole("textbox", { name: "依赖源名称" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "依赖源类型" })).toBeTruthy();
@@ -2721,8 +2736,8 @@ it("expands and collapses the AI panel and blocks send without an Adapter", asyn
 
 it.each([
   ["python", "Python 依赖"],
-  ["javascript", "npm 依赖"],
-  ["java", "Maven 依赖"],
+  ["javascript", "JavaScript 依赖"],
+  ["java", "Java 依赖"],
 ] as const)(
   "sends the %s Working Copy, shows Candidate Diff with Apply, and applies browser-only",
   async (language, dependencyLabel) => {
@@ -3338,7 +3353,10 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
   fireEvent.click(await screen.findByText("AI 模型"));
   await screen.findByTestId("ai-model-settings-panel");
 
-  expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("工作副本");
+  expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("AI 使用说明");
+  expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain(
+    "敏感凭据不会发送给模型",
+  );
   fireEvent.click(screen.getByText("高级：推理策略（跟随模型默认）"));
   expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("跟随模型默认");
   expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();

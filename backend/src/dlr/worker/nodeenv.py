@@ -116,7 +116,7 @@ def prepare_version_node(
                 if npmrc is not None:
                     command.extend(["--userconfig", str(npmrc)])
                 try:
-                    venv._run_logged(command + ["--offline"], timeout_seconds)
+                    venv._run_install_logged(command + ["--offline"], timeout_seconds)
                 except venv.DependencyPreparationError as offline_error:
                     if not registry_url:
                         raise venv.DependencyPreparationError(
@@ -125,7 +125,9 @@ def prepare_version_node(
                             offline_error.install_log,
                         ) from offline_error
                     assert clean_registry is not None
-                    venv._run_logged(command + ["--registry", clean_registry], timeout_seconds)
+                    venv._run_install_logged(
+                        command + ["--registry", clean_registry], timeout_seconds
+                    )
             except venv.DependencyPreparationError:
                 shutil.rmtree(directory, ignore_errors=True)
                 raise

@@ -52,8 +52,8 @@ def _fail(exit_code: int, layer: str, detail: str) -> NoReturn:
     print(f"[FAIL] {layer}: {detail}", file=sys.stderr)
     print(
         f"hint: {layer} 失败，请对照 README「容器网络与 DNS 排障」检查对应层级；"
-        "默认 Compose 使用 Docker 内置 DNS（转发宿主机 resolv.conf），"
-        "企业网络 / VPN 下可参考 docker-compose.dns.example.yml 覆盖 DNS。",
+        "control / worker 默认已带公共 DNS 回退（127.0.0.11 → 1.1.1.1 → 8.8.8.8），"
+        "企业网络 / VPN 下可在 .env 设置 DLR_DNS_FALLBACK_1/2 指定自有 DNS。",
         file=sys.stderr,
     )
     raise SystemExit(exit_code)

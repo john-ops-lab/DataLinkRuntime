@@ -81,10 +81,17 @@ export const DEPENDENCY_UI: Record<
   AdapterLanguage,
   { label: string; placeholder: string }
 > = {
-  python: { label: "Python 依赖", placeholder: "如 requests==2.32.3（每行一个依赖）" },
-  javascript: { label: "npm 依赖", placeholder: "如 axios@1.7.7（每行一个依赖）" },
+  python: { label: "Python 依赖", placeholder: "如 requests==2.32.3（回车换行，每行写一个依赖）" },
+  javascript: {
+    label: "JavaScript 依赖",
+    placeholder: "如 axios@1.7.7（回车换行，每行写一个依赖）",
+  },
   java: {
-    label: "Maven 依赖",
-    placeholder: "如 com.squareup.okhttp3:okhttp:4.12.0（每行一个依赖）",
+    label: "Java 依赖",
+    placeholder: "如 org.apache.commons:commons-lang3:3.17.0（回车换行，每行写一个依赖）",
   },
 };
+
+/** 三种语言共用的依赖安装说明（M5.5.8）。 */
+export const DEPENDENCY_NOTE =
+  "Worker 执行前会安装这些依赖。安装源需在“系统设置”中配置；如为离线/企业网络环境，可由管理员预置对应依赖源或缓存。不填写则平台不会额外检查依赖是否齐全，缺少依赖可能在运行时直接报错。";

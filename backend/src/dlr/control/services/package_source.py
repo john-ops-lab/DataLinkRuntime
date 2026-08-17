@@ -16,7 +16,9 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models.platform import Credential, PackageSource
 from dlr.control.schemas.package_source import (
+    DefaultPackageSourceInfo,
     PackageSourceCreate,
+    PackageSourceDefaultsResponse,
     PackageSourceResponse,
     PackageSourceUpdate,
 )
@@ -25,6 +27,79 @@ from dlr.control.services.adapter import domain_error
 
 # Control-side reachability probes must stay fast and bounded.
 REACHABILITY_TIMEOUT_SECONDS = 5.0
+
+# Canonical fresh-deployment defaults (M5.5.8). Seeded only when the
+# package_sources table is empty so existing deployments keep their sources.
+DEFAULT_SOURCE_NAME: dict[str, str] = {
+    "pypi": "阿里云 PyPI 镜像",
+    "npm": "npmmirror npm 镜像",
+    "maven": "阿里云 Maven 公共仓库",
+}
+DEFAULT_SOURCE_URL: dict[str, str] = {
+    "pypi": "https://mirrors.aliyun.com/pypi/simple/",
+    "npm": "https://registry.npmmirror.com/",
+    "maven": "https://maven.aliyun.com/repository/public",
+}
+
+
+def default_source_info(kind: str) -> DefaultPackageSourceInfo:
+    if kind not in DEFAULT_SOURCE_URL:
+        raise domain_error(
+            422, "package_source_kind_invalid", f"Unknown package source kind: {kind}"
+        )
+    return DefaultPackageSourceInfo(
+        kind=kind, name=DEFAULT_SOURCE_NAME[kind], index_url=DEFAULT_SOURCE_URL[kind]
+    )
+
+
+def list_default_sources() -> PackageSourceDefaultsResponse:
+    """Canonical defaults for every kind, independent of the local database."""
+    return PackageSourceDefaultsResponse(
+        pypi=default_source_info("pypi"),
+        npm=default_source_info("npm"),
+        maven=default_source_info("maven"),
+    )
+
+
+def restore_default_source(session: Session, kind: str) -> PackageSource:
+    """Reset one kind to its canonical default source.
+
+    When a default source of that kind already exists its index URL is
+    restored to the canonical value (name and bound credential are kept);
+    otherwise a new default source is created. Deleting every source and
+    restoring later always lands on the canonical URL, never an unknown one.
+    """
+    canonical = default_source_info(kind)
+    default = session.scalar(
+        select(PackageSource).where(PackageSource.kind == kind, PackageSource.is_default.is_(True))
+    )
+    if default is not None:
+        if default.index_url != canonical.index_url:
+            default.index_url = canonical.index_url
+            session.commit()
+            session.refresh(default)
+        return default
+    # Reuse an existing non-default source of the same kind when present so
+    # restoring never duplicates names the admin may already have created.
+    existing = session.scalar(select(PackageSource).where(PackageSource.kind == kind))
+    if existing is not None:
+        existing.index_url = canonical.index_url
+        _clear_other_defaults(session, kind, keep_id=existing.id)
+        existing.is_default = True
+        session.commit()
+        session.refresh(existing)
+        return existing
+    source = PackageSource(
+        name=canonical.name,
+        kind=kind,
+        index_url=canonical.index_url,
+        is_default=True,
+        credential_id=None,
+    )
+    session.add(source)
+    session.commit()
+    session.refresh(source)
+    return source
 
 
 def _get_credential(session: Session, credential_id: int) -> Credential:
