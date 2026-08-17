@@ -13,6 +13,7 @@ import { openExecutionEvents } from "../sse";
 import type { ExecutionEventsHandle } from "../sse";
 import { isTerminal } from "../status";
 import type { Execution } from "../types";
+import { LIVE_LOG_MAX_LINES, tailLogLines } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 
 export interface ExecutionWatcher {
@@ -29,6 +30,10 @@ export interface ExecutionWatcher {
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
+}
+
+function retainLiveLines(content: string): string {
+  return tailLogLines(content, LIVE_LOG_MAX_LINES);
 }
 
 export function useExecutionWatcher(onError: (message: string) => void): ExecutionWatcher {
@@ -72,8 +77,8 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
       return; // a newer watch owns the view now
     }
     setExecution(detail);
-    setLiveStdout(detail.stdout);
-    setLiveStderr(detail.stderr);
+    setLiveStdout(retainLiveLines(detail.stdout));
+    setLiveStderr(retainLiveLines(detail.stderr));
   }
 
   // SSE is only the experience channel: after any abnormal end the final
@@ -122,8 +127,8 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     const generation = generationRef.current;
     setFallbackExhausted(false);
     setExecution(initial);
-    setLiveStdout(initial.stdout);
-    setLiveStderr(initial.stderr);
+    setLiveStdout(retainLiveLines(initial.stdout));
+    setLiveStderr(retainLiveLines(initial.stderr));
     streamRef.current?.close();
     stopFallbackPolling();
     if (isTerminal(initial.status)) {
@@ -138,8 +143,8 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
         // log events between polls are deltas on top of it, so replacing the
         // buffers here keeps the live view consistent without duplicates.
         setExecution(next);
-        setLiveStdout(next.stdout);
-        setLiveStderr(next.stderr);
+        setLiveStdout(retainLiveLines(next.stdout));
+        setLiveStderr(retainLiveLines(next.stderr));
         if (isTerminal(next.status)) {
           streamRef.current?.close();
           // The final result is authoritative: reload the full detail.
@@ -159,9 +164,9 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
           return;
         }
         if (event.stream === "stdout") {
-          setLiveStdout((current) => current + event.chunk);
+          setLiveStdout((current) => retainLiveLines(current + event.chunk));
         } else {
-          setLiveStderr((current) => current + event.chunk);
+          setLiveStderr((current) => retainLiveLines(current + event.chunk));
         }
       },
       onLogSnapshot(event) {
@@ -169,9 +174,9 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
           return;
         }
         if (event.stream === "stdout") {
-          setLiveStdout(event.content);
+          setLiveStdout(retainLiveLines(event.content));
         } else {
-          setLiveStderr(event.content);
+          setLiveStderr(retainLiveLines(event.content));
         }
         // Truncation just happened server-side: reflect it immediately
         // instead of waiting for the next execution event or terminal.
