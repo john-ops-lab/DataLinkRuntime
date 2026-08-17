@@ -43,6 +43,18 @@ if DLR_DNS_FALLBACK_1= DLR_DNS_FALLBACK_2= docker compose -f docker-compose.yml 
   echo "ERROR: disabled DNS fallback still in config" >&2
   exit 1
 fi
+# M5.5.8: the README-standard `cp .env.example .env` path must keep the public
+# DNS fallback. .env.example deliberately ships no active DLR_DNS_FALLBACK_*
+# assignments because an empty-but-set value overrides the compose default.
+env_example_check=$(mktemp -d)
+cp .env.example "$env_example_check/.env"
+if ! docker compose --env-file "$env_example_check/.env" -f docker-compose.yml config \
+  | grep -q "1.1.1.1"; then
+  echo "ERROR: .env.example copied per README loses the public DNS fallback" >&2
+  rm -rf "$env_example_check"
+  exit 1
+fi
+rm -rf "$env_example_check"
 docker compose build
 docker compose up -d
 
