@@ -169,8 +169,10 @@ def test_executor_adapter_exception_reports_failed(tmp_path: object) -> None:
     code = "def handle(context, input):\n    raise ValueError('boom')\n"
     result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "failed"
-    assert "ValueError" in result["stderr"]
-    assert "boom" in result["stderr"]
+    # M5.5.10: the traceback lives in the unified log stream (stdout channel).
+    assert "ValueError" in result["stdout"]
+    assert "boom" in result["stdout"]
+    assert result["stderr"] == ""
     assert result["error"]
 
 
@@ -178,7 +180,7 @@ def test_executor_non_serializable_return_reports_failed(tmp_path: object) -> No
     code = "def handle(context, input):\n    return object()\n"
     result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "failed"
-    assert "JSON" in result["stderr"]
+    assert "JSON" in result["stdout"]
 
 
 def test_executor_timeout_kills_process(tmp_path: object) -> None:
@@ -384,8 +386,11 @@ def test_executor_progress_callback_receives_live_chunks(
     assert "phase-1" in delivered
     assert "phase-2" in delivered
     assert len(chunks) >= 2, "progress must arrive in multiple waves, not one final dump"
-    # Progress never changes the final report.
-    assert result["stdout"] == "phase-1\nphase-2\n"
+    # Progress never changes the final report; M5.5.10 adds unified line
+    # timestamps, so the exact text is no longer the raw stream.
+    assert "phase-1" in result["stdout"]
+    assert "phase-2" in result["stdout"]
+    assert result["stderr"] == ""
 
 
 def test_executor_progress_chunks_are_redacted(
@@ -426,7 +431,97 @@ def test_executor_progress_callback_failure_never_fails_run(
         progress_callback=broken_callback,
     )
     assert result["status"] == "succeeded", "progress is best effort and must not fail the run"
-    assert result["stdout"] == "phase-1\nphase-2\n"
+    assert "phase-1" in result["stdout"]
+    assert "phase-2" in result["stdout"]
+
+
+# --- M5.5.10 unified live log contract -----------------------------------------
+
+
+def test_executor_unified_log_merges_streams_and_timestamps_lines(
+    tmp_path: object,
+) -> None:
+    """stdout, stderr and logger land in one actual-order stream with one
+    unified per-line time prefix; the stderr channel stays empty."""
+    code = (
+        "import sys\n"
+        "def handle(context, input):\n"
+        "    print('print-line', flush=True)\n"
+        "    sys.stderr.write('stderr-line\\n')\n"
+        "    context.logger.info('logger-line')\n"
+        "    context.logger.error('logger-error')\n"
+        "    return {}\n"
+    )
+    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    assert result["status"] == "succeeded"
+    assert result["stderr"] == ""
+    assert result["stderr_truncated"] is False
+    lines = result["stdout"].splitlines()
+    assert len(lines) == 4
+    for line in lines:
+        assert line.startswith("[20"), f"every line needs a time prefix: {line!r}"
+    assert any("print-line" in line for line in lines)
+    assert any("stderr-line" in line for line in lines)
+    # The logger keeps its level marker after the unified time prefix.
+    assert any("[INFO] logger-line" in line for line in lines)
+    assert any("[ERROR] logger-error" in line for line in lines)
+    # Actual order: the print happens before the stderr write.
+    assert lines.index(next(line for line in lines if "print-line" in line)) < lines.index(
+        next(line for line in lines if "stderr-line" in line)
+    )
+
+
+def test_executor_unified_log_platform_message_on_failure(tmp_path: object) -> None:
+    code = "def handle(context, input):\n    import sys\n    sys.exit(3)\n"
+    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    assert result["status"] == "failed"
+    assert "adapter process exited with code 3" in result["stdout"]
+    assert "adapter process exited with code 3" in (result["error"] or "")
+
+
+def test_executor_unified_log_traceback_is_inline(tmp_path: object) -> None:
+    """A Traceback is part of the unified stream, not a separate view."""
+    code = "def handle(context, input):\n    raise ValueError('boom')\n"
+    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    assert result["status"] == "failed"
+    traceback_lines = [line for line in result["stdout"].splitlines() if "Traceback" in line]
+    assert traceback_lines, "the Traceback header must be in the unified log"
+    assert any("ValueError" in line for line in result["stdout"].splitlines())
+
+
+def test_line_timestamp_buffer_prefixes_complete_lines_only() -> None:
+    buffer = executor._LineTimestampBuffer()
+    first = buffer.push("lead\npartial")
+    assert first.startswith("[20"), "the emitted text needs a time prefix"
+    assert first.endswith("lead\n"), "only the complete line is emitted"
+    second = buffer.push(" tail\n")
+    assert "partial tail" in second
+    assert buffer.flush() == ""
+    assert buffer.push("") == ""
+
+
+def test_executor_unified_log_live_chunks_match_final_report(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live-uploaded chunks concatenate to a prefix of the final report
+    text, so SSE replay and the authoritative result stay consistent."""
+    monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
+    chunks: list[str] = []
+
+    def callback(stdout_chunk: str, stderr_chunk: str) -> None:
+        chunks.append(stdout_chunk)
+
+    result = executor.run(
+        make_payload(code=LIVE_LOG_CODE),
+        runtime_settings(tmp_path),
+        progress_callback=callback,
+    )
+    assert result["status"] == "succeeded"
+    live = "".join(chunks)
+    assert live != ""
+    assert result["stdout"].startswith(live), (
+        "the final authoritative text must keep the exact live-uploaded prefix"
+    )
 
 
 def test_stream_tailer_keeps_split_utf8_boundaries(tmp_path: object) -> None:
@@ -647,10 +742,8 @@ def test_blocking_progress_callback_cannot_delay_the_deadline(
     the executor would hang forever here; with the off-thread uploader the
     kill must land within a small tolerance of the configured deadline.
     """
-    stdout_path = Path(str(tmp_path)) / "stdout.log"
+    stdout_path = Path(str(tmp_path)) / "stream.log"
     stdout_path.write_text("")
-    stderr_path = Path(str(tmp_path)) / "stderr.log"
-    stderr_path.write_text("")
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         stdout=subprocess.DEVNULL,
@@ -663,10 +756,9 @@ def test_blocking_progress_callback_cannot_delay_the_deadline(
 
     started = time.monotonic()
     try:
-        returncode, timed_out, cancelled = executor._wait_with_progress(
+        returncode, timed_out, cancelled, _final_text = executor._wait_with_progress(
             process,
             stdout_path,
-            stderr_path,
             timeout=1.0,
             progress_callback=blocking_callback,
         )

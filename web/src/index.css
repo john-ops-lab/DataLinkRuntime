@@ -307,24 +307,18 @@ body {
   position: relative;
 }
 
-/* M5.4.4 Workbench-level live logs: one shared surface for every trigger. */
+/* M5.5.10 Workbench 独立「实时日志」Tab：填充 Tab 内容区，不再是底部浮层。 */
 .live-log-workspace {
-  flex: 0 0 min(280px, 42vh);
-  min-height: 190px;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
   background: #0d1117;
   color: #d1d5db;
-  border-top: 1px solid #30363d;
-  box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.14);
-  z-index: 20;
-}
-
-.live-log-fullscreen {
-  position: fixed;
-  inset: var(--dlr-header-height) 0 0;
-  min-height: 0;
-  z-index: 1200;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  overflow: hidden;
 }
 
 .live-log-header {
@@ -387,10 +381,10 @@ body {
   flex-direction: column;
 }
 
-.live-log-tabs .terminal-view,
+.live-log-tabs .log-pane,
 .live-log-tabs .output-view {
   min-height: 0;
-  height: 100%;
+  flex: 1;
   border: 1px solid #30363d;
 }
 
@@ -434,6 +428,20 @@ body {
   color: #c9d1d9;
   font-family: var(--dlr-mono-font);
   font-size: 0.76rem;
+}
+
+/* M5.5.10：统一日志的暂停/继续跟随工具条。 */
+.log-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+
+.log-toolbar .ant-alert {
+  flex: 1;
+  min-width: 0;
 }
 
 .task-live-log-handoff {
@@ -1100,7 +1108,7 @@ body {
   gap: 6px;
 }
 
-/* 终端风格日志：深色背景 + 等宽字体，stdout/stderr 保持分离。 */
+/* M5.5.10：统一日志视图——所有输出源按实际顺序在一处展示。 */
 .terminal-view {
   flex: 1;
   min-height: 120px;

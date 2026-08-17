@@ -149,7 +149,8 @@ function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
 
-type WorkbenchTabKey = "edit" | "runtime" | "history";
+// M5.5.10：实时日志是独立 Tab，不再有覆盖页面的底部浮层。
+type WorkbenchTabKey = "edit" | "runtime" | "history" | "live";
 
 // 编辑页次级配置区（语言依赖 | 凭据绑定）。M5.5.9：运行参数（JSON）已退出
 // 用户主流程；普通、非敏感配置由代码本身表达。
@@ -244,8 +245,6 @@ function AdapterConsole() {
   const [webhookRuntimeState, setWebhookRuntimeState] = useState<WebhookRuntimeState>(INITIAL_WEBHOOK_RUNTIME_STATE);
   const taskRuntimeRef = useRef<TaskRunSettingsHandle>(null);
   const webhookRuntimeRef = useRef<WebhookTriggerHandle>(null);
-  const [liveLogOpen, setLiveLogOpen] = useState(false);
-  const [liveLogFullscreen, setLiveLogFullscreen] = useState(false);
   const [waitingForWebhook, setWaitingForWebhook] = useState(false);
   const [saveWorkerPromptOpen, setSaveWorkerPromptOpen] = useState(false);
   const [saveWorkerId, setSaveWorkerId] = useState<number | null>(null);
@@ -406,10 +405,8 @@ function AdapterConsole() {
       refreshedTerminalExecutionId.current = null;
       liveWatchRef.current(execution);
       setWaitingForWebhook(false);
-      setLiveLogOpen(true);
-      setLiveLogFullscreen(false);
       if (execution.trigger === "schedule") {
-        messageApi.info(`定时执行 #${execution.id} 已开始，实时日志已在页面底部打开。`);
+        messageApi.info("定时执行已开始，可在「实时日志」标签查看本次运行。");
       }
     }).catch((watchError) => {
       if (!cancelled) {
@@ -499,19 +496,15 @@ function AdapterConsole() {
   }, []);
 
   const handleExecutionStarted = useCallback((execution: Execution) => {
+    // M5.5.10：用户手动触发的运行直接切换到「实时日志」Tab。
     refreshedTerminalExecutionId.current = null;
     liveWatchRef.current(execution);
     setWaitingForWebhook(false);
-    setLiveLogOpen(true);
-    setLiveLogFullscreen(false);
+    setActiveTabKey("live");
   }, []);
 
   const handleWebhookReceivingChange = useCallback((enabled: boolean) => {
     setWaitingForWebhook(enabled);
-    if (enabled) {
-      setLiveLogOpen(true);
-      setLiveLogFullscreen(false);
-    }
   }, []);
 
   useEffect(() => {
@@ -575,8 +568,6 @@ function AdapterConsole() {
     setActiveTabKey("edit");
     setConfigTabKey("requirements");
     liveWatcher.stop();
-    setLiveLogOpen(false);
-    setLiveLogFullscreen(false);
     setWaitingForWebhook(false);
     setTaskRuntimeState(INITIAL_TASK_RUNTIME_STATE);
     setWebhookRuntimeState(INITIAL_WEBHOOK_RUNTIME_STATE);
@@ -964,7 +955,6 @@ function AdapterConsole() {
       setSettingsOpen(false);
       setSystemSettingsOpen(false);
       liveWatcher.stop();
-      setLiveLogOpen(false);
       setWaitingForWebhook(false);
       applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
       await refreshAdapters();
@@ -1267,23 +1257,27 @@ function AdapterConsole() {
                       />
                     ),
                   },
+                  {
+                    // M5.5.10：Task/Webhook 共用的独立「实时日志」Tab；forceRender
+                    // 让后台定时/Webhook 运行与等待状态在切换到本 Tab 前就已就绪。
+                    key: "live",
+                    label: "实时日志",
+                    forceRender: true,
+                    children: (
+                      <LiveLogWorkspace
+                        execution={liveExecution}
+                        liveStdout={liveWatcher.liveStdout}
+                        liveStderr={liveWatcher.liveStderr}
+                        fallbackExhausted={liveWatcher.fallbackExhausted}
+                        waitingForWebhook={
+                          selected.adapter_type === "webhook" &&
+                          waitingForWebhook &&
+                          liveExecution === null
+                        }
+                      />
+                    ),
+                  },
                 ]}
-              />
-              <LiveLogWorkspace
-                execution={liveExecution}
-                liveStdout={liveWatcher.liveStdout}
-                liveStderr={liveWatcher.liveStderr}
-                fallbackExhausted={liveWatcher.fallbackExhausted}
-                waitingForWebhook={selected.adapter_type === "webhook" && waitingForWebhook && liveExecution === null}
-                open={liveLogOpen}
-                fullscreen={liveLogFullscreen}
-                onOpen={() => setLiveLogOpen(true)}
-                onClose={() => {
-                  setLiveLogOpen(false);
-                  setLiveLogFullscreen(false);
-                }}
-                onEnterFullscreen={() => setLiveLogFullscreen(true)}
-                onRestoreBottom={() => setLiveLogFullscreen(false)}
               />
             </section>
           )}

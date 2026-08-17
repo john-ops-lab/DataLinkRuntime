@@ -15,9 +15,9 @@ class Secrets {
 }
 
 class Logger {
-    public void info(Object message) { System.out.println(String.valueOf(message)); }
-    public void warn(Object message) { System.err.println(String.valueOf(message)); }
-    public void error(Object message) { System.err.println(String.valueOf(message)); }
+    public void info(Object message) { System.out.println("[INFO] " + message); }
+    public void warn(Object message) { System.err.println("[WARN] " + message); }
+    public void error(Object message) { System.err.println("[ERROR] " + message); }
 }
 
 class Context {

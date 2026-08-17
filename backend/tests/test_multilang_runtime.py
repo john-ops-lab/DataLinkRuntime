@@ -60,9 +60,13 @@ export async function handle(context, input) {
     }
     assert "javascript stdout" in result["stdout"]
     assert "logger info" in result["stdout"]
-    assert "javascript stderr" in result["stderr"]
-    assert "javascript stdout" in "".join(stdout for stdout, _ in progress)
-    assert "javascript stderr" in "".join(stderr for _, stderr in progress)
+    assert "javascript stderr" in result["stdout"], (
+        "M5.5.10: stderr merges into the unified stdout-channel log"
+    )
+    assert result["stderr"] == ""
+    delivered = "".join(stdout for stdout, _ in progress)
+    assert "javascript stdout" in delivered
+    assert "javascript stderr" in delivered
 
 
 def test_javascript_exception_invalid_output_timeout_and_cancel(tmp_path: Path) -> None:
@@ -77,14 +81,14 @@ def test_javascript_exception_invalid_output_timeout_and_cancel(tmp_path: Path) 
         runtime_settings(tmp_path / "raised"),
     )
     assert raised["status"] == "failed"
-    assert "broken" in raised["stderr"]
+    assert "broken" in raised["stdout"]
 
     invalid = executor.run(
         payload("javascript", "export function handle() { return 1n; }"),
         runtime_settings(tmp_path / "invalid"),
     )
     assert invalid["status"] == "failed"
-    assert "JSON" in invalid["stderr"]
+    assert "JSON" in invalid["stdout"]
 
     timed_out = executor.run(
         payload(
@@ -138,9 +142,10 @@ public class Adapter {
         "secret": "[REDACTED]",
     }
     assert "java stdout" in result["stdout"]
-    assert "java stderr" in result["stderr"]
-    assert "java stdout" in "".join(stdout for stdout, _ in progress)
-    assert "java stderr" in "".join(stderr for _, stderr in progress)
+    assert "java stderr" in result["stdout"]
+    delivered = "".join(stdout for stdout, _ in progress)
+    assert "java stdout" in delivered
+    assert "java stderr" in delivered
 
 
 def test_java_compile_error_runtime_error_timeout_and_cancel(tmp_path: Path) -> None:
@@ -150,7 +155,7 @@ def test_java_compile_error_runtime_error_timeout_and_cancel(tmp_path: Path) -> 
     )
     assert compile_error["status"] == "failed"
     assert "javac" in compile_error["error"]
-    assert compile_error["stderr"]
+    assert compile_error["stdout"]
 
     runtime_error = executor.run(
         payload(
@@ -162,7 +167,7 @@ def test_java_compile_error_runtime_error_timeout_and_cancel(tmp_path: Path) -> 
         runtime_settings(tmp_path / "runtime"),
     )
     assert runtime_error["status"] == "failed"
-    assert "broken" in runtime_error["stderr"]
+    assert "broken" in runtime_error["stdout"]
 
     loop = """public class Adapter {
     public Object handle(Context context, Object input) throws Exception {

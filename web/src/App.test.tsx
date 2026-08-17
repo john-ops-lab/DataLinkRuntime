@@ -1684,14 +1684,14 @@ function consoleWithVersionRoutes(adapter: Adapter, version: VersionDetail): Rou
   ];
 }
 
-it("runs a Task from the Workbench header and follows it in the shared live log", async () => {
+it("runs a Task from the Workbench header and follows it in the 实时日志 tab", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
   const pending = makeExecution();
   const succeeded = makeExecution({
     status: "succeeded",
     worker_id: 1,
     target_worker_id: 1,
-    stdout: "任务开始\n任务结束\n",
+    stdout: "[2026-08-17 10:30:00] 任务开始\n[2026-08-17 10:30:01] 任务结束\n",
     output: { ok: true },
     output_size: 11,
     ended_at: "2026-08-15T00:00:02Z",
@@ -1712,7 +1712,7 @@ it("runs a Task from the Workbench header and follows it in the shared live log"
       method: "GET",
       match: "/api/executions/5/events",
       respond: () => ({
-        stream: `event: log\ndata: ${JSON.stringify({ stream: "stdout", chunk: "任务开始\\n" })}\n\nevent: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+        stream: `event: log\ndata: ${JSON.stringify({ stream: "stdout", chunk: "[2026-08-17 10:30:00] 任务开始\\n" })}\n\nevent: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
       }),
     },
     { method: "GET", match: "/api/executions/5", respond: () => ({ body: succeeded }) },
@@ -1724,18 +1724,20 @@ it("runs a Task from the Workbench header and follows it in the shared live log"
   await waitFor(() => expect(runButton.disabled).toBe(false));
   fireEvent.click(runButton);
 
+  // M5.5.10：手动运行自动切换到「实时日志」Tab，统一视图展示全部日志。
   const workspace = await screen.findByTestId("live-log-workspace");
+  expect(screen.getByRole("tab", { name: "实时日志" }).getAttribute("aria-selected")).toBe("true");
   await waitFor(() => {
-    expect(screen.getByTestId("live-log-stdout").textContent).toContain("任务开始");
-    expect(screen.getByTestId("live-log-stdout").textContent).toContain("任务结束");
+    expect(screen.getByTestId("live-log").textContent).toContain("任务开始");
+    expect(screen.getByTestId("live-log").textContent).toContain("任务结束");
   });
-  expect(workspace.textContent).toContain("执行 #5");
+  expect(workspace.textContent).not.toContain("执行 #");
+  expect(workspace.textContent).not.toContain("Execution #");
   expect(
     fetchMock.mock.calls.some(
       ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
     ),
   ).toBe(true);
-  expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
 });
 
 it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", async () => {
@@ -1815,7 +1817,7 @@ it("announces a background Schedule run without leaving the execution history ta
   const succeeded = makeExecution({
     trigger: "schedule",
     status: "succeeded",
-    stdout: "任务开始\n任务结束\n",
+    stdout: "[2026-08-17 10:30:00] 任务开始\n[2026-08-17 10:30:01] 任务结束\n",
     ended_at: "2026-08-15T00:00:02Z",
   });
   let executionReads = 0;
@@ -1862,8 +1864,7 @@ it("announces a background Schedule run without leaving the execution history ta
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "执行记录" }));
 
-  await screen.findByText("定时执行 #5 已开始，实时日志已在页面底部打开。");
-  await screen.findByTestId("live-log-workspace");
+  await screen.findByText("定时执行已开始，可在「实时日志」标签查看本次运行。");
   expect(screen.getByRole("tab", { name: "执行记录" }).getAttribute("aria-selected")).toBe("true");
   expect(await screen.findAllByTestId("history-row")).toHaveLength(1);
 });
@@ -2046,6 +2047,10 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   });
   expect(screen.queryByTestId("history-load-more")).toBeNull();
 
+  // M5.5.10：历史列表与详情不再暴露内部版本号与 Execution #N。
+  expect(document.body.textContent).not.toContain("v7");
+  expect(document.body.textContent).not.toMatch(/执行 #/);
+
   const [firstRow, secondRow] = screen.getAllByTestId("history-row");
   expect(firstRow.getAttribute("tabindex")).toBe("0");
   firstRow.focus();
@@ -2056,15 +2061,17 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   if (!(drawer instanceof HTMLElement)) {
     throw new Error("Execution detail drawer not found");
   }
-  expect(within(drawer).getByText("v7")).toBeTruthy();
   expect(within(drawer).getByText("worker-main")).toBeTruthy();
-  expect(within(drawer).getByText("#10")).toBeTruthy();
-  expect(within(drawer).getByText("#3")).toBeTruthy();
+  expect(within(drawer).getByText("运行 ID：6")).toBeTruthy();
+  expect(within(drawer).queryByText(/版本/)).toBeNull();
+  expect(within(drawer).queryByText("v7")).toBeNull();
+  expect(within(drawer).queryByText("#10")).toBeNull();
+  expect(within(drawer).queryByText("#3")).toBeNull();
 
   fireEvent.click(drawer.querySelector(".ant-drawer-close") as HTMLButtonElement);
   secondRow.focus();
   expect(fireEvent.keyDown(secondRow, { key: " " })).toBe(false);
-  await screen.findByText("执行 #4");
+  await screen.findByText("执行详情");
   expect((await screen.findByTestId("detail-input")).textContent).toContain('"k": 2');
 });
 
@@ -2108,21 +2115,21 @@ it("never shows a stale detail when executions are clicked in quick succession",
   // Once B is visible, opening slow A must hide B immediately instead of
   // presenting stale details under the new Execution title.
   fireEvent.click(rows[1]);
-  await screen.findByText("执行 #4");
+  await screen.findByText("执行详情");
   expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
   fireEvent.click(rows[0]);
   expect(screen.queryByTestId("detail-input")).toBeNull();
 
   // Click B again while A is still slow: B must win even though A resolves last.
   fireEvent.click(rows[1]);
-  await screen.findByText("执行 #4");
+  await screen.findByText("执行详情");
   expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
 
   releaseA();
   // Let A's late response settle, then verify the drawer still shows B.
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(screen.getByTestId("detail-input").textContent).toContain('"who": "B"');
-  expect(screen.getByText("执行 #4")).toBeTruthy();
+  expect(screen.getByText("执行详情")).toBeTruthy();
 });
 
 it("shows the worker badge by online presence, not by registration count", async () => {
@@ -3487,7 +3494,7 @@ function webhookConsoleRoutes(adapter: Adapter, webhook = makeWebhook()): Route[
   ];
 }
 
-it("shows the Webhook starter and only 编辑 / 运行设置 / 调用记录", async () => {
+it("shows the Webhook starter and only 编辑 / 运行设置 / 调用记录 / 实时日志", async () => {
   const adapter = makeAdapter({ adapter_type: "webhook", name: "hook-a", runtime_worker_id: 3 });
   stubFetch(webhookConsoleRoutes(adapter));
   render(<App />);
@@ -3498,6 +3505,7 @@ it("shows the Webhook starter and only 编辑 / 运行设置 / 调用记录", as
   expect(screen.getByRole("tab", { name: "编辑" })).toBeDefined();
   expect(screen.getByRole("tab", { name: "运行设置" })).toBeDefined();
   expect(screen.getByRole("tab", { name: "调用记录" })).toBeDefined();
+  expect(screen.getByRole("tab", { name: "实时日志" })).toBeDefined();
   expect(document.body.textContent).not.toMatch(/Publish|Published|Production|测试运行|触发器|Cron|Timezone/);
 });
 
@@ -3535,8 +3543,10 @@ it("requests Webhook call history with a server-side trigger filter", async () =
   expect(await screen.findAllByTestId("history-row")).toHaveLength(1);
   expect(historyUrls).toHaveLength(1);
   expect(historyUrls[0]).toContain("trigger=webhook");
-  expect(document.body.textContent).toContain("#31");
-  expect(document.body.textContent).not.toContain("#30");
+  // M5.5.10：只展示本次 Webhook 调用（内部 ID 不在用户界面出现）。
+  expect(document.body.textContent).toContain("Webhook 触发");
+  expect(document.body.textContent).not.toContain("主动触发");
+  expect(document.body.textContent).not.toMatch(/调用 #/);
 });
 
 it("edits only the URL path, saves Worker and Token, then starts receiving", async () => {
