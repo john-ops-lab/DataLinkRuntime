@@ -11,7 +11,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Alert, Button, Input, InputNumber, Radio, Select, Space, Spin, Tag, Typography } from "antd";
 
 import { ApiError, api } from "../api";
-import { isTerminal, statusColor, statusLabel } from "../status";
+import { isTerminal } from "../status";
 import type { Adapter, AdapterSchedule, Execution, TaskRunMode, Worker } from "../types";
 import { userErrorMessage } from "../user-message";
 
@@ -49,9 +49,7 @@ const MAX_TIMEOUT_SECONDS = 24 * 60 * 60; // 24 小时
 const TIMEOUT_PRESET_MINUTES = [1, 5, 10, 30, 60] as const;
 
 const TIMEOUT_HINT =
-  "一次运行超过该时间后，系统将自动停止任务并标记为“超时”。最大 24 小时，不提供“无限制”。";
-const TIMEOUT_NOT =
-  "此配置不是：Cron 间隔、Webhook HTTP 等待超时、AI 请求超时、依赖安装超时。";
+  "一次运行超过该时间后，系统将自动停止任务并标记为“超时”。";
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
@@ -252,6 +250,14 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function saveSchedule(enabled: boolean) {
+    if (enabled && activeExecution) {
+      onError("当前执行仍在运行，请等待终态或停止当前执行后再启用定时");
+      return;
+    }
+    if (enabled && scheduleEnableBlockedReason !== null) {
+      onError(scheduleEnableBlockedReason);
+      return;
+    }
     const parsed = parseInput(scheduleInput);
     if (!parsed.ok) {
       onError("Schedule Input 必须是合法 JSON");
@@ -333,12 +339,23 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const runtimeLocked = props.adapter.runtime_locked === true;
   const scheduleEnabled = schedule?.enabled === true;
   const scheduleFieldsLocked = scheduleEnabled || runtimeLocked;
-  const scheduleEnableBlockedReason =
-    props.adapter.latest_version_id === null
-      ? "请先保存适配器，再启用定时。"
-      : props.adapter.runtime_worker_id == null
-        ? "请先保存运行节点，再启用定时。"
-        : null;
+  const scheduleConfigMissing =
+    runMode === "schedule" && schedule === null && !loadingSchedule && !scheduleLoadFailed;
+  const runtimeConfigDirty =
+    runMode !== props.adapter.run_mode ||
+    workerId !== (props.adapter.runtime_worker_id ?? null) ||
+    effectiveTimeoutSeconds !== (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) ||
+    scheduleTouched;
+  const scheduleEnableBlockedReason = (() => {
+    if (loadingSchedule) return "定时配置正在加载，请稍候。";
+    if (scheduleLoadFailed) return "定时配置加载失败，请刷新后重试。";
+    if (props.adapter.latest_version_id === null) return "请先保存适配器，再启用定时。";
+    if (props.adapter.runtime_worker_id == null) return "请先保存运行节点，再启用定时。";
+    if (props.dirty) return "请先保存当前修改，再启用定时。";
+    if (runtimeConfigDirty) return "运行设置有未保存修改，请先保存运行配置。";
+    if (scheduleConfigMissing) return "请先保存运行配置，再启用定时。";
+    return null;
+  })();
   const compatibleWorkers = props.workers.filter((worker) =>
     worker.capabilities.includes(props.adapter.language),
   );
@@ -457,9 +474,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <Typography.Text type="secondary" className="settings-field-hint">
               {TIMEOUT_HINT}
             </Typography.Text>
-            <Typography.Text type="secondary" className="settings-field-hint">
-              {TIMEOUT_NOT}
-            </Typography.Text>
           </div>
           {runtimeLocked && (
             <Alert
@@ -498,29 +512,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                   <Button size="small" onClick={() => void loadSchedule()}>刷新</Button>
                 </Space>
               </div>
-              <Space>
-                <Button
-                  type={scheduleEnabled ? "default" : "primary"}
-                  danger={scheduleEnabled}
-                  data-testid={scheduleEnabled ? "disable-task-schedule" : "enable-task-schedule"}
-                  loading={savingSchedule}
-                  disabled={
-                    !scheduleEnabled &&
-                    (activeExecution || scheduleEnableBlockedReason !== null)
-                  }
-                  onClick={() => void saveSchedule(!scheduleEnabled)}
-                >
-                  {scheduleEnabled ? "停用定时" : "启用定时"}
-                </Button>
-              </Space>
-              {!scheduleEnabled && scheduleEnableBlockedReason !== null && (
-                <Alert
-                  type="info"
-                  showIcon
-                  data-testid="task-schedule-enable-blocked"
-                  message={scheduleEnableBlockedReason}
-                />
-              )}
             </Space>
           )}
         </section>
@@ -533,29 +524,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <span className="settings-field-label">输入（JSON）</span>
             <Input.TextArea data-testid="task-manual-input" rows={4} value={manualInput} disabled={activeExecution} onChange={(event) => setManualInput(event.target.value)} />
           </label>
-        </section>
-      )}
-
-      {(execution !== null || activeExecution) && (
-        <section className="task-execution-status">
-          <Typography.Title level={5}>当前执行</Typography.Title>
-          <Space>
-            {activeExecution && (
-              <Button danger data-testid="task-stop-run" loading={cancelling} onClick={() => void stopExecution()}>
-                停止运行
-              </Button>
-            )}
-            {execution !== null && <Tag color={statusColor(execution.status)}>{statusLabel(execution.status)}</Tag>}
-          </Space>
-          {execution !== null && (
-            <Alert
-              className="task-live-log-handoff"
-              type={isTerminal(execution.status) ? "success" : "info"}
-              showIcon
-              message={`运行状态：${statusLabel(execution.status)}`}
-              description="实时日志与输出请在「实时日志」标签中查看。"
-            />
-          )}
         </section>
       )}
 

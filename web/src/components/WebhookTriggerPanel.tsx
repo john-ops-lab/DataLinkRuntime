@@ -30,7 +30,7 @@ const MAX_TIMEOUT_SECONDS = 24 * 60 * 60; // 24 小时
 const TIMEOUT_PRESET_MINUTES = [1, 5, 10, 30, 60] as const;
 
 const TIMEOUT_HINT =
-  "一次调用超过该时间后，系统将自动结束并标记为“超时”。最大 24 小时，不提供“无限制”。";
+  "一次调用超过该时间后，系统将自动结束并标记为“超时”。";
 
 function errorMessage(error: unknown, publicId: string): string {
   if (error instanceof ApiError) {
@@ -456,10 +456,19 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         </div>
         <div className="settings-field">
           <span className="settings-field-label">完整地址</span>
-          <Space.Compact style={{ width: "100%", maxWidth: 760 }}>
-            <Input data-testid="webhook-url" readOnly value={fullUrl} onFocus={(event) => event.target.select()} />
-            <Button data-testid="webhook-copy" onClick={() => void copyUrl()}>复制</Button>
-          </Space.Compact>
+          <div className="webhook-url-control" data-testid="webhook-url-readonly">
+            <Space.Compact style={{ width: "100%", maxWidth: 760 }}>
+              <Input
+                data-testid="webhook-url"
+                aria-label="完整地址（只读）"
+                aria-readonly="true"
+                readOnly
+                value={fullUrl}
+                onFocus={(event) => event.target.select()}
+              />
+              <Button data-testid="webhook-copy" onClick={() => void copyUrl()}>复制</Button>
+            </Space.Compact>
+          </div>
         </div>
         <label className="settings-field">
           <span className="settings-field-label">访问凭据</span>

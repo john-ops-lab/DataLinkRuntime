@@ -158,6 +158,55 @@ body {
   padding: 0 12px 8px;
 }
 
+.catalog-search-control > .ant-input-affix-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+
+.catalog-type-filter-trigger {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  color: var(--dlr-text-secondary);
+}
+
+.catalog-type-filter-trigger:hover,
+.catalog-type-filter-trigger:focus-visible {
+  color: #0958d9;
+  background: #e6f4ff;
+}
+
+.catalog-type-filter-menu {
+  min-width: 188px;
+  padding: 8px;
+  background: var(--dlr-workspace-bg);
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(16, 24, 40, 0.12);
+}
+
+.catalog-type-filter-actions {
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--dlr-border);
+}
+
+.catalog-type-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 2px;
+  cursor: pointer;
+  color: var(--dlr-text);
+}
+
+.catalog-type-filter-option input {
+  margin: 0;
+  accent-color: #1677ff;
+}
+
 .catalog-list {
   flex: 1;
   min-height: 0;
@@ -591,6 +640,22 @@ body {
   border: 1px solid var(--dlr-border);
   border-radius: 6px;
   word-break: break-all;
+}
+
+/* Webhook 完整地址始终可读、可复制，但不作为可编辑字段呈现。 */
+.webhook-url-control .ant-input {
+  color: var(--dlr-text);
+  background: var(--dlr-surface-muted, rgba(128, 128, 128, 0.06));
+  cursor: text;
+}
+
+.webhook-url-control .ant-input:hover {
+  border-color: var(--dlr-border-strong);
+}
+
+.webhook-url-control .ant-input:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
 }
 
 .webhook-lock-glyph {

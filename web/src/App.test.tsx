@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { useEffect } from "react";
+import { createRef, useEffect } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -11,6 +11,7 @@ import App, {
 } from "./App";
 import { setAuthToken } from "./api";
 import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
+import type { TaskRunSettingsHandle } from "./components/TaskRunSettingsPanel";
 import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import { FALLBACK_POLICY } from "./fallback-policy";
@@ -425,6 +426,12 @@ it("persists the Task run mode and reveals Schedule settings", async () => {
   fireEvent.click(screen.getByTestId("save-task-runtime"));
 
   await screen.findByTestId("task-schedule-next-run");
+  expect(screen.queryByTestId("enable-task-schedule")).toBeNull();
+  expect(screen.getByTestId("header-task-schedule-toggle").textContent).toContain("启用定时");
+  const globalActionLabels = Array.from(document.querySelectorAll(".workbench-controls button")).map(
+    (button) => button.textContent?.replace(/\s/g, "") ?? "",
+  );
+  expect(globalActionLabels.indexOf("启用定时")).toBeLessThan(globalActionLabels.indexOf("立即运行一次"));
   const patchCall = fetchMock.mock.calls.find(
     ([url, init]) => String(url) === "/api/adapters/1" && init?.method === "PATCH",
   );
@@ -503,6 +510,66 @@ it("loads an existing disabled Schedule before saving a manual-to-schedule switc
   ).toBe(false);
 });
 
+it("blocks the top Schedule enable action until changed runtime settings are saved", async () => {
+  let adapter = makeAdapter({
+    run_mode: "schedule",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+  });
+  let schedule = {
+    adapter_id: 1,
+    enabled: false,
+    cron: "*/5 * * * *",
+    timezone: "Asia/Shanghai",
+    input: {},
+    next_run_at: null,
+    updated_at: "2026-08-15T00:00:00Z",
+  };
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    { method: "GET", match: "/api/adapters/1/schedule", respond: () => ({ body: schedule }) },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        adapter = { ...adapter, ...JSON.parse(body ?? "{}") };
+        return { body: adapter };
+      },
+    },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: (body) => {
+        schedule = { ...schedule, ...JSON.parse(body ?? "{}") };
+        return { body: schedule };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("task-schedule-cron");
+
+  fireEvent.change(screen.getByTestId("task-schedule-cron"), { target: { value: "0 * * * *" } });
+  const enable = screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement;
+  expect(enable.disabled).toBe(true);
+  expect(enable.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(
+    "运行设置有未保存修改，请先保存运行配置。",
+  );
+  expect(fetchMock.mock.calls.some(([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT")).toBe(false);
+
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+  await waitFor(() => expect((screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByTestId("header-task-schedule-toggle"));
+  await waitFor(() => expect(screen.getByTestId("header-task-schedule-toggle").textContent).toContain("停用定时"));
+  expect(fetchMock.mock.calls.some(([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT" && JSON.parse(String(init?.body)).enabled === true)).toBe(true);
+});
+
 it("switches manual/schedule fields immediately and keeps run-once out of run settings (M5.5.11)", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
   stubFetch([
@@ -528,6 +595,8 @@ it("switches manual/schedule fields immediately and keeps run-once out of run se
   const preset = screen.getByTestId("task-timeout-preset");
   expect(preset.querySelector(".ant-radio-wrapper-checked")?.textContent).toContain("5 分钟");
   expect(preset.textContent).toContain("自定义");
+  expect(document.body.textContent).toContain("一次运行超过该时间后，系统将自动停止任务并标记为“超时”。");
+  expect(document.body.textContent).not.toContain("此配置不是：");
   // M5.5.11：运行设置内部不得重复“运行一次”。
   expect(screen.queryByTestId("task-run-once")).toBeNull();
   expect(screen.queryByText("立即运行一次")).toBeNull();
@@ -539,6 +608,7 @@ it("switches manual/schedule fields immediately and keeps run-once out of run se
   expect(screen.getByTestId("task-schedule-timezone")).toBeTruthy();
   expect(screen.getByTestId("task-schedule-input")).toBeTruthy();
   expect(screen.getByTestId("task-schedule-next-run")).toBeTruthy();
+  expect(screen.queryByTestId("enable-task-schedule")).toBeNull();
   expect(screen.queryByTestId("task-manual-input")).toBeNull();
 
   // 切回手动：手动字段回来，定时字段消失。
@@ -788,10 +858,9 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
     {
       method: "GET",
       match: "/api/adapters/1/schedule",
-      respond: () =>
-        enabled
-          ? { body: { adapter_id: 1, enabled: true, cron: "*/5 * * * *", timezone: "Asia/Shanghai", input: {}, next_run_at: "2026-08-15T01:00:00Z", updated_at: "2026-08-15T00:00:00Z" } }
-          : { status: 404, body: { detail: { code: "schedule_not_configured", message: "Schedule is not configured" } } },
+      respond: () => enabled
+        ? { body: { adapter_id: 1, enabled: true, cron: "*/5 * * * *", timezone: "Asia/Shanghai", input: {}, next_run_at: "2026-08-15T01:00:00Z", updated_at: "2026-08-15T00:00:00Z" } }
+        : { body: { adapter_id: 1, enabled: false, cron: "*/5 * * * *", timezone: "Asia/Shanghai", input: {}, next_run_at: null, updated_at: "2026-08-15T00:00:00Z" } },
     },
     {
       method: "PUT",
@@ -807,8 +876,8 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   render(<App />);
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
-  fireEvent.click(await screen.findByTestId("enable-task-schedule"));
-  await screen.findByTestId("disable-task-schedule");
+  fireEvent.click(await screen.findByTestId("header-task-schedule-toggle"));
+  await waitFor(() => expect(screen.getByTestId("header-task-schedule-toggle").textContent).toContain("停用定时"));
   fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
   await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true));
   // M5.5.9：运行中只保留低干扰提示；不再展示大块黄色说明、复制引导或修订号。
@@ -843,8 +912,8 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
   await waitFor(() => expect(screen.queryByTestId("clone-adapter")).toBeNull());
 
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
-  fireEvent.click(screen.getByTestId("disable-task-schedule"));
-  await screen.findByTestId("enable-task-schedule");
+  fireEvent.click(screen.getByTestId("header-task-schedule-toggle"));
+  await waitFor(() => expect(screen.getByTestId("header-task-schedule-toggle").textContent).toContain("启用定时"));
   fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
   await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(false));
 });
@@ -903,9 +972,9 @@ it.each([
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
 
-  const enable = await screen.findByTestId("enable-task-schedule") as HTMLButtonElement;
+  const enable = await screen.findByTestId("header-task-schedule-toggle") as HTMLButtonElement;
   expect(enable.disabled).toBe(true);
-  expect(screen.getByText(expectedReason)).toBeDefined();
+  expect(enable.closest(".action-with-reason")?.getAttribute("aria-label")).toContain(expectedReason);
   fireEvent.click(enable);
   expect(
     fetchMock.mock.calls.some(
@@ -2329,8 +2398,10 @@ it("cancels the authoritative Adapter Execution instead of a stale terminal watc
     { method: "GET", match: "/api/adapters/1", respond: () => ({ body: { ...adapter, runtime_locked: false, running_execution_id: null } }) },
   ]);
 
+  const runtimeRef = createRef<TaskRunSettingsHandle>();
   render(
     <TaskRunSettingsPanel
+      ref={runtimeRef}
       adapter={adapter}
       workers={[]}
       workersLoading={false}
@@ -2344,7 +2415,9 @@ it("cancels the authoritative Adapter Execution instead of a stale terminal watc
     />,
   );
 
-  fireEvent.click(await screen.findByTestId("task-stop-run"));
+  await waitFor(() => expect(runtimeRef.current).not.toBeNull());
+  expect(screen.queryByTestId("task-stop-run")).toBeNull();
+  act(() => runtimeRef.current?.stopExecution());
   await waitFor(() => {
     expect(
       fetchMock.mock.calls.some(
@@ -3977,7 +4050,12 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
 
   // M5.5.12：URL 只展示一次——完整地址只读 + 复制，不再拆成前缀 + 路径双框。
   expect(screen.queryByTestId("webhook-prefix")).toBeNull();
-  expect((screen.getByTestId("webhook-url") as HTMLInputElement).readOnly).toBe(true);
+  const fullUrlInput = screen.getByTestId("webhook-url") as HTMLInputElement;
+  expect(fullUrlInput.readOnly).toBe(true);
+  fireEvent.change(fullUrlInput, { target: { value: "https://attacker.invalid/changed" } });
+  expect(fullUrlInput.value).toBe(`${window.location.origin}/api/hooks/a8f3c9d2`);
+  expect(screen.getByTestId("webhook-url-readonly").className).toContain("webhook-url-control");
+  expect(screen.getByTestId("webhook-url").getAttribute("aria-label")).toBe("完整地址（只读）");
   expect(screen.getByTestId("webhook-url")).toHaveProperty(
     "value",
     `${window.location.origin}/api/hooks/a8f3c9d2`,
@@ -3988,6 +4066,8 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
   expect(screen.getByText("访问凭据")).toBeDefined();
   expect(screen.getByText("运行节点")).toBeDefined();
   expect(screen.getByText("单次执行超时（一次运行的最长时间）")).toBeDefined();
+  expect(document.body.textContent).toContain("一次调用超过该时间后，系统将自动结束并标记为“超时”。");
+  expect(document.body.textContent).not.toContain("此配置不是：");
   expect(screen.queryByText("接收状态")).toBeNull();
   expect(screen.queryByTestId("webhook-start")).toBeNull();
   expect(screen.queryByTestId("webhook-stop")).toBeNull();
@@ -4166,6 +4246,7 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
   expect(document.body.textContent).not.toContain("real-hook-secret");
   // 完整 Webhook 地址运行中仍允许复制。
   expect((screen.getByTestId("webhook-copy") as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.getByTestId("webhook-url-readonly").className).toContain("webhook-url-control");
 
   // 有 active Webhook Execution：点击“停止接收”必须弹出三选一。
   fireEvent.click(screen.getByTestId("header-webhook-toggle"));
