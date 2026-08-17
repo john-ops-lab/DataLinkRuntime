@@ -52,10 +52,13 @@ export default function WebhookWorkbenchHeader(props: Props) {
             运行节点：{props.runtimeWorker?.name ?? "未选择"}
           </span>
         </div>
-        {/* M5.5.9：运行中只保留低干扰提示，不再展示大块说明或“复制适配器”升级引导。 */}
+        {/* M5.5.9/M5.5.12：只保留一行低干扰提示，不再展示大块说明、“复制适配器”
+            升级引导或重复的黄色锁定 Alert。接收中与“已停止但仍有活跃调用”共用一行。 */}
         {locked && (
           <p className="runtime-lock-hint" data-testid="webhook-active-execution">
-            适配器正在运行，编辑与运行配置已锁定。
+            {props.runtimeState.enabled
+              ? "适配器正在接收请求，运行配置已锁定。"
+              : "当前调用仍在执行，运行配置已锁定。"}
           </p>
         )}
       </div>
