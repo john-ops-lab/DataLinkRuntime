@@ -131,7 +131,16 @@ def selection_body(
     start_line: int = 1,
     end_line: int = 1,
 ) -> dict[str, object]:
-    return {"text": text, "start_line": start_line, "end_line": end_line}
+    return {"source": "code", "text": text, "start_line": start_line, "end_line": end_line}
+
+
+def log_snippet_body(
+    text: str,
+    start_line: int = 1,
+    end_line: int = 1,
+) -> dict[str, object]:
+    """M5.5.13: a live-log context snippet (browser-visible masked text only)."""
+    return {"source": "log", "text": text, "start_line": start_line, "end_line": end_line}
 
 
 def test_ai_provider_timeout_settings_default_and_environment(
@@ -982,8 +991,9 @@ def test_assist_prompt_uses_language_contract_and_secret_names_only(
 def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """M5.5.5: the exact selected text and line range reach the Provider as a
-    structured block, while Credential truth still never joins the Prompt."""
+    """M5.5.13: exact code and masked-log snippets (text, source and line
+    range) reach the Provider as an ordered structured block, while Credential
+    truth still never joins the Prompt."""
     adapter = create_adapter(api_client, "selection-context")
     version = save_version(api_client, adapter["id"])
     business_credential = create_credential(
@@ -1023,17 +1033,24 @@ def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
         )
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
-    # 选区文本刻意包含前导缩进与行尾换行，且**不是** Working Copy 的子串，
-    # 确保下面的断言只能由 selected_context 自身命中（防止巧合通过）。
+    # 代码选区刻意包含前导缩进与行尾换行，且**不是** Working Copy 的子串，
+    # 确保下面的断言只能由 snippet 自身命中（防止巧合通过）；日志 snippet
+    # 使用浏览器可见的已脱敏文本（含统一日志时间前缀与 [REDACTED] 哨兵）。
     selected = "    items = input.get('items', [])  # exact selection\n"
+    log_text = (
+        "[2026-08-17 10:21:03] [ERROR] token [REDACTED] failed\n[2026-08-17 10:21:08] retry ok\n"
+    )
     request_body = assist_body()
     request_body["base_version_id"] = version["id"]
-    request_body["selected_context"] = selection_body(text=selected, start_line=2, end_line=3)
+    request_body["context_snippets"] = [
+        selection_body(text=selected, start_line=2, end_line=3),
+        log_snippet_body(text=log_text, start_line=10, end_line=11),
+    ]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=request_body)
     assert response.status_code == 200, response.text
     assert response.json()["candidate"] is not None
     # Reasoning from the Provider never reaches the browser, with or without
-    # the selection context.
+    # the context snippets.
     assert "reasoning" not in response.text
     assert "provider-reasoning-sentinel" not in response.text
 
@@ -1043,18 +1060,27 @@ def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
     assert isinstance(messages, list) and isinstance(messages[0], dict)
     system_prompt = messages[0]["content"]
     assert isinstance(system_prompt, str)
-    # The exact selected text (leading indentation and trailing newline kept
-    # verbatim) and the structured line range both travel. The prompt embeds
-    # the context JSON, so the newline appears in JSON-escaped form.
+    # Both snippets travel verbatim (leading indentation and trailing newline
+    # kept for code; masked text kept for logs), in added order, with their
+    # sources and line ranges. The prompt embeds the context JSON, so newlines
+    # appear in JSON-escaped form.
     encoded_selection = json.dumps(selected, ensure_ascii=False)[1:-1]
     assert encoded_selection in system_prompt
     assert "\\n" in encoded_selection
+    encoded_log = json.dumps(log_text, ensure_ascii=False)[1:-1]
+    assert encoded_log in system_prompt
+    assert '"source": "code"' in system_prompt
+    assert '"source": "log"' in system_prompt
     assert '"start_line": 2' in system_prompt
     assert '"end_line": 3' in system_prompt
-    # The binding name is present; the Credential truth is not.
+    assert '"start_line": 10' in system_prompt
+    assert '"end_line": 11' in system_prompt
+    # The binding name is present; the Credential truth is not. Log snippets
+    # carry only masked browser-visible text, never raw Secret values.
     assert "SELECTION_SECRET" in system_prompt
     assert BUSINESS_SECRET not in system_prompt
     assert "selection-user" not in system_prompt
+    assert "[REDACTED]" in system_prompt
 
 
 @pytest.mark.parametrize(
@@ -1067,6 +1093,8 @@ def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
         ({"start_line": 424244, "end_line": 424243}, "424244"),
         ({"start_line": -424245}, "-424245"),
         ({"start_line": "STRING_ECHO_SENTINEL"}, "STRING_ECHO_SENTINEL"),
+        # M5.5.13：超过长度上限的 snippet 文本同样稳定 422 且不回显。
+        ({"text": "x" * 50_001}, "x" * 20),
     ],
 )
 def test_assist_rejects_invalid_selection_context_without_echo(
@@ -1078,7 +1106,7 @@ def test_assist_rejects_invalid_selection_context_without_echo(
     adapter = create_adapter(api_client, "invalid-selection")
     configure(api_client)
     body = assist_body()
-    body["selected_context"] = {**selection_body(), **overrides}
+    body["context_snippets"] = [{**selection_body(), **overrides}]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "ai_request_invalid"
@@ -1087,17 +1115,48 @@ def test_assist_rejects_invalid_selection_context_without_echo(
         assert echo_sentinel not in response.text
 
 
+def test_assist_rejects_invalid_snippet_sources_and_excessive_snippets_without_echo(
+    api_client: TestClient,
+) -> None:
+    """M5.5.13: unknown snippet sources and over-limit snippet lists are
+    rejected with the stable code and never echo the offending value."""
+    adapter = create_adapter(api_client, "invalid-snippets")
+
+    bad_source = assist_body()
+    bad_source["context_snippets"] = [
+        {"source": "raw_log", "text": "SOURCE_ECHO_SENTINEL", "start_line": 1, "end_line": 1}
+    ]
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=bad_source)
+    assert response.status_code == 422
+    # Literal enum failures surface as FastAPI's standard validation detail
+    # (a list); both shapes must never echo the offending values.
+    assert "SOURCE_ECHO_SENTINEL" not in response.text
+    assert "raw_log" not in response.text
+
+    too_many = assist_body()
+    too_many["context_snippets"] = [
+        selection_body(text=f"line-{index}", start_line=index, end_line=index)
+        for index in range(1, 22)
+    ]
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=too_many)
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "ai_request_invalid"
+    assert "line-21" not in response.text
+
+
 def test_assist_selection_does_not_persist_or_log_selected_code(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """M5.5.5: selected code never lands in the database or normal logs."""
+    """M5.5.13: selected code and masked log text never land in the database
+    or normal logs."""
     adapter = create_adapter(api_client, "selection-isolation")
     version = save_version(api_client, adapter["id"])
     configure(api_client)
     selected_sentinel = "SELECTION_SENTINEL_MUST_NOT_PERSIST"
+    log_sentinel = "LOG_SENTINEL_MUST_NOT_PERSIST"
 
     def fake_request(*_: object, **__: object) -> object:
         return fake_chat_response(valid_output())
@@ -1105,7 +1164,10 @@ def test_assist_selection_does_not_persist_or_log_selected_code(
     monkeypatch.setattr(providers, "_request_json", fake_request)
     body = assist_body()
     body["base_version_id"] = version["id"]
-    body["selected_context"] = selection_body(text=selected_sentinel, start_line=1, end_line=1)
+    body["context_snippets"] = [
+        selection_body(text=selected_sentinel, start_line=1, end_line=1),
+        log_snippet_body(text=log_sentinel, start_line=1, end_line=1),
+    ]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
 
@@ -1118,8 +1180,11 @@ def test_assist_selection_does_not_persist_or_log_selected_code(
             select(AdapterVersion.code).where(AdapterVersion.id == version["id"])
         ).scalar_one()
     assert selected_sentinel not in stored
+    assert log_sentinel not in stored
     assert selected_sentinel not in "".join(record.message for record in caplog.records)
+    assert log_sentinel not in "".join(record.message for record in caplog.records)
     assert selected_sentinel not in response.text
+    assert log_sentinel not in response.text
 
 
 @pytest.mark.parametrize(
@@ -1346,7 +1411,7 @@ def test_assist_request_rejects_non_finite_runtime_config(
         "working_copy.runtime_config.key",
         "working_copy.runtime_config.value",
         "recent_messages.content",
-        "selected_context.text",
+        "context_snippets.text",
     ],
 )
 def test_assist_request_rejects_unicode_surrogates_without_echo(
@@ -1370,9 +1435,9 @@ def test_assist_request_rejects_unicode_surrogates_without_echo(
     elif target == "recent_messages.content":
         payload["recent_messages"] = [{"role": "user", "content": "invalid-\ud800"}]
     else:
-        payload["selected_context"] = selection_body(
-            text="invalid-\ud800", start_line=1, end_line=1
-        )
+        payload["context_snippets"] = [
+            selection_body(text="invalid-\ud800", start_line=1, end_line=1)
+        ]
 
     response = api_client.post(
         f"/api/adapters/{adapter['id']}/ai/assist",

@@ -667,7 +667,9 @@ body {
   background: var(--dlr-workspace-bg);
 }
 
-/* 收起态 = 悬浮入口：绝对定位不参与 flex 布局，Monaco 主编辑区不受压缩。 */
+/* 收起态 = 悬浮入口：绝对定位不参与 flex 布局，Monaco 主编辑区不受压缩。
+   M5.5.13：支持在可视工作区内拖动（pointer events + touch-action:none），
+   位置不持久化，刷新后恢复本默认位置。 */
 .ai-assistant-collapsed {
   position: absolute;
   top: 50%;
@@ -676,6 +678,7 @@ body {
   z-index: 30;
   border: none;
   background: transparent;
+  touch-action: none;
 }
 
 .ai-assistant-open.ant-btn {
@@ -688,6 +691,13 @@ body {
   border-radius: 50%;
   font-weight: 700;
   box-shadow: 0 4px 12px rgba(9, 88, 217, 0.35);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ai-assistant-open.ant-btn:active {
+  cursor: grabbing;
 }
 
 .ai-assistant-expanded {
@@ -698,6 +708,7 @@ body {
   border-left: 1px solid var(--dlr-border);
 }
 
+/* M5.5.13：AI 面板抬头使用主操作蓝色；关闭按钮与次级文字改白色保证对比度。 */
 .ai-assistant-header {
   flex: 0 0 auto;
   display: flex;
@@ -705,14 +716,24 @@ body {
   justify-content: space-between;
   gap: 10px;
   padding: 12px 14px 10px;
+  background: #0958d9;
+  color: #fff;
   border-bottom: 1px solid var(--dlr-border);
+}
+
+.ai-assistant-header strong {
+  color: #fff;
 }
 
 .ai-assistant-header p {
   margin: 3px 0 0;
-  color: var(--dlr-text-weak);
+  color: rgba(255, 255, 255, 0.85);
   font-size: 0.72rem;
   line-height: 1.45;
+}
+
+.ai-assistant-header .ant-btn {
+  color: #fff;
 }
 
 .ai-assistant-context {
@@ -730,24 +751,55 @@ body {
   color: var(--dlr-text-weak);
 }
 
-/* M5.5.5：已加入的 Monaco 选区上下文标记（可清除）。 */
-.ai-selection-context {
+/* M5.5.13：已加入的上下文片段列表（代码 / 实时日志，可单删或清空全部）。 */
+.ai-snippets {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
   padding: 6px 14px;
   border-bottom: 1px solid var(--dlr-border);
   background: #f0f7ff;
   font-size: 0.75rem;
   color: #0958d9;
+  max-height: 148px;
+  overflow-y: auto;
 }
 
-.ai-selection-context .ant-btn {
-  height: 24px;
-  padding: 0 8px;
-  font-size: 0.72rem;
+.ai-snippets-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-snippets-header .ant-btn {
+  height: 22px;
+  padding: 0 6px;
+  font-size: 0.7rem;
+  color: #0958d9;
+}
+
+.ai-snippet-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.ai-snippet-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-snippet-item .ant-btn {
+  height: 22px;
+  padding: 0 6px;
+  font-size: 0.7rem;
+  color: #0958d9;
 }
 
 .ai-conversation {
@@ -895,6 +947,15 @@ body {
   align-self: stretch;
   margin: 0;
   font-size: 0.75rem;
+}
+
+/* M5.5.13：凭据安全引导（绑定 Secret 不进 Prompt / 硬编码敏感信息会随代码发送）。 */
+.ai-composer-hint {
+  align-self: stretch;
+  margin: 0;
+  color: var(--dlr-text-weak);
+  font-size: 0.7rem;
+  line-height: 1.5;
 }
 
 /* M3.2：次级配置区 textarea 关闭 resize，避免破坏工作台布局。 */

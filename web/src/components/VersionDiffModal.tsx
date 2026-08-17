@@ -59,13 +59,13 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
           <div className="diff-modal-footer">
             {applyAction.stale && (
               <div className="ai-stale-warning" role="alert" data-testid="diff-candidate-stale">
-                <strong>⚠ AI 生成期间工作副本已发生修改。</strong>
-                <span>该候选修改基于较早的编辑内容生成，应用会覆盖当前工作副本。</span>
+                <strong>⚠ AI 生成期间当前代码已发生修改。</strong>
+                <span>该候选修改基于较早的编辑内容生成，应用会覆盖当前代码。</span>
               </div>
             )}
             {applyAction.applied && (
               <p className="ai-candidate-applied" role="status" data-testid="diff-candidate-applied">
-                已应用到浏览器工作副本；请继续人工保存、测试与运行。
+                已应用到浏览器中的当前代码；请继续人工保存、测试与运行。
               </p>
             )}
             <div className="diff-modal-actions">

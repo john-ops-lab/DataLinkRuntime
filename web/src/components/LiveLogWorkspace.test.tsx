@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { expect, it, vi } from "vitest";
 
 import type { Execution } from "../types";
 import LiveLogWorkspace from "./LiveLogWorkspace";
@@ -109,4 +109,96 @@ it("shows the Webhook waiting state without inventing an Execution", () => {
 it("shows an idle placeholder when nothing has run yet", () => {
   renderWorkspace({ execution: null, liveStdout: "", waitingForWebhook: false });
   expect(screen.getByTestId("live-log-workspace").textContent).toContain("暂无实时日志");
+});
+
+// --- M5.5.13：实时日志选区 → AI 上下文（只使用浏览器可见的已脱敏文本） ------
+
+function mockInPaneSelection(pre: HTMLElement, startOffset: number, endOffset: number) {
+  const textNode = pre.firstChild as Text;
+  const range = document.createRange();
+  range.setStart(textNode, startOffset);
+  range.setEnd(textNode, endOffset);
+  return vi.spyOn(window, "getSelection").mockReturnValue({
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => range,
+    toString: () => range.toString(),
+    anchorNode: textNode,
+    focusNode: textNode,
+  } as unknown as Selection);
+}
+
+it("offers 加入对话上下文 only for in-pane selections and reports masked text + line range", () => {
+  const onAddContext = vi.fn();
+  renderWorkspace({
+    onAddContext,
+    liveStdout: "[2026-08-17 10:30:00] line one\n[2026-08-17 10:30:01] line two\n",
+  });
+  const pre = screen.getByTestId("live-log");
+  const addButton = screen.getByTestId("live-log-add-context") as HTMLButtonElement;
+  expect(addButton.disabled).toBe(true);
+
+  const selectionSpy = mockInPaneSelection(pre, 0, 40);
+  act(() => {
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  expect(addButton.disabled).toBe(false);
+
+  fireEvent.click(addButton);
+  expect(onAddContext).toHaveBeenCalledTimes(1);
+  // 回调只携带渲染出的已脱敏可见文本与 1-based 行范围。
+  expect(onAddContext).toHaveBeenCalledWith({
+    source: "log",
+    text: "[2026-08-17 10:30:00] line one\n[2026-08-",
+    start_line: 1,
+    end_line: 2,
+  });
+  selectionSpy.mockRestore();
+});
+
+it("keeps 加入对话上下文 disabled without an in-pane selection and ignores empty text", () => {
+  const onAddContext = vi.fn();
+  renderWorkspace({
+    onAddContext,
+    liveStdout: "[2026-08-17 10:30:00] line one\n",
+  });
+  const pre = screen.getByTestId("live-log");
+  const addButton = screen.getByTestId("live-log-add-context") as HTMLButtonElement;
+  expect(addButton.disabled).toBe(true);
+
+  // 空选区：保持禁用。
+  const emptySpy = vi.spyOn(window, "getSelection").mockReturnValue({
+    isCollapsed: true,
+    rangeCount: 0,
+  } as unknown as Selection);
+  act(() => {
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  expect(addButton.disabled).toBe(true);
+  fireEvent.click(addButton);
+  expect(onAddContext).not.toHaveBeenCalled();
+
+  // 纯空白选区文本：点击不产生片段。
+  const whitespaceSpy = mockInPaneSelection(pre, 0, 0);
+  whitespaceSpy.mockImplementation(() => ({
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => {
+      const textNode = pre.firstChild as Text;
+      const range = document.createRange();
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, 0);
+      return range;
+    },
+    toString: () => "   ",
+    anchorNode: pre.firstChild,
+    focusNode: pre.firstChild,
+  } as unknown as Selection));
+  act(() => {
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  fireEvent.click(addButton);
+  expect(onAddContext).not.toHaveBeenCalled();
+  emptySpy.mockRestore();
+  whitespaceSpy.mockRestore();
 });

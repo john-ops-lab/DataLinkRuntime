@@ -16,6 +16,9 @@ export SMOKE_STORED_SECRET=${SMOKE_STORED_SECRET:-smoke-stored-secret-$$}
 # M5.5.5: the selected code sent to the fake Provider must never reach
 # service logs (requests are not logged; this assertion pins that contract).
 export SMOKE_SELECTED_TEXT=${SMOKE_SELECTED_TEXT:-smoke-selected-sentinel-$$}
+# M5.5.13: the masked live-log snippet sent to the fake Provider is also
+# request-only: never logged, and only browser-visible masked text travels.
+export SMOKE_LOG_TEXT=${SMOKE_LOG_TEXT:-smoke-log-sentinel-$$}
 AI_FAKE_CONTAINER_ID=""
 AI_FAKE_DISABLED_CONTAINER_ID=""
 
@@ -134,6 +137,7 @@ AI_FAKE_CONTAINER_ID=$(docker run -d \
   --name "$AI_FAKE_CONTAINER_NAME" \
   --network "$CONTROL_NETWORK" \
   -e SMOKE_SELECTED_TEXT \
+  -e SMOKE_LOG_TEXT \
   --volume "$PWD/scripts/ai-fake-provider.py:/tmp/dlr-ai-fake-provider.py:ro" \
   --entrypoint python \
   "$CONTROL_IMAGE" /tmp/dlr-ai-fake-provider.py --port 18080)
@@ -179,6 +183,7 @@ docker compose exec -T \
   -e DLR_WORKER_TOKEN \
   -e SMOKE_STORED_SECRET \
   -e SMOKE_SELECTED_TEXT \
+  -e SMOKE_LOG_TEXT \
   -e AI_FAKE_BASE_URL \
   -e AI_FAKE_DISABLED_BASE_URL \
   control python - < scripts/compose-smoke.py
@@ -188,9 +193,14 @@ if docker compose logs control worker web | grep -F "$SMOKE_STORED_SECRET" >/dev
   echo "ERROR: stored secret appeared in service logs" >&2
   exit 1
 fi
-# M5.5.5: the administrator-selected code is request payload, never a log line.
+# M5.5.5/5.13: the administrator-selected code and the masked log snippet
+# are request payload, never log lines.
 if docker compose logs control worker web | grep -F "$SMOKE_SELECTED_TEXT" >/dev/null; then
   echo "ERROR: selected code appeared in service logs" >&2
+  exit 1
+fi
+if docker compose logs control worker web | grep -F "$SMOKE_LOG_TEXT" >/dev/null; then
+  echo "ERROR: log snippet appeared in service logs" >&2
   exit 1
 fi
 

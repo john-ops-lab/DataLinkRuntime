@@ -9,8 +9,9 @@ import type {
   Adapter,
   AiCandidate,
   AiConversationMessage,
-  AiSelectionContext,
+  AiContextSnippet,
 } from "../types";
+import { logSnippetTimeLabel } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import VersionDiffModal, { type DiffPane } from "./VersionDiffModal";
 
@@ -19,6 +20,10 @@ export interface AiWorkingCopy {
   requirements: string;
   runtimeConfigText: string;
 }
+
+/** M5.5.13: one confirmed context snippet with a client-side identity; the
+ * wire shape stays the API's AiContextSnippet. */
+export type AiContextSnippetEntry = AiContextSnippet & { id: number };
 
 interface CandidateState {
   value: AiCandidate;
@@ -46,14 +51,16 @@ interface AiAssistantPanelProps {
   workingCopy: AiWorkingCopy;
   contentReady: boolean;
   busy: boolean;
-  /** M5.5.5: the confirmed Monaco selection snapshot of the current session. */
-  selectedContext: AiSelectionContext | null;
+  /** M5.5.13: confirmed multi-snippet context (code and/or masked log
+   * selections), in the order the administrator added them. */
+  contextSnippets: AiContextSnippetEntry[];
   /** M5.5.9: Monaco 主题透传，Diff 弹窗与主编辑器保持同一主题。 */
   theme: string;
   onOpen: () => void;
   onClose: () => void;
   onApply: (candidate: AiCandidate) => void;
-  onClearSelectedContext: () => void;
+  onRemoveContextSnippet: (id: number) => void;
+  onClearContextSnippets: () => void;
 }
 
 /** M5.5.5: DLR-known request lifecycle stages. Reasoning/CoT is never
@@ -131,6 +138,31 @@ function recentVisibleMessages(messages: VisibleMessage[]): AiConversationMessag
   return messages.slice(-8).map(({ role, content }) => ({ role, content }));
 }
 
+/** M5.5.13: user-facing label of one context snippet ("代码 第 12–20 行",
+ * "实时日志 10:21:03–10:21:08"). Log ranges are derived from the capture-time
+ * prefixes of the browser-visible masked text only. */
+function contextSnippetLabel(
+  snippet: AiContextSnippetEntry,
+  language: Adapter["language"],
+): string {
+  if (snippet.source === "code") {
+    const range =
+      snippet.end_line > snippet.start_line
+        ? `第 ${snippet.start_line}–${snippet.end_line} 行`
+        : `第 ${snippet.start_line} 行`;
+    return `代码 ${range}（${LANGUAGE_LABELS[language] ?? language}）`;
+  }
+  const timeLabel = logSnippetTimeLabel(snippet.text);
+  if (timeLabel !== null) {
+    return `实时日志 ${timeLabel}`;
+  }
+  const range =
+    snippet.end_line > snippet.start_line
+      ? `第 ${snippet.start_line}–${snippet.end_line} 行`
+      : `第 ${snippet.start_line} 行`;
+  return `实时日志 ${range}`;
+}
+
 export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
@@ -141,6 +173,18 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [bindingsVerified, setBindingsVerified] = useState(false);
   const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
   const [progressStage, setProgressStage] = useState<ProgressStage | null>(null);
+  // M5.5.13: the floating entry is draggable within the viewport. The position
+  // is deliberately NOT persisted anywhere (no localStorage/sessionStorage/
+  // database): a refresh restores the product default (CSS right: 16px).
+  const [entryOffset, setEntryOffset] = useState<{ x: number; y: number } | null>(null);
+  const dragStateRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startOffset: { x: number; y: number };
+    moved: boolean;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
   const requestGeneration = useRef(0);
   const bindingsGeneration = useRef(0);
   const nextMessageId = useRef(1);
@@ -260,11 +304,21 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         },
         recent_messages: recentMessages,
         base_version_id: props.selectedVersionId,
-        // The confirmed selection snapshot captured at click time; later
-        // cursor movement never changes it.
-        ...(props.selectedContext === null
+        // M5.5.13: all confirmed snippets in the order they were added; the
+        // snapshots are frozen at click time, later cursor movement never
+        // changes them. Omitted entirely when none were added.
+        ...(props.contextSnippets.length === 0
           ? {}
-          : { selected_context: props.selectedContext }),
+          : {
+              context_snippets: props.contextSnippets.map(
+                ({ source, text, start_line, end_line }) => ({
+                  source,
+                  text,
+                  start_line,
+                  end_line,
+                }),
+              ),
+            }),
       });
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
@@ -378,6 +432,64 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           : message,
       ),
     );
+    // M5.5.13: a successful Apply closes the Diff automatically and returns to
+    // the Workbench. Failed/blocked applies never reach this point (the Apply
+    // button stays disabled with its reason), so the Diff and its error/stale
+    // information are preserved in every failure path.
+    setCandidateDiff(null);
+  }
+
+  // M5.5.13: drag the floating entry within the visible work area without
+  // triggering a click. Pointer events are used so the drag works for mouse
+  // and touch; a small movement threshold separates "drag" from "click".
+  const ENTRY_SIZE = 46;
+  const ENTRY_MARGIN = 8;
+  const DRAG_THRESHOLD_PX = 4;
+
+  function handleEntryPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0 && event.pointerType === "mouse") {
+      return;
+    }
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffset: entryOffset ?? { x: 0, y: 0 },
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function handleEntryPointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    const dragState = dragStateRef.current;
+    if (dragState === null || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+    const deltaX = event.clientX - dragState.startClientX;
+    const deltaY = event.clientY - dragState.startClientY;
+    if (!dragState.moved && Math.hypot(deltaX, deltaY) < DRAG_THRESHOLD_PX) {
+      return;
+    }
+    dragState.moved = true;
+    // Clamp inside the visible viewport: the button never leaves the page.
+    const maxX = Math.max(ENTRY_MARGIN, window.innerWidth - ENTRY_SIZE - ENTRY_MARGIN);
+    const maxY = Math.max(ENTRY_MARGIN, window.innerHeight - ENTRY_SIZE - ENTRY_MARGIN);
+    const x = Math.min(maxX, Math.max(ENTRY_MARGIN, dragState.startOffset.x + deltaX));
+    const y = Math.min(maxY, Math.max(ENTRY_MARGIN, dragState.startOffset.y + deltaY));
+    setEntryOffset({ x, y });
+  }
+
+  function handleEntryPointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+    const dragState = dragStateRef.current;
+    if (dragState === null || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+    if (dragState.moved) {
+      // The pointer movement was a drag, not a click: swallow the synthetic
+      // click that follows so the panel never toggles accidentally.
+      suppressClickRef.current = true;
+    }
+    dragStateRef.current = null;
   }
 
   const collapsedEntry = (
@@ -388,7 +500,17 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         data-testid="open-ai-assistant"
         aria-label="展开 AI 助手"
         aria-expanded={false}
-        onClick={props.onOpen}
+        style={entryOffset === null ? undefined : { left: entryOffset.x, top: entryOffset.y }}
+        onPointerDown={handleEntryPointerDown}
+        onPointerMove={handleEntryPointerMove}
+        onPointerUp={handleEntryPointerUp}
+        onClick={() => {
+          if (suppressClickRef.current) {
+            suppressClickRef.current = false;
+            return;
+          }
+          props.onOpen();
+        }}
       >
         AI
       </Button>
@@ -396,7 +518,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   );
 
   const contextVersion =
-    props.selectedVersionSeq === null ? "未保存工作副本" : `工作副本 v${props.selectedVersionSeq}`;
+    props.selectedVersionSeq === null ? "未保存版本" : `版本 v${props.selectedVersionSeq}`;
 
   const expandedPanel = (
     <aside className="ai-assistant ai-assistant-expanded" data-testid="ai-assistant-panel">
@@ -427,24 +549,44 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         )}
       </div>
 
-      {props.adapter !== null && props.selectedContext !== null && (
-        <div className="ai-selection-context" data-testid="ai-selection-context">
-          <span data-testid="ai-selection-label">
-            已添加选中文本：第 {props.selectedContext.start_line}
-            {props.selectedContext.end_line > props.selectedContext.start_line
-              ? `–${props.selectedContext.end_line}`
-              : ""}{" "}
-            行（{LANGUAGE_LABELS[props.adapter.language]}）
-          </span>
-          <Button
-            size="small"
-            type="text"
-            data-testid="ai-clear-selection"
-            aria-label="清除已添加的选中文本"
-            onClick={props.onClearSelectedContext}
-          >
-            清除
-          </Button>
+      {props.adapter !== null && props.contextSnippets.length > 0 && (
+        <div className="ai-snippets" data-testid="ai-context-snippets">
+          <div className="ai-snippets-header">
+            <span>已加入的上下文片段</span>
+            <Button
+              size="small"
+              type="text"
+              data-testid="ai-clear-all-snippets"
+              aria-label="清空全部上下文片段"
+              onClick={props.onClearContextSnippets}
+            >
+              清空全部
+            </Button>
+          </div>
+          {props.adapter !== null &&
+            (() => {
+              const adapterLanguage = props.adapter.language;
+              return props.contextSnippets.map((snippet) => (
+                <div
+                  key={snippet.id}
+                  className="ai-snippet-item"
+                  data-testid={`ai-snippet-${snippet.id}`}
+                >
+                  <span className="ai-snippet-label" data-testid="ai-snippet-label">
+                    {contextSnippetLabel(snippet, adapterLanguage)}
+                  </span>
+                  <Button
+                    size="small"
+                    type="text"
+                    data-testid={`ai-remove-snippet-${snippet.id}`}
+                    aria-label="删除该上下文片段"
+                    onClick={() => props.onRemoveContextSnippet(snippet.id)}
+                  >
+                    删除
+                  </Button>
+                </div>
+              ));
+            })()}
         </div>
       )}
 
@@ -459,8 +601,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         }}
       >
         {messages.length === 0 ? (
-          <p className="ai-conversation-empty">
-            描述你希望解释或修改的内容。每次请求都基于当前编辑器中的代码与配置，不包含任何凭据。
+          <p className="ai-conversation-empty" data-testid="ai-conversation-empty">
+            描述你的需求，可引用原代码片段。建议不要在代码中直接写入密码、Token、密钥等凭据，
+            请使用「凭据绑定」功能，避免敏感凭据随代码发送给 AI。
           </p>
         ) : (
           messages.map((message) => {
@@ -508,7 +651,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                     )}
                     {stale && (
                       <div className="ai-stale-warning" role="alert" data-testid="ai-candidate-stale">
-                        <strong>⚠ AI 生成期间工作副本已发生修改。</strong>
+                        <strong>⚠ AI 生成期间当前代码已发生修改。</strong>
                         <span>该候选修改基于较早的编辑内容生成。</span>
                       </div>
                     )}
@@ -519,7 +662,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                     )}
                     {candidateState.applied && (
                       <p className="ai-candidate-applied" role="status" data-testid="ai-candidate-applied">
-                        已应用到浏览器工作副本；请继续人工保存、测试与运行。
+                        已应用到浏览器中的当前代码；请继续人工保存、测试与运行。
                       </p>
                     )}
                     <div className="ai-candidate-actions">
@@ -530,7 +673,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                         disabled={!props.contentReady || props.busy}
                         onClick={() => openCandidateDiff(message.id, candidateState)}
                       >
-                        {stale ? "查看与当前工作副本的修改" : "查看修改"}
+                        {stale ? "查看与当前代码的修改" : "查看修改"}
                       </Button>
                     </div>
                   </div>
@@ -558,6 +701,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
             {panelError}
           </p>
         )}
+        <p className="ai-composer-hint" data-testid="ai-credential-guidance">
+          凭据绑定中的 Secret 不会发送给 AI；硬编码在代码中的敏感信息会随代码上下文发送。
+        </p>
         <textarea
           ref={messageInputRef}
           rows={4}
@@ -610,11 +756,11 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       !candidateState.applied &&
       !snapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
     const applyBlockedReason = candidateState.applied
-      ? "该候选修改已应用到当前工作副本"
+      ? "该候选修改已应用到当前代码"
       : props.adapter?.archived_at
         ? "适配器已删除，候选修改只能查看，不能应用"
         : !props.contentReady
-          ? "工作副本尚未加载完成，请稍后重试"
+          ? "当前代码尚未加载完成，请稍后重试"
           : props.busy
             ? "其他操作正在进行，请等待完成"
             : props.adapter?.runtime_locked === true
@@ -633,8 +779,8 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     <>
       <VersionDiffModal
         open={candidateDiff !== null}
-        title="AI 候选修改：与当前工作副本对比"
-        originalTitle="工作副本（当前编辑内容）"
+        title="AI 候选修改：与当前编辑内容对比"
+        originalTitle="当前编辑内容"
         modifiedTitle="AI 候选修改"
         panes={candidateDiff?.panes ?? []}
         theme={props.theme}

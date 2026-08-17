@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { useEffect } from "react";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import App, {
@@ -3181,10 +3181,11 @@ it.each([
     await selectFirstAdapter();
     await openAiAssistant();
 
-    // M5.5.5：选区快照随请求发送，且不改变 Candidate → Diff → Apply 路径。
+    // M5.5.13：选区快照随请求发送，且不改变 Candidate → Diff → Apply 路径。
     selectInEditor(`selected-${language}`, 2, 3);
     fireEvent.click(screen.getByTestId("add-ai-selection"));
-    expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 2–3 行");
+    expect(screen.getByTestId("ai-snippet-label").textContent).toContain("第 2–3 行");
+    expect(screen.getByTestId("ai-snippet-label").textContent).toContain("代码");
 
     fireEvent.change(screen.getByTestId("ai-message-input"), {
       target: { value: "增加分页" },
@@ -3214,7 +3215,12 @@ it.each([
       };
       recent_messages: unknown[];
       base_version_id: number;
-      selected_context: { text: string; start_line: number; end_line: number };
+      context_snippets: {
+        source: string;
+        text: string;
+        start_line: number;
+        end_line: number;
+      }[];
     };
     expect(payload).toEqual({
       message: "增加分页",
@@ -3225,7 +3231,14 @@ it.each([
       },
       recent_messages: [],
       base_version_id: 10,
-      selected_context: { text: `selected-${language}`, start_line: 2, end_line: 3 },
+      context_snippets: [
+        {
+          source: "code",
+          text: `selected-${language}`,
+          start_line: 2,
+          end_line: 3,
+        },
+      ],
     });
 
     fireEvent.click(screen.getByTestId("ai-view-diff"));
@@ -3239,13 +3252,12 @@ it.each([
     fireEvent.click(within(diffModal).getByText("运行参数"));
     expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe("json");
 
-    // Apply 只发生在 Diff 内（M5.5.4 单一路径）。
+    // Apply 只发生在 Diff 内（M5.5.4 单一路径）；成功后 Diff 自动关闭
+    // （M5.5.13），返回 Monaco/Workbench。
     fireEvent.click(screen.getByTestId("diff-apply-candidate"));
+    await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
     expect(valueOf("code-editor")).toBe("candidate-code\n");
-    expect(screen.getByTestId("diff-candidate-applied")).toBeTruthy();
-    expect(
-      (screen.getByTestId("diff-apply-candidate") as HTMLButtonElement).textContent?.replace(/\s/g, ""),
-    ).toBe("已应用");
+    expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
     expect(valueOf("requirements-input")).toBe("candidate-dependency\n");
     // M5.5.9：运行参数（JSON）已退出编辑页；候选参数只随工作副本进入保存。
     expect(screen.queryByText("运行参数（JSON）")).toBeNull();
@@ -3258,10 +3270,6 @@ it.each([
         .closest(".action-with-reason")
         ?.getAttribute("aria-label"),
     ).toContain("请先保存当前修改，再运行。");
-    expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId("diff-close"));
-    await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
 
     expect(
       fetchMock.mock.calls.some(
@@ -4137,7 +4145,7 @@ function selectInEditor(text: string, startLine: number, endLine: number) {
   });
 }
 
-it("adds the exact Monaco selection snapshot and sends it unchanged after cursor moves", async () => {
+it("adds the exact Monaco selection snapshot, auto-opens the panel, and sends it unchanged", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const requestBodies: string[] = [];
   stubFetch([
@@ -4154,20 +4162,18 @@ it("adds the exact Monaco selection snapshot and sends it unchanged after cursor
   ]);
   render(<App />);
   await selectFirstAdapter();
-  await openAiAssistant();
 
   // 空选区：入口禁用，不提供无意义操作。
   const addButton = screen.getByTestId("add-ai-selection") as HTMLButtonElement;
   expect(addButton.disabled).toBe(true);
-  expect(screen.queryByTestId("ai-selection-context")).toBeNull();
+  expect(screen.queryByTestId("ai-context-snippets")).toBeNull();
 
-  // 非空选区：入口可用；点击后出现行号标记。
+  // 非空选区：入口可用；点击后出现行号标记，并自动展开 AI 面板（M5.5.13）。
   selectInEditor("def handle(context, input):\n    return input\n", 2, 3);
   expect(addButton.disabled).toBe(false);
   fireEvent.click(addButton);
-  expect(screen.getByTestId("ai-selection-label").textContent).toBe(
-    "已添加选中文本：第 2–3 行（Python）",
-  );
+  await screen.findByTestId("ai-assistant-panel");
+  expect(screen.getByTestId("ai-snippet-label").textContent).toBe("代码 第 2–3 行（Python）");
 
   // 光标随后移动（选区收起）：按钮回到禁用，但已确认的快照不受影响。
   act(() => {
@@ -4179,7 +4185,7 @@ it("adds the exact Monaco selection snapshot and sends it unchanged after cursor
     });
   });
   expect(addButton.disabled).toBe(true);
-  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 2–3 行");
+  expect(screen.getByTestId("ai-snippet-label").textContent).toContain("第 2–3 行");
 
   fireEvent.change(screen.getByTestId("ai-message-input"), {
     target: { value: "解释选中代码" },
@@ -4188,16 +4194,19 @@ it("adds the exact Monaco selection snapshot and sends it unchanged after cursor
   await screen.findByTestId("ai-candidate-summary");
 
   const payload = JSON.parse(requestBodies[0]) as {
-    selected_context: { text: string; start_line: number; end_line: number };
+    context_snippets: { source: string; text: string; start_line: number; end_line: number }[];
   };
-  expect(payload.selected_context).toEqual({
-    text: "def handle(context, input):\n    return input\n",
-    start_line: 2,
-    end_line: 3,
-  });
+  expect(payload.context_snippets).toEqual([
+    {
+      source: "code",
+      text: "def handle(context, input):\n    return input\n",
+      start_line: 2,
+      end_line: 3,
+    },
+  ]);
 });
 
-it("rejects whitespace-only selections and supports clear and replace", async () => {
+it("rejects whitespace-only selections and supports single delete and clear-all", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   const requestBodies: string[] = [];
   stubFetch([
@@ -4229,45 +4238,57 @@ it("rejects whitespace-only selections and supports clear and replace", async ()
   });
   expect(addButton.disabled).toBe(false);
   fireEvent.click(addButton);
-  expect(screen.queryByTestId("ai-selection-context")).toBeNull();
+  expect(screen.queryByTestId("ai-context-snippets")).toBeNull();
 
-  // 加入 → 清除：标记消失，发送时不携带 selected_context。
+  // 加入 → 单独删除：标记消失，发送时不携带 context_snippets。
   selectInEditor("first selection\n", 1, 1);
   fireEvent.click(screen.getByTestId("add-ai-selection"));
-  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 1 行");
-  fireEvent.click(screen.getByTestId("ai-clear-selection"));
-  expect(screen.queryByTestId("ai-selection-context")).toBeNull();
+  expect(screen.getByTestId("ai-snippet-label").textContent).toContain("第 1 行");
+  fireEvent.click(screen.getByTestId("ai-remove-snippet-1"));
+  expect(screen.queryByTestId("ai-context-snippets")).toBeNull();
 
   fireEvent.change(screen.getByTestId("ai-message-input"), {
-    target: { value: "不带选区" },
+    target: { value: "不带片段" },
   });
   fireEvent.click(screen.getByTestId("ai-send"));
   await screen.findByTestId("ai-candidate-summary");
   const clearedPayload = JSON.parse(requestBodies[0]) as {
-    selected_context?: unknown;
+    context_snippets?: unknown;
   };
-  expect(clearedPayload.selected_context).toBeUndefined();
+  expect(clearedPayload.context_snippets).toBeUndefined();
 
-  // 替换：新选区直接覆盖旧快照。
-  selectInEditor("replacement selection\n", 4, 5);
+  // 追加：新片段不覆盖旧片段，按加入顺序展示（M5.5.13）。
+  selectInEditor("first snippet\n", 1, 1);
   fireEvent.click(screen.getByTestId("add-ai-selection"));
-  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 4–5 行");
+  selectInEditor("second snippet\n", 4, 5);
+  fireEvent.click(screen.getByTestId("add-ai-selection"));
+  const labels = screen.getAllByTestId("ai-snippet-label").map((node) => node.textContent);
+  expect(labels[0]).toContain("第 1 行");
+  expect(labels[1]).toContain("第 4–5 行");
+
+  // 删除第一段：第二段保持；发送只携带剩余片段（加入顺序不变）。
+  fireEvent.click(screen.getByTestId("ai-remove-snippet-2"));
+  expect(screen.getAllByTestId("ai-snippet-label")).toHaveLength(1);
+  expect(screen.getByTestId("ai-snippet-label").textContent).toContain("第 4–5 行");
+
   fireEvent.change(screen.getByTestId("ai-message-input"), {
-    target: { value: "带替换选区" },
+    target: { value: "带第二段" },
   });
   fireEvent.click(screen.getByTestId("ai-send"));
   await waitFor(() => expect(requestBodies).toHaveLength(2));
-  const replacedPayload = JSON.parse(requestBodies[1]) as {
-    selected_context: { text: string; start_line: number; end_line: number };
+  const secondPayload = JSON.parse(requestBodies[1]) as {
+    context_snippets: { source: string; text: string; start_line: number; end_line: number }[];
   };
-  expect(replacedPayload.selected_context).toEqual({
-    text: "replacement selection\n",
-    start_line: 4,
-    end_line: 5,
-  });
+  expect(secondPayload.context_snippets).toEqual([
+    { source: "code", text: "second snippet\n", start_line: 4, end_line: 5 },
+  ]);
+
+  // 清空全部：列表消失，后续发送不再携带任何片段。
+  fireEvent.click(screen.getByTestId("ai-clear-all-snippets"));
+  expect(screen.queryByTestId("ai-context-snippets")).toBeNull();
 });
 
-it("clears the selection context on Adapter switch and never cross-talks", async () => {
+it("clears the context snippets on Adapter switch and never cross-talks", async () => {
   const adapterA = makeAdapter({ id: 1, name: "adapter-a" });
   const adapterB = makeAdapter({ id: 2, name: "adapter-b" });
   const requestBodies: string[] = [];
@@ -4297,31 +4318,29 @@ it("clears the selection context on Adapter switch and never cross-talks", async
 
   selectInEditor("adapter-a selection\n", 1, 1);
   fireEvent.click(screen.getByTestId("add-ai-selection"));
-  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 1 行");
+  expect(screen.getByTestId("ai-snippet-label").textContent).toContain("第 1 行");
 
-  // 切换 Adapter：旧选区标记立即消失，按钮回到禁用（不串线）。
+  // 切换 Adapter：旧片段标记立即消失，按钮回到禁用（不串线）。
   fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
   await screen.findByRole("heading", { name: "adapter-b" });
-  expect(screen.queryByTestId("ai-selection-context")).toBeNull();
+  expect(screen.queryByTestId("ai-context-snippets")).toBeNull();
   expect((screen.getByTestId("add-ai-selection") as HTMLButtonElement).disabled).toBe(true);
 
-  // B 中新选区 → 标记属于 B；发送只携带 B 的选区快照。
+  // B 中新片段 → 标记属于 B；发送只携带 B 的快照。
   selectInEditor("adapter-b selection\n", 7, 8);
   fireEvent.click(screen.getByTestId("add-ai-selection"));
-  expect(screen.getByTestId("ai-selection-label").textContent).toContain("第 7–8 行");
+  expect(screen.getByTestId("ai-snippet-label").textContent).toContain("第 7–8 行");
   fireEvent.change(screen.getByTestId("ai-message-input"), {
     target: { value: "B 的请求" },
   });
   fireEvent.click(screen.getByTestId("ai-send"));
   await screen.findByTestId("ai-candidate-summary");
   const payload = JSON.parse(requestBodies[0]) as {
-    selected_context: { text: string; start_line: number; end_line: number };
+    context_snippets: { source: string; text: string; start_line: number; end_line: number }[];
   };
-  expect(payload.selected_context).toEqual({
-    text: "adapter-b selection\n",
-    start_line: 7,
-    end_line: 8,
-  });
+  expect(payload.context_snippets).toEqual([
+    { source: "code", text: "adapter-b selection\n", start_line: 7, end_line: 8 },
+  ]);
 });
 
 it("shows DLR lifecycle stage progress and converges on success without reasoning", async () => {
@@ -4546,4 +4565,261 @@ it("keeps Candidate stale and Apply gating unchanged when a selection is present
   expect(screen.getByTestId("diff-apply-candidate").textContent).toContain("仍然应用");
   fireEvent.click(screen.getByTestId("diff-apply-candidate"));
   expect(valueOf("code-editor")).toBe("candidate-code\n");
+});
+
+// --- M5.5.13：Apply 自动关 Diff / 悬浮入口拖动 / 日志上下文 / 文案收敛 --------
+
+// jsdom 的 PointerEvent 构造器不应用 init 属性：用普通事件 + 显式属性派发，
+// 覆盖 React 的合成 pointer 事件处理（真实浏览器行为一致）。
+function pointerEvent(type: string, init: Record<string, unknown>) {
+  const event = new window.Event(type, { bubbles: true });
+  Object.assign(event, init);
+  return event;
+}
+
+function firePointer(el: Element, type: string, init: Record<string, unknown>) {
+  act(() => {
+    el.dispatchEvent(pointerEvent(type, init));
+  });
+}
+
+it("auto-closes the Candidate Diff on successful Apply and keeps it open when blocked", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion({ code: "base-code\n" })),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: () => ({ body: aiResponse("候选已生成", AI_CANDIDATE) }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "改代码" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+
+  // Apply 成功 → Diff 自动关闭（不再需要手工点“关闭”），返回 Workbench。
+  fireEvent.click(screen.getByTestId("ai-view-diff"));
+  await screen.findByTestId("version-diff");
+  fireEvent.click(screen.getByTestId("diff-apply-candidate"));
+  await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
+  expect(valueOf("code-editor")).toBe("candidate-code\n");
+  expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
+});
+
+it("keeps the Candidate Diff open with its reason when Apply is blocked by the run lock", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_locked: true });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion({ code: "base-code\n" })),
+    aiBindingsRoute(1),
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: () => ({ body: aiResponse("候选已生成", AI_CANDIDATE) }),
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "改代码" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+
+  fireEvent.click(screen.getByTestId("ai-view-diff"));
+  await screen.findByTestId("version-diff");
+  // 运行锁：Apply 禁用并展示原因，Diff 保持打开（不自动关闭）。
+  expect((screen.getByTestId("diff-apply-candidate") as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    (screen.getByTestId("diff-apply-candidate") as HTMLButtonElement)
+      .closest(".action-with-reason")
+      ?.getAttribute("aria-label"),
+  ).toContain("适配器正在运行，不能应用候选修改");
+  expect(screen.getByTestId("version-diff")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("diff-close"));
+  await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
+});
+
+it("drags the floating entry within the viewport without clicking, and click still opens", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  const entry = (await screen.findByTestId("open-ai-assistant")) as HTMLButtonElement;
+  expect(entry.style.left).toBe("");
+
+  // 拖动超过阈值：位置内联更新，合成 click 被吞掉（不展开面板）。
+  firePointer(entry, "pointerdown", { pointerId: 1, clientX: 200, clientY: 300, button: 0, pointerType: "mouse" });
+  firePointer(entry, "pointermove", { pointerId: 1, clientX: 260, clientY: 330 });
+  firePointer(entry, "pointerup", { pointerId: 1 });
+  fireEvent.click(entry);
+  expect(screen.queryByTestId("ai-assistant-panel")).toBeNull();
+  expect(entry.style.left).toBe("60px");
+  expect(entry.style.top).toBe("30px");
+
+  // 拖动不会拖出页面：极限坐标被钳制在视口内。
+  firePointer(entry, "pointerdown", { pointerId: 2, clientX: 260, clientY: 330, button: 0, pointerType: "mouse" });
+  firePointer(entry, "pointermove", { pointerId: 2, clientX: 100000, clientY: 100000 });
+  firePointer(entry, "pointerup", { pointerId: 2 });
+  const clampedX = Number.parseInt(entry.style.left, 10);
+  const clampedY = Number.parseInt(entry.style.top, 10);
+  expect(clampedX).toBeLessThanOrEqual(window.innerWidth - 54);
+  expect(clampedY).toBeLessThanOrEqual(window.innerHeight - 54);
+  expect(clampedX).toBeGreaterThanOrEqual(8);
+
+  // 位置不持久化：重新挂载后恢复产品默认位置（无内联坐标）。
+  cleanup();
+  render(<App />);
+  await selectFirstAdapter();
+  const fresh = (await screen.findByTestId("open-ai-assistant")) as HTMLButtonElement;
+  expect(fresh.style.left).toBe("");
+
+  // 普通点击（无拖动）仍展开 AI 面板。
+  fireEvent.click(fresh);
+  await screen.findByTestId("ai-assistant-panel");
+});
+
+it("adds masked live-log selections to the AI context alongside code and sends both in order", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  const pending = makeExecution();
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 1,
+    target_worker_id: 1,
+    stdout:
+      "[2026-08-17 10:30:00] 任务开始\n[2026-08-17 10:30:01] 任务结束\n",
+    output: { ok: true },
+    output_size: 11,
+    ended_at: "2026-08-15T00:00:02Z",
+    duration_ms: 1000,
+  });
+  const requestBodies: string[] = [];
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [{ id: 1, name: "task-worker", status: "online", last_heartbeat: "", capabilities: ["python"] }],
+      }),
+    },
+    { method: "POST", match: "/api/adapters/1/executions", respond: () => ({ status: 201, body: pending }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: log\ndata: ${JSON.stringify({ stream: "stdout", chunk: "[2026-08-17 10:30:00] 任务开始\\n" })}\n\nevent: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: succeeded }) },
+    {
+      method: "POST",
+      match: "/api/adapters/1/ai/assist",
+      respond: (body) => {
+        requestBodies.push(body ?? "");
+        return { body: aiResponse("候选已生成", AI_CANDIDATE) };
+      },
+    },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+
+  // 先加入一个代码片段（编辑 Tab），面板自动展开。
+  selectInEditor("def handle(context, input):\n    return input\n", 1, 1);
+  fireEvent.click(screen.getByTestId("add-ai-selection"));
+  await screen.findByTestId("ai-assistant-panel");
+  expect(screen.getAllByTestId("ai-snippet-label")[0].textContent).toContain("代码");
+
+  // 运行一次 → 自动切到「实时日志」Tab，出现统一日志。
+  const runButton = (await screen.findByTestId("header-task-run-once")) as HTMLButtonElement;
+  await waitFor(() => expect(runButton.disabled).toBe(false));
+  fireEvent.click(runButton);
+  await screen.findByTestId("live-log-workspace");
+  await waitFor(() => {
+    expect(screen.getByTestId("live-log").textContent).toContain("任务开始");
+  });
+
+  // 选中日志可见文本（模拟浏览器选区；只读渲染出的已脱敏文本）→ 加入上下文。
+  const logPane = screen.getByTestId("live-log");
+  const textNode = logPane.firstChild as Text;
+  const range = document.createRange();
+  range.setStart(textNode, 0);
+  range.setEnd(textNode, 31); // 第一行完整（含换行）
+  const getSelectionSpy = vi.spyOn(window, "getSelection").mockReturnValue({
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => range,
+    toString: () => range.toString(),
+    anchorNode: textNode,
+    focusNode: textNode,
+  } as unknown as Selection);
+  act(() => {
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  const addLogButton = screen.getByTestId("live-log-add-context") as HTMLButtonElement;
+  expect(addLogButton.disabled).toBe(false);
+  fireEvent.click(addLogButton);
+  expect(screen.getAllByTestId("ai-snippet-label")).toHaveLength(2);
+  expect(screen.getAllByTestId("ai-snippet-label")[1].textContent).toContain("实时日志");
+  expect(screen.getAllByTestId("ai-snippet-label")[1].textContent).toContain("10:30:00");
+
+  // 发送：按加入顺序携带代码 + 日志两个片段（日志只有浏览器可见脱敏文本）。
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "解释代码和日志" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-candidate-summary");
+  const payload = JSON.parse(requestBodies[0]) as {
+    context_snippets: { source: string; text: string; start_line: number; end_line: number }[];
+  };
+  expect(payload.context_snippets).toHaveLength(2);
+  expect(payload.context_snippets[0]).toEqual({
+    source: "code",
+    text: "def handle(context, input):\n    return input\n",
+    start_line: 1,
+    end_line: 1,
+  });
+  expect(payload.context_snippets[1].source).toBe("log");
+  expect(payload.context_snippets[1].text).toContain("[2026-08-17 10:30:00] 任务开始");
+  expect(payload.context_snippets[1].start_line).toBe(1);
+  getSelectionSpy.mockRestore();
+});
+
+it("shows the M5.5.13 credential guidance copy and the primary-blue assistant header", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  // 引导文案：凭据绑定引导 + 硬编码敏感信息会随代码发送的区分，无内部术语。
+  const empty = screen.getByTestId("ai-conversation-empty");
+  expect(empty.textContent).toContain("凭据绑定");
+  expect(empty.textContent).toContain("避免敏感凭据随代码发送给 AI");
+  expect(empty.textContent).not.toContain("工作副本");
+  expect(empty.textContent).not.toContain("唯一代码快照");
+  const guidance = screen.getByTestId("ai-credential-guidance");
+  expect(guidance.textContent).toContain("Secret 不会发送给 AI");
+  expect(guidance.textContent).toContain("硬编码在代码中的敏感信息会随代码上下文发送");
+  // 面板上下文行不使用内部术语“工作副本”。
+  expect(screen.getByTestId("ai-current-context").textContent).not.toContain("工作副本");
+  // 顶部使用主操作蓝色（CSS 断言）。
+  const appStyles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
+  expect(appStyles).toMatch(/\.ai-assistant-header\s*\{[^}]*background\s*:\s*#0958d9/s);
 });

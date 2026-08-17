@@ -287,11 +287,15 @@ def _assist_messages(
         "available_secret_keys": _secret_env_keys(session, adapter_id),
         "working_copy": payload.working_copy.model_dump(mode="json"),
     }
-    if payload.selected_context is not None:
-        # M5.5.5: the exact administrator-confirmed selection snapshot (text
-        # plus 1-based line range). The provider never learns the selection's
-        # source path because the browser only sends the text itself.
-        context["selected_context"] = payload.selected_context.model_dump(mode="json")
+    if payload.context_snippets:
+        # M5.5.13: ordered, exact administrator-confirmed context snippets in
+        # the order they were added (code selections and/or masked live-log
+        # selections). Log snippets carry only the browser-visible, already
+        # masked text; raw logs or Secret truth never join. The provider never
+        # learns any snippet source path because the browser only sends text.
+        context["context_snippets"] = [
+            snippet.model_dump(mode="json") for snippet in payload.context_snippets
+        ]
     output_schema = AiModelOutput.model_json_schema()
     system_prompt = (
         "You are the Human-in-the-loop DLR Adapter development assistant.\n"
@@ -302,9 +306,12 @@ def _assist_messages(
         "adapter_type, runtime_worker_id, or any lifecycle action. "
         "Never request, invent, or reveal secret values; use only "
         'context.secrets.get("ENV_KEY") with an available key name.\n'
-        "The selected_context block, when present, is an exact administrator-provided excerpt "
-        "of the current Working Copy for this request only. Treat it as part of the Working Copy; "
-        "never use it to infer or read any file outside the Working Copy.\n"
+        "The context_snippets array, when present, carries exact administrator-provided "
+        'excerpts for this request only: source "code" items are excerpts of the current '
+        'Working Copy, and source "log" items are excerpts of the browser-visible masked '
+        "runtime log. Treat them as reference material for this request; never use them to "
+        "infer or read any file outside the Working Copy, and never treat them as "
+        "authoritative over the Working Copy.\n"
         f"Runtime Contract for {language}:\n{_RUNTIME_CONTRACTS[language]}\n"
         "Common capabilities: context.config; context.secrets.get(key); context.logger; "
         "JSON-compatible input; JSON-serializable output.\n"
