@@ -48,7 +48,8 @@
         "totalTooLarge": "The attachments exceed the total size limit ({{total}}): remove or compress attachments and try again",
         "countExceeded": "Too many attachments (limit {{count}}): remove some and try again",
         "readFailed": "The file could not be read: choose the file again",
-        "empty": "The file is empty: choose a file with content"
+        "empty": "The file is empty: choose a file with content",
+        "rejected": "A rejected attachment cannot be sent: remove it and try again"
       }
     },
     "code": {

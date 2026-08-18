@@ -276,6 +276,84 @@ describe("selection / drop / delete / clear", () => {
 });
 
 describe("client-side bounds mirror the B2 contract", () => {
+  it("never attaches pasted files (paste bypass closed)", async () => {
+    vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
+    renderPanel();
+    fireEvent.paste(screen.getByTestId("ai-message-input"), {
+      clipboardData: { files: [makeFile("pasted.txt", "text/plain"), makeFile("pasted.png", "image/png")] },
+    });
+    await waitFor(() => {
+      // Paste must not create attachment rows (validated picker/dropzone
+      // are the only entry points) and must not raise an error.
+      expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+    });
+    expect(screen.queryByTestId("ai-attachment-error")).toBeNull();
+  });
+
+  it("keeps the full draft when attachment resolution fails (no data loss)", async () => {
+    const file = makeFile("notes.txt", "text/plain", "draft-body");
+    const assistAdapter = vi
+      .spyOn(api, "assistAdapter")
+      .mockResolvedValue(aiResponse("回复", null));
+    renderPanel();
+    await addFiles(file);
+    const input = screen.getByTestId("ai-message-input") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "请分析" } });
+
+    // Simulate a browser file-read failure during body resolution (real
+    // browsers surface reader.error as a DOMException).
+    const readSpy = vi
+      .spyOn(FileReader.prototype, "readAsDataURL")
+      .mockImplementation(function (this: FileReader) {
+        Object.defineProperty(this, "error", {
+          value: new DOMException("read failed", "NotFoundError"),
+          configurable: true,
+        });
+        this.onerror?.(new ProgressEvent("error") as ProgressEvent<FileReader>);
+      });
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await screen.findByTestId("ai-attachment-error");
+    expect(screen.getByTestId("ai-attachment-error").textContent).toContain("附件读取失败");
+    // The draft is fully preserved: text and attachment row stay put, and
+    // nothing was sent.
+    expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("请分析");
+    expect(screen.queryAllByTestId("ai-attachment-item")).toHaveLength(1);
+    expect(assistAdapter).not.toHaveBeenCalled();
+
+    // After the transient failure clears, the same draft sends successfully.
+    readSpy.mockRestore();
+    fireEvent.click(screen.getByTestId("ai-send"));
+    await screen.findByText("回复");
+    expect(assistAdapter).toHaveBeenCalledTimes(1);
+    expect(attachmentPayloadOf(assistAdapter, 0).attachments?.[0]?.data_base64).toBe(
+      btoa("draft-body"),
+    );
+  });
+
+  it("follows a narrowed server capability table for the runtime accept check", async () => {
+    vi.spyOn(api, "getAiAttachmentCapabilities").mockResolvedValue({
+      ...attachmentCapabilities,
+      supported_content_types: ["text/plain"],
+    });
+    vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
+    renderPanel();
+    await screen.findByTestId("ai-attachment-hint");
+
+    // text/plain is still accepted...
+    fireEvent.drop(screen.getByTestId("ai-attachment-dropzone"), {
+      dataTransfer: { files: [makeFile("ok.txt", "text/plain")] },
+    });
+    await waitFor(() => expect(screen.queryAllByTestId("ai-attachment-item")).toHaveLength(1));
+    // ...but application/json is outside the narrowed table: rejected with
+    // actionable copy and never added as a row.
+    fireEvent.drop(screen.getByTestId("ai-attachment-dropzone"), {
+      dataTransfer: { files: [makeFile("config.json", "application/json")] },
+    });
+    await screen.findByTestId("ai-attachment-error");
+    expect(screen.getByTestId("ai-attachment-error").textContent).toContain("不支持的文件类型");
+    expect(screen.queryAllByTestId("ai-attachment-item")).toHaveLength(1);
+  });
+
   it("rejects oversized, count-exceeded and total-exceeded files with actionable localized copy", async () => {
     vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
     renderPanel();

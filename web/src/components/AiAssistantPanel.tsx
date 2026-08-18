@@ -42,21 +42,22 @@ import {
   type Attachment,
   type AttachmentAdapter,
   type CompleteAttachment,
-  type PendingAttachment,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 
 import { api, ApiError } from "../api";
 import {
   acceptStringFor,
+  attachmentAddErrorMessage,
   base64DecodedSize,
   buildWireAttachment,
   classifyAttachment,
+  createDlrAttachmentAdapter,
   DEFAULT_ATTACHMENT_LIMITS,
   DEFAULT_SUPPORTED_CONTENT_TYPES,
+  firstRejectedRowMessage,
   formatAttachmentSize,
   validateAttachmentAdd,
-  type AttachmentAddErrorReason,
 } from "../attachment-client";
 import { dependencyUiFor, LANGUAGE_LABELS } from "../languages";
 import type {
@@ -261,99 +262,15 @@ function attachmentServerErrorMessage(error: unknown, fallback: string): string 
   return userErrorMessage(error, fallback);
 }
 
-/** Stable attachment identity (jsdom/node provide crypto.randomUUID). */
-function attachmentId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-/** An attachment that failed client-side validation. It renders as a visible,
- * removable error row with the localized reason (the runtime skips throwing
- * so the picker path never swallows the message silently). */
-function errorPendingAttachment(file: File, message: string): PendingAttachment {
-  return {
-    id: attachmentId(),
-    type: "document",
-    name: file.name,
-    contentType: file.type,
-    file,
-    status: { type: "incomplete", reason: "error", message },
-  };
-}
-
-/** Resolve one pending attachment into its complete form. The strict base64
- * body is read once and cached (WeakMap keyed by the returned complete
- * attachment object) so the wire payload reuses the same string instead of
- * re-reading the file. The content part carries a transient data URL only
- * for contract shape; DLR never renders it (the thread renders text-only
- * converted messages), and it is GC'd with the transient AppendMessage. */
-async function completeAttachment(
-  attachment: PendingAttachment,
-  wireCache: WeakMap<object, AiAttachment>,
-): Promise<CompleteAttachment> {
-  const wire = await buildWireAttachment(
-    attachment.name,
-    attachment.contentType ?? attachment.file.type,
-    attachment.file,
-  );
-  const dataUrl = `data:${wire.content_type};base64,${wire.data_base64}`;
-  const content = attachment.type === "image"
-    ? [{ type: "image" as const, image: dataUrl, filename: attachment.name }]
-    : [{ type: "file" as const, filename: attachment.name, data: dataUrl, mimeType: wire.content_type }];
-  const complete: CompleteAttachment = {
-    id: attachment.id,
-    type: attachment.type,
-    name: attachment.name,
-    contentType: wire.content_type,
-    file: attachment.file,
-    content,
-    status: { type: "complete" },
-  };
-  wireCache.set(complete, wire);
-  return complete;
-}
-
-/** Localized message for one client-side add rejection (pre-validation path).
- * Server rejections use the stable ``ai_attachment_*`` codes via
- * common.errors instead. */
-function attachmentAddErrorMessage(
-  reason: AttachmentAddErrorReason,
-  limits: AiAttachmentLimits,
-  translate: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  switch (reason) {
-    case "filename_invalid":
-      return translate("assistant.attachments.error.filenameInvalid");
-    case "empty":
-      return translate("assistant.attachments.error.empty");
-    case "too_large":
-      return translate("assistant.attachments.error.tooLarge", {
-        size: formatAttachmentSize(limits.max_file_bytes),
-      });
-    case "count_exceeded":
-      return translate("assistant.attachments.error.countExceeded", {
-        count: limits.max_attachments,
-      });
-    case "total_too_large":
-      return translate("assistant.attachments.error.totalTooLarge", {
-        total: formatAttachmentSize(limits.max_total_bytes),
-      });
-    case "unsupported":
-      return translate("assistant.attachments.error.unsupported");
-  }
-}
-
 /** M5.7 Wave A: 发送按钮。点击路径由 DLR 同步启动 assist 流程（保持既有
  * “准备态先于请求可见”的生命周期回归语义），并阻止原语自带的异步 send()
  * 双路径；Enter / Ctrl/Cmd+Enter 键盘路径仍走表单提交 → External Store
  * Runtime onNew。两条路径汇聚到同一个 DLR runAssist。
  *
- * M5.7 Wave B3: the click also consumes the composer attachment rows (the
- * primitive default send handler is prevented, so the runtime never
- * double-sends); the captured File references are resolved into the frozen
- * round snapshot by DLR's own send path. */
+ * M5.7 Wave B3: the click captures the composer draft (text + attachment
+ * rows) without clearing anything — DLR's send path validates and resolves
+ * the attachment bodies first and only consumes the draft after success, so
+ * a rejected row or a failed read never discards the user's composition. */
 function ComposerSubmitButton(props: {
   disabled: boolean;
   sending: boolean;
@@ -374,10 +291,10 @@ function ComposerSubmitButton(props: {
         if (text.trim() === "" && attachments.length === 0) {
           return;
         }
-        composer.setText("");
-        // The rows are consumed by DLR's send path; clear them synchronously
-        // (adapter.remove is a no-op — no per-attachment browser resources).
-        void composer.clearAttachments();
+        // The draft (text + rows) is deliberately NOT cleared here: DLR's
+        // send path validates and resolves the attachment bodies first and
+        // only then consumes the draft, so a rejected row or a failed read
+        // never discards the user's composition.
         props.onSend(text, attachments);
       }}
     >
@@ -389,10 +306,16 @@ function ComposerSubmitButton(props: {
 
 /** M5.7 Wave B3: keeps the AttachmentAdapter's composer view in sync (the
  * add-time count/total checks need the current composer attachments) and
- * exposes composer controls (clear on Adapter switch) to the panel. */
+ * exposes composer controls (consume the draft on send, clear on Adapter
+ * switch) to the panel. */
 function ComposerAttachmentsBridge(props: {
   onAttachmentsChange: (attachments: readonly Attachment[]) => void;
-  onControlsChange: (controls: { clearAttachments: () => Promise<void> } | null) => void;
+  onControlsChange: (
+    controls: {
+      setText: (text: string) => void;
+      clearAttachments: () => Promise<void>;
+    } | null,
+  ) => void;
 }) {
   const aui = useAui();
   const attachments = useAuiState((state) => state.composer.attachments);
@@ -401,6 +324,7 @@ function ComposerAttachmentsBridge(props: {
   }, [attachments, props]);
   useEffect(() => {
     props.onControlsChange({
+      setText: (text: string) => aui.composer.setText(text),
       clearAttachments: () => aui.composer.clearAttachments(),
     });
     return () => props.onControlsChange(null);
@@ -542,6 +466,10 @@ function ComposerAttachmentArea(props: {
         minRows={3}
         maxRows={10}
         disabled={props.disabled}
+        // Wave B3: pasted files would bypass DLR's pre-validation and enter
+        // the composer through the runtime as error rows; attachments are
+        // added exclusively through the validated picker and dropzone.
+        addAttachmentOnPaste={false}
       />
       {props.error !== null && (
         <p className="ai-attachment-panel-error" role="alert" data-testid="ai-attachment-error">
@@ -696,19 +624,26 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const supportedContentTypes: readonly string[] =
     attachmentCapabilities?.supported_content_types ?? DEFAULT_SUPPORTED_CONTENT_TYPES;
   // The AttachmentAdapter is created once; everything it needs at call time
-  // (limits, current composer attachments, translations, wire-body cache and
-  // the send entry) flows through refs below. The refs are updated in
+  // (limits, current composer attachments, supported types, translations and
+  // the wire-body cache) flows through refs below. The refs are updated in
   // effects (never during render); the adapter only reads them from event
   // handlers and async flows, so the one-render lag is irrelevant.
   const attachmentLimitsRef = useRef(attachmentLimits);
+  const supportedContentTypesRef = useRef(supportedContentTypes);
   const translateRef = useRef<(key: string, options?: Record<string, unknown>) => string>(t);
   const composerAttachmentsRef = useRef<readonly Attachment[]>([]);
   const wireCacheRef = useRef(new WeakMap<object, AiAttachment>());
-  const composerControlsRef = useRef<{ clearAttachments: () => Promise<void> } | null>(null);
+  const composerControlsRef = useRef<{
+    setText: (text: string) => void;
+    clearAttachments: () => Promise<void>;
+  } | null>(null);
   const previousAdapterIdRef = useRef<number | null>(props.adapter?.id ?? null);
   useEffect(() => {
     attachmentLimitsRef.current = attachmentLimits;
   }, [attachmentLimits]);
+  useEffect(() => {
+    supportedContentTypesRef.current = supportedContentTypes;
+  }, [supportedContentTypes]);
   useEffect(() => {
     translateRef.current = t;
   }, [t]);
@@ -834,44 +769,28 @@ async function resolveComposerAttachment(
 }
 
 /** M5.7 Wave B3: the official assistant-ui AttachmentAdapter for this
-   * External Store Runtime. ``accept`` mirrors the B2 supported MIME table;
-   * ``add`` validates every file against the B2 bounds (returning a visible,
-   * removable error row for rejections so picker errors are never swallowed);
-   * ``send`` reads the strict base64 body once and caches it for the wire
-   * payload; ``remove`` releases nothing because DLR holds no per-attachment
-   * browser resources (no object URLs, no previews). */
-  const attachmentAdapter = useMemo<AttachmentAdapter>(
-    () => ({
-      accept: acceptStringFor(DEFAULT_SUPPORTED_CONTENT_TYPES),
-      async add({ file }) {
-        const limits = attachmentLimitsRef.current;
-        const verdict = validateAttachmentAdd(file, limits, composerAttachmentsRef.current);
-        if (!verdict.ok) {
-          return errorPendingAttachment(
-            file,
-            attachmentAddErrorMessage(verdict.reason, limits, translateRef.current),
-          );
-        }
-        return {
-          id: attachmentId(),
-          type: verdict.category === "image" ? "image" : "document",
-          name: file.name.trim(),
-          contentType: verdict.contentType,
-          file,
-          status: { type: "requires-action", reason: "composer-send" },
-        };
-      },
-      async send(attachment) {
-        return completeAttachment(attachment, wireCacheRef.current);
-      },
-      async remove() {
-        // Nothing to release: attachments are held as plain File references
-        // (GC reclaims them once the composer drops the row); object URLs are
-        // never created, so there is nothing to revoke.
-      },
+ * External Store Runtime, fed by live refs so it stays stable while the
+ * capability table / limits / locale change (see createDlrAttachmentAdapter
+ * in attachment-client.ts).
+ *
+ * The refs are intentionally read inside the adapter's closures: the adapter
+ * is a plain object the runtime invokes from event handlers and async flows
+ * (add/send/remove), never during React render, so the one-render lag of the
+ * effect-updated refs is irrelevant. */
+/* eslint-disable react-hooks/refs -- stable adapter; the closures read refs
+   only from runtime callbacks (add/send/remove), never during render. */
+const attachmentAdapter = useMemo<AttachmentAdapter>(
+  () =>
+    createDlrAttachmentAdapter({
+      limits: () => attachmentLimitsRef.current,
+      composerAttachments: () => composerAttachmentsRef.current,
+      supportedContentTypes: () => supportedContentTypesRef.current,
+      translate: (key, options) => translateRef.current(key, options),
+      wireCache: () => wireCacheRef.current,
     }),
-    [],
-  );
+  [],
+);
+/* eslint-enable react-hooks/refs */
 
   /** M5.7 Wave B3: turn the composer's attachment rows into the B2 wire shape
    * (filename, content_type, strict base64 body), re-verifying the total
@@ -1109,7 +1028,13 @@ async function resolveComposerAttachment(
    * External Store runtime's onNew. Resolves the composer attachment rows
    * into the frozen round snapshot, appends the user message, then runs the
    * assist flow. Text-only sends keep the Wave A synchronous
-   * preparing-stage contract; attachment reads happen before freezing. */
+   * preparing-stage contract; attachment reads happen before freezing.
+   *
+   * Wave B3 draft-safety: the composer draft (text + rows) is only consumed
+   * AFTER validation and body resolution succeed. A rejected (error) row
+   * blocks the send with its localized message, and a failed read or a
+   * tightened total bound surfaces an actionable error — in both cases the
+   * draft stays fully intact in the composer. */
   async function sendMessage(rawText: string, composerAttachments: readonly Attachment[]) {
     const text = rawText.trim();
     const adapter = props.adapter;
@@ -1122,6 +1047,20 @@ async function resolveComposerAttachment(
     ) {
       return;
     }
+    // A client-rejected row must never leave the browser: block the send
+    // with the row's localized message and keep the draft intact (the user
+    // can delete the row and retry).
+    const rejectedMessage = firstRejectedRowMessage(
+      composerAttachments,
+      t("assistant.attachments.error.rejected"),
+    );
+    if (rejectedMessage !== null) {
+      setAttachmentError(rejectedMessage);
+      return;
+    }
+    // Resolve bodies while the draft is still in the composer so any failure
+    // loses nothing. Text-only sends skip the await and keep the Wave A
+    // synchronous preparing-stage contract.
     let wireAttachments: AiAttachment[];
     try {
       wireAttachments =
@@ -1129,13 +1068,22 @@ async function resolveComposerAttachment(
           ? []
           : await resolveComposerAttachments(composerAttachments);
     } catch (error) {
-      // A file body could not be produced (defensive; sizes were validated
-      // at add time): surface the actionable message and keep the composer.
+      // DLR's own rejection messages (localized total-bound / refused-row
+      // errors) are plain Errors; browser file-read failures surface as
+      // DOMExceptions and localize through the readFailed copy instead.
       setAttachmentError(
-        error instanceof Error ? error.message : t("assistant.attachments.error.readFailed"),
+        error instanceof Error &&
+          error.message !== "" &&
+          !(typeof DOMException !== "undefined" && error instanceof DOMException)
+          ? error.message
+          : t("assistant.attachments.error.readFailed"),
       );
       return;
     }
+    // Only after successful resolution consume the draft (adapter.remove is
+    // a no-op — no per-attachment browser resources).
+    composerControlsRef.current?.setText("");
+    void composerControlsRef.current?.clearAttachments();
     const snapshot = buildRoundSnapshot(adapter, text, wireAttachments);
     if (snapshot === null) {
       return;
