@@ -150,6 +150,7 @@
     "scheduledFor": "Scheduled {{time}}",
     "openDetail": "Open execution details, Runtime Worker {{worker}}",
     "detailTitle": "Execution details",
+    "runId": "Run ID: {{id}}",
     "refresh": "Refresh",
     "loadMore": "Load more",
     "connectionLost": "Log connection lost; status may be stale",

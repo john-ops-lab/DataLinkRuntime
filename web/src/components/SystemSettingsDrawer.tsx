@@ -213,8 +213,14 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
         <ul className="credential-type-guide-list">
            {CREDENTIAL_TYPE_GUIDE.map((type) => (
              <li key={type} data-testid={`credential-type-guide-${type}`}>
-               <strong>{credentialTypeLabel(type)}</strong>（{t("credentialGuide.fields")}：
-               {t(`credentialGuide.items.${type}.fields`)}）：{t("credentialGuide.scenarios")} {t(`credentialGuide.items.${type}.scenarios`)}。{t(`credentialGuide.${type === "password" ? "createHint" : type === "token" ? "tokenHint" : type === "access_key" ? "accessKeyHint" : "secretHint"}`)}。
+               <strong>{credentialTypeLabel(type)}</strong>
+               {t("credentialGuide.lineSuffix", {
+                 fieldsLabel: t("credentialGuide.fields"),
+                 fields: t(`credentialGuide.items.${type}.fields`),
+                 scenariosLabel: t("credentialGuide.scenarios"),
+                 scenarios: t(`credentialGuide.items.${type}.scenarios`),
+                 hint: t(`credentialGuide.${type === "password" ? "createHint" : type === "token" ? "tokenHint" : type === "access_key" ? "accessKeyHint" : "secretHint"}`),
+               })}
             </li>
           ))}
         </ul>
@@ -254,7 +260,10 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
             value={form.type}
             disabled={form.editingId !== null}
             options={Object.keys(CREDENTIAL_TYPE_FIELDS).map((type) => ({
-              label: `${credentialTypeLabel(type)}（${credentialFields(type).join(" + ")}）`,
+              label: t("credentials.typeOption", {
+                type: credentialTypeLabel(type),
+                fields: credentialFields(type).join(" + "),
+              }),
               value: type,
             }))}
             onChange={(value) => handleTypeChange(value)}

@@ -516,7 +516,13 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
               loading={props.workersLoading}
               disabled={props.workersLoading}
               options={compatibleWorkers.map((worker) => ({
-                 label: `${worker.name}（${worker.status === "online" ? t("worker.online", { ns: "common" }) : t("worker.offline", { ns: "common" })}）`,
+                 label: t("worker.option", {
+                   ns: "common",
+                   name: worker.name,
+                   status: worker.status === "online"
+                     ? t("worker.online", { ns: "common" })
+                     : t("worker.offline", { ns: "common" }),
+                 }),
                 value: worker.id,
                 disabled: worker.status !== "online",
               }))}

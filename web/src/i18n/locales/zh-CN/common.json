@@ -95,7 +95,6 @@
     "input": "输入",
     "output": "输出",
     "executionLog": "执行日志",
-    "runId": "运行 ID",
     "code": "代码",
     "runtimeConfig": "运行参数",
     "fullUrl": "完整地址",
@@ -138,7 +137,8 @@
     "empty": "暂无已注册运行节点",
     "lastHeartbeat": "最近心跳：{{time}}",
     "onlineSummary": "{{online}}/{{total}} 在线",
-    "hint": "在线状态已结合最近心跳和超时阈值判定；最近心跳时间用于排障。"
+    "hint": "在线状态已结合最近心跳和超时阈值判定；最近心跳时间用于排障。",
+    "option": "{{name}}（{{status}}）"
   },
   "empty": {
     "noAdapter": "请选择一个适配器进行管理。",
@@ -178,6 +178,9 @@
   },
   "fallback": {
     "unknownValue": "未知"
+  },
+  "punctuation": {
+    "listSeparator": "；"
   },
   "accessibility": {
     "unavailable": "{{label}}不可用：{{reason}}"

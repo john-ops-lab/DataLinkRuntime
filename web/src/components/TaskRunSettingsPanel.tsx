@@ -414,7 +414,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               onChange={(value: number) => setWorkerOverride(value)}
               options={compatibleWorkers.map((worker) => ({
                 value: worker.id,
-                label: `${worker.name}（${worker.status === "online" ? t("worker.online", { ns: "common" }) : t("worker.offline", { ns: "common" })}）`,
+                label: t("worker.option", {
+                  ns: "common",
+                  name: worker.name,
+                  status: worker.status === "online"
+                    ? t("worker.online", { ns: "common" })
+                    : t("worker.offline", { ns: "common" }),
+                }),
                 disabled: worker.status !== "online",
               }))}
             />

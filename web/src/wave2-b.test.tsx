@@ -21,6 +21,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App, { TOKEN_STORAGE_KEY } from "./App";
 import { api, setAuthToken } from "./api";
 import AiAssistantPanel from "./components/AiAssistantPanel";
+import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
 import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
 import {
   applySystemLocale,
@@ -465,8 +466,49 @@ it("switches AI Candidate/Diff/Apply copy between the two locales", async () => 
   expect(screen.getByText("AI assistant")).toBeTruthy();
   expect(screen.getByLabelText("AI instruction")).toBeTruthy();
   expect(screen.getByTestId("ai-candidate-ready").textContent).toBe("Code generated");
+  // The Candidate diff stays open across the switch and its pane labels are
+  // re-derived at render time, exactly like the Workbench diff.
   expect(screen.getByTestId("version-diff").textContent).toContain("Current code");
+  expect(screen.getByTestId("version-diff").textContent).toContain("Code");
+  expect(screen.getByTestId("version-diff").textContent).toContain("Runtime parameters");
   expect(screen.getByTestId("diff-apply-candidate").textContent).toBe("Apply changes");
+});
+
+it("uses locale punctuation in composed labels (guide line, options, Run ID, separators)", async () => {
+  // Composed templates keep punctuation inside the locale resources: the
+  // English output must never render full-width CJK punctuation.
+  await applySystemLocale("en");
+  expect(
+    i18n.t("credentials.typeOption", { ns: "settings", type: "Token", fields: "token" }),
+  ).toBe("Token (token)");
+  expect(
+    i18n.t("worker.option", { ns: "common", name: "worker-1", status: "Online" }),
+  ).toBe("worker-1 (Online)");
+  expect(i18n.t("history.runId", { ns: "runtime", id: 6 })).toBe("Run ID: 6");
+  expect(i18n.t("punctuation.listSeparator")).toBe("; ");
+
+  // Rendered credential type guide: ASCII punctuation in English.
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue({
+    pypi: { kind: "pypi", name: "PyPI", index_url: "https://pypi.org/simple/" },
+    npm: { kind: "npm", name: "npm", index_url: "https://registry.npmjs.org/" },
+    maven: { kind: "maven", name: "Maven", index_url: "https://repo1.maven.org/maven2/" },
+  });
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  const guide = await screen.findByTestId("credential-type-guide-password");
+  const guideText = guide.textContent ?? "";
+  expect(guideText).toContain("Password (Fields: username + password)");
+  expect(guideText).not.toMatch(/[（）：；。]/);
+
+  // And the same guide renders CJK punctuation in Chinese.
+  await applySystemLocale("zh-CN");
+  await waitFor(() =>
+    expect(screen.getByTestId("credential-type-guide-password").textContent).toContain(
+      "密码（字段：username + password）：常见场景为",
+    ),
+  );
 });
 
 it("keeps zh-CN/en key sets identical and renders the English console at 1280–1920 widths", async () => {

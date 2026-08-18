@@ -95,7 +95,6 @@
     "input": "Input",
     "output": "Output",
     "executionLog": "Execution log",
-    "runId": "Run ID",
     "code": "Code",
     "runtimeConfig": "Runtime parameters",
     "fullUrl": "Full URL",
@@ -138,7 +137,8 @@
     "empty": "No registered Runtime Workers",
     "lastHeartbeat": "Last heartbeat: {{time}}",
     "onlineSummary": "{{online}}/{{total}} online",
-    "hint": "Online status combines the latest heartbeat with the timeout threshold; the heartbeat time helps with troubleshooting."
+    "hint": "Online status combines the latest heartbeat with the timeout threshold; the heartbeat time helps with troubleshooting.",
+    "option": "{{name}} ({{status}})"
   },
   "empty": {
     "noAdapter": "Select an Adapter to manage.",
@@ -178,6 +178,9 @@
   },
   "fallback": {
     "unknownValue": "Unknown"
+  },
+  "punctuation": {
+    "listSeparator": "; "
   },
   "accessibility": {
     "unavailable": "{{label}} unavailable: {{reason}}"

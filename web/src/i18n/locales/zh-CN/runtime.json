@@ -150,6 +150,7 @@
     "scheduledFor": "计划 {{time}}",
     "openDetail": "打开执行详情，运行节点 {{worker}}",
     "detailTitle": "执行详情",
+    "runId": "运行 ID：{{id}}",
     "refresh": "刷新",
     "loadMore": "加载更多",
     "connectionLost": "日志连接已断开，状态可能已过期",

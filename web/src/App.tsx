@@ -759,7 +759,9 @@ function AdapterConsole() {
       if (refreshFailures.length === 0) {
         messageApi.success(t("messages.adapterSaved"));
       } else {
-        setError(t("messages.adapterSavedRefreshSummary", { details: refreshFailures.join("；") }));
+        setError(t("messages.adapterSavedRefreshSummary", {
+          details: refreshFailures.join(i18n.t("punctuation.listSeparator")),
+        }));
       }
     } catch (err) {
       setError(errorMessage(err));

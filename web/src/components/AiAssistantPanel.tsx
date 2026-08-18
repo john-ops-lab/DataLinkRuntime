@@ -39,9 +39,11 @@ interface VisibleMessage {
   candidate: CandidateState | null;
 }
 
+/** Candidate diff stores only data; pane labels are derived at render time
+ * (like the Workbench diff) so an open modal switches locale immediately. */
 interface CandidateDiffState {
   messageId: number;
-  panes: DiffPane[];
+  panes: Omit<DiffPane, "label">[];
 }
 
 interface AiAssistantPanelProps {
@@ -387,21 +389,18 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       panes: [
         {
           key: "code",
-          label: t("assistant.diff.code"),
           language: adapter.language,
           original: props.workingCopy.code,
           modified: candidate.code,
         },
         {
           key: "requirements",
-          label: dependencyUiFor(adapter.language).label,
           language: "plaintext",
           original: props.workingCopy.requirements,
           modified: candidate.requirements,
         },
         {
           key: "runtime-config",
-          label: t("assistant.diff.runtimeConfig"),
           language: "json",
           original: props.workingCopy.runtimeConfigText,
           modified: JSON.stringify(candidate.runtime_config, null, 2),
@@ -811,7 +810,15 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         title={t("assistant.diff.title")}
         originalTitle={t("assistant.diff.original")}
         modifiedTitle={t("assistant.diff.modified")}
-        panes={candidateDiff?.panes ?? []}
+        panes={(candidateDiff?.panes ?? []).map((pane) => ({
+          ...pane,
+          label:
+            pane.key === "code"
+              ? t("assistant.diff.code")
+              : pane.key === "requirements"
+                ? dependencyUiFor(props.adapter?.language ?? "python").label
+                : t("assistant.diff.runtimeConfig"),
+        }))}
         theme={props.theme}
         onClose={() => setCandidateDiff(null)}
         applyAction={diffApplyAction}

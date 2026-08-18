@@ -341,7 +341,7 @@ export default function ExecutionHistoryPanel(props: {
             />
             {/* M5.5.10：内部 Execution ID 只作为次级技术信息展示（易理解名称“运行 ID”）。 */}
             <div className="execution-version-debug" data-testid="execution-run-id">
-              {t("labels.runId", { ns: "common" })}：{visibleDetail.id}
+              {t("history.runId", { id: visibleDetail.id })}
             </div>
             <Tabs
               size="small"
