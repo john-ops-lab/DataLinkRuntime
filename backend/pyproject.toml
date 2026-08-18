@@ -10,6 +10,11 @@ dependencies = [
     "alembic>=1.13",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.4",
+    # M5.7 Wave B2 attachments: server-side PDF text fallback. Pure-Python
+    # (headless-friendly), BSD-3-Clause, actively maintained, no transitive
+    # runtime dependencies; the ~0.4MB wheel is the minimal PDF parser that
+    # can extract real text. DOCX/text/code fallback uses only the stdlib.
+    "pypdf>=6.0,<7",
     "cryptography>=43",
     "croniter>=6",
     "tzdata>=2024",
