@@ -18,7 +18,14 @@ REQUIRED_DOC_PAIRS = (
     ("docs/en/architecture.md", "docs/zh-CN/architecture.md"),
 )
 
-CHECKED_FILES = tuple(dict.fromkeys(path for pair in REQUIRED_DOC_PAIRS for path in pair))
+# Redirect stubs at the historical doc paths are scanned too so migrated-pointer
+# files cannot escape the relative-link check.
+CHECKED_FILES = tuple(
+    dict.fromkeys(
+        [path for pair in REQUIRED_DOC_PAIRS for path in pair]
+        + ["docs/product.md", "docs/architecture.md"]
+    )
+)
 
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 HEADING_RE = re.compile(r"^(#{1,6}) ")
