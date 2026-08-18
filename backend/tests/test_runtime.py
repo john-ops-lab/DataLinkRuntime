@@ -197,7 +197,13 @@ def test_executor_dependency_failure_reports_failed(tmp_path: object) -> None:
     payload = make_payload(code=ECHO_CODE, requirements="definitely-not-a-real-package-xyz==1.0")
     result = executor.run(payload, runtime_settings(tmp_path))
     assert result["status"] == "failed"
-    assert "dependency preparation failed" in (result["error"] or "")
+    # Locale-less legacy payloads keep the zh-CN default; the error field
+    # carries the localized DLR message, never the raw English instruction.
+    error = result["error"] or ""
+    assert "Python 依赖准备失败" in error
+    assert "本地缓存中没有所需依赖" in error
+    assert "dependency preparation failed" not in error
+    assert "not available from the local cache" not in error
 
 
 def test_executor_dependency_logs_use_live_channel_before_user_script(

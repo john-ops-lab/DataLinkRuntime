@@ -62,7 +62,10 @@
   "model": {
     "notice": "AI usage",
     "boundary": "When AI is used, the current Adapter code and ordinary configuration are sent to your configured model service to generate suggestions. Passwords, Tokens and other sensitive Credentials are never sent to the model. Do not put passwords or keys directly in Adapter code.",
-    "provider": "Model provider",
+    "provider": {
+      "label": "Model provider",
+      "custom": "Custom OpenAI-compatible service"
+    },
     "baseUrl": "Base URL",
     "baseUrlHint": "Enter the model service root URL; it may end with /v1 or omit it.",
     "credential": "API Key Credential (optional, token type only)",
@@ -92,12 +95,8 @@
     "refreshBaseUrlRequired": "Enter a Base URL before refreshing models",
     "saveNotice": "AI model settings saved. The Model ID changes only when an administrator edits it again.",
     "testSuccess": "Connection test passed: the model returned a parseable minimal response.",
-    "testSuccessDetail": "Connection test passed: {{detail}}",
     "testFailed": "Connection test failed. Check the model service configuration and network.",
     "testFailedDetail": "Connection test failed: {{detail}}",
-    "requestFailed": "AI settings request failed",
-    "provider": {
-      "custom": "Custom OpenAI-compatible service"
-    }
+    "requestFailed": "AI settings request failed"
   }
 }

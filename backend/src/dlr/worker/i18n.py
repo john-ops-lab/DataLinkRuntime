@@ -17,6 +17,8 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
         "dependency.install_succeeded": "{dependency} 安装成功",
         "dependency.install_failed": "{dependency} 安装失败，停止本次运行",
         "dependency.preparation_failed": "依赖准备失败，停止本次运行",
+        "dependency.prepare_failed": "{language} 依赖准备失败",
+        "dependency.prepare_failed_dependency": "（失败依赖：{dependency}）",
         "dependency.script_not_started": "[系统] 本次执行未开始脚本逻辑",
         "dependency.offline_cache_fallback": "[离线缓存不足，正在使用配置的依赖源重试]",
         "dependency.no_source_python": (
@@ -58,6 +60,8 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
         "dependency.install_succeeded": "{dependency} installation succeeded",
         "dependency.install_failed": "{dependency} installation failed; stopping this run",
         "dependency.preparation_failed": "Dependency preparation failed; stopping this run",
+        "dependency.prepare_failed": "{language} dependency preparation failed",
+        "dependency.prepare_failed_dependency": " (failed dependency: {dependency})",
         "dependency.script_not_started": "[System] The Adapter script did not start",
         "dependency.offline_cache_fallback": (
             "[Offline cache is insufficient; retrying with the configured package source]"

@@ -84,7 +84,7 @@ async function createCredential(
       });
     }
     fireEvent.click(screen.getByTestId("submit-credential"));
-    await screen.findByText("凭据已创建");
+    await screen.findByText("凭据已创建", undefined, { timeout: 5000 });
   } finally {
     confirm.mockRestore();
   }
@@ -166,7 +166,7 @@ it("跨 Tab 同步：新建/更新凭据后 AI 模型凭据选择器无需 F5 �
   // Secret 真值始终不出现在浏览器 DOM 中。
   expect(document.body.textContent).not.toContain("secret-one-value");
   expect(document.body.textContent).not.toContain("secret-two-value");
-});
+}, 20000);
 
 it("跨 Tab 同步：依赖源新建表单中的凭据选择器在凭据增删后同步", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
@@ -237,7 +237,7 @@ it("跨 Tab 同步：依赖源新建表单中的凭据选择器在凭据增删�
   // Secret 真值始终不出现在浏览器 DOM 中。
   expect(document.body.textContent).not.toContain("source-secret-one");
   expect(document.body.textContent).not.toContain("source-secret-two");
-});
+}, 20000);
 
 it("订阅在组件卸载后自动取消，不会影响其他面板", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);

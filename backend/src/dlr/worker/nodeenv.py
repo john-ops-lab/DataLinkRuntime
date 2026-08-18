@@ -131,6 +131,7 @@ def prepare_version_node(
                                 (f"{name}@{version}" for name, version in dependencies.items()),
                                 offline_error.install_log,
                             ),
+                            no_source=True,
                         ) from offline_error
                     assert clean_registry is not None
                     try:

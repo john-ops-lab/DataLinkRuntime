@@ -155,7 +155,10 @@ def test_java_compile_error_runtime_error_timeout_and_cancel(tmp_path: Path) -> 
         runtime_settings(tmp_path / "compile"),
     )
     assert compile_error["status"] == "failed"
-    assert "javac" in compile_error["error"]
+    # M5.6 Wave 4 E: the error field carries the localized DLR message; the
+    # raw javac diagnostics live in the unified log stream, untouched.
+    assert "Java 依赖准备失败" in compile_error["error"]
+    assert "javac" not in compile_error["error"]
     assert compile_error["stdout"]
 
     runtime_error = executor.run(
