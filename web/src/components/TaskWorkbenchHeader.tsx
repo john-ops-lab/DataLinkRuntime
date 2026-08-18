@@ -1,6 +1,7 @@
 /** Task Adapter header: identity, runtime context and type-specific actions. */
 
 import { Button, Tag } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, Worker } from "../types";
@@ -22,44 +23,45 @@ interface TaskWorkbenchHeaderProps {
 }
 
 export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
+  const { t } = useTranslation(["runtime", "common"]);
   const archived = !!props.adapter.archived_at;
   const runtimeLocked = props.adapter.runtime_locked === true;
   const activeExecution = props.runtimeState.activeExecution;
   const scheduleMode = props.adapter.run_mode === "schedule";
   const runtimeStatus = activeExecution
-    ? "运行中"
+    ? t("task.status.running")
     : scheduleMode && props.runtimeState.scheduleEnabled
-      ? "定时已启用"
-      : "已停止";
+      ? t("task.status.scheduled")
+      : t("task.status.stopped");
   const saveBlockedReason = archived
-    ? "适配器已删除，不能继续编辑"
+    ? t("task.reasons.deleted")
     : runtimeLocked
       ? scheduleMode && props.runtimeState.scheduleEnabled
-        ? "定时已启用，请先停用定时后再保存"
-        : "适配器正在运行，请先停止当前运行后再保存"
+        ? t("task.reasons.scheduleEnabledSave")
+        : t("task.reasons.runningSave")
       : !props.contentReady
-        ? "版本内容尚未就绪，请等待加载完成或刷新后重试"
+        ? t("task.reasons.contentNotReady")
         : props.busy
-          ? "其他操作正在进行，请等待完成"
+          ? t("task.reasons.busy")
           : null;
   // M5.5.9：存在未保存修改时不得直接运行，先保存。
   const runBlockedReason = props.dirty
-    ? "请先保存当前修改，再运行。"
+    ? t("task.reasons.dirtyRun")
     : props.runtimeState.canRun
       ? null
       : activeExecution
-        ? "已有执行正在运行"
+        ? t("task.reasons.activeRun")
         : props.adapter.latest_version_id === null
-          ? "请先保存适配器"
+          ? t("task.reasons.noVersion")
           : props.adapter.runtime_worker_id == null
-            ? "请先在运行设置中选择并保存运行节点"
+            ? t("task.reasons.noWorker")
             : props.runtimeState.loading || props.busy
-              ? "运行操作正在处理中"
-              : "当前状态暂不可运行";
+              ? t("task.reasons.processing")
+              : t("task.reasons.unavailable");
   const scheduleToggleReason = props.runtimeState.scheduleEnabled
     ? null
     : activeExecution
-      ? "当前执行仍在运行，请等待终态或停止当前执行后再启用定时"
+      ? t("task.reasons.activeSchedule")
       : props.runtimeState.scheduleEnableBlockedReason;
 
   return (
@@ -67,31 +69,33 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
       <div className="workbench-context" data-testid="task-workbench-header">
         <div className="workbench-title-row">
           <h2 className="workbench-title" title={props.adapter.name}>{props.adapter.name}</h2>
-          <Tag color="blue">任务</Tag>
+          <Tag color="blue">{t("task.header.type")}</Tag>
           <span className="workbench-context-fact">{LANGUAGE_LABELS[props.adapter.language]}</span>
           <Tag color={activeExecution || props.runtimeState.scheduleEnabled ? "processing" : "default"}>{runtimeStatus}</Tag>
           <span className="workbench-context-fact" data-testid="header-runtime-worker">
-            运行节点：{props.runtimeWorker?.name ?? "未选择"}
+            {t("task.header.worker", {
+              name: props.runtimeWorker?.name ?? t("labels.notSelected", { ns: "common" }),
+            })}
           </span>
         </div>
         {/* M5.5.9：运行中只保留低干扰提示，不再展示大块说明或“复制适配器”升级引导。 */}
         {runtimeLocked && (
           <p className="runtime-lock-hint" data-testid="task-active-execution">
-            适配器正在运行，编辑与运行配置已锁定。
+            {t("task.lockHint")}
           </p>
         )}
       </div>
       <div className="workbench-controls">
-        <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>设置</Button>
-        <ActionWithReason label="保存" reason={saveBlockedReason}>
+        <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>{t("actions.settings", { ns: "common" })}</Button>
+        <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveBlockedReason}>
           <Button type="primary" data-testid="save-version" disabled={saveBlockedReason !== null} onClick={props.onSave}>
-            保存
+            {t("actions.save", { ns: "common" })}
           </Button>
         </ActionWithReason>
         {scheduleMode ? (
           <>
             <ActionWithReason
-              label={props.runtimeState.scheduleEnabled ? "停用定时" : "启用定时"}
+              label={props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}
               reason={scheduleToggleReason}
             >
               <Button
@@ -101,29 +105,29 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
                 disabled={scheduleToggleReason !== null}
                 onClick={props.onToggleSchedule}
               >
-                {props.runtimeState.scheduleEnabled ? "停用定时" : "启用定时"}
+                {props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}
               </Button>
             </ActionWithReason>
             {activeExecution ? (
               <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
-                停止当前执行
+                {t("actions.stopCurrentExecution", { ns: "common" })}
               </Button>
             ) : (
-              <ActionWithReason label="立即运行一次" reason={runBlockedReason}>
+              <ActionWithReason label={t("actions.runImmediatelyOnce", { ns: "common" })} reason={runBlockedReason}>
                 <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
-                  立即运行一次
+                  {t("actions.runImmediatelyOnce", { ns: "common" })}
                 </Button>
               </ActionWithReason>
             )}
           </>
         ) : activeExecution ? (
           <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
-            停止运行
+            {t("actions.stop", { ns: "common" })}
           </Button>
         ) : (
-          <ActionWithReason label="运行一次" reason={runBlockedReason}>
+          <ActionWithReason label={t("actions.runOnce", { ns: "common" })} reason={runBlockedReason}>
             <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
-              运行一次
+              {t("actions.runOnce", { ns: "common" })}
             </Button>
           </ActionWithReason>
         )}

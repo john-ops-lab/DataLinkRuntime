@@ -12,10 +12,10 @@ export const CREDENTIAL_TYPE_FIELDS: Record<string, readonly string[]> = {
 };
 
 export const CREDENTIAL_TYPE_LABELS: Record<string, string> = {
-  password: "密码",
-  token: "令牌",
-  access_key: "访问密钥",
-  secret: "通用密钥",
+  password: "password",
+  token: "token",
+  access_key: "access_key",
+  secret: "secret",
 };
 
 const CREDENTIAL_TYPE_LABEL_KEYS: Record<string, string> = {

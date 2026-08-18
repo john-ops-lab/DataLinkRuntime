@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Button, Collapse, Input, Select, Space, Spin, Typography } from "antd";
+import { useTranslation } from "react-i18next";
+
+import { i18n } from "../i18n";
 
 import { ApiError, api } from "../api";
 import { subscribeCredentialCatalog } from "../credential-catalog";
@@ -33,7 +36,7 @@ const PROVIDER_OPTIONS: { label: string; value: AiProvider }[] = [
   { label: "DeepSeek", value: "deepseek" },
   { label: "Kimi", value: "kimi" },
   { label: "MiniMax", value: "minimax" },
-  { label: "自定义 OpenAI 兼容服务", value: "custom_openai_compatible" },
+  { label: "custom_openai_compatible", value: "custom_openai_compatible" },
 ];
 
 const REASONING_EFFORTS_BY_PROVIDER: Record<
@@ -65,8 +68,8 @@ function normalizeReasoningEffort(
   return effort;
 }
 
-function errorMessage(error: unknown): string {
-  return userErrorMessage(error, "AI 设置请求失败");
+function errorMessage(error: unknown, fallback: string): string {
+  return userErrorMessage(error, fallback);
 }
 
 function normalizeSetting(setting: AiModelSetting | null): AiModelSettingDraft {
@@ -88,6 +91,7 @@ function normalizeSetting(setting: AiModelSetting | null): AiModelSettingDraft {
 }
 
 export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
+  const { t } = useTranslation(["ai", "common"]);
   const { onError } = props;
   const [form, setForm] = useState<AiModelSettingDraft>({ ...DEFAULT_SETTING });
   const [credentials, setCredentials] = useState<Credential[]>([]);
@@ -101,6 +105,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const reasoningEfforts = supportedReasoningEfforts(form.provider, form.reasoning_mode);
   const actionBusy = saving || refreshingModels || testing;
+  const providerOptions = PROVIDER_OPTIONS.map((option) =>
+    option.value === "custom_openai_compatible"
+      ? { ...option, label: t("model.provider.custom") }
+      : option,
+  );
 
   function editForm(updater: (current: AiModelSettingDraft) => AiModelSettingDraft) {
     setPanelError(null);
@@ -122,7 +131,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       const credentialList = await api.listCredentials();
       setCredentials(credentialList.filter((credential) => credential.type === "token"));
     } catch (error) {
-      fail(errorMessage(error));
+      fail(userErrorMessage(error, i18n.t("model.requestFailed")));
     }
   }, [fail]);
 
@@ -141,7 +150,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       !(settingResult.reason instanceof ApiError) ||
       settingResult.reason.code !== "ai_not_configured"
     ) {
-      fail(errorMessage(settingResult.reason));
+      fail(userErrorMessage(settingResult.reason, i18n.t("model.requestFailed")));
     }
 
     if (credentialsResult.status === "fulfilled") {
@@ -149,7 +158,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         credentialsResult.value.filter((credential) => credential.type === "token"),
       );
     } else {
-      fail(errorMessage(credentialsResult.reason));
+      fail(userErrorMessage(credentialsResult.reason, i18n.t("model.requestFailed")));
     }
     setLoading(false);
   }, [fail]);
@@ -170,7 +179,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     const baseUrl = form.base_url.trim();
     const model = form.model.trim();
     if (baseUrl === "" || model === "") {
-      fail("基础 URL 与模型 ID 均不能为空");
+      fail(t("model.baseUrlModelRequired"));
       return null;
     }
     const reasoningEffort = normalizeReasoningEffort(
@@ -183,7 +192,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       form.reasoning_mode === "enabled" &&
       reasoningEffort === null
     ) {
-      fail("OpenAI 开启推理时必须显式选择受支持的推理强度");
+      fail(t("model.openaiReasoningRequired"));
       return null;
     }
     return {
@@ -204,7 +213,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     setNotice(null);
     const baseUrl = form.base_url.trim();
     if (baseUrl === "") {
-      fail("刷新模型前请填写基础 URL");
+      fail(t("model.refreshBaseUrlRequired"));
       return;
     }
     setRefreshingModels(true);
@@ -217,15 +226,15 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       setModelOptions(response.models);
       setNotice(
         response.models.length === 0
-          ? "刷新成功，但未发现可用模型；可手工填写模型 ID。"
-          : `已刷新 ${response.models.length} 个模型 ID；不会自动更改当前选择。`,
+          ? t("model.refreshEmpty")
+          : t("model.refreshSuccess", { count: response.models.length }),
       );
     } catch (error) {
       if (error instanceof ApiError && error.code === "ai_models_not_supported") {
         // 服务端文案已包含"可手工填写模型 ID"，不再重复追加。
-        fail(errorMessage(error));
+        fail(errorMessage(error, t("model.requestFailed")));
       } else {
-        fail(`${errorMessage(error)}；仍可手工输入模型 ID。`);
+        fail(t("model.refreshFailedManualHint", { error: errorMessage(error, t("model.requestFailed")) }));
       }
     } finally {
       setRefreshingModels(false);
@@ -246,9 +255,9 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     try {
       const saved = await api.updateAiSetting(payload);
       setForm(normalizeSetting(saved));
-      setNotice("AI 模型设置已保存。模型 ID 仅在管理员再次修改时才会变化。");
+       setNotice(t("model.saveNotice"));
     } catch (error) {
-      fail(errorMessage(error));
+      fail(errorMessage(error, t("model.requestFailed")));
     } finally {
       setSaving(false);
     }
@@ -269,12 +278,12 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       const result = await api.testAiSetting(payload);
       const detail = result.message.trim();
       if (result.ok) {
-        setNotice(detail === "" ? "连接测试通过：模型返回可解析的最小响应。" : `连接测试通过：${detail}`);
+         setNotice(detail === "" ? t("model.testSuccess") : t("model.testSuccessDetail", { detail }));
       } else {
-        fail(detail === "" ? "连接测试失败；请检查模型服务配置与网络。" : `连接测试失败：${detail}`);
+         fail(detail === "" ? t("model.testFailed") : t("model.testFailedDetail", { detail }));
       }
     } catch (error) {
-      fail(errorMessage(error));
+      fail(errorMessage(error, t("model.requestFailed")));
     } finally {
       setTesting(false);
     }
@@ -289,18 +298,18 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       <Alert
         type="info"
         showIcon
-        message="AI 使用说明"
-        description="使用 AI 功能时，当前 Adapter 的代码和普通配置会发送到你配置的模型服务，用于生成建议。密码、Token、密钥等敏感凭据不会发送给模型。请不要把密码或密钥直接写在 Adapter 代码中。"
+         message={t("model.notice")}
+         description={t("model.boundary")}
         data-testid="ai-data-boundary-warning"
       />
 
       <label className="settings-field">
-        <span>模型服务商</span>
+         <span>{t("model.provider")}</span>
         <Select<AiProvider>
           data-testid="ai-provider"
           disabled={actionBusy}
           value={form.provider}
-          options={PROVIDER_OPTIONS}
+           options={providerOptions}
           onChange={(provider) =>
             editForm((current) => ({
               ...current,
@@ -316,7 +325,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       </label>
 
       <label className="settings-field">
-        <span>基础 URL</span>
+         <span>{t("model.baseUrl")}</span>
         <Input
           data-testid="ai-base-url"
           disabled={actionBusy}
@@ -327,17 +336,17 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           }
         />
         <Typography.Text type="secondary">
-          填写模型服务根 URL；末尾带或不带 /v1 均可。
+          {t("model.baseUrlHint")}
         </Typography.Text>
       </label>
 
       <label className="settings-field">
-        <span>API Key 凭据（可选，仅 token 类型）</span>
+         <span>{t("model.credential")}</span>
         <Select<number>
           data-testid="ai-credential"
           disabled={actionBusy}
           allowClear
-          placeholder="无鉴权 / 选择 token 凭据"
+          placeholder={t("model.credentialPlaceholder")}
           value={form.credential_id ?? undefined}
           options={credentials.map((credential) => ({
             label: credential.name,
@@ -350,12 +359,12 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       </label>
 
       <label className="settings-field">
-        <span>模型 ID</span>
+         <span>{t("model.modelId")}</span>
         <Input
           data-testid="ai-model-input"
           disabled={actionBusy}
           list="ai-model-suggestions"
-          placeholder="可从模型列表选择，也可手工输入"
+          placeholder={t("model.modelPlaceholder")}
           value={form.model}
           onChange={(event) => editForm((current) => ({ ...current, model: event.target.value }))}
         />
@@ -373,10 +382,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           disabled={actionBusy}
           onClick={() => void handleRefreshModels()}
         >
-          刷新模型
+          {t("model.refreshModels")}
         </Button>
         <Typography.Text type="secondary">
-          刷新失败不影响手工输入；刷新成功也不会自动切换已保存模型 ID。
+          {t("model.refreshHint")}
         </Typography.Text>
       </Space>
 
@@ -391,25 +400,25 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         items={[
           {
             key: "reasoning",
-            label: `高级：推理策略（${
-              form.reasoning_mode === "default"
-                ? "跟随模型默认"
-                : form.reasoning_mode === "enabled"
-                  ? "开启"
-                  : "关闭"
-            }）`,
+             label: t("model.advanced", { value:
+               form.reasoning_mode === "default"
+                 ? t("model.reasoningDefault")
+                 : form.reasoning_mode === "enabled"
+                   ? t("model.reasoningEnabled")
+                   : t("model.reasoningDisabled")
+             }),
             children: (
               <div className="settings-advanced">
                 <label className="settings-field">
-                  <span>推理策略</span>
+                   <span>{t("model.reasoningMode")}</span>
                   <Select<AiReasoningMode>
                     data-testid="ai-reasoning-mode"
                     disabled={actionBusy}
                     value={form.reasoning_mode}
                     options={[
-                      { label: "跟随模型默认", value: "default" },
-                      { label: "开启推理", value: "enabled" },
-                      { label: "关闭推理", value: "disabled" },
+                       { label: t("model.reasoningDefault"), value: "default" },
+                       { label: t("model.reasoningOpen"), value: "enabled" },
+                       { label: t("model.reasoningClose"), value: "disabled" },
                     ]}
                     onChange={(reasoningMode) =>
                       editForm((current) => ({
@@ -427,13 +436,13 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
 
                 {reasoningEfforts.length > 0 && (
                   <label className="settings-field">
-                    <span>{form.provider === "openai" ? "推理强度" : "推理强度（可选）"}</span>
+                   <span>{form.provider === "openai" ? t("model.reasoningEffort") : t("model.reasoningEffortOptional")}</span>
                     <Select<AiReasoningEffort>
                       data-testid="ai-reasoning-effort"
                       disabled={actionBusy}
                       allowClear={form.provider !== "openai"}
                       placeholder={
-                        form.provider === "openai" ? "请选择推理强度" : "不覆盖模型默认强度"
+                         form.provider === "openai" ? t("model.reasoningEffortPlaceholder") : t("model.reasoningEffortDefault")
                       }
                       value={form.reasoning_effort ?? undefined}
                       options={reasoningEfforts.map((effort) => ({ label: effort, value: effort }))}
@@ -448,7 +457,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
                 )}
 
                 <Typography.Text type="secondary">
-                  “跟随模型默认”不会主动发送 reasoning 开关。显式配置若不受支持，服务端会返回 ai_reasoning_unsupported，不会静默忽略。
+                   {t("model.reasoningHint")}
                 </Typography.Text>
               </div>
             ),
@@ -474,7 +483,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           disabled={actionBusy}
           onClick={() => void handleTest()}
         >
-          测试连接
+           {t("actions.testConnection", { ns: "common" })}
         </Button>
         <Button
           type="primary"
@@ -483,7 +492,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           disabled={actionBusy}
           onClick={() => void handleSave()}
         >
-          保存
+           {t("actions.save", { ns: "common" })}
         </Button>
       </Space>
     </div>

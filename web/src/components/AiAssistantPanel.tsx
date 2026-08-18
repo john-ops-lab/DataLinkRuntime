@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Spin } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { api } from "../api";
 import { dependencyUiFor, LANGUAGE_LABELS } from "../languages";
@@ -38,9 +39,11 @@ interface VisibleMessage {
   candidate: CandidateState | null;
 }
 
+/** Candidate diff stores only data; pane labels are derived at render time
+ * (like the Workbench diff) so an open modal switches locale immediately. */
 interface CandidateDiffState {
   messageId: number;
-  panes: DiffPane[];
+  panes: Omit<DiffPane, "label">[];
 }
 
 interface AiAssistantPanelProps {
@@ -67,17 +70,6 @@ interface AiAssistantPanelProps {
  * requested, parsed, or displayed — these stages only reflect what the
  * browser itself knows about the in-flight assist request. */
 type ProgressStage = "preparing" | "requesting" | "validating" | "succeeded";
-
-const PROGRESS_TEXT: Record<ProgressStage, string> = {
-  preparing: "正在准备当前代码上下文…",
-  requesting: "正在请求 AI 模型…",
-  validating: "正在校验返回结果…",
-  succeeded: "已生成修改，等待查看 Diff",
-};
-
-function errorMessage(error: unknown): string {
-  return userErrorMessage(error, "AI 请求失败");
-}
 
 function hasOnlyFiniteJsonNumbers(value: unknown): boolean {
   if (typeof value === "number") {
@@ -144,26 +136,31 @@ function recentVisibleMessages(messages: VisibleMessage[]): AiConversationMessag
 function contextSnippetLabel(
   snippet: AiContextSnippetEntry,
   language: Adapter["language"],
+  translate: (key: string, options?: Record<string, unknown>) => string,
 ): string {
   if (snippet.source === "code") {
     const range =
       snippet.end_line > snippet.start_line
-        ? `第 ${snippet.start_line}–${snippet.end_line} 行`
-        : `第 ${snippet.start_line} 行`;
-    return `代码 ${range}（${LANGUAGE_LABELS[language] ?? language}）`;
+        ? translate("assistant.context.lineRange", { start: snippet.start_line, end: snippet.end_line })
+        : translate("assistant.context.line", { line: snippet.start_line });
+    return translate("assistant.context.codeRange", {
+      range,
+      language: LANGUAGE_LABELS[language] ?? language,
+    });
   }
   const timeLabel = logSnippetTimeLabel(snippet.text);
   if (timeLabel !== null) {
-    return `实时日志 ${timeLabel}`;
+    return translate("assistant.context.logTime", { time: timeLabel });
   }
   const range =
     snippet.end_line > snippet.start_line
-      ? `第 ${snippet.start_line}–${snippet.end_line} 行`
-      : `第 ${snippet.start_line} 行`;
-  return `实时日志 ${range}`;
+      ? translate("assistant.context.lineRange", { start: snippet.start_line, end: snippet.end_line })
+      : translate("assistant.context.line", { line: snippet.start_line });
+  return translate("assistant.context.logRange", { range });
 }
 
 export default function AiAssistantPanel(props: AiAssistantPanelProps) {
+  const { t } = useTranslation(["ai", "common"]);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
   const [sending, setSending] = useState(false);
@@ -262,7 +259,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     }
     const runtimeConfig = parseRuntimeConfig(props.workingCopy.runtimeConfigText);
     if (runtimeConfig === null) {
-      setPanelError("发送前请先修正运行参数：必须是合法的 JSON 对象。");
+      setPanelError(t("assistant.invalidRuntimeConfig"));
       return;
     }
 
@@ -369,7 +366,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       setProgressStage(assistantMessage.candidate === null ? null : "succeeded");
     } catch (error) {
       if (generation === requestGeneration.current) {
-        setPanelError(errorMessage(error));
+        setPanelError(userErrorMessage(error, t("assistant.errors.requestFailed")));
         // M5.5.5: failures converge to an explicit error state; no progress
         // line lingers or keeps claiming an unfinished stage.
         setProgressStage(null);
@@ -392,21 +389,18 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       panes: [
         {
           key: "code",
-          label: "代码",
           language: adapter.language,
           original: props.workingCopy.code,
           modified: candidate.code,
         },
         {
           key: "requirements",
-          label: dependencyUiFor(adapter.language).label,
           language: "plaintext",
           original: props.workingCopy.requirements,
           modified: candidate.requirements,
         },
         {
           key: "runtime-config",
-          label: "运行参数",
           language: "json",
           original: props.workingCopy.runtimeConfigText,
           modified: JSON.stringify(candidate.runtime_config, null, 2),
@@ -535,7 +529,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         type="primary"
         className="ai-assistant-open"
         data-testid="open-ai-assistant"
-        aria-label="展开 AI 助手"
+            aria-label={t("assistant.open")}
         aria-expanded={false}
         onPointerDown={handleEntryPointerDown}
         onPointerMove={handleEntryPointerMove}
@@ -554,19 +548,21 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   );
 
   const contextVersion =
-    props.selectedVersionSeq === null ? "未保存版本" : `版本 v${props.selectedVersionSeq}`;
+    props.selectedVersionSeq === null
+      ? t("assistant.context.unsavedVersion")
+      : t("assistant.context.version", { seq: props.selectedVersionSeq });
 
   const expandedPanel = (
     <aside className="ai-assistant ai-assistant-expanded" data-testid="ai-assistant-panel">
       <div className="ai-assistant-header">
         <div>
-          <strong>AI 助手</strong>
-          <p>候选修改仅写入浏览器，不会自动保存、测试或运行。</p>
+          <strong>{t("assistant.title")}</strong>
+          <p>{t("assistant.notice")}</p>
         </div>
         <Button
           type="text"
           data-testid="close-ai-assistant"
-          aria-label="收起 AI 助手"
+          aria-label={t("assistant.close")}
           aria-expanded={true}
           onClick={props.onClose}
         >
@@ -576,7 +572,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
 
       <div className="ai-assistant-context" data-testid="ai-current-context">
         {props.adapter === null ? (
-          <span>请先选择一个适配器。</span>
+           <span>{t("assistant.noAdapter")}</span>
         ) : (
           <>
             <strong>{props.adapter.name}</strong>
@@ -588,15 +584,15 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       {props.adapter !== null && props.contextSnippets.length > 0 && (
         <div className="ai-snippets" data-testid="ai-context-snippets">
           <div className="ai-snippets-header">
-            <span>已加入的上下文片段</span>
+             <span>{t("assistant.contextSnippets")}</span>
             <Button
               size="small"
               type="text"
               data-testid="ai-clear-all-snippets"
-              aria-label="清空全部上下文片段"
+               aria-label={t("assistant.clearSnippets")}
               onClick={props.onClearContextSnippets}
             >
-              清空全部
+              {t("actions.clearAll", { ns: "common" })}
             </Button>
           </div>
           {props.adapter !== null &&
@@ -609,16 +605,16 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                   data-testid={`ai-snippet-${snippet.id}`}
                 >
                   <span className="ai-snippet-label" data-testid="ai-snippet-label">
-                    {contextSnippetLabel(snippet, adapterLanguage)}
+                     {contextSnippetLabel(snippet, adapterLanguage, (key, options) => t(key, options))}
                   </span>
                   <Button
                     size="small"
                     type="text"
                     data-testid={`ai-remove-snippet-${snippet.id}`}
-                    aria-label="删除该上下文片段"
+                     aria-label={t("assistant.removeSnippet")}
                     onClick={() => props.onRemoveContextSnippet(snippet.id)}
                   >
-                    删除
+                     {t("assistant.remove")}
                   </Button>
                 </div>
               ));
@@ -638,8 +634,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       >
         {messages.length === 0 ? (
           <p className="ai-conversation-empty" data-testid="ai-conversation-empty">
-            描述你的需求，可引用原代码片段。建议不要在代码中直接写入密码、Token、密钥等凭据，
-            请使用「凭据绑定」功能，避免敏感凭据随代码发送给 AI。
+             {t("assistant.empty")}
           </p>
         ) : (
           messages.map((message) => {
@@ -660,45 +655,45 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                 className={`ai-message ai-message-${message.role}`}
                 data-testid={`ai-message-${message.role}`}
               >
-                <span className="ai-message-role">{message.role === "user" ? "你" : "AI"}</span>
+                <span className="ai-message-role">{message.role === "user" ? t("assistant.user") : "AI"}</span>
                 <p>{message.content}</p>
                 {candidateState !== null && (
                   <div className="ai-candidate" data-testid="ai-candidate">
                     <p className="ai-candidate-ready" data-testid="ai-candidate-ready">
-                      代码已生成
+                       {t("assistant.candidateReady")}
                     </p>
                     <strong data-testid="ai-candidate-summary">
                       {candidateState.value.summary}
                     </strong>
                     {candidateState.value.required_secret_keys.length > 0 && (
                       <p className="ai-secret-suggestion" data-testid="ai-required-secret-keys">
-                        AI 建议需要：{candidateState.value.required_secret_keys.join(", ")}
+                         {t("assistant.requiredSecrets", { keys: candidateState.value.required_secret_keys.join(", ") })}
                       </p>
                     )}
                     {!bindingsLoading && bindingsVerified && missingKeys.length > 0 && (
                       <p className="ai-secret-warning" role="alert" data-testid="ai-missing-secret-keys">
-                        ⚠ 缺少凭据绑定：{missingKeys.join(", ")}
+                         {t("assistant.missingSecrets", { keys: missingKeys.join(", ") })}
                       </p>
                     )}
                     {!bindingsLoading && !bindingsVerified && (
                       <p className="ai-secret-check-unavailable" role="alert">
-                        暂时无法核对当前凭据绑定。
+                         {t("assistant.secretCheckUnavailable")}
                       </p>
                     )}
                     {stale && (
                       <div className="ai-stale-warning" role="alert" data-testid="ai-candidate-stale">
-                        <strong>⚠ AI 生成期间当前代码已发生修改。</strong>
-                        <span>该候选修改基于较早的编辑内容生成。</span>
+                         <strong>{t("assistant.staleTitle")}</strong>
+                         <span>{t("assistant.staleDescription")}</span>
                       </div>
                     )}
                     {props.adapter?.archived_at && (
                       <p className="ai-secret-warning" role="alert" data-testid="ai-archived-apply-blocked">
-                        已删除适配器为只读，不能应用候选修改。
+                         {t("assistant.archivedApplyBlocked")}
                       </p>
                     )}
                     {candidateState.applied && (
                       <p className="ai-candidate-applied" role="status" data-testid="ai-candidate-applied">
-                        已应用到浏览器中的当前代码；请继续人工保存、测试与运行。
+                         {t("assistant.applied")}
                       </p>
                     )}
                     <div className="ai-candidate-actions">
@@ -709,7 +704,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                         disabled={!props.contentReady || props.busy}
                         onClick={() => openCandidateDiff(message.id, candidateState)}
                       >
-                        {stale ? "查看与当前代码的修改" : "查看修改"}
+                        {stale ? t("actions.viewCurrentChanges", { ns: "common" }) : t("actions.viewChanges", { ns: "common" })}
                       </Button>
                     </div>
                   </div>
@@ -721,12 +716,12 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         {sending && progressStage !== null && (
           <div className="ai-loading" data-testid="ai-loading" role="status" aria-live="polite">
             <Spin size="small" />
-            <span data-testid="ai-progress-stage">{PROGRESS_TEXT[progressStage]}</span>
+            <span data-testid="ai-progress-stage">{t(`assistant.progress.${progressStage}`)}</span>
           </div>
         )}
         {!sending && progressStage === "succeeded" && (
           <div className="ai-progress-done" data-testid="ai-progress-done" role="status">
-            {PROGRESS_TEXT.succeeded}
+            {t("assistant.progress.succeeded")}
           </div>
         )}
       </div>
@@ -741,8 +736,8 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           ref={messageInputRef}
           rows={4}
           data-testid="ai-message-input"
-          aria-label="AI 指令"
-          placeholder="输入问题或修改要求…"
+           aria-label={t("assistant.commandLabel")}
+           placeholder={t("assistant.commandPlaceholder")}
           value={draft}
           disabled={props.adapter === null || !props.contentReady || props.busy || sending}
           onChange={(event) => setDraft(event.target.value)}
@@ -766,7 +761,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           }
           onClick={() => void handleSend()}
         >
-          发送
+           {t("assistant.send")}
         </Button>
       </div>
     </aside>
@@ -789,18 +784,18 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       !candidateState.applied &&
       !snapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
     const applyBlockedReason = candidateState.applied
-      ? "该候选修改已应用到当前代码"
+      ? t("assistant.diff.applyBlockedApplied")
       : props.adapter?.archived_at
-        ? "适配器已删除，候选修改只能查看，不能应用"
+        ? t("assistant.diff.applyBlockedArchived")
         : !props.contentReady
-          ? "当前代码尚未加载完成，请稍后重试"
+          ? t("assistant.diff.applyBlockedNotReady")
           : props.busy
-            ? "其他操作正在进行，请等待完成"
+            ? t("assistant.diff.applyBlockedBusy")
             : props.adapter?.runtime_locked === true
-              ? "适配器正在运行，不能应用候选修改"
+              ? t("assistant.diff.applyBlockedLocked")
               : null;
     return {
-      label: stale ? "仍然应用" : "应用修改",
+      label: stale ? t("assistant.diff.applyStale") : t("actions.apply", { ns: "common" }),
       reason: applyBlockedReason,
       applied: candidateState.applied,
       stale,
@@ -812,10 +807,18 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     <>
       <VersionDiffModal
         open={candidateDiff !== null}
-        title="AI 候选修改：与当前编辑内容对比"
-        originalTitle="当前编辑内容"
-        modifiedTitle="AI 候选修改"
-        panes={candidateDiff?.panes ?? []}
+        title={t("assistant.diff.title")}
+        originalTitle={t("assistant.diff.original")}
+        modifiedTitle={t("assistant.diff.modified")}
+        panes={(candidateDiff?.panes ?? []).map((pane) => ({
+          ...pane,
+          label:
+            pane.key === "code"
+              ? t("assistant.diff.code")
+              : pane.key === "requirements"
+                ? dependencyUiFor(props.adapter?.language ?? "python").label
+                : t("assistant.diff.runtimeConfig"),
+        }))}
         theme={props.theme}
         onClose={() => setCandidateDiff(null)}
         applyAction={diffApplyAction}

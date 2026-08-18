@@ -1,12 +1,13 @@
 /** 顶部 Worker 状态观察（M3 §10）：复用 App 为 Catalog/设置加载的列表。 */
 
 import { Badge, Button, Empty, List, Popover, Spin, Tag } from "antd";
+import { useTranslation } from "react-i18next";
 
 import type { Worker } from "../types";
 
-function formatTime(value: string): string {
+function formatTime(value: string, locale: "zh-CN" | "en"): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale === "en" ? "en-US" : "zh-CN");
 }
 
 interface WorkerStatusProps {
@@ -16,12 +17,14 @@ interface WorkerStatusProps {
 }
 
 export default function WorkerStatus({ workers, loading, error }: WorkerStatusProps) {
+  const { i18n, t } = useTranslation("common");
+  const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const content = (
     <div className="worker-popover">
       {loading && <Spin size="small" />}
       {error !== null && <span className="history-error" role="alert">{error}</span>}
       {!loading && error === null && workers.length === 0 && (
-        <Empty description="暂无已注册运行节点" />
+        <Empty description={t("worker.empty")} />
       )}
       {!loading && workers.length > 0 && (
         <List
@@ -34,11 +37,11 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
                   <span>
                     {worker.name}{" "}
                     <Tag color={worker.status === "online" ? "green" : "red"}>
-                      {worker.status === "online" ? "在线" : "离线"}
+                      {worker.status === "online" ? t("worker.online") : t("worker.offline")}
                     </Tag>
                   </span>
                 }
-                description={`最近心跳：${formatTime(worker.last_heartbeat)}`}
+                description={t("worker.lastHeartbeat", { time: formatTime(worker.last_heartbeat, locale) })}
               />
             </List.Item>
           )}
@@ -46,7 +49,7 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
       )}
       {!loading && (
         <p className="worker-hint">
-          在线状态已结合最近心跳和超时阈值判定；最近心跳时间用于排障。
+          {t("worker.hint")}
         </p>
       )}
     </div>
@@ -59,12 +62,12 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
   return (
     <Popover
       content={content}
-      title="运行节点"
+      title={t("worker.title")}
       trigger="click"
     >
       <Button size="small" data-testid="worker-status">
         <Badge status={hasOnlineWorker ? "success" : allOffline ? "error" : "default"} />
-        运行节点 · {loading ? "加载中" : error !== null ? "状态未知" : `${onlineCount}/${workers.length} 在线`}
+        {t("worker.title")} · {loading ? t("worker.loading") : error !== null ? t("worker.unknownStatus") : t("worker.onlineSummary", { online: onlineCount, total: workers.length })}
       </Button>
     </Popover>
   );

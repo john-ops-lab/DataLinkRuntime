@@ -7,6 +7,7 @@
  */
 
 import { Alert, Tabs, Tag } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { AiContextSnippet, Execution } from "../types";
@@ -25,6 +26,7 @@ interface Props {
 }
 
 export default function LiveLogWorkspace(props: Props) {
+  const { t } = useTranslation("runtime");
   const execution = props.execution;
   const content = unifiedLogContent(props.liveStdout, props.liveStderr);
 
@@ -36,16 +38,16 @@ export default function LiveLogWorkspace(props: Props) {
   }
 
   return (
-    <section className="live-log-workspace" data-testid="live-log-workspace" aria-label="实时日志">
+    <section className="live-log-workspace" data-testid="live-log-workspace" aria-label={t("live.title")}>
       <div className="live-log-header">
         <div className="live-log-title-group">
-          <strong>实时日志</strong>
+            <strong>{t("live.title")}</strong>
           {execution !== null ? (
             <Tag color={statusColor(execution.status)}>{statusLabel(execution.status)}</Tag>
           ) : props.waitingForWebhook ? (
-            <Tag color="processing">等待 Webhook 请求…</Tag>
+            <Tag color="processing">{t("live.waitingTag")}</Tag>
           ) : (
-            <Tag>暂无日志</Tag>
+            <Tag>{t("live.emptyTag")}</Tag>
           )}
         </div>
       </div>
@@ -54,15 +56,15 @@ export default function LiveLogWorkspace(props: Props) {
         <div className="live-log-waiting" role="status">
           <span className="live-log-waiting-pulse" aria-hidden="true" />
           <div>
-            <strong>等待 Webhook 请求…</strong>
-            <p>收到真实请求并创建执行后，这里会自动跟踪本次调用的完整日志。</p>
+            <strong>{t("live.waitingTitle")}</strong>
+            <p>{t("live.waitingDescription")}</p>
           </div>
         </div>
       ) : execution === null ? (
         <div className="live-log-waiting" role="status">
           <div>
-            <strong>暂无实时日志</strong>
-            <p>运行开始后，stdout、stderr、logger 与 Traceback 会按实际顺序显示在这里。</p>
+            <strong>{t("live.emptyTitle")}</strong>
+            <p>{t("live.emptyDescription")}</p>
           </div>
         </div>
       ) : (
@@ -71,8 +73,8 @@ export default function LiveLogWorkspace(props: Props) {
             <Alert
               type="warning"
               showIcon
-              message="实时连接已断开，状态可能已过期"
-              description="已按权威结果轮询至上限仍未等到终态，请刷新或稍后到执行记录中查看。"
+              message={t("live.connectionLost")}
+              description={t("live.connectionLostDescription")}
             />
           )}
           <Tabs
@@ -81,23 +83,23 @@ export default function LiveLogWorkspace(props: Props) {
             items={[
               {
                 key: "log",
-                label: "统一日志",
+                label: t("live.unifiedLog"),
                 children: (
                   <LogView
                     testId="live-log"
                     content={content}
                     truncated={execution.stdout_truncated || execution.stderr_truncated}
-                    emptyHint="暂无日志"
+                    emptyHint={t("logs.empty")}
                     maxLines={LIVE_LOG_MAX_LINES}
                     mode="live"
-                    addContextLabel="加入对话上下文"
+                    addContextLabel={t("actions.addContext", { ns: "common" })}
                     onAddContext={handleAddContext}
                   />
                 ),
               },
               {
                 key: "output",
-                label: "输出",
+                label: t("live.output"),
                 children: <OutputView execution={execution} />,
               },
             ]}

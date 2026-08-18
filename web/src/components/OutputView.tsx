@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button } from "antd";
+import { useTranslation } from "react-i18next";
 
 import type { Execution } from "../types";
 import { tailLogLines } from "../unified-log";
@@ -9,14 +10,17 @@ import { tailLogLines } from "../unified-log";
 /** Full output as formatted JSON; truncated output shows size + preview. */
 export function OutputView(props: { execution: Execution; testId?: string }) {
   const { execution } = props;
+  const { t } = useTranslation(["runtime", "common"]);
   if (execution.output_truncated) {
     return (
       <div className="output-view" data-testid={props.testId ?? "output-truncated"}>
         <Alert
           type="warning"
           showIcon
-          message="输出超过平台保存上限，未保存完整内容"
-          description={`实际大小：${execution.output_size ?? "未知"} 字节；以下为内容预览（非完整 JSON）`}
+          message={t("output.truncated")}
+          description={t("output.truncatedDescription", {
+            size: execution.output_size ?? t("output.unknownSize"),
+          })}
         />
         <pre className="terminal-view" data-testid="output-preview">
           {execution.output_preview ?? ""}
@@ -27,7 +31,7 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
   if (execution.output === null || execution.output === undefined) {
     return (
       <div className="output-view output-empty" data-testid={props.testId ?? "output-empty"}>
-        无 Output
+        {t("output.empty")}
       </div>
     );
   }
@@ -83,6 +87,7 @@ export function LogView(props: {
   addContextLabel?: string;
   onAddContext?: (text: string, startLine: number, endLine: number) => void;
 }) {
+  const { t } = useTranslation("runtime");
   const preRef = useRef<HTMLPreElement | null>(null);
   const followControls = props.followControls ?? true;
   const mode = props.mode ?? "live";
@@ -204,7 +209,7 @@ export function LogView(props: {
               data-testid={props.testId ? `${props.testId}-resume` : "log-resume"}
               onClick={resumeFollowing}
             >
-              继续跟随
+              {t("logs.resume")}
             </Button>
           ) : (
             <Button
@@ -215,7 +220,7 @@ export function LogView(props: {
                 setPaused(true);
               }}
             >
-              暂停跟随
+              {t("logs.pause")}
             </Button>
           ))}
         {props.onAddContext !== undefined && (
@@ -223,10 +228,10 @@ export function LogView(props: {
             size="small"
             data-testid={props.testId ? `${props.testId}-add-context` : "log-add-context"}
             disabled={!hasSelection}
-            title="把当前选中的日志文本加入 AI 对话上下文（仅使用浏览器可见的已脱敏文本）"
+            title={t("logs.addContextTitle")}
             onClick={handleAddContext}
           >
-            {props.addContextLabel ?? "加入对话上下文"}
+            {props.addContextLabel ?? t("actions.addContext", { ns: "common" })}
           </Button>
         )}
         <Button
@@ -236,13 +241,15 @@ export function LogView(props: {
               ? `${props.testId}-${maximized ? "restore" : "maximize"}`
               : `log-${maximized ? "restore" : "maximize"}`
           }
-          aria-label={maximized ? "恢复日志大小" : "最大化日志"}
+          aria-label={maximized ? t("logs.restore") : t("logs.maximize")}
           onClick={() => setMaximized((current) => !current)}
         >
-          {maximized ? "恢复" : "最大化"}
+          {maximized
+            ? t("actions.restore", { ns: "common" })
+            : t("actions.maximize", { ns: "common" })}
         </Button>
         {props.truncated && (
-          <Alert type="warning" showIcon banner message="日志超过平台保存上限，部分内容已被截断" />
+          <Alert type="warning" showIcon banner message={t("logs.truncated")} />
         )}
       </div>
       <pre
@@ -251,7 +258,7 @@ export function LogView(props: {
         data-testid={props.testId ?? "log-view"}
         onScroll={handleScroll}
       >
-        {displayContent === "" ? (props.emptyHint ?? "暂无日志") : displayContent}
+        {displayContent === "" ? (props.emptyHint ?? t("logs.empty")) : displayContent}
       </pre>
     </div>
   );

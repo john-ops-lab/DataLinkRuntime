@@ -1,6 +1,7 @@
 /** Webhook Adapter header: identity, receive state and explicit actions. */
 
 import { Button, Tag } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, Worker } from "../types";
@@ -19,23 +20,24 @@ interface Props {
 }
 
 export default function WebhookWorkbenchHeader(props: Props) {
+  const { t } = useTranslation(["runtime", "common"]);
   const archived = !!props.adapter.archived_at;
   const locked = props.adapter.runtime_locked === true || props.runtimeState.enabled;
   const saveReason = archived
-    ? "适配器已删除，不能继续编辑"
+    ? t("webhook.reasons.deleted")
     : locked
-      ? "正在接收或存在运行中的调用，请先停止接收并等待当前调用完成"
+      ? t("webhook.reasons.lockedSave")
       : !props.contentReady
-        ? "内容尚未就绪"
+        ? t("webhook.reasons.contentNotReady")
         : props.busy
-          ? "其他操作正在进行"
+          ? t("webhook.reasons.busy")
           : null;
   const receiveReason = props.runtimeState.enabled
     ? null
     : !props.runtimeState.loaded
-      ? "Webhook 运行设置正在加载"
+      ? t("webhook.reasons.loading")
       : props.runtimeState.runtimeLocked
-        ? "已有调用仍在运行，请等待其进入终态后再开启接收或修改运行配置"
+        ? t("webhook.reasons.activeCall")
         : props.runtimeState.startBlockedReason;
 
   return (
@@ -43,13 +45,19 @@ export default function WebhookWorkbenchHeader(props: Props) {
       <div className="workbench-context" data-testid="webhook-workbench-header">
         <div className="workbench-title-row">
           <h2 className="workbench-title" title={props.adapter.name}>{props.adapter.name}</h2>
-          <Tag color="cyan">Webhook</Tag>
+          <Tag color="cyan">{t("webhook.header.type")}</Tag>
           <span className="workbench-context-fact">{LANGUAGE_LABELS[props.adapter.language]}</span>
           <Tag color={props.runtimeState.enabled ? "processing" : "default"}>
-            {props.runtimeState.enabled ? "接收中" : props.adapter.running_execution_id != null ? "调用中" : "已停止"}
+            {props.runtimeState.enabled
+              ? t("webhook.status.receiving")
+              : props.adapter.running_execution_id != null
+                ? t("webhook.status.calling")
+                : t("webhook.status.stopped")}
           </Tag>
           <span className="workbench-context-fact" data-testid="header-runtime-worker">
-            运行节点：{props.runtimeWorker?.name ?? "未选择"}
+            {t("webhook.header.worker", {
+              name: props.runtimeWorker?.name ?? t("labels.notSelected", { ns: "common" }),
+            })}
           </span>
         </div>
         {/* M5.5.9/M5.5.12：只保留一行低干扰提示，不再展示大块说明、“复制适配器”
@@ -57,17 +65,17 @@ export default function WebhookWorkbenchHeader(props: Props) {
         {locked && (
           <p className="runtime-lock-hint" data-testid="webhook-active-execution">
             {props.runtimeState.enabled
-              ? "适配器正在接收请求，运行配置已锁定。"
-              : "当前调用仍在执行，运行配置已锁定。"}
+              ? t("webhook.lockReceiving")
+              : t("webhook.lockCalling")}
           </p>
         )}
       </div>
       <div className="workbench-controls">
-        <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>设置</Button>
-        <ActionWithReason label="保存" reason={saveReason}>
-          <Button type="primary" data-testid="save-version" disabled={saveReason !== null} onClick={props.onSave}>保存</Button>
+        <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>{t("actions.settings", { ns: "common" })}</Button>
+        <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveReason}>
+          <Button type="primary" data-testid="save-version" disabled={saveReason !== null} onClick={props.onSave}>{t("actions.save", { ns: "common" })}</Button>
         </ActionWithReason>
-        <ActionWithReason label={props.runtimeState.enabled ? "停止接收" : "开启接收"} reason={receiveReason}>
+        <ActionWithReason label={props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })} reason={receiveReason}>
           <Button
             danger={props.runtimeState.enabled}
             data-testid="header-webhook-toggle"
@@ -75,7 +83,7 @@ export default function WebhookWorkbenchHeader(props: Props) {
             disabled={!props.runtimeState.enabled && receiveReason !== null}
             onClick={props.onToggleReceiving}
           >
-            {props.runtimeState.enabled ? "停止接收" : "开启接收"}
+            {props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })}
           </Button>
         </ActionWithReason>
       </div>

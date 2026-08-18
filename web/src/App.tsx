@@ -26,7 +26,7 @@ import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/Web
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
-import { applySystemLocale, currentSystemLocale, isSystemLocale, resolveSystemLocale } from "./i18n";
+import { applySystemLocale, currentSystemLocale, i18n, isSystemLocale, resolveSystemLocale } from "./i18n";
 import {
   dependencyNoteFor,
   dependencyUiFor,
@@ -53,7 +53,7 @@ const INITIAL_TASK_RUNTIME_STATE: TaskRuntimeState = {
   loading: true,
   activeExecution: false,
   canRun: false,
-  scheduleEnableBlockedReason: "运行设置正在加载",
+  scheduleEnableBlockedReason: null,
 };
 
 const INITIAL_WEBHOOK_RUNTIME_STATE: WebhookRuntimeState = {
@@ -61,7 +61,7 @@ const INITIAL_WEBHOOK_RUNTIME_STATE: WebhookRuntimeState = {
   enabled: false,
   runtimeLocked: false,
   changingState: false,
-  startBlockedReason: "Webhook 运行设置正在加载",
+  startBlockedReason: null,
 };
 
 type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
@@ -171,12 +171,12 @@ type WorkbenchTabKey = "edit" | "runtime" | "history" | "live";
 // 用户主流程；普通、非敏感配置由代码本身表达。
 type ConfigTabKey = "requirements" | "bindings";
 
-/** Working Copy / AI Candidate diff modal state. */
+/** Working Copy / AI Candidate diff modal state (display strings are derived
+ * at render time so an open modal switches language immediately). */
 interface DiffViewState {
-  title: string;
-  originalTitle: string;
-  modifiedTitle: string;
-  panes: DiffPane[];
+  baseSeq: number | null;
+  adapterLanguage: AdapterLanguage;
+  panes: Omit<DiffPane, "label">[];
 }
 
 // M1 frontend validation mirrors the backend contract: runtime_config must be
@@ -210,6 +210,7 @@ function activeNameConflict(
 }
 
 function AdapterConsole() {
+  const { t } = useTranslation(["common", "adapter", "runtime"]);
   const [messageApi, messageContextHolder] = message.useMessage();
   const [health, setHealth] = useState<HealthStatus>("loading");
 
@@ -428,7 +429,9 @@ function AdapterConsole() {
       liveWatchRef.current(execution);
       setWaitingForWebhook(false);
       if (execution.trigger === "schedule") {
-        messageApi.info("定时执行已开始，可在「实时日志」标签查看本次运行。");
+        // The message is a transient toast: translate it with the locale at
+        // fire time without subscribing this effect to language changes.
+        messageApi.info(i18n.t("messages.scheduleStarted"));
       }
     }).catch((watchError) => {
       if (!cancelled) {
@@ -572,7 +575,7 @@ function AdapterConsole() {
     if (!dirty) {
       return true;
     }
-    return window.confirm("存在未保存的修改，确定放弃吗？");
+    return window.confirm(t("confirm.discardChanges"));
   }
 
   async function loadAdapterContent(
@@ -667,7 +670,7 @@ function AdapterConsole() {
     }
     // M5.5.9：前端预检同名（活跃）适配器，给出明确中文提示。
     if (activeNameConflict(adapters, createdName, null)) {
-      messageApi.error("已存在同名适配器，请使用其他名称。");
+      messageApi.error(t("messages.nameConflict"));
       return false;
     }
     const starterLocale = currentSystemLocale();
@@ -686,7 +689,7 @@ function AdapterConsole() {
       return true;
     } catch (err) {
       if (err instanceof ApiError && err.code === "adapter_name_conflict") {
-        messageApi.error("已存在同名适配器，请使用其他名称。");
+        messageApi.error(t("messages.nameConflict"));
       } else {
         setError(errorMessage(err));
       }
@@ -702,11 +705,11 @@ function AdapterConsole() {
     }
     const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
     if (runtimeConfig === null) {
-      setError("运行参数必须是合法的 JSON 对象");
+      setError(t("validation.runtimeConfigJson"));
       return;
     }
     if (!snapshot.code.trim()) {
-      setError("代码不能为空");
+      setError(t("validation.codeRequired"));
       return;
     }
     setBusy(true);
@@ -742,7 +745,7 @@ function AdapterConsole() {
         const versionList = await api.listVersions(saveTarget.id);
         setVersions(versionList);
       } catch (refreshErr) {
-        refreshFailures.push(`刷新版本列表失败：${errorMessage(refreshErr)}`);
+        refreshFailures.push(t("messages.versionListRefreshFailed", { error: errorMessage(refreshErr) }));
       }
       try {
         // Best-effort refresh of the real Adapter (server-owned updated_at);
@@ -751,12 +754,14 @@ function AdapterConsole() {
         setSelected(real);
         setAdapters((current) => current.map((item) => (item.id === real.id ? real : item)));
       } catch (refreshErr) {
-        refreshFailures.push(`刷新适配器失败：${errorMessage(refreshErr)}`);
+        refreshFailures.push(t("messages.adapterRefreshFailed", { error: errorMessage(refreshErr) }));
       }
       if (refreshFailures.length === 0) {
-        messageApi.success("适配器已保存");
+        messageApi.success(t("messages.adapterSaved"));
       } else {
-        setError(`适配器已保存，但${refreshFailures.join("；")}`);
+        setError(t("messages.adapterSavedRefreshSummary", {
+          details: refreshFailures.join(i18n.t("punctuation.listSeparator")),
+        }));
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -770,11 +775,11 @@ function AdapterConsole() {
       return;
     }
     if (parseRuntimeConfig(snapshot.runtimeConfigText) === null) {
-      setError("运行参数必须是合法的 JSON 对象");
+      setError(t("validation.runtimeConfigJson"));
       return;
     }
     if (!snapshot.code.trim()) {
-      setError("代码不能为空");
+      setError(t("validation.codeRequired"));
       return;
     }
     if (selected.runtime_worker_id != null) {
@@ -825,7 +830,7 @@ function AdapterConsole() {
     const targetName = cloneName.trim();
     // M5.5.9：前端预检同名（活跃）适配器。
     if (activeNameConflict(adapters, targetName, null)) {
-      messageApi.error("已存在同名适配器，请使用其他名称。");
+      messageApi.error(t("messages.nameConflict"));
       return;
     }
     setCloneSource(null);
@@ -838,7 +843,7 @@ function AdapterConsole() {
       await loadAdapterContent(target);
     } catch (err) {
       if (err instanceof ApiError && err.code === "adapter_name_conflict") {
-        messageApi.error("已存在同名适配器，请使用其他名称。");
+        messageApi.error(t("messages.nameConflict"));
       } else {
         setError(errorMessage(err));
       }
@@ -852,30 +857,24 @@ function AdapterConsole() {
     if (!selected) {
       return;
     }
-    const baseLabel =
-      selectedVersion !== null ? `基准版本 v${selectedVersion.seq}` : "基准版本（无已保存版本）";
     setDiffView({
-      title: "版本差异：工作副本与基准版本",
-      originalTitle: baseLabel,
-      modifiedTitle: "工作副本（当前编辑内容）",
+      baseSeq: selectedVersion?.seq ?? null,
+      adapterLanguage: selected.language,
       panes: [
         {
           key: "code",
-          label: "代码",
           language: selected.language,
           original: baseline.code,
           modified: snapshot.code,
         },
         {
           key: "requirements",
-          label: dependencyUiFor(selected.language).label,
           language: "plaintext",
           original: baseline.requirements,
           modified: snapshot.requirements,
         },
         {
           key: "runtime-config",
-          label: "运行参数",
           language: "json",
           original: baseline.runtimeConfigText,
           modified: snapshot.runtimeConfigText,
@@ -958,7 +957,7 @@ function AdapterConsole() {
     }
     // M5.5.9：重命名预检——trim 后与活跃同名拒绝。
     if (name.trim() !== "" && activeNameConflict(adapters, name, selected.id)) {
-      messageApi.error("已存在同名适配器，请使用其他名称。");
+      messageApi.error(t("messages.nameConflict"));
       return;
     }
     setBusy(true);
@@ -970,16 +969,16 @@ function AdapterConsole() {
       setDescription(refreshed.description);
       try {
         await refreshAdapters();
-        messageApi.success("适配器信息已保存");
+        messageApi.success(t("messages.adapterInfoSaved"));
       } catch {
         setAdapters((current) =>
           current.map((item) => (item.id === refreshed.id ? refreshed : item)),
         );
-        setError("适配器信息已保存，但列表刷新失败；请手动刷新确认。");
+        setError(t("messages.adapterInfoSavedRefreshFailed"));
       }
     } catch (err) {
       if (err instanceof ApiError && err.code === "adapter_name_conflict") {
-        messageApi.error("已存在同名适配器，请使用其他名称。");
+        messageApi.error(t("messages.nameConflict"));
       } else {
         setError(errorMessage(err));
       }
@@ -992,9 +991,9 @@ function AdapterConsole() {
     if (!selected || busy) {
       return;
     }
-    const warning = dirty ? "该适配器存在未保存的编辑器修改。" : "";
+    const warning = dirty ? t("messages.discardWarning") : "";
     if (
-      !window.confirm(`确定删除适配器“${selected.name}”吗？删除后它会从活跃列表移除。${warning}`)
+      !window.confirm(t("confirm.deleteAdapter", { name: selected.name, warning }))
     ) {
       return;
     }
@@ -1023,12 +1022,12 @@ function AdapterConsole() {
 
   const healthText =
     health === "loading"
-      ? "控制服务检查中…"
+      ? t("health.loading")
       : health === "ok"
-        ? "控制服务正常"
+        ? t("health.ok")
         : health === "degraded"
-          ? "控制服务降级"
-          : "控制服务不可达";
+          ? t("health.degraded")
+          : t("health.unreachable");
 
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
   const selectedRuntimeWorker = selected?.runtime_worker_id == null
@@ -1053,7 +1052,7 @@ function AdapterConsole() {
       <header className="app-header">
         <div className="app-header-brand">
           <h1 className="app-header-logo">DLR</h1>
-          <span className="app-header-product">DataLinkRuntime · 轻量数据适配运行平台</span>
+          <span className="app-header-product">{t("product.tagline")}</span>
         </div>
         <div className="app-header-status">
           <span className="health-status">
@@ -1065,7 +1064,7 @@ function AdapterConsole() {
             data-testid="system-settings"
             onClick={() => setSystemSettingsOpen(true)}
           >
-            系统设置
+            {t("actions.systemSettings")}
           </Button>
           <WorkerStatus workers={workers} loading={workersLoading} error={workersError} />
         </div>
@@ -1115,7 +1114,7 @@ function AdapterConsole() {
 
         <main className="workbench">
           {selected === null ? (
-            <div className="workbench-empty">请选择一个适配器进行管理。</div>
+            <div className="workbench-empty">{t("empty.noAdapter")}</div>
           ) : (
             <section className="detail">
               {selected.adapter_type === "task" ? (
@@ -1152,19 +1151,19 @@ function AdapterConsole() {
                 items={[
                   {
                     key: "edit",
-                    label: "编辑",
+                    label: t("labels.edit"),
                     children: (
                       <div className="editor-pane">
                         <div className="editor-toolbar">
-                          <span className="editor-toolbar-label">编辑器主题</span>
+                          <span className="editor-toolbar-label">{t("editor.theme")}</span>
                           <Segmented
                             size="small"
                             data-testid="editor-theme-picker"
                             value={themePreference}
                             options={[
-                              { label: "深色", value: "dark" },
-                              { label: "浅色", value: "light" },
-                              { label: "跟随系统", value: "system" },
+                              { label: t("editor.dark"), value: "dark" },
+                              { label: t("editor.light"), value: "light" },
+                              { label: t("editor.system"), value: "system" },
                             ]}
                             onChange={(value) => setThemePreference(value as EditorThemePreference)}
                           />
@@ -1174,7 +1173,7 @@ function AdapterConsole() {
                             disabled={busy || !contentReady}
                             onClick={handleOpenWorkingDiff}
                           >
-                            查看差异
+                            {t("actions.viewDiff")}
                           </Button>
                           <Button
                             size="small"
@@ -1182,7 +1181,7 @@ function AdapterConsole() {
                             disabled={busy || !contentReady || !editorHasSelection}
                             onClick={handleAddSelectedContext}
                           >
-                            加入对话上下文
+                            {t("actions.addContext")}
                           </Button>
                         </div>
                         <div className="editor-main" data-testid="editor-main" data-monaco-theme={editorTheme}>
@@ -1243,7 +1242,7 @@ function AdapterConsole() {
                               },
                               {
                                 key: "bindings",
-                                label: "凭据绑定",
+                                label: t("labels.credentialBindings"),
                                 children: (
                                   <CredentialBindingsEditor
                                     adapterId={selected.id}
@@ -1262,7 +1261,7 @@ function AdapterConsole() {
                   selected.adapter_type === "task"
                     ? {
                         key: "runtime",
-                        label: "运行设置",
+                        label: t("labels.runtimeSettings"),
                         forceRender: true,
                         children: (
                           <TaskRunSettingsPanel
@@ -1283,7 +1282,7 @@ function AdapterConsole() {
                       }
                     : {
                         key: "runtime",
-                        label: "运行设置",
+                        label: t("labels.runtimeSettings"),
                         forceRender: true,
                         children: (
                           <WebhookTriggerPanel
@@ -1302,7 +1301,7 @@ function AdapterConsole() {
                       },
                   {
                     key: "history",
-                    label: selected.adapter_type === "webhook" ? "调用记录" : "执行记录",
+                    label: selected.adapter_type === "webhook" ? t("labels.callHistory") : t("labels.history"),
                     // antd Tabs render lazily: the history API is only called
                     // after this tab is activated for the first time.
                     children: (
@@ -1310,7 +1309,7 @@ function AdapterConsole() {
                         key={selected.id}
                         adapterId={selected.id}
                         trigger={selected.adapter_type === "webhook" ? "webhook" : undefined}
-                        recordLabel={selected.adapter_type === "webhook" ? "调用记录" : "执行记录"}
+                        recordKind={selected.adapter_type === "webhook" ? "call" : "execution"}
                       />
                     ),
                   },
@@ -1318,7 +1317,7 @@ function AdapterConsole() {
                     // M5.5.10：Task/Webhook 共用的独立「实时日志」Tab；forceRender
                     // 让后台定时/Webhook 运行与等待状态在切换到本 Tab 前就已就绪。
                     key: "live",
-                    label: "实时日志",
+                    label: t("labels.liveLog"),
                     forceRender: true,
                     children: (
                       <LiveLogWorkspace
@@ -1364,29 +1363,41 @@ function AdapterConsole() {
 
       <VersionDiffModal
         open={diffView !== null}
-        title={diffView?.title ?? ""}
-        originalTitle={diffView?.originalTitle ?? ""}
-        modifiedTitle={diffView?.modifiedTitle ?? ""}
-        panes={diffView?.panes ?? []}
+        title={t("diff.workingTitle", { ns: "runtime" })}
+        originalTitle={
+          diffView?.baseSeq == null
+            ? t("diff.baseVersionNone", { ns: "runtime" })
+            : t("diff.baseVersion", { ns: "runtime", seq: diffView.baseSeq })
+        }
+        modifiedTitle={t("diff.workingModified", { ns: "runtime" })}
+        panes={(diffView?.panes ?? []).map((pane) => ({
+          ...pane,
+          label:
+            pane.key === "code"
+              ? t("labels.code", { ns: "common" })
+              : pane.key === "requirements"
+                ? dependencyUiFor(diffView?.adapterLanguage ?? "python").label
+                : t("labels.runtimeConfig", { ns: "common" }),
+        }))}
         theme={editorTheme}
         onClose={() => setDiffView(null)}
       />
 
       <Modal
-        title="复制适配器"
+        title={t("clone.title", { ns: "adapter" })}
         open={cloneSource !== null}
-        okText="复制"
-        cancelText="取消"
+        okText={t("clone.ok", { ns: "adapter" })}
+        cancelText={t("actions.cancel")}
         confirmLoading={busy}
         okButtonProps={{ disabled: cloneName.trim() === "" }}
         onCancel={() => setCloneSource(null)}
         onOk={() => void performClone()}
       >
         <div className="clone-confirm">
-          <p>将复制当前代码、依赖、运行配置（含单次执行超时）、凭据引用和运行节点。</p>
-          <p>执行历史不会复制；新适配器创建后保持停止，不会自动运行。</p>
+          <p>{t("clone.description", { ns: "adapter" })}</p>
+          <p>{t("clone.historyNote", { ns: "adapter" })}</p>
           <label className="settings-field">
-            <span className="settings-field-label">新适配器名称</span>
+            <span className="settings-field-label">{t("clone.name", { ns: "adapter" })}</span>
             <Input
               autoFocus
               data-testid="clone-adapter-name"
@@ -1398,10 +1409,10 @@ function AdapterConsole() {
       </Modal>
 
       <Modal
-        title="保存适配器"
+        title={t("save.title", { ns: "adapter" })}
         open={saveWorkerPromptOpen}
-        okText="保存"
-        cancelText="取消"
+        okText={t("actions.save")}
+        cancelText={t("actions.cancel")}
         okButtonProps={{ disabled: saveWorkerId === null }}
         onCancel={() => {
           setSaveWorkerPromptOpen(false);
@@ -1416,14 +1427,14 @@ function AdapterConsole() {
         }}
       >
         <div className="save-worker-prompt">
-          <p>第一次保存需要确定运行节点。后续可在“运行设置”中查看或修改。</p>
+          <p>{t("save.firstSaveHint", { ns: "adapter" })}</p>
           <label className="settings-field">
-            <span className="settings-field-label">运行节点 *</span>
+            <span className="settings-field-label">{t("save.worker", { ns: "adapter" })}</span>
             <Select
-              aria-label="保存适配器运行节点"
+              aria-label={t("save.workerAria", { ns: "adapter" })}
               data-testid="save-worker-select"
               value={saveWorkerId ?? undefined}
-              placeholder="请选择在线且支持当前语言的运行节点"
+              placeholder={t("save.workerPlaceholder", { ns: "adapter" })}
               onChange={(value: number) => setSaveWorkerId(value)}
               options={workers
                 .filter((worker) =>
@@ -1439,7 +1450,7 @@ function AdapterConsole() {
             worker.status === "online" &&
             worker.capabilities.includes(selected.language),
           ).length === 0 && (
-            <p className="settings-danger-hint" role="alert">当前没有可用的兼容运行节点，请先启动或注册运行节点。</p>
+            <p className="settings-danger-hint" role="alert">{t("save.noWorker", { ns: "adapter" })}</p>
           )}
         </div>
       </Modal>

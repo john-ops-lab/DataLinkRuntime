@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import { useTranslation } from "react-i18next";
 
 import { api } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
@@ -19,32 +20,40 @@ function errorMessage(error: unknown): string {
 }
 
 /** M5.5.10：用户侧触发方式只保留主动/定时/Webhook 三种；历史兼容值原样兜底。 */
-function triggerLabel(trigger: string): string {
+function triggerLabel(
+  trigger: string,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
   if (trigger === "manual" || trigger === "production") {
-    return "主动触发";
+    return translate("history.activeTrigger");
   }
   if (trigger === "schedule") {
-    return "定时触发";
+    return translate("history.scheduledTrigger");
   }
   if (trigger === "webhook") {
-    return "Webhook 触发";
+    return translate("history.webhookTrigger");
   }
-  return trigger;
+  return translate("history.unknownTrigger", { trigger });
 }
 
-function formatTime(value: string | null): string {
+function formatTime(value: string | null, locale: "zh-CN" | "en"): string {
   if (value === null) {
     return "—";
   }
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale === "en" ? "en-US" : "zh-CN");
 }
 
-function formatDuration(durationMs: number | null): string {
+function formatDuration(
+  durationMs: number | null,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
   if (durationMs === null) {
     return "—";
   }
-  return durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)} 秒` : `${durationMs} 毫秒`;
+  return durationMs >= 1000
+    ? translate("units.seconds", { value: (durationMs / 1000).toFixed(1) })
+    : translate("units.milliseconds", { value: durationMs });
 }
 
 export default function ExecutionHistoryPanel(props: {
@@ -53,8 +62,10 @@ export default function ExecutionHistoryPanel(props: {
   trigger?: "webhook";
   /** Start 成功后自动打开该 Execution 的详情抽屉（含执行日志）。 */
   autoOpenExecutionId?: number | null;
-  recordLabel?: "执行记录" | "调用记录";
+  recordKind?: "execution" | "call";
 }) {
+  const { i18n, t } = useTranslation(["runtime", "common"]);
+  const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const [items, setItems] = useState<ExecutionSummary[]>([]);
   const [nextBeforeId, setNextBeforeId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -167,56 +178,56 @@ export default function ExecutionHistoryPanel(props: {
 
   const columns: ColumnsType<ExecutionSummary> = [
     {
-      title: "状态",
+      title: t("labels.status", { ns: "common" }),
       dataIndex: "status",
       width: 96,
       render: (status: string) => <Tag color={statusColor(status)}>{statusLabel(status)}</Tag>,
     },
     {
-      title: "运行节点",
+      title: t("labels.runtimeWorker", { ns: "common" }),
       dataIndex: "worker_name",
       width: 130,
       ellipsis: true,
       render: (name: string | null) => <span title={name ?? undefined}>{name ?? "—"}</span>,
     },
     {
-      title: "触发",
+      title: t("labels.trigger", { ns: "common" }),
       dataIndex: "trigger",
       width: 150,
       render: (trigger: string, summary: ExecutionSummary) => (
         <div>
-          <div>{triggerLabel(trigger)}</div>
+          <div>{triggerLabel(trigger, (key, options) => t(key, options))}</div>
           {trigger === "schedule" && summary.scheduled_for !== null && (
             <div className="execution-version-debug" data-testid="history-scheduled-for">
-              计划 {formatTime(summary.scheduled_for)}
+              {t("history.scheduledFor", { time: formatTime(summary.scheduled_for, locale) })}
             </div>
           )}
         </div>
       ),
     },
     {
-      title: "开始时间",
+      title: t("labels.startTime", { ns: "common" }),
       dataIndex: "started_at",
       width: 160,
-      render: (value: string | null) => formatTime(value),
+      render: (value: string | null) => formatTime(value, locale),
     },
     {
-      title: "结束时间",
+      title: t("labels.endTime", { ns: "common" }),
       dataIndex: "ended_at",
       width: 160,
-      render: (value: string | null) => formatTime(value),
+      render: (value: string | null) => formatTime(value, locale),
     },
     {
-      title: "耗时",
+      title: t("labels.duration", { ns: "common" }),
       dataIndex: "duration_ms",
       width: 100,
-      render: (duration: number | null) => formatDuration(duration),
+      render: (duration: number | null) => formatDuration(duration, (key, options) => t(key, options)),
     },
     {
-      title: "创建时间",
+      title: t("labels.createdTime", { ns: "common" }),
       dataIndex: "created_at",
       width: 160,
-      render: (value: string) => formatTime(value),
+      render: (value: string) => formatTime(value, locale),
     },
   ];
   const activeSummary =
@@ -229,7 +240,7 @@ export default function ExecutionHistoryPanel(props: {
     <div className="history-panel">
       <Space className="history-toolbar">
         <Button data-testid="history-refresh" loading={loading} onClick={() => void loadPage(null)}>
-          刷新
+          {t("history.refresh")}
         </Button>
         {loadError && <span className="history-error" role="alert">{loadError}</span>}
       </Space>
@@ -241,7 +252,13 @@ export default function ExecutionHistoryPanel(props: {
           dataSource={items}
           pagination={false}
           scroll={{ x: 1000 }}
-          locale={{ emptyText: <Empty description={`暂无${props.recordLabel ?? "执行记录"}`} /> }}
+          locale={{
+            emptyText: (
+              <Empty
+                description={props.recordKind === "call" ? t("empty.noCallHistory", { ns: "common" }) : t("empty.noHistory", { ns: "common" })}
+              />
+            ),
+          }}
           onRow={(summary) => ({
             onClick: () => void openExecution(summary.id, summary),
             onKeyDown: (event) => {
@@ -252,7 +269,7 @@ export default function ExecutionHistoryPanel(props: {
             },
             tabIndex: 0,
             "aria-haspopup": "dialog",
-            "aria-label": `打开执行详情，运行节点 ${summary.worker_name ?? "未知"}`,
+            "aria-label": t("history.openDetail", { worker: summary.worker_name ?? t("labels.unknown", { ns: "common" }) }),
             "data-testid": "history-row",
           })}
         />
@@ -263,12 +280,12 @@ export default function ExecutionHistoryPanel(props: {
           loading={loading}
           onClick={() => void loadPage(nextBeforeId)}
         >
-          加载更多
+          {t("history.loadMore")}
         </Button>
       )}
 
       <Drawer
-        title="执行详情"
+        title={t("history.detailTitle")}
         width={640}
         open={drawerOpen}
         onClose={() => {
@@ -286,63 +303,63 @@ export default function ExecutionHistoryPanel(props: {
               <Alert
                 type="warning"
                 showIcon
-                message="日志连接已断开，状态可能已过期"
-                description="已按权威结果轮询至上限仍未等到终态，请刷新或稍后重新查看该执行。"
+                message={t("history.connectionLost")}
+                description={t("history.connectionLostDescription")}
               />
             )}
             <Descriptions
               size="small"
               column={2}
               items={[
-                { key: "status", label: "状态", children: <Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag> },
+                { key: "status", label: t("labels.status", { ns: "common" }), children: <Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag> },
                 {
                   key: "worker",
-                  label: "运行节点",
+                  label: t("labels.runtimeWorker", { ns: "common" }),
                   children: activeSummary?.worker_name ? (
                     activeSummary.worker_name
                   ) : visibleDetail.worker_id === null ? (
                     "—"
                   ) : (
-                    `运行节点 #${visibleDetail.worker_id}`
+                    `${t("labels.runtimeWorker", { ns: "common" })} #${visibleDetail.worker_id}`
                   ),
                 },
-                { key: "trigger", label: "触发方式", children: triggerLabel(visibleDetail.trigger) },
+                { key: "trigger", label: t("labels.triggerMode", { ns: "common" }), children: triggerLabel(visibleDetail.trigger, (key, options) => t(key, options)) },
                 ...(visibleDetail.trigger === "schedule"
                   ? [
                       {
                         key: "scheduled-for",
-                        label: "计划时间",
-                        children: formatTime(visibleDetail.scheduled_for),
+                        label: t("labels.scheduledTime", { ns: "common" }),
+                        children: formatTime(visibleDetail.scheduled_for, locale),
                       },
                     ]
                   : []),
-                { key: "created", label: "创建时间", children: formatTime(visibleDetail.created_at) },
-                { key: "started", label: "开始时间", children: formatTime(visibleDetail.started_at) },
-                { key: "ended", label: "结束时间", children: formatTime(visibleDetail.ended_at) },
-                { key: "duration", label: "耗时", children: formatDuration(visibleDetail.duration_ms) },
+                { key: "created", label: t("labels.createdTime", { ns: "common" }), children: formatTime(visibleDetail.created_at, locale) },
+                { key: "started", label: t("labels.startTime", { ns: "common" }), children: formatTime(visibleDetail.started_at, locale) },
+                { key: "ended", label: t("labels.endTime", { ns: "common" }), children: formatTime(visibleDetail.ended_at, locale) },
+                { key: "duration", label: t("labels.duration", { ns: "common" }), children: formatDuration(visibleDetail.duration_ms, (key, options) => t(key, options)) },
               ]}
             />
             {/* M5.5.10：内部 Execution ID 只作为次级技术信息展示（易理解名称“运行 ID”）。 */}
             <div className="execution-version-debug" data-testid="execution-run-id">
-              运行 ID：{visibleDetail.id}
+              {t("history.runId", { id: visibleDetail.id })}
             </div>
             <Tabs
               size="small"
               items={[
                 {
                   key: "input",
-                  label: "输入",
+                  label: t("labels.input", { ns: "common" }),
                   children: (
                     <pre className="output-view" data-testid="detail-input">
                       {JSON.stringify(visibleDetail.input, null, 2)}
                     </pre>
                   ),
                 },
-                { key: "output", label: "输出", children: <OutputView execution={visibleDetail} /> },
+                { key: "output", label: t("labels.output", { ns: "common" }), children: <OutputView execution={visibleDetail} /> },
                 {
                   // M5.5.10：stdout/stderr 视图统一为一个按实际顺序的执行日志。
                   key: "log",
-                  label: "执行日志",
+                  label: t("labels.executionLog", { ns: "common" }),
                   children: (
                     <LogView
                       testId="detail-log"

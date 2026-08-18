@@ -1,3 +1,198 @@
 {
-  "namespace": "运行时"
+  "namespace": "运行时",
+  "executionStatus": {
+    "pending": "等待中",
+    "running": "运行中",
+    "succeeded": "成功",
+    "failed": "失败",
+    "timeout": "超时",
+    "cancelled": "已取消"
+  },
+  "dependencies": {
+    "python": {
+      "label": "Python 依赖",
+      "placeholder": "如 requests==2.32.3（回车换行，每行写一个依赖）"
+    },
+    "javascript": {
+      "label": "JavaScript 依赖",
+      "placeholder": "如 axios@1.7.7（回车换行，每行写一个依赖）"
+    },
+    "java": {
+      "label": "Java 依赖",
+      "placeholder": "如 org.apache.commons:commons-lang3:3.17.0（回车换行，每行写一个依赖）"
+    },
+    "note": "Worker 执行前会安装这些依赖。安装源需在“系统设置”中配置；如为离线/企业网络环境，可由管理员预置对应依赖源或缓存。不填写则平台不会额外检查依赖是否齐全，缺少依赖可能在运行时直接报错。"
+  },
+  "task": {
+    "status": {
+      "running": "运行中",
+      "scheduled": "定时已启用",
+      "stopped": "已停止"
+    },
+    "reasons": {
+      "deleted": "适配器已删除，不能继续编辑",
+      "scheduleEnabledSave": "定时已启用，请先停用定时后再保存",
+      "runningSave": "适配器正在运行，请先停止当前运行后再保存",
+      "contentNotReady": "版本内容尚未就绪，请等待加载完成或刷新后重试",
+      "busy": "其他操作正在进行，请等待完成",
+      "dirtyRun": "请先保存当前修改，再运行。",
+      "activeRun": "已有执行正在运行",
+      "noVersion": "请先保存适配器",
+      "noWorker": "请先在运行设置中选择并保存运行节点",
+      "processing": "运行操作正在处理中",
+      "unavailable": "当前状态暂不可运行",
+      "activeSchedule": "当前执行仍在运行，请等待终态或停止当前执行后再启用定时",
+      "loadingSchedule": "定时配置正在加载，请稍候。",
+      "scheduleLoadFailed": "定时配置加载失败，请刷新后重试。",
+      "saveVersionFirst": "请先保存适配器，再启用定时。",
+      "saveWorkerFirst": "请先保存运行节点，再启用定时。",
+      "saveChangesFirst": "请先保存当前修改，再启用定时。",
+      "runtimeDirty": "运行设置有未保存修改，请先保存运行配置。",
+      "saveRuntimeFirst": "请先保存运行配置，再启用定时。"
+    },
+    "lockHint": "适配器正在运行，编辑与运行配置已锁定。",
+    "header": {
+      "type": "任务",
+      "worker": "运行节点：{{name}}"
+    },
+    "settings": {
+      "title": "任务运行设置",
+      "worker": "运行节点",
+      "workerPlaceholder": "请选择支持当前语言的运行节点",
+      "mode": "运行方式",
+      "manual": "手动运行",
+      "schedule": "定时运行",
+      "timeout": "单次执行超时（一次运行的最长时间）",
+      "timeoutHint": "一次运行超过该时间后，系统将自动停止任务并标记为“超时”。",
+      "custom": "自定义",
+      "seconds": "秒",
+      "locked": "运行配置已锁定",
+      "lockedDescription": "定时启用或执行活跃期间，不能修改代码、运行节点、运行方式、单次执行超时、Cron、依赖、运行参数或凭据。",
+      "scheduleTitle": "定时配置",
+      "cron": "Cron（5 字段）",
+      "timezone": "时区（IANA）",
+      "input": "输入（JSON）",
+      "scheduleStatus": "定时状态",
+      "scheduleRunning": "定时运行中",
+      "disabled": "已停用",
+      "nextRun": "下一次执行：{{time}}",
+      "manualTitle": "手动运行配置",
+      "save": "保存运行配置",
+      "invalidTimeout": "单次执行超时必须是 1–{{max}} 秒（最大 24 小时）。",
+      "chooseWorker": "请先选择运行节点。",
+      "invalidScheduleInput": "Schedule Input 必须是合法 JSON",
+      "savedScheduleNotLoaded": "运行配置已保存；但 Schedule 尚未加载完成（或加载失败），定时字段未保存，请刷新后重试。",
+      "invalidInput": "Input 必须是合法 JSON"
+    }
+  },
+  "webhook": {
+    "status": {
+      "receiving": "接收中",
+      "calling": "调用中",
+      "stopped": "已停止"
+    },
+    "reasons": {
+      "deleted": "适配器已删除，不能继续编辑",
+      "lockedSave": "正在接收或存在运行中的调用，请先停止接收并等待当前调用完成",
+      "contentNotReady": "内容尚未就绪",
+      "busy": "其他操作正在进行",
+      "loading": "Webhook 运行设置正在加载",
+      "activeCall": "已有调用仍在运行，请等待其进入终态后再开启接收或修改运行配置",
+      "noVersion": "请先保存适配器。",
+      "noWorker": "请先选择并保存运行节点。",
+      "noCredential": "请先选择并保存访问凭据。",
+      "dirty": "运行设置有未保存修改，请先保存。"
+    },
+    "lockReceiving": "适配器正在接收请求，运行配置已锁定。",
+    "lockCalling": "当前调用仍在执行，运行配置已锁定。",
+    "header": {
+      "type": "Webhook",
+      "worker": "运行节点：{{name}}"
+    },
+    "settings": {
+      "title": "Webhook 运行设置",
+      "path": "Webhook 路径",
+      "pathAria": "Webhook 路径",
+      "pathInvalid": "只允许 3–64 位小写字母、数字和连字符，且必须以字母或数字开头。",
+      "legacyPath": "这是升级前创建的兼容地址；未修改时可继续启停。编辑后必须使用小写字母、数字和连字符。",
+      "pathHint": "系统已自动生成随机地址，也可以改成便于识别的路径，例如 receive-sys1-data。",
+      "fullUrl": "完整地址",
+      "fullUrlAria": "完整地址（只读）",
+      "credential": "访问凭据",
+      "credentialPlaceholder": "选择访问凭据",
+      "noCredential": "尚无访问凭据（token 类型），请先在系统设置中创建。",
+      "worker": "运行节点",
+      "workerPlaceholder": "选择支持当前语言的运行节点",
+      "timeout": "单次执行超时（一次运行的最长时间）",
+      "timeoutHint": "一次调用超过该时间后，系统将自动结束并标记为“超时”。",
+      "custom": "自定义",
+      "seconds": "秒",
+      "save": "保存运行设置",
+      "copy": "Webhook 地址已复制到剪贴板。",
+      "copyFailed": "复制失败，请手动选择完整地址复制。",
+      "timeoutInvalid": "单次执行超时必须是 1–{{max}} 秒（最大 24 小时）。",
+      "pathInUse": "Webhook 地址 {{path}} 当前正在被另一个运行中的适配器使用，请先停止旧适配器后再启动当前适配器。",
+      "credentialTypeInvalid": "Webhook 只能绑定 token 类型的凭据",
+      "stopTitle": "停止接收",
+      "stopDescription": "当前仍有 Webhook 调用正在执行。停止接收后将不再接受新的请求。请选择如何处理当前调用。",
+      "endCall": "直接结束当前调用",
+      "waitCall": "等待调用结束",
+      "cancelCall": "取消",
+      "stoppedAndEnded": "已停止接收，当前调用已结束。",
+      "cancelFailed": "已停止接收，但取消当前调用失败：{{error}}。当前调用仍在执行，可在「实时日志」中查看；进入终态后运行配置会自动解锁。"
+    }
+  },
+  "history": {
+    "activeTrigger": "主动触发",
+    "scheduledTrigger": "定时触发",
+    "webhookTrigger": "Webhook 触发",
+    "unknownTrigger": "{{trigger}}",
+    "scheduledFor": "计划 {{time}}",
+    "openDetail": "打开执行详情，运行节点 {{worker}}",
+    "detailTitle": "执行详情",
+    "runId": "运行 ID：{{id}}",
+    "refresh": "刷新",
+    "loadMore": "加载更多",
+    "connectionLost": "日志连接已断开，状态可能已过期",
+    "connectionLostDescription": "已按权威结果轮询至上限仍未等到终态，请刷新或稍后重新查看该执行。"
+  },
+  "live": {
+    "title": "实时日志",
+    "waitingTag": "等待 Webhook 请求…",
+    "emptyTag": "暂无日志",
+    "waitingTitle": "等待 Webhook 请求…",
+    "waitingDescription": "收到真实请求并创建执行后，这里会自动跟踪本次调用的完整日志。",
+    "emptyTitle": "暂无实时日志",
+    "emptyDescription": "运行开始后，stdout、stderr、logger 与 Traceback 会按实际顺序显示在这里。",
+    "connectionLost": "实时连接已断开，状态可能已过期",
+    "connectionLostDescription": "已按权威结果轮询至上限仍未等到终态，请刷新或稍后到执行记录中查看。",
+    "unifiedLog": "统一日志",
+    "output": "输出"
+  },
+  "output": {
+    "truncated": "输出超过平台保存上限，未保存完整内容",
+    "truncatedDescription": "实际大小：{{size}} 字节；以下为内容预览（非完整 JSON）",
+    "unknownSize": "未知",
+    "empty": "无 Output"
+  },
+  "logs": {
+    "pause": "暂停跟随",
+    "resume": "继续跟随",
+    "addContextTitle": "把当前选中的日志文本加入 AI 对话上下文（仅使用浏览器可见的已脱敏文本）",
+    "maximize": "最大化日志",
+    "restore": "恢复日志大小",
+    "truncated": "日志超过平台保存上限，部分内容已被截断",
+    "empty": "暂无日志"
+  },
+  "units": {
+    "seconds": "{{value}} 秒",
+    "minutes": "{{value}} 分钟",
+    "milliseconds": "{{value}} 毫秒"
+  },
+  "diff": {
+    "baseVersion": "基准版本 v{{seq}}",
+    "baseVersionNone": "基准版本（无已保存版本）",
+    "workingTitle": "版本差异：工作副本与基准版本",
+    "workingModified": "工作副本（当前编辑内容）"
+  }
 }

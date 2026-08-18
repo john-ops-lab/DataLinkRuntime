@@ -6,6 +6,11 @@
     "en": "English"
   },
   "localeUpdateFailed": "语言设置更新失败，请重试",
+  "tabs": {
+    "credentials": "凭据管理",
+    "packageSources": "依赖源",
+    "aiModel": "AI 模型"
+  },
   "credentialTypes": {
     "password": "密码",
     "token": "令牌",
@@ -19,6 +24,79 @@
     "access_key_id": "访问密钥 ID",
     "access_key_secret": "访问密钥 Secret",
     "value": "值"
+  },
+  "credentialGuide": {
+    "title": "凭据类型说明",
+    "description": "不同凭据类型是常见敏感信息结构的模板，帮助你快速选择正确字段。无法确定时，优先选择最接近的类型；仍不匹配时可使用「通用密钥」。",
+    "fields": "字段",
+    "scenarios": "常见场景为",
+    "lineSuffix": "（{{fieldsLabel}}：{{fields}}）：{{scenariosLabel}} {{scenarios}}。{{hint}}。",
+    "createHint": "目标系统需要「用户名 + 密码」时选择",
+    "tokenHint": "目标系统直接提供一串 Token 时选择",
+    "accessKeyHint": "目标系统提供 AK/SK、AccessKey ID/Secret 等成对密钥时选择",
+    "secretHint": "前三种不匹配时的兜底类型，避免与「访问密钥」混淆",
+    "items": {
+      "password": {
+        "fields": "username + password",
+        "scenarios": "数据库、SSH、FTP/SFTP、HTTP Basic、设备账号登录"
+      },
+      "token": {
+        "fields": "token",
+        "scenarios": "API Token、Bearer Token、PAT、Webhook Token"
+      },
+      "access_key": {
+        "fields": "access_key_id + access_key_secret",
+        "scenarios": "阿里云、AWS、腾讯云、对象存储、云平台 API 请求签名"
+      },
+      "secret": {
+        "fields": "value（可存放 api_key、client_secret、signing_secret、private_key 等）",
+        "scenarios": "第三方 API Key、OAuth Client Secret、签名密钥、加密密钥"
+      }
+    }
+  },
+  "credentials": {
+    "new": "新建凭据",
+    "refreshList": "凭据列表已刷新",
+    "metadataNotice": "这里只展示凭据元数据；密钥真值不会回显到浏览器。",
+    "name": "凭据名称",
+    "type": "凭据类型",
+    "typeOption": "{{type}}（{{fields}}）",
+    "fieldAria": "凭据字段 {{field}}",
+    "submitCreate": "创建",
+    "submitUpdate": "更新",
+    "updateHint": "更新将重新加密并替换已保存的值；留空校验必填。",
+    "created": "凭据已创建",
+    "updated": "凭据已更新",
+    "deleted": "凭据已删除",
+    "createRefreshFailed": "{{operation}}，但刷新列表失败；请手动刷新确认，避免重复提交。",
+    "deleteRefreshFailed": "凭据已删除，但刷新列表失败；请手动刷新确认。",
+    "nameRequired": "凭据名称不能为空",
+    "fieldRequired": "字段 {{field}} 不能为空",
+    "tableName": "名称",
+    "tableType": "类型",
+    "tableActions": "操作",
+    "bindingInvalid": "",
+    "cancel": "取消"
+  },
+  "bindings": {
+    "help": "代码中的凭据名用于脚本读取绑定后的敏感信息，例如",
+    "helpSuffix": "；绑定将凭据字段以",
+    "injectedSuffix": "注入该 Adapter 的执行环境，保存为全量替换。",
+    "openSettingsHint": "如需新增凭据，请前往「系统设置 → 凭据管理」新建。",
+    "renameHint": "修改代码中的凭据名后，代码中的引用也需要保持一致。",
+    "saved": "凭据绑定已保存",
+    "save": "保存绑定",
+    "row": "绑定 {{index}}",
+    "envKey": "绑定 {{index}} 代码中的凭据名",
+    "envKeyPlaceholder": "代码中的凭据名（如 DB_PASSWORD）",
+    "credential": "绑定 {{index}} 凭据",
+    "credentialPlaceholder": "选择凭据",
+    "field": "绑定 {{index}} 字段",
+    "fieldPlaceholder": "字段",
+    "delete": "删除绑定 {{index}}",
+    "validationEnvKeyRequired": "每行绑定都必须填写代码中的凭据名",
+    "validationEnvKeyDuplicate": "代码中的凭据名不能重复",
+    "validationSelectionRequired": "每行绑定都必须选择凭据与字段"
   },
   "packageSources": {
     "kinds": {
@@ -39,6 +117,39 @@
         "aliyun": "阿里云 Maven 公共仓库",
         "central": "Maven Central"
       }
-    }
+    },
+    "new": "新建依赖源",
+    "description": "每种类型最多一个默认源；运行节点会先尝试本地缓存，再使用对应语言的默认依赖源。",
+    "nameAndUrlRequired": "包源名称与索引 URL 均不能为空",
+    "refreshList": "依赖源列表已刷新",
+    "name": "依赖源名称",
+    "kind": "依赖源类型",
+    "repositoryUrl": "依赖源仓库 URL",
+    "urlPlaceholder": "仓库 URL",
+    "credential": "依赖源凭据",
+    "credentialPlaceholder": "凭据（可选）",
+    "defaultCheckbox": "设为该类型的默认源",
+    "created": "依赖源已创建",
+    "deleted": "依赖源已删除",
+    "setDefault": "{{name}} 已设为默认依赖源",
+    "setDefaultAction": "设为默认",
+    "restoreDefault": "{{kind}} 已恢复默认依赖源",
+    "createRefreshFailed": "依赖源已创建，但刷新列表失败；请手动刷新确认，避免重复提交。",
+    "deleteRefreshFailed": "依赖源已删除，但刷新列表失败；请手动刷新确认。",
+    "setDefaultRefreshFailed": "{{name}} 已设为默认依赖源，但刷新列表失败；请手动刷新确认。",
+    "restoreDefaultRefreshFailed": "{{kind}} 已恢复默认依赖源，但刷新列表失败；请手动刷新确认。",
+    "emptyDefaults": "默认依赖源信息未加载，请刷新后重试",
+    "restoreConfirm": "确定把 {{name}}（{{url}}）恢复为 {{kind}} 的默认依赖源吗？会补齐国内与官方默认源并选中国内源；已有自定义源和绑定凭据保持不变。",
+    "fallbackNotice": "{{kind}} 未配置默认依赖源：Worker 将只使用本地缓存，缓存不足时安装会明确失败，不会静默使用未配置的地址；可点击上方「恢复默认 {{kind}}」使用平台默认镜像，或新建并设为默认。",
+    "restoreTitle": "恢复为平台默认：{{url}}",
+    "restoreButton": "恢复默认 {{kind}}",
+    "test": "测试",
+    "testing": "测试中",
+    "untested": "未测试",
+    "reachable": "可达",
+    "unreachable": "不可达",
+    "timeout": "超时",
+    "authFailed": "认证失败",
+    "testDetailUnknown": "请检查 URL、凭据和网络"
   }
 }

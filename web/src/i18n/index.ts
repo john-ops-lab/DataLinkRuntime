@@ -36,8 +36,6 @@ export const resources = {
   },
 } as const;
 
-const MISSING_TRANSLATION = commonZhCN.translation.unavailable;
-
 void i18n.use(initReactI18next).init({
   lng: readCachedSystemLocale(),
   fallbackLng: DEFAULT_SYSTEM_LOCALE,
@@ -48,10 +46,15 @@ void i18n.use(initReactI18next).init({
   interpolation: { escapeValue: false },
   returnNull: false,
   returnEmptyString: false,
-  parseMissingKeyHandler: (key, defaultValue) =>
-    typeof defaultValue === "string" && defaultValue !== key
-      ? defaultValue
-      : MISSING_TRANSLATION,
+  parseMissingKeyHandler: (key, defaultValue, options) => {
+    if (typeof defaultValue === "string" && defaultValue !== key) {
+      return defaultValue;
+    }
+    const locale = resolveSystemLocale(
+      typeof options?.lng === "string" ? options.lng : i18n.language,
+    );
+    return resources[locale].common.translation.unavailable;
+  },
 });
 
 export async function applySystemLocale(locale: SystemLocale): Promise<void> {

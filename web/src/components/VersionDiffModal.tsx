@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { Button, Modal, Tabs } from "antd";
+import { useTranslation } from "react-i18next";
 
 import ActionWithReason from "./ActionWithReason";
 
@@ -42,6 +43,7 @@ interface VersionDiffModalProps {
 }
 
 export default function VersionDiffModal(props: VersionDiffModalProps) {
+  const { t } = useTranslation(["ai", "common"]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
 
   const current =
@@ -59,28 +61,28 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
           <div className="diff-modal-footer">
             {applyAction.stale && (
               <div className="ai-stale-warning" role="alert" data-testid="diff-candidate-stale">
-                <strong>⚠ AI 生成期间当前代码已发生修改。</strong>
-                <span>该候选修改基于较早的编辑内容生成，应用会覆盖当前代码。</span>
+                <strong>{t("assistant.diff.staleTitle")}</strong>
+                <span>{t("assistant.diff.staleDescription")}</span>
               </div>
             )}
             {applyAction.applied && (
               <p className="ai-candidate-applied" role="status" data-testid="diff-candidate-applied">
-                已应用到浏览器中的当前代码；请继续人工保存、测试与运行。
+                {t("assistant.applied")}
               </p>
             )}
             <div className="diff-modal-actions">
-              <ActionWithReason label="应用修改" reason={applyAction.reason}>
+              <ActionWithReason label={t("actions.apply", { ns: "common" })} reason={applyAction.reason}>
                 <Button
                   type="primary"
                   data-testid="diff-apply-candidate"
                   disabled={applyAction.reason !== null}
                   onClick={applyAction.onApply}
                 >
-                  {applyAction.applied ? "已应用" : applyAction.label}
+                  {applyAction.applied ? t("actions.applied", { ns: "common" }) : applyAction.label}
                 </Button>
               </ActionWithReason>
               <Button data-testid="diff-close" onClick={props.onClose}>
-                关闭
+                {t("actions.close", { ns: "common" })}
               </Button>
             </div>
           </div>

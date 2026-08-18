@@ -3,16 +3,17 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Button, Drawer, Dropdown, Input, Radio, Space } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, AdapterLanguage, AdapterType, Worker } from "../types";
 
 type AdapterTypeFilter = "task-manual" | "task-schedule" | "webhook";
 
-const ADAPTER_TYPE_FILTERS: ReadonlyArray<{ value: AdapterTypeFilter; label: string }> = [
-  { value: "task-manual", label: "任务型（手动）" },
-  { value: "task-schedule", label: "任务型（定时）" },
-  { value: "webhook", label: "Webhook" },
+const ADAPTER_TYPE_FILTERS: ReadonlyArray<{ value: AdapterTypeFilter }> = [
+  { value: "task-manual" },
+  { value: "task-schedule" },
+  { value: "webhook" },
 ];
 
 function matchesTypeFilter(adapter: Adapter, filter: AdapterTypeFilter): boolean {
@@ -66,15 +67,15 @@ function catalogRuntimeStatus(adapter: Adapter): {
   // M5.5.10：主界面不展示内部 Execution #N，只保留用户可见状态。
   if (adapter.adapter_type === "task") {
     if (adapter.running_execution_id != null) {
-      return { dot: "running", label: "运行中", fact: "运行中" };
+      return { dot: "running", label: "running", fact: "running" };
     }
-    const label = adapter.runtime_locked ? "定时运行中" : "空闲";
+    const label = adapter.runtime_locked ? "scheduledRunning" : "idle";
     return { dot: adapter.runtime_locked ? "running" : "stopped", label, fact: label };
   }
   if (adapter.running_execution_id != null) {
-    return { dot: "running", label: "调用中", fact: "调用中" };
+    return { dot: "running", label: "calling", fact: "calling" };
   }
-  const label = adapter.runtime_locked ? "接收中" : "已停止";
+  const label = adapter.runtime_locked ? "receiving" : "stopped";
   return { dot: adapter.runtime_locked ? "running" : "stopped", label, fact: label };
 }
 
@@ -83,26 +84,37 @@ function catalogSubtitle(
   runtimeStatus: ReturnType<typeof catalogRuntimeStatus>,
   versionSeqById: Map<number, number>,
   workersById: Map<number, Worker>,
+  translate: (key: string, options?: Record<string, unknown>) => string,
 ): { primary: string; attention: string[]; full: string } {
   // M5.5.9：目录行直接展示 Adapter 类型，便于快速扫描。
-  const typeLabel = adapter.adapter_type === "task" ? "[任务]" : "[Webhook]";
+  const typeLabel = adapter.adapter_type === "task"
+    ? `[${translate("types.task")}]`
+    : `[${translate("types.webhook")}]`;
   if (adapter.adapter_type === "task") {
     const attention: string[] = [];
-    const mode = adapter.run_mode === "schedule" ? "定时运行" : "手动运行";
+    const mode = translate(`catalog.${adapter.run_mode === "schedule" ? "schedule" : "manual"}`);
+    const status = translate(`catalog.${runtimeStatus.label}`);
     const workerId = adapter.runtime_worker_id;
     if (workerId != null) {
       const worker = workersById.get(workerId);
       if (worker !== undefined && worker.status !== "online") {
-        attention.push("运行节点离线");
+        attention.push(translate("catalog.workerOffline"));
       }
     }
-    const primary = `${typeLabel} ${LANGUAGE_LABELS[adapter.language]} · ${mode} · ${runtimeStatus.fact}`;
+    const primary = translate("catalog.taskSubtitle", {
+      type: typeLabel,
+      language: LANGUAGE_LABELS[adapter.language],
+      mode,
+      status,
+    });
     const fullParts = [primary, ...attention];
     if (workerId == null) {
-      fullParts.push("运行节点未配置");
+      fullParts.push(translate("catalog.workerNotConfigured"));
     } else {
       const worker = workersById.get(workerId);
-      fullParts.push(worker === undefined ? `运行节点 #${workerId}` : `运行节点 ${worker.name}`);
+      fullParts.push(worker === undefined
+        ? translate("catalog.workerUnknown", { id: workerId })
+        : translate("catalog.workerNamed", { name: worker.name }));
     }
     if (adapter.description.trim() !== "") {
       fullParts.push(adapter.description.trim());
@@ -114,20 +126,27 @@ function catalogSubtitle(
   if (workerId !== null && workerId !== undefined) {
     const worker = workersById.get(workerId);
     if (worker !== undefined && worker.status !== "online") {
-      attention.push("运行节点离线");
+      attention.push(translate("catalog.workerOffline"));
     }
   }
   const revision =
     adapter.latest_version_id == null
-      ? "未保存"
-      : `已保存 ${versionLabel(adapter.latest_version_id, null, versionSeqById)}`;
-  const primary = `${typeLabel} ${LANGUAGE_LABELS[adapter.language]} · ${runtimeStatus.fact} · ${revision}`;
+      ? translate("catalog.notSaved")
+      : translate("catalog.saved", { version: versionLabel(adapter.latest_version_id, null, versionSeqById) });
+  const primary = translate("catalog.webhookSubtitle", {
+    type: typeLabel,
+    language: LANGUAGE_LABELS[adapter.language],
+    status: translate(`catalog.${runtimeStatus.label}`),
+    revision,
+  });
   const fullParts = [primary, ...attention];
   if (workerId === null || workerId === undefined) {
-    fullParts.push("运行节点未配置");
+    fullParts.push(translate("catalog.workerNotConfigured"));
   } else {
     const worker = workersById.get(workerId);
-    fullParts.push(worker === undefined ? `运行节点 #${workerId}` : `运行节点 ${worker.name}`);
+    fullParts.push(worker === undefined
+      ? translate("catalog.workerUnknown", { id: workerId })
+      : translate("catalog.workerNamed", { name: worker.name }));
   }
   if (adapter.description.trim() !== "") {
     fullParts.push(adapter.description.trim());
@@ -146,6 +165,7 @@ export default function AdapterCatalog({
   onOpenSettings,
   onClone,
 }: AdapterCatalogProps) {
+  const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [typeFilters, setTypeFilters] = useState<AdapterTypeFilter[]>([]);
@@ -189,13 +209,15 @@ export default function AdapterCatalog({
     : typeFiltered.filter((adapter) =>
         [adapter.name, adapter.description].some((value) => value.toLowerCase().includes(keyword)),
       );
-  const typeFilterLabel = typeFilters.length === 0 ? "类型" : `类型（${typeFilters.length}）`;
+  const typeFilterLabel = typeFilters.length === 0
+    ? t("catalog.filter")
+    : t("catalog.filterSelected", { count: typeFilters.length });
   const typeFilterPanel = (
     <div
       className="catalog-type-filter-menu"
       data-testid="adapter-type-filter-menu"
       role="group"
-      aria-label="适配器类型筛选"
+      aria-label={t("catalog.filterAria")}
       onMouseDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
     >
@@ -206,7 +228,7 @@ export default function AdapterCatalog({
           data-testid="adapter-type-select-all"
           onClick={() => setTypeFilters(ADAPTER_TYPE_FILTERS.map((option) => option.value))}
         >
-          全选
+          {t("catalog.selectAll")}
         </Button>
         <Button
           type="link"
@@ -214,7 +236,7 @@ export default function AdapterCatalog({
           data-testid="adapter-type-clear"
           onClick={() => setTypeFilters([])}
         >
-          清空
+          {t("catalog.clear")}
         </Button>
         <Button
           type="link"
@@ -225,31 +247,36 @@ export default function AdapterCatalog({
             setSearch("");
           }}
         >
-          清空全部
+          {t("catalog.clearAll")}
         </Button>
       </div>
-      {ADAPTER_TYPE_FILTERS.map((option) => (
+      {ADAPTER_TYPE_FILTERS.map((option) => {
+        const optionLabel = t(
+          `catalog.${option.value === "task-manual" ? "taskManual" : option.value === "task-schedule" ? "taskSchedule" : "webhook"}`,
+        );
+        return (
         <label className="catalog-type-filter-option" key={option.value}>
           <input
             type="checkbox"
             checked={typeFilters.includes(option.value)}
-            aria-label={option.label}
+            aria-label={optionLabel}
             onChange={() => {
               setTypeFilters((current) => current.includes(option.value)
                 ? current.filter((value) => value !== option.value)
                 : [...current, option.value]);
             }}
           />
-          <span>{option.label}</span>
+          <span>{optionLabel}</span>
         </label>
-      ))}
+        );
+      })}
     </div>
   );
 
   return (
     <aside className="catalog" data-testid="adapter-catalog">
       <div className="catalog-header">
-        <h2 className="catalog-title">适配器</h2>
+        <h2 className="catalog-title">{t("catalog.title")}</h2>
         <Button
           size="small"
           type="primary"
@@ -261,7 +288,7 @@ export default function AdapterCatalog({
             setCreating(true);
           }}
         >
-          新建
+          {t("catalog.new")}
         </Button>
       </div>
 
@@ -269,8 +296,8 @@ export default function AdapterCatalog({
         <Space.Compact className="catalog-search-control" style={{ width: "100%" }}>
           <Input
             data-testid="adapter-search"
-            aria-label="搜索适配器"
-            placeholder="搜索适配器"
+            aria-label={t("catalog.search")}
+            placeholder={t("catalog.search")}
             allowClear
             size="small"
             value={search}
@@ -287,7 +314,9 @@ export default function AdapterCatalog({
               size="small"
               className="catalog-type-filter-trigger"
               data-testid="adapter-type-filter"
-              aria-label={`类型筛选，${typeFilters.length === 0 ? "全部类型" : `已选 ${typeFilters.length} 项`}`}
+              aria-label={typeFilters.length === 0
+                ? t("catalog.filterAriaAll")
+                : t("catalog.filterAriaSelected", { count: typeFilters.length })}
               aria-haspopup="true"
               aria-expanded={typeFilterOpen}
             >
@@ -299,12 +328,26 @@ export default function AdapterCatalog({
 
       <div className="catalog-list">
         {visible.length === 0 ? (
-          <p className="catalog-empty">{inView.length === 0 ? "暂无适配器" : "没有匹配的适配器"}</p>
+          <p className="catalog-empty">{inView.length === 0 ? t("catalog.empty") : t("catalog.noMatch")}</p>
         ) : (
           visible.map((adapter) => {
-            const runtimeStatus = catalogRuntimeStatus(adapter);
-            const statusDescription = `${adapter.adapter_type === "task" ? "任务" : "Webhook "}状态：${runtimeStatus.label}`;
-            const subtitle = catalogSubtitle(adapter, runtimeStatus, versionSeqById, workersById);
+            const runtimeStatusKey = catalogRuntimeStatus(adapter);
+            const runtimeStatus = {
+              ...runtimeStatusKey,
+              label: t(`catalog.${runtimeStatusKey.label}`),
+              fact: t(`catalog.${runtimeStatusKey.fact}`),
+            };
+            const statusDescription = t("catalog.statusDescription", {
+              type: t(`types.${adapter.adapter_type}`),
+              status: runtimeStatus.label,
+            });
+            const subtitle = catalogSubtitle(
+              adapter,
+              runtimeStatusKey,
+              versionSeqById,
+              workersById,
+              (key, options) => t(key, options),
+            );
             const accessibleRuntimeFact = statusDescription;
             return (
               <div key={adapter.id} className="catalog-row">
@@ -338,8 +381,8 @@ export default function AdapterCatalog({
                   placement="bottomRight"
                   menu={{
                     items: [
-                      { key: "settings", label: "设置" },
-                      { key: "clone", label: "复制" },
+                       { key: "settings", label: t("catalog.settings") },
+                       { key: "clone", label: t("catalog.clone") },
                     ],
                     onClick: ({ key }) => {
                       if (key === "settings") {
@@ -355,7 +398,7 @@ export default function AdapterCatalog({
                     type="text"
                     className="catalog-item-menu"
                     disabled={busy}
-                    aria-label={`${adapter.name} 更多操作`}
+                    aria-label={t("catalog.moreActions", { name: adapter.name })}
                     data-testid="adapter-item-menu"
                   >
                     ···
@@ -368,7 +411,7 @@ export default function AdapterCatalog({
       </div>
 
       <Drawer
-        title="新建适配器"
+        title={t("catalog.createTitle")}
         width={360}
         open={creating}
         destroyOnHidden
@@ -377,30 +420,30 @@ export default function AdapterCatalog({
         <form className="create-form" onSubmit={(event) => void handleCreate(event)}>
           <Input
             data-testid="new-adapter-name"
-            aria-label="适配器名称"
-            placeholder="名称"
+            aria-label={t("catalog.name")}
+            placeholder={t("catalog.namePlaceholder")}
             value={name}
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
           />
-          <div className="settings-field" role="radiogroup" aria-label="适配器类型">
-            <span className="settings-field-label">适配器类型</span>
+          <div className="settings-field" role="radiogroup" aria-label={t("catalog.type")}>
+            <span className="settings-field-label">{t("catalog.type")}</span>
             <Radio.Group
               data-testid="new-adapter-type"
               value={adapterType}
               disabled={busy}
               onChange={(event) => setAdapterType(event.target.value as AdapterType)}
             >
-              <Radio value="task">任务型适配器</Radio>
-              <Radio value="webhook">Webhook 适配器</Radio>
+              <Radio value="task">{t("types.taskAdapter")}</Radio>
+              <Radio value="webhook">{t("types.webhookAdapter")}</Radio>
             </Radio.Group>
           </div>
           <div
             className="settings-field"
             role="radiogroup"
-            aria-label="适配器开发语言"
+            aria-label={t("catalog.language")}
           >
-            <span className="settings-field-label">开发语言</span>
+            <span className="settings-field-label">{t("catalog.languageField")}</span>
             <Radio.Group
               data-testid="new-adapter-language"
               value={language}
@@ -414,8 +457,8 @@ export default function AdapterCatalog({
           </div>
           <Input
             data-testid="new-adapter-description"
-            aria-label="适配器描述"
-            placeholder="描述（可选）"
+            aria-label={t("catalog.description")}
+            placeholder={t("catalog.descriptionPlaceholder")}
             value={description}
             disabled={busy}
             onChange={(event) => setDescription(event.target.value)}
@@ -428,9 +471,9 @@ export default function AdapterCatalog({
               loading={submitting}
               disabled={busy}
             >
-              创建
+              {t("catalog.create")}
             </Button>
-            <Button onClick={() => setCreating(false)}>取消</Button>
+            <Button onClick={() => setCreating(false)}>{t("actions.cancel", { ns: "common" })}</Button>
           </Space>
         </form>
       </Drawer>

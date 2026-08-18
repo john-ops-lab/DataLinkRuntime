@@ -47,36 +47,11 @@ function errorMessage(error: unknown): string {
 
 // M5.5.7：四类凭据的常驻用户说明，帮助用户在新建前选择正确的类型。
 // 与 credential-fields.ts / 后端 CREDENTIAL_FIELDS 保持一致。
-const CREDENTIAL_TYPE_GUIDE: Array<{
-  type: CredentialType;
-  fields: string;
-  scenarios: string;
-  hint: string;
-}> = [
-  {
-    type: "password",
-    fields: "username + password",
-    scenarios: "数据库、SSH、FTP/SFTP、HTTP Basic、设备账号登录",
-    hint: "目标系统需要「用户名 + 密码」时选择",
-  },
-  {
-    type: "token",
-    fields: "token",
-    scenarios: "API Token、Bearer Token、PAT、Webhook Token",
-    hint: "目标系统直接提供一串 Token 时选择",
-  },
-  {
-    type: "access_key",
-    fields: "access_key_id + access_key_secret",
-    scenarios: "阿里云、AWS、腾讯云、对象存储、云平台 API 请求签名",
-    hint: "目标系统提供 AK/SK、AccessKey ID/Secret 等成对密钥时选择",
-  },
-  {
-    type: "secret",
-    fields: "value（可存放 api_key、client_secret、signing_secret、private_key 等）",
-    scenarios: "第三方 API Key、OAuth Client Secret、签名密钥、加密密钥",
-    hint: "前三种不匹配时的兜底类型，避免与「访问密钥」混淆",
-  },
+const CREDENTIAL_TYPE_GUIDE: readonly CredentialType[] = [
+  "password",
+  "token",
+  "access_key",
+  "secret",
 ];
 
 interface CredentialFormState {
@@ -92,6 +67,7 @@ function emptyForm(): CredentialFormState {
 }
 
 function CredentialsPanel(props: { onError: (message: string) => void }) {
+  const { t } = useTranslation(["settings", "common"]);
   const { onError } = props;
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,7 +132,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
     }
     const name = form.name.trim();
     if (name === "") {
-      fail("凭据名称不能为空");
+      fail(t("credentials.nameRequired"));
       return;
     }
     const required = credentialFields(form.type);
@@ -164,7 +140,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
     for (const key of required) {
       const value = (form.fields[key] ?? "").trim();
       if (value === "") {
-        fail(`字段 ${key} 不能为空`);
+        fail(t("credentials.fieldRequired", { field: credentialFieldLabel(key) }));
         return;
       }
       fields[key] = value;
@@ -173,7 +149,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
     // 查看，因此必须在最终提交前明确告知用户先妥善保存或复制。
     if (form.editingId === null) {
       const confirmed = window.confirm(
-        "保存后密码、Token、密钥等敏感内容无法再次通过浏览器查看，请先妥善保存或复制。\n\n确定创建该凭据吗？",
+        t("confirm.createCredential", { ns: "common" }),
       );
       if (!confirmed) {
         return;
@@ -189,11 +165,11 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
         await api.updateCredential(form.editingId, { name, fields });
       }
       setFormOpen(false);
-      const operation = form.editingId === null ? "凭据已创建" : "凭据已更新";
+      const operation = form.editingId === null ? t("credentials.created") : t("credentials.updated");
       if (await load()) {
         setNotice(operation);
       } else {
-        setPanelError(`${operation}，但刷新列表失败；请手动刷新确认，避免重复提交。`);
+        setPanelError(t("credentials.createRefreshFailed", { operation }));
       }
       // 跨设置同步（UX-003）：让 AI 模型 / 绑定 / 依赖源等选择器无需 F5 即可
       // 看到新凭据。只通知变化，不携带任何 Secret 数据。
@@ -206,7 +182,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
   }
 
   async function handleDelete(credential: Credential) {
-    if (!window.confirm(`确定删除凭据 “${credential.name}” 吗？引用它的绑定与包源将失效。`)) {
+    if (!window.confirm(t("confirm.deleteCredential", { name: credential.name, ns: "common" }))) {
       return;
     }
     try {
@@ -214,9 +190,9 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
       setNotice(null);
       await api.deleteCredential(credential.id);
       if (await load()) {
-        setNotice("凭据已删除");
+        setNotice(t("credentials.deleted"));
       } else {
-        setPanelError("凭据已删除，但刷新列表失败；请手动刷新确认。");
+        setPanelError(t("credentials.deleteRefreshFailed"));
       }
       // 删除同样属于凭据元数据变化，通知所有选择器失效旧引用。
       notifyCredentialCatalogChanged();
@@ -230,35 +206,41 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
   return (
     <div className="settings-panel" data-testid="credentials-panel">
       <div className="credential-type-guide" data-testid="credential-type-guide">
-        <Typography.Title level={5}>凭据类型说明</Typography.Title>
+         <Typography.Title level={5}>{t("credentialGuide.title")}</Typography.Title>
         <Typography.Paragraph type="secondary">
-          不同凭据类型是常见敏感信息结构的模板，帮助你快速选择正确字段。无法确定时，优先选择最接近的类型；仍不匹配时可使用「通用密钥」。
+           {t("credentialGuide.description")}
         </Typography.Paragraph>
         <ul className="credential-type-guide-list">
-          {CREDENTIAL_TYPE_GUIDE.map((item) => (
-            <li key={item.type} data-testid={`credential-type-guide-${item.type}`}>
-              <strong>{credentialTypeLabel(item.type)}</strong>（字段：
-              {item.fields}）：常见场景为 {item.scenarios}。{item.hint}。
+           {CREDENTIAL_TYPE_GUIDE.map((type) => (
+             <li key={type} data-testid={`credential-type-guide-${type}`}>
+               <strong>{credentialTypeLabel(type)}</strong>
+               {t("credentialGuide.lineSuffix", {
+                 fieldsLabel: t("credentialGuide.fields"),
+                 fields: t(`credentialGuide.items.${type}.fields`),
+                 scenariosLabel: t("credentialGuide.scenarios"),
+                 scenarios: t(`credentialGuide.items.${type}.scenarios`),
+                 hint: t(`credentialGuide.${type === "password" ? "createHint" : type === "token" ? "tokenHint" : type === "access_key" ? "accessKeyHint" : "secretHint"}`),
+               })}
             </li>
           ))}
         </ul>
       </div>
       <Space className="settings-panel-toolbar">
         <Button type="primary" data-testid="new-credential" onClick={openCreate}>
-          新建凭据
+           {t("credentials.new")}
         </Button>
         <Button
           data-testid="refresh-credentials"
           loading={loading}
           onClick={() => {
             setNotice(null);
-            void load().then((ok) => ok && setNotice("凭据列表已刷新"));
+             void load().then((ok) => ok && setNotice(t("credentials.refreshList")));
           }}
         >
-          刷新
+          {t("actions.refresh", { ns: "common" })}
         </Button>
       </Space>
-      <Typography.Text type="secondary">这里只展示凭据元数据；密钥真值不会回显到浏览器。</Typography.Text>
+      <Typography.Text type="secondary">{t("credentials.metadataNotice")}</Typography.Text>
       {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
 
@@ -266,19 +248,22 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
         <div className="settings-inline-form" data-testid="credential-form">
           <Input
             data-testid="credential-name"
-            aria-label="凭据名称"
-            placeholder="名称"
+            aria-label={t("credentials.name")}
+            placeholder={t("labels.name", { ns: "common" })}
             value={form.name}
             onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
           />
           <Select
             data-testid="credential-type"
-            aria-label="凭据类型"
+            aria-label={t("credentials.type")}
             style={{ minWidth: 200 }}
             value={form.type}
             disabled={form.editingId !== null}
             options={Object.keys(CREDENTIAL_TYPE_FIELDS).map((type) => ({
-              label: `${credentialTypeLabel(type)}（${credentialFields(type).join(" + ")}）`,
+              label: t("credentials.typeOption", {
+                type: credentialTypeLabel(type),
+                fields: credentialFields(type).join(" + "),
+              }),
               value: type,
             }))}
             onChange={(value) => handleTypeChange(value)}
@@ -287,8 +272,8 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
             <Input.Password
               key={key}
               data-testid={`credential-field-${key}`}
-              aria-label={`凭据字段 ${key}`}
-               placeholder={credentialFieldLabel(key)}
+              aria-label={t("credentials.fieldAria", { field: key })}
+              placeholder={credentialFieldLabel(key)}
               value={form.fields[key] ?? ""}
               autoComplete="new-password"
               onChange={(event) =>
@@ -306,13 +291,13 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
               loading={submitting}
               onClick={() => void handleSubmit()}
             >
-              {form.editingId === null ? "创建" : "更新"}
+              {form.editingId === null ? t("credentials.submitCreate") : t("credentials.submitUpdate")}
             </Button>
-            <Button onClick={() => setFormOpen(false)}>取消</Button>
+            <Button onClick={() => setFormOpen(false)}>{t("credentials.cancel")}</Button>
           </Space>
           {form.editingId !== null && (
             <Typography.Text type="secondary">
-              更新将重新加密并替换已保存的值；留空校验必填。
+              {t("credentials.updateHint")}
             </Typography.Text>
           )}
         </div>
@@ -321,7 +306,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
       {loading ? (
         <Spin />
       ) : credentials.length === 0 ? (
-        <Empty description="暂无凭据" />
+        <Empty description={t("empty.noCredentials", { ns: "common" })} />
       ) : (
         <Table<Credential>
           rowKey="id"
@@ -329,15 +314,15 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
           pagination={false}
           dataSource={credentials}
           columns={[
-            { title: "名称", dataIndex: "name", render: (name: string) => <span data-testid="credential-row">{name}</span> },
+            { title: t("credentials.tableName"), dataIndex: "name", render: (name: string) => <span data-testid="credential-row">{name}</span> },
             {
-              title: "类型",
+              title: t("credentials.tableType"),
               dataIndex: "type",
               width: 120,
                render: (type: string) => credentialTypeLabel(type),
             },
             {
-              title: "操作",
+              title: t("credentials.tableActions"),
               width: 160,
               render: (_, credential) => (
                 <Space>
@@ -346,7 +331,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
                     data-testid="update-credential"
                     onClick={() => openUpdate(credential)}
                   >
-                    更新
+                    {t("credentials.submitUpdate")}
                   </Button>
                   <Button
                     size="small"
@@ -354,7 +339,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
                     data-testid="delete-credential"
                     onClick={() => void handleDelete(credential)}
                   >
-                    删除
+                    {t("actions.delete", { ns: "common" })}
                   </Button>
                 </Space>
               ),
@@ -382,7 +367,7 @@ interface PackageSourceFormState {
   credential_id: number | null;
 }
 
-type PackageSourceTestStatus = "可达" | "不可达" | "超时" | "认证失败";
+type PackageSourceTestStatus = "reachable" | "unreachable" | "timeout" | "auth-failed";
 
 interface PackageSourceTestResult {
   status: PackageSourceTestStatus;
@@ -398,6 +383,7 @@ const EMPTY_SOURCE_FORM: PackageSourceFormState = {
 };
 
 function PackageSourcesPanel(props: { onError: (message: string) => void }) {
+  const { t } = useTranslation(["settings", "common"]);
   const { onError } = props;
   const [sources, setSources] = useState<PackageSource[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
@@ -466,7 +452,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     const name = form.name.trim();
     const indexUrl = form.index_url.trim();
     if (name === "" || indexUrl === "") {
-      fail("包源名称与索引 URL 均不能为空");
+      fail(t("packageSources.nameAndUrlRequired"));
       return;
     }
     setNotice(null);
@@ -483,9 +469,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       setFormOpen(false);
       setForm(EMPTY_SOURCE_FORM);
       if (await load()) {
-        setNotice("依赖源已创建");
+        setNotice(t("packageSources.created"));
       } else {
-        setPanelError("依赖源已创建，但刷新列表失败；请手动刷新确认，避免重复提交。");
+        setPanelError(t("packageSources.createRefreshFailed"));
       }
     } catch (error) {
       fail(errorMessage(error));
@@ -500,9 +486,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       setNotice(null);
       await api.updatePackageSource(source.id, { is_default: true });
       if (await load()) {
-        setNotice(`${source.name} 已设为默认依赖源`);
+        setNotice(t("packageSources.setDefault", { name: source.name }));
       } else {
-        setPanelError(`${source.name} 已设为默认依赖源，但刷新列表失败；请手动刷新确认。`);
+        setPanelError(t("packageSources.setDefaultRefreshFailed", { name: source.name }));
       }
     } catch (error) {
       fail(errorMessage(error));
@@ -510,7 +496,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   }
 
   async function handleDelete(source: PackageSource) {
-    if (!window.confirm(`确定删除包源 “${source.name}” 吗？`)) {
+    if (!window.confirm(t("confirm.deletePackageSource", { name: source.name, ns: "common" }))) {
       return;
     }
     try {
@@ -518,9 +504,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       setNotice(null);
       await api.deletePackageSource(source.id);
       if (await load()) {
-        setNotice("依赖源已删除");
+        setNotice(t("packageSources.deleted"));
       } else {
-        setPanelError("依赖源已删除，但刷新列表失败；请手动刷新确认。");
+        setPanelError(t("packageSources.deleteRefreshFailed"));
       }
     } catch (error) {
       fail(errorMessage(error));
@@ -547,17 +533,17 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
         (result.status_code === 408 || result.status_code === 504 ||
           /timeout|timed out|time out|超时/i.test(errorDetail ?? ""));
       const status: PackageSourceTestStatus = result.ok
-        ? "可达"
+        ? "reachable"
         : authFailure
-          ? "认证失败"
+          ? "auth-failed"
           : timeout
-            ? "超时"
-            : "不可达";
+            ? "timeout"
+            : "unreachable";
       const detail = result.ok
         ? result.status_code === null
           ? null
           : `HTTP ${result.status_code}`
-        : errorDetail ?? "请检查 URL、凭据和网络";
+        : errorDetail ?? t("packageSources.testDetailUnknown");
       setTestResults((current) =>
         new Map(current).set(source.id, { status, detail }),
       );
@@ -574,13 +560,16 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     }
     const canonical = defaults?.[kind];
     if (canonical === undefined) {
-      fail("默认依赖源信息未加载，请刷新后重试");
+      fail(t("packageSources.emptyDefaults"));
       return;
     }
     if (
       !window.confirm(
-        `确定把 ${canonical.name}（${canonical.index_url}）恢复为 ${kindLabel(kind)} 的默认依赖源吗？` +
-          "会补齐国内与官方默认源并选中国内源；已有自定义源和绑定凭据保持不变。",
+        t("packageSources.restoreConfirm", {
+          name: canonical.name,
+          url: canonical.index_url,
+          kind: kindLabel(kind),
+        }),
       )
     ) {
       return;
@@ -591,9 +580,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     try {
       await api.restorePackageSourceDefault(kind);
       if (await load()) {
-        setNotice(`${kindLabel(kind)} 已恢复默认依赖源`);
+        setNotice(t("packageSources.restoreDefault", { kind: kindLabel(kind) }));
       } else {
-        setPanelError(`${kindLabel(kind)} 已恢复默认依赖源，但刷新列表失败；请手动刷新确认。`);
+        setPanelError(t("packageSources.restoreDefaultRefreshFailed", { kind: kindLabel(kind) }));
       }
     } catch (error) {
       fail(errorMessage(error));
@@ -606,13 +595,13 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
 
   const columns: ColumnsType<PackageSource> = [
     {
-      title: "类型",
+      title: t("labels.type", { ns: "common" }),
       dataIndex: "kind",
       width: 90,
       render: (kind: PackageSource["kind"]) => packageSourceKindLabel(kind),
     },
     {
-      title: "名称",
+      title: t("labels.name", { ns: "common" }),
       dataIndex: "name",
       width: 190,
       render: (_name: string, source) => (
@@ -621,7 +610,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             {packageSourcePresetLabel(source)}
             {source.is_default && (
               <Tag color="green" data-testid="default-source-badge">
-                默认
+                {t("labels.default", { ns: "common" })}
               </Tag>
             )}
           </span>
@@ -629,7 +618,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       ),
     },
     {
-      title: "仓库 URL",
+      title: t("labels.repositoryUrl", { ns: "common" }),
       dataIndex: "index_url",
       width: 300,
       render: (url: string) => (
@@ -639,13 +628,13 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       ),
     },
     {
-      title: "凭据",
+      title: t("labels.accessCredential", { ns: "common" }),
       dataIndex: "credential_name",
       width: 110,
       render: (name: string | null) => name ?? "—",
     },
     {
-      title: "可达性",
+      title: t("labels.reachability", { ns: "common" }),
       width: 190,
       render: (_, source) => {
         const result = testResults.get(source.id);
@@ -659,7 +648,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
               disabled={testing !== null}
               onClick={() => void handleTest(source)}
             >
-              测试
+              {t("packageSources.test")}
             </Button>
             <Tooltip title={result?.detail ?? undefined}>
               <Typography.Text
@@ -667,18 +656,22 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
                 type={
                   result === undefined || testingThisSource
                     ? undefined
-                    : result.status === "可达"
+                    : result.status === "reachable"
                       ? "success"
                       : "danger"
                 }
                 role={
-                  result === undefined || testingThisSource || result.status === "可达"
+                  result === undefined || testingThisSource || result.status === "reachable"
                     ? "status"
                     : "alert"
                 }
                 data-testid="package-source-test-result"
               >
-                {testingThisSource ? "测试中" : result?.status ?? "未测试"}
+                {testingThisSource
+                  ? t("packageSources.testing")
+                  : result === undefined
+                    ? t("packageSources.untested")
+                    : t(`packageSources.${result.status === "auth-failed" ? "authFailed" : result.status}`)}
               </Typography.Text>
             </Tooltip>
           </div>
@@ -686,7 +679,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       },
     },
     {
-      title: "操作",
+      title: t("labels.operation", { ns: "common" }),
       width: 170,
       render: (_, source) => (
         <Space>
@@ -696,7 +689,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             disabled={source.is_default}
             onClick={() => void handleSetDefault(source)}
           >
-            设为默认
+             {t("packageSources.setDefaultAction")}
           </Button>
           <Button
             size="small"
@@ -704,7 +697,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             data-testid="delete-package-source"
             onClick={() => void handleDelete(source)}
           >
-            删除
+             {t("actions.delete", { ns: "common" })}
           </Button>
         </Space>
       ),
@@ -722,21 +715,21 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             setFormOpen(true);
           }}
         >
-          新建依赖源
+          {t("packageSources.new")}
         </Button>
         <Button
           data-testid="refresh-package-sources"
           loading={loading}
           onClick={() => {
             setNotice(null);
-            void load().then((ok) => ok && setNotice("依赖源列表已刷新"));
+            void load().then((ok) => ok && setNotice(t("packageSources.refreshList")));
           }}
         >
-          刷新
+          {t("actions.refresh", { ns: "common" })}
         </Button>
       </Space>
       <Typography.Text type="secondary">
-        每种类型最多一个默认源；运行节点会先尝试本地缓存，再使用对应语言的默认依赖源。
+         {t("packageSources.description")}
       </Typography.Text>
 
       <div className="settings-package-source-defaults" data-testid="package-source-defaults">
@@ -752,9 +745,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
                   loading={restoring === kind}
                   disabled={restoring !== null}
                   onClick={() => void handleRestoreDefault(kind)}
-                  title={`恢复为平台默认：${canonical.index_url}`}
+                   title={t("packageSources.restoreTitle", { url: canonical.index_url })}
                 >
-                  恢复默认 {kindLabel(kind)}
+                   {t("packageSources.restoreButton", { kind: kindLabel(kind) })}
                 </Button>
               );
             })}
@@ -772,9 +765,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
               data-testid={`no-default-source-${kind}`}
               className="settings-package-source-fallback"
             >
-              {kindLabel(kind)} 未配置默认依赖源：Worker 将只使用本地缓存，缓存不足时安装会明确失败，
-              不会静默使用未配置的地址；可点击上方「恢复默认 {kindLabel(kind)}」使用平台默认镜像，
-              或新建并设为默认。
+              {t("packageSources.fallbackNotice", { kind: kindLabel(kind) })}
             </Typography.Text>
           );
         })}
@@ -786,14 +777,14 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
         <div className="settings-inline-form" data-testid="package-source-form">
           <Input
             data-testid="package-source-name"
-            aria-label="依赖源名称"
-            placeholder="名称"
+            aria-label={t("packageSources.name")}
+            placeholder={t("labels.name", { ns: "common" })}
             value={form.name}
             onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
           />
           <Select
             data-testid="package-source-kind"
-            aria-label="依赖源类型"
+            aria-label={t("packageSources.kind")}
             value={form.kind}
             style={{ minWidth: 180 }}
             options={[
@@ -807,8 +798,8 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           />
           <Input
             data-testid="package-source-url"
-            aria-label="依赖源仓库 URL"
-            placeholder="仓库 URL"
+            aria-label={t("packageSources.repositoryUrl")}
+            placeholder={t("packageSources.urlPlaceholder")}
             value={form.index_url}
             onChange={(event) => setForm((current) => ({ ...current, index_url: event.target.value }))}
           />
@@ -816,13 +807,13 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             data-testid="package-source-default"
             checked={form.is_default}
             onChange={(event) => setForm((current) => ({ ...current, is_default: event.target.checked }))}
-          >
-            设为该类型的默认源
+            >
+             {t("packageSources.defaultCheckbox")}
           </Checkbox>
           <Select
             data-testid="package-source-credential"
-            aria-label="依赖源凭据"
-            placeholder="凭据（可选）"
+            aria-label={t("packageSources.credential")}
+            placeholder={t("packageSources.credentialPlaceholder")}
             allowClear
             style={{ minWidth: 220 }}
             value={form.credential_id ?? undefined}
@@ -845,9 +836,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
               loading={submitting}
               onClick={() => void handleSubmit()}
             >
-              创建
+              {t("actions.create", { ns: "common" })}
             </Button>
-            <Button onClick={() => setFormOpen(false)}>取消</Button>
+            <Button onClick={() => setFormOpen(false)}>{t("actions.cancel", { ns: "common" })}</Button>
           </Space>
         </div>
       )}
@@ -855,7 +846,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       {loading ? (
         <Spin />
       ) : sources.length === 0 ? (
-        <Empty description="暂无包源" />
+        <Empty description={t("empty.noPackageSources", { ns: "common" })} />
       ) : (
         <Table<PackageSource>
           rowKey="id"
@@ -950,17 +941,17 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
         items={[
           {
             key: "credentials",
-            label: "凭据管理",
+            label: t("tabs.credentials"),
             children: <CredentialsPanel onError={keepErrorInline} />,
           },
           {
             key: "package-sources",
-            label: "依赖源",
+            label: t("tabs.packageSources"),
             children: <PackageSourcesPanel onError={keepErrorInline} />,
           },
           {
             key: "ai-model",
-            label: "AI 模型",
+            label: t("tabs.aiModel"),
             children: <AiModelSettingsPanel onError={keepErrorInline} />,
           },
         ]}
