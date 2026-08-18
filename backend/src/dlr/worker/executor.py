@@ -643,21 +643,12 @@ def run(
             )
         elif hint is not None:
             failure_message = f"{failure_message}: {hint}"
-        elif not index_url and preparation.dependency is not None:
+        elif preparation.no_source:
             failure_message = i18n.text(locale, f"dependency.no_source_{language}")
-        # The env managers raise their own long English no-source instruction;
-        # replace it with the localized message so a single Execution never
-        # mixes DLR-generated languages. Raw tool output still lives in the
-        # unified log below and stays untouched.
-        no_source_replaced = (
-            runtime_name is None
-            and hint is None
-            and not index_url
-            and preparation.dependency is not None
-        )
-        safe_error = venv_manager.redact_package_index_log(str(preparation), index_url)
-        if no_source_replaced:
-            safe_error = failure_message
+        # The env managers raise DLR-generated English summaries ("uv pip
+        # install failed") that are internal diagnostics, not user-facing
+        # copy; the error field carries only Execution-locale DLR text. The
+        # raw tool output stays in the unified log below, untouched.
         failure_detail = i18n.text(
             locale, "dependency.prepare_failed", language=LANGUAGE_LABELS.get(language, language)
         )
@@ -668,25 +659,12 @@ def run(
             failure_detail += i18n.text(
                 locale, "dependency.prepare_failed_dependency", dependency=safe_dependency
             )
-        failure_detail += f": {safe_error}"
+        failure_detail += f": {failure_message}"
         # M5.5.10: the dependency failure lives in the unified log stream
         # (stdout channel) with the same line format as every other source.
         unified_log = "".join(dependency_log)
         unified_log += _timestamped_text(redact_secrets(safe_install_log, dependency_secret_values))
         result_error = failure_detail
-        if "locale" in payload:
-            if runtime_name is not None:
-                runtime_error = i18n.text(
-                    locale,
-                    "runtime.unavailable",
-                    runtime=runtime_name,
-                )
-                result_error = f"{result_error}: {runtime_error}"
-            elif hint is not None:
-                result_error = f"{result_error}: {hint}"
-            elif not index_url and preparation.dependency is not None:
-                if not no_source_replaced:
-                    result_error = f"{result_error}: {failure_message}"
         unified_log += _platform_message(
             "ERROR",
             failure_message,

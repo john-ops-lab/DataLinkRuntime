@@ -286,6 +286,7 @@ def _run_install_logged(command: list[str], timeout_seconds: int) -> str:
             error.install_log,
             dependency=error.dependency,
             hint_code=error.hint_code,
+            no_source=error.no_source,
         ) from error
 
 
@@ -298,11 +299,16 @@ class DependencyPreparationError(Exception):
         install_log: str,
         dependency: str | None = None,
         hint_code: str | None = None,
+        no_source: bool = False,
     ) -> None:
         super().__init__(message)
         self.install_log = install_log
         self.dependency = dependency
         self.hint_code = hint_code or dependency_source_hint_code(install_log)
+        # Stable machine marker: this failure is exactly "no dependency source
+        # is configured". The executor replaces the English instruction with
+        # the Execution-locale message without relying on the dependency label.
+        self.no_source = no_source
 
 
 def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
@@ -417,6 +423,7 @@ def prepare_version_venv(
                             dependency=dependency_failure_label(
                                 dependencies, offline_error.install_log
                             ),
+                            no_source=True,
                         ) from offline_error
                     install_log += offline_error.install_log
                     install_log += f"\n{OFFLINE_CACHE_FALLBACK_MARKER}\n"

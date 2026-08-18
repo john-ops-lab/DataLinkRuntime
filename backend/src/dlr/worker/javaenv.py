@@ -145,6 +145,7 @@ def prepare_version_java(
                                 (":".join(parts) for parts in dependencies),
                                 offline_error.install_log,
                             ),
+                            no_source=True,
                         ) from offline_error
                     try:
                         venv._run_install_logged(base, timeout_seconds)

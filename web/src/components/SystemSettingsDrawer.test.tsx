@@ -96,7 +96,8 @@ afterEach(() => {
 
 it("跨 Tab 同步：新建/更新凭据后 AI 模型凭据选择器无需 F5 即可看到（Secret 真值不可见）", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
-  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
   const stored: Credential[] = [];
   const listCredentials = vi
     .spyOn(api, "listCredentials")

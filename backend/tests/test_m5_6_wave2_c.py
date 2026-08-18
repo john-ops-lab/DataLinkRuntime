@@ -349,7 +349,53 @@ def test_dependency_failure_error_field_is_localized_per_execution_locale(
         # Execution locale; raw tool detail stays in the unified log.
         assert expected_prefix in result["error"], result["error"]
         assert forbidden not in result["error"], result["error"]
+        # DLR's own English diagnostic summaries never reach the error field
+        # (the raw tool output below them lives in the unified log instead).
+        assert "uv pip install failed" not in result["error"], result["error"]
         assert "Could not resolve host" in result["stdout"], result["stdout"]
+
+
+def test_no_source_failure_uses_localized_message_without_dependency_label(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The stable no_source marker drives the localized replacement even when
+    the tool log names no declared dependency (dependency label is None)."""
+
+    def fail_prepare(*args: object, **kwargs: object) -> Path:
+        raise venv.DependencyPreparationError(
+            "dependencies are not available from the local cache and no "
+            "package source is configured; ask the platform admin to add "
+            "a package source in System Settings (or set DLR_PYPI_INDEX_URL "
+            "on the Worker)",
+            "ERROR: package not cached",
+            no_source=True,
+        )
+
+    monkeypatch.setattr(venv, "prepare_version_venv", fail_prepare)
+    code = "def handle(context, input):\n    return input\n"
+    for locale, expected, forbidden in (
+        (
+            "zh-CN",
+            "本地缓存中没有所需依赖，且未配置 Python 依赖源",
+            "not available from the local cache",
+        ),
+        (
+            "en",
+            "not in the local cache and no Python dependency source is configured",
+            "本地缓存",
+        ),
+    ):
+        result = executor.run(
+            _payload("python", code, locale),
+            _runtime_settings(tmp_path / locale),
+        )
+        assert result["status"] == "failed", result
+        assert expected in result["error"], result["error"]
+        assert forbidden not in result["error"], result["error"]
+        # The raw English instruction raised by the env manager never leaks
+        # into the localized error field.
+        assert "ask the platform admin" not in result["error"], result["error"]
 
 
 def test_dependency_source_presets_have_stable_ids_and_user_names_are_unchanged(
