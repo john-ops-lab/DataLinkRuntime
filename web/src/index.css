@@ -923,6 +923,9 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* M5.7 Wave A: 长代码在代码块内部横向滚动（.ai-markdown-pre
+     overflow-x:auto），面板自身绝不出现横向滚动条。 */
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -961,11 +964,140 @@ body {
   font-weight: 600;
 }
 
-.ai-message > p {
+/* M5.7 Wave A：消息正文由 assistant-ui MarkdownTextPrimitive 渲染。
+   ai-markdown 是消息内容容器；所有元素样式为 DLR 自有 CSS（无 Tailwind）。 */
+.ai-message-content {
+  min-width: 0;
+}
+
+.ai-markdown {
   margin: 4px 0 0;
   font-size: 0.8rem;
   line-height: 1.55;
+  overflow-wrap: break-word;
+}
+
+.ai-markdown > :first-child {
+  margin-top: 0;
+}
+
+.ai-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-markdown p {
+  margin: 4px 0;
   white-space: pre-wrap;
+}
+
+.ai-markdown ul,
+.ai-markdown ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.ai-markdown li {
+  margin: 2px 0;
+}
+
+.ai-markdown blockquote {
+  margin: 6px 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--dlr-border-strong);
+  color: var(--dlr-text-secondary);
+}
+
+.ai-markdown table {
+  margin: 6px 0;
+  border-collapse: collapse;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+
+.ai-markdown th,
+.ai-markdown td {
+  padding: 4px 8px;
+  border: 1px solid var(--dlr-border);
+  text-align: left;
+}
+
+.ai-markdown th {
+  background: #f5f7fa;
+  font-weight: 600;
+}
+
+.ai-markdown a {
+  color: #0958d9;
+}
+
+.ai-markdown hr {
+  border: none;
+  border-top: 1px solid var(--dlr-border);
+  margin: 8px 0;
+}
+
+.ai-markdown .ai-markdown-code-inline {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #f0f2f5;
+  border: 1px solid var(--dlr-border);
+  font-family: var(--dlr-mono-font);
+  font-size: 0.76rem;
+}
+
+/* M5.7 Wave A：代码块 = 头部（语言 + 复制） + pre/code 主体。 */
+.ai-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--dlr-border);
+  border-bottom: none;
+  border-radius: 5px 5px 0 0;
+  background: #f5f7fa;
+  font-size: 0.7rem;
+}
+
+.ai-code-lang {
+  color: var(--dlr-text-weak);
+  font-weight: 600;
+}
+
+.ai-code-copy {
+  border: 1px solid var(--dlr-border);
+  border-radius: 4px;
+  padding: 1px 8px;
+  background: #fff;
+  color: #0958d9;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.ai-code-copy:hover {
+  border-color: #0958d9;
+}
+
+.ai-markdown-pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 0 0 5px 5px;
+  background: #1f2430;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+.ai-code-header + .ai-markdown-pre {
+  margin-top: 0;
+}
+
+.ai-markdown-code {
+  font-family: var(--dlr-mono-font);
+  font-size: 0.76rem;
+  color: #e6e8ee;
+  white-space: pre;
 }
 
 .ai-candidate {
@@ -1053,11 +1185,47 @@ body {
 .ai-composer textarea {
   width: 100%;
   box-sizing: border-box;
-  resize: vertical;
+  resize: none;
   padding: 8px;
   border: 1px solid var(--dlr-border-strong);
   border-radius: 5px;
   font: inherit;
+}
+
+.ai-composer textarea:disabled {
+  background: #f5f5f5;
+  color: var(--dlr-text-weak);
+}
+
+/* M5.7 Wave A：发送按钮由 ComposerPrimitive.Send 渲染（普通 button）。 */
+.ai-composer-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-radius: 5px;
+  padding: 4px 14px;
+  background: #0958d9;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ai-composer-send:hover:not(:disabled) {
+  background: #1677ff;
+}
+
+.ai-composer-send:disabled {
+  background: #b7c4d9;
+  cursor: not-allowed;
+}
+
+/* M5.7 Wave A：assistant-ui Thread 原语容器：占满面板纵向空间。 */
+.ai-thread {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .ai-panel-error {
