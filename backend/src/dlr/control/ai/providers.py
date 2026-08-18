@@ -65,6 +65,10 @@ class ProviderAdapter:
     reasoning_efforts: frozenset[ReasoningEffort] = frozenset()
     require_effort_when_enabled: bool = False
     split_reasoning: bool = False
+    # M5.7 Wave B2: explicit native-attachment capability. "Multimodal" is
+    # never assumed: only entries in this table enable provider-native input.
+    images_native: bool = False
+    files_native: bool = False
 
 
 PROVIDERS: dict[AiProvider, ProviderAdapter] = {
@@ -78,6 +82,7 @@ PROVIDERS: dict[AiProvider, ProviderAdapter] = {
         "openai_effort",
         frozenset(("low", "medium", "high", "xhigh")),
         True,
+        images_native=True,
     ),
     "deepseek": ProviderAdapter(
         "deepseek",
@@ -202,6 +207,7 @@ def _request_json(
     not_found_code: str,
     reasoning_explicit: bool = False,
     model_discovery: bool = False,
+    image_input: bool = False,
 ) -> object:
     """Bounded JSON HTTP request with fully sanitized failure mapping."""
     try:
@@ -219,6 +225,11 @@ def _request_json(
             raise AiProviderError("ai_timeout") from None
         if error.code == 404:
             raise AiProviderError(not_found_code) from None
+        # M5.7 Wave B2: a Provider that rejects a native image payload
+        # (wrong model family, image size policy) gets its own actionable
+        # code instead of a generic transport error.
+        if image_input and error.code in (400, 422):
+            raise AiProviderError("ai_attachment_image_unsupported") from None
         if reasoning_explicit and error.code in (400, 422):
             raise AiProviderError("ai_reasoning_unsupported") from None
         # A responding Provider that rejects the discovery request (missing or
@@ -324,6 +335,7 @@ def chat(
     messages: list[JsonObject],
     *,
     structured: bool,
+    image_input: bool = False,
 ) -> str:
     payload = build_chat_payload(setting, messages, structured=structured)
     response = _request_json(
@@ -333,6 +345,7 @@ def chat(
         payload,
         not_found_code="ai_model_not_found",
         reasoning_explicit=setting.reasoning_mode != "default",
+        image_input=image_input,
     )
     return extract_final_text(setting.provider, response)
 

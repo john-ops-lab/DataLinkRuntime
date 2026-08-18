@@ -19,6 +19,9 @@ export SMOKE_SELECTED_TEXT=${SMOKE_SELECTED_TEXT:-smoke-selected-sentinel-$$}
 # M5.5.13: the masked live-log snippet sent to the fake Provider is also
 # request-only: never logged, and only browser-visible masked text travels.
 export SMOKE_LOG_TEXT=${SMOKE_LOG_TEXT:-smoke-log-sentinel-$$}
+# M5.7 Wave B2: attachment body text sent to the fake Provider is request-only
+# too: never logged, never persisted, never echoed back to the browser.
+export SMOKE_ATTACH_TEXT=${SMOKE_ATTACH_TEXT:-smoke-attach-sentinel-$$}
 AI_FAKE_CONTAINER_ID=""
 AI_FAKE_DISABLED_CONTAINER_ID=""
 AO_DOCKER_LABEL="ao.session=${AO_SESSION_ID:-compose-smoke}"
@@ -140,6 +143,7 @@ AI_FAKE_CONTAINER_ID=$(docker run -d \
   --network "$CONTROL_NETWORK" \
   -e SMOKE_SELECTED_TEXT \
   -e SMOKE_LOG_TEXT \
+  -e SMOKE_ATTACH_TEXT \
   --volume "$PWD/scripts/ai-fake-provider.py:/tmp/dlr-ai-fake-provider.py:ro" \
   --entrypoint python \
   "$CONTROL_IMAGE" /tmp/dlr-ai-fake-provider.py --port 18080)
@@ -187,6 +191,7 @@ docker compose exec -T \
   -e SMOKE_STORED_SECRET \
   -e SMOKE_SELECTED_TEXT \
   -e SMOKE_LOG_TEXT \
+  -e SMOKE_ATTACH_TEXT \
   -e AI_FAKE_BASE_URL \
   -e AI_FAKE_DISABLED_BASE_URL \
   control python - < scripts/compose-smoke.py
@@ -204,6 +209,11 @@ if docker compose logs control worker web | grep -F "$SMOKE_SELECTED_TEXT" >/dev
 fi
 if docker compose logs control worker web | grep -F "$SMOKE_LOG_TEXT" >/dev/null; then
   echo "ERROR: log snippet appeared in service logs" >&2
+  exit 1
+fi
+# M5.7 Wave B2: attachment body text never enters service logs either.
+if docker compose logs control worker web | grep -F "$SMOKE_ATTACH_TEXT" >/dev/null; then
+  echo "ERROR: attachment text appeared in service logs" >&2
   exit 1
 fi
 

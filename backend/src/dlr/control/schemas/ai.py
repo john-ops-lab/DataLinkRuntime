@@ -7,6 +7,8 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from dlr.control.ai.attachments import MAX_ATTACHMENTS, MAX_FILE_BYTES
+
 AiProvider = Literal[
     "openai",
     "deepseek",
@@ -173,6 +175,103 @@ class AiRecentMessage(_StrictSchema):
     content: str
 
 
+class AiAttachment(_StrictSchema):
+    """M5.7 Wave B2: one browser-uploaded attachment for this request only.
+
+    The file body travels as strict base64 inside the existing JSON assist
+    request. Attachments are validated, bounded and (for PDF / DOCX / text /
+    code) parsed server-side; they exist only for the current request and are
+    never persisted, never written to temp files and never logged. The
+    filename is display metadata only and is sanitized before it can join the
+    Provider context. Structural checks below keep the stable error contract;
+    byte size, magic-byte, archive-safety and parse checks happen in the
+    service layer.
+    """
+
+    filename: str
+    content_type: str
+    data_base64: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unknown_fields(cls, value: object) -> object:
+        # extra="forbid" alone would let FastAPI's default 422 renderer echo
+        # the unknown field's input back to the browser; reject unknown keys
+        # here with the stable sanitized code instead (no input echo).
+        if isinstance(value, dict):
+            allowed = {"filename", "content_type", "data_base64"}
+            unknown = [key for key in value if key not in allowed]
+            if unknown:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "ai_attachment_invalid",
+                        "message": "AI request contains an invalid attachment",
+                    },
+                ) from None
+        return value
+
+    @field_validator("filename", mode="before")
+    @classmethod
+    def validate_filename(cls, value: object) -> str:
+        # Blank/oversized filenames are rejected here with the stable code and
+        # never echoed; path/traversal/control-char checks live in the service
+        # layer where the sanitized display name is produced.
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_invalid",
+                    "message": "AI request contains an invalid attachment",
+                },
+            ) from None
+        if len(value) > 255:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_invalid",
+                    "message": "AI request contains an invalid attachment",
+                },
+            ) from None
+        return value
+
+    @field_validator("content_type", mode="before")
+    @classmethod
+    def validate_content_type(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_invalid",
+                    "message": "AI request contains an invalid attachment",
+                },
+            ) from None
+        return value
+
+    @field_validator("data_base64", mode="before")
+    @classmethod
+    def validate_data_base64(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_invalid",
+                    "message": "AI request contains an invalid attachment",
+                },
+            ) from None
+        # Cheap pre-guard against oversized JSON bodies; the exact decoded
+        # byte limit is enforced in the service layer.
+        if len(value) > (MAX_FILE_BYTES * 4 // 3) + 8:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_too_large",
+                    "message": "AI request attachment exceeds the size limit",
+                },
+            ) from None
+        return value
+
+
 class AiContextSnippet(_StrictSchema):
     """M5.5.13: one exact browser-captured context snippet added to the AI
     context (Monaco code selection or a selection of the browser-visible,
@@ -266,6 +365,9 @@ class AiAssistRequest(_StrictSchema):
     # The browser sends the snippets in the order the administrator added
     # them; they are never persisted and never leak across Adapter switches.
     context_snippets: list[AiContextSnippet] = Field(default_factory=list)
+    # M5.7 Wave B2: request-only attachments (base64 bodies). Omitted or
+    # empty keeps the pre-attachment request contract byte-for-byte.
+    attachments: list[AiAttachment] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_snippet_count(self) -> "AiAssistRequest":
@@ -277,6 +379,18 @@ class AiAssistRequest(_StrictSchema):
                 detail={
                     "code": "ai_request_invalid",
                     "message": "AI request contains an invalid context snippet",
+                },
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_attachment_count(self) -> "AiAssistRequest":
+        if len(self.attachments) > MAX_ATTACHMENTS:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_count_exceeded",
+                    "message": "AI request contains too many attachments",
                 },
             )
         return self
@@ -336,3 +450,38 @@ class AiAssistResponse(AiModelOutput):
 
     provider: AiProvider
     model: str
+
+
+class AiAttachmentLimits(_StrictSchema):
+    """M5.7 Wave B2: bounded attachment limits for the Wave B3 upload UI."""
+
+    max_attachments: int
+    max_file_bytes: int
+    max_total_bytes: int
+    max_parsed_chars_per_file: int
+    max_parsed_total_chars: int
+    parse_timeout_seconds: float
+
+
+class AiProviderAttachmentCapability(_StrictSchema):
+    """Per-Provider native attachment capability (explicit, never assumed).
+
+    ``images_native`` means the Provider adapter sends images through its
+    native multimodal content parts; ``files_native`` means the Provider
+    accepts raw files. Only capability-table truth enables native input;
+    everything else goes to the bounded server-side fallback or a stable,
+    actionable error.
+    """
+
+    provider: AiProvider
+    images_native: bool
+    files_native: bool
+
+
+class AiAttachmentCapabilitiesResponse(_StrictSchema):
+    """Stable Wave B3 contract: limits, accepted MIME types and Provider
+    capability table for the current build."""
+
+    limits: AiAttachmentLimits
+    supported_content_types: list[str]
+    providers: list[AiProviderAttachmentCapability]

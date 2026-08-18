@@ -86,7 +86,57 @@ def detect_log_snippet(payload: dict[str, Any]) -> bool:
     return has_log
 
 
-def candidate_for(language: str, selected: bool, log_snippet: bool = False) -> dict[str, Any]:
+def detect_attachment(payload: dict[str, Any]) -> bool:
+    """M5.7 Wave B2: prove server-side parsed attachment text reached us.
+
+    The context dict is serialized inside the system prompt, so the real
+    attachments KEY appears JSON-escaped (\\"attachments\\"). When
+    SMOKE_ATTACH_TEXT is configured (compose-smoke.sh), the extracted text
+    must also be present: if the backend silently dropped or failed to parse
+    the attachment, the sentinel would be nowhere in the payload.
+    """
+    encoded = json.dumps(payload, ensure_ascii=False)
+    has_key = '\\"attachments\\"' in encoded
+    sentinel = os.environ.get("SMOKE_ATTACH_TEXT", "")
+    if sentinel:
+        return has_key and sentinel in encoded
+    return has_key
+
+
+def detect_native_image(payload: dict[str, Any]) -> bool:
+    """M5.7 Wave B2: prove a Provider-native image part reached us.
+
+    Native images travel as OpenAI-style content parts in the final user
+    message ({\"type\": \"image_url\", ...}); they must never be re-sent as
+    parsed text and never appear in the system-prompt context. This check
+    only matches the user-message image part, so a backend that silently
+    dropped the image (or faked OCR text instead) fails the smoke.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    last = messages[-1]
+    if not isinstance(last, dict):
+        return False
+    content = last.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(part, dict)
+        and part.get("type") == "image_url"
+        and isinstance(part.get("image_url"), dict)
+        and str(part["image_url"].get("url", "")).startswith("data:image/")
+        for part in content
+    )
+
+
+def candidate_for(
+    language: str,
+    selected: bool,
+    log_snippet: bool = False,
+    attachment: bool = False,
+    native_image: bool = False,
+) -> dict[str, Any]:
     code = {
         "python": (
             "def handle(context, input):\n    return {'ai_smoke': 'python', 'input': input}\n"
@@ -110,6 +160,10 @@ def candidate_for(language: str, selected: bool, log_snippet: bool = False) -> d
         suffix += " with selected context"
     if log_snippet:
         suffix += " with log snippet"
+    if attachment:
+        suffix += " with attachment"
+    if native_image:
+        suffix += " with native image"
     suffix = suffix + "." if suffix else "."
     return {
         "message": f"Generated a local smoke Candidate for {language}{suffix}",
@@ -189,8 +243,11 @@ class Handler(BaseHTTPRequestHandler):
         language = detect_language(request_payload)
         selected = detect_selected_context(request_payload)
         log_snippet = detect_log_snippet(request_payload)
+        attachment = detect_attachment(request_payload)
+        native_image = detect_native_image(request_payload)
         content = json.dumps(
-            candidate_for(language, selected, log_snippet), ensure_ascii=False
+            candidate_for(language, selected, log_snippet, attachment, native_image),
+            ensure_ascii=False,
         )
         self._write_json(
             200,

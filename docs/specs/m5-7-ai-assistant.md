@@ -226,6 +226,54 @@ M5.7 只要求轻量、临时的文档检索，不建设永久向量库。
 - UI 必须提示附件可能发送给管理员配置的第三方模型 Provider；
 - DLR 不承诺能自动识别附件里的全部 Secret，因此不能把“自动脱敏附件”作为安全保证。
 
+### 7.5 B2 服务端附件合同（已实现）
+
+Wave B2 交付后端/API/types/tests 的完整附件服务端合同，供 Wave B3 直接消费；
+B2 不做任何前端 UI（assistant-ui 面板保持 Wave A 原样）。
+
+**传输与向后兼容**：附件仍走既有 JSON `POST /api/adapters/{id}/ai/assist`，
+字段为 `attachments: [{filename, content_type, data_base64}]`（严格 base64）。
+不携带或传空数组的请求与 Wave A 之前逐字节兼容（Prompt 不含附件指令）。
+
+**能力表（显式，绝不假设）**：`GET /api/ai/attachment-capabilities` 返回
+`limits`（数量/单文件/总量/解析文本预算/解析超时）、`supported_content_types`
+与逐 Provider 的 `images_native` / `files_native`。当前：仅 `openai`
+`images_native=true`；`deepseek / kimi / minimax / custom_openai_compatible`
+均为 false（“多模态”不等于支持原生图片/文件）。
+
+**处理策略**：
+
+```text
+图片 + 能力表支持  → OpenAI 风格原生 image_url content part（data URL）
+图片 + 不支持      → 422 ai_attachment_image_unsupported（可行动，绝不 OCR）
+PDF / DOCX / 文本/代码 → 服务端有界解析文本（pypdf / stdlib zip+XML）
+无文本层（扫描件） → 422 ai_attachment_no_text（提示换模型，可行动）
+```
+
+**上限（前后端同源）**：单文件 6 MiB、总量 12 MiB、最多 8 个、单文件解析
+文本 64 KiB 字符、总解析 256 KiB 字符（按附件数均分预算，`truncated` 标记）、
+解析超时 30s（线程 + 硬截止）。错误码均为稳定 `detail.code` 且不回显文件
+内容/文件名/base64：`ai_attachment_invalid`、`ai_attachment_filename_invalid`
+（拒绝路径/遍历/控制字符）、`ai_attachment_type_unsupported`（未知 MIME、
+MIME/扩展名不一致、magic bytes 不符）、`ai_attachment_too_large`、
+`ai_attachment_total_too_large`、`ai_attachment_count_exceeded`、
+`ai_attachment_parse_failed`、`ai_attachment_unsafe_archive`（DOCX zip 成员/
+总量/膨胀比上限）、`ai_attachment_parse_timeout`(504)、`ai_attachment_no_text`。
+
+**生命周期与隐私**：全程内存处理，不写临时文件、不落数据库/Thread/日志；
+成功、校验失败、解析失败、超时均无残留。附件正文只进入本轮 Provider 请求；
+响应、错误、日志一律不回显。Provider 对原生图片返回 400/422 时映射为
+`ai_attachment_image_unsupported`，不泄露 Provider 错误体。
+
+**依赖**：新增 `pypdf>=6,<7`（uv.lock 锁定）。理由：纯 Python（无 C 依赖，
+适合无 GUI 容器）、BSD-3-Clause、活跃维护、无传递运行时依赖、wheel 约 0.4MB；
+是能真实提取 PDF 文本的最小解析器。DOCX 只用 stdlib `zipfile` + `xml.etree`
+（w:t 流式提取），不引入 lxml 等编译依赖。
+
+**Wave B3 消费点**：能力端点驱动上传入口展示；`attachments` 字段驱动
+AttachmentAdapter；错误码驱动附件状态文案；`truncated` 与解析预算驱动
+“文档较大，将按相关内容检索”的降级提示（B3 再实现临时切块检索）。
+
 ## 8. Tool Call
 
 M5.7 实现真实、受控、只读的 Tool Call，而不是只画 UI。

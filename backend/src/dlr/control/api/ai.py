@@ -9,6 +9,7 @@ from dlr.control import db
 from dlr.control.schemas.ai import (
     AiAssistRequest,
     AiAssistResponse,
+    AiAttachmentCapabilitiesResponse,
     AiConnectionTestResponse,
     AiModelsResponse,
     AiProviderDraft,
@@ -45,6 +46,13 @@ def test_ai_setting(payload: AiSettingDraft, session: DbSession) -> AiConnection
 def refresh_ai_models(payload: AiProviderDraft, session: DbSession) -> AiModelsResponse:
     """Discover model IDs; failure never removes the manually editable field."""
     return ai_service.refresh_models(session, payload)
+
+
+@router.get("/api/ai/attachment-capabilities", response_model=AiAttachmentCapabilitiesResponse)
+def get_ai_attachment_capabilities() -> AiAttachmentCapabilitiesResponse:
+    """M5.7 Wave B2: stable attachment limits, accepted MIME types and the
+    per-Provider native-attachment capability table for the Wave B3 UI."""
+    return ai_service.attachment_capabilities()
 
 
 @router.post("/api/adapters/{adapter_id}/ai/assist", response_model=AiAssistResponse)

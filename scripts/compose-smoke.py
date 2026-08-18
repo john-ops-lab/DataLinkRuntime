@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -24,6 +25,12 @@ WORKER_TOKEN = os.environ["DLR_WORKER_TOKEN"]
 STORED_SECRET = os.environ["SMOKE_STORED_SECRET"]
 AI_FAKE_BASE_URL = os.environ["AI_FAKE_BASE_URL"]
 AI_FAKE_DISABLED_BASE_URL = os.environ["AI_FAKE_DISABLED_BASE_URL"]
+
+# M5.7 Wave B2: a real 1x1 PNG (magic bytes are sniffed server-side).
+PNG_1PX_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8"
+    "AAAAASUVORK5CYII="
+)
 
 
 def request(
@@ -882,5 +889,87 @@ assert manual_assist["model"] == "manual-smoke-model", manual_assist
 # 反向判别：不带上下文片段的请求不得触发 fake 的 "with selected context"
 # 回显，证明检测只对真实携带 context_snippets 的请求生效。
 assert "with selected context" not in manual_assist["message"], manual_assist
+
+# M5.7 Wave B2：附件服务端合同。附件正文只进入本轮 Provider 请求（fake
+# 回显确认），绝不进入浏览器响应、服务日志或数据库；图片只在能力表明确
+# 支持时走 Provider 原生 payload，否则给稳定可行动错误，绝不伪装 OCR。
+attach_text = os.environ.get("SMOKE_ATTACH_TEXT", "smoke-attach-sentinel")
+attach_assisted = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "Generate the deterministic python smoke Candidate with the attachment.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "base_version_id": ai_revision["id"],
+        "attachments": [
+            {
+                "filename": "smoke-notes.txt",
+                "content_type": "text/plain",
+                "data_base64": base64.b64encode(attach_text.encode()).decode(),
+            }
+        ],
+    },
+)
+assert attach_assisted["candidate"] is not None, attach_assisted
+# fake 回显 "with attachment" 证明解析后的附件文本真实到达 Provider。
+assert "with attachment" in attach_assisted["message"], attach_assisted
+# 附件原文与 hidden reasoning 哨兵永不返回浏览器。
+assert attach_text not in json.dumps(attach_assisted), attach_assisted
+assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in json.dumps(attach_assisted)
+
+# custom_openai_compatible 能力表不支持图片：必须稳定拒绝且不调用 Provider。
+image_blocked = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "Look at the image.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "attachments": [
+            {
+                "filename": "smoke.png",
+                "content_type": "image/png",
+                "data_base64": PNG_1PX_BASE64,
+            }
+        ],
+    },
+    expected=422,
+)
+assert image_blocked["detail"]["code"] == "ai_attachment_image_unsupported", image_blocked
+assert "更换支持图片的模型" in image_blocked["detail"]["message"], image_blocked
+
+# openai 能力表明确支持原生图片：fake 收到 content 数组形式的 image_url 部
+# 分并回显 "with native image"；随后恢复 custom 设置。
+openai_setting = {
+    "provider": "openai",
+    "base_url": AI_FAKE_BASE_URL,
+    "model": "dlr-smoke-model",
+    "credential_id": None,
+    "reasoning_mode": "default",
+    "reasoning_effort": None,
+}
+request("PUT", "/ai/settings", openai_setting)
+image_assisted = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "Describe the image.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "attachments": [
+            {
+                "filename": "smoke.png",
+                "content_type": "image/png",
+                "data_base64": PNG_1PX_BASE64,
+            }
+        ],
+    },
+)
+assert image_assisted["candidate"] is not None, image_assisted
+assert "with native image" in image_assisted["message"], image_assisted
+assert PNG_1PX_BASE64 not in json.dumps(image_assisted), image_assisted
+assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in json.dumps(image_assisted)
+request("PUT", "/ai/settings", setting)
 
 print("M5.4.4 compose smoke passed")

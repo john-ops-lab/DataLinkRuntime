@@ -10,6 +10,8 @@ import type {
   AdapterType,
   TaskRunMode,
   AiAssistResponse,
+  AiAttachment,
+  AiAttachmentCapabilities,
   AiConnectionTestResult,
   AiConversationMessage,
   AiContextSnippet,
@@ -335,6 +337,10 @@ export const api = {
   }): Promise<{ models: string[] }> =>
     request("/api/ai/models/refresh", { method: "POST", body: JSON.stringify(payload) }),
 
+  /** M5.7 Wave B2: stable attachment limits/MIME/capability contract. */
+  getAiAttachmentCapabilities: (): Promise<AiAttachmentCapabilities> =>
+    request("/api/ai/attachment-capabilities"),
+
   assistAdapter: (
     adapterId: number,
     payload: {
@@ -348,6 +354,8 @@ export const api = {
       base_version_id?: number | null;
       /** M5.5.13: ordered exact context snippets (code and/or masked log). */
       context_snippets?: AiContextSnippet[];
+      /** M5.7 Wave B2: request-only attachments (base64 bodies). */
+      attachments?: AiAttachment[];
     },
   ): Promise<AiAssistResponse> =>
     request(`/api/adapters/${adapterId}/ai/assist`, {

@@ -272,6 +272,43 @@ export interface AiAssistResponse {
   model: string;
 }
 
+/** M5.7 Wave B2: one browser-uploaded attachment for this request only.
+ * The file body travels as strict base64 inside the JSON assist request.
+ * Attachments are validated, bounded and (for PDF/DOCX/text/code) parsed
+ * server-side; they exist only for the current request and are never
+ * persisted or logged. */
+export interface AiAttachment {
+  filename: string;
+  content_type: string;
+  data_base64: string;
+}
+
+/** M5.7 Wave B2: bounded attachment limits (upload UI shows these). */
+export interface AiAttachmentLimits {
+  max_attachments: number;
+  max_file_bytes: number;
+  max_total_bytes: number;
+  max_parsed_chars_per_file: number;
+  max_parsed_total_chars: number;
+  parse_timeout_seconds: number;
+}
+
+/** M5.7 Wave B2: per-Provider native attachment capability. Only explicit
+ * capability-table truth enables provider-native input; everything else goes
+ * to the bounded server-side fallback or a stable actionable error. */
+export interface AiProviderAttachmentCapability {
+  provider: AiProvider;
+  images_native: boolean;
+  files_native: boolean;
+}
+
+/** M5.7 Wave B2: stable Wave B3 contract for the attachment upload UI. */
+export interface AiAttachmentCapabilities {
+  limits: AiAttachmentLimits;
+  supported_content_types: string[];
+  providers: AiProviderAttachmentCapability[];
+}
+
 export interface AiConnectionTestResult {
   ok: boolean;
   message: string;
