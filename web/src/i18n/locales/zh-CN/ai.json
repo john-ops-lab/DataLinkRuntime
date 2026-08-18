@@ -23,6 +23,8 @@
     "commandLabel": "AI 指令",
     "commandPlaceholder": "输入问题或修改要求…",
     "send": "发送",
+    "regenerate": "重新生成",
+    "regenerateAria": "重新生成该回复（复用发送时的原始代码与上下文）",
     "code": {
       "plain": "纯文本",
       "copy": "复制代码",

@@ -5,7 +5,14 @@
  * the authoritative message/business state (VisibleMessage, Candidate,
  * Working Copy snapshot, Secret binding knowledge); the runtime only mirrors
  * the visible user/assistant text for Thread/Message/Composer/Markdown
- * primitives. No Regenerate / Attachments / Tool Call / Streaming in Wave A.
+ * primitives.
+ *
+ * M5.7 Wave B1: Regenerate via the External Store Runtime's onReload
+ * contract. Each sent round freezes a complete AssistRoundSnapshot (user
+ * message, the visible recent_messages boundary, working_copy/base version,
+ * ordered context snippets, adapter and UI locale); regenerating reuses that
+ * frozen snapshot and never reads the current editor/Adapter/config. No
+ * Attachments / Tool Call / Streaming / Reasoning UI / Thread persistence.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -53,11 +60,33 @@ interface CandidateState {
   applied: boolean;
 }
 
+/** M5.7 Wave B1: the complete request context of one sent round, frozen at
+ * send time. Regenerate reuses this snapshot and never reads the current
+ * editor / Adapter / config. The wire contract stays exactly Wave A: the
+ * backend is the authority for provider/model/credential, so the browser
+ * freezes everything it contributes (message, working_copy incl. parsed
+ * runtime_config, base version, recent_messages boundary, ordered context
+ * snippets) plus the round's adapter identity and UI locale (locale is not
+ * part of the wire request; it documents the frozen round context). */
+interface AssistRoundSnapshot {
+  adapterId: number;
+  message: string;
+  baseSnapshot: AiWorkingCopy;
+  runtimeConfig: Record<string, unknown>;
+  baseVersionId: number | null;
+  recentMessages: AiConversationMessage[];
+  contextSnippets: AiContextSnippet[];
+  locale: string;
+}
+
 interface VisibleMessage {
   id: number;
   role: "user" | "assistant";
   content: string;
   candidate: CandidateState | null;
+  /** Wave B1: present only on user messages; the frozen request context of
+   * that round, reused verbatim by Regenerate. */
+  snapshot: AssistRoundSnapshot | null;
 }
 
 /** Candidate diff stores only data; pane labels are derived at render time
@@ -206,6 +235,36 @@ function ComposerSubmitButton(props: {
   );
 }
 
+/** M5.7 Wave B1: Regenerate entry of one assistant round. DLR renders the
+ * button itself: the ActionBarPrimitive.Reload primitive is not wired to the
+ * External Store Runtime under MessageProvider in assistant-ui 0.15.x (its
+ * reload throws "Not supported in ThreadMessageProvider"), so the click goes
+ * through the official runtime regenerate path `thread.startRun({parentId})`,
+ * which the External Store Runtime forwards to the adapter's `onReload`. */
+function RegenerateButton(props: {
+  userMessageId: number;
+  disabled: boolean;
+}) {
+  const { t } = useTranslation(["ai"]);
+  const aui = useAui();
+  return (
+    <Button
+      size="small"
+      type="text"
+      className="ai-regenerate"
+      data-testid="ai-regenerate"
+      disabled={props.disabled}
+      aria-label={t("assistant.regenerateAria")}
+      title={t("assistant.regenerateAria")}
+      onClick={() => {
+        void aui.thread.startRun({ parentId: String(props.userMessageId) });
+      }}
+    >
+      {t("assistant.regenerate")}
+    </Button>
+  );
+}
+
 /** M5.5.13: user-facing label of one context snippet ("代码 第 12–20 行",
  * "实时日志 10:21:03–10:21:08"). Log ranges are derived from the capture-time
  * prefixes of the browser-visible masked text only. */
@@ -236,7 +295,7 @@ function contextSnippetLabel(
 }
 
 export default function AiAssistantPanel(props: AiAssistantPanelProps) {
-  const { t } = useTranslation(["ai", "common"]);
+  const { t, i18n } = useTranslation(["ai", "common"]);
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -318,34 +377,38 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     };
   }, [adapterId, props.open]);
 
-  /** M5.7 Wave A: DLR-owned single-shot assist flow. Called by the External
-   * Store runtime's onNew with the composed text; never throws (all failures
-   * converge to the panel error contract). */
-  async function runAssist(message: string) {
+  /** M5.7 Wave A/B1: DLR-owned single-shot assist flow. Called by the External
+   * Store runtime's onNew (with a freshly frozen round snapshot) and by its
+   * onReload (with the frozen snapshot of the original round). Never throws:
+   * all failures converge to the panel error contract, and a failed
+   * Regenerate keeps the original assistant message intact.
+   *
+   * `replaceAssistantMessageId` is null on a normal send; on Regenerate it is
+   * the id of the assistant message being regenerated — on success it is
+   * replaced in place by the new result (no duplicate user message, no branch
+   * tree; later rounds are history and stay untouched). */
+  async function runAssist(
+    snapshot: AssistRoundSnapshot,
+    replaceAssistantMessageId: number | null,
+  ) {
     const adapter = props.adapter;
-    if (adapter === null || !props.contentReady || props.busy || sending || message.trim() === "") {
-      return;
-    }
-    const runtimeConfig = parseRuntimeConfig(props.workingCopy.runtimeConfigText);
-    if (runtimeConfig === null) {
-      setPanelError(t("assistant.invalidRuntimeConfig"));
+    if (
+      adapter === null ||
+      !props.contentReady ||
+      props.busy ||
+      sending ||
+      // Wave B1: a regenerated round is bound to the Adapter it was sent
+      // against; it must never silently rerun against a switched Adapter.
+      snapshot.adapterId !== adapter.id
+    ) {
       return;
     }
 
     const generation = ++requestGeneration.current;
-    const requestAdapterId = adapter.id;
-    const baseSnapshot = { ...props.workingCopy };
-    const recentMessages = recentVisibleMessages(messages);
-    const userMessage: VisibleMessage = {
-      id: nextMessageId.current++,
-      role: "user",
-      content: message.trim(),
-      candidate: null,
-    };
-    // Sending explicitly returns to the current exchange. A later manual
-    // upward scroll can still pause following before the response arrives.
+    const requestAdapterId = snapshot.adapterId;
+    // Regenerating explicitly returns to the regenerated exchange. A later
+    // manual upward scroll can still pause following before the reply arrives.
     followLatestRef.current = true;
-    setMessages((current) => [...current, userMessage]);
     setPanelError(null);
     setSending(true);
     setProgressStage("preparing");
@@ -361,29 +424,22 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       }
       setProgressStage("requesting");
       const response = await api.assistAdapter(requestAdapterId, {
-        message: message.trim(),
+        // Wave B1: the frozen round snapshot, never the current editor,
+        // Adapter or config.
+        message: snapshot.message,
         working_copy: {
-          code: baseSnapshot.code,
-          requirements: baseSnapshot.requirements,
-          runtime_config: runtimeConfig,
+          code: snapshot.baseSnapshot.code,
+          requirements: snapshot.baseSnapshot.requirements,
+          runtime_config: snapshot.runtimeConfig,
         },
-        recent_messages: recentMessages,
-        base_version_id: props.selectedVersionId,
+        recent_messages: snapshot.recentMessages,
+        base_version_id: snapshot.baseVersionId,
         // M5.5.13: all confirmed snippets in the order they were added; the
         // snapshots are frozen at click time, later cursor movement never
         // changes them. Omitted entirely when none were added.
-        ...(props.contextSnippets.length === 0
+        ...(snapshot.contextSnippets.length === 0
           ? {}
-          : {
-              context_snippets: props.contextSnippets.map(
-                ({ source, text, start_line, end_line }) => ({
-                  source,
-                  text,
-                  start_line,
-                  end_line,
-                }),
-              ),
-            }),
+          : { context_snippets: snapshot.contextSnippets }),
       });
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
@@ -422,12 +478,35 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         id: nextMessageId.current++,
         role: "assistant",
         content: response.message,
+        snapshot: null,
+        // The regenerated Candidate stays anchored to the frozen base snapshot
+        // of the original round, so the stale check keeps comparing against
+        // the current editor honestly.
         candidate:
           response.candidate === null || !isValidAiCandidate(response.candidate)
             ? null
-            : { value: response.candidate, baseSnapshot, applied: false },
+            : {
+                value: response.candidate,
+                baseSnapshot: snapshot.baseSnapshot,
+                applied: false,
+              },
       };
-      setMessages((current) => [...current, assistantMessage]);
+      setMessages((current) => {
+        if (replaceAssistantMessageId === null) {
+          return [...current, assistantMessage];
+        }
+        const targetIndex = current.findIndex(
+          (message) => message.id === replaceAssistantMessageId,
+        );
+        if (targetIndex === -1) {
+          // The target round vanished (e.g. the panel was remounted mid-run);
+          // surface the result as a new reply rather than dropping it.
+          return [...current, assistantMessage];
+        }
+        return current.map((message) =>
+          message.id === replaceAssistantMessageId ? assistantMessage : message,
+        );
+      });
       // M5.5.5: the success stage claims "waiting to view the Diff" only when
       // a Candidate is actually rendered; a plain-text reply converges
       // silently to the assistant message itself.
@@ -446,8 +525,66 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     }
   }
 
-  /** M5.7 Wave A: External Store Runtime — DLR 继续持有消息状态，assistant-ui
-   * 只读取镜像消息并驱动 Composer 提交。 */
+  /** M5.7 Wave B1: freeze the complete request context of one round at send
+   * time. Returns null (and reports the error) when the runtime parameters do
+   * not parse; Regenerate never revalidates — it reuses the frozen value. */
+  function buildRoundSnapshot(adapter: Adapter, message: string): AssistRoundSnapshot | null {
+    const runtimeConfig = parseRuntimeConfig(props.workingCopy.runtimeConfigText);
+    if (runtimeConfig === null) {
+      setPanelError(t("assistant.invalidRuntimeConfig"));
+      return null;
+    }
+    return {
+      adapterId: adapter.id,
+      message: message.trim(),
+      baseSnapshot: { ...props.workingCopy },
+      runtimeConfig,
+      baseVersionId: props.selectedVersionId,
+      recentMessages: recentVisibleMessages(messages),
+      contextSnippets: props.contextSnippets.map(
+        ({ source, text, start_line, end_line }) => ({
+          source,
+          text,
+          start_line,
+          end_line,
+        }),
+      ),
+      locale: i18n.language,
+    };
+  }
+
+  /** M5.7 Wave B1: shared send entry for the composer click path and the
+   * External Store runtime's onNew. Freezes the round snapshot, appends the
+   * user message, then runs the assist flow. */
+  async function sendMessage(rawText: string) {
+    const text = rawText.trim();
+    const adapter = props.adapter;
+    if (
+      adapter === null ||
+      !props.contentReady ||
+      props.busy ||
+      sending ||
+      text === ""
+    ) {
+      return;
+    }
+    const snapshot = buildRoundSnapshot(adapter, text);
+    if (snapshot === null) {
+      return;
+    }
+    const userMessage: VisibleMessage = {
+      id: nextMessageId.current++,
+      role: "user",
+      content: snapshot.message,
+      candidate: null,
+      snapshot,
+    };
+    setMessages((current) => [...current, userMessage]);
+    await runAssist(snapshot, null);
+  }
+
+  /** M5.7 Wave A/B1: External Store Runtime — DLR 继续持有消息状态，assistant-ui
+   * 只读取镜像消息并驱动 Composer 提交与 Regenerate 入口。 */
   const runtime = useExternalStoreRuntime({
     messages,
     isRunning: sending,
@@ -455,7 +592,31 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       props.adapter === null || !props.contentReady || props.busy || sending,
     convertMessage: toThreadMessageLike,
     onNew: async (message: AppendMessage) => {
-      await runAssist(appendMessageText(message));
+      await sendMessage(appendMessageText(message));
+    },
+    // Wave B1: Regenerate — parentId is the id of the user message whose
+    // assistant reply should be regenerated; the round's frozen snapshot is
+    // reused verbatim.
+    onReload: async (parentId: string | null) => {
+      if (parentId === null) {
+        return;
+      }
+      const userMessage = messages.find(
+        (message) => message.role === "user" && String(message.id) === parentId,
+      );
+      if (userMessage === undefined) {
+        return;
+      }
+      const snapshot = userMessage.snapshot;
+      if (snapshot === null) {
+        return;
+      }
+      const userIndex = messages.findIndex((message) => message.id === userMessage.id);
+      const assistantMessage = messages[userIndex + 1];
+      if (assistantMessage === undefined || assistantMessage.role !== "assistant") {
+        return;
+      }
+      await runAssist(snapshot, assistantMessage.id);
     },
   });
 
@@ -762,6 +923,25 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                       <MessagePrimitive.Content
                         components={{ Text: AssistantMarkdownText }}
                       />
+                      {/* M5.7 Wave B1: Regenerate entry — one per assistant
+                          round; the previous message is always the round's
+                          user message (DLR appends strictly alternating
+                          pairs). Disabled while a request is in flight or the
+                          panel is otherwise gated; the runtime/onReload
+                          guards still re-check every gate. */}
+                      {message.role === "assistant" && index > 0 && (
+                        <div className="ai-message-actions">
+                          <RegenerateButton
+                            userMessageId={messages[index - 1].id}
+                            disabled={
+                              sending ||
+                              props.busy ||
+                              !props.contentReady ||
+                              props.adapter === null
+                            }
+                          />
+                        </div>
+                      )}
                       {candidateState !== null && (
                         <div className="ai-candidate" data-testid="ai-candidate">
                           <p className="ai-candidate-ready" data-testid="ai-candidate-ready">
@@ -850,7 +1030,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
             <ComposerSubmitButton
               disabled={composerDisabled}
               sending={sending}
-              onSend={(text) => void runAssist(text)}
+              onSend={(text) => void sendMessage(text)}
             />
           </ComposerPrimitive.Root>
         </ThreadPrimitive.Root>

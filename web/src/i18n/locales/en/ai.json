@@ -23,6 +23,8 @@
     "commandLabel": "AI instruction",
     "commandPlaceholder": "Enter a question or change request…",
     "send": "Send",
+    "regenerate": "Regenerate",
+    "regenerateAria": "Regenerate this reply (reusing the original code and context from when it was sent)",
     "code": {
       "plain": "plain text",
       "copy": "Copy code",
