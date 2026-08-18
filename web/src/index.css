@@ -1154,6 +1154,25 @@ body {
   margin-top: 8px;
 }
 
+/* M5.7 Wave B1：assistant 消息的重新生成入口行。 */
+.ai-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.ai-message-actions .ai-regenerate {
+  padding: 0 4px;
+  height: 22px;
+  font-size: 0.72rem;
+  color: var(--dlr-text-secondary);
+}
+
+.ai-message-actions .ai-regenerate:hover:not(:disabled) {
+  color: #0958d9;
+  background: transparent;
+}
+
 .ai-loading {
   display: flex;
   align-items: center;
