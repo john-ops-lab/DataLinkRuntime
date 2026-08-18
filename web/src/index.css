@@ -1195,10 +1195,26 @@ body {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 7px;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--dlr-border);
+}
+
+/* M5.7 Wave B3：拖放区包住整个 Composer；拖入文件时显示提示边框。 */
+.ai-composer-dropzone {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px dashed transparent;
+  border-radius: 5px;
+  padding: 2px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.ai-composer-dropzone[data-dragging="true"] {
+  border-color: #0958d9;
+  background: #f0f7ff;
 }
 
 .ai-composer textarea {
@@ -1216,6 +1232,112 @@ body {
   color: var(--dlr-text-weak);
 }
 
+/* M5.7 Wave B3：附件列表 —— 可访问的名称、类型、大小、状态与删除。 */
+.ai-attachment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 5px;
+  background: #fff;
+  font-size: 0.72rem;
+}
+
+.ai-attachment-error {
+  border-color: #ffa39e;
+  background: #fff1f0;
+}
+
+.ai-attachment-name {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  max-width: 220px;
+}
+
+.ai-attachment-meta {
+  flex: 0 0 auto;
+  color: var(--dlr-text-weak);
+  white-space: nowrap;
+}
+
+.ai-attachment-ready {
+  flex: 0 0 auto;
+  color: #237804;
+  white-space: nowrap;
+}
+
+.ai-attachment-error-message {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #cf1322;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-attachment-remove {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--dlr-text-weak);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.ai-attachment-remove:hover {
+  color: #cf1322;
+  background: #f0f2f5;
+}
+
+.ai-attachment-remove:focus-visible {
+  outline: 2px solid #0958d9;
+  outline-offset: 1px;
+}
+
+/* M5.7 Wave B3：Composer 操作行 —— 提示、隐私说明、附件按钮与发送按钮。 */
+.ai-composer-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.ai-attachment-hint,
+.ai-attachment-privacy {
+  font-size: 0.68rem;
+  line-height: 1.45;
+  color: var(--dlr-text-weak);
+}
+
+.ai-attachment-privacy {
+  flex-basis: 100%;
+  color: #ad4e00;
+}
+
+.ai-attachment-panel-error {
+  align-self: stretch;
+  margin: 0;
+  font-size: 0.72rem;
+  color: #cf1322;
+}
+
+.ai-attachment-add.ant-btn {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+  color: #0958d9;
+  border-color: var(--dlr-border-strong);
+}
+
 /* M5.7 Wave A：发送按钮由 ComposerPrimitive.Send 渲染（普通 button）。 */
 .ai-composer-send {
   display: inline-flex;
@@ -1228,6 +1350,7 @@ body {
   color: #fff;
   font-weight: 600;
   cursor: pointer;
+  margin-left: auto;
 }
 
 .ai-composer-send:hover:not(:disabled) {

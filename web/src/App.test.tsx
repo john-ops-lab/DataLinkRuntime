@@ -20,6 +20,7 @@ import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   Adapter,
   AiAssistResponse,
+  AiAttachmentCapabilities,
   AiCandidate,
   Execution,
   ExecutionSummary,
@@ -3240,6 +3241,52 @@ function aiBindingsRoute(adapterId: number, envKeys: string[] = []): Route {
   };
 }
 
+// M5.7 Wave B3: stable B2 attachment limits/MIME/capability contract.
+function aiAttachmentCapabilitiesRoute(overrides: Partial<AiAttachmentCapabilities> = {}): Route {
+  return {
+    method: "GET",
+    match: "/api/ai/attachment-capabilities",
+    respond: () => ({
+      body: {
+        limits: {
+          max_attachments: 8,
+          max_file_bytes: 6 * 1024 * 1024,
+          max_total_bytes: 12 * 1024 * 1024,
+          max_parsed_chars_per_file: 64 * 1024,
+          max_parsed_total_chars: 256 * 1024,
+          parse_timeout_seconds: 30,
+        },
+        supported_content_types: [
+          "application/json",
+          "application/octet-stream",
+          "application/pdf",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "application/x-yaml",
+          "application/xml",
+          "application/javascript",
+          "image/jpeg",
+          "image/png",
+          "image/webp",
+          "text/csv",
+          "text/javascript",
+          "text/markdown",
+          "text/plain",
+          "text/x-yaml",
+          "text/xml",
+        ],
+        providers: [
+          { provider: "openai", images_native: true, files_native: false },
+          { provider: "deepseek", images_native: false, files_native: false },
+          { provider: "kimi", images_native: false, files_native: false },
+          { provider: "minimax", images_native: false, files_native: false },
+          { provider: "custom_openai_compatible", images_native: false, files_native: false },
+        ],
+        ...overrides,
+      },
+    }),
+  };
+}
+
 async function openAiAssistant() {
   fireEvent.click(screen.getByTestId("open-ai-assistant"));
   await screen.findByTestId("ai-assistant-panel");
@@ -3276,6 +3323,7 @@ it.each([
     const fetchMock = stubFetch([
       ...consoleWithVersionRoutes(adapter, version),
       aiBindingsRoute(1, ["API_TOKEN"]),
+      aiAttachmentCapabilitiesRoute(),
       {
         method: "POST",
         match: "/api/adapters/1/ai/assist",
@@ -3598,6 +3646,7 @@ it("clears conversation on Adapter switch and ignores the old Adapter response",
     { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [] }) },
     aiBindingsRoute(1),
     aiBindingsRoute(2),
+    aiAttachmentCapabilitiesRoute(),
     {
       method: "POST",
       match: "/api/adapters/1/ai/assist",
@@ -4931,6 +4980,7 @@ it("converges to an explicit error state when the request fails", async () => {
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
     aiBindingsRoute(1),
+    aiAttachmentCapabilitiesRoute(),
     {
       method: "POST",
       match: "/api/adapters/1/ai/assist",
@@ -4962,6 +5012,41 @@ it("converges to an explicit error state when the request fails", async () => {
   expect(screen.queryByTestId("ai-candidate")).toBeNull();
 });
 
+it("renders the B2 attachment capability bounds and rejects an oversized file in the composer", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    aiBindingsRoute(1),
+    aiAttachmentCapabilitiesRoute({
+      limits: {
+        max_attachments: 8,
+        max_file_bytes: 1024,
+        max_total_bytes: 2048,
+        max_parsed_chars_per_file: 64 * 1024,
+        max_parsed_total_chars: 256 * 1024,
+        parse_timeout_seconds: 30,
+      },
+    }),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  await openAiAssistant();
+
+  // Server-provided bounds render in the composer hint (1 KiB per-file).
+  await screen.findByTestId("ai-attachment-hint");
+  expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("1 KiB");
+  expect(screen.getByTestId("ai-attachment-add").textContent).toBe("添加附件");
+
+  // A file above the server-declared bound is rejected before any request.
+  const oversized = new File([new Uint8Array(2048)], "notes.txt", { type: "text/plain" });
+  fireEvent.change(screen.getByTestId("ai-attachment-input"), {
+    target: { files: [oversized] },
+  });
+  await screen.findByTestId("ai-attachment-error");
+  expect(screen.getByTestId("ai-attachment-error").textContent).toContain("1 KiB");
+  expect(screen.queryByTestId("ai-attachment-item")).toBeNull();
+});
+
 it("does not let the old session progress overwrite the new Adapter session", async () => {
   const adapterA = makeAdapter({ id: 1, name: "adapter-a" });
   const adapterB = makeAdapter({ id: 2, name: "adapter-b" });
@@ -4980,6 +5065,7 @@ it("does not let the old session progress overwrite the new Adapter session", as
     { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [] }) },
     aiBindingsRoute(1),
     aiBindingsRoute(2),
+    aiAttachmentCapabilitiesRoute(),
     {
       method: "POST",
       match: "/api/adapters/1/ai/assist",

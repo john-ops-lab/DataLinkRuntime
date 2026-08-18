@@ -11,15 +11,25 @@
  * contract. Each sent round freezes a complete AssistRoundSnapshot (user
  * message, the visible recent_messages boundary, working_copy/base version,
  * ordered context snippets, adapter and UI locale); regenerating reuses that
- * frozen snapshot and never reads the current editor/Adapter/config. No
- * Attachments / Tool Call / Streaming / Reasoning UI / Thread persistence.
+ * frozen snapshot and never reads the current editor/Adapter/config.
+ *
+ * M5.7 Wave B3: Composer attachments through the official assistant-ui
+ * AttachmentAdapter / Composer attachment primitives. File selection and
+ * drag & drop are validated against the Wave B2 server contract (type/ext
+ * table, per-file/total/count bounds); the server stays the authoritative
+ * validator and parser. Attachment bodies (strict base64, inline per the B2
+ * API) are frozen into the round snapshot at send time — bounded by the B2
+ * total size cap, never rendered or logged — so Regenerate and the failed-
+ * round retry reuse the original files without reading the current Composer.
+ * No Tool Call / MCP / Streaming / Reasoning UI / Thread persistence.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, Spin } from "antd";
 import { useTranslation } from "react-i18next";
 import {
   AssistantRuntimeProvider,
+  AttachmentPrimitive,
   ComposerPrimitive,
   fromThreadMessageLike,
   MessagePrimitive,
@@ -27,20 +37,40 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
   useAui,
+  useAuiState,
   type AppendMessage,
+  type Attachment,
+  type AttachmentAdapter,
+  type CompleteAttachment,
+  type PendingAttachment,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 
-import { api } from "../api";
+import { api, ApiError } from "../api";
+import {
+  acceptStringFor,
+  base64DecodedSize,
+  buildWireAttachment,
+  classifyAttachment,
+  DEFAULT_ATTACHMENT_LIMITS,
+  DEFAULT_SUPPORTED_CONTENT_TYPES,
+  formatAttachmentSize,
+  validateAttachmentAdd,
+  type AttachmentAddErrorReason,
+} from "../attachment-client";
 import { dependencyUiFor, LANGUAGE_LABELS } from "../languages";
 import type {
   Adapter,
+  AiAttachment,
+  AiAttachmentCapabilities,
+  AiAttachmentLimits,
   AiCandidate,
   AiConversationMessage,
   AiContextSnippet,
 } from "../types";
 import { logSnippetTimeLabel } from "../unified-log";
 import { userErrorMessage } from "../user-message";
+import { i18n } from "../i18n";
 import { AssistantMarkdownText } from "./ai-markdown";
 import VersionDiffModal, { type DiffPane } from "./VersionDiffModal";
 
@@ -67,7 +97,12 @@ interface CandidateState {
  * freezes everything it contributes (message, working_copy incl. parsed
  * runtime_config, base version, recent_messages boundary, ordered context
  * snippets) plus the round's adapter identity and UI locale (locale is not
- * part of the wire request; it documents the frozen round context). */
+ * part of the wire request; it documents the frozen round context).
+ *
+ * M5.7 Wave B3: ``attachments`` freezes the B2 wire shape (filename,
+ * content_type, strict base64 body) of the round's files. Bodies are bounded
+ * by the B2 total-size cap, held in memory only for the round's Regenerate/
+ * retry lifetime and never rendered, logged or persisted. */
 interface AssistRoundSnapshot {
   adapterId: number;
   message: string;
@@ -76,6 +111,7 @@ interface AssistRoundSnapshot {
   baseVersionId: number | null;
   recentMessages: AiConversationMessage[];
   contextSnippets: AiContextSnippet[];
+  attachments: AiAttachment[];
   locale: string;
 }
 
@@ -203,14 +239,125 @@ function appendMessageText(message: AppendMessage): string {
     .join("");
 }
 
+// --- M5.7 Wave B3: attachment helpers ---------------------------------------
+
+/** M5.7 Wave B3: the stable B2 attachment error codes localize through the
+ * bundled common.errors table with zh-CN/en key parity (the code is appended
+ * in the platform's established style). Every other error keeps the M5.6
+ * userErrorMessage contract unchanged. The server never echoes file bodies,
+ * filenames, base64 or Secrets into the detail, so nothing here can leak
+ * them into the panel either. */
+function attachmentServerErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && error.code.startsWith("ai_attachment_")) {
+    const key = `errors.${error.code}`;
+    if (i18n.exists(key, { ns: "common" })) {
+      const message = i18n.getFixedT(i18n.language, "common")(key);
+      const locale = i18n.language === "en" ? "en" : "zh-CN";
+      return locale === "en"
+        ? `${message} (Error code: ${error.code})`
+        : `${message}（错误码：${error.code}）`;
+    }
+  }
+  return userErrorMessage(error, fallback);
+}
+
+/** Stable attachment identity (jsdom/node provide crypto.randomUUID). */
+function attachmentId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** An attachment that failed client-side validation. It renders as a visible,
+ * removable error row with the localized reason (the runtime skips throwing
+ * so the picker path never swallows the message silently). */
+function errorPendingAttachment(file: File, message: string): PendingAttachment {
+  return {
+    id: attachmentId(),
+    type: "document",
+    name: file.name,
+    contentType: file.type,
+    file,
+    status: { type: "incomplete", reason: "error", message },
+  };
+}
+
+/** Resolve one pending attachment into its complete form. The strict base64
+ * body is read once and cached (WeakMap keyed by the returned complete
+ * attachment object) so the wire payload reuses the same string instead of
+ * re-reading the file. The content part carries a transient data URL only
+ * for contract shape; DLR never renders it (the thread renders text-only
+ * converted messages), and it is GC'd with the transient AppendMessage. */
+async function completeAttachment(
+  attachment: PendingAttachment,
+  wireCache: WeakMap<object, AiAttachment>,
+): Promise<CompleteAttachment> {
+  const wire = await buildWireAttachment(
+    attachment.name,
+    attachment.contentType ?? attachment.file.type,
+    attachment.file,
+  );
+  const dataUrl = `data:${wire.content_type};base64,${wire.data_base64}`;
+  const content = attachment.type === "image"
+    ? [{ type: "image" as const, image: dataUrl, filename: attachment.name }]
+    : [{ type: "file" as const, filename: attachment.name, data: dataUrl, mimeType: wire.content_type }];
+  const complete: CompleteAttachment = {
+    id: attachment.id,
+    type: attachment.type,
+    name: attachment.name,
+    contentType: wire.content_type,
+    file: attachment.file,
+    content,
+    status: { type: "complete" },
+  };
+  wireCache.set(complete, wire);
+  return complete;
+}
+
+/** Localized message for one client-side add rejection (pre-validation path).
+ * Server rejections use the stable ``ai_attachment_*`` codes via
+ * common.errors instead. */
+function attachmentAddErrorMessage(
+  reason: AttachmentAddErrorReason,
+  limits: AiAttachmentLimits,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  switch (reason) {
+    case "filename_invalid":
+      return translate("assistant.attachments.error.filenameInvalid");
+    case "empty":
+      return translate("assistant.attachments.error.empty");
+    case "too_large":
+      return translate("assistant.attachments.error.tooLarge", {
+        size: formatAttachmentSize(limits.max_file_bytes),
+      });
+    case "count_exceeded":
+      return translate("assistant.attachments.error.countExceeded", {
+        count: limits.max_attachments,
+      });
+    case "total_too_large":
+      return translate("assistant.attachments.error.totalTooLarge", {
+        total: formatAttachmentSize(limits.max_total_bytes),
+      });
+    case "unsupported":
+      return translate("assistant.attachments.error.unsupported");
+  }
+}
+
 /** M5.7 Wave A: 发送按钮。点击路径由 DLR 同步启动 assist 流程（保持既有
  * “准备态先于请求可见”的生命周期回归语义），并阻止原语自带的异步 send()
  * 双路径；Enter / Ctrl/Cmd+Enter 键盘路径仍走表单提交 → External Store
- * Runtime onNew。两条路径汇聚到同一个 DLR runAssist。 */
+ * Runtime onNew。两条路径汇聚到同一个 DLR runAssist。
+ *
+ * M5.7 Wave B3: the click also consumes the composer attachment rows (the
+ * primitive default send handler is prevented, so the runtime never
+ * double-sends); the captured File references are resolved into the frozen
+ * round snapshot by DLR's own send path. */
 function ComposerSubmitButton(props: {
   disabled: boolean;
   sending: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: readonly Attachment[]) => void;
 }) {
   const { t } = useTranslation(["ai", "common"]);
   const composer = useAui().composer;
@@ -221,12 +368,17 @@ function ComposerSubmitButton(props: {
       disabled={props.disabled}
       onClick={(event) => {
         event.preventDefault();
-        const text = composer.getState().text;
-        if (text.trim() === "") {
+        const state = composer.getState();
+        const text = state.text;
+        const attachments = state.attachments;
+        if (text.trim() === "" && attachments.length === 0) {
           return;
         }
         composer.setText("");
-        props.onSend(text);
+        // The rows are consumed by DLR's send path; clear them synchronously
+        // (adapter.remove is a no-op — no per-attachment browser resources).
+        void composer.clearAttachments();
+        props.onSend(text, attachments);
       }}
     >
       {props.sending && <Spin size="small" />}
@@ -235,32 +387,244 @@ function ComposerSubmitButton(props: {
   );
 }
 
+/** M5.7 Wave B3: keeps the AttachmentAdapter's composer view in sync (the
+ * add-time count/total checks need the current composer attachments) and
+ * exposes composer controls (clear on Adapter switch) to the panel. */
+function ComposerAttachmentsBridge(props: {
+  onAttachmentsChange: (attachments: readonly Attachment[]) => void;
+  onControlsChange: (controls: { clearAttachments: () => Promise<void> } | null) => void;
+}) {
+  const aui = useAui();
+  const attachments = useAuiState((state) => state.composer.attachments);
+  useEffect(() => {
+    props.onAttachmentsChange(attachments);
+  }, [attachments, props]);
+  useEffect(() => {
+    props.onControlsChange({
+      clearAttachments: () => aui.composer.clearAttachments(),
+    });
+    return () => props.onControlsChange(null);
+  }, [aui, props]);
+  return null;
+}
+
+/** M5.7 Wave B3: one composer attachment row. Accessible name (filename),
+ * category/type label, size, ready/error status and a remove button; long
+ * filenames ellipsize without pushing the layout (real-browser width gate). */
+function AttachmentItem(props: { attachment: Attachment }) {
+  const { t } = useTranslation(["ai"]);
+  const { attachment } = props;
+  const classification = classifyAttachment(
+    attachment.name,
+    attachment.contentType ?? attachment.file?.type ?? "",
+  );
+  const category = classification.ok
+    ? t(`assistant.attachments.category.${classification.category}`)
+    : "";
+  const size = attachment.file !== undefined ? formatAttachmentSize(attachment.file.size) : "";
+  const failed = attachment.status.type === "incomplete";
+  const failedMessage =
+    attachment.status.type === "incomplete" ? attachment.status.message : null;
+  return (
+    <div
+      className={`ai-attachment${failed ? " ai-attachment-error" : ""}`}
+      data-testid="ai-attachment-item"
+    >
+      <span className="ai-attachment-name" data-testid="ai-attachment-name" title={attachment.name}>
+        {attachment.name}
+      </span>
+      <span className="ai-attachment-meta" data-testid="ai-attachment-meta">
+        {[category, size].filter(Boolean).join(" · ")}
+      </span>
+      {failed ? (
+        <span
+          className="ai-attachment-error-message"
+          role="alert"
+          data-testid="ai-attachment-error-message"
+        >
+          {failedMessage}
+        </span>
+      ) : (
+        <span className="ai-attachment-ready" data-testid="ai-attachment-ready">
+          {t("assistant.attachments.ready")}
+        </span>
+      )}
+      <AttachmentPrimitive.Remove
+        className="ai-attachment-remove"
+        data-testid="ai-attachment-remove"
+        aria-label={t("assistant.attachments.remove", { name: attachment.name })}
+        title={t("assistant.attachments.remove", { name: attachment.name })}
+      >
+        ×
+      </AttachmentPrimitive.Remove>
+    </div>
+  );
+}
+
+/** M5.7 Wave B3: the composer attachment surface — drag & drop zone, file
+ * picker, accessible list, bounds/privacy hints and pre-send validation.
+ * All client checks mirror the B2 server limits; the server remains the
+ * authoritative validator (stable ai_attachment_* codes). */
+function ComposerAttachmentArea(props: {
+  disabled: boolean;
+  sending: boolean;
+  limits: AiAttachmentLimits;
+  supportedContentTypes: readonly string[];
+  error: string | null;
+  onErrorChange: (message: string | null) => void;
+  onSend: (text: string, attachments: readonly Attachment[]) => void;
+}) {
+  const { t } = useTranslation(["ai"]);
+  const aui = useAui();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function addFiles(files: readonly File[]) {
+    const composer = aui.composer;
+    for (const file of files) {
+      const verdict = validateAttachmentAdd(file, props.limits, composer.getState().attachments);
+      if (!verdict.ok) {
+        props.onErrorChange(
+          attachmentAddErrorMessage(verdict.reason, props.limits, (key, options) =>
+            t(key, options),
+          ),
+        );
+        continue;
+      }
+      try {
+        await composer.addAttachment(file);
+        // A successful add clears the previous rejection message.
+        props.onErrorChange(null);
+      } catch {
+        // The runtime accept-table check (raw English) is never surfaced:
+        // DLR's own pre-validation already rejected every unsupported file.
+        props.onErrorChange(t("assistant.attachments.error.unsupported"));
+      }
+    }
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    // Own the drop handling: the primitive's internal handler is composed
+    // after ours and skips when the event is default-prevented.
+    event.preventDefault();
+    if (props.disabled) {
+      return;
+    }
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length > 0) {
+      void addFiles(files);
+    }
+  }
+
+  function handleInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    // Reset so re-selecting the same file fires change again.
+    event.target.value = "";
+    if (files.length > 0) {
+      void addFiles(files);
+    }
+  }
+
+  return (
+    <ComposerPrimitive.AttachmentDropzone
+      className="ai-composer-dropzone"
+      data-testid="ai-attachment-dropzone"
+      disabled={props.disabled}
+      onDropCapture={handleDrop}
+    >
+      <ComposerPrimitive.Attachments>
+        {({ attachment }) => <AttachmentItem attachment={attachment} />}
+      </ComposerPrimitive.Attachments>
+      <ComposerPrimitive.Input
+        data-testid="ai-message-input"
+        autoFocus
+        aria-label={t("assistant.commandLabel")}
+        placeholder={t("assistant.commandPlaceholder")}
+        minRows={3}
+        maxRows={10}
+        disabled={props.disabled}
+      />
+      {props.error !== null && (
+        <p className="ai-attachment-panel-error" role="alert" data-testid="ai-attachment-error">
+          {props.error}
+        </p>
+      )}
+      <div className="ai-composer-actions">
+        <span className="ai-attachment-hint" data-testid="ai-attachment-hint">
+          {t("assistant.attachments.hint", {
+            count: props.limits.max_attachments,
+            size: formatAttachmentSize(props.limits.max_file_bytes),
+            total: formatAttachmentSize(props.limits.max_total_bytes),
+          })}
+        </span>
+        <span className="ai-attachment-privacy" data-testid="ai-attachment-privacy">
+          {t("assistant.attachments.privacyNotice")}
+        </span>
+        <Button
+          size="small"
+          className="ai-attachment-add"
+          data-testid="ai-attachment-add"
+          disabled={props.disabled}
+          aria-label={t("assistant.attachments.addAria")}
+          title={t("assistant.attachments.addAria")}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          {t("assistant.attachments.add")}
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          data-testid="ai-attachment-input"
+          accept={acceptStringFor(props.supportedContentTypes)}
+          aria-label={t("assistant.attachments.addAria")}
+          onChange={handleInputChange}
+        />
+        <ComposerSubmitButton
+          disabled={props.disabled}
+          sending={props.sending}
+          onSend={props.onSend}
+        />
+      </div>
+    </ComposerPrimitive.AttachmentDropzone>
+  );
+}
+
 /** M5.7 Wave B1: Regenerate entry of one assistant round. DLR renders the
  * button itself: the ActionBarPrimitive.Reload primitive is not wired to the
  * External Store Runtime under MessageProvider in assistant-ui 0.15.x (its
  * reload throws "Not supported in ThreadMessageProvider"), so the click goes
  * through the official runtime regenerate path `thread.startRun({parentId})`,
- * which the External Store Runtime forwards to the adapter's `onReload`. */
+ * which the External Store Runtime forwards to the adapter's `onReload`.
+ *
+ * M5.7 Wave B3: a round whose send failed has no assistant reply; the same
+ * entry renders on the failed user round as "Retry", reusing the frozen
+ * snapshot (message, context and attachments) and appending a fresh reply. */
 function RegenerateButton(props: {
   userMessageId: number;
   disabled: boolean;
+  retry?: boolean;
 }) {
   const { t } = useTranslation(["ai"]);
   const aui = useAui();
+  const label = props.retry ? t("assistant.retry") : t("assistant.regenerate");
+  const ariaLabel = props.retry
+    ? t("assistant.retryAria")
+    : t("assistant.regenerateAria");
   return (
     <Button
       size="small"
       type="text"
       className="ai-regenerate"
-      data-testid="ai-regenerate"
+      data-testid={props.retry ? "ai-retry" : "ai-regenerate"}
       disabled={props.disabled}
-      aria-label={t("assistant.regenerateAria")}
-      title={t("assistant.regenerateAria")}
+      aria-label={ariaLabel}
+      title={ariaLabel}
       onClick={() => {
         void aui.thread.startRun({ parentId: String(props.userMessageId) });
       }}
     >
-      {t("assistant.regenerate")}
+      {label}
     </Button>
   );
 }
@@ -322,6 +686,32 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const conversationRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
   const previousOpenRef = useRef(props.open);
+  // M5.7 Wave B3: attachment state — the capability table (bounded limits and
+  // supported MIME types) and the last client-side rejection message.
+  const [attachmentCapabilities, setAttachmentCapabilities] =
+    useState<AiAttachmentCapabilities | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const attachmentLimits: AiAttachmentLimits =
+    attachmentCapabilities?.limits ?? DEFAULT_ATTACHMENT_LIMITS;
+  const supportedContentTypes: readonly string[] =
+    attachmentCapabilities?.supported_content_types ?? DEFAULT_SUPPORTED_CONTENT_TYPES;
+  // The AttachmentAdapter is created once; everything it needs at call time
+  // (limits, current composer attachments, translations, wire-body cache and
+  // the send entry) flows through refs below. The refs are updated in
+  // effects (never during render); the adapter only reads them from event
+  // handlers and async flows, so the one-render lag is irrelevant.
+  const attachmentLimitsRef = useRef(attachmentLimits);
+  const translateRef = useRef<(key: string, options?: Record<string, unknown>) => string>(t);
+  const composerAttachmentsRef = useRef<readonly Attachment[]>([]);
+  const wireCacheRef = useRef(new WeakMap<object, AiAttachment>());
+  const composerControlsRef = useRef<{ clearAttachments: () => Promise<void> } | null>(null);
+  const previousAdapterIdRef = useRef<number | null>(props.adapter?.id ?? null);
+  useEffect(() => {
+    attachmentLimitsRef.current = attachmentLimits;
+  }, [attachmentLimits]);
+  useEffect(() => {
+    translateRef.current = t;
+  }, [t]);
 
   useLayoutEffect(() => {
     if (props.open && !previousOpenRef.current) {
@@ -376,6 +766,153 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       cancelled = true;
     };
   }, [adapterId, props.open]);
+
+  // M5.7 Wave B3: load the stable B2 capability table (limits + accepted MIME
+  // types) while the panel is open. Fail-soft: the canonical B2 defaults keep
+  // the upload UI bounded; the server remains the authoritative validator.
+  useEffect(() => {
+    if (!props.open || adapterId === null) {
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getAiAttachmentCapabilities()
+      .then((capabilities) => {
+        if (!cancelled) {
+          setAttachmentCapabilities(capabilities);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAttachmentCapabilities(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [adapterId, props.open]);
+
+  // M5.7 Wave B3: Adapter switch isolates every historical run state — the
+  // composer's pending attachments are cleared (nothing composed for the old
+  // Adapter can leak into the new one) and the frozen attachment bodies of
+  // past rounds are released. Regenerate across Adapters is additionally
+  // blocked by the round-snapshot adapter guard in runAssist.
+  useEffect(() => {
+    const nextAdapterId = props.adapter?.id ?? null;
+    if (previousAdapterIdRef.current === nextAdapterId) {
+      return;
+    }
+    previousAdapterIdRef.current = nextAdapterId;
+    setMessages((current) =>
+      current.map((message) =>
+        message.snapshot !== null && message.snapshot.attachments.length > 0
+          ? { ...message, snapshot: { ...message.snapshot, attachments: [] } }
+          : message,
+      ),
+    );
+    void composerControlsRef.current?.clearAttachments();
+    setAttachmentError(null);
+  }, [props.adapter?.id]);
+
+  /** M5.7 Wave B3: type predicate — the runtime's Attachment union nests the
+ * status discriminant, which TypeScript cannot narrow through assignments;
+ * the predicate narrows the full union for the send/resolve path. */
+function isCompleteAttachment(attachment: Attachment): attachment is CompleteAttachment {
+  return attachment.status.type === "complete";
+}
+
+/** M5.7 Wave B3: official assistant-ui AttachmentAdapter helper — resolve
+ * one composer attachment into its complete form (see completeAttachment). */
+async function resolveComposerAttachment(
+  attachment: Attachment,
+  adapter: AttachmentAdapter,
+): Promise<CompleteAttachment> {
+  if (isCompleteAttachment(attachment)) {
+    return attachment;
+  }
+  return adapter.send(attachment);
+}
+
+/** M5.7 Wave B3: the official assistant-ui AttachmentAdapter for this
+   * External Store Runtime. ``accept`` mirrors the B2 supported MIME table;
+   * ``add`` validates every file against the B2 bounds (returning a visible,
+   * removable error row for rejections so picker errors are never swallowed);
+   * ``send`` reads the strict base64 body once and caches it for the wire
+   * payload; ``remove`` releases nothing because DLR holds no per-attachment
+   * browser resources (no object URLs, no previews). */
+  const attachmentAdapter = useMemo<AttachmentAdapter>(
+    () => ({
+      accept: acceptStringFor(DEFAULT_SUPPORTED_CONTENT_TYPES),
+      async add({ file }) {
+        const limits = attachmentLimitsRef.current;
+        const verdict = validateAttachmentAdd(file, limits, composerAttachmentsRef.current);
+        if (!verdict.ok) {
+          return errorPendingAttachment(
+            file,
+            attachmentAddErrorMessage(verdict.reason, limits, translateRef.current),
+          );
+        }
+        return {
+          id: attachmentId(),
+          type: verdict.category === "image" ? "image" : "document",
+          name: file.name.trim(),
+          contentType: verdict.contentType,
+          file,
+          status: { type: "requires-action", reason: "composer-send" },
+        };
+      },
+      async send(attachment) {
+        return completeAttachment(attachment, wireCacheRef.current);
+      },
+      async remove() {
+        // Nothing to release: attachments are held as plain File references
+        // (GC reclaims them once the composer drops the row); object URLs are
+        // never created, so there is nothing to revoke.
+      },
+    }),
+    [],
+  );
+
+  /** M5.7 Wave B3: turn the composer's attachment rows into the B2 wire shape
+   * (filename, content_type, strict base64 body), re-verifying the total
+   * size bound. The per-file read happens exactly once (cached by the
+   * adapter); the result is frozen into the round snapshot. */
+  async function resolveComposerAttachments(
+    composerAttachments: readonly Attachment[],
+  ): Promise<AiAttachment[]> {
+    const wireAttachments: AiAttachment[] = [];
+    let totalBytes = 0;
+    for (const attachment of composerAttachments) {
+      const complete = await resolveComposerAttachment(attachment, attachmentAdapter);
+      const cached = wireCacheRef.current.get(complete);
+      const file = complete.file;
+      if (file === undefined) {
+        // Every complete attachment originates from this adapter's send()
+        // (cache hit above); a missing File reference is unreachable in
+        // practice and cannot produce a body — skip defensively.
+        continue;
+      }
+      const wire =
+        cached ??
+        (await buildWireAttachment(
+          complete.name,
+          complete.contentType ?? file.type,
+          file,
+        ));
+      totalBytes += base64DecodedSize(wire.data_base64);
+      if (totalBytes > attachmentLimitsRef.current.max_total_bytes) {
+        throw new Error(
+          attachmentAddErrorMessage(
+            "total_too_large",
+            attachmentLimitsRef.current,
+            translateRef.current,
+          ),
+        );
+      }
+      wireAttachments.push(wire);
+    }
+    return wireAttachments;
+  }
 
   /** M5.7 Wave A/B1: DLR-owned single-shot assist flow. Called by the External
    * Store runtime's onNew (with a freshly frozen round snapshot) and by its
@@ -440,6 +977,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
         ...(snapshot.contextSnippets.length === 0
           ? {}
           : { context_snippets: snapshot.contextSnippets }),
+        // M5.7 Wave B3: request-only attachments frozen at send time (strict
+        // base64 per the B2 contract). Omitted entirely for attachment-free
+        // rounds so those requests stay byte-compatible with Wave A/B1. The
+        // bodies never enter recent_messages, the thread DOM or any log.
+        ...(snapshot.attachments.length === 0
+          ? {}
+          : { attachments: snapshot.attachments }),
       });
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
@@ -513,7 +1057,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       setProgressStage(assistantMessage.candidate === null ? null : "succeeded");
     } catch (error) {
       if (generation === requestGeneration.current) {
-        setPanelError(userErrorMessage(error, t("assistant.errors.requestFailed")));
+        setPanelError(
+          attachmentServerErrorMessage(error, t("assistant.errors.requestFailed")),
+        );
         // M5.5.5: failures converge to an explicit error state; no progress
         // line lingers or keeps claiming an unfinished stage.
         setProgressStage(null);
@@ -527,8 +1073,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
 
   /** M5.7 Wave B1: freeze the complete request context of one round at send
    * time. Returns null (and reports the error) when the runtime parameters do
-   * not parse; Regenerate never revalidates — it reuses the frozen value. */
-  function buildRoundSnapshot(adapter: Adapter, message: string): AssistRoundSnapshot | null {
+   * not parse; Regenerate never revalidates — it reuses the frozen value.
+   * M5.7 Wave B3: the B2 wire attachment bodies join the frozen context. */
+  function buildRoundSnapshot(
+    adapter: Adapter,
+    message: string,
+    attachments: AiAttachment[],
+  ): AssistRoundSnapshot | null {
     const runtimeConfig = parseRuntimeConfig(props.workingCopy.runtimeConfigText);
     if (runtimeConfig === null) {
       setPanelError(t("assistant.invalidRuntimeConfig"));
@@ -549,14 +1100,17 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           end_line,
         }),
       ),
+      attachments,
       locale: i18n.language,
     };
   }
 
-  /** M5.7 Wave B1: shared send entry for the composer click path and the
-   * External Store runtime's onNew. Freezes the round snapshot, appends the
-   * user message, then runs the assist flow. */
-  async function sendMessage(rawText: string) {
+  /** M5.7 Wave B1/B3: shared send entry for the composer click path and the
+   * External Store runtime's onNew. Resolves the composer attachment rows
+   * into the frozen round snapshot, appends the user message, then runs the
+   * assist flow. Text-only sends keep the Wave A synchronous
+   * preparing-stage contract; attachment reads happen before freezing. */
+  async function sendMessage(rawText: string, composerAttachments: readonly Attachment[]) {
     const text = rawText.trim();
     const adapter = props.adapter;
     if (
@@ -564,11 +1118,25 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       !props.contentReady ||
       props.busy ||
       sending ||
-      text === ""
+      (text === "" && composerAttachments.length === 0)
     ) {
       return;
     }
-    const snapshot = buildRoundSnapshot(adapter, text);
+    let wireAttachments: AiAttachment[];
+    try {
+      wireAttachments =
+        composerAttachments.length === 0
+          ? []
+          : await resolveComposerAttachments(composerAttachments);
+    } catch (error) {
+      // A file body could not be produced (defensive; sizes were validated
+      // at add time): surface the actionable message and keep the composer.
+      setAttachmentError(
+        error instanceof Error ? error.message : t("assistant.attachments.error.readFailed"),
+      );
+      return;
+    }
+    const snapshot = buildRoundSnapshot(adapter, text, wireAttachments);
     if (snapshot === null) {
       return;
     }
@@ -580,6 +1148,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       snapshot,
     };
     setMessages((current) => [...current, userMessage]);
+    setAttachmentError(null);
     await runAssist(snapshot, null);
   }
 
@@ -591,12 +1160,16 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     isDisabled:
       props.adapter === null || !props.contentReady || props.busy || sending,
     convertMessage: toThreadMessageLike,
+    adapters: { attachments: attachmentAdapter },
     onNew: async (message: AppendMessage) => {
-      await sendMessage(appendMessageText(message));
+      await sendMessage(appendMessageText(message), message.attachments ?? []);
     },
     // Wave B1: Regenerate — parentId is the id of the user message whose
     // assistant reply should be regenerated; the round's frozen snapshot is
-    // reused verbatim.
+    // reused verbatim. Wave B3: a round whose send failed has no assistant
+    // reply — retrying reuses the same frozen snapshot (including the
+    // attachments) and appends a fresh reply without duplicating the user
+    // message.
     onReload: async (parentId: string | null) => {
       if (parentId === null) {
         return;
@@ -614,6 +1187,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       const userIndex = messages.findIndex((message) => message.id === userMessage.id);
       const assistantMessage = messages[userIndex + 1];
       if (assistantMessage === undefined || assistantMessage.role !== "assistant") {
+        await runAssist(snapshot, null);
         return;
       }
       await runAssist(snapshot, assistantMessage.id);
@@ -928,11 +1502,24 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                           user message (DLR appends strictly alternating
                           pairs). Disabled while a request is in flight or the
                           panel is otherwise gated; the runtime/onReload
-                          guards still re-check every gate. */}
-                      {message.role === "assistant" && index > 0 && (
+                          guards still re-check every gate.
+                          M5.7 Wave B3: a round whose send failed has no
+                          assistant reply; the entry renders on the failed
+                          user round as "Retry" and reuses the frozen snapshot
+                          (message, context and attachments). */}
+                      {(message.role === "assistant" && index > 0) ||
+                        (message.role === "user" &&
+                          message.snapshot !== null &&
+                          index === messages.length - 1 &&
+                          !sending) ? (
                         <div className="ai-message-actions">
                           <RegenerateButton
-                            userMessageId={messages[index - 1].id}
+                            userMessageId={
+                              message.role === "assistant"
+                                ? messages[index - 1].id
+                                : message.id
+                            }
+                            retry={message.role === "user"}
                             disabled={
                               sending ||
                               props.busy ||
@@ -941,7 +1528,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                             }
                           />
                         </div>
-                      )}
+                      ) : null}
                       {candidateState !== null && (
                         <div className="ai-candidate" data-testid="ai-candidate">
                           <p className="ai-candidate-ready" data-testid="ai-candidate-ready">
@@ -1018,19 +1605,24 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                 {panelError}
               </p>
             )}
-            <ComposerPrimitive.Input
-              data-testid="ai-message-input"
-              autoFocus
-              aria-label={t("assistant.commandLabel")}
-              placeholder={t("assistant.commandPlaceholder")}
-              minRows={3}
-              maxRows={10}
-              disabled={composerDisabled}
+            {/* M5.7 Wave B3: the composer attachment surface (dropzone, file
+                picker, accessible list, hints and pre-send validation). */}
+            <ComposerAttachmentsBridge
+              onAttachmentsChange={(attachments) => {
+                composerAttachmentsRef.current = attachments;
+              }}
+              onControlsChange={(controls) => {
+                composerControlsRef.current = controls;
+              }}
             />
-            <ComposerSubmitButton
+            <ComposerAttachmentArea
               disabled={composerDisabled}
               sending={sending}
-              onSend={(text) => void sendMessage(text)}
+              limits={attachmentLimits}
+              supportedContentTypes={supportedContentTypes}
+              error={attachmentError}
+              onErrorChange={(message) => setAttachmentError(message)}
+              onSend={(text, attachments) => void sendMessage(text, attachments)}
             />
           </ComposerPrimitive.Root>
         </ThreadPrimitive.Root>
