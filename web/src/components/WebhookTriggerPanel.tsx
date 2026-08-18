@@ -16,6 +16,9 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { Alert, Button, Input, InputNumber, Modal, Radio, Select, Space, Spin, Typography } from "antd";
+import { useTranslation } from "react-i18next";
+
+import { i18n } from "../i18n";
 
 import { ApiError, api } from "../api";
 import { subscribeCredentialCatalog } from "../credential-catalog";
@@ -29,19 +32,27 @@ const DEFAULT_TIMEOUT_SECONDS = 300;
 const MAX_TIMEOUT_SECONDS = 24 * 60 * 60; // 24 小时
 const TIMEOUT_PRESET_MINUTES = [1, 5, 10, 30, 60] as const;
 
-const TIMEOUT_HINT =
-  "一次调用超过该时间后，系统将自动结束并标记为“超时”。";
+/** Stable runtime-namespace translator for effects and subscriptions, so a
+ * locale switch never re-runs the webhook load effect (which would discard
+ * in-progress edits). */
+function runtimeTranslate(key: string, options?: Record<string, unknown>): string {
+  return i18n.t(key, { ns: "runtime", ...options });
+}
 
-function errorMessage(error: unknown, publicId: string): string {
+function errorMessage(
+  error: unknown,
+  publicId: string,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
   if (error instanceof ApiError) {
     if (error.code === "webhook_path_in_use") {
-      return `Webhook 地址 ${publicId} 当前正在被另一个运行中的适配器使用，请先停止旧适配器后再启动当前适配器。`;
+      return translate("webhook.settings.pathInUse", { path: publicId });
     }
     if (error.code === "webhook_credential_type_invalid") {
-      return "Webhook 只能绑定 token 类型的凭据";
+      return translate("webhook.settings.credentialTypeInvalid");
     }
     if (error.code === "webhook_path_invalid") {
-      return "Webhook 路径只允许 3–64 位小写字母、数字和连字符，且必须以字母或数字开头。";
+      return translate("webhook.settings.pathInvalid");
     }
     return userErrorMessage(error);
   }
@@ -80,9 +91,14 @@ function LockedValue({ testId, children }: { testId: string; children: React.Rea
   );
 }
 
-function formatTimeout(seconds: number): string {
+function formatTimeout(
+  seconds: number,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
   const minutes = seconds / 60;
-  return Number.isInteger(minutes) ? `${minutes} 分钟` : `${seconds} 秒`;
+  return Number.isInteger(minutes)
+    ? translate("units.minutes", { value: minutes })
+    : translate("units.seconds", { value: seconds });
 }
 
 function presetMinutesFor(seconds: number): number | undefined {
@@ -113,6 +129,7 @@ export interface WebhookTriggerHandle {
 }
 
 const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function WebhookTriggerPanel(props, ref) {
+  const { t } = useTranslation(["runtime", "common"]);
   const adapterId = props.adapter.id;
   const onAdapterChange = props.onAdapterChange;
   const onError = props.onError;
@@ -164,7 +181,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         onAdapterChange(adapter);
       } catch (error) {
         if (!cancelled) {
-          onError(errorMessage(error, ""));
+           onError(errorMessage(error, "", runtimeTranslate));
         }
       } finally {
         if (!cancelled) {
@@ -186,7 +203,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         void api
           .listCredentials()
           .then((credentialList) => setCredentials(credentialList))
-          .catch((error) => onError(errorMessage(error, "")));
+          .catch((error) => onError(errorMessage(error, "", runtimeTranslate)));
       }),
     [onError],
   );
@@ -220,22 +237,22 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   const canConfigure = !archived && !runtimeLocked && !saving && !changingState;
   const startBlockedReason =
     props.adapter.latest_version_id === null
-      ? "请先保存适配器。"
+      ? t("webhook.reasons.noVersion")
       : workerId === null
-        ? "请先选择并保存运行节点。"
+        ? t("webhook.reasons.noWorker")
         : credentialId === null
-          ? "请先选择并保存访问凭据。"
+          ? t("webhook.reasons.noCredential")
           : dirty
-            ? "运行设置有未保存修改，请先保存。"
+            ? t("webhook.reasons.dirty")
             : null;
   const gatewayPrefix = `${window.location.origin}/api/hooks/`;
   const fullUrl = gatewayPrefix + publicId;
   const credentialName =
     saved?.credential_name ??
     tokenCredentials.find((credential) => credential.id === credentialId)?.name ??
-    "未选择";
+     t("labels.notSelected", { ns: "common" });
   const workerName =
-    props.workers.find((worker) => worker.id === workerId)?.name ?? "未选择";
+    props.workers.find((worker) => worker.id === workerId)?.name ?? t("labels.notSelected", { ns: "common" });
 
   useEffect(() => {
     onRuntimeStateChange({
@@ -284,7 +301,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       effectiveTimeoutSeconds < 1 ||
       effectiveTimeoutSeconds > MAX_TIMEOUT_SECONDS
     ) {
-      onError(`单次执行超时必须是 1–${MAX_TIMEOUT_SECONDS} 秒（最大 24 小时）。`);
+      onError(t("webhook.settings.timeoutInvalid", { max: MAX_TIMEOUT_SECONDS }));
       return null;
     }
     return effectiveTimeoutSeconds;
@@ -312,7 +329,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       setTimeoutOverride(null);
       setTimeoutCustomMode(false);
     } catch (error) {
-      props.onError(errorMessage(error, publicId));
+       props.onError(errorMessage(error, publicId, (key, options) => t(key, options)));
     } finally {
       setSaving(false);
     }
@@ -340,7 +357,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       props.onAdapterChange(adapter);
       return true;
     } catch (error) {
-      props.onError(errorMessage(error, saved.public_id));
+       props.onError(errorMessage(error, saved.public_id, (key, options) => t(key, options)));
       return false;
     } finally {
       setChangingState(false);
@@ -364,7 +381,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       const adapter = await api.getAdapter(adapterId);
       props.onAdapterChange(adapter);
     } catch (error) {
-      props.onError(errorMessage(error, saved.public_id));
+       props.onError(errorMessage(error, saved.public_id, (key, options) => t(key, options)));
     } finally {
       setChangingState(false);
     }
@@ -383,12 +400,12 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       // A pending Execution turns cancelled immediately; a running one gets
       // the cancel flag the Worker picks up on its next progress round trip.
       if (execution.status === "cancelled") {
-        setNotice("已停止接收，当前调用已结束。");
+         setNotice(t("webhook.settings.stoppedAndEnded"));
       }
     } catch (error) {
       // 已停止接收保持真实状态：cancel 失败绝不偷偷重新开启 Webhook。
       props.onError(
-        `已停止接收，但取消当前调用失败：${userErrorMessage(error)}。当前调用仍在执行，可在「实时日志」中查看；进入终态后运行配置会自动解锁。`,
+         t("webhook.settings.cancelFailed", { error: userErrorMessage(error) }),
       );
     } finally {
       setChangingState(false);
@@ -411,9 +428,9 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     setCopyError(null);
     try {
       await navigator.clipboard.writeText(fullUrl);
-      setNotice("Webhook 地址已复制到剪贴板。");
+       setNotice(t("webhook.settings.copy"));
     } catch {
-      setCopyError("复制失败，请手动选择完整地址复制。");
+       setCopyError(t("webhook.settings.copyFailed"));
     }
   }
 
@@ -423,31 +440,31 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
 
   return (
     <div className="webhook-trigger-panel" data-testid="webhook-run-settings">
-      <Typography.Title level={5}>Webhook 运行设置</Typography.Title>
+       <Typography.Title level={5}>{t("webhook.settings.title")}</Typography.Title>
       <Space direction="vertical" size="middle" className="webhook-form">
         <div className="settings-field">
-          <span className="settings-field-label">Webhook 路径</span>
+           <span className="settings-field-label">{t("webhook.settings.path")}</span>
           {canConfigure ? (
             <>
               <Input
                 data-testid="webhook-public-id"
-                aria-label="Webhook 路径"
+                 aria-label={t("webhook.settings.pathAria")}
                 value={publicId}
                 onChange={(event) => { setPublicId(event.target.value); setNotice(null); }}
               />
               {!pathValid && !unchangedLegacyPath && (
-                <Alert type="error" showIcon data-testid="webhook-path-invalid" message="只允许 3–64 位小写字母、数字和连字符，且必须以字母或数字开头。" />
+                 <Alert type="error" showIcon data-testid="webhook-path-invalid" message={t("webhook.settings.pathInvalid")} />
               )}
               {unchangedLegacyPath && (
                 <Alert
                   type="warning"
                   showIcon
                   data-testid="webhook-path-legacy"
-                  message="这是升级前创建的兼容地址；未修改时可继续启停。编辑后必须使用小写字母、数字和连字符。"
+                   message={t("webhook.settings.legacyPath")}
                 />
               )}
               <Typography.Text type="secondary">
-                系统已自动生成随机地址，也可以改成便于识别的路径，例如 receive-sys1-data。
+                 {t("webhook.settings.pathHint")}
               </Typography.Text>
             </>
           ) : (
@@ -455,34 +472,34 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           )}
         </div>
         <div className="settings-field">
-          <span className="settings-field-label">完整地址</span>
+           <span className="settings-field-label">{t("webhook.settings.fullUrl")}</span>
           <div className="webhook-url-control" data-testid="webhook-url-readonly">
             <Space.Compact style={{ width: "100%", maxWidth: 760 }}>
               <Input
                 data-testid="webhook-url"
-                aria-label="完整地址（只读）"
+                 aria-label={t("webhook.settings.fullUrlAria")}
                 aria-readonly="true"
                 readOnly
                 value={fullUrl}
                 onFocus={(event) => event.target.select()}
               />
-              <Button data-testid="webhook-copy" onClick={() => void copyUrl()}>复制</Button>
+               <Button data-testid="webhook-copy" onClick={() => void copyUrl()}>{t("actions.copy", { ns: "common" })}</Button>
             </Space.Compact>
           </div>
         </div>
         <label className="settings-field">
-          <span className="settings-field-label">访问凭据</span>
+           <span className="settings-field-label">{t("webhook.settings.credential")}</span>
           {canConfigure ? (
             <>
               <Select
                 data-testid="webhook-credential"
                 value={credentialId ?? undefined}
-                placeholder="选择访问凭据"
+                 placeholder={t("webhook.settings.credentialPlaceholder")}
                 options={tokenCredentials.map((credential) => ({ label: credential.name, value: credential.id }))}
                 onChange={(value) => { setCredentialId(value); setNotice(null); }}
               />
               {tokenCredentials.length === 0 && (
-                <Alert type="warning" showIcon message="尚无访问凭据（token 类型），请先在系统设置中创建。" />
+                 <Alert type="warning" showIcon message={t("webhook.settings.noCredential")} />
               )}
             </>
           ) : (
@@ -490,16 +507,16 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           )}
         </label>
         <label className="settings-field">
-          <span className="settings-field-label">运行节点</span>
+           <span className="settings-field-label">{t("webhook.settings.worker")}</span>
           {canConfigure ? (
             <Select
               data-testid="webhook-runtime-worker"
               value={workerId ?? undefined}
-              placeholder="选择支持当前语言的运行节点"
+               placeholder={t("webhook.settings.workerPlaceholder")}
               loading={props.workersLoading}
               disabled={props.workersLoading}
               options={compatibleWorkers.map((worker) => ({
-                label: `${worker.name}（${worker.status === "online" ? "在线" : "离线"}）`,
+                 label: `${worker.name}（${worker.status === "online" ? t("worker.online", { ns: "common" }) : t("worker.offline", { ns: "common" })}）`,
                 value: worker.id,
                 disabled: worker.status !== "online",
               }))}
@@ -510,7 +527,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           )}
         </label>
         <div className="settings-field">
-          <span className="settings-field-label">单次执行超时（一次运行的最长时间）</span>
+           <span className="settings-field-label">{t("webhook.settings.timeout")}</span>
           {canConfigure ? (
             <>
               <Radio.Group
@@ -528,10 +545,10 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
               >
                 {TIMEOUT_PRESET_MINUTES.map((minutes) => (
                   <Radio key={minutes} value={minutes}>
-                    {minutes} 分钟
+                     {t("units.minutes", { value: minutes })}
                   </Radio>
                 ))}
-                <Radio value="custom">自定义</Radio>
+                 <Radio value="custom">{t("webhook.settings.custom")}</Radio>
               </Radio.Group>
               {effectiveCustom && (
                 <InputNumber
@@ -540,16 +557,16 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                   max={MAX_TIMEOUT_SECONDS}
                   precision={0}
                   value={effectiveTimeoutSeconds}
-                  addonAfter="秒"
+                   addonAfter={t("webhook.settings.seconds")}
                   onChange={(value) => setTimeoutOverride(value ?? null)}
                 />
               )}
               <Typography.Text type="secondary" className="settings-field-hint">
-                {TIMEOUT_HINT}
+                 {t("webhook.settings.timeoutHint")}
               </Typography.Text>
             </>
           ) : (
-            <LockedValue testId="webhook-timeout-locked">{formatTimeout(effectiveTimeoutSeconds)}</LockedValue>
+             <LockedValue testId="webhook-timeout-locked">{formatTimeout(effectiveTimeoutSeconds, (key, options) => t(key, options))}</LockedValue>
           )}
         </div>
         {props.workersError !== null && <Alert type="error" showIcon message={props.workersError} />}
@@ -561,7 +578,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
             loading={saving}
             disabled={!pathAcceptable || workerId === null || !dirty}
             onClick={() => void saveConfiguration()}
-          >保存运行设置</Button>
+           >{t("webhook.settings.save")}</Button>
         )}
         {!enabled && startBlockedReason !== null && (
           <Alert type="info" showIcon data-testid="webhook-start-blocked" message={startBlockedReason} />
@@ -570,24 +587,24 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
 
       <Modal
         open={stopDialogOpen}
-        title="停止接收"
+         title={t("webhook.settings.stopTitle")}
         width={520}
         destroyOnHidden
         onCancel={() => setStopDialogOpen(false)}
         footer={[
           <Button key="end" danger type="primary" data-testid="webhook-stop-end" onClick={() => void stopAndEndCall()}>
-            直接结束当前调用
+             {t("webhook.settings.endCall")}
           </Button>,
           <Button key="wait" data-testid="webhook-stop-wait" onClick={() => void stopAndWaitForEnd()}>
-            等待调用结束
+             {t("webhook.settings.waitCall")}
           </Button>,
           <Button key="cancel" data-testid="webhook-stop-cancel" onClick={() => setStopDialogOpen(false)}>
-            取消
+             {t("webhook.settings.cancelCall")}
           </Button>,
         ]}
       >
         <p data-testid="webhook-stop-dialog-text">
-          当前仍有 Webhook 调用正在执行。停止接收后将不再接受新的请求。请选择如何处理当前调用。
+           {t("webhook.settings.stopDescription")}
         </p>
       </Modal>
     </div>

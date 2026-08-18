@@ -1,6 +1,7 @@
 /** Low-frequency Adapter metadata, clone and soft-delete actions. */
 
 import { Alert, Button, Divider, Drawer, Input, Space } from "antd";
+import { useTranslation } from "react-i18next";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter } from "../types";
@@ -22,11 +23,12 @@ interface Props {
 }
 
 export default function AdapterSettingsDrawer(props: Props) {
+  const { t } = useTranslation(["adapter", "common"]);
   const adapter = props.adapter;
   const archived = !!adapter?.archived_at;
   return (
     <Drawer
-      title={`${adapter?.adapter_type === "webhook" ? "Webhook" : "任务"}适配器设置`}
+      title={adapter?.adapter_type === "webhook" ? t("settings.webhookTitle") : t("settings.taskTitle")}
       width={400}
       open={props.open}
       destroyOnHidden
@@ -35,42 +37,42 @@ export default function AdapterSettingsDrawer(props: Props) {
       {adapter !== null && (
         <div className="settings-form">
           <label className="settings-field">
-            <span className="settings-field-label">名称</span>
+            <span className="settings-field-label">{t("settings.name")}</span>
             <Input data-testid="adapter-name" value={props.name} disabled={props.busy || archived} onChange={(event) => props.onNameChange(event.target.value)} />
           </label>
           <label className="settings-field">
-            <span className="settings-field-label">开发语言</span>
+            <span className="settings-field-label">{t("settings.language")}</span>
             <Input data-testid="adapter-language" value={LANGUAGE_LABELS[adapter.language]} disabled />
           </label>
           <label className="settings-field">
-            <span className="settings-field-label">描述</span>
+            <span className="settings-field-label">{t("settings.description")}</span>
             <Input data-testid="adapter-description" value={props.description} disabled={props.busy || archived} onChange={(event) => props.onDescriptionChange(event.target.value)} />
           </label>
-          <Button type="primary" data-testid="update-details" disabled={props.busy || !props.contentReady || archived} onClick={props.onUpdate}>更新信息</Button>
+          <Button type="primary" data-testid="update-details" disabled={props.busy || !props.contentReady || archived} onClick={props.onUpdate}>{t("settings.update")}</Button>
           <Divider />
           {archived ? (
             <Alert
               type="info"
               showIcon
               data-testid="archived-settings-readonly"
-              message="已删除适配器仅支持查看"
-              description="该适配器已从活跃列表移除。"
+               message={t("settings.archivedMessage")}
+               description={t("settings.archivedDescription")}
             />
           ) : (
             <Space direction="vertical" className="settings-lifecycle-actions">
-              <Button data-testid="clone-adapter" disabled={props.busy} onClick={props.onClone}>复制适配器</Button>
+               <Button data-testid="clone-adapter" disabled={props.busy} onClick={props.onClone}>{t("settings.clone")}</Button>
               <ActionWithReason
-                label="删除适配器"
-                reason={adapter.runtime_locked === true ? "请先停止适配器，再删除" : props.busy ? "其他操作正在进行" : null}
+                 label={t("settings.delete")}
+                 reason={adapter.runtime_locked === true ? t("settings.deleteReasonLocked") : props.busy ? t("settings.deleteReasonBusy") : null}
               >
-                <Button danger data-testid="delete-adapter" disabled={props.busy || adapter.runtime_locked === true} onClick={props.onDelete}>删除适配器</Button>
+                <Button danger data-testid="delete-adapter" disabled={props.busy || adapter.runtime_locked === true} onClick={props.onDelete}>{t("settings.delete")}</Button>
               </ActionWithReason>
             </Space>
           )}
           {adapter.runtime_locked === true && (
-            <Alert type="warning" showIcon message={adapter.adapter_type === "webhook" ? "接收中或调用活跃期间不能删除适配器。" : "定时启用或执行活跃期间不能删除适配器。"} />
+           <Alert type="warning" showIcon message={adapter.adapter_type === "webhook" ? t("settings.deleteWarningWebhook") : t("settings.deleteWarningTask")} />
           )}
-          {!archived && <p className="settings-danger-hint">删除后适配器会从活跃列表消失；运行历史按平台保留策略处理。</p>}
+           {!archived && <p className="settings-danger-hint">{t("settings.dangerHint")}</p>}
         </div>
       )}
     </Drawer>

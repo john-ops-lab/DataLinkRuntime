@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Tooltip } from "antd";
+import { useTranslation } from "react-i18next";
 
 interface ActionWithReasonProps {
   label: string;
@@ -17,13 +18,14 @@ export default function ActionWithReason({
   reason,
   children,
 }: ActionWithReasonProps) {
+  const { t } = useTranslation("common");
   const action = (
     <span
       className="action-with-reason"
       data-disabled-reason={reason ?? undefined}
       title={reason ?? undefined}
       tabIndex={reason === null ? undefined : 0}
-      aria-label={reason === null ? undefined : `${label}不可用：${reason}`}
+      aria-label={reason === null ? undefined : t("accessibility.unavailable", { label, reason })}
     >
       {children}
     </span>

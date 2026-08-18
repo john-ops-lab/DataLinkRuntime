@@ -6,6 +6,11 @@
     "en": "English"
   },
   "localeUpdateFailed": "The language setting could not be updated. Try again.",
+  "tabs": {
+    "credentials": "Credentials",
+    "packageSources": "Package sources",
+    "aiModel": "AI model"
+  },
   "credentialTypes": {
     "password": "Password",
     "token": "Token",
@@ -19,6 +24,77 @@
     "access_key_id": "Access Key ID",
     "access_key_secret": "Access Key Secret",
     "value": "Value"
+  },
+  "credentialGuide": {
+    "title": "Credential type guide",
+    "description": "Credential types are templates for common sensitive-data structures and help you choose the right fields. When unsure, choose the closest match; use Generic Secret only when the other types do not fit.",
+    "fields": "Fields",
+    "scenarios": "Common scenarios:",
+    "createHint": "Choose this when the target system requires a username and password",
+    "tokenHint": "Choose this when the target system provides a Token string",
+    "accessKeyHint": "Choose this when the target system provides a pair such as AK/SK or AccessKey ID/Secret",
+    "secretHint": "A fallback when the first three types do not fit; keeps it distinct from Access Key",
+    "items": {
+      "password": {
+        "fields": "username + password",
+        "scenarios": "Databases, SSH, FTP/SFTP, HTTP Basic and device logins"
+      },
+      "token": {
+        "fields": "token",
+        "scenarios": "API Tokens, Bearer Tokens, PATs and Webhook Tokens"
+      },
+      "access_key": {
+        "fields": "access_key_id + access_key_secret",
+        "scenarios": "Alibaba Cloud, AWS, Tencent Cloud, object storage and cloud API request signing"
+      },
+      "secret": {
+        "fields": "value (for api_key, client_secret, signing_secret, private_key and similar values)",
+        "scenarios": "Third-party API keys, OAuth client secrets, signing keys and encryption keys"
+      }
+    }
+  },
+  "credentials": {
+    "new": "New Credential",
+    "refreshList": "Credential list refreshed",
+    "metadataNotice": "Only Credential metadata is shown here; secret values are never echoed to the browser.",
+    "name": "Credential name",
+    "type": "Credential type",
+    "fieldAria": "Credential field {{field}}",
+    "submitCreate": "Create",
+    "submitUpdate": "Update",
+    "updateHint": "Updating re-encrypts and replaces the saved value; required fields cannot be blank.",
+    "created": "Credential created",
+    "updated": "Credential updated",
+    "deleted": "Credential deleted",
+    "createRefreshFailed": "{{operation}}, but the list refresh failed. Refresh manually to confirm and avoid submitting again.",
+    "deleteRefreshFailed": "Credential deleted, but the list refresh failed. Refresh manually to confirm.",
+    "nameRequired": "Credential name cannot be empty",
+    "fieldRequired": "Field {{field}} cannot be empty",
+    "tableName": "Name",
+    "tableType": "Type",
+    "tableActions": "Actions",
+    "bindingInvalid": "",
+    "cancel": "Cancel"
+  },
+  "bindings": {
+    "help": "The code Credential name lets the script read the bound sensitive value, for example",
+    "helpSuffix": "; the field is injected into the Adapter execution environment as",
+    "injectedSuffix": "; all bindings are replaced on save.",
+    "openSettingsHint": "To add a Credential, open System Settings → Credentials.",
+    "renameHint": "After changing a code Credential name, update the references in the code too.",
+    "saved": "Credential bindings saved",
+    "save": "Save bindings",
+    "row": "Binding {{index}}",
+    "envKey": "Binding {{index}} code Credential name",
+    "envKeyPlaceholder": "Code Credential name (for example DB_PASSWORD)",
+    "credential": "Binding {{index}} Credential",
+    "credentialPlaceholder": "Select a Credential",
+    "field": "Binding {{index}} field",
+    "fieldPlaceholder": "Field",
+    "delete": "Delete binding {{index}}",
+    "validationEnvKeyRequired": "Every binding must have a code Credential name",
+    "validationEnvKeyDuplicate": "Code Credential names must be unique",
+    "validationSelectionRequired": "Every binding must select a Credential and field"
   },
   "packageSources": {
     "kinds": {
@@ -39,6 +115,39 @@
         "aliyun": "Aliyun Maven public repository",
         "central": "Maven Central"
       }
-    }
+    },
+    "new": "New package source",
+    "description": "There can be at most one default source per type; the Worker tries its local cache first and then the default source for the language.",
+    "nameAndUrlRequired": "Package source name and index URL are required",
+    "refreshList": "Package source list refreshed",
+    "name": "Package source name",
+    "kind": "Package source type",
+    "repositoryUrl": "Package source repository URL",
+    "urlPlaceholder": "Repository URL",
+    "credential": "Package source Credential",
+    "credentialPlaceholder": "Credential (optional)",
+    "defaultCheckbox": "Set as the default source for this type",
+    "created": "Package source created",
+    "deleted": "Package source deleted",
+    "setDefault": "{{name}} is now the default package source",
+    "setDefaultAction": "Set as default",
+    "restoreDefault": "{{kind}} default package sources restored",
+    "createRefreshFailed": "Package source created, but the list refresh failed. Refresh manually to confirm and avoid submitting again.",
+    "deleteRefreshFailed": "Package source deleted, but the list refresh failed. Refresh manually to confirm.",
+    "setDefaultRefreshFailed": "{{name}} is now the default package source, but the list refresh failed. Refresh manually to confirm.",
+    "restoreDefaultRefreshFailed": "{{kind}} default package sources restored, but the list refresh failed. Refresh manually to confirm.",
+    "emptyDefaults": "Default package source information is not loaded. Refresh and try again.",
+    "restoreConfirm": "Restore {{name}} ({{url}}) as the default {{kind}} package source? This adds domestic and official defaults and selects the domestic source; existing custom sources and Credential bindings are preserved.",
+    "fallbackNotice": "No default {{kind}} source is configured: the Worker will use only its local cache, and installation will fail explicitly when the cache is insufficient. It will not silently use an unconfigured URL. Click “Restore default {{kind}}” above or create and set a default.",
+    "restoreTitle": "Restore platform default: {{url}}",
+    "restoreButton": "Restore default {{kind}}",
+    "test": "Test",
+    "testing": "Testing",
+    "untested": "Not tested",
+    "reachable": "Reachable",
+    "unreachable": "Unreachable",
+    "timeout": "Timeout",
+    "authFailed": "Authentication failed",
+    "testDetailUnknown": "Check the URL, Credential and network"
   }
 }

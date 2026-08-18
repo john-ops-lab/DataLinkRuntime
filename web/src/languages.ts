@@ -1,4 +1,4 @@
-import { currentSystemLocale } from "./i18n";
+import { currentSystemLocale, i18n } from "./i18n";
 import type { AdapterLanguage, AdapterType, SystemLocale } from "./types";
 
 export const LANGUAGE_LABELS: Record<AdapterLanguage, string> = {
@@ -96,24 +96,29 @@ export const WEBHOOK_STARTER_CODE: Record<AdapterLanguage, string> = {
     "}\n",
 };
 
+const zhRuntimeT = i18n.getFixedT("zh-CN", "runtime");
+
+/** zh-CN compatibility exports retained for the existing starter contract tests. */
 export const DEPENDENCY_UI: Record<
   AdapterLanguage,
   { label: string; placeholder: string }
 > = {
-  python: { label: "Python 依赖", placeholder: "如 requests==2.32.3（回车换行，每行写一个依赖）" },
+  python: {
+    label: zhRuntimeT("dependencies.python.label"),
+    placeholder: zhRuntimeT("dependencies.python.placeholder"),
+  },
   javascript: {
-    label: "JavaScript 依赖",
-    placeholder: "如 axios@1.7.7（回车换行，每行写一个依赖）",
+    label: zhRuntimeT("dependencies.javascript.label"),
+    placeholder: zhRuntimeT("dependencies.javascript.placeholder"),
   },
   java: {
-    label: "Java 依赖",
-    placeholder: "如 org.apache.commons:commons-lang3:3.17.0（回车换行，每行写一个依赖）",
+    label: zhRuntimeT("dependencies.java.label"),
+    placeholder: zhRuntimeT("dependencies.java.placeholder"),
   },
 };
 
-/** 三种语言共用的依赖安装说明（M5.5.8）。 */
-export const DEPENDENCY_NOTE =
-  "Worker 执行前会安装这些依赖。安装源需在“系统设置”中配置；如为离线/企业网络环境，可由管理员预置对应依赖源或缓存。不填写则平台不会额外检查依赖是否齐全，缺少依赖可能在运行时直接报错。";
+/** zh-CN compatibility export retained for the existing dependency contract tests. */
+export const DEPENDENCY_NOTE = zhRuntimeT("dependencies.note");
 
 const EN_TASK_STARTER_CODE: Record<AdapterLanguage, string> = {
   python:
@@ -209,18 +214,13 @@ export function dependencyUiFor(
   language: AdapterLanguage,
   locale: SystemLocale = currentSystemLocale(),
 ): { label: string; placeholder: string } {
-  if (locale === "en") {
-    return {
-      python: { label: "Python dependencies", placeholder: "e.g. requests==2.32.3 (one dependency per line)" },
-      javascript: { label: "JavaScript dependencies", placeholder: "e.g. axios@1.7.7 (one dependency per line)" },
-      java: { label: "Java dependencies", placeholder: "e.g. org.apache.commons:commons-lang3:3.17.0 (one dependency per line)" },
-    }[language];
-  }
-  return DEPENDENCY_UI[language];
+  const t = i18n.getFixedT(locale, "runtime");
+  return {
+    label: t(`dependencies.${language}.label`),
+    placeholder: t(`dependencies.${language}.placeholder`),
+  };
 }
 
 export function dependencyNoteFor(locale: SystemLocale = currentSystemLocale()): string {
-  return locale === "en"
-    ? "The Worker installs these dependencies before execution. Configure a source in System Settings; administrators can pre-populate a source or cache for offline and enterprise networks. An empty list skips the dependency check and missing packages may fail at runtime."
-    : DEPENDENCY_NOTE;
+  return i18n.getFixedT(locale, "runtime")("dependencies.note");
 }

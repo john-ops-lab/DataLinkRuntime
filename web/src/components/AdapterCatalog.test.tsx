@@ -59,17 +59,17 @@ it("exposes each Task and Webhook runtime status and type in the catalog item na
   // M5.5.9：目录行直接展示 [任务]/[Webhook] 类型。
   expect(
     screen.getByRole("button", {
-      name: "task-idle，[任务] Python · 手动运行 · 任务状态：空闲 · 运行节点未配置",
+      name: "task-idle，[任务] Python · 手动运行 · 任务 状态：空闲 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "task-scheduled，[任务] Python · 手动运行 · 任务状态：定时运行中 · 运行节点未配置",
+      name: "task-scheduled，[任务] Python · 手动运行 · 任务 状态：定时运行中 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "task-running，[任务] Python · 手动运行 · 任务状态：运行中 · 运行节点未配置",
+      name: "task-running，[任务] Python · 手动运行 · 任务 状态：运行中 · 运行节点未配置",
     }),
   ).toBeTruthy();
   expect(

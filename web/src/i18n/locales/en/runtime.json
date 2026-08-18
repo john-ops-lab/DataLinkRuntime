@@ -1,3 +1,197 @@
 {
-  "namespace": "Runtime"
+  "namespace": "Runtime",
+  "executionStatus": {
+    "pending": "Pending",
+    "running": "Running",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "timeout": "Timed out",
+    "cancelled": "Cancelled"
+  },
+  "dependencies": {
+    "python": {
+      "label": "Python dependencies",
+      "placeholder": "e.g. requests==2.32.3 (one dependency per line)"
+    },
+    "javascript": {
+      "label": "JavaScript dependencies",
+      "placeholder": "e.g. axios@1.7.7 (one dependency per line)"
+    },
+    "java": {
+      "label": "Java dependencies",
+      "placeholder": "e.g. org.apache.commons:commons-lang3:3.17.0 (one dependency per line)"
+    },
+    "note": "The Worker installs these dependencies before execution. Configure a source in System Settings; administrators can pre-populate a source or cache for offline and enterprise networks. An empty list skips the dependency check and missing packages may fail at runtime."
+  },
+  "task": {
+    "status": {
+      "running": "Running",
+      "scheduled": "Schedule enabled",
+      "stopped": "Stopped"
+    },
+    "reasons": {
+      "deleted": "The Adapter was deleted and cannot be edited",
+      "scheduleEnabledSave": "Disable the schedule before saving",
+      "runningSave": "Stop the current run before saving",
+      "contentNotReady": "Revision content is not ready. Wait for it to load or refresh and try again",
+      "busy": "Another operation is in progress. Wait for it to finish",
+      "dirtyRun": "Save the current changes before running.",
+      "activeRun": "An execution is already running",
+      "noVersion": "Save the Adapter first",
+      "noWorker": "Choose and save a Runtime Worker in Runtime settings first",
+      "processing": "The run operation is still being processed",
+      "unavailable": "The current state cannot run",
+      "activeSchedule": "An execution is still running. Wait for its terminal state or stop it before enabling the schedule",
+      "loadingSchedule": "Loading schedule configuration. Please wait.",
+      "scheduleLoadFailed": "Schedule configuration failed to load. Refresh and try again.",
+      "saveVersionFirst": "Save the Adapter before enabling the schedule.",
+      "saveWorkerFirst": "Save the Runtime Worker before enabling the schedule.",
+      "saveChangesFirst": "Save the current changes before enabling the schedule.",
+      "runtimeDirty": "Runtime settings have unsaved changes. Save the runtime configuration first.",
+      "saveRuntimeFirst": "Save the runtime configuration before enabling the schedule."
+    },
+    "lockHint": "The Adapter is running; editing and runtime configuration are locked.",
+    "header": {
+      "type": "Task",
+      "worker": "Runtime Worker: {{name}}"
+    },
+    "settings": {
+      "title": "Task runtime settings",
+      "worker": "Runtime Worker",
+      "workerPlaceholder": "Select a Runtime Worker that supports the current language",
+      "mode": "Run mode",
+      "manual": "Manual",
+      "schedule": "Scheduled",
+      "timeout": "Per-execution timeout (maximum run time)",
+      "timeoutHint": "When a run exceeds this duration, the system stops the Task and marks it as “timeout”.",
+      "custom": "Custom",
+      "seconds": "seconds",
+      "locked": "Runtime configuration locked",
+      "lockedDescription": "While a schedule or execution is active, code, Runtime Worker, run mode, per-execution timeout, Cron, dependencies, runtime parameters and Credentials cannot be changed.",
+      "scheduleTitle": "Schedule configuration",
+      "cron": "Cron (5 fields)",
+      "timezone": "Timezone (IANA)",
+      "input": "Input (JSON)",
+      "scheduleStatus": "Schedule status",
+      "scheduleRunning": "Schedule running",
+      "disabled": "Disabled",
+      "nextRun": "Next execution: {{time}}",
+      "manualTitle": "Manual run configuration",
+      "save": "Save runtime configuration",
+      "invalidTimeout": "Per-execution timeout must be between 1 and {{max}} seconds (maximum 24 hours).",
+      "chooseWorker": "Choose a Runtime Worker first.",
+      "invalidScheduleInput": "Schedule Input must be valid JSON",
+      "savedScheduleNotLoaded": "Runtime configuration was saved, but Schedule has not finished loading (or failed to load), so schedule fields were not saved. Refresh and try again.",
+      "invalidInput": "Input must be valid JSON"
+    }
+  },
+  "webhook": {
+    "status": {
+      "receiving": "Receiving",
+      "calling": "Calling",
+      "stopped": "Stopped"
+    },
+    "reasons": {
+      "deleted": "The Adapter was deleted and cannot be edited",
+      "lockedSave": "Receiving is active or a call is running. Stop receiving and wait for the current call to finish",
+      "contentNotReady": "Content is not ready",
+      "busy": "Another operation is in progress",
+      "loading": "Loading Webhook runtime settings",
+      "activeCall": "A call is still running. Wait for its terminal state before receiving or changing runtime configuration",
+      "noVersion": "Save the Adapter first.",
+      "noWorker": "Choose and save a Runtime Worker first.",
+      "noCredential": "Choose and save an Access Credential first.",
+      "dirty": "Runtime settings have unsaved changes. Save them first."
+    },
+    "lockReceiving": "The Adapter is receiving requests; runtime configuration is locked.",
+    "lockCalling": "The current call is still running; runtime configuration is locked.",
+    "header": {
+      "type": "Webhook",
+      "worker": "Runtime Worker: {{name}}"
+    },
+    "settings": {
+      "title": "Webhook runtime settings",
+      "path": "Webhook path",
+      "pathAria": "Webhook path",
+      "pathInvalid": "Use 3–64 lowercase letters, digits or hyphens, starting with a letter or digit.",
+      "legacyPath": "This compatibility path was created before the upgrade; it can be started or stopped unchanged. Edited paths must use lowercase letters, digits and hyphens.",
+      "pathHint": "A random path was generated automatically. You can change it to a recognizable path such as receive-sys1-data.",
+      "fullUrl": "Full URL",
+      "fullUrlAria": "Full URL (read-only)",
+      "credential": "Access Credential",
+      "credentialPlaceholder": "Select an Access Credential",
+      "noCredential": "No token Credentials are available. Create one in System Settings first.",
+      "worker": "Runtime Worker",
+      "workerPlaceholder": "Select a Runtime Worker that supports the current language",
+      "timeout": "Per-execution timeout (maximum run time)",
+      "timeoutHint": "When a call exceeds this duration, the system ends it and marks it as “timeout”.",
+      "custom": "Custom",
+      "seconds": "seconds",
+      "save": "Save runtime settings",
+      "copy": "Webhook address copied to the clipboard.",
+      "copyFailed": "Copy failed. Select and copy the full address manually.",
+      "timeoutInvalid": "Per-execution timeout must be between 1 and {{max}} seconds (maximum 24 hours).",
+      "pathInUse": "Webhook path {{path}} is currently used by another running Adapter. Stop the old Adapter before starting this one.",
+      "credentialTypeInvalid": "A Webhook can only use a token Credential",
+      "stopTitle": "Stop receiving",
+      "stopDescription": "A Webhook call is still running. Stopping receiving will reject new requests. Choose how to handle the current call.",
+      "endCall": "End current call now",
+      "waitCall": "Wait for the call to finish",
+      "cancelCall": "Cancel",
+      "stoppedAndEnded": "Receiving stopped and the current call ended.",
+      "cancelFailed": "Receiving stopped, but cancelling the current call failed: {{error}}. The call is still running; view it in Live logs. Runtime settings unlock after it reaches a terminal state."
+    }
+  },
+  "history": {
+    "activeTrigger": "Manual trigger",
+    "scheduledTrigger": "Schedule trigger",
+    "webhookTrigger": "Webhook trigger",
+    "unknownTrigger": "{{trigger}}",
+    "scheduledFor": "Scheduled {{time}}",
+    "openDetail": "Open execution details, Runtime Worker {{worker}}",
+    "detailTitle": "Execution details",
+    "refresh": "Refresh",
+    "loadMore": "Load more",
+    "connectionLost": "Log connection lost; status may be stale",
+    "connectionLostDescription": "The authoritative polling limit was reached without a terminal state. Refresh or open this execution again later."
+  },
+  "live": {
+    "title": "Live logs",
+    "waitingTag": "Waiting for Webhook request…",
+    "emptyTag": "No logs",
+    "waitingTitle": "Waiting for Webhook request…",
+    "waitingDescription": "After a real request creates an execution, this view will follow the complete call log automatically.",
+    "emptyTitle": "No live logs",
+    "emptyDescription": "After a run starts, stdout, stderr, logger and Traceback appear here in the order they occurred.",
+    "connectionLost": "Live connection lost; status may be stale",
+    "connectionLostDescription": "The authoritative polling limit was reached without a terminal state. Refresh or open the execution history later.",
+    "unifiedLog": "Unified log",
+    "output": "Output"
+  },
+  "output": {
+    "truncated": "Output exceeded the platform retention limit; the complete content was not saved",
+    "truncatedDescription": "Actual size: {{size}} bytes; the content below is a preview, not complete JSON",
+    "unknownSize": "Unknown",
+    "empty": "No Output"
+  },
+  "logs": {
+    "pause": "Pause following",
+    "resume": "Resume following",
+    "addContextTitle": "Add the selected log text to the AI conversation context (only masked text visible in the browser is used)",
+    "maximize": "Maximize logs",
+    "restore": "Restore log size",
+    "truncated": "Logs exceeded the platform retention limit; some content was truncated",
+    "empty": "No logs"
+  },
+  "units": {
+    "seconds": "{{value}} seconds",
+    "minutes": "{{value}} minutes",
+    "milliseconds": "{{value}} ms"
+  },
+  "diff": {
+    "baseVersion": "Baseline Revision v{{seq}}",
+    "baseVersionNone": "Baseline (no saved Revision)",
+    "workingTitle": "Revision diff: Working Copy vs baseline",
+    "workingModified": "Working Copy (current edits)"
+  }
 }

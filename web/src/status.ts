@@ -1,14 +1,24 @@
 /** Unified Chinese status display for Executions (M3 spec §8.3). */
 
 import type { ExecutionStatus } from "./types";
+import { currentSystemLocale, i18n } from "./i18n";
+
+const STATUS_LABEL_KEYS: Record<ExecutionStatus, string> = {
+  pending: "executionStatus.pending",
+  running: "executionStatus.running",
+  succeeded: "executionStatus.succeeded",
+  failed: "executionStatus.failed",
+  timeout: "executionStatus.timeout",
+  cancelled: "executionStatus.cancelled",
+};
 
 export const STATUS_LABELS: Record<ExecutionStatus, string> = {
-  pending: "等待中",
-  running: "运行中",
-  succeeded: "成功",
-  failed: "失败",
-  timeout: "超时",
-  cancelled: "已取消",
+  pending: i18n.getFixedT("zh-CN", "runtime")(STATUS_LABEL_KEYS.pending),
+  running: i18n.getFixedT("zh-CN", "runtime")(STATUS_LABEL_KEYS.running),
+  succeeded: i18n.getFixedT("zh-CN", "runtime")(STATUS_LABEL_KEYS.succeeded),
+  failed: i18n.getFixedT("zh-CN", "runtime")(STATUS_LABEL_KEYS.failed),
+  timeout: i18n.getFixedT("zh-CN", "runtime")(STATUS_LABEL_KEYS.timeout),
+  cancelled: i18n.getFixedT("zh-CN", "runtime")(STATUS_LABEL_KEYS.cancelled),
 };
 
 // antd Tag color semantics: keep success/error/warning consistent everywhere.
@@ -28,8 +38,9 @@ export const TERMINAL_STATUSES: ReadonlySet<ExecutionStatus> = new Set([
   "cancelled",
 ]);
 
-export function statusLabel(status: string): string {
-  return STATUS_LABELS[status as ExecutionStatus] ?? status;
+export function statusLabel(status: string, locale = currentSystemLocale()): string {
+  const key = STATUS_LABEL_KEYS[status as ExecutionStatus];
+  return key === undefined ? status : i18n.getFixedT(locale, "runtime")(key);
 }
 
 export function statusColor(status: string): string {

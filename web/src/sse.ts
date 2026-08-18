@@ -6,7 +6,12 @@
  */
 
 import { getAuthToken, handleUnauthorized } from "./api";
+import { currentSystemLocale, i18n } from "./i18n";
 import type { Execution } from "./types";
+
+function sseErrorMessage(key: string, params?: Record<string, unknown>): string {
+  return i18n.getFixedT(currentSystemLocale(), "common")(key, params);
+}
 
 export interface LogEvent {
   stream: "stdout" | "stderr";
@@ -101,7 +106,7 @@ export function openExecutionEvents(
       });
     } catch {
       if (!closed) {
-        handlers.onError?.("实时事件连接失败");
+        handlers.onError?.(sseErrorMessage("errors.sse_connect_failed"));
         fallbackUnlessClosed();
       }
       return;
@@ -114,7 +119,7 @@ export function openExecutionEvents(
       return;
     }
     if (!response.ok || response.body === null) {
-      handlers.onError?.(`实时事件连接失败（HTTP ${response.status}）`);
+      handlers.onError?.(sseErrorMessage("errors.sse_connect_failed_http", { status: response.status }));
       fallbackUnlessClosed();
       return;
     }
@@ -137,7 +142,7 @@ export function openExecutionEvents(
       }
     } catch {
       if (!closed) {
-        handlers.onError?.("实时事件读取失败");
+        handlers.onError?.(sseErrorMessage("errors.sse_read_failed"));
       }
     }
     // The server only closes the stream after a terminal status, and a
