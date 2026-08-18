@@ -354,6 +354,73 @@ describe("client-side bounds mirror the B2 contract", () => {
     expect(screen.queryAllByTestId("ai-attachment-item")).toHaveLength(1);
   });
 
+  it("serializes double-clicks while attachment bodies are being resolved", async () => {
+    const file = makeFile("notes.txt", "text/plain", "race-body");
+    const assistAdapter = vi
+      .spyOn(api, "assistAdapter")
+      .mockResolvedValue(aiResponse("回复", null));
+    renderPanel();
+    await addFiles(file);
+    fireEvent.change(screen.getByTestId("ai-message-input"), {
+      target: { value: "请分析" },
+    });
+
+    // Hold the file read open so the send stays in the resolution window
+    // (draft still visible, `sending` still false).
+    let resolveRead: ((dataUrl: string) => void) | undefined;
+    const pendingRead = new Promise<string>((resolve) => {
+      resolveRead = resolve;
+    });
+    const readSpy = vi
+      .spyOn(FileReader.prototype, "readAsDataURL")
+      .mockImplementation(function (this: FileReader) {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias -- test mock needs the FileReader instance inside the deferred callback
+        const target = this;
+        void pendingRead.then((dataUrl) => {
+          Object.defineProperty(target, "result", { value: dataUrl, configurable: true });
+          target.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+        });
+      });
+
+    fireEvent.click(screen.getByTestId("ai-send"));
+    fireEvent.click(screen.getByTestId("ai-send"));
+    fireEvent.click(screen.getByTestId("ai-send"));
+
+    await act(async () => {
+      resolveRead?.("data:text/plain;base64,cmFjZS1ib2R5");
+      await pendingRead;
+    });
+    await screen.findByText("回复");
+
+    // Exactly one request and one user message — the re-entry guard drops
+    // the duplicate clicks instead of duplicating the round.
+    expect(assistAdapter).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("ai-message-user")).toHaveLength(1);
+    readSpy.mockRestore();
+  });
+
+  it("keeps the draft when the runtime config is invalid (consumption happens after freezing)", async () => {
+    const file = makeFile("notes.txt", "text/plain", "draft-body");
+    const assistAdapter = vi
+      .spyOn(api, "assistAdapter")
+      .mockResolvedValue(aiResponse("回复", null));
+    renderPanel({
+      workingCopy: { ...workingCopy, runtimeConfigText: "not-json{" },
+    });
+    await addFiles(file);
+    fireEvent.change(screen.getByTestId("ai-message-input"), {
+      target: { value: "请分析" },
+    });
+    fireEvent.click(screen.getByTestId("ai-send"));
+
+    await screen.findByTestId("ai-panel-error");
+    expect(screen.getByTestId("ai-panel-error").textContent).toContain("运行参数");
+    // The draft is preserved: text and attachment row stay put, nothing sent.
+    expect((screen.getByTestId("ai-message-input") as HTMLTextAreaElement).value).toBe("请分析");
+    expect(screen.queryAllByTestId("ai-attachment-item")).toHaveLength(1);
+    expect(assistAdapter).not.toHaveBeenCalled();
+  });
+
   it("rejects oversized, count-exceeded and total-exceeded files with actionable localized copy", async () => {
     vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
     renderPanel();

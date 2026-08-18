@@ -633,6 +633,12 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const translateRef = useRef<(key: string, options?: Record<string, unknown>) => string>(t);
   const composerAttachmentsRef = useRef<readonly Attachment[]>([]);
   const wireCacheRef = useRef(new WeakMap<object, AiAttachment>());
+  // Wave B3: guards the send entry against re-entry while attachment bodies
+  // are being resolved. The draft stays visible and `sending` is still false
+  // during that window, so a second click/Enter would otherwise duplicate
+  // the user message and the request; the ref is set synchronously before
+  // the first await and cleared in the finally block.
+  const attachmentSendInFlightRef = useRef(false);
   const composerControlsRef = useRef<{
     setText: (text: string) => void;
     clearAttachments: () => Promise<void>;
@@ -777,20 +783,20 @@ async function resolveComposerAttachment(
  * is a plain object the runtime invokes from event handlers and async flows
  * (add/send/remove), never during React render, so the one-render lag of the
  * effect-updated refs is irrelevant. */
-/* eslint-disable react-hooks/refs -- stable adapter; the closures read refs
-   only from runtime callbacks (add/send/remove), never during render. */
-const attachmentAdapter = useMemo<AttachmentAdapter>(
-  () =>
-    createDlrAttachmentAdapter({
-      limits: () => attachmentLimitsRef.current,
-      composerAttachments: () => composerAttachmentsRef.current,
-      supportedContentTypes: () => supportedContentTypesRef.current,
-      translate: (key, options) => translateRef.current(key, options),
-      wireCache: () => wireCacheRef.current,
-    }),
-  [],
-);
-/* eslint-enable react-hooks/refs */
+  /* eslint-disable react-hooks/refs -- stable adapter; the closures read refs
+     only from runtime callbacks (add/send/remove), never during render. */
+  const attachmentAdapter = useMemo<AttachmentAdapter>(
+    () =>
+      createDlrAttachmentAdapter({
+        limits: () => attachmentLimitsRef.current,
+        composerAttachments: () => composerAttachmentsRef.current,
+        supportedContentTypes: () => supportedContentTypesRef.current,
+        translate: (key, options) => translateRef.current(key, options),
+        wireCache: () => wireCacheRef.current,
+      }),
+    [],
+  );
+  /* eslint-enable react-hooks/refs */
 
   /** M5.7 Wave B3: turn the composer's attachment rows into the B2 wire shape
    * (filename, content_type, strict base64 body), re-verifying the total
@@ -1031,10 +1037,11 @@ const attachmentAdapter = useMemo<AttachmentAdapter>(
    * preparing-stage contract; attachment reads happen before freezing.
    *
    * Wave B3 draft-safety: the composer draft (text + rows) is only consumed
-   * AFTER validation and body resolution succeed. A rejected (error) row
-   * blocks the send with its localized message, and a failed read or a
-   * tightened total bound surfaces an actionable error — in both cases the
-   * draft stays fully intact in the composer. */
+   * AFTER validation, body resolution and snapshot freezing succeed. A
+   * rejected (error) row blocks the send with its localized message, a
+   * failed read or a tightened total bound surfaces an actionable error, and
+   * an invalid runtime config keeps the composition — in every failure case
+   * the draft stays fully intact in the composer. */
   async function sendMessage(rawText: string, composerAttachments: readonly Attachment[]) {
     const text = rawText.trim();
     const adapter = props.adapter;
@@ -1047,57 +1054,72 @@ const attachmentAdapter = useMemo<AttachmentAdapter>(
     ) {
       return;
     }
-    // A client-rejected row must never leave the browser: block the send
-    // with the row's localized message and keep the draft intact (the user
-    // can delete the row and retry).
-    const rejectedMessage = firstRejectedRowMessage(
-      composerAttachments,
-      t("assistant.attachments.error.rejected"),
-    );
-    if (rejectedMessage !== null) {
-      setAttachmentError(rejectedMessage);
+    // Wave B3: re-entry guard. The draft is still visible and `sending` is
+    // still false while bodies resolve, so without this a second
+    // click/Enter would duplicate the round. Set synchronously before the
+    // first await; reset on every exit path.
+    if (attachmentSendInFlightRef.current) {
       return;
     }
-    // Resolve bodies while the draft is still in the composer so any failure
-    // loses nothing. Text-only sends skip the await and keep the Wave A
-    // synchronous preparing-stage contract.
-    let wireAttachments: AiAttachment[];
+    attachmentSendInFlightRef.current = true;
     try {
-      wireAttachments =
-        composerAttachments.length === 0
-          ? []
-          : await resolveComposerAttachments(composerAttachments);
-    } catch (error) {
-      // DLR's own rejection messages (localized total-bound / refused-row
-      // errors) are plain Errors; browser file-read failures surface as
-      // DOMExceptions and localize through the readFailed copy instead.
-      setAttachmentError(
-        error instanceof Error &&
-          error.message !== "" &&
-          !(typeof DOMException !== "undefined" && error instanceof DOMException)
-          ? error.message
-          : t("assistant.attachments.error.readFailed"),
+      // A client-rejected row must never leave the browser: block the send
+      // with the row's localized message and keep the draft intact (the
+      // user can delete the row and retry).
+      const rejectedMessage = firstRejectedRowMessage(
+        composerAttachments,
+        t("assistant.attachments.error.rejected"),
       );
-      return;
+      if (rejectedMessage !== null) {
+        setAttachmentError(rejectedMessage);
+        return;
+      }
+      // Resolve bodies while the draft is still in the composer so any
+      // failure loses nothing. Text-only sends skip the await and keep the
+      // Wave A synchronous preparing-stage contract.
+      let wireAttachments: AiAttachment[];
+      try {
+        wireAttachments =
+          composerAttachments.length === 0
+            ? []
+            : await resolveComposerAttachments(composerAttachments);
+      } catch (error) {
+        // DLR's own rejection messages (localized total-bound / refused-row
+        // errors) are plain Errors; browser file-read failures surface as
+        // DOMExceptions and localize through the readFailed copy instead.
+        setAttachmentError(
+          error instanceof Error &&
+            error.message !== "" &&
+            !(typeof DOMException !== "undefined" && error instanceof DOMException)
+            ? error.message
+            : t("assistant.attachments.error.readFailed"),
+        );
+        return;
+      }
+      const snapshot = buildRoundSnapshot(adapter, text, wireAttachments);
+      if (snapshot === null) {
+        // Invalid runtime config: the error is reported by
+        // buildRoundSnapshot and the draft stays untouched.
+        return;
+      }
+      // Only after validation, resolution and freezing succeed, consume the
+      // draft (adapter.remove is a no-op — no per-attachment browser
+      // resources).
+      composerControlsRef.current?.setText("");
+      void composerControlsRef.current?.clearAttachments();
+      const userMessage: VisibleMessage = {
+        id: nextMessageId.current++,
+        role: "user",
+        content: snapshot.message,
+        candidate: null,
+        snapshot,
+      };
+      setMessages((current) => [...current, userMessage]);
+      setAttachmentError(null);
+      await runAssist(snapshot, null);
+    } finally {
+      attachmentSendInFlightRef.current = false;
     }
-    // Only after successful resolution consume the draft (adapter.remove is
-    // a no-op — no per-attachment browser resources).
-    composerControlsRef.current?.setText("");
-    void composerControlsRef.current?.clearAttachments();
-    const snapshot = buildRoundSnapshot(adapter, text, wireAttachments);
-    if (snapshot === null) {
-      return;
-    }
-    const userMessage: VisibleMessage = {
-      id: nextMessageId.current++,
-      role: "user",
-      content: snapshot.message,
-      candidate: null,
-      snapshot,
-    };
-    setMessages((current) => [...current, userMessage]);
-    setAttachmentError(null);
-    await runAssist(snapshot, null);
   }
 
   /** M5.7 Wave A/B1: External Store Runtime — DLR 继续持有消息状态，assistant-ui
