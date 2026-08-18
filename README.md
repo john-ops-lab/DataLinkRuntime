@@ -1,301 +1,261 @@
-# DataLinkRuntime (DLR)
+<h1 align="center">DataLinkRuntime</h1>
 
-**English** | [简体中文](README.zh-CN.md)
+<p align="center">
+  一个轻量、可自托管的数据适配运行平台，用浏览器完成数据接入代码的开发、运行与运维。
+</p>
 
-A lightweight data adapter runtime platform for data collection, receiving, parsing,
-transformation and output for CMDB and other systems.
+<p align="center">
+  <a href="https://github.com/john-ops-lab/DataLinkRuntime/actions/workflows/ci.yml"><img src="https://github.com/john-ops-lab/DataLinkRuntime/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/Python-3.13-blue" alt="Python 3.13">
+  <img src="https://img.shields.io/badge/Runtime-Python%20%7C%20JavaScript%20%7C%20Java-informational" alt="Runtimes">
+</p>
 
-- Product definition: [docs/en/product.md](docs/en/product.md)
-- Overall architecture: [docs/en/architecture.md](docs/en/architecture.md)
-- M4 AI Editor Spec: [docs/specs/m4-ai-editor.md](docs/specs/m4-ai-editor.md)
+<p align="center">
+  <strong>简体中文</strong> · <a href="README.en.md">English</a> ·
+  <a href="docs/zh-CN/product.md">产品定义</a> ·
+  <a href="docs/zh-CN/architecture.md">总体架构</a> ·
+  <a href="docs/specs/README.md">规格索引</a> ·
+  <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues/80">路线图</a>
+</p>
 
-The M5.4 Workbench is complete: Python / JavaScript / Java Adapters share immutable
-Revisions, Secrets, live logs and Execution history semantics, and the right-hand
-AI Assistant can generate a complete Candidate from the current Working Copy. A
-Candidate must be reviewed as a Diff and explicitly applied by an administrator;
-applying only updates the browser Working Copy; saving and running always remain
-administrator actions. Task Adapters support manual or scheduled runs, and both
-entries always execute the latest saved content and are pinned to the configured
-runtime node. Webhook Adapters automatically receive a random URL path at creation;
-after binding a Token Credential and a runtime node they can start receiving. Every
-successful JSON request asynchronously creates one Execution, and each Adapter keeps
-only the most recent 100 Webhook call records. Stopping reception immediately rejects
-new requests but does not terminate calls that are already executing. Task, Schedule
-and Webhook reuse the unified run lock and the Workbench bottom live log; the log
-supports fullscreen and restore. While running, code, run configuration, saving and
-deletion are locked, with a Clone upgrade entry and an explicit reason. The official
-Worker image includes Python 3.13 / uv, Node.js LTS / npm and JDK 21 / Maven, and
-reports capability from the runtimes actually available. M4.1 further derives the
-Worker effective online status from heartbeat timeout so run entries never pick a
-Worker that has already lost contact.
+# DataLinkRuntime - 轻量数据适配运行平台
 
-## Quick Start
+DataLinkRuntime（DLR）面向 CMDB 等系统的数据采集、接收、解析、转换和输出场景。
 
-Prerequisites: Docker (with Compose v2).
+核心思路很简单：**一个 Adapter 就是一个自包含的数据处理单元**。你在 Web Workbench 中编写代码，DLR 把代码交给 Worker 执行，并为每一次运行保留可追溯的输入、输出、日志和状态。
 
-Since M2, Control / Worker require a static Token; since M3.2 the Secret Store also
-requires the deployment-level `DLR_MASTER_KEY`. Compose does not ship usable defaults
-for any of these values:
+DLR 有意保持轻量：它不是工作流引擎，也不是低代码平台，而是专注于把 Adapter 的开发、执行和运维做得简单、明确、易于私有化部署。
+
+## 主要概念
+
+1. **创建 Adapter**
+   - `Task`：支持手动运行和定时运行。
+   - `Webhook`：通过 HTTP 接收外部 JSON 请求。
+
+2. **在浏览器中开发**
+   - Monaco 在线编辑器。
+   - Python、JavaScript、Java 共用统一的 `Input → handle(context, input) → Output` 合同。
+   - 依赖、运行配置和 Credential Binding 跟随 Adapter 管理。
+
+3. **在 Worker 上执行**
+   - Control 负责状态、事务和调度，但不执行用户 Adapter 代码。
+   - Worker 主动领取 Execution，并在独立子进程 / JVM 中运行代码。
+   - 同一个 Adapter 同时最多只有一个 `pending / running` Execution。
+
+4. **观察每一次运行**
+   - 实时 stdout / stderr。
+   - 结构化 Output。
+   - Execution 历史与 Webhook 调用记录。
+   - Task、Schedule、Webhook 共用超时、取消与运行锁语义。
+
+5. **用 AI 辅助开发，但保留人工确认**
+   - AI Assistant 读取当前 Working Copy 和有界的非敏感上下文。
+   - AI 返回完整 Candidate 快照。
+   - 管理员先看 Diff，再明确 Apply。
+   - Apply 不会自动保存、测试或运行 Adapter。
+
+## 功能特性
+
+- 基于 Monaco Editor 的浏览器 Adapter Workbench。
+- Task 手动运行与 Cron / Timezone 定时运行。
+- 带 Bearer Token 鉴权的 Webhook Adapter。
+- Python 3.13、JavaScript / Node.js、Java 21 Runtime。
+- Version-scoped 依赖环境。
+- PostgreSQL 驱动的 Execution 状态与调度。
+- Worker 心跳与 capability 感知调度。
+- 实时日志、Execution 历史、Webhook 调用记录。
+- 加密 Credential 与 Adapter Secret Binding。
+- Python / npm / Maven 依赖源管理。
+- Human-in-the-loop AI Assistant：Candidate → Diff → Apply。
+- 部署级 `zh-CN / en` 国际化。
+- Docker Compose 私有化部署。
+
+## 快速开始
+
+前置条件：Docker，并支持 Compose v2。
+
+创建部署配置并替换其中的占位凭据：
 
 ```bash
-cp .env.example .env   # replace placeholder values such as DLR_ADMIN_TOKEN / DLR_WORKER_TOKEN / DLR_MASTER_KEY
-docker compose up -d --build
+cp .env.example .env
+# 编辑 .env，至少设置：
+# DLR_ADMIN_TOKEN
+# DLR_WORKER_TOKEN
+# DLR_MASTER_KEY
 ```
 
-On first start the Worker needs the `workers` table to register, so the database
-migration must run first:
+先启动 PostgreSQL 并执行数据库迁移：
 
 ```bash
-# wait for PostgreSQL to start
-docker compose ps postgres
+docker compose up -d postgres
 docker compose run --rm control alembic upgrade head
 ```
 
-After the migration, wait until all services are healthy:
+启动完整环境：
+
+```bash
+docker compose up -d --build
+```
+
+检查服务状态：
 
 ```bash
 docker compose ps
 ```
 
-Once all services report `healthy`:
+全部服务健康后：
 
-- Web UI: http://localhost:8080 (the first visit asks for `DLR_ADMIN_TOKEN`, stored only in the browser sessionStorage)
-- Control health (via web/nginx): http://localhost:8080/api/health
-- Worker: no external port (outbound long polling to Control; healthcheck based on the ready file)
+- Web Console：`http://localhost:8080`
+- Health API：`http://localhost:8080/api/health`
 
-Admin APIs require `Authorization: Bearer <DLR_ADMIN_TOKEN>`; Worker APIs require
-`DLR_WORKER_TOKEN`. Runtime Secrets are injected into the Worker only, as
-`DLR_SECRET_*` entries, and Adapters read them via `context.secrets.get(...)`.
+首次进入 Web Console 时需要输入 `DLR_ADMIN_TOKEN`；Token 只保存在浏览器 `sessionStorage` 中。
 
-Clean up the environment (including the database volume):
+清理本地环境及数据库卷：
 
 ```bash
 docker compose down --volumes
 ```
 
-## Components
+## 架构
 
-| Component | Description |
-|-----------|-------------|
-| web | React + TypeScript + Vite SPA, served by Nginx which proxies `/api` |
-| control | FastAPI control node (Python 3.13) |
-| postgres | PostgreSQL 16 |
-| worker | Worker Agent: register / heartbeat / long polling, executes Adapters in separate sub-processes of a version-scoped environment per language |
+```text
+┌─────────────────────┐
+│ Web                  │
+│ React + Monaco       │
+└──────────┬──────────┘
+           │ HTTP/JSON + SSE
+           ▼
+┌─────────────────────┐       ┌─────────────────────┐
+│ Control              │──────▶│ PostgreSQL          │
+│ FastAPI              │       │ 状态 / 调度         │
+│ API / 门禁 / AI      │       │ 执行历史            │
+└──────────┬──────────┘       └─────────────────────┘
+           │ Worker 主动长轮询
+           ▼
+┌─────────────────────┐
+│ Worker               │
+│ Python / Node / Java │
+│ 独立子进程执行       │
+└─────────────────────┘
+```
 
-## Worker Effective Online Status
+DLR 刻意保持清晰的执行边界：
 
-Workers send a heartbeat every 10 seconds by default
-(`DLR_WORKER_HEARTBEAT_SECONDS`). `workers.status` in the database is the Stored
-Status that a Worker writes actively at register / heartbeat / graceful offline;
-Control never rewrites expired heartbeats to `offline` through a background task.
+- **Web**：提供管理员操作体验。
+- **Control**：负责 API、事务门禁、调度、Webhook 路由和 AI Provider 集成。
+- **PostgreSQL**：保存权威持久化状态。
+- **Worker**：唯一真正执行用户 Adapter 代码的组件。
 
-When Control needs to decide whether a Worker is currently usable, it derives the
-Effective Status: the Stored Status must be `online` and the latest heartbeat age
-must be less than or equal to `DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS` (default 30
-seconds). Exactly at the timeout boundary the Worker still counts as online. The
-`status` of the Admin Worker API, Test and Start all use this effective status;
-`last_heartbeat` is returned as-is for troubleshooting only, and the Web never
-recomputes it with browser time.
+当前详细合同见 [总体架构](docs/zh-CN/architecture.md)。
 
-The heartbeat timeout must be positive and strictly greater than the Worker
-heartbeat interval; when adjusting the heartbeat interval, adjust the timeout
-accordingly — about 3 times the interval is recommended. An expired Worker
-automatically returns to effective online once heartbeats resume, with no manual
-intervention.
+## 技术栈
 
-## AI Assistant Configuration and Boundaries
+| 层 | 技术 |
+|---|---|
+| Web | React 19、TypeScript、Vite、Ant Design、Monaco Editor、i18next |
+| Control | Python 3.13、FastAPI、SQLAlchemy 2、Alembic |
+| Database | PostgreSQL 16 |
+| Worker | Python、Node.js / npm、JDK 21 / Maven |
+| Python 工具链 | uv、pytest、Ruff、mypy |
+| 部署 | Docker Compose |
 
-The AI Assistant uses one global active model configuration. In
-「System Settings → AI Model」, select a Provider and fill in the Base URL and Model
-ID; the Model ID can be refreshed from the Provider's `/v1/models` or entered
-manually. If an API Key is needed, create a `token`-type Credential first and
-reference it in the AI settings; the browser and the AI settings API only see
-Credential metadata, never the plaintext token. The reasoning strategy defaults to
-「Follow model default」, in which case DLR does not send a reasoning override.
+## AI Assistant
 
-The default timeout for non-streaming Provider HTTP requests is 180 seconds and can
-be adjusted with `DLR_AI_PROVIDER_TIMEOUT_SECONDS` in the 10–600 second range; this
-parameter only controls the request deadline and does not add streaming or output
-token management.
+当前 AI Assistant 是一个**受约束的编程助手**，不是自主 Agent。
 
-When using AI features, the current Adapter code, ordinary configuration and a
-bounded recent conversation are sent to the configured model service to generate
-suggestions; the names of bound Secrets are forwarded (so the model can produce
-usable code), but the true values of passwords, Tokens, keys and other sensitive
-credentials are never sent to the model, and the browser and the AI settings API
-never return those true values. The selected model API Key is used only for request
-authentication and never enters the Prompt. Conversations, Prompts, Provider
-Responses and reasoning are not persisted and are not written to ordinary application
-logs. Candidate changes returned by the model still require human review and Apply
-after local Schema validation; Apply does not save, test or run the Adapter.
+```text
+Working Copy + 有界上下文
+→ 模型回答
+→ Candidate 严格校验
+→ Diff 审阅
+→ 人工明确 Apply
+→ 浏览器 Working Copy 进入 dirty
+```
 
-## Local Development
+安全与行为边界：
 
-### backend
+- Working Copy 是本轮请求的权威代码快照。
+- Credential 真值不会进入 Prompt。
+- 只允许把已绑定 Secret 的 key 名称提供给模型，帮助生成可运行代码。
+- Provider reasoning 不持久化、不展示。
+- AI 对话、Prompt、Provider 原始响应不持久化。
+- Apply 不会自动执行 Save / Test / Run。
 
-Prerequisites: [uv](https://docs.astral.sh/uv/) (it installs Python 3.13
-automatically).
+M5.7 正在继续扩展 AI Assistant：采用 `assistant-ui`、加入 Regenerate、附件、受控只读 Tool Call 和 MCP 知识接入。在实现并完成人工验收之前，这些能力属于路线图而不是当前已完成能力。详见 [Issue #80](https://github.com/john-ops-lab/DataLinkRuntime/issues/80)。
+
+## 安全
+
+- Credential 使用部署级 `DLR_MASTER_KEY` 派生密钥进行静态加密。
+- Credential 明文永远不会返回浏览器。
+- Runtime Secret 只为目标 Execution 注入，并从平台日志中脱敏。
+- Admin API 与 Worker API 使用不同的 Bearer Token。
+- Webhook Token 使用 constant-time compare。
+- Control 永远不执行用户 Adapter 代码。
+- DLR v1 采用可信管理员代码模型；子进程隔离**不等于安全沙箱**。
+
+不要在 Adapter 源码中硬编码密码、Token、私钥或其他 Secret。
+
+## 本地开发
+
+Backend：
 
 ```bash
 cd backend
 uv sync --frozen
-uv run uvicorn dlr.control.app:create_app --factory --reload
-uv run ruff check . && uv run ruff format --check .
+uv run ruff check .
+uv run ruff format --check .
 uv run mypy
-uv run pytest   # needs a reachable PostgreSQL (tests create their own isolated dlr_test database and run real migrations)
+uv run pytest
 ```
 
-If no PostgreSQL is available locally, start a temporary test instance (the default
-`DATABASE_URL` connects to it directly):
-
-```bash
-docker run --rm -d --name dlr-dev-pg -p 127.0.0.1:5432:5432 \
-  -e POSTGRES_USER=dlr -e POSTGRES_PASSWORD=dlr -e POSTGRES_DB=dlr postgres:16
-```
-
-Database migrations (PostgreSQL is reachable only inside the Compose network):
-
-```bash
-docker compose run --rm control alembic upgrade head
-```
-
-### web
-
-Prerequisites: Node.js 22+.
+Web：
 
 ```bash
 cd web
 npm ci
-npm run dev        # http://localhost:5173, /api proxied to localhost:8000
 npm run lint
 npm run typecheck
 npm run test
 npm run build
 ```
 
-## Smoke Test
-
-Build and start all containers (an isolated compose project with dedicated ports),
-run the Alembic migrations on a real PostgreSQL, wait for all services to be healthy,
-then verify the `/api/health` chain and 401 authentication rejection. The M5.4 Task
-main path really runs `Task create → Save + Worker → Run Once → succeeded → switch to
-scheduled run → configure a short-period Schedule → enable → schedule Execution
-succeeded → disable`, and verifies that Python / JavaScript / Java real base
-executions all print “任务开始/任务结束”, that Run Once and Schedule both pin the
-latest saved content / running Worker, the unified active lock, and that Clone leaves
-the Schedule disabled. The Webhook main path really runs
-`create → Save + Worker + Token → readable path → start receiving → POST JSON → 202 →
-succeeded → call record → stop receiving`, and verifies that stopping does not
-terminate an active Execution, the single in-flight constraint for the same path, and
-`Clone disabled → old Adapter stopped → Clone takes over the original URL`. The M4
-path additionally starts a temporary OpenAI-compatible fake Provider that lives only
-in the smoke network, verifying settings, model refresh, connection test and
-three-language AI Assist, and proving that AI does not change save, Execution or run
-configuration facts; no public AI is accessed and the fake Provider never enters the
-formal Compose topology. The whole process uses a dedicated Compose project and
-volumes and cleans up afterwards; it also verifies the three default dependency
-sources shipped with a fresh deployment, the restore-defaults API, and that the
-default DNS fallback container configuration and Docker internal service-name
-resolution do not regress:
+完整集成冒烟测试：
 
 ```bash
 ./scripts/compose-smoke.sh
 ```
 
-## Container Network and DNS Troubleshooting
+Smoke Test 使用隔离的本地环境和 fake AI Provider，不会访问公网 AI 服务。
 
-### Default Behavior (M5.5.8)
+## 文档
 
-The `control` / `worker` DNS list defaults to
-`127.0.0.11 → 1.1.1.1 → 8.8.8.8`: the first entry is the Docker built-in resolver
-(responsible for internal service names such as `postgres` / `control`), and the
-other two are public DNS fallbacks tried only when the built-in resolver cannot
-resolve public domains (corporate networks / VPN / firewalls blocking host DNS
-forwarding). Only two kinds of external connections need public domain resolution:
+- [产品定义](docs/zh-CN/product.md)
+- [总体架构](docs/zh-CN/architecture.md)
+- [规格索引与冲突优先级](docs/specs/README.md)
+- [M5.7 AI Assistant Spec](docs/specs/m5-7-ai-assistant.md)
 
-- `control` accessing the AI Provider Base URL (the model service in AI settings);
-- `worker` downloading dependencies per Adapter language (PyPI / npm / Maven; the
-  default sources are configured in System Settings, with optional compatible
-  configuration in `.env.example`).
+M1-M4 的历史 Spec 会继续保留用于追溯。当文档发生冲突时，应遵循 `docs/specs/README.md` 中定义的优先级，而不是把所有历史 Spec 都当成当前产品行为。
 
-### Overriding or Disabling DNS Fallback
+## 路线图
 
-- **Corporate / VPN / private DNS**: specify your own DNS in `.env`, for example
-  ```bash
-  DLR_DNS_FALLBACK_1=10.0.0.53
-  DLR_DNS_FALLBACK_2=
-  ```
-- **Disable public DNS fallback completely** (back to the old default of pure Docker
-  built-in resolver forwarding the host `resolv.conf`): leave both fallbacks empty:
-  ```bash
-  DLR_DNS_FALLBACK_1=
-  DLR_DNS_FALLBACK_2=
-  ```
-- **Replace the whole DNS list** (without editing `docker-compose.yml`, requires
-  Compose v2.24+):
-  ```bash
-  cp docker-compose.dns.example.yml docker-compose.dns.yml
-  # edit docker-compose.dns.yml and replace it with DNS actually usable in your network
-  docker compose -f docker-compose.yml -f docker-compose.dns.yml up -d --build
-  ```
+当前阶段：**M5.7 - AI Assistant UI 组件化与受控知识接入扩展**。
 
-In every case `127.0.0.11` (the Docker built-in resolver) must stay first in the
-list, or internal service names cannot be resolved inside containers.
+计划范围包括：
 
-### Layered Troubleshooting Order (DNS → TCP → TLS/HTTP)
+- 基于 `assistant-ui` 的 Chat UI。
+- Regenerate。
+- 图片、PDF、Word、文本和代码附件。
+- Provider 原生文件 / 多模态能力优先，DLR 提供有界 fallback 解析。
+- 只读 Tool Call。
+- MCP 知识接入，腾讯 ima 知识库作为首个 POC。
 
-Work bottom-up when troubleshooting; do not skip layers:
+M5.7 明确不做 Streaming token 输出、Reasoning UI 和通用自主 Agent Runtime。
 
-1. **DNS resolution failure**: the AI settings return error code
-   `ai_provider_dns_failed` (the message contains 「域名解析失败」). Verify resolution
-   inside the container directly:
-   ```bash
-   docker compose exec control python -c "import socket; socket.getaddrinfo('api.example.com', 443)"
-   ```
-   Failure means the DNS layer is broken: prefer the DNS override file above; on
-   corporate networks confirm the DNS allows outbound resolution, and on VPN confirm
-   routing does not block DNS traffic.
-2. **TCP connection failure**: error code `ai_provider_unreachable` (the message
-   contains 「TCP 连接或 TLS 握手失败」). Verify the three-way handshake to the target
-   port:
-   ```bash
-   docker compose exec control python -c \
-     "import socket; socket.create_connection(('api.example.com', 443), timeout=5)"
-   ```
-   Failure means the network layer is broken: check container outbound firewall /
-   proxy / VPN routing; DNS is not involved.
-3. **TLS / HTTP failure**: still `ai_provider_unreachable` (TLS handshake failure)
-   or another error code (`ai_auth_failed` means credentials were rejected,
-   `ai_model_not_found` means the Model ID does not exist, `ai_timeout` means the
-   request timed out). This step means network and resolution are both fine; the
-   problem is the server-side interface, certificate chain or authentication.
+当前合同见 [Issue #80](https://github.com/john-ops-lab/DataLinkRuntime/issues/80)。
 
-All three layers can be run at once inside a container (same DNS environment as
-`control`):
+## License
 
-```bash
-# run the layered diagnostics inside the control container (DNS → TCP → TLS → HTTP)
-docker compose exec -T control python - < scripts/diag-network.py --url https://api.example.com
-```
+DataLinkRuntime 基于 [MIT License](LICENSE) 开源。
 
-The script stops at the failed layer and reports it with the exit code (2=DNS,
-3=TCP, 4=TLS, 5=HTTP); on the host it can also run directly as
-`python3 scripts/diag-network.py --host api.example.com --port 443` (the `--host`
-mode only checks DNS/TCP; add `--tls` to also check the TLS handshake; no HTTP
-probing).
-
-### Docker Desktop / VPN / Enterprise Network Checklist
-
-- Docker Desktop: confirm 「Settings → Resources → Network」 does not restrict
-  outbound traffic and the host DNS works (`scutil --dns` / `nslookup` resolve the
-  target domain).
-- VPN: confirm the VPN does not blackhole all Docker VM traffic (temporarily
-  disconnecting the VPN can reproduce the difference); if the VPN brings its own
-  DNS, write it into `docker-compose.dns.yml`.
-- Corporate network: confirm the proxy configuration; `control` outbound traffic
-  does not use host proxy environment variables (`HTTP_PROXY` is not set in the
-  image); if a corporate proxy is required, inject it at the deployment layer and
-  keep the platform configuration file free of proxy credentials.
-- The platform itself never exposes Token / Credential / Provider API Keys: all
-  diagnostic commands use only domains, ports and URLs, and never read or echo
-  secrets.
+Copyright (c) 2026 john-ops-lab。
