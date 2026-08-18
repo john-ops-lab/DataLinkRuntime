@@ -67,7 +67,12 @@ export function DlrToolCallUI(props: ToolCallMessagePartProps) {
   const { t } = useTranslation(["ai"]);
   const calling = isCalling(props);
   const failed = !calling && isErrorState(props);
-  const toolName = clampDisplay(props.toolName || t("assistant.tools.unknownName"));
+  const rawName = clampDisplay(props.toolName || t("assistant.tools.unknownName"));
+  // M5.7 Wave C2: knowledge tools get a localized display name; unknown
+  // tools (and the C1 docs tools) fall back to the raw registered name.
+  const toolName = clampDisplay(
+    t(`assistant.tools.names.${rawName}`, { defaultValue: rawName }),
+  );
   const argsText = clampDisplay(props.argsText ?? "");
   const resultText = clampDisplay(
     typeof props.result === "string" ? props.result : "",

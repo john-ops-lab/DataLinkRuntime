@@ -22,8 +22,23 @@ export SMOKE_LOG_TEXT=${SMOKE_LOG_TEXT:-smoke-log-sentinel-$$}
 # M5.7 Wave B2: attachment body text sent to the fake Provider is request-only
 # too: never logged, never persisted, never echoed back to the browser.
 export SMOKE_ATTACH_TEXT=${SMOKE_ATTACH_TEXT:-smoke-attach-sentinel-$$}
+# M5.7 Wave C2: the fake official ima service credential. The knowledge tools
+# resolve it through the DLR Secret Store; the fake echoes it inside read
+# content on purpose so the smoke proves by-value redaction end to end.
+export SMOKE_IMA_TOKEN=${SMOKE_IMA_TOKEN:-smoke-ima-token-$$}
+# M5.7 Wave C2: the read-only KnowledgeSource deployment config. Exported
+# before `docker compose up -d` so the Control service (which handles the
+# assist requests) boots with them via the docker-compose env passthrough.
+# The endpoint points at the fake official ima service on the private smoke
+# network; DLR_IMA_ALLOW_HTTP is the explicit test/smoke escape hatch.
+IMA_FAKE_CONTAINER_NAME="${COMPOSE_PROJECT_NAME}-ima-fake"
+export DLR_IMA_ENDPOINT="http://${IMA_FAKE_CONTAINER_NAME}:18081"
+export DLR_IMA_ALLOWED_HOSTS="ima.qq.com,${IMA_FAKE_CONTAINER_NAME}"
+export DLR_IMA_ALLOW_HTTP=1
+export DLR_IMA_CREDENTIAL_NAME="smoke-ima"
 AI_FAKE_CONTAINER_ID=""
 AI_FAKE_DISABLED_CONTAINER_ID=""
+IMA_FAKE_CONTAINER_ID=""
 AO_DOCKER_LABEL="ao.session=${AO_SESSION_ID:-compose-smoke}"
 
 cleanup() {
@@ -32,6 +47,9 @@ cleanup() {
   fi
   if [ -n "$AI_FAKE_DISABLED_CONTAINER_ID" ]; then
     docker rm -f "$AI_FAKE_DISABLED_CONTAINER_ID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$IMA_FAKE_CONTAINER_ID" ]; then
+    docker rm -f "$IMA_FAKE_CONTAINER_ID" >/dev/null 2>&1 || true
   fi
   docker compose -p "$COMPOSE_PROJECT_NAME" down --volumes --remove-orphans
 }
@@ -144,6 +162,7 @@ AI_FAKE_CONTAINER_ID=$(docker run -d \
   -e SMOKE_SELECTED_TEXT \
   -e SMOKE_LOG_TEXT \
   -e SMOKE_ATTACH_TEXT \
+  -e SMOKE_IMA_TOKEN \
   --volume "$PWD/scripts/ai-fake-provider.py:/tmp/dlr-ai-fake-provider.py:ro" \
   --entrypoint python \
   "$CONTROL_IMAGE" /tmp/dlr-ai-fake-provider.py --port 18080)
@@ -184,6 +203,28 @@ while ! docker compose exec -T -e AI_FAKE_DISABLED_BASE_URL control python -c \
   elapsed=$((elapsed + 2))
 done
 
+echo "==> starting isolated fake official ima-compatible knowledge service (M5.7 Wave C2)"
+IMA_FAKE_CONTAINER_ID=$(docker run -d \
+  --label "$AO_DOCKER_LABEL" \
+  --name "$IMA_FAKE_CONTAINER_NAME" \
+  --network "$CONTROL_NETWORK" \
+  -e SMOKE_IMA_TOKEN \
+  --volume "$PWD/scripts/ima-fake-service.py:/tmp/dlr-ima-fake-service.py:ro" \
+  --entrypoint python \
+  "$CONTROL_IMAGE" /tmp/dlr-ima-fake-service.py --port 18081)
+
+elapsed=0
+while ! docker compose exec -T -e DLR_IMA_ENDPOINT control python -c \
+  'import os, urllib.request; urllib.request.urlopen(os.environ["DLR_IMA_ENDPOINT"] + "/healthz", timeout=2).read()' \
+  >/dev/null 2>&1; do
+  if [ "$elapsed" -ge 60 ]; then
+    docker logs --tail 50 "$IMA_FAKE_CONTAINER_ID"
+    exit 1
+  fi
+  sleep 2
+  elapsed=$((elapsed + 2))
+done
+
 echo "==> running M5.4.4 Task, Webhook, runtime-lock and Clone regression chain"
 docker compose exec -T \
   -e DLR_ADMIN_TOKEN \
@@ -194,6 +235,7 @@ docker compose exec -T \
   -e SMOKE_ATTACH_TEXT \
   -e AI_FAKE_BASE_URL \
   -e AI_FAKE_DISABLED_BASE_URL \
+  -e SMOKE_IMA_TOKEN \
   control python - < scripts/compose-smoke.py
 
 echo "==> verifying secrets did not enter service logs"
@@ -214,6 +256,12 @@ fi
 # M5.7 Wave B2: attachment body text never enters service logs either.
 if docker compose logs control worker web | grep -F "$SMOKE_ATTACH_TEXT" >/dev/null; then
   echo "ERROR: attachment text appeared in service logs" >&2
+  exit 1
+fi
+# M5.7 Wave C2: the ima credential truth must never enter service logs
+# (the fake ima service echoes it inside the read content on purpose).
+if docker compose logs control worker web | grep -F "$SMOKE_IMA_TOKEN" >/dev/null; then
+  echo "ERROR: ima credential appeared in service logs" >&2
   exit 1
 fi
 

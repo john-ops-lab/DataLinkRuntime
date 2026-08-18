@@ -80,5 +80,41 @@ class Settings(BaseSettings):
         validation_alias="DLR_AI_PROVIDER_TIMEOUT_SECONDS",
     )
 
+    # M5.7 Wave C2: read-only KnowledgeSource (first target: Tencent ima).
+    # The endpoint must be HTTPS and its host must appear in the official host
+    # allowlist; redirects are never followed and only the three registered
+    # read-only knowledge operations exist. Secret truth (Client ID / API
+    # Key / Token) is stored in DLR Credentials (Secret Store) and resolved
+    # only at the server-side execution point, never in the browser, prompts,
+    # tool summaries/results, logs or errors.
+    #
+    # DLR_IMA_ALLOW_HTTP is a strict test/smoke escape hatch: when true, an
+    # http endpoint is accepted for hosts explicitly added to the allowlist
+    # (a fake official service on a private network). Production deployments
+    # must keep it false (default).
+    dlr_ima_endpoint: str | None = Field(default=None, validation_alias="DLR_IMA_ENDPOINT")
+    dlr_ima_credential_name: str | None = Field(
+        default=None, validation_alias="DLR_IMA_CREDENTIAL_NAME"
+    )
+    dlr_ima_allowed_hosts: str = Field(
+        default="ima.qq.com",
+        validation_alias="DLR_IMA_ALLOWED_HOSTS",
+    )
+    dlr_ima_allow_http: bool = Field(
+        default=False,
+        validation_alias="DLR_IMA_ALLOW_HTTP",
+    )
+    # Bounded knowledge request deadline. Kept below the C1 per-tool timeout
+    # (TOOL_TIMEOUT_SECONDS = 10) so a stuck upstream can never outlive the
+    # tool budget; both the socket phases and a total wall-clock deadline are
+    # enforced by the adapter.
+    dlr_ima_timeout_seconds: float = Field(
+        default=8.0,
+        ge=1.0,
+        le=30.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_IMA_TIMEOUT_SECONDS",
+    )
+
 
 settings = Settings()

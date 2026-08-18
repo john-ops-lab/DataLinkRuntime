@@ -1,4 +1,4 @@
-"""M5.7 Wave C1: DLR's explicit read-only Tool registry and bounded dispatcher.
+"""M5.7 Wave C1/C2: DLR's explicit read-only Tool registry and bounded dispatcher.
 
 This module owns the whitelist, the strict argument schemas, the fixed
 execution bounds and the sanitization boundary for the controlled Tool Call
@@ -6,6 +6,17 @@ loop. It is deliberately NOT a general agent runtime: there is no way to
 register a tool at runtime from request data, every registered tool is
 read-only by construction, and the dispatcher executes tool calls strictly
 sequentially (concurrency is fixed at 1).
+
+Registered tools:
+
+- C1: ``dlr_docs_list`` / ``dlr_docs_search`` / ``dlr_docs_read`` (app-shipped
+  DLR platform help docs, fully local and deterministic).
+- C2: ``list_knowledge_bases`` / ``search_knowledge`` / ``read_knowledge`` —
+  the unified read-only KnowledgeSource boundary (first real target: Tencent
+  ima through the thin official OpenAPI adapter). The per-execution context
+  (DB session + resolved credential truth for by-value redaction) travels to
+  the knowledge handlers through a context variable; handlers keep the C1
+  single-argument signature.
 
 Bounds (all fixed module constants, enforced before any provider round trip):
 
@@ -20,19 +31,22 @@ Bounds (all fixed module constants, enforced before any provider round trip):
 
 Every executed call logs one line with only tool name / status / duration /
 size / stable error code — never arguments, results or any sensitive data.
+The round's API key and any per-execution knowledge-source credential truth
+are redacted by exact value from every summary/result/model/log path.
 """
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from dlr.control.ai import dlr_docs
+from dlr.control.ai import dlr_docs, knowledge
 
 logger = logging.getLogger("dlr.ai.tools")
 
@@ -81,12 +95,43 @@ class ToolSpec:
     from request data.
     """
 
-    """One whitelisted read-only tool."""
-
     name: str
     description: str
     parameters: dict[str, Any]
     handler: Callable[[dict[str, Any]], dict[str, Any]]
+
+
+@dataclass
+class ToolExecutionContext:
+    """M5.7 Wave C2: per-execution context handed to knowledge handlers.
+
+    ``session`` is the request's DB session (used to resolve DLR Credential
+    rows inside the Secret Store for the read-only knowledge sources).
+    ``secret_values`` collects the resolved credential truth of every source
+    touched by the current assist; the sanitizer redacts each value by
+    string replacement from every summary/result/model/log path.
+    """
+
+    session: Any = None
+    secret_values: list[str] = field(default_factory=list)
+
+
+# Execution is strictly sequential (MAX_TOOL_CONCURRENCY is fixed at 1), so
+# the per-execution context travels through one context variable set around
+# exactly one handler invocation and reset afterwards. Handler signatures
+# stay unchanged (the C1 contract), and no request can leak its context into
+# another request's execution.
+_TOOL_CONTEXT: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "dlr_tool_context", default=None
+)
+
+
+def current_tool_context() -> knowledge.ToolContext | None:
+    """The ToolExecutionContext of the running tool call, if any."""
+    context = _TOOL_CONTEXT.get()
+    if isinstance(context, ToolExecutionContext):
+        return context
+    return None
 
 
 @dataclass(frozen=True)
@@ -105,6 +150,40 @@ class ToolExecution:
     source: str | None
 
 
+def _redact_values(
+    api_key: str | None,
+    context: ToolExecutionContext | None = None,
+    *,
+    extra_values: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """The exact secret values redacted by string replacement.
+
+    The round's API key, any per-execution source credential truth (ima
+    Client ID / API Key / Token) and any explicit extra values are all
+    redacted by value; the pattern list is a second, shape-based layer.
+    """
+    values: list[str] = []
+    if api_key:
+        values.append(api_key)
+    if context is not None:
+        for value in context.secret_values:
+            if value and value not in values:
+                values.append(value)
+    for value in extra_values:
+        if value and value not in values:
+            values.append(value)
+    return tuple(values)
+
+
+def _redact(value: str, redact_values: tuple[str, ...]) -> str:
+    sanitized = value
+    for secret in redact_values:
+        sanitized = sanitized.replace(secret, _REDACTED)
+    for pattern in _SECRET_PATTERNS:
+        sanitized = pattern.sub(_REDACTED, sanitized)
+    return sanitized
+
+
 def _bounded_text(value: str, max_chars: int) -> str:
     """Deterministic length bound; the truncation suffix is never appended
     to strings that already fit, and the suffix itself is cut to the bound."""
@@ -113,19 +192,22 @@ def _bounded_text(value: str, max_chars: int) -> str:
     return value[: max(0, max_chars - len(_TRUNCATION_SUFFIX))] + _TRUNCATION_SUFFIX
 
 
-def sanitize_text(value: str, api_key: str | None, max_chars: int) -> str:
+def sanitize_text(
+    value: str,
+    api_key: str | None,
+    max_chars: int,
+    extra_values: tuple[str, ...] = (),
+) -> str:
     """Redact secrets and clamp length.
 
     Applied on every path that could reach the model, the browser, logs or
     errors. The round's API key is redacted by exact value; the pattern list
-    catches common token shapes. Truncation is deterministic (head kept) so
-    identical inputs always produce identical outputs.
+    catches common token shapes; ``extra_values`` adds further exact-value
+    redaction (e.g. resolved knowledge-source credential truth). Truncation
+    is deterministic (head kept) so identical inputs always produce
+    identical outputs.
     """
-    sanitized = value
-    if api_key:
-        sanitized = sanitized.replace(api_key, _REDACTED)
-    for pattern in _SECRET_PATTERNS:
-        sanitized = pattern.sub(_REDACTED, sanitized)
+    sanitized = _redact(value, _redact_values(api_key, extra_values=extra_values))
     return _bounded_text(sanitized, max_chars)
 
 
@@ -138,9 +220,9 @@ def _stringify(value: object) -> str:
         return _REDACTED
 
 
-def _summary_text(value: object, api_key: str | None) -> str:
+def _summary_text(value: object, redact_values: tuple[str, ...]) -> str:
     """Bounded, sanitized, deterministic string form for model/UI use."""
-    return sanitize_text(_stringify(value), api_key, MAX_TOOL_SUMMARY_CHARS)
+    return sanitize_text(_stringify(value), None, MAX_TOOL_SUMMARY_CHARS, redact_values)
 
 
 def _docs_entry_payload(entry: dlr_docs.DocEntry, *, include_content: bool) -> dict[str, Any]:
@@ -184,6 +266,42 @@ def _handler_docs_read(args: dict[str, Any]) -> dict[str, Any]:
     if entry is None:
         raise ToolFailure(CODE_ARGS_INVALID, "unknown dlr docs id")
     return {"tool": "dlr_docs_read", "item": _docs_entry_payload(entry, include_content=True)}
+
+
+def _knowledge_call(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run one knowledge-boundary operation with stable error mapping.
+
+    ``KnowledgeSourceError`` codes (``ks_*``) surface as the tool execution's
+    stable error code; the message stays generic so request data, item ids,
+    endpoint details and Secrets are never reflected. The current tool
+    context (DB session + secret values) reaches the handlers through
+    :func:`current_tool_context`.
+    """
+    try:
+        return call()
+    except knowledge.KnowledgeSourceError as error:
+        raise ToolFailure(error.code, "knowledge source request failed") from None
+
+
+def _handler_knowledge_list(args: dict[str, Any]) -> dict[str, Any]:
+    return _knowledge_call(
+        lambda: knowledge.list_knowledge_bases(args["source"], current_tool_context())
+    )
+
+
+def _handler_knowledge_search(args: dict[str, Any]) -> dict[str, Any]:
+    limit = min(max(1, int(args.get("limit", 5))), 10)
+    return _knowledge_call(
+        lambda: knowledge.search_knowledge(
+            args["source"], args["query"], limit, current_tool_context()
+        )
+    )
+
+
+def _handler_knowledge_read(args: dict[str, Any]) -> dict[str, Any]:
+    return _knowledge_call(
+        lambda: knowledge.read_knowledge(args["source"], args["item_id"], current_tool_context())
+    )
 
 
 class ToolFailure(Exception):
@@ -327,6 +445,82 @@ _TOOLS: dict[str, ToolSpec] = {
         },
         handler=_handler_docs_read,
     ),
+    # M5.7 Wave C2: the unified read-only KnowledgeSource boundary (first
+    # real target: Tencent ima). Exactly three read-only operations; unknown
+    # sources and write operations are rejected with stable ks_* codes.
+    "list_knowledge_bases": ToolSpec(
+        name="list_knowledge_bases",
+        description=(
+            "List the knowledge bases of a registered read-only knowledge "
+            "source (currently 'ima', Tencent ima). Returns bounded base "
+            "summaries with an ima:v1 source identifier. Read-only."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "Registered knowledge source id, e.g. 'ima'",
+                },
+            },
+            "required": ["source"],
+            "additionalProperties": False,
+        },
+        handler=_handler_knowledge_list,
+    ),
+    "search_knowledge": ToolSpec(
+        name="search_knowledge",
+        description=(
+            "Search one registered read-only knowledge source (currently "
+            "'ima', Tencent ima) by query text. Returns at most 10 bounded "
+            "hit summaries with an ima:v1 source identifier. Read-only."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "Registered knowledge source id, e.g. 'ima'",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search text, e.g. 'runtime contract'",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results (1-10, default 5)",
+                },
+            },
+            "required": ["source", "query"],
+            "additionalProperties": False,
+        },
+        handler=_handler_knowledge_search,
+    ),
+    "read_knowledge": ToolSpec(
+        name="read_knowledge",
+        description=(
+            "Read one knowledge item by its exact id (from list_knowledge_bases "
+            "or search_knowledge) of a registered read-only knowledge source "
+            "(currently 'ima', Tencent ima). Bounded content with an ima:v1 "
+            "source identifier. Read-only."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "Registered knowledge source id, e.g. 'ima'",
+                },
+                "item_id": {
+                    "type": "string",
+                    "description": "Exact knowledge item id",
+                },
+            },
+            "required": ["source", "item_id"],
+            "additionalProperties": False,
+        },
+        handler=_handler_knowledge_read,
+    ),
 }
 
 
@@ -357,12 +551,19 @@ def is_registered_tool(name: str) -> bool:
 def _execute_one(
     spec: ToolSpec,
     validated_args: dict[str, Any],
-    api_key: str | None,
+    redact_values: tuple[str, ...],
+    context: ToolExecutionContext | None,
 ) -> tuple[dict[str, Any], bool]:
-    """Run one handler with a wall-clock timeout (sequential executor)."""
+    """Run one handler with a wall-clock timeout (sequential executor).
+
+    The per-execution context (DB session + collected source credential
+    truth) is visible to knowledge handlers through
+    :func:`current_tool_context` for the duration of this single call only.
+    """
     started = time.monotonic()
     result: dict[str, Any] = {}
     truncated = False
+    token = _TOOL_CONTEXT.set(context)
     try:
         # The executor is deliberately a single worker: MAX_TOOL_CONCURRENCY
         # is fixed at 1 and each call gets its own timeout budget.
@@ -373,29 +574,30 @@ def _execute_one(
     except Exception:
         raise ToolFailure(CODE_FAILED, "tool execution failed") from None
     finally:
+        _TOOL_CONTEXT.reset(token)
         elapsed_ms = int((time.monotonic() - started) * 1000)
     if elapsed_ms > TOOL_TIMEOUT_SECONDS * 1000:
         raise ToolFailure(CODE_TIMEOUT, "tool execution timed out")
     # Sanitize the raw handler output before it can reach the model.
-    result = _sanitize_result(result, api_key)
+    result = _sanitize_result(result, redact_values)
     encoded = json.dumps(result, ensure_ascii=False, sort_keys=True)
     if len(encoded) > MAX_TOOL_RESULT_CHARS:
-        result = _truncate_result(result, api_key)
+        result = _truncate_result(result, redact_values)
         truncated = True
     return result, truncated
 
 
-def _sanitize_result(result: dict[str, Any], api_key: str | None) -> dict[str, Any]:
+def _sanitize_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> dict[str, Any]:
     """Deep-sanitize one tool result: redact secrets and clamp string length."""
     sanitized: dict[str, Any] = {}
     for key, value in result.items():
         if isinstance(value, str):
-            sanitized[key] = sanitize_text(value, api_key, MAX_TOOL_RESULT_CHARS)
+            sanitized[key] = sanitize_text(value, None, MAX_TOOL_RESULT_CHARS, redact_values)
         elif isinstance(value, dict):
-            sanitized[key] = _sanitize_result(value, api_key)
+            sanitized[key] = _sanitize_result(value, redact_values)
         elif isinstance(value, list):
             sanitized[key] = [
-                _sanitize_result(item, api_key) if isinstance(item, dict) else item
+                _sanitize_result(item, redact_values) if isinstance(item, dict) else item
                 for item in value
             ]
         else:
@@ -403,10 +605,10 @@ def _sanitize_result(result: dict[str, Any], api_key: str | None) -> dict[str, A
     return sanitized
 
 
-def _truncate_result(result: dict[str, Any], api_key: str | None) -> dict[str, Any]:
+def _truncate_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> dict[str, Any]:
     """Deterministically cut an oversized sanitized result to the bound."""
     raw = json.dumps(result, ensure_ascii=False, sort_keys=True)
-    bounded = _bounded_text(raw, MAX_TOOL_RESULT_CHARS)
+    bounded = sanitize_text(raw, None, MAX_TOOL_RESULT_CHARS, redact_values)
     return {"value": bounded, "truncated": True}
 
 
@@ -443,6 +645,7 @@ def execute_tool_call(
     tool_name: str,
     raw_arguments: str,
     api_key: str | None,
+    context: ToolExecutionContext | None = None,
 ) -> ToolExecution:
     """Validate, bound and execute ONE whitelisted read-only tool call.
 
@@ -450,9 +653,12 @@ def execute_tool_call(
     (``ai_tool_unknown``). Malformed or oversized arguments are rejected
     without execution (``ai_tool_args_invalid``). Timeouts and handler
     failures produce stable error results. Everything that could reach the
-    model, the browser or logs is sanitized and length-bounded.
+    model, the browser or logs is sanitized and length-bounded; the round's
+    API key and any per-execution source credential truth (from ``context``)
+    are redacted by exact value on every path.
     """
     started = time.monotonic()
+    redact_values = _redact_values(api_key, context)
     spec = _TOOLS.get(tool_name)
     if spec is None:
         elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -480,12 +686,12 @@ def execute_tool_call(
         )
         return _error_execution(
             spec.name,
-            _summary_text(raw_arguments, api_key),
+            _summary_text(raw_arguments, redact_values),
             error.code,
             elapsed_ms,
         )
     try:
-        result, truncated = _execute_one(spec, validated_args, api_key)
+        result, truncated = _execute_one(spec, validated_args, redact_values, context)
     except ToolFailure as error:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         logger.info(
@@ -496,7 +702,7 @@ def execute_tool_call(
         )
         return _error_execution(
             spec.name,
-            _summary_text(validated_args, api_key),
+            _summary_text(validated_args, redact_values),
             error.code,
             elapsed_ms,
         )
@@ -522,7 +728,7 @@ def execute_tool_call(
     return ToolExecution(
         tool_name=spec.name,
         status="success",
-        args_summary=_summary_text(validated_args, api_key),
+        args_summary=_summary_text(validated_args, redact_values),
         result_summary=_bounded_text(content, MAX_TOOL_SUMMARY_CHARS),
         model_content=content,
         error_code=None,
