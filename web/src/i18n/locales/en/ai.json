@@ -25,6 +25,33 @@
     "send": "Send",
     "regenerate": "Regenerate",
     "regenerateAria": "Regenerate this reply (reusing the original code and context from when it was sent)",
+    "retry": "Retry",
+    "retryAria": "Retry this round (reusing the original code, context and attachments from when it was sent)",
+    "attachments": {
+      "add": "Attach files",
+      "addAria": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX and text / code files",
+      "hint": "Images / PDF / DOCX / text and code files: up to {{count}}, {{size}} each, {{total}} total",
+      "privacyNotice": "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials; DLR does not promise to detect sensitive information in attachments automatically.",
+      "remove": "Remove attachment {{name}}",
+      "ready": "Ready",
+      "category": {
+        "image": "Image",
+        "pdf": "PDF",
+        "docx": "DOCX",
+        "text": "Text",
+        "code": "Code"
+      },
+      "error": {
+        "unsupported": "Unsupported file type: only images (PNG / JPEG / WebP), PDF, DOCX and text / code files are supported, and the file extension must match the declared type",
+        "filenameInvalid": "Invalid attachment filename: use a plain filename without path separators",
+        "tooLarge": "The file exceeds the per-file size limit ({{size}}): compress or split it and upload again",
+        "totalTooLarge": "The attachments exceed the total size limit ({{total}}): remove or compress attachments and try again",
+        "countExceeded": "Too many attachments (limit {{count}}): remove some and try again",
+        "readFailed": "The file could not be read: choose the file again",
+        "empty": "The file is empty: choose a file with content",
+        "rejected": "A rejected attachment cannot be sent: remove it and try again"
+      }
+    },
     "code": {
       "plain": "plain text",
       "copy": "Copy code",
