@@ -131,10 +131,14 @@ def test_web_has_no_user_visible_hardcoded_english_props() -> None:
 # Preset display names: the frontend localizes them by stable preset_id.
 # ai.py compatibility messages: the frontend localizes by stable error code;
 # the message field stays a zh-CN compatibility fallback by design.
+# tools.py: the deterministic truncation marker is data inside sanitized tool
+# results (the localized "truncated" notice is the UI chrome), exactly like
+# the ai.py compatibility-message contract.
 BACKEND_ALLOWLISTED_FILES = (
     "dlr/worker/i18n.py",
     "dlr/control/package_source_defaults.py",
     "dlr/control/services/ai.py",
+    "dlr/control/ai/tools.py",
 )
 
 # Canonical zh dependency events emitted by the env managers; the executor

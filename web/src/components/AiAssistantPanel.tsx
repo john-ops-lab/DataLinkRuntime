@@ -21,7 +21,19 @@
  * API) are frozen into the round snapshot at send time — bounded by the B2
  * total size cap, never rendered or logged — so Regenerate and the failed-
  * round retry reuse the original files without reading the current Composer.
- * No Tool Call / MCP / Streaming / Reasoning UI / Thread persistence.
+ *
+ * M5.7 Wave C1: controlled read-only Tool Call UI on the official assistant-ui
+ * Tool Call primitives (MessagePrimitive.Content components.tools). The
+ * backend executes DLR's whitelisted, bounded, read-only tools and returns
+ * sanitized summaries; this panel converts them into tool-call parts that
+ * render tool name, calling/success/error state, sanitized args/result
+ * summaries and the stable error code. Tool data never joins
+ * recent_messages (plain user/assistant text only), never carries raw
+ * payloads, Credentials or hidden reasoning, and Regenerate replaces the
+ * whole round (text + tools + Candidate) with the fresh result.
+ *
+ * No MCP / ima external adapters (Wave C2), no Streaming, no Reasoning UI,
+ * no Thread persistence, no general Agent Runtime.
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -68,11 +80,13 @@ import type {
   AiCandidate,
   AiConversationMessage,
   AiContextSnippet,
+  AiToolCallSummary,
 } from "../types";
 import { logSnippetTimeLabel } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import { i18n } from "../i18n";
 import { AssistantMarkdownText } from "./ai-markdown";
+import { DlrToolCallUI } from "./ai-tool-call";
 import VersionDiffModal, { type DiffPane } from "./VersionDiffModal";
 
 export interface AiWorkingCopy {
@@ -124,6 +138,10 @@ interface VisibleMessage {
   /** Wave B1: present only on user messages; the frozen request context of
    * that round, reused verbatim by Regenerate. */
   snapshot: AssistRoundSnapshot | null;
+  /** M5.7 Wave C1: sanitized Tool execution summaries of the round. They
+   * render through the official Tool Call UI primitives and NEVER join
+   * recent_messages (which stays a plain user/assistant text history). */
+  toolCalls: AiToolCallSummary[];
 }
 
 /** Candidate diff stores only data; pane labels are derived at render time
@@ -219,14 +237,41 @@ function recentVisibleMessages(messages: VisibleMessage[]): AiConversationMessag
   return messages.slice(-8).map(({ role, content }) => ({ role, content }));
 }
 
+/** M5.7 Wave C1: DLR tool summaries → official assistant-ui tool-call parts.
+ * Only sanitized, bounded strings travel into the runtime: args/result
+ * summaries (server-capped), the stable error code for failures, and never
+ * raw payloads, Credentials or hidden reasoning. The error result carries
+ * only the stable code so the official Tool Call UI can label it without
+ * echoing any rejected content. */
+type ThreadContentPart = Exclude<ThreadMessageLike["content"], string>[number];
+
+function toToolCallParts(message: VisibleMessage): ThreadContentPart[] {
+  return message.toolCalls.map((summary, index) => ({
+    type: "tool-call",
+    toolCallId: `dlr-tool-${message.id}-${index}`,
+    toolName: summary.tool_name,
+    args: {},
+    argsText: summary.args_summary,
+    result:
+      summary.status === "error"
+        ? JSON.stringify({ ok: false, error_code: summary.error_code })
+        : summary.result_summary,
+    isError: summary.status === "error",
+  }));
+}
+
 /** M5.7 Wave A: DLR 消息 → assistant-ui External Store 消息。只携带可见
- * 文本；Candidate / Secret / Working Copy 等权威语义保持在 DLR 状态中，
- * 不进入第三方 runtime。id 统一为字符串以满足 runtime 合同。 */
+ * 文本与 Wave C1 脱敏工具摘要；Candidate / Secret / Working Copy 等权威
+ * 语义保持在 DLR 状态中，不进入第三方 runtime。id 统一为字符串以满足
+ * runtime 合同。 */
 function toThreadMessageLike(message: VisibleMessage): ThreadMessageLike {
   return {
     id: String(message.id),
     role: message.role,
-    content: [{ type: "text", text: message.content }],
+    content: [
+      ...toToolCallParts(message),
+      { type: "text", text: message.content },
+    ],
   };
 }
 
@@ -948,6 +993,11 @@ async function resolveComposerAttachment(
         role: "assistant",
         content: response.message,
         snapshot: null,
+        // M5.7 Wave C1: sanitized Tool execution summaries (empty when the
+        // round never called a tool — the pre-C1 response shape stays
+        // compatible). They render through the official Tool Call UI
+        // primitives and never enter recent_messages.
+        toolCalls: Array.isArray(response.tool_calls) ? response.tool_calls : [],
         // The regenerated Candidate stays anchored to the frozen base snapshot
         // of the original round, so the stale check keeps comparing against
         // the current editor honestly.
@@ -1113,6 +1163,7 @@ async function resolveComposerAttachment(
         content: snapshot.message,
         candidate: null,
         snapshot,
+        toolCalls: [],
       };
       setMessages((current) => [...current, userMessage]);
       setAttachmentError(null);
@@ -1465,7 +1516,14 @@ async function resolveComposerAttachment(
                     >
                       <span className="ai-message-role">{message.role === "user" ? t("assistant.user") : "AI"}</span>
                       <MessagePrimitive.Content
-                        components={{ Text: AssistantMarkdownText }}
+                        components={{
+                          Text: AssistantMarkdownText,
+                          // M5.7 Wave C1: official Tool Call UI — the Fallback
+                          // slot renders every whitelisted tool through the
+                          // DLR component (tool name, calling/success/error
+                          // state, sanitized args/result summaries).
+                          tools: { Fallback: DlrToolCallUI },
+                        }}
                       />
                       {/* M5.7 Wave B1: Regenerate entry — one per assistant
                           round; the previous message is always the round's

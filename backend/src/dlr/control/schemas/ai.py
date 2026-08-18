@@ -454,11 +454,46 @@ class AiModelOutput(_StrictSchema):
         return value
 
 
+class AiToolCallSummary(_StrictSchema):
+    """M5.7 Wave C1: one sanitized read-only tool execution for the Tool UI.
+
+    Only non-sensitive metadata and bounded summaries travel to the browser:
+    the tool name, the final status, the sanitized argument/result summaries,
+    the stable error code (errors only), the wall-clock duration, the size of
+    the sanitized result, whether it was truncated, and an auditable but
+    non-sensitive source identifier (e.g. ``dlr-docs:v1:<id>``) when the tool
+    result carries one. Secret truth, raw payloads and hidden reasoning never
+    enter this object.
+    """
+
+    tool_name: str
+    status: Literal["success", "error"]
+    args_summary: str = ""
+    result_summary: str = ""
+    error_code: str | None = None
+    duration_ms: int = 0
+    result_truncated: bool = False
+    result_size: int = 0
+    source: str | None = None
+
+    @field_validator("tool_name", "args_summary", "result_summary", mode="before")
+    @classmethod
+    def validate_summary_strings(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("tool summary fields must be strings")
+        if len(value) > 600:
+            raise ValueError("tool summary field exceeds the bound")
+        return value
+
+
 class AiAssistResponse(AiModelOutput):
     """Browser response enriched only with non-sensitive routing metadata."""
 
     provider: AiProvider
     model: str
+    # M5.7 Wave C1: sanitized Tool execution summaries (empty for rounds that
+    # never called a tool, keeping the pre-C1 response shape compatible).
+    tool_calls: list[AiToolCallSummary] = Field(default_factory=list)
 
 
 class AiAttachmentLimits(_StrictSchema):

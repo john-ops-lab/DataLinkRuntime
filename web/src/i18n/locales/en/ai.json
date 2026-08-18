@@ -52,6 +52,20 @@
         "rejected": "A rejected attachment cannot be sent: remove it and try again"
       }
     },
+    "tools": {
+      "unknownName": "Unknown tool",
+      "status": {
+        "calling": "Calling",
+        "success": "Success",
+        "error": "Failed"
+      },
+      "argsLabel": "Args",
+      "resultLabel": "Result",
+      "rejected": "Tool call rejected or failed",
+      "truncated": "Result too large; truncated",
+      "errorLabel": "Error code: {{code}}",
+      "ariaGroup": "Tool {{name}}: {{status}}"
+    },
     "code": {
       "plain": "plain text",
       "copy": "Copy code",

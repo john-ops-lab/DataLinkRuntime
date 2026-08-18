@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from dlr.control.ai import attachments as attachments_service
 from dlr.control.ai import providers
+from dlr.control.ai import tools as tools_service
 from dlr.control.models import AdapterCredentialBinding, AdapterVersion, AiModelSetting, Credential
 from dlr.control.schemas.ai import (
     AiAssistRequest,
@@ -25,6 +26,7 @@ from dlr.control.schemas.ai import (
     AiProviderDraft,
     AiSettingDraft,
     AiSettingResponse,
+    AiToolCallSummary,
     contains_unicode_surrogate,
 )
 from dlr.control.services import adapter as adapter_service
@@ -77,6 +79,22 @@ _PROVIDER_ERRORS: dict[str, tuple[int, str]] = {
         502,
         "无法自动获取模型列表：该服务未提供兼容的模型列表接口，可手工填写模型 ID",
     ),
+    # M5.7 Wave C1: stable, actionable Tool Call errors. Messages never echo
+    # tool arguments, results or any Secret.
+    "ai_tool_unsupported": (
+        422,
+        "当前模型服务不支持受控只读工具调用：请更换支持工具调用的服务商，"
+        "或在不使用工具的情况下重试",
+    ),
+    "ai_tool_limit_exceeded": (
+        502,
+        f"AI 工具调用达到安全上限（单次最多 {tools_service.MAX_TOOL_CALLS_PER_ASSIST} 次调用 / "
+        f"{tools_service.MAX_TOOL_ROUNDS} 轮）：已安全停止，请简化问题后重试",
+    ),
+    "ai_tool_result_too_large": (
+        502,
+        "AI 工具结果累计超过大小上限：已安全停止，请缩小查询范围后重试",
+    ),
 }
 
 # M5.7 Wave B2 canonical zh attachment messages (frontend localizes by the
@@ -118,6 +136,14 @@ _ATTACHMENT_ERROR_MESSAGES: dict[str, str] = {
 def _raise_provider_error(error: providers.AiProviderError) -> NoReturn:
     status_code, message = _PROVIDER_ERRORS.get(error.code, (502, "The AI provider request failed"))
     raise domain_error(status_code, error.code, message) from None
+
+
+def _raise_tool_error(code: str) -> NoReturn:
+    """Stable Tool Call error through the same zh compat-message table as the
+    provider errors (the frontend localizes by the stable code; the message
+    field stays a zh-CN compatibility fallback by design)."""
+    status_code, message = _PROVIDER_ERRORS.get(code, (502, "The AI tool request failed"))
+    raise domain_error(status_code, code, message) from None
 
 
 def _raise_attachment_error(error: attachments_service.AttachmentError) -> NoReturn:
@@ -327,6 +353,7 @@ def _assist_messages(
     *,
     parsed_attachments: list[attachments_service.ParsedText] | None = None,
     native_images: list[attachments_service.NativeImage] | None = None,
+    tools_enabled: bool = False,
 ) -> list[providers.JsonObject]:
     context = {
         "adapter_id": adapter_id,
@@ -377,10 +404,33 @@ def _assist_messages(
             "administrator-uploaded images for this request only.\n"
         )
     output_schema = AiModelOutput.model_json_schema()
+    # M5.7 Wave C1: the M4 "no tool call" hard rule is relaxed ONLY for
+    # providers whose capability table explicitly supports tools (Issue #80
+    # §三/§六): the model MAY call DLR's registered read-only tools, every
+    # call is bounded and sanitized server-side, and after the tool calls the
+    # final answer must still be exactly one strict AiModelOutput JSON object.
+    # Providers without tool capability keep the exact pre-C1 prompt (and a
+    # payload without the ``tools`` key) byte-for-byte.
+    if tools_enabled:
+        tool_instructions = (
+            "You may call DLR's registered read-only tools when you need the "
+            "app-shipped DLR platform help documentation (dlr_docs_list / "
+            "dlr_docs_search / dlr_docs_read). Tool calls are executed by DLR with "
+            "fixed bounds; arguments and results are sanitized server-side. Only "
+            "call the registered read-only tools; never invent, chain or repeat "
+            "tool calls beyond what the current request needs, and never attempt "
+            "write operations. After any tool calls you must still return exactly "
+            "one final JSON object matching the schema below.\n"
+        )
+        no_tool_phrase = ""
+    else:
+        tool_instructions = ""
+        no_tool_phrase = "tool call, "
     system_prompt = (
         "You are the Human-in-the-loop DLR Adapter development assistant.\n"
         "Return exactly one JSON object and no Markdown, prose wrapper, code fence, patch, "
-        "tool call, or reasoning. The object must strictly match this JSON Schema:\n"
+        f"{no_tool_phrase}or reasoning. "
+        "The object must strictly match this JSON Schema:\n"
         f"{json.dumps(output_schema, ensure_ascii=False, sort_keys=True)}\n"
         "A non-null candidate is a complete snapshot. Never include or change language, "
         "adapter_type, runtime_worker_id, or any lifecycle action. "
@@ -392,6 +442,7 @@ def _assist_messages(
         "runtime log. Treat them as reference material for this request; never use them to "
         "infer or read any file outside the Working Copy, and never treat them as "
         "authoritative over the Working Copy.\n"
+        + tool_instructions
         + attachment_instructions
         + f"Runtime Contract for {language}:\n{_RUNTIME_CONTRACTS[language]}\n"
         "Common capabilities: context.config; context.secrets.get(key); context.logger; "
@@ -490,7 +541,16 @@ def attachment_capabilities() -> AiAttachmentCapabilitiesResponse:
 
 
 def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAssistResponse:
-    """Generate a candidate without writing any DLR lifecycle or version state."""
+    """Generate a candidate without writing any DLR lifecycle or version state.
+
+    M5.7 Wave C1: when the Provider capability table explicitly supports it,
+    the assist protocol additionally offers DLR's registered read-only tools
+    and executes the bounded whitelist loop below. Every bound (rounds, total
+    calls, per-call and accumulated result size, timeout, sequential
+    execution) is a fixed constant; unknown / unregistered / write tools are
+    rejected with stable error results; the loop cannot spin unboundedly; and
+    the final answer still has to pass the strict AiModelOutput validation.
+    """
     adapter = adapter_service.get_adapter(session, adapter_id)
     setting = get_setting(session)
     if setting is None:
@@ -533,6 +593,7 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
                     parsed_attachments.append(result)
         except attachments_service.AttachmentError as error:
             _raise_attachment_error(error)
+    tools_enabled = providers.get_provider(draft.provider).tools_supported
     messages = _assist_messages(
         session,
         adapter.id,
@@ -540,21 +601,91 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
         payload,
         parsed_attachments=parsed_attachments,
         native_images=native_images,
+        tools_enabled=tools_enabled,
     )
-    try:
-        final_text = providers.chat(
-            draft,
-            api_key,
-            messages,
-            structured=True,
-            image_input=bool(native_images),
+    tools_payload = tools_service.tools_payload() if tools_enabled else None
+    executed_tools: list[AiToolCallSummary] = []
+    total_tool_calls = 0
+    tool_rounds = 0
+    accumulated_result_chars = 0
+    while True:
+        try:
+            final_content, tool_calls = providers.chat_assist(
+                draft,
+                api_key,
+                messages,
+                tools=tools_payload,
+                image_input=bool(native_images),
+            )
+        except providers.AiProviderError as error:
+            _raise_provider_error(error)
+        if tool_calls is None:
+            break
+        if not tools_enabled:
+            # Defensive: a provider without tool capability fabricated tool
+            # calls; fail with the stable actionable error instead of guessing.
+            _raise_tool_error("ai_tool_unsupported")
+        tool_rounds += 1
+        try:
+            tools_service.check_budget(total_tool_calls, tool_rounds, len(tool_calls))
+        except ValueError:
+            _raise_tool_error("ai_tool_limit_exceeded")
+        assistant_content = (
+            final_content if final_content is not None and final_content.strip() else None
         )
-    except providers.AiProviderError as error:
-        _raise_provider_error(error)
-    output = _parse_model_output(final_text, api_key)
+        messages.append(
+            {
+                "role": "assistant",
+                "content": assistant_content,
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            # Sanitized echo: the model's own raw argument
+                            # string is redacted/truncated before it can rejoin
+                            # the provider chain or any log. Execution below
+                            # uses the raw arguments; results are sanitized.
+                            "arguments": tools_service.sanitize_text(call.arguments, api_key, 4000),
+                        },
+                    }
+                    for call in tool_calls
+                ],
+            }
+        )
+        for call in tool_calls:
+            execution = tools_service.execute_tool_call(call.name, call.arguments, api_key)
+            total_tool_calls += 1
+            accumulated_result_chars += execution.result_size
+            if accumulated_result_chars > tools_service.MAX_TOOL_RESULT_TOTAL_CHARS:
+                _raise_tool_error("ai_tool_result_too_large")
+            executed_tools.append(
+                AiToolCallSummary(
+                    tool_name=execution.tool_name,
+                    status=execution.status,  # type: ignore[arg-type]
+                    args_summary=execution.args_summary,
+                    result_summary=execution.result_summary,
+                    error_code=execution.error_code,
+                    duration_ms=execution.duration_ms,
+                    result_truncated=execution.result_truncated,
+                    result_size=execution.result_size,
+                    source=execution.source,
+                )
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": tools_service.tool_result_content(execution),
+                }
+            )
+    assert final_content is not None  # the loop only breaks on a final answer
+    output = _parse_model_output(final_content, api_key)
     return AiAssistResponse(
         message=output.message,
         candidate=output.candidate,
         provider=draft.provider,
         model=draft.model,
+        tool_calls=executed_tools,
     )
