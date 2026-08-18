@@ -1,5 +1,9 @@
 # M3.2 Adapter 生产生命周期与运行配置闭环——关键决策记录
 
+> **当前现行性：Historical / Superseded by M5.4。**  
+> 本文保留 M3.2 当时已实施的数据库、安全、凭据和 Production 生命周期决策，用于历史追溯；其中 `Publish / Published Version / Production Version / Production Worker / Start / Stop` 等用户侧产品模型已经被 M5.4 之后的 Task / Webhook 运行模型替代。  
+> **不得用本文恢复当前产品已经取消的旧生命周期。** 当前产品与架构以 `docs/zh-CN/product.md`、`docs/zh-CN/architecture.md`、最新 `main` 和当前阶段 Issue 为准；详见 `docs/specs/README.md`。
+
 > 状态：已实施  
 > 基线：M3.1 已合并到 `main`（`0a6cc62`）  
 > 实施分支：`feat/m3-2-adapter-production-lifecycle`（对应 Issue #10）  
