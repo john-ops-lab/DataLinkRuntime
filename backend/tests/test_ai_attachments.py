@@ -545,6 +545,38 @@ def test_assist_rejects_blank_attachment_fields_without_echo(
         assert_stable_error(response, 422, "ai_attachment_invalid")
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        # Missing one of the three required keys.
+        {"content_type": "text/plain", "data_base64": "aGk="},
+        {"filename": "a.txt", "data_base64": "aGk="},
+        {"filename": "a.txt", "content_type": "text/plain"},
+        # Non-object entries.
+        "not-an-object",
+        42,
+        None,
+        ["a.txt"],
+    ],
+)
+def test_assist_rejects_missing_or_non_object_attachment_entries_with_stable_code(
+    api_client: TestClient, entry: object
+) -> None:
+    """A malformed entry must never bypass the stable sanitized error: the
+    response keeps the {code, message} detail shape and never echoes the
+    offending input (including the base64 body)."""
+    adapter = create_adapter(api_client, "attach-malformed-reject")
+    configure(api_client)
+    body = assist_body()
+    body["attachments"] = [entry]  # type: ignore[list-item]
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert_stable_error(response, 422, "ai_attachment_invalid")
+    detail = response.json()["detail"]
+    assert isinstance(detail, dict) and "code" in detail
+    assert "aGk=" not in response.text
+    assert "data_base64" not in response.text
+
+
 def test_assist_rejects_per_file_size_limit(
     api_client: TestClient,
 ) -> None:
@@ -628,14 +660,49 @@ def test_total_parsed_budget_is_shared_across_attachments() -> None:
         assert len(result.text) <= budget + len(attachments_module.TRUNCATION_MARKER)
 
 
-def test_scanned_pdf_returns_actionable_no_text_error(
+def build_docx_empty_paragraphs(count: int) -> bytes:
+    """Build a DOCX whose body contains paragraphs without any w:t runs."""
+    body = "<w:p/>" * count
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{_WORD_NS}"><w:body>{body}</w:body></w:document>'
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", xml)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "data"),
+    [
+        # Scanned PDF: the page has no content stream at all.
+        ("scan.pdf", "application/pdf", build_pdf("ignored", trailing=False)),
+        # PDF whose only page text is whitespace.
+        ("blank.pdf", "application/pdf", build_pdf("   ")),
+        # DOCX whose paragraphs carry no w:t runs (only paragraph breaks).
+        (
+            "empty.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            build_docx_empty_paragraphs(3),
+        ),
+        # Whitespace-only text files carry no extractable content.
+        ("blank.txt", "text/plain", b"   \n  \n"),
+    ],
+)
+def test_textless_attachments_return_actionable_no_text_error_across_categories(
     api_client: TestClient,
+    filename: str,
+    content_type: str,
+    data: bytes,
 ) -> None:
-    adapter = create_adapter(api_client, "attach-scanned")
+    """The no-text contract is consistent: scanned PDFs, whitespace-only
+    pages, DOCX without w:t text and blank text files all yield the same
+    stable actionable error instead of whitespace-only context."""
+    adapter = create_adapter(api_client, "attach-textless")
     configure(api_client)
-    pdf = build_pdf("ignored", trailing=False)
     body = assist_body()
-    body["attachments"] = [attachment("scan.pdf", "application/pdf", pdf)]
+    body["attachments"] = [attachment(filename, content_type, data)]
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert_stable_error(
         response,

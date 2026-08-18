@@ -320,6 +320,10 @@ def _parse_text(data: bytes, limit_chars: int) -> tuple[str, bool]:
     if "\x00" in text:
         # NUL bytes mean the payload is binary masquerading as text.
         raise AttachmentError("ai_attachment_parse_failed")
+    if not text.strip():
+        # Empty or whitespace-only text files carry no extractable content:
+        # the no-text contract is consistent with the PDF and DOCX paths.
+        raise AttachmentError("ai_attachment_no_text")
     return _truncate(text, limit_chars)
 
 
@@ -346,7 +350,12 @@ def _parse_pdf(data: bytes, limit_chars: int) -> tuple[str, bool]:
             break
     if not chunks:
         raise AttachmentError("ai_attachment_no_text")
-    return _truncate("".join(chunks), limit_chars)
+    joined = "".join(chunks)
+    if not joined.strip():
+        # Whitespace-only pages are text-less documents too: the no-text
+        # contract is consistent across every category.
+        raise AttachmentError("ai_attachment_no_text")
+    return _truncate(joined, limit_chars)
 
 
 def _check_archive_safety(archive: zipfile.ZipFile) -> None:
@@ -403,9 +412,13 @@ def _parse_docx(data: bytes, limit_chars: int) -> tuple[str, bool]:
             element.clear()
     except ET.ParseError:
         raise AttachmentError("ai_attachment_parse_failed") from None
-    if not chunks:
+    joined = "".join(chunks)
+    if not joined.strip():
+        # A document whose paragraphs carry no w:t text (empty document, or
+        # content only in constructs this extractor skips) is text-less: the
+        # no-text contract is consistent with the PDF and text paths.
         raise AttachmentError("ai_attachment_no_text")
-    return _truncate("".join(chunks), limit_chars)
+    return _truncate(joined, limit_chars)
 
 
 # ---------------------------------------------------------------------------

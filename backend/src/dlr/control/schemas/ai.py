@@ -194,21 +194,30 @@ class AiAttachment(_StrictSchema):
 
     @model_validator(mode="before")
     @classmethod
-    def reject_unknown_fields(cls, value: object) -> object:
-        # extra="forbid" alone would let FastAPI's default 422 renderer echo
-        # the unknown field's input back to the browser; reject unknown keys
-        # here with the stable sanitized code instead (no input echo).
-        if isinstance(value, dict):
-            allowed = {"filename", "content_type", "data_base64"}
-            unknown = [key for key in value if key not in allowed]
-            if unknown:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "ai_attachment_invalid",
-                        "message": "AI request contains an invalid attachment",
-                    },
-                ) from None
+    def reject_malformed_attachment(cls, value: object) -> object:
+        # A malformed entry (non-object, unknown keys, or any missing
+        # required key) is rejected here with the stable sanitized code.
+        # Without this, pydantic's plain ValidationError would let FastAPI's
+        # default 422 renderer return a list detail instead of the stable
+        # {code, message} shape and echo the offending input — including the
+        # whole attachment dict with its base64 body — back to the browser.
+        if not isinstance(value, dict):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_invalid",
+                    "message": "AI request contains an invalid attachment",
+                },
+            ) from None
+        required = {"filename", "content_type", "data_base64"}
+        if not required.issubset(value) or any(key not in required for key in value):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_attachment_invalid",
+                    "message": "AI request contains an invalid attachment",
+                },
+            ) from None
         return value
 
     @field_validator("filename", mode="before")
