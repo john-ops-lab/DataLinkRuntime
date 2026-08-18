@@ -1,8 +1,7 @@
 # DLR（DataLinkRuntime）Product Definition
 
-> Current baseline: M5.5.15 (the M5.6 i18n foundation is live)
-> This document describes the current product model only; historical decisions live in
-> `docs/specs/` and the database migration history.
+> Current baseline: M5.6 is complete and passed user acceptance; M5.7 / #80 is the current development stage.
+> This document describes only the currently implemented product model. M5.7 targets are defined by Issue #80 and `docs/specs/m5-7-ai-assistant.md`; historical decisions live in `docs/specs/README.md`, historical Specs and the database migration history.
 
 ## 1. Product Positioning
 
