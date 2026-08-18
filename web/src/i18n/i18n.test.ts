@@ -17,6 +17,27 @@ function leafKeys(value: unknown, prefix = ""): string[] {
   );
 }
 
+function leafValueMap(root: object, prefix = ""): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const [key, child] of Object.entries(root)) {
+    const path = prefix === "" ? key : `${prefix}.${key}`;
+    if (typeof child === "string") {
+      result.set(path, child);
+    } else if (typeof child === "object" && child !== null) {
+      for (const [leaf, value] of leafValueMap(child, path)) {
+        result.set(leaf, value);
+      }
+    }
+  }
+  return result;
+}
+
+function interpolationPlaceholders(value: string): string[] {
+  return [...value.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g)]
+    .map((match) => match[1].trim())
+    .sort();
+}
+
 afterEach(async () => {
   await applySystemLocale(DEFAULT_SYSTEM_LOCALE);
 });
@@ -27,6 +48,25 @@ describe("locale infrastructure", () => {
       const zhKeys = leafKeys(resources["zh-CN"][namespace as keyof typeof resources.en]);
       const enKeys = leafKeys(resources.en[namespace as keyof typeof resources.en]);
       expect(enKeys, `${namespace} English keys`).toEqual(zhKeys);
+    }
+  });
+
+  it("keeps the namespace set identical across both supported locales", () => {
+    const zhNamespaces = Object.keys(resources[DEFAULT_SYSTEM_LOCALE]).sort();
+    expect(Object.keys(resources.en).sort()).toEqual(zhNamespaces);
+  });
+
+  it("keeps interpolation placeholders identical per leaf key", () => {
+    for (const namespace of Object.keys(resources[DEFAULT_SYSTEM_LOCALE])) {
+      const zh = leafValueMap(resources["zh-CN"][namespace as keyof typeof resources.en]);
+      const en = leafValueMap(resources.en[namespace as keyof typeof resources.en]);
+      expect([...zh.keys()].sort(), `${namespace} zh leaf keys`).toEqual([...en.keys()].sort());
+      for (const key of zh.keys()) {
+        expect(
+          interpolationPlaceholders(zh.get(key) ?? ""),
+          `${namespace}.${key} zh placeholders`,
+        ).toEqual(interpolationPlaceholders(en.get(key) ?? ""));
+      }
     }
   });
 
