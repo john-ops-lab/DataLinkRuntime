@@ -12,8 +12,11 @@ from dlr.worker.i18n import _MESSAGES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# README.md is the default Simplified Chinese landing page; README.en.md is the
+# maintained English counterpart. README.zh-CN.md remains only as a compatibility
+# redirect for links created before M5.7 documentation cleanup.
 REQUIRED_DOC_PAIRS = (
-    ("README.md", "README.zh-CN.md"),
+    ("README.en.md", "README.md"),
     ("docs/en/product.md", "docs/zh-CN/product.md"),
     ("docs/en/architecture.md", "docs/zh-CN/architecture.md"),
 )
@@ -23,7 +26,7 @@ REQUIRED_DOC_PAIRS = (
 CHECKED_FILES = tuple(
     dict.fromkeys(
         [path for pair in REQUIRED_DOC_PAIRS for path in pair]
-        + ["docs/product.md", "docs/architecture.md"]
+        + ["README.zh-CN.md", "docs/product.md", "docs/architecture.md"]
     )
 )
 
@@ -64,10 +67,16 @@ def test_required_bilingual_docs_exist_in_pairs() -> None:
 
 
 def test_readme_mutual_language_links_are_prominent() -> None:
-    readme_header = _header(_read("README.md"))
-    readme_zh_header = _header(_read("README.zh-CN.md"))
-    assert "[简体中文](README.zh-CN.md)" in readme_header
-    assert "[English](README.md)" in readme_zh_header
+    readme_zh_header = _header(_read("README.md"))
+    readme_en_header = _header(_read("README.en.md"))
+    assert 'href="README.en.md">English</a>' in readme_zh_header
+    assert 'href="README.md">简体中文</a>' in readme_en_header
+
+
+def test_legacy_readme_zh_cn_redirects_to_current_readmes() -> None:
+    legacy = _read("README.zh-CN.md")
+    assert "[README.md](README.md)" in legacy
+    assert "[README.en.md](README.en.md)" in legacy
 
 
 def test_doc_pair_heading_structure_is_aligned() -> None:
