@@ -130,6 +130,142 @@ def detect_native_image(payload: dict[str, Any]) -> bool:
     )
 
 
+def last_user_text(payload: dict[str, Any]) -> str:
+    """The plain text of the most recent user message (tool scenario probe)."""
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            return "".join(parts)
+    return ""
+
+
+def has_tool_messages(payload: dict[str, Any]) -> bool:
+    """True once DLR fed sanitized tool results back into the conversation."""
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return False
+    return any(isinstance(message, dict) and message.get("role") == "tool" for message in messages)
+
+
+def tool_rounds(payload: dict[str, Any]) -> int:
+    """Count assistant rounds that carried tool_calls (loop detection)."""
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    return sum(
+        1
+        for message in messages
+        if isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and isinstance(message.get("tool_calls"), list)
+    )
+
+
+TOOL_SCENARIOS = (
+    "SMOKE_TOOL_SINGLE",
+    "SMOKE_TOOL_MULTI",
+    "SMOKE_TOOL_READ",
+    "SMOKE_TOOL_UNKNOWN",
+    "SMOKE_TOOL_WRITE",
+    "SMOKE_TOOL_LOOP",
+)
+
+
+def detect_tool_scenario(payload: dict[str, Any]) -> str | None:
+    """M5.7 Wave C1: the scripted tool-call scenario for this request.
+
+    Only requests that actually carry the DLR ``tools`` whitelist can enter a
+    tool scenario; the scenario marker lives in the browser-visible user
+    message, so the smoke proves the marker-driven chain end to end.
+    """
+    if "tools" not in payload:
+        return None
+    text = last_user_text(payload)
+    for scenario in TOOL_SCENARIOS:
+        if scenario in text:
+            return scenario
+    return None
+
+
+def tool_calls_for(scenario: str) -> list[dict[str, Any]]:
+    """The first-round tool calls of one smoke scenario (write-style tool
+    names are intentionally NOT in the DLR whitelist)."""
+    if scenario == "SMOKE_TOOL_MULTI":
+        return [
+            {
+                "id": "call-smoke-list",
+                "type": "function",
+                "function": {"name": "dlr_docs_list", "arguments": "{}"},
+            },
+            {
+                "id": "call-smoke-search",
+                "type": "function",
+                "function": {"name": "dlr_docs_search", "arguments": '{"query": "secrets"}'},
+            },
+        ]
+    if scenario == "SMOKE_TOOL_READ":
+        # Reads the longest docs entry: the sanitized result gets truncated
+        # server-side, exercising the bounded long-summary UI path.
+        return [
+            {
+                "id": "call-smoke-read",
+                "type": "function",
+                "function": {
+                    "name": "dlr_docs_read",
+                    "arguments": '{"doc_id": "ai-assistant-usage"}',
+                },
+            }
+        ]
+    if scenario == "SMOKE_TOOL_UNKNOWN":
+        return [
+            {
+                "id": "call-smoke-unknown",
+                "type": "function",
+                "function": {"name": "not_registered_tool", "arguments": "{}"},
+            }
+        ]
+    if scenario == "SMOKE_TOOL_WRITE":
+        return [
+            {
+                "id": "call-smoke-write",
+                "type": "function",
+                "function": {"name": "dlr_runtime_save", "arguments": '{"code": "x"}'},
+            }
+        ]
+    return [
+        {
+            "id": "call-smoke-list",
+            "type": "function",
+            "function": {"name": "dlr_docs_list", "arguments": "{}"},
+        }
+    ]
+
+
+def last_tool_result(payload: dict[str, Any]) -> str:
+    """The sanitized tool result DLR sent back (probe for the docs source)."""
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "tool":
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+    return ""
+
+
 def candidate_for(
     language: str,
     selected: bool,
@@ -188,6 +324,42 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _completion(
+        self,
+        request_payload: dict[str, Any],
+        *,
+        message: str | None,
+        tool_calls: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """One Chat Completions fixture; hidden-reasoning sentinels are always
+        attached so the smoke can pin that they never reach the browser."""
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": message,
+            "reasoning_content": REASONING_SENTINEL,
+            "reasoning_details": [{"text": REASONING_SENTINEL}],
+        }
+        if tool_calls is not None:
+            assistant_message["tool_calls"] = tool_calls
+        return {
+            "id": "chatcmpl-dlr-smoke",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": request_payload.get("model", MODEL_ID),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": assistant_message,
+                    "finish_reason": "tool_calls" if tool_calls is not None else "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length)
@@ -245,36 +417,63 @@ class Handler(BaseHTTPRequestHandler):
         log_snippet = detect_log_snippet(request_payload)
         attachment = detect_attachment(request_payload)
         native_image = detect_native_image(request_payload)
+
+        # M5.7 Wave C1: the controlled tool-call chain. The fake only enters
+        # a scenario when the DLR whitelist actually reached it AND the user
+        # message carries the scenario marker. Each scenario proves one part
+        # of the bounded loop: tool call -> DLR executes -> sanitized tool
+        # result returns on the same chain -> final strict AiModelOutput.
+        scenario = detect_tool_scenario(request_payload)
+        if scenario is not None:
+            if scenario == "SMOKE_TOOL_LOOP":
+                # A looping model: always ask for tools again. DLR must stop
+                # deterministically with ai_tool_limit_exceeded (no hang).
+                self._write_json(
+                    200,
+                    self._completion(
+                        request_payload,
+                        message=None,
+                        tool_calls=tool_calls_for("SMOKE_TOOL_SINGLE"),
+                    ),
+                )
+                return
+            if not has_tool_messages(request_payload):
+                self._write_json(
+                    200,
+                    self._completion(
+                        request_payload,
+                        message=None,
+                        tool_calls=tool_calls_for(scenario),
+                    ),
+                )
+                return
+            # The sanitized tool result really came back to the model.
+            tool_result = last_tool_result(request_payload)
+            suffix = ""
+            if scenario == "SMOKE_TOOL_UNKNOWN":
+                suffix = " with rejected tool"
+            elif scenario == "SMOKE_TOOL_WRITE":
+                suffix = " with write tool rejected"
+            else:
+                suffix = " with tool result"
+            if "dlr-docs:v1" in tool_result:
+                suffix += " with docs source"
+            content = json.dumps(
+                candidate_for(language, selected, log_snippet, attachment, native_image),
+                ensure_ascii=False,
+            )
+            output = json.loads(content)
+            output["message"] = (
+                output["message"].rstrip(".") + suffix + "."
+            )
+            self._write_json(200, self._completion(request_payload, message=json.dumps(output)))
+            return
+
         content = json.dumps(
             candidate_for(language, selected, log_snippet, attachment, native_image),
             ensure_ascii=False,
         )
-        self._write_json(
-            200,
-            {
-                "id": "chatcmpl-dlr-smoke",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": request_payload.get("model", MODEL_ID),
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": content,
-                            "reasoning_content": REASONING_SENTINEL,
-                            "reasoning_details": [{"text": REASONING_SENTINEL}],
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
-                },
-            },
-        )
+        self._write_json(200, self._completion(request_payload, message=content))
 
     def log_message(self, format_string: str, *args: object) -> None:
         # Keep smoke logs useful without ever logging headers or request bodies.

@@ -1555,10 +1555,13 @@ def test_assist_provider_failures_have_stable_sanitized_codes(
     adapter = create_adapter(api_client, f"provider-error-{code}")
     configure(api_client)
 
-    def fake_chat(*_: object, **__: object) -> str:
+    def fake_chat_assist(*_: object, **__: object) -> tuple[str | None, list[object] | None]:
         raise providers.AiProviderError(code)
 
-    monkeypatch.setattr(providers, "chat", fake_chat)
+    # M5.7 Wave C1: the assist protocol now runs through chat_assist; the
+    # behavioral contract (stable sanitized codes, no secret reflection)
+    # stays identical.
+    monkeypatch.setattr(providers, "chat_assist", fake_chat_assist)
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
     assert response.status_code == status_code
     assert response.json()["detail"]["code"] == code

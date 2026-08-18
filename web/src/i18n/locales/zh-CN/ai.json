@@ -52,6 +52,20 @@
         "rejected": "被拒绝的附件不能发送：请删除后重试"
       }
     },
+    "tools": {
+      "unknownName": "未知工具",
+      "status": {
+        "calling": "调用中",
+        "success": "成功",
+        "error": "失败"
+      },
+      "argsLabel": "参数",
+      "resultLabel": "结果",
+      "rejected": "工具调用已被拒绝或失败",
+      "truncated": "结果过大，已截断",
+      "errorLabel": "错误码：{{code}}",
+      "ariaGroup": "工具 {{name}}：{{status}}"
+    },
     "code": {
       "plain": "纯文本",
       "copy": "复制代码",

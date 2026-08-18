@@ -964,6 +964,69 @@ body {
   font-weight: 600;
 }
 
+/* M5.7 Wave C1：受控只读 Tool Call UI（官方 assistant-ui Tool Call 原语
+   渲染 DLR 脱敏工具摘要）。紧凑卡片、结果/参数摘要永不撑破布局：
+   长文本客户端二次截断 + 省略号，禁止横向溢出。 */
+.ai-tool-call {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--dlr-border);
+  border-left: 3px solid #1677ff;
+  border-radius: 6px;
+  background: #f6f8fa;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+
+.ai-tool-call-calling {
+  border-left-color: #1677ff;
+}
+
+.ai-tool-call-error {
+  border-left-color: #cf1322;
+  background: #fff2f0;
+}
+
+.ai-tool-name {
+  font-weight: 600;
+  color: var(--dlr-text);
+  overflow-wrap: anywhere;
+}
+
+.ai-tool-status {
+  align-self: flex-start;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: #e6f4ff;
+  color: #0958d9;
+  font-size: 0.66rem;
+  font-weight: 600;
+}
+
+.ai-tool-call-error .ai-tool-status {
+  background: #fff1f0;
+  color: #cf1322;
+}
+
+.ai-tool-args,
+.ai-tool-result {
+  color: var(--dlr-text-secondary);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.ai-tool-truncated,
+.ai-tool-error-code {
+  color: #cf1322;
+  font-size: 0.68rem;
+}
+
 /* M5.7 Wave A：消息正文由 assistant-ui MarkdownTextPrimitive 渲染。
    ai-markdown 是消息内容容器；所有元素样式为 DLR 自有 CSS（无 Tailwind）。 */
 .ai-message-content {

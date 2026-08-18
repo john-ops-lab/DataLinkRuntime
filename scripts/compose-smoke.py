@@ -972,4 +972,105 @@ assert PNG_1PX_BASE64 not in json.dumps(image_assisted), image_assisted
 assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in json.dumps(image_assisted)
 request("PUT", "/ai/settings", setting)
 
+# M5.7 Wave C1: the controlled read-only Tool Call chain. The fake Provider
+# only enters a tool scenario when the DLR whitelist really reached it and the
+# user message carries the scenario marker; each scenario proves one part of
+# the bounded loop: tool call -> DLR executes -> sanitized tool result returns
+# on the same non-streaming chain -> final strict AiModelOutput.
+tool_single = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "SMOKE_TOOL_SINGLE Generate the deterministic python smoke Candidate.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "base_version_id": ai_revision["id"],
+    },
+)
+assert tool_single["candidate"] is not None, tool_single
+assert "with tool result" in tool_single["message"], tool_single
+assert "with docs source" in tool_single["message"], tool_single
+assert len(tool_single["tool_calls"]) == 1, tool_single
+single_summary = tool_single["tool_calls"][0]
+assert single_summary["tool_name"] == "dlr_docs_list", single_summary
+assert single_summary["status"] == "success", single_summary
+assert single_summary["error_code"] is None, single_summary
+assert single_summary["source"] == "dlr-docs:v1:runtime-contract-python", single_summary
+assert "dlr-docs:v1" in single_summary["result_summary"], single_summary
+assert single_summary["result_truncated"] is False, single_summary
+# hidden reasoning 哨兵与附件正文/Secret 永不进入工具摘要或浏览器响应。
+assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in json.dumps(tool_single)
+
+tool_multi = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "SMOKE_TOOL_MULTI Generate the deterministic python smoke Candidate.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "base_version_id": ai_revision["id"],
+    },
+)
+assert tool_multi["candidate"] is not None, tool_multi
+assert len(tool_multi["tool_calls"]) == 2, tool_multi
+assert [item["tool_name"] for item in tool_multi["tool_calls"]] == [
+    "dlr_docs_list",
+    "dlr_docs_search",
+], tool_multi
+assert all(item["status"] == "success" for item in tool_multi["tool_calls"]), tool_multi
+assert tool_multi["tool_calls"][1]["source"] == "dlr-docs:v1:secrets-and-bindings", tool_multi
+
+# 非白名单工具被安全拒绝：错误摘要返回浏览器，模型仍产出最终合法 JSON。
+tool_unknown = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "SMOKE_TOOL_UNKNOWN Generate the deterministic python smoke Candidate.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "base_version_id": ai_revision["id"],
+    },
+)
+assert tool_unknown["candidate"] is not None, tool_unknown
+assert "with rejected tool" in tool_unknown["message"], tool_unknown
+assert tool_unknown["tool_calls"][0]["tool_name"] == "not_registered_tool", tool_unknown
+assert tool_unknown["tool_calls"][0]["status"] == "error", tool_unknown
+assert tool_unknown["tool_calls"][0]["error_code"] == "ai_tool_unknown", tool_unknown
+
+# 写操作风格工具同样被拒绝（不在白名单，永不执行）。
+tool_write = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "SMOKE_TOOL_WRITE Generate the deterministic python smoke Candidate.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "base_version_id": ai_revision["id"],
+    },
+)
+assert tool_write["candidate"] is not None, tool_write
+assert "with write tool rejected" in tool_write["message"], tool_write
+assert tool_write["tool_calls"][0]["status"] == "error", tool_write
+assert tool_write["tool_calls"][0]["error_code"] == "ai_tool_unknown", tool_write
+
+# 无限循环模型被固定轮数/次数上限安全终止，绝不挂死。
+tool_loop = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "SMOKE_TOOL_LOOP Generate the deterministic python smoke Candidate.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "base_version_id": ai_revision["id"],
+    },
+    expected=502,
+)
+assert tool_loop["detail"]["code"] == "ai_tool_limit_exceeded", tool_loop
+assert "安全上限" in tool_loop["detail"]["message"], tool_loop
+
+# 工具调用不产生任何生命周期副作用。
+after_tools = request("GET", f"/adapters/{ai_adapter['id']}")
+assert after_tools["latest_version_id"] == before["latest_version_id"], after_tools
+assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
+
 print("M5.4.4 compose smoke passed")

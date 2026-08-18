@@ -31,6 +31,15 @@ StructuredOutput = Literal["json_object", "prompt_only"]
 ReasoningStyle = Literal["openai_effort", "thinking", "unsupported"]
 
 
+@dataclass(frozen=True)
+class NormalizedToolCall:
+    """One validated provider tool call with typed string fields."""
+
+    id: str
+    name: str
+    arguments: str
+
+
 class AiProviderError(Exception):
     """Sanitized provider failure carrying only a stable public error code."""
 
@@ -69,6 +78,12 @@ class ProviderAdapter:
     # never assumed: only entries in this table enable provider-native input.
     images_native: bool = False
     files_native: bool = False
+    # M5.7 Wave C1: explicit read-only Tool Call capability. Only providers
+    # whose Chat Completions contract is known to accept ``tools`` offer the
+    # whitelisted function definitions; the flag is capability-table truth,
+    # never inferred from the model id. Providers without the flag keep the
+    # exact single-shot protocol (no ``tools`` payload key).
+    tools_supported: bool = False
 
 
 PROVIDERS: dict[AiProvider, ProviderAdapter] = {
@@ -83,6 +98,7 @@ PROVIDERS: dict[AiProvider, ProviderAdapter] = {
         frozenset(("low", "medium", "high", "xhigh")),
         True,
         images_native=True,
+        tools_supported=True,
     ),
     "deepseek": ProviderAdapter(
         "deepseek",
@@ -96,8 +112,10 @@ PROVIDERS: dict[AiProvider, ProviderAdapter] = {
     "kimi": ProviderAdapter("kimi", "json_object", "thinking"),
     # MiniMax can return reasoning separately when reasoning_split is true.
     "minimax": ProviderAdapter("minimax", "prompt_only", "unsupported", split_reasoning=True),
+    # The custom OpenAI-compatible family is exercised end-to-end by the
+    # compose-smoke fake Provider (tool-call -> tool result -> final answer).
     "custom_openai_compatible": ProviderAdapter(
-        "custom_openai_compatible", "prompt_only", "unsupported"
+        "custom_openai_compatible", "prompt_only", "unsupported", tools_supported=True
     ),
 }
 
@@ -329,6 +347,63 @@ def extract_final_text(provider: AiProvider, response: object) -> str:
     return _strip_thinking_container(content)
 
 
+def extract_round(
+    provider: AiProvider, response: object
+) -> tuple[str | None, list[NormalizedToolCall] | None]:
+    """Split one provider fixture into (final_content, tool_calls).
+
+    M5.7 Wave C1: when the provider asks for tool calls, this returns the
+    sanitized tool-call list (id/name/raw arguments) and the (nullable)
+    accompanying content; the caller executes the bounded whitelist tools and
+    sends the sanitized results back on the same non-streaming chain. When
+    the provider returns a final answer, ``tool_calls`` is None and
+    ``final_content`` is the strict final text (hidden reasoning containers
+    are still stripped and never returned). A provider that fabricates tool
+    calls while offering none is a malformed response.
+    """
+    get_provider(provider)  # validates and documents the selected thin adapter
+    if not isinstance(response, dict):
+        raise AiProviderError("ai_response_invalid")
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise AiProviderError("ai_response_invalid")
+    choice = choices[0]
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise AiProviderError("ai_response_invalid")
+    raw_tool_calls = message.get("tool_calls")
+    if raw_tool_calls is not None:
+        if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+            raise AiProviderError("ai_response_invalid")
+        tool_calls: list[NormalizedToolCall] = []
+        for call in raw_tool_calls:
+            if not isinstance(call, dict):
+                raise AiProviderError("ai_response_invalid")
+            call_id = call.get("id")
+            function = call.get("function")
+            if not isinstance(call_id, str) or not call_id.strip():
+                raise AiProviderError("ai_response_invalid")
+            if not isinstance(function, dict):
+                raise AiProviderError("ai_response_invalid")
+            name = function.get("name")
+            arguments = function.get("arguments", "")
+            if not isinstance(name, str) or not name.strip():
+                raise AiProviderError("ai_response_invalid")
+            if not isinstance(arguments, str):
+                raise AiProviderError("ai_response_invalid")
+            tool_calls.append(NormalizedToolCall(id=call_id, name=name, arguments=arguments))
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise AiProviderError("ai_response_invalid")
+        return content, tool_calls
+    if choice.get("finish_reason") != "stop":
+        raise AiProviderError("ai_response_invalid")
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise AiProviderError("ai_response_invalid")
+    return _strip_thinking_container(content), None
+
+
 def chat(
     setting: AiSettingDraft,
     api_key: str | None,
@@ -348,6 +423,41 @@ def chat(
         image_input=image_input,
     )
     return extract_final_text(setting.provider, response)
+
+
+def chat_assist(
+    setting: AiSettingDraft,
+    api_key: str | None,
+    messages: list[JsonObject],
+    *,
+    tools: list[JsonObject] | None = None,
+    image_input: bool = False,
+) -> tuple[str | None, list[NormalizedToolCall] | None]:
+    """One non-streaming assist round; returns (final_content, tool_calls).
+
+    M5.7 Wave C1: the whitelisted read-only ``tools`` definitions join the
+    payload only when the Provider capability table explicitly supports them
+    (``tools_supported``); otherwise the payload is byte-identical to the
+    pre-C1 assist protocol and the provider cannot call any tool. The final
+    answer is still expected as strict JSON through the same chain.
+    """
+    adapter = get_provider(setting.provider)
+    payload = build_chat_payload(setting, messages, structured=True)
+    if tools is not None:
+        if not adapter.tools_supported:  # capability guard, never assumed
+            raise AiProviderError("ai_tool_unsupported")
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    response = _request_json(
+        "POST",
+        _endpoint(setting.base_url, "/v1/chat/completions"),
+        _headers(api_key),
+        payload,
+        not_found_code="ai_model_not_found",
+        reasoning_explicit=setting.reasoning_mode != "default",
+        image_input=image_input,
+    )
+    return extract_round(setting.provider, response)
 
 
 def normalize_models(response: object) -> list[str]:

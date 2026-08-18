@@ -270,6 +270,24 @@ export interface AiAssistResponse {
   candidate: AiCandidate | null;
   provider: AiProvider;
   model: string;
+  /** M5.7 Wave C1: sanitized Tool execution summaries (empty for rounds that
+   * never called a tool). Only bounded, secret-free metadata + summaries —
+   * never raw payloads, Credentials or hidden reasoning. */
+  tool_calls?: AiToolCallSummary[];
+}
+
+/** M5.7 Wave C1: one sanitized read-only tool execution for the Tool UI. */
+export interface AiToolCallSummary {
+  tool_name: string;
+  status: "success" | "error";
+  args_summary: string;
+  result_summary: string;
+  error_code: string | null;
+  duration_ms: number;
+  result_truncated: boolean;
+  result_size: number;
+  /** Auditable but non-sensitive source, e.g. "dlr-docs:v1:<id>". */
+  source: string | null;
 }
 
 /** M5.7 Wave B2: one browser-uploaded attachment for this request only.
