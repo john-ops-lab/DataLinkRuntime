@@ -103,9 +103,21 @@ POST /api/adapters/{adapter_id}/ai/assist
       "start_line": 1,
       "end_line": 4
     }
+  ],
+  "attachments": [
+    {
+      "filename": "requirements.pdf",
+      "content_type": "application/pdf",
+      "data_base64": "...严格 base64..."
+    }
   ]
 }
 ```
+
+`attachments`（M5.7 Wave B2）可空，最多 8 个，仅服务本次请求（不落库、不写临时
+文件、不写日志）。完整合同（上限、能力表、错误码、解析与隐私边界）见
+`docs/specs/m5-7-ai-assistant.md` §7.5；能力表另见
+`GET /api/ai/attachment-capabilities`。不带该字段的请求与 Wave A 之前完全兼容。
 
 `recent_messages` 最多 8 条，只允许 `user / assistant` 可见消息；旧 Candidate、旧代码快照
 和 reasoning 不进入历史。`base_version_id` 可空；非空时只用于补充属于当前 Adapter 的
