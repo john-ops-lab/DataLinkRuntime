@@ -1,7 +1,7 @@
 # DLR（DataLinkRuntime）产品定义
 
-> 当前基线：M5.5.15（M5.6 国际化基础已生效）
-> 本文档只描述当前产品模型；历史决策见 `docs/specs/` 与数据库迁移记录。
+> 当前基线：M5.6 已完成并通过人工验收；M5.7 / #80 为当前开发阶段。
+> 本文档只描述当前已经实现的产品模型；M5.7 目标以 Issue #80 与 `docs/specs/m5-7-ai-assistant.md` 为准，历史决策见 `docs/specs/README.md`、历史 Specs 与数据库迁移记录。
 
 ## 1. 产品定位
 

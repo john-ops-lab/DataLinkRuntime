@@ -11,6 +11,19 @@ trigger: always_on
 - 尽量保持改动范围最小，避免顺手重构与当前任务无关的代码。
 - 没有明确收益时，不主动引入新的框架、基础设施或依赖。
 
+## 文档与规格优先级
+
+- `docs/specs/` 同时包含历史里程碑设计和当前阶段规格，**不得默认把目录内所有文件都当作当前产品合同**。
+- 开始开发前必须先阅读 `docs/specs/README.md`，确认目标 Spec 的现行状态和已被替代的语义。
+- 文档或实现发生冲突时，按以下优先级判断：
+  1. 当前正在执行的 GitHub Issue / 里程碑合同定义本轮目标行为；
+  2. 最新 `main` 的代码、API Schema、migration 与自动化测试定义当前已存在行为；
+  3. 当前 `docs/zh-CN/product.md`、`docs/zh-CN/architecture.md` 及对应英文版；
+  4. 当前阶段 Spec；
+  5. 历史 Specs 仅作为演进背景和仍未被替代的局部合同参考。
+- 历史 Spec 与后续 Issue/main 冲突时，不得擅自恢复旧设计；尤其不得从旧文档重新引入已被 M5.4 替代的 `Publish / Production Version / Production Worker / 强制 Save → Test → Publish → Start` 用户流程。
+- 如果无法判断某条历史约束是否仍有效，应先检查最新代码、测试、当前产品文档和当前阶段 Issue，再决定是否需要人工确认。
+
 ## 语言与交付
 
 - 所有面向人的内容统一使用中文，包括但不限于：项目文档、规格说明、GitHub Issue、PR 标题与描述、Code Review 说明、实施计划、任务总结、验证报告、已知限制和后续事项。
