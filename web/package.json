@@ -11,13 +11,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.15.15",
+    "@assistant-ui/react-markdown": "^0.14.11",
     "@monaco-editor/react": "^4.7.0",
     "antd": "^5.29.3",
     "i18next": "^25.6.2",
     "monaco-editor": "^0.56.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-i18next": "^15.7.3"
+    "react-i18next": "^15.7.3",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@testing-library/react": "^16.0.0",

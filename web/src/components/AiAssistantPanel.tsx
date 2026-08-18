@@ -1,8 +1,28 @@
-/** Browser-only AI conversation and Candidate review surface (M4). */
+/** Browser-only AI conversation and Candidate review surface (M4).
+ *
+ * M5.7 Wave A: the conversation/composer layer is rebuilt on the official
+ * assistant-ui headless primitives via the External Store Runtime. DLR keeps
+ * the authoritative message/business state (VisibleMessage, Candidate,
+ * Working Copy snapshot, Secret binding knowledge); the runtime only mirrors
+ * the visible user/assistant text for Thread/Message/Composer/Markdown
+ * primitives. No Regenerate / Attachments / Tool Call / Streaming in Wave A.
+ */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Spin } from "antd";
 import { useTranslation } from "react-i18next";
+import {
+  AssistantRuntimeProvider,
+  ComposerPrimitive,
+  fromThreadMessageLike,
+  MessagePrimitive,
+  MessageProvider,
+  ThreadPrimitive,
+  useExternalStoreRuntime,
+  useAui,
+  type AppendMessage,
+  type ThreadMessageLike,
+} from "@assistant-ui/react";
 
 import { api } from "../api";
 import { dependencyUiFor, LANGUAGE_LABELS } from "../languages";
@@ -14,6 +34,7 @@ import type {
 } from "../types";
 import { logSnippetTimeLabel } from "../unified-log";
 import { userErrorMessage } from "../user-message";
+import { AssistantMarkdownText } from "./ai-markdown";
 import VersionDiffModal, { type DiffPane } from "./VersionDiffModal";
 
 export interface AiWorkingCopy {
@@ -126,8 +147,63 @@ function snapshotsEqual(left: AiWorkingCopy, right: AiWorkingCopy): boolean {
   );
 }
 
+/** M5.7 Wave A: recent_messages 仍只取浏览器可见 user/assistant 对话，
+ * 最多 8 条；Candidate / reasoning 从不进入该列表。 */
 function recentVisibleMessages(messages: VisibleMessage[]): AiConversationMessage[] {
   return messages.slice(-8).map(({ role, content }) => ({ role, content }));
+}
+
+/** M5.7 Wave A: DLR 消息 → assistant-ui External Store 消息。只携带可见
+ * 文本；Candidate / Secret / Working Copy 等权威语义保持在 DLR 状态中，
+ * 不进入第三方 runtime。id 统一为字符串以满足 runtime 合同。 */
+function toThreadMessageLike(message: VisibleMessage): ThreadMessageLike {
+  return {
+    id: String(message.id),
+    role: message.role,
+    content: [{ type: "text", text: message.content }],
+  };
+}
+
+/** Composer 提交的 AppendMessage → 纯文本（Wave A 只存在 text part）。 */
+function appendMessageText(message: AppendMessage): string {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  return message.content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("");
+}
+
+/** M5.7 Wave A: 发送按钮。点击路径由 DLR 同步启动 assist 流程（保持既有
+ * “准备态先于请求可见”的生命周期回归语义），并阻止原语自带的异步 send()
+ * 双路径；Enter / Ctrl/Cmd+Enter 键盘路径仍走表单提交 → External Store
+ * Runtime onNew。两条路径汇聚到同一个 DLR runAssist。 */
+function ComposerSubmitButton(props: {
+  disabled: boolean;
+  sending: boolean;
+  onSend: (text: string) => void;
+}) {
+  const { t } = useTranslation(["ai", "common"]);
+  const composer = useAui().composer;
+  return (
+    <ComposerPrimitive.Send
+      className="ai-composer-send"
+      data-testid="ai-send"
+      disabled={props.disabled}
+      onClick={(event) => {
+        event.preventDefault();
+        const text = composer.getState().text;
+        if (text.trim() === "") {
+          return;
+        }
+        composer.setText("");
+        props.onSend(text);
+      }}
+    >
+      {props.sending && <Spin size="small" />}
+      {t("assistant.send")}
+    </ComposerPrimitive.Send>
+  );
 }
 
 /** M5.5.13: user-facing label of one context snippet ("代码 第 12–20 行",
@@ -161,7 +237,6 @@ function contextSnippetLabel(
 
 export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const { t } = useTranslation(["ai", "common"]);
-  const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -186,16 +261,8 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const bindingsGeneration = useRef(0);
   const nextMessageId = useRef(1);
   const conversationRef = useRef<HTMLDivElement>(null);
-  const messageInputRef = useRef<HTMLTextAreaElement>(null);
   const followLatestRef = useRef(true);
   const previousOpenRef = useRef(props.open);
-
-  // 展开时把焦点移入面板（键盘可达、焦点可见）；收起后由浏览器自然回到页面。
-  useEffect(() => {
-    if (props.open) {
-      messageInputRef.current?.focus();
-    }
-  }, [props.open]);
 
   useLayoutEffect(() => {
     if (props.open && !previousOpenRef.current) {
@@ -251,10 +318,12 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     };
   }, [adapterId, props.open]);
 
-  async function handleSend() {
+  /** M5.7 Wave A: DLR-owned single-shot assist flow. Called by the External
+   * Store runtime's onNew with the composed text; never throws (all failures
+   * converge to the panel error contract). */
+  async function runAssist(message: string) {
     const adapter = props.adapter;
-    const message = draft.trim();
-    if (adapter === null || !props.contentReady || props.busy || sending || message === "") {
+    if (adapter === null || !props.contentReady || props.busy || sending || message.trim() === "") {
       return;
     }
     const runtimeConfig = parseRuntimeConfig(props.workingCopy.runtimeConfigText);
@@ -270,14 +339,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     const userMessage: VisibleMessage = {
       id: nextMessageId.current++,
       role: "user",
-      content: message,
+      content: message.trim(),
       candidate: null,
     };
     // Sending explicitly returns to the current exchange. A later manual
     // upward scroll can still pause following before the response arrives.
     followLatestRef.current = true;
     setMessages((current) => [...current, userMessage]);
-    setDraft("");
     setPanelError(null);
     setSending(true);
     setProgressStage("preparing");
@@ -293,7 +361,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       }
       setProgressStage("requesting");
       const response = await api.assistAdapter(requestAdapterId, {
-        message,
+        message: message.trim(),
         working_copy: {
           code: baseSnapshot.code,
           requirements: baseSnapshot.requirements,
@@ -377,6 +445,19 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       }
     }
   }
+
+  /** M5.7 Wave A: External Store Runtime — DLR 继续持有消息状态，assistant-ui
+   * 只读取镜像消息并驱动 Composer 提交。 */
+  const runtime = useExternalStoreRuntime({
+    messages,
+    isRunning: sending,
+    isDisabled:
+      props.adapter === null || !props.contentReady || props.busy || sending,
+    convertMessage: toThreadMessageLike,
+    onNew: async (message: AppendMessage) => {
+      await runAssist(appendMessageText(message));
+    },
+  });
 
   function openCandidateDiff(messageId: number, candidateState: CandidateState) {
     const adapter = props.adapter;
@@ -552,218 +633,228 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       ? t("assistant.context.unsavedVersion")
       : t("assistant.context.version", { seq: props.selectedVersionSeq });
 
+  const composerDisabled =
+    props.adapter === null || !props.contentReady || props.busy || sending;
+
   const expandedPanel = (
     <aside className="ai-assistant ai-assistant-expanded" data-testid="ai-assistant-panel">
-      <div className="ai-assistant-header">
-        <div>
-          <strong>{t("assistant.title")}</strong>
-          <p>{t("assistant.notice")}</p>
-        </div>
-        <Button
-          type="text"
-          data-testid="close-ai-assistant"
-          aria-label={t("assistant.close")}
-          aria-expanded={true}
-          onClick={props.onClose}
-        >
-          ×
-        </Button>
-      </div>
-
-      <div className="ai-assistant-context" data-testid="ai-current-context">
-        {props.adapter === null ? (
-           <span>{t("assistant.noAdapter")}</span>
-        ) : (
-          <>
-            <strong>{props.adapter.name}</strong>
-            <span>{LANGUAGE_LABELS[props.adapter.language]} · {contextVersion}</span>
-          </>
-        )}
-      </div>
-
-      {props.adapter !== null && props.contextSnippets.length > 0 && (
-        <div className="ai-snippets" data-testid="ai-context-snippets">
-          <div className="ai-snippets-header">
-             <span>{t("assistant.contextSnippets")}</span>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ThreadPrimitive.Root className="ai-thread">
+          <div className="ai-assistant-header">
+            <div>
+              <strong>{t("assistant.title")}</strong>
+              <p>{t("assistant.notice")}</p>
+            </div>
             <Button
-              size="small"
               type="text"
-              data-testid="ai-clear-all-snippets"
-               aria-label={t("assistant.clearSnippets")}
-              onClick={props.onClearContextSnippets}
+              data-testid="close-ai-assistant"
+              aria-label={t("assistant.close")}
+              aria-expanded={true}
+              onClick={props.onClose}
             >
-              {t("actions.clearAll", { ns: "common" })}
+              ×
             </Button>
           </div>
-          {props.adapter !== null &&
-            (() => {
-              const adapterLanguage = props.adapter.language;
-              return props.contextSnippets.map((snippet) => (
-                <div
-                  key={snippet.id}
-                  className="ai-snippet-item"
-                  data-testid={`ai-snippet-${snippet.id}`}
-                >
-                  <span className="ai-snippet-label" data-testid="ai-snippet-label">
-                     {contextSnippetLabel(snippet, adapterLanguage, (key, options) => t(key, options))}
-                  </span>
-                  <Button
-                    size="small"
-                    type="text"
-                    data-testid={`ai-remove-snippet-${snippet.id}`}
-                     aria-label={t("assistant.removeSnippet")}
-                    onClick={() => props.onRemoveContextSnippet(snippet.id)}
-                  >
-                     {t("assistant.remove")}
-                  </Button>
-                </div>
-              ));
-            })()}
-        </div>
-      )}
 
-      <div
-        ref={conversationRef}
-        className="ai-conversation"
-        data-testid="ai-conversation"
-        onScroll={(event) => {
-          const target = event.currentTarget;
-          followLatestRef.current =
-            target.scrollHeight - target.clientHeight - target.scrollTop <= 32;
-        }}
-      >
-        {messages.length === 0 ? (
-          <p className="ai-conversation-empty" data-testid="ai-conversation-empty">
-             {t("assistant.empty")}
-          </p>
-        ) : (
-          messages.map((message) => {
-            const candidateState = message.candidate;
-            const stale =
-              candidateState !== null &&
-              !candidateState.applied &&
-              !snapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
-            const missingKeys =
-              candidateState === null
-                ? []
-                : [...new Set(candidateState.value.required_secret_keys)].filter(
-                    (key) => !boundSecretKeys.has(key),
-                  );
-            return (
-              <article
-                key={message.id}
-                className={`ai-message ai-message-${message.role}`}
-                data-testid={`ai-message-${message.role}`}
-              >
-                <span className="ai-message-role">{message.role === "user" ? t("assistant.user") : "AI"}</span>
-                <p>{message.content}</p>
-                {candidateState !== null && (
-                  <div className="ai-candidate" data-testid="ai-candidate">
-                    <p className="ai-candidate-ready" data-testid="ai-candidate-ready">
-                       {t("assistant.candidateReady")}
-                    </p>
-                    <strong data-testid="ai-candidate-summary">
-                      {candidateState.value.summary}
-                    </strong>
-                    {candidateState.value.required_secret_keys.length > 0 && (
-                      <p className="ai-secret-suggestion" data-testid="ai-required-secret-keys">
-                         {t("assistant.requiredSecrets", { keys: candidateState.value.required_secret_keys.join(", ") })}
-                      </p>
-                    )}
-                    {!bindingsLoading && bindingsVerified && missingKeys.length > 0 && (
-                      <p className="ai-secret-warning" role="alert" data-testid="ai-missing-secret-keys">
-                         {t("assistant.missingSecrets", { keys: missingKeys.join(", ") })}
-                      </p>
-                    )}
-                    {!bindingsLoading && !bindingsVerified && (
-                      <p className="ai-secret-check-unavailable" role="alert">
-                         {t("assistant.secretCheckUnavailable")}
-                      </p>
-                    )}
-                    {stale && (
-                      <div className="ai-stale-warning" role="alert" data-testid="ai-candidate-stale">
-                         <strong>{t("assistant.staleTitle")}</strong>
-                         <span>{t("assistant.staleDescription")}</span>
-                      </div>
-                    )}
-                    {props.adapter?.archived_at && (
-                      <p className="ai-secret-warning" role="alert" data-testid="ai-archived-apply-blocked">
-                         {t("assistant.archivedApplyBlocked")}
-                      </p>
-                    )}
-                    {candidateState.applied && (
-                      <p className="ai-candidate-applied" role="status" data-testid="ai-candidate-applied">
-                         {t("assistant.applied")}
-                      </p>
-                    )}
-                    <div className="ai-candidate-actions">
+          <div className="ai-assistant-context" data-testid="ai-current-context">
+            {props.adapter === null ? (
+               <span>{t("assistant.noAdapter")}</span>
+            ) : (
+              <>
+                <strong>{props.adapter.name}</strong>
+                <span>{LANGUAGE_LABELS[props.adapter.language]} · {contextVersion}</span>
+              </>
+            )}
+          </div>
+
+          {props.adapter !== null && props.contextSnippets.length > 0 && (
+            <div className="ai-snippets" data-testid="ai-context-snippets">
+              <div className="ai-snippets-header">
+                 <span>{t("assistant.contextSnippets")}</span>
+                <Button
+                  size="small"
+                  type="text"
+                  data-testid="ai-clear-all-snippets"
+                   aria-label={t("assistant.clearSnippets")}
+                  onClick={props.onClearContextSnippets}
+                >
+                  {t("actions.clearAll", { ns: "common" })}
+                </Button>
+              </div>
+              {props.adapter !== null &&
+                (() => {
+                  const adapterLanguage = props.adapter.language;
+                  return props.contextSnippets.map((snippet) => (
+                    <div
+                      key={snippet.id}
+                      className="ai-snippet-item"
+                      data-testid={`ai-snippet-${snippet.id}`}
+                    >
+                      <span className="ai-snippet-label" data-testid="ai-snippet-label">
+                         {contextSnippetLabel(snippet, adapterLanguage, (key, options) => t(key, options))}
+                      </span>
                       <Button
                         size="small"
-                        type="primary"
-                        data-testid="ai-view-diff"
-                        disabled={!props.contentReady || props.busy}
-                        onClick={() => openCandidateDiff(message.id, candidateState)}
+                        type="text"
+                        data-testid={`ai-remove-snippet-${snippet.id}`}
+                         aria-label={t("assistant.removeSnippet")}
+                        onClick={() => props.onRemoveContextSnippet(snippet.id)}
                       >
-                        {stale ? t("actions.viewCurrentChanges", { ns: "common" }) : t("actions.viewChanges", { ns: "common" })}
+                         {t("assistant.remove")}
                       </Button>
                     </div>
-                  </div>
-                )}
-              </article>
-            );
-          })
-        )}
-        {sending && progressStage !== null && (
-          <div className="ai-loading" data-testid="ai-loading" role="status" aria-live="polite">
-            <Spin size="small" />
-            <span data-testid="ai-progress-stage">{t(`assistant.progress.${progressStage}`)}</span>
-          </div>
-        )}
-        {!sending && progressStage === "succeeded" && (
-          <div className="ai-progress-done" data-testid="ai-progress-done" role="status">
-            {t("assistant.progress.succeeded")}
-          </div>
-        )}
-      </div>
+                  ));
+                })()}
+            </div>
+          )}
 
-      <div className="ai-composer">
-        {panelError !== null && (
-          <p className="ai-panel-error" role="alert" data-testid="ai-panel-error">
-            {panelError}
-          </p>
-        )}
-        <textarea
-          ref={messageInputRef}
-          rows={4}
-          data-testid="ai-message-input"
-           aria-label={t("assistant.commandLabel")}
-           placeholder={t("assistant.commandPlaceholder")}
-          value={draft}
-          disabled={props.adapter === null || !props.contentReady || props.busy || sending}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              void handleSend();
-            }
-          }}
-        />
-        <Button
-          type="primary"
-          data-testid="ai-send"
-          loading={sending}
-          disabled={
-            props.adapter === null ||
-            !props.contentReady ||
-            props.busy ||
-            sending ||
-            draft.trim() === ""
-          }
-          onClick={() => void handleSend()}
-        >
-           {t("assistant.send")}
-        </Button>
-      </div>
+          <ThreadPrimitive.Viewport
+            ref={conversationRef}
+            className="ai-conversation"
+            data-testid="ai-conversation"
+            // M5.7 Wave A: DLR owns the scroll-follow semantics (32px
+            // threshold, explicit follow/resume on reopen) on the primitive
+            // viewport; assistant-ui's built-in autoscroll is disabled so the
+            // two mechanisms never fight.
+            autoScroll={false}
+            scrollToBottomOnInitialize={false}
+            scrollToBottomOnRunStart={false}
+            scrollToBottomOnThreadSwitch={false}
+            onScroll={(event) => {
+              const target = event.currentTarget;
+              followLatestRef.current =
+                target.scrollHeight - target.clientHeight - target.scrollTop <= 32;
+            }}
+          >
+            {messages.length === 0 ? (
+              <p className="ai-conversation-empty" data-testid="ai-conversation-empty">
+                 {t("assistant.empty")}
+              </p>
+            ) : (
+              messages.map((message, index) => {
+                const candidateState = message.candidate;
+                const stale =
+                  candidateState !== null &&
+                  !candidateState.applied &&
+                  !snapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
+                const missingKeys =
+                  candidateState === null
+                    ? []
+                    : [...new Set(candidateState.value.required_secret_keys)].filter(
+                        (key) => !boundSecretKeys.has(key),
+                      );
+                return (
+                  <MessageProvider
+                    key={message.id}
+                    message={fromThreadMessageLike(
+                      toThreadMessageLike(message),
+                      String(message.id),
+                      { type: "complete", reason: "stop" },
+                    )}
+                    index={index}
+                    isLast={index === messages.length - 1}
+                  >
+                    <MessagePrimitive.Root
+                      className={`ai-message ai-message-${message.role}`}
+                      data-testid={`ai-message-${message.role}`}
+                    >
+                      <span className="ai-message-role">{message.role === "user" ? t("assistant.user") : "AI"}</span>
+                      <MessagePrimitive.Content
+                        components={{ Text: AssistantMarkdownText }}
+                      />
+                      {candidateState !== null && (
+                        <div className="ai-candidate" data-testid="ai-candidate">
+                          <p className="ai-candidate-ready" data-testid="ai-candidate-ready">
+                             {t("assistant.candidateReady")}
+                          </p>
+                          <strong data-testid="ai-candidate-summary">
+                            {candidateState.value.summary}
+                          </strong>
+                          {candidateState.value.required_secret_keys.length > 0 && (
+                            <p className="ai-secret-suggestion" data-testid="ai-required-secret-keys">
+                               {t("assistant.requiredSecrets", { keys: candidateState.value.required_secret_keys.join(", ") })}
+                            </p>
+                          )}
+                          {!bindingsLoading && bindingsVerified && missingKeys.length > 0 && (
+                            <p className="ai-secret-warning" role="alert" data-testid="ai-missing-secret-keys">
+                               {t("assistant.missingSecrets", { keys: missingKeys.join(", ") })}
+                            </p>
+                          )}
+                          {!bindingsLoading && !bindingsVerified && (
+                            <p className="ai-secret-check-unavailable" role="alert">
+                               {t("assistant.secretCheckUnavailable")}
+                            </p>
+                          )}
+                          {stale && (
+                            <div className="ai-stale-warning" role="alert" data-testid="ai-candidate-stale">
+                               <strong>{t("assistant.staleTitle")}</strong>
+                               <span>{t("assistant.staleDescription")}</span>
+                            </div>
+                          )}
+                          {props.adapter?.archived_at && (
+                            <p className="ai-secret-warning" role="alert" data-testid="ai-archived-apply-blocked">
+                               {t("assistant.archivedApplyBlocked")}
+                            </p>
+                          )}
+                          {candidateState.applied && (
+                            <p className="ai-candidate-applied" role="status" data-testid="ai-candidate-applied">
+                               {t("assistant.applied")}
+                            </p>
+                          )}
+                          <div className="ai-candidate-actions">
+                            <Button
+                              size="small"
+                              type="primary"
+                              data-testid="ai-view-diff"
+                              disabled={!props.contentReady || props.busy}
+                              onClick={() => openCandidateDiff(message.id, candidateState)}
+                            >
+                              {stale ? t("actions.viewCurrentChanges", { ns: "common" }) : t("actions.viewChanges", { ns: "common" })}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </MessagePrimitive.Root>
+                  </MessageProvider>
+                );
+              })
+            )}
+            {sending && progressStage !== null && (
+              <div className="ai-loading" data-testid="ai-loading" role="status" aria-live="polite">
+                <Spin size="small" />
+                <span data-testid="ai-progress-stage">{t(`assistant.progress.${progressStage}`)}</span>
+              </div>
+            )}
+            {!sending && progressStage === "succeeded" && (
+              <div className="ai-progress-done" data-testid="ai-progress-done" role="status">
+                {t("assistant.progress.succeeded")}
+              </div>
+            )}
+          </ThreadPrimitive.Viewport>
+
+          <ComposerPrimitive.Root className="ai-composer">
+            {panelError !== null && (
+              <p className="ai-panel-error" role="alert" data-testid="ai-panel-error">
+                {panelError}
+              </p>
+            )}
+            <ComposerPrimitive.Input
+              data-testid="ai-message-input"
+              autoFocus
+              aria-label={t("assistant.commandLabel")}
+              placeholder={t("assistant.commandPlaceholder")}
+              minRows={3}
+              maxRows={10}
+              disabled={composerDisabled}
+            />
+            <ComposerSubmitButton
+              disabled={composerDisabled}
+              sending={sending}
+              onSend={(text) => void runAssist(text)}
+            />
+          </ComposerPrimitive.Root>
+        </ThreadPrimitive.Root>
+      </AssistantRuntimeProvider>
     </aside>
   );
 

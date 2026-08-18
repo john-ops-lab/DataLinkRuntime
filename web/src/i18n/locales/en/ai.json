@@ -23,6 +23,11 @@
     "commandLabel": "AI instruction",
     "commandPlaceholder": "Enter a question or change request…",
     "send": "Send",
+    "code": {
+      "plain": "plain text",
+      "copy": "Copy code",
+      "copied": "Copied"
+    },
     "invalidRuntimeConfig": "Fix the runtime parameters before sending: they must be a valid JSON object.",
     "progress": {
       "preparing": "Preparing the current code context…",

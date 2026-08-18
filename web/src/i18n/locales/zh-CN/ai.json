@@ -23,6 +23,11 @@
     "commandLabel": "AI 指令",
     "commandPlaceholder": "输入问题或修改要求…",
     "send": "发送",
+    "code": {
+      "plain": "纯文本",
+      "copy": "复制代码",
+      "copied": "已复制"
+    },
     "invalidRuntimeConfig": "发送前请先修正运行参数：必须是合法的 JSON 对象。",
     "progress": {
       "preparing": "正在准备当前代码上下文…",
