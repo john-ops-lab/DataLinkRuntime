@@ -201,8 +201,10 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
   await chooseOption("ai-reasoning-effort", "xhigh");
   fireEvent.click(screen.getByTestId("ai-test-connection"));
   await waitFor(() => expect(testSetting).toHaveBeenCalledTimes(1));
+  // M5.6 Wave 4 E: the success sentence is DLR-owned and localized in the
+  // bundle; the server compatibility message is never interpolated verbatim.
   expect((await screen.findByTestId("ai-settings-notice")).textContent).toBe(
-    "连接测试通过：Connection successful",
+    "连接测试通过：模型返回可解析的最小响应。",
   );
   expect(testSetting).toHaveBeenLastCalledWith({
     provider: "openai",

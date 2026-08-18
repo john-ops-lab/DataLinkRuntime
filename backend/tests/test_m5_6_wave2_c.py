@@ -314,6 +314,44 @@ def test_english_dependency_error_keeps_localized_hint_and_raw_tool_detail(
     assert "Could not resolve host" in result["stdout"]
 
 
+def test_dependency_failure_error_field_is_localized_per_execution_locale(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fail_prepare(*args: object, **kwargs: object) -> Path:
+        raise venv.DependencyPreparationError(
+            "uv pip install failed",
+            "ERROR: Could not resolve host: mirror.example.com",
+            dependency="missing==1.0",
+        )
+
+    monkeypatch.setattr(venv, "prepare_version_venv", fail_prepare)
+    code = "def handle(context, input):\n    return input\n"
+    cases = (
+        (
+            "zh-CN",
+            "Python 依赖准备失败（失败依赖：missing==1.0）",
+            "dependency preparation failed",
+        ),
+        (
+            "en",
+            "Python dependency preparation failed (failed dependency: missing==1.0)",
+            "依赖准备失败",
+        ),
+    )
+    for locale, expected_prefix, forbidden in cases:
+        result = executor.run(
+            _payload("python", code, locale),
+            _runtime_settings(tmp_path / locale),
+        )
+        assert result["status"] == "failed", result
+        # The DLR-generated error prefix and hint follow the captured
+        # Execution locale; raw tool detail stays in the unified log.
+        assert expected_prefix in result["error"], result["error"]
+        assert forbidden not in result["error"], result["error"]
+        assert "Could not resolve host" in result["stdout"], result["stdout"]
+
+
 def test_dependency_source_presets_have_stable_ids_and_user_names_are_unchanged(
     api_client: TestClient,
 ) -> None:

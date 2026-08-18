@@ -277,10 +277,13 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     try {
       const result = await api.testAiSetting(payload);
       const detail = result.message.trim();
+      // The success sentence is DLR-owned and fully localized here; the
+      // server message is a compatibility field and is never interpolated
+      // verbatim, so the en Console cannot mix in zh-CN server text.
       if (result.ok) {
-         setNotice(detail === "" ? t("model.testSuccess") : t("model.testSuccessDetail", { detail }));
+        setNotice(t("model.testSuccess"));
       } else {
-         fail(detail === "" ? t("model.testFailed") : t("model.testFailedDetail", { detail }));
+        fail(detail === "" ? t("model.testFailed") : t("model.testFailedDetail", { detail }));
       }
     } catch (error) {
       fail(errorMessage(error, t("model.requestFailed")));
@@ -304,7 +307,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       />
 
       <label className="settings-field">
-         <span>{t("model.provider")}</span>
+         <span>{t("model.provider.label")}</span>
         <Select<AiProvider>
           data-testid="ai-provider"
           disabled={actionBusy}
