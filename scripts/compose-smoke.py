@@ -1074,17 +1074,29 @@ assert after_tools["latest_version_id"] == before["latest_version_id"], after_to
 assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
 
 # M5.7 Wave C2: the read-only KnowledgeSource chain against the fake official
-# ima-compatible service (wire protocol v1). The credential is stored through
-# the normal DLR Secret Store API; the fake ima service rejects requests
-# without the exact Bearer token and echoes the token inside the read content
-# on purpose, so the smoke proves: list -> search -> read -> final
-# AiModelOutput, the ima:v1 source identifiers, and by-value credential
-# redaction (token never reaches the browser response or the model chain).
+# ima service implementing the OFFICIAL ima OpenAPI contract (base path
+# /openapi/wiki/v1, auth headers ima-openapi-clientid / ima-openapi-apikey,
+# envelope {code, msg, data}). The credential is stored through the normal
+# DLR Secret Store API as an access_key Credential (access_key_id -> Client
+# ID, access_key_secret -> API Key); the fake rejects requests without the
+# exact headers and echoes the API Key inside the read content on purpose, so
+# the smoke proves: list -> search -> read -> final AiModelOutput, the ima:v1
+# source identifiers, and by-value credential redaction (token never reaches
+# the browser response or the model chain). The target knowledge base is
+# matched by NAME only ("DLR接口库"); its id/content are never recorded.
 ima_token = os.environ["SMOKE_IMA_TOKEN"]
+ima_client_id = os.environ["SMOKE_IMA_CLIENT_ID"]
 ima_credential = request(
     "POST",
     "/credentials",
-    {"name": "smoke-ima", "type": "token", "fields": {"token": ima_token}},
+    {
+        "name": "smoke-ima",
+        "type": "access_key",
+        "fields": {
+            "access_key_id": ima_client_id,
+            "access_key_secret": ima_token,
+        },
+    },
     expected=201,
 )
 assert ima_credential["name"] == "smoke-ima", ima_credential
@@ -1107,15 +1119,19 @@ assert [item["tool_name"] for item in knowledge["tool_calls"]] == [
     "read_knowledge",
 ], knowledge
 assert all(item["status"] == "success" for item in knowledge["tool_calls"]), knowledge
-assert knowledge["tool_calls"][0]["source"] == "ima:v1:team-knowledge", knowledge
-# The "secrets" query matches the runtime-contract item first (its content
-# mentions context.secrets), so the first hit is kb-item-1.
+# The test knowledge base is matched by NAME ("DLR接口库"); only the name is
+# asserted here, never its id or content.
+assert knowledge["tool_calls"][0]["source"] == "ima:v1:dlr-interface-lib", knowledge
+assert "DLR接口库" in knowledge["tool_calls"][0]["result_summary"], knowledge
+# The "contract" query hits the runtime-contract item first.
 assert knowledge["tool_calls"][1]["source"] == "ima:v1:kb-item-1", knowledge
+# The read goes through the official notes branch (get_doc_content).
 assert knowledge["tool_calls"][2]["source"] == "ima:v1:kb-item-2", knowledge
 # The read content echoed the credential token; the tools layer redacted it
 # by value before it could reach the browser.
 serialized = json.dumps(knowledge, ensure_ascii=False)
 assert ima_token not in serialized, knowledge
+assert ima_client_id not in serialized, knowledge
 assert "[REDACTED]" in serialized, knowledge
 # hidden reasoning 哨兵与附件正文/Secret 永不进入知识工具摘要或浏览器响应。
 assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in serialized

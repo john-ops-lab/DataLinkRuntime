@@ -293,7 +293,11 @@ def _handler_knowledge_search(args: dict[str, Any]) -> dict[str, Any]:
     limit = min(max(1, int(args.get("limit", 5))), 10)
     return _knowledge_call(
         lambda: knowledge.search_knowledge(
-            args["source"], args["query"], limit, current_tool_context()
+            args["source"],
+            args["query"],
+            limit,
+            args["knowledge_base_id"],
+            current_tool_context(),
         )
     )
 
@@ -472,8 +476,10 @@ _TOOLS: dict[str, ToolSpec] = {
         name="search_knowledge",
         description=(
             "Search one registered read-only knowledge source (currently "
-            "'ima', Tencent ima) by query text. Returns at most 10 bounded "
-            "hit summaries with an ima:v1 source identifier. Read-only."
+            "'ima', Tencent ima) inside one knowledge base. Pass the "
+            "knowledge_base_id exactly as returned by list_knowledge_bases. "
+            "Returns bounded hit summaries with an ima:v1 source identifier. "
+            "Read-only."
         ),
         parameters={
             "type": "object",
@@ -481,6 +487,10 @@ _TOOLS: dict[str, ToolSpec] = {
                 "source": {
                     "type": "string",
                     "description": "Registered knowledge source id, e.g. 'ima'",
+                },
+                "knowledge_base_id": {
+                    "type": "string",
+                    "description": "Knowledge base id from list_knowledge_bases",
                 },
                 "query": {
                     "type": "string",
@@ -491,7 +501,7 @@ _TOOLS: dict[str, ToolSpec] = {
                     "description": "Maximum results (1-10, default 5)",
                 },
             },
-            "required": ["source", "query"],
+            "required": ["source", "knowledge_base_id", "query"],
             "additionalProperties": False,
         },
         handler=_handler_knowledge_search,
@@ -499,9 +509,11 @@ _TOOLS: dict[str, ToolSpec] = {
     "read_knowledge": ToolSpec(
         name="read_knowledge",
         description=(
-            "Read one knowledge item by its exact id (from list_knowledge_bases "
-            "or search_knowledge) of a registered read-only knowledge source "
-            "(currently 'ima', Tencent ima). Bounded content with an ima:v1 "
+            "Read one knowledge item's text content by its exact media_id "
+            "(from search_knowledge) of a registered read-only knowledge "
+            "source (currently 'ima', Tencent ima). Uses the official ima "
+            "read chain (get_media_info; notes get_doc_content or the "
+            "bounded official media URL). Bounded content with an ima:v1 "
             "source identifier. Read-only."
         ),
         parameters={
@@ -513,7 +525,7 @@ _TOOLS: dict[str, ToolSpec] = {
                 },
                 "item_id": {
                     "type": "string",
-                    "description": "Exact knowledge item id",
+                    "description": "Exact knowledge media_id from search_knowledge",
                 },
             },
             "required": ["source", "item_id"],

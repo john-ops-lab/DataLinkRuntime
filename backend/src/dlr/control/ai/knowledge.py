@@ -121,8 +121,12 @@ class KnowledgeSource(ABC):
         """List the knowledge bases of this source (bounded result)."""
 
     @abstractmethod
-    def search_knowledge(self, query: str, limit: int) -> list[KnowledgeHit]:
-        """Search this source; ``limit`` is already clamped by the tool."""
+    def search_knowledge(
+        self, query: str, limit: int, knowledge_base_id: str
+    ) -> list[KnowledgeHit]:
+        """Search one knowledge base of this source; ``limit`` is already
+        clamped by the tool. ``knowledge_base_id`` comes from
+        :meth:`list_knowledge_bases` (the official ima API requires it)."""
 
     @abstractmethod
     def read_knowledge(self, item_id: str) -> KnowledgeItem:
@@ -200,6 +204,17 @@ def _bounded_int(value: object) -> int:
     return value
 
 
+def _bounded_opt_str(value: object, max_chars: int) -> str:
+    """Optional string field: empty strings allowed, oversized rejected."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
+    if len(value) > max_chars:
+        raise KnowledgeSourceError(KS_TOO_LARGE, "knowledge source response too large")
+    return value
+
+
 def build_source(source_id: str, context: ToolContext | None) -> KnowledgeSource:
     """Resolve one registered knowledge source id to a concrete adapter.
 
@@ -256,7 +271,7 @@ def list_knowledge_bases(source_id: str, context: ToolContext | None) -> dict[st
             {
                 "id": _bounded_str(item.id, MAX_KNOWLEDGE_FIELD_CHARS),
                 "name": _bounded_str(item.name, MAX_KNOWLEDGE_FIELD_CHARS),
-                "description": _bounded_str(item.description, MAX_KNOWLEDGE_FIELD_CHARS),
+                "description": _bounded_opt_str(item.description, MAX_KNOWLEDGE_FIELD_CHARS),
                 "item_count": _bounded_int(item.item_count),
                 "source": _bounded_str(item.source, 128),
             }
@@ -269,13 +284,17 @@ def list_knowledge_bases(source_id: str, context: ToolContext | None) -> dict[st
 
 
 def search_knowledge(
-    source_id: str, query: str, limit: int, context: ToolContext | None
+    source_id: str,
+    query: str,
+    limit: int,
+    knowledge_base_id: str,
+    context: ToolContext | None,
 ) -> dict[str, Any]:
     """Tool-facing search operation; returns the normalized tool result dict."""
     source = build_source(source_id, context)
     _to_result(source)
     _collect_redact_values(source, context)
-    hits = source.search_knowledge(query, limit)
+    hits = source.search_knowledge(query, limit, knowledge_base_id)
     payload: list[dict[str, Any]] = []
     for hit in hits:
         if not isinstance(hit, KnowledgeHit):
@@ -284,7 +303,7 @@ def search_knowledge(
             {
                 "id": _bounded_str(hit.id, MAX_KNOWLEDGE_FIELD_CHARS),
                 "title": _bounded_str(hit.title, MAX_KNOWLEDGE_FIELD_CHARS),
-                "summary": _bounded_str(hit.summary, MAX_KNOWLEDGE_FIELD_CHARS),
+                "summary": _bounded_opt_str(hit.summary, MAX_KNOWLEDGE_FIELD_CHARS),
                 "source": _bounded_str(hit.source, 128),
             }
         )
@@ -309,7 +328,7 @@ def read_knowledge(source_id: str, item_id: str, context: ToolContext | None) ->
         "tool": "read_knowledge",
         "item": {
             "id": _bounded_str(item.id, MAX_KNOWLEDGE_FIELD_CHARS),
-            "title": _bounded_str(item.title, MAX_KNOWLEDGE_FIELD_CHARS),
+            "title": _bounded_opt_str(item.title, MAX_KNOWLEDGE_FIELD_CHARS),
             "content": _bounded_str(item.content, MAX_KNOWLEDGE_CONTENT_CHARS),
             "source": _bounded_str(item.source, 128),
         },

@@ -22,10 +22,12 @@ export SMOKE_LOG_TEXT=${SMOKE_LOG_TEXT:-smoke-log-sentinel-$$}
 # M5.7 Wave B2: attachment body text sent to the fake Provider is request-only
 # too: never logged, never persisted, never echoed back to the browser.
 export SMOKE_ATTACH_TEXT=${SMOKE_ATTACH_TEXT:-smoke-attach-sentinel-$$}
-# M5.7 Wave C2: the fake official ima service credential. The knowledge tools
-# resolve it through the DLR Secret Store; the fake echoes it inside read
-# content on purpose so the smoke proves by-value redaction end to end.
+# M5.7 Wave C2: the fake official ima service credentials (Client ID / API
+# Key). The knowledge tools resolve them through a DLR access_key Credential
+# (Secret Store); the fake echoes the API Key inside read content on purpose
+# so the smoke proves by-value redaction end to end.
 export SMOKE_IMA_TOKEN=${SMOKE_IMA_TOKEN:-smoke-ima-token-$$}
+export SMOKE_IMA_CLIENT_ID=${SMOKE_IMA_CLIENT_ID:-smoke-ima-client-$$}
 # M5.7 Wave C2: the read-only KnowledgeSource deployment config. Exported
 # before `docker compose up -d` so the Control service (which handles the
 # assist requests) boots with them via the docker-compose env passthrough.
@@ -163,6 +165,7 @@ AI_FAKE_CONTAINER_ID=$(docker run -d \
   -e SMOKE_LOG_TEXT \
   -e SMOKE_ATTACH_TEXT \
   -e SMOKE_IMA_TOKEN \
+  -e SMOKE_IMA_CLIENT_ID \
   --volume "$PWD/scripts/ai-fake-provider.py:/tmp/dlr-ai-fake-provider.py:ro" \
   --entrypoint python \
   "$CONTROL_IMAGE" /tmp/dlr-ai-fake-provider.py --port 18080)
@@ -209,6 +212,8 @@ IMA_FAKE_CONTAINER_ID=$(docker run -d \
   --name "$IMA_FAKE_CONTAINER_NAME" \
   --network "$CONTROL_NETWORK" \
   -e SMOKE_IMA_TOKEN \
+  -e SMOKE_IMA_CLIENT_ID \
+  -e SMOKE_IMA_BASE_URL="$DLR_IMA_ENDPOINT" \
   --volume "$PWD/scripts/ima-fake-service.py:/tmp/dlr-ima-fake-service.py:ro" \
   --entrypoint python \
   "$CONTROL_IMAGE" /tmp/dlr-ima-fake-service.py --port 18081)
@@ -236,6 +241,7 @@ docker compose exec -T \
   -e AI_FAKE_BASE_URL \
   -e AI_FAKE_DISABLED_BASE_URL \
   -e SMOKE_IMA_TOKEN \
+  -e SMOKE_IMA_CLIENT_ID \
   control python - < scripts/compose-smoke.py
 
 echo "==> verifying secrets did not enter service logs"
@@ -259,9 +265,13 @@ if docker compose logs control worker web | grep -F "$SMOKE_ATTACH_TEXT" >/dev/n
   exit 1
 fi
 # M5.7 Wave C2: the ima credential truth must never enter service logs
-# (the fake ima service echoes it inside the read content on purpose).
+# (the fake ima service echoes the API Key inside the read content on purpose).
 if docker compose logs control worker web | grep -F "$SMOKE_IMA_TOKEN" >/dev/null; then
   echo "ERROR: ima credential appeared in service logs" >&2
+  exit 1
+fi
+if docker compose logs control worker web | grep -F "$SMOKE_IMA_CLIENT_ID" >/dev/null; then
+  echo "ERROR: ima client id appeared in service logs" >&2
   exit 1
 fi
 

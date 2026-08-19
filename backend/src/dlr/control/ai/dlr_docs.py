@@ -249,22 +249,30 @@ _ENTRIES: tuple[DocEntry, ...] = (
         "knowledge-source-contract",
         "Read-only KnowledgeSource Boundary (Tencent ima)",
         "platform",
-        "The unified read-only knowledge boundary: list/search/read only, official hosts, HTTPS, bounded and sanitized.",
+        "The unified read-only knowledge boundary: list/search/read only, official ima OpenAPI, HTTPS, bounded and sanitized.",
         (
             "DLR exposes exactly three read-only knowledge operations per source: "
             "list_knowledge_bases, search_knowledge and read_knowledge. The first "
-            "real source is Tencent ima through a thin official OpenAPI adapter. "
-            "Every source endpoint must be HTTPS on the official host allowlist; "
-            "redirects are never followed, IP literals are rejected, response bodies "
-            "are size-bounded and schema-validated before redaction, and every "
+            "real source is Tencent ima through a thin official OpenAPI adapter "
+            "(base https://ima.qq.com; auth headers ima-openapi-clientid / "
+            "ima-openapi-apikey; envelope {code, msg, data}). list maps to "
+            "search_knowledge_base (empty query) with get_knowledge_base "
+            "enrichment; search maps to search_knowledge (requires the "
+            "knowledge_base_id returned by list); read maps to get_media_info "
+            "and then the official read chain — notes get_doc_content for "
+            "media_type=11, or a bounded HTTPS fetch of the official media URL "
+            "(ima.qq.com / *.myqcloud.com) — and never a write interface. Every "
+            "endpoint must be HTTPS on the official host allowlist; redirects are "
+            "never followed, IP literals are rejected, response bodies are "
+            "size-bounded and schema-validated before redaction, and every "
             "connection/read/total deadline interrupts the external call. Upload, "
             "write, delete, permission, share and sync operations do not exist in "
-            "the boundary and are rejected. ima Client ID / API Key / Token live "
-            "only in DLR Credentials (Secret Store) and are resolved at the "
-            "server-side execution point for the duration of one tool call; they are "
-            "redacted by value from prompts, tool parameters, summaries, results, "
-            "logs and errors. The browser only ever sees sanitized summaries and "
-            "binding status."
+            "the boundary and are rejected. ima Client ID / API Key live only in "
+            "a DLR access_key Credential (Secret Store) and are resolved at the "
+            "server-side execution point for the duration of one tool call; they "
+            "are redacted by value from prompts, tool parameters, summaries, "
+            "results, logs and errors. The browser only ever sees sanitized "
+            "summaries and binding status."
         ),
     ),
     _entry(

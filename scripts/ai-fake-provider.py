@@ -205,7 +205,8 @@ def tool_calls_for(scenario: str) -> list[dict[str, Any]]:
     names are intentionally NOT in the DLR whitelist)."""
     if scenario == "SMOKE_KNOWLEDGE":
         # M5.7 Wave C2: the read-only KnowledgeSource chain against the fake
-        # official ima service: list -> search -> read.
+        # official ima service (official OpenAPI contract): list -> search
+        # (inside the DLR接口库 knowledge base) -> read.
         return [
             {
                 "id": "call-smoke-kb-list",
@@ -217,7 +218,10 @@ def tool_calls_for(scenario: str) -> list[dict[str, Any]]:
                 "type": "function",
                 "function": {
                     "name": "search_knowledge",
-                    "arguments": '{"source": "ima", "query": "secrets", "limit": 2}',
+                    "arguments": (
+                        '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                        '"query": "contract", "limit": 2}'
+                    ),
                 },
             },
             {
