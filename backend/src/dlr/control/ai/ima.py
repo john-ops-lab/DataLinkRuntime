@@ -293,7 +293,6 @@ class TencentImaKnowledgeSource(KnowledgeSource):
                 raise KnowledgeSourceError(KS_TIMEOUT, "knowledge source request timed out")
             with _NO_REDIRECT_OPENER.open(request, timeout=remaining) as response:
                 raw = response.read(MAX_KNOWLEDGE_RESPONSE_BYTES + 1)
-                response_headers = dict(response.headers)
         except KnowledgeSourceError:
             raise
         except url_error.HTTPError as error:
@@ -336,16 +335,13 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             ) from None
         if not isinstance(parsed, dict):
             raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
-        return self._unwrap_envelope(parsed, response_headers)
+        return self._unwrap_envelope(parsed)
 
-    def _unwrap_envelope(
-        self, parsed: dict[str, Any], response_headers: dict[str, str]
-    ) -> dict[str, Any]:
+    def _unwrap_envelope(self, parsed: dict[str, Any]) -> dict[str, Any]:
         """Validate the official ``{code, msg, data}`` envelope.
 
         Business errors (``code != 0``) map to stable ``ks_*`` codes; the
-        official ``msg`` is never echoed. The response headers are kept so
-        the media-URL fetch can reuse the same size/type checks.
+        official ``msg`` is never echoed.
         """
         code = parsed.get("code")
         if not isinstance(code, int):
