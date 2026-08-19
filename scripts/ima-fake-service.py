@@ -134,9 +134,7 @@ class Handler(BaseHTTPRequestHandler):
         self._write_json(200, {"code": code, "msg": msg, "data": {}})
 
     def _body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length)
-        payload = json.loads(raw)
+        payload = json.loads(self._request_body)
         if not isinstance(payload, dict):
             raise TypeError("request body must be an object")
         return payload
@@ -263,6 +261,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/_smoke/metrics":
             self._write_json(200, METRICS.snapshot())
             return
+        # Read the request body first: a server that closes with unread
+        # request data can RST the client mid-response on Linux.
+        length = int(self.headers.get("Content-Length", "0"))
+        self._request_body = self.rfile.read(length)
         try:
             self._handle_openapi()
         except (json.JSONDecodeError, TypeError, ValueError, KeyError):

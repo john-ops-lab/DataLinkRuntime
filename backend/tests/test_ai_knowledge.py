@@ -131,6 +131,7 @@ class FakeImaHandler(BaseHTTPRequestHandler):
     redirect_to: str | None = None
     require_auth: bool = True
     biz_code: int | None = None
+    close_after_bytes: int | None = None
     echo_secret: bool = True
     bases: list[dict[str, Any]] = BASES
     items: dict[str, dict[str, str]] = ITEMS
@@ -167,8 +168,7 @@ class FakeImaHandler(BaseHTTPRequestHandler):
         )
 
     def _body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        payload = json.loads(self.rfile.read(length))
+        payload = json.loads(self._request_body)
         if not isinstance(payload, dict):
             raise TypeError("request body must be an object")
         return payload
@@ -184,6 +184,14 @@ class FakeImaHandler(BaseHTTPRequestHandler):
             time.sleep(self.delay_seconds)
         if self.status is not None:
             self._write(self.status, {"error": {"code": "upstream", "message": "fake"}})
+            return
+        if self.close_after_bytes is not None:
+            total = self.close_after_bytes + 10
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(total))
+            self.end_headers()
+            self.wfile.write(b"x" * self.close_after_bytes)
             return
         if self.raw_body is not None:
             self.send_response(200)
@@ -294,6 +302,11 @@ class FakeImaHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def do_POST(self) -> None:
+        # Read the request body first: a server that closes with unread
+        # request data can RST the client mid-response (deterministic on
+        # Linux under load), which previously flaked the oversize test.
+        length = int(self.headers.get("Content-Length", "0"))
+        self._request_body = self.rfile.read(length)
         try:
             self._handle_openapi()
         except (json.JSONDecodeError, TypeError, ValueError, KeyError):
@@ -317,6 +330,7 @@ def ima_server() -> Iterator[ThreadingHTTPServer]:
     FakeImaHandler.redirect_to = None
     FakeImaHandler.require_auth = True
     FakeImaHandler.biz_code = None
+    FakeImaHandler.close_after_bytes = None
     FakeImaHandler.echo_secret = True
     FakeImaHandler.bases = BASES
     FakeImaHandler.items = ITEMS
@@ -608,6 +622,31 @@ def test_ima_oversize_response_rejected(ima_session: Session) -> None:
     execution = execute("list_knowledge_bases", {"source": "ima"}, session=ima_session)
     assert execution.status == "error"
     assert execution.error_code == knowledge.KS_TOO_LARGE
+
+
+def test_ima_transport_cut_with_oversize_partial_is_still_too_large(
+    ima_session: Session,
+) -> None:
+    """Deterministic repro: the upstream closes mid-body after already
+    sending more than the size bound. The response is still rejected as
+    too large (never remapped to a transport error), matching the official
+    contract that schema/size validation precedes anything else."""
+    FakeImaHandler.close_after_bytes = ima_adapter.MAX_KNOWLEDGE_RESPONSE_BYTES + 1
+    execution = execute("list_knowledge_bases", {"source": "ima"}, session=ima_session)
+    assert execution.status == "error"
+    assert execution.error_code == knowledge.KS_TOO_LARGE
+
+
+def test_ima_transport_cut_with_small_partial_is_not_too_large(
+    ima_session: Session,
+) -> None:
+    """A transport cut before the body reaches the size bound must never be
+    misreported as too_large: the truncated body fails the strict JSON /
+    envelope validation first and maps to the stable malformed code."""
+    FakeImaHandler.close_after_bytes = 100
+    execution = execute("list_knowledge_bases", {"source": "ima"}, session=ima_session)
+    assert execution.status == "error"
+    assert execution.error_code == knowledge.KS_RESPONSE_INVALID
 
 
 def test_ima_oversize_item_field_rejected(ima_session: Session) -> None:

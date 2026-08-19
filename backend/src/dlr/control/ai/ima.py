@@ -295,6 +295,18 @@ class TencentImaKnowledgeSource(KnowledgeSource):
                 raw = response.read(MAX_KNOWLEDGE_RESPONSE_BYTES + 1)
         except KnowledgeSourceError:
             raise
+        except http_client.IncompleteRead as error:
+            # The connection dropped before the full body arrived (a server
+            # closing with unread request data can RST the client mid-read).
+            # When the partial body already exceeds the size bound, the
+            # response is still deterministically too large; otherwise the
+            # incomplete transport cannot be trusted and maps to unreachable.
+            partial = error.partial or b""
+            if len(partial) > MAX_KNOWLEDGE_RESPONSE_BYTES:
+                raise KnowledgeSourceError(
+                    KS_TOO_LARGE, "knowledge source response too large"
+                ) from None
+            raise KnowledgeSourceError(KS_UNREACHABLE, "knowledge source unreachable") from None
         except url_error.HTTPError as error:
             if error.code in (301, 302, 303, 307, 308):
                 raise KnowledgeSourceError(
@@ -517,6 +529,15 @@ class TencentImaKnowledgeSource(KnowledgeSource):
                 content_type = response.headers.get("Content-Type", "")
         except KnowledgeSourceError:
             raise
+        except http_client.IncompleteRead as error:
+            partial = error.partial or b""
+            if len(partial) > MAX_KNOWLEDGE_RESPONSE_BYTES:
+                raise KnowledgeSourceError(
+                    KS_TOO_LARGE, "knowledge source media too large"
+                ) from None
+            raise KnowledgeSourceError(
+                KS_UNREACHABLE, "knowledge source media unreachable"
+            ) from None
         except url_error.HTTPError as error:
             if error.code in (301, 302, 303, 307, 308):
                 raise KnowledgeSourceError(
