@@ -54,6 +54,11 @@
     },
     "tools": {
       "unknownName": "Unknown tool",
+      "names": {
+        "list_knowledge_bases": "List knowledge bases",
+        "search_knowledge": "Search knowledge",
+        "read_knowledge": "Read knowledge item"
+      },
       "status": {
         "calling": "Calling",
         "success": "Success",

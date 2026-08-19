@@ -215,7 +215,10 @@ _ENTRIES: tuple[DocEntry, ...] = (
             "request-only attachments and the visible recent conversation to the configured model "
             "service. It may call DLR's registered read-only documentation tools (dlr_docs_list / "
             "dlr_docs_search / dlr_docs_read) which only read this app-shipped help collection with "
-            "fixed bounds. Every tool call is bounded (rounds, count, size, timeout, sequential "
+            "fixed bounds, and the registered read-only knowledge sources (list_knowledge_bases / "
+            "search_knowledge / read_knowledge, e.g. Tencent ima) which only read official "
+            "configured knowledge endpoints with the same bounds and strict HTTPS / host-allowlist "
+            "guards. Every tool call is bounded (rounds, count, size, timeout, sequential "
             "execution) and sanitized; unknown or write tools are rejected. The final answer must "
             "still be a strict AiModelOutput JSON: a message and an optional complete Candidate "
             "snapshot. Secret truth, hidden reasoning and raw tool payloads never reach the browser."
@@ -225,16 +228,51 @@ _ENTRIES: tuple[DocEntry, ...] = (
         "tool-call-contract",
         "Read-only Tool Call Contract",
         "platform",
-        "The C1 tool whitelist, parameter schemas, bounds and sanitization rules.",
+        "The C1/C2 tool whitelist, parameter schemas, bounds and sanitization rules.",
         (
-            "Registered C1 tools: dlr_docs_list (optional category filter), dlr_docs_search (query "
-            "and optional limit) and dlr_docs_read (doc_id). All are read-only, validate arguments "
-            "against strict JSON schemas, run sequentially with a fixed per-call timeout, and return "
-            "deterministic bounded results with a dlr-docs:v1 source identifier. Per assist: at most "
-            "8 tool calls across at most 4 tool rounds; per-call results and the accumulated result "
-            "budget are capped; results are sanitized (secret patterns redacted) before reaching the "
-            "model or the browser. Unknown, unregistered or write tools are rejected with a stable "
-            "error result and never executed."
+            "Registered read-only tools: dlr_docs_list (optional category filter), "
+            "dlr_docs_search (query and optional limit) and dlr_docs_read (doc_id) "
+            "for the app-shipped help docs; list_knowledge_bases, search_knowledge "
+            "and read_knowledge (source id, e.g. 'ima') for registered read-only "
+            "knowledge sources. All are read-only, validate arguments against strict "
+            "JSON schemas, run sequentially with a fixed per-call timeout, and return "
+            "deterministic bounded results with a stable source identifier "
+            "(dlr-docs:v1 / ima:v1). Per assist: at most 8 tool calls across at most "
+            "4 tool rounds; per-call results and the accumulated result budget are "
+            "capped; results are sanitized (secret patterns and the round's credential "
+            "truth redacted by value) before reaching the model or the browser. "
+            "Unknown, unregistered or write tools are rejected with a stable error "
+            "result and never executed."
+        ),
+    ),
+    _entry(
+        "knowledge-source-contract",
+        "Read-only KnowledgeSource Boundary (Tencent ima)",
+        "platform",
+        "The unified read-only knowledge boundary: list/search/read only, official ima OpenAPI, HTTPS, bounded and sanitized.",
+        (
+            "DLR exposes exactly three read-only knowledge operations per source: "
+            "list_knowledge_bases, search_knowledge and read_knowledge. The first "
+            "real source is Tencent ima through a thin official OpenAPI adapter "
+            "(base https://ima.qq.com; auth headers ima-openapi-clientid / "
+            "ima-openapi-apikey; envelope {code, msg, data}). list maps to "
+            "search_knowledge_base (empty query) with get_knowledge_base "
+            "enrichment; search maps to search_knowledge (requires the "
+            "knowledge_base_id returned by list); read maps to get_media_info "
+            "and then the official read chain — notes get_doc_content for "
+            "media_type=11, or a bounded HTTPS fetch of the official media URL "
+            "(ima.qq.com / *.myqcloud.com) — and never a write interface. Every "
+            "endpoint must be HTTPS on the official host allowlist; redirects are "
+            "never followed, IP literals are rejected, response bodies are "
+            "size-bounded and schema-validated before redaction, and every "
+            "connection/read/total deadline interrupts the external call. Upload, "
+            "write, delete, permission, share and sync operations do not exist in "
+            "the boundary and are rejected. ima Client ID / API Key live only in "
+            "a DLR access_key Credential (Secret Store) and are resolved at the "
+            "server-side execution point for the duration of one tool call; they "
+            "are redacted by value from prompts, tool parameters, summaries, "
+            "results, logs and errors. The browser only ever sees sanitized "
+            "summaries and binding status."
         ),
     ),
     _entry(

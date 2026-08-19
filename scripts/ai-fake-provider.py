@@ -180,6 +180,7 @@ TOOL_SCENARIOS = (
     "SMOKE_TOOL_UNKNOWN",
     "SMOKE_TOOL_WRITE",
     "SMOKE_TOOL_LOOP",
+    "SMOKE_KNOWLEDGE",
 )
 
 
@@ -202,6 +203,36 @@ def detect_tool_scenario(payload: dict[str, Any]) -> str | None:
 def tool_calls_for(scenario: str) -> list[dict[str, Any]]:
     """The first-round tool calls of one smoke scenario (write-style tool
     names are intentionally NOT in the DLR whitelist)."""
+    if scenario == "SMOKE_KNOWLEDGE":
+        # M5.7 Wave C2: the read-only KnowledgeSource chain against the fake
+        # official ima service (official OpenAPI contract): list -> search
+        # (inside the DLR接口库 knowledge base) -> read.
+        return [
+            {
+                "id": "call-smoke-kb-list",
+                "type": "function",
+                "function": {"name": "list_knowledge_bases", "arguments": '{"source": "ima"}'},
+            },
+            {
+                "id": "call-smoke-kb-search",
+                "type": "function",
+                "function": {
+                    "name": "search_knowledge",
+                    "arguments": (
+                        '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                        '"query": "contract", "limit": 2}'
+                    ),
+                },
+            },
+            {
+                "id": "call-smoke-kb-read",
+                "type": "function",
+                "function": {
+                    "name": "read_knowledge",
+                    "arguments": '{"source": "ima", "item_id": "kb-item-2"}',
+                },
+            },
+        ]
     if scenario == "SMOKE_TOOL_MULTI":
         return [
             {
@@ -454,6 +485,19 @@ class Handler(BaseHTTPRequestHandler):
                 suffix = " with rejected tool"
             elif scenario == "SMOKE_TOOL_WRITE":
                 suffix = " with write tool rejected"
+            elif scenario == "SMOKE_KNOWLEDGE":
+                # M5.7 Wave C2: the knowledge chain result carries the ima:v1
+                # source identifiers, and the read content echoes the ima
+                # Token which DLR must have redacted to [REDACTED] before the
+                # result ever rejoined this provider chain.
+                if "ima:v1:kb-item-2" not in tool_result:
+                    raise AssertionError("knowledge read source missing in tool result")
+                token = os.environ.get("SMOKE_IMA_TOKEN", "")
+                if token and token in tool_result:
+                    raise AssertionError("ima credential truth leaked into the provider chain")
+                if token and "[REDACTED]" not in tool_result:
+                    raise AssertionError("ima credential truth was not redacted in tool result")
+                suffix = " with knowledge result"
             else:
                 suffix = " with tool result"
             if "dlr-docs:v1" in tool_result:

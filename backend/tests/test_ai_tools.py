@@ -167,7 +167,16 @@ def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_too
     tools = payload["tools"]
     assert isinstance(tools, list)
     names = [entry["function"]["name"] for entry in tools]
-    assert names == ["dlr_docs_list", "dlr_docs_search", "dlr_docs_read"]
+    # M5.7 Wave C2: the C1 docs whitelist plus the unified read-only
+    # KnowledgeSource operations (first target: Tencent ima).
+    assert names == [
+        "dlr_docs_list",
+        "dlr_docs_search",
+        "dlr_docs_read",
+        "list_knowledge_bases",
+        "search_knowledge",
+        "read_knowledge",
+    ]
     system_prompt = payload["messages"][0]["content"]
     assert isinstance(system_prompt, str)
     assert "tool call," not in system_prompt

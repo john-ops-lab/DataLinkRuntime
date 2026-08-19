@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from dlr.control.ai import attachments as attachments_service
+from dlr.control.ai import knowledge as knowledge_service
 from dlr.control.ai import providers
 from dlr.control.ai import tools as tools_service
 from dlr.control.models import AdapterCredentialBinding, AdapterVersion, AiModelSetting, Credential
@@ -415,7 +416,12 @@ def _assist_messages(
         tool_instructions = (
             "You may call DLR's registered read-only tools when you need the "
             "app-shipped DLR platform help documentation (dlr_docs_list / "
-            "dlr_docs_search / dlr_docs_read). Tool calls are executed by DLR with "
+            "dlr_docs_search / dlr_docs_read) or read-only knowledge sources "
+            "such as Tencent ima (list_knowledge_bases / search_knowledge / "
+            "read_knowledge). For knowledge sources, first call "
+            "list_knowledge_bases, then pass the returned knowledge_base_id "
+            "to search_knowledge and the returned media_id to read_knowledge. "
+            "Tool calls are executed by DLR with "
             "fixed bounds; arguments and results are sanitized server-side. Only "
             "call the registered read-only tools; never invent, chain or repeat "
             "tool calls beyond what the current request needs, and never attempt "
@@ -604,6 +610,18 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
         tools_enabled=tools_enabled,
     )
     tools_payload = tools_service.tools_payload() if tools_enabled else None
+    # M5.7 Wave C2: per-execution tool context. The request's DB session lets
+    # knowledge handlers resolve DLR Credentials inside the Secret Store;
+    # ``secret_values`` collects the resolved knowledge-source credential
+    # truth so every sanitization path redacts it by exact value. The ima
+    # credential values are pre-resolved (best effort) so even the model's
+    # own tool-call echo and early summaries are redacted.
+    tool_context = tools_service.ToolExecutionContext(
+        session=session,
+        secret_values=list(
+            knowledge_service.redact_values_for("ima", session) if tools_enabled else ()
+        ),
+    )
     executed_tools: list[AiToolCallSummary] = []
     total_tool_calls = 0
     tool_rounds = 0
@@ -647,7 +665,12 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
                             # string is redacted/truncated before it can rejoin
                             # the provider chain or any log. Execution below
                             # uses the raw arguments; results are sanitized.
-                            "arguments": tools_service.sanitize_text(call.arguments, api_key, 4000),
+                            "arguments": tools_service.sanitize_text(
+                                call.arguments,
+                                api_key,
+                                4000,
+                                extra_values=tuple(tool_context.secret_values),
+                            ),
                         },
                     }
                     for call in tool_calls
@@ -655,7 +678,9 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
             }
         )
         for call in tool_calls:
-            execution = tools_service.execute_tool_call(call.name, call.arguments, api_key)
+            execution = tools_service.execute_tool_call(
+                call.name, call.arguments, api_key, context=tool_context
+            )
             total_tool_calls += 1
             accumulated_result_chars += execution.result_size
             if accumulated_result_chars > tools_service.MAX_TOOL_RESULT_TOTAL_CHARS:

@@ -54,6 +54,11 @@
     },
     "tools": {
       "unknownName": "未知工具",
+      "names": {
+        "list_knowledge_bases": "列出知识库",
+        "search_knowledge": "搜索知识",
+        "read_knowledge": "读取知识条目"
+      },
       "status": {
         "calling": "调用中",
         "success": "成功",
