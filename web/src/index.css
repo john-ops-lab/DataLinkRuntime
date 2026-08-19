@@ -1029,9 +1029,6 @@ body {
 
 /* M5.7 Wave A：消息正文由 assistant-ui MarkdownTextPrimitive 渲染。
    ai-markdown 是消息内容容器；所有元素样式为 DLR 自有 CSS（无 Tailwind）。 */
-.ai-message-content {
-  min-width: 0;
-}
 
 .ai-markdown {
   margin: 4px 0 0;
