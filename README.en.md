@@ -1,7 +1,20 @@
 <h1 align="center">DataLinkRuntime</h1>
 
 <p align="center">
-  A lightweight, self-hostable data adapter runtime for building, running and operating data integration code in the browser.
+  <strong>Code your data connections.</strong>
+</p>
+
+<p align="center">
+  Write your data connection logic as an <strong>Adapter</strong>, then run it directly.
+</p>
+
+<p align="center">
+  From code editing and dependency configuration to execution, logs and history,<br>
+  DataLinkRuntime provides a lightweight, self-hosted environment for developing and running data adapters.
+</p>
+
+<p align="center">
+  <strong>Develop → Run → Observe</strong>
 </p>
 
 <p align="center">
@@ -12,93 +25,253 @@
 </p>
 
 <p align="center">
-  <a href="README.md">简体中文</a> · <strong>English</strong> ·
+  <a href="README.md">简体中文</a> ·
+  <strong>English</strong> ·
   <a href="docs/en/product.md">Product</a> ·
   <a href="docs/en/architecture.md">Architecture</a> ·
   <a href="docs/specs/README.md">Specs</a> ·
-  <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues/80">Roadmap</a>
+  <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues">Issues</a>
 </p>
 
-# DataLinkRuntime - Lightweight Data Adapter Runtime
+---
 
-DataLinkRuntime (DLR) is designed for data collection, receiving, parsing, transformation and output in CMDB and other integration scenarios.
+## What is DataLinkRuntime?
 
-The core idea is simple: an **Adapter is a self-contained data processing unit**. You write code in the Web Workbench, DLR runs it on a Worker, and every execution has traceable input, output, logs and status.
+DataLinkRuntime (DLR) is an **AI-assisted, code-first platform for developing and running data adapters**.
 
-DLR is intentionally not a workflow engine or a low-code platform. It focuses on keeping Adapter development, execution and operations small, explicit and easy to self-host.
+Many data integration tasks are fundamentally just a small amount of code:
 
-## Main Concepts
+```text
+Read / Receive data
+        ↓
+Validate / Transform
+        ↓
+Apply business logic
+        ↓
+Send to the target system
+```
 
-1. **Create an Adapter**
-   - `Task`: run manually or on a schedule.
-   - `Webhook`: receive external JSON requests through an HTTP endpoint.
+The code itself may only be tens or hundreds of lines, but once it needs to run reliably over time, you also need dependency management, configuration, credentials, scheduling, versioning, logs, execution history and troubleshooting.
 
-2. **Develop in the browser**
-   - Monaco-based editor.
-   - Python, JavaScript and Java share one `Input → handle(context, input) → Output` contract.
-   - Dependencies, runtime settings and Credential bindings stay with the Adapter.
+DLR brings those operational needs into one lightweight platform. Every **Adapter** is a self-contained data processing unit:
 
-3. **Run on Workers**
-   - Control manages state and scheduling but never executes user Adapter code.
-   - Workers claim executions and run code in fresh subprocesses / JVMs.
-   - One Adapter has at most one active `pending / running` Execution.
+```text
+Source / Event
+      ↓
+   Adapter
+      ↓
+Transform / Process
+      ↓
+    Target
+```
 
-4. **Observe every run**
-   - Live stdout / stderr.
-   - Structured Output.
-   - Execution history and Webhook call history.
-   - Timeout, cancellation and runtime-lock semantics are shared across trigger types.
+The Adapter owns one complete unit of data processing and external output logic; DLR owns its development, execution and management environment.
 
-5. **Use AI as a human-in-the-loop coding assistant**
-   - The AI Assistant reads the current Working Copy and bounded non-sensitive context.
-   - It returns a complete Candidate snapshot.
-   - You review the Diff and explicitly Apply it.
-   - Apply never automatically saves, tests or runs the Adapter.
+---
 
-## Features
+## Code-first, AI-assisted
 
-- Browser-based Adapter Workbench with Monaco Editor.
-- Task manual run and Cron / Timezone scheduling.
-- Webhook Adapter with Bearer Token authentication.
-- Python 3.13, JavaScript / Node.js and Java 21 runtimes.
-- Version-scoped dependency environments.
-- PostgreSQL-backed Execution state and scheduling.
-- Worker heartbeat and capability-aware dispatch.
-- Live logs, Execution history and Webhook call history.
-- Encrypted Credentials and Adapter Secret bindings.
-- Package source management for Python / npm / Maven.
-- Human-in-the-loop AI Assistant with Candidate → Diff → Apply.
-- Deployment-level `zh-CN / en` internationalization.
-- Docker Compose self-hosting.
+Many integration platforms reduce development effort by introducing components, nodes and visual workflows. DataLinkRuntime takes a different path:
+
+> **Instead of decomposing logic into more and more platform-specific components, DLR lets AI help you generate and modify readable, runnable Adapter code directly.**
+
+You can write code yourself or describe what you want:
+
+```text
+Describe → Generate → Review → Run
+```
+
+The DLR AI Assistant produces a Candidate. You review the Diff and explicitly Apply it. Apply only updates the browser Working Copy; it does not automatically save or run the Adapter.
+
+Code remains the final asset, so it stays readable, editable, testable and versionable while retaining access to the existing Python, JavaScript and Java ecosystems.
+
+**DLR does not try to eliminate code with more components. It uses AI to make code a simple way to express integration logic again.**
+
+---
+
+## Use cases
+
+DLR is designed for **independent data connection tasks that need reliable execution and long-term maintainability**.
+
+- **System-to-system synchronization**: read data from System A, transform it, then write it to System B.
+- **API / data format adaptation**: field mapping, enum conversion, structure reshaping, data cleaning and protocol differences.
+- **Data collection**: periodically collect data from cloud platforms, Kubernetes, VMware, databases, monitoring systems or business applications.
+- **Webhook / event handling**: receive and transform events from GitHub, CI/CD, monitoring, cloud platforms or business systems.
+- **Scheduled jobs and script consolidation**: bring scripts scattered across servers, Cron, containers or local directories into one runtime with logs and version history.
+- **One-off data processing**: migrations, bulk corrections, temporary transformations and short-lived integration tasks.
+
+Common processing patterns:
+
+```text
+Fetch → Transform → Push
+```
+
+or:
+
+```text
+Receive → Validate → Process → Send
+```
+
+---
+
+## Core capabilities
+
+| Capability | Description |
+|---|---|
+| **Web Workbench** | Create, edit and manage Adapters in the browser |
+| **Multi-language Runtime** | Python, JavaScript and Java share one execution model |
+| **Task** | Manual execution plus Cron / Timezone scheduling |
+| **Webhook** | Receive external HTTP requests and create Executions |
+| **Dependency management** | Manage Python, npm and Maven dependencies and package sources |
+| **Credential** | Encrypt credentials and inject them through Secret Bindings |
+| **Version traceability** | Every save produces an immutable runtime snapshot |
+| **Live logs** | Observe Adapter execution logs in real time |
+| **Execution history** | Inspect status, duration, input, output and logs for each Execution |
+| **Worker Runtime** | Control and code execution are separated; Workers run Adapter code |
+| **AI Assistant** | Human-in-the-loop Candidate → Diff → Apply coding assistance |
+| **AI Context** | Explicit code / log context, attachments and controlled read-only knowledge sources |
+| **Self-hosted** | Deploy the full platform on one server with Docker Compose |
+| **Internationalization** | Simplified Chinese and English UI |
+
+---
+
+## Adapter Runtime Contract
+
+All three languages share the same core model:
+
+```text
+Input → handle(context, input) → Output
+```
+
+| Language | Entry point |
+|---|---|
+| Python | `def handle(context, input)` |
+| JavaScript | `export async function handle(context, input)` |
+| Java | `Adapter.handle(Context context, Object input)` |
+
+The runtime provides:
+
+- `context.config`: non-sensitive runtime configuration;
+- `context.secrets.get(key)`: access to bound Secrets;
+- `context.logger`: real-time logging;
+- `input`: JSON-compatible input;
+- `output`: JSON-serializable output.
+
+Adapters can call databases, HTTP APIs, SDKs or other external systems as needed.
+
+---
+
+## Adapter types
+
+### Task
+
+For actively executed data processing jobs. Task supports:
+
+- manual execution;
+- Cron / Timezone scheduling;
+- custom Input;
+- run / stop;
+- live logs;
+- execution history.
+
+Typical flow:
+
+```text
+Create → Edit → Save → Run / Schedule → Observe
+```
+
+### Webhook
+
+For data pushed from external systems:
+
+```text
+External System
+      ↓
+POST Webhook
+      ↓
+DLR Control
+      ↓
+Execution
+      ↓
+Worker
+      ↓
+Adapter
+```
+
+Useful for GitHub, CI/CD, monitoring, cloud platform and business-system events.
+
+---
+
+## AI Assistant
+
+The AI Assistant is an Adapter development assistant, not an autonomous runtime Agent.
+
+It can combine the current Working Copy with explicitly added code / log context, attachments and configured controlled read-only knowledge sources to help generate, modify and explain Adapter code.
+
+```text
+Working Copy + Context
+        ↓
+   AI Assistant
+        ↓
+     Candidate
+        ↓
+       Diff
+        ↓
+      Apply
+        ↓
+Working Copy (dirty)
+```
+
+AI does not automatically perform:
+
+```text
+Save
+Run
+Stop
+Worker changes
+Schedule / Webhook lifecycle changes
+```
+
+Saving and execution always require an explicit user action.
+
+---
 
 ## Quick Start
 
-Prerequisite: Docker with Compose v2.
+### Prerequisites
 
-Create the deployment configuration and replace the placeholder secrets:
+Docker with Compose v2.
+
+### 1. Create the deployment configuration
 
 ```bash
 cp .env.example .env
-# Edit .env and set at least:
-# DLR_ADMIN_TOKEN
-# DLR_WORKER_TOKEN
-# DLR_MASTER_KEY
 ```
 
-Start PostgreSQL first and apply migrations:
+Set at least:
+
+```text
+DLR_ADMIN_TOKEN
+DLR_WORKER_TOKEN
+DLR_MASTER_KEY
+```
+
+Replace all placeholder values with real random Secrets.
+
+### 2. Start PostgreSQL and apply migrations
 
 ```bash
 docker compose up -d postgres
 docker compose run --rm control alembic upgrade head
 ```
 
-Start the full stack:
+### 3. Start the full platform
 
 ```bash
 docker compose up -d --build
 ```
 
-Check health:
+Check service status:
 
 ```bash
 docker compose ps
@@ -109,92 +282,99 @@ When all services are healthy:
 - Web Console: `http://localhost:8080`
 - Health API: `http://localhost:8080/api/health`
 
-The first Web Console visit asks for `DLR_ADMIN_TOKEN`; it is kept in browser `sessionStorage` only.
+Enter `DLR_ADMIN_TOKEN` on the first Web Console visit.
 
-To remove the local stack and database volume:
+Remove the local stack and database volume with:
 
 ```bash
 docker compose down --volumes
 ```
 
+---
+
 ## Architecture
 
 ```text
-┌─────────────────────┐
-│ Web                  │
-│ React + Monaco       │
-└──────────┬──────────┘
-           │ HTTP/JSON + SSE
-           ▼
-┌─────────────────────┐       ┌─────────────────────┐
-│ Control              │──────▶│ PostgreSQL          │
-│ FastAPI              │       │ state / scheduling  │
-│ API / gates / AI     │       │ execution history   │
-└──────────┬──────────┘       └─────────────────────┘
-           │ Worker long polling
-           ▼
-┌─────────────────────┐
-│ Worker               │
-│ Python / Node / Java │
-│ subprocess execution │
-└─────────────────────┘
+┌─────────────────────────────┐
+│ Web                         │
+│ React + Monaco + AI UI      │
+└──────────────┬──────────────┘
+               │ HTTP / JSON / SSE
+               ▼
+┌─────────────────────────────┐       ┌─────────────────────┐
+│ Control                     │──────▶│ PostgreSQL          │
+│ FastAPI                     │       │ State / History     │
+│ API / Scheduler / AI        │       └─────────────────────┘
+│ Webhook / Credential        │
+└──────────────┬──────────────┘
+               │ Worker Poll
+               ▼
+┌─────────────────────────────┐
+│ Worker                      │
+│ Python / Node.js / Java     │
+│ Adapter Execution           │
+└─────────────────────────────┘
 ```
 
-DLR keeps the execution boundary explicit:
+Responsibilities:
 
-- **Web** provides the operator experience.
-- **Control** owns APIs, transactions, scheduling, Webhook routing and AI Provider integration.
-- **PostgreSQL** is the durable source of truth.
-- **Worker** is the only component that runs user Adapter code.
+- **Web**: Adapter development, configuration, execution and observability experience;
+- **Control**: APIs, authoritative gates, scheduling, Webhook, Credential and AI Provider integration;
+- **PostgreSQL**: authoritative platform state, versions and execution history;
+- **Worker**: actual execution of user Adapter code.
 
-See [Overall Architecture](docs/en/architecture.md) for the current detailed contract.
+Control itself never executes Adapter code.
 
-## Stack
+See [Overall Architecture](docs/en/architecture.md) for the detailed contract.
+
+---
+
+## Product boundaries
+
+DataLinkRuntime focuses on **developing and running independent Adapters**.
+
+It is not a:
+
+- DAG / Workflow orchestration engine;
+- drag-and-drop low-code workflow platform;
+- large-scale streaming compute platform;
+- enterprise service bus;
+- general-purpose Serverless platform;
+- general-purpose autonomous AI Agent runtime.
+
+If the core problem is multi-task dependency management, parallel branches, complex conditions, human approval or cross-task state orchestration, a dedicated Workflow / DAG platform is a better fit.
+
+---
+
+## Security boundaries
+
+DLR currently uses a **trusted-code execution model**.
+
+- Adapter subprocess isolation is not a security sandbox;
+- do not execute arbitrary code from untrusted users;
+- Credential plaintext is never returned to the browser;
+- Secrets are injected only for the target Execution and redacted from platform logs;
+- Control never directly executes user Adapter code;
+- do not hard-code passwords, Tokens, private keys or other credentials in Adapter source code;
+- the AI Assistant does not send Credential plaintext as normal model context;
+- AI attachment content is sent to the model service configured by the administrator; do not upload passwords, keys or other sensitive credentials.
+
+See [Overall Architecture](docs/en/architecture.md) for more security and runtime details.
+
+---
+
+## Technology stack
 
 | Layer | Technology |
 |---|---|
-| Web | React 19, TypeScript, Vite, Ant Design, Monaco Editor, i18next |
+| Web | React 19, TypeScript, Vite, Ant Design, Monaco Editor, assistant-ui, i18next |
 | Control | Python 3.13, FastAPI, SQLAlchemy 2, Alembic |
 | Database | PostgreSQL 16 |
 | Worker | Python, Node.js / npm, JDK 21 / Maven |
 | Python tooling | uv, pytest, Ruff, mypy |
 | Deployment | Docker Compose |
 
-## AI Assistant
-
-The current AI Assistant is a constrained coding assistant, not an autonomous Agent.
-
-```text
-Working Copy + bounded context
-→ model response
-→ strict Candidate validation
-→ Diff review
-→ explicit Apply
-→ browser Working Copy becomes dirty
-```
-
-Security and behavior boundaries:
-
-- The Working Copy is the authoritative code snapshot for the request.
-- Credential true values never enter the Prompt.
-- Only bound Secret key names may be exposed to help the model generate usable code.
-- Provider reasoning is not persisted or displayed.
-- AI conversations, Prompts and raw Provider responses are not persisted.
-- Apply never performs Save / Test / Run automatically.
-
-M5.7 is extending this UI with `assistant-ui`, Regenerate, attachments, controlled read-only Tool Calls and MCP knowledge access. These are roadmap items until their implementation and acceptance are complete. See [Issue #80](https://github.com/john-ops-lab/DataLinkRuntime/issues/80).
-
-## Security
-
-- Credentials are encrypted at rest using a key derived from deployment-level `DLR_MASTER_KEY`.
-- Credential plaintext is never returned to the browser.
-- Runtime Secrets are injected only for the target Execution and are redacted from platform logs.
-- Admin and Worker APIs use separate Bearer Tokens.
-- Webhook Tokens use constant-time comparison.
-- Control never executes user Adapter code.
-- DLR v1 uses a trusted-administrator code model; subprocess isolation is **not** a security sandbox.
-
-Do not hard-code passwords, Tokens, private keys or other Secrets in Adapter source code.
+---
 
 ## Local Development
 
@@ -228,34 +408,22 @@ Full integration smoke test:
 
 The smoke test uses isolated local infrastructure and a fake AI Provider; it does not call a public AI service.
 
+---
+
 ## Documentation
 
 - [Product Definition](docs/en/product.md)
 - [Overall Architecture](docs/en/architecture.md)
 - [Specification Index and precedence rules](docs/specs/README.md)
-- [M5.7 AI Assistant Spec](docs/specs/m5-7-ai-assistant.md)
 
-Historical M1-M4 specs are retained for traceability. When documents conflict, follow the precedence rules in `docs/specs/README.md` rather than treating every historical spec as current behavior.
+Historical Specs are retained for design traceability. If historical documents conflict with current behavior, follow the precedence rules defined in `docs/specs/README.md`.
 
-## Roadmap
+Report bugs, product issues or new use-case ideas through [GitHub Issues](https://github.com/john-ops-lab/DataLinkRuntime/issues).
 
-Current stage: **M5.7 - AI Assistant UI componentization and controlled knowledge access**.
-
-Planned scope includes:
-
-- `assistant-ui` based chat UI.
-- Regenerate.
-- Image, PDF, Word, text and code attachments.
-- Provider-native file / multimodal capability first, with bounded DLR fallback parsing.
-- Read-only Tool Call support.
-- MCP knowledge access, with Tencent ima Knowledge Base as the first POC.
-
-Streaming token output, reasoning UI and a general-purpose autonomous Agent Runtime are explicitly outside M5.7.
-
-Track the current contract in [Issue #80](https://github.com/john-ops-lab/DataLinkRuntime/issues/80).
+---
 
 ## License
 
 DataLinkRuntime is open source under the [MIT License](LICENSE).
 
-Copyright (c) 2026 john-ops-lab.
+Copyright (c) 2026 john-ops-lab
