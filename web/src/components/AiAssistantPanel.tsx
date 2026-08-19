@@ -287,14 +287,17 @@ function appendMessageText(message: AppendMessage): string {
 
 // --- M5.7 Wave B3: attachment helpers ---------------------------------------
 
-/** M5.7 Wave B3: the stable B2 attachment error codes localize through the
- * bundled common.errors table with zh-CN/en key parity (the code is appended
- * in the platform's established style). Every other error keeps the M5.6
- * userErrorMessage contract unchanged. The server never echoes file bodies,
- * filenames, base64 or Secrets into the detail, so nothing here can leak
- * them into the panel either. */
+/** M5.7 Wave B3/D: the stable B2 attachment and C1 tool error codes localize
+ * through the bundled common.errors table with zh-CN/en key parity (the code
+ * is appended in the platform's established style). Every other error keeps
+ * the M5.6 userErrorMessage contract unchanged. The server never echoes file
+ * bodies, filenames, base64, Secrets, tool arguments or results into the
+ * detail, so nothing here can leak them into the panel either. */
 function attachmentServerErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof ApiError && error.code.startsWith("ai_attachment_")) {
+  if (
+    error instanceof ApiError &&
+    (error.code.startsWith("ai_attachment_") || error.code.startsWith("ai_tool_"))
+  ) {
     const key = `errors.${error.code}`;
     if (i18n.exists(key, { ns: "common" })) {
       const message = i18n.getFixedT(i18n.language, "common")(key);

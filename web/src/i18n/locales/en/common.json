@@ -254,6 +254,9 @@
     "ai_attachment_no_text": "The document has no extractable text layer (possibly a scanned file): provide a PDF / DOCX with a text layer, or switch to a model with image / native-file support",
     "ai_attachment_unsafe_archive": "Unsafe attachment content: the archive structure or decompression ratio exceeds the allowed bounds",
     "ai_attachment_parse_timeout": "Attachment parsing timed out: the file structure is too complex; try a smaller or simpler file",
+    "ai_tool_unsupported": "The current model service does not support controlled read-only tool calls: switch to a provider with tool-call support, or retry without tools",
+    "ai_tool_limit_exceeded": "AI tool calls reached the safety limit (at most 8 calls / 4 rounds per assist): stopped safely; simplify the question and retry",
+    "ai_tool_result_too_large": "The accumulated AI tool result exceeded the size limit: stopped safely; narrow the query and retry",
     "sse_connect_failed": "Live event connection failed",
     "sse_connect_failed_http": "Live event connection failed (HTTP {{status}})",
     "sse_read_failed": "Live event read failed"

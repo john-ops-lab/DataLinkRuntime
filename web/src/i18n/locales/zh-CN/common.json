@@ -254,6 +254,9 @@
     "ai_attachment_no_text": "文档中没有可提取的文本层（可能是扫描件）：请提供带文本层的 PDF / DOCX，或更换支持图片 / 原生文件的模型",
     "ai_attachment_unsafe_archive": "附件内容不安全：压缩包结构或解压比例超出允许范围",
     "ai_attachment_parse_timeout": "附件解析超时：文件结构过于复杂，请尝试缩小或简化文件后重试",
+    "ai_tool_unsupported": "当前模型服务不支持受控只读工具调用：请更换支持工具调用的服务商，或在不使用工具的情况下重试",
+    "ai_tool_limit_exceeded": "AI 工具调用达到安全上限（单次最多 8 次调用 / 4 轮）：已安全停止，请简化问题后重试",
+    "ai_tool_result_too_large": "AI 工具结果累计超过大小上限：已安全停止，请缩小查询范围后重试",
     "sse_connect_failed": "实时事件连接失败",
     "sse_connect_failed_http": "实时事件连接失败（HTTP {{status}}）",
     "sse_read_failed": "实时事件读取失败"
