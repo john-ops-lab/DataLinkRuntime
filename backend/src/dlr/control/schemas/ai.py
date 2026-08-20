@@ -174,6 +174,19 @@ class AiRecentMessage(_StrictSchema):
     role: Literal["user", "assistant"]
     content: str
 
+    @field_validator("content", mode="before")
+    @classmethod
+    def validate_content(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_request_invalid",
+                    "message": "AI request contains an invalid recent message",
+                },
+            ) from None
+        return value
+
 
 class AiAttachment(_StrictSchema):
     """M5.7 Wave B2: one browser-uploaded attachment for this request only.

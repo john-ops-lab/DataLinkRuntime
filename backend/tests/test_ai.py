@@ -1383,6 +1383,24 @@ def test_assist_can_answer_without_candidate(
     assert response.json()["candidate"] is None
 
 
+@pytest.mark.parametrize("content", ["", " \n\t"])
+def test_assist_rejects_blank_recent_message_content_without_500(
+    api_client: TestClient, content: str
+) -> None:
+    """Malformed non-browser history returns the stable request error."""
+    adapter = create_adapter(api_client, "blank-recent-message")
+    body = assist_body()
+    body["recent_messages"] = [{"role": "assistant", "content": content}]
+
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "ai_request_invalid",
+        "message": "AI request contains an invalid recent message",
+    }
+
+
 @pytest.mark.parametrize(
     (
         "scenario",
