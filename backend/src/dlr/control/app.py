@@ -112,14 +112,18 @@ def create_app() -> FastAPI:
             request.scope["dlr_entry_mode"] = "token"
         # Every non-safe request arriving through the account reverse-proxy
         # boundary is cookie-authenticated and must carry the double-submit
-        # token. Token superadmin requests deliberately bypass this check so
-        # the legacy entry remains compatible even when account cookies exist
-        # for the same host on another port.
-        if request.scope["dlr_entry_mode"] == "account" and request.method.upper() not in {
-            "GET",
-            "HEAD",
-            "OPTIONS",
-        }:
+        # token. The public Webhook ingress is the exception: it is Bearer
+        # token-authenticated by the referenced Credential and is intentionally
+        # reachable through the account entry so copied hook URLs keep working.
+        # Token superadmin requests deliberately bypass this check so the
+        # legacy entry remains compatible even when account cookies exist for
+        # the same host on another port.
+        is_public_hook = request.scope["path"].startswith("/api/hooks/")
+        if (
+            request.scope["dlr_entry_mode"] == "account"
+            and not is_public_hook
+            and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}
+        ):
             try:
                 require_csrf(request)
             except HTTPException as exc:
