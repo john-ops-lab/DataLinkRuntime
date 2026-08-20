@@ -230,7 +230,7 @@ def test_last_enabled_admin_cannot_be_disabled_or_demoted(account_admin: TestCli
     assert final_admin_disable.json()["detail"]["code"] == "last_admin_protected"
 
 
-def test_account_user_cannot_bypass_management_or_business_gates(
+def test_account_user_cannot_bypass_management_but_reaches_acl_checked_business_api(
     account_admin: TestClient,
 ) -> None:
     created = create_account(
@@ -267,7 +267,6 @@ def test_account_user_cannot_bypass_management_or_business_gates(
     assert role_attempt.json()["detail"]["code"] == "account_user_profile_forbidden"
 
     for path in (
-        "/api/adapters",
         "/api/workers",
         "/api/credentials",
         "/api/package-sources",
@@ -276,10 +275,15 @@ def test_account_user_cannot_bypass_management_or_business_gates(
     ):
         response = user_client.get(account_path(path))
         assert response.status_code == 403, (path, response.text)
-        assert response.json()["detail"]["code"] in {
-            "account_admin_required",
-            "account_user_business_forbidden",
-        }
+        assert response.json()["detail"]["code"] == "account_admin_required"
+
+    created_adapter = user_client.post(
+        account_path("/api/adapters"),
+        json={"name": "wave-c-user-adapter", "language": "python", "adapter_type": "task"},
+        headers={"X-CSRF-Token": csrf(user_client)},
+    )
+    assert created_adapter.status_code == 201, created_adapter.text
+    assert created_adapter.json()["owner_user_id"] == user_id
 
 
 def test_account_write_csrf_is_uniform_and_token_superadmin_is_compatible(

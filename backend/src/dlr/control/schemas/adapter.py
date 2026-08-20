@@ -126,6 +126,7 @@ class AdapterResponse(BaseModel):
     adapter_type: str
     run_mode: str
     timeout_seconds: int
+    owner_user_id: int | None
     latest_version_id: int | None
     runtime_worker_id: int | None
     runtime_locked: bool = False
@@ -169,3 +170,22 @@ class CloneRequest(BaseModel):
     @classmethod
     def normalize_name(cls, value: object) -> str:
         return _validate_name(value)
+
+
+class AdapterPermissionUpsert(BaseModel):
+    """One explicit read/edit ACL grant for an account user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    permission: Literal["read", "edit"]
+
+
+class AdapterPermissionResponse(BaseModel):
+    """Secret-free ACL metadata returned to an owner or administrator."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: int
+    username: str
+    enabled: bool
+    permission: Literal["read", "edit"]

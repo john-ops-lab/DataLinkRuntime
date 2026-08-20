@@ -35,6 +35,8 @@ export interface Adapter {
   run_mode: TaskRunMode;
   /** M5.5.11: authoritative single-run execution timeout in seconds (1..86400, default 300). */
   timeout_seconds?: number;
+  /** M5.9 Wave C: null means a system-owned Adapter. */
+  owner_user_id?: number | null;
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;

@@ -58,11 +58,12 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0021_m5_9_wave_a_accounts"
+    assert revision == "0022_m5_9_wave_c_adapter_acl"
     assert {
         "adapter_type",
         "run_mode",
         "timeout_seconds",
+        "owner_user_id",
         "latest_version_id",
         "runtime_worker_id",
         "archived_at",

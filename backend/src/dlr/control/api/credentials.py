@@ -17,12 +17,20 @@ from dlr.control.schemas.credential import (
     CredentialResponse,
     CredentialUpdate,
 )
-from dlr.control.security import require_admin_principal
+from dlr.control.security import (
+    Principal,
+    require_admin_principal,
+    require_business_principal,
+    require_principal,
+)
+from dlr.control.services import adapter_access
 from dlr.control.services import secrets as secrets_service
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
+adapter_router = APIRouter(dependencies=[Depends(require_business_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
+CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
 
 
 @router.get("/api/credentials", response_model=list[CredentialResponse])
@@ -56,15 +64,26 @@ def delete_credential(credential_id: int, session: DbSession) -> Response:
     return Response(status_code=204)
 
 
-@router.get("/api/adapters/{adapter_id}/credential-bindings", response_model=list[BindingResponse])
-def list_adapter_bindings(adapter_id: int, session: DbSession) -> list[BindingResponse]:
+@adapter_router.get(
+    "/api/adapters/{adapter_id}/credential-bindings", response_model=list[BindingResponse]
+)
+def list_adapter_bindings(
+    adapter_id: int, principal: CurrentPrincipal, session: DbSession
+) -> list[BindingResponse]:
+    adapter_access.require_adapter_access(session, adapter_id, principal, "read")
     return secrets_service.list_adapter_bindings(session, adapter_id)
 
 
-@router.put("/api/adapters/{adapter_id}/credential-bindings", response_model=list[BindingResponse])
+@adapter_router.put(
+    "/api/adapters/{adapter_id}/credential-bindings", response_model=list[BindingResponse]
+)
 def set_adapter_bindings(
-    adapter_id: int, payload: BindingsUpdate, session: DbSession
+    adapter_id: int,
+    payload: BindingsUpdate,
+    principal: CurrentPrincipal,
+    session: DbSession,
 ) -> list[BindingResponse]:
     """Full replacement of the Adapter's binding set."""
+    adapter_access.require_adapter_access(session, adapter_id, principal, "owner")
     items = [(item.env_key, item.credential_id, item.field) for item in payload.bindings]
     return secrets_service.set_adapter_bindings(session, adapter_id, items)

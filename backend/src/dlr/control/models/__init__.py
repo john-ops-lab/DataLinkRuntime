@@ -1,7 +1,7 @@
 """SQLAlchemy persistence models of the Control Node."""
 
 from dlr.control.models.account import User, UserSession
-from dlr.control.models.adapter import Adapter, AdapterVersion
+from dlr.control.models.adapter import Adapter, AdapterPermission, AdapterVersion
 from dlr.control.models.execution import Execution, Worker
 from dlr.control.models.knowledge_source import KnowledgeSourceSetting
 from dlr.control.models.platform import (
@@ -16,6 +16,7 @@ from dlr.control.models.webhook import AdapterWebhook
 
 __all__ = [
     "Adapter",
+    "AdapterPermission",
     "AdapterCredentialBinding",
     "AdapterSchedule",
     "AdapterVersion",

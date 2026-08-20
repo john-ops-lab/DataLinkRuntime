@@ -79,6 +79,16 @@ class Adapter(Base):
     timeout_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, default=300, server_default=text("300")
     )
+    # Account users own the Adapters they create. Historical Adapters and
+    # Adapters created through the deployment superadmin/admin entry remain
+    # system-owned (NULL) and are only visible to ordinary users after an
+    # explicit ACL grant.
+    owner_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     # Circular reference with adapter_versions: these foreign keys use
     # use_alter so DDL is emitted after both tables exist.
     latest_version_id: Mapped[int | None] = mapped_column(
@@ -135,3 +145,28 @@ class AdapterVersion(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class AdapterPermission(Base):
+    """One explicit read/edit grant for an account user on an Adapter."""
+
+    __tablename__ = "adapter_permissions"
+    __table_args__ = (
+        CheckConstraint(
+            "permission IN ('read', 'edit')",
+            name="ck_adapter_permissions_permission",
+        ),
+        UniqueConstraint("adapter_id", "user_id", name="uq_adapter_permissions_adapter_user"),
+    )
+
+    adapter_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("adapters.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    permission: Mapped[str] = mapped_column(String(8), nullable=False)

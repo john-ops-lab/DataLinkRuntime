@@ -127,7 +127,9 @@ def _add_default_demo_binding(session: Session, adapter: Adapter) -> None:
     )
 
 
-def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
+def create_adapter(
+    session: Session, data: AdapterCreate, *, owner_user_id: int | None = None
+) -> Adapter:
     if _active_name_conflict(session, data.name):
         raise domain_error(
             409,
@@ -141,6 +143,7 @@ def create_adapter(session: Session, data: AdapterCreate) -> Adapter:
         language=data.language,
         adapter_type=data.adapter_type,
         timeout_seconds=data.timeout_seconds,
+        owner_user_id=owner_user_id,
     )
     session.add(adapter)
     try:
@@ -369,7 +372,13 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
     return version
 
 
-def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adapter:
+def clone_adapter(
+    session: Session,
+    adapter_id: int,
+    data: CloneRequest,
+    *,
+    owner_user_id: int | None = None,
+) -> Adapter:
     """Clone common M5.4 facts; the clone has its own Revision 1 and no runs."""
     # Freeze the source configuration while the copy is assembled. Runtime
     # writes use the same Adapter-first lock order, so a clone cannot combine
@@ -392,6 +401,7 @@ def clone_adapter(session: Session, adapter_id: int, data: CloneRequest) -> Adap
         adapter_type=source.adapter_type,
         run_mode=source.run_mode,
         runtime_worker_id=source.runtime_worker_id,
+        owner_user_id=owner_user_id,
         # M5.5.11: the clone copies the source's single-run execution timeout.
         timeout_seconds=source.timeout_seconds,
     )

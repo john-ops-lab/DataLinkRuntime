@@ -188,16 +188,8 @@ def require_admin_principal(
 def require_business_principal(
     principal: Annotated[Principal, Depends(require_principal)],
 ) -> Principal:
-    """Keep Wave B account users off business APIs until Wave C ACL exists."""
-    if principal.kind == "superadmin" or principal.role == "admin":
-        return principal
-    raise HTTPException(
-        status_code=403,
-        detail={
-            "code": "account_user_business_forbidden",
-            "message": "Account users cannot access this application API yet",
-        },
-    )
+    """Allow every authenticated account identity onto ACL-checked APIs."""
+    return principal
 
 
 def require_csrf(request: Request) -> None:
