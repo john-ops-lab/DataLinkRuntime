@@ -12,8 +12,6 @@ interface LoginPageProps {
   onSubmit: (token: string) => Promise<void>;
 }
 
-const BRAND_FEATURES = ["lightweight", "adapters", "online", "ai"] as const;
-
 export default function LoginPage(props: LoginPageProps) {
   const { i18n, t } = useTranslation("common");
   const [token, setToken] = useState("");
@@ -49,16 +47,11 @@ export default function LoginPage(props: LoginPageProps) {
             <h1 className="login-brand-logo">DLR</h1>
             <div className="login-brand-name">{t("product.name")}</div>
           </div>
-          <p className="login-brand-tagline">{t("product.tagline")}</p>
-          <p className="login-brand-sub">{t("product.description")}</p>
-          <div className="login-features">
-            {BRAND_FEATURES.map((feature) => (
-              <div className="login-feature" key={feature}>
-                <span className="login-feature-title">{t(`auth.feature.${feature}.title`)}</span>
-                <span className="login-feature-text">{t(`auth.feature.${feature}.text`)}</span>
-              </div>
-            ))}
-          </div>
+          {/* M5.8-011：品牌区收敛为已确认的产品文案，不再堆叠功能列表。 */}
+          <p className="login-brand-tagline">{t("product.headline")}</p>
+          <p className="login-brand-sub">{t("product.intro1")}</p>
+          <p className="login-brand-sub login-brand-intro">{t("product.intro2")}</p>
+          <p className="login-brand-flow">{t("product.flow")}</p>
           <p className="login-copyright">{t("product.copyright")}</p>
         </section>
 
