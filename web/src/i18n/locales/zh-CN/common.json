@@ -2,8 +2,11 @@
   "product": {
     "name": "DataLinkRuntime",
     "tagline": "轻量数据适配运行平台",
-    "description": "适配器（Adapter）在线编辑、保存版本、手动运行、实时日志与执行记录，全部在浏览器中完成；一台服务器 + Docker Compose 即可运行完整平台。",
-    "copyright": "© DataLinkRuntime (DLR) · 轻量 · 连接 · 适配 · 运行"
+    "headline": "Code your data connections.",
+    "intro1": "把数据连接逻辑写成 Adapter（适配器），然后直接运行。",
+    "intro2": "从代码编辑、依赖配置到执行、日志与历史追踪，\nDataLinkRuntime 提供一个轻量、自托管的完整运行环境。",
+    "flow": "Develop → Run → Observe",
+    "copyright": "© 2026 DataLinkRuntime · MIT License"
   },
   "auth": {
     "loginTitle": "欢迎登录 DLR 控制台",
@@ -13,13 +16,7 @@
     "login": "登录",
     "tokenStorageNotice": "Token 仅保存在当前浏览器会话中，不写入数据库。",
     "loginFailed": "登录失败，请检查 Token 后重试",
-    "sessionRejected": "会话 Token 已被拒绝，请重新登录。",
-    "feature": {
-      "lightweight": { "title": "轻量易用", "text": "核心精简，快速部署" },
-      "adapters": { "title": "多元适配", "text": "代码驱动，灵活接入" },
-      "online": { "title": "在线开发", "text": "编辑、测试、运行、日志一体" },
-      "ai": { "title": "AI 辅助", "text": "生成、修改、调试更高效" }
-    }
+    "sessionRejected": "会话 Token 已被拒绝，请重新登录。"
   },
   "translation": {
     "unavailable": "暂不可用"

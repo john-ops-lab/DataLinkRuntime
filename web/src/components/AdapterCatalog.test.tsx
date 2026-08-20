@@ -24,11 +24,12 @@ function renderCatalog(
   onSelect = vi.fn(),
   onOpenSettings = vi.fn(),
   onClone = vi.fn(),
+  selectedId: number | null = null,
 ) {
   render(
     <AdapterCatalog
       adapters={adapters}
-      selectedId={null}
+      selectedId={selectedId}
       busy={false}
       onSelect={onSelect}
       onCreate={vi.fn(async () => false)}
@@ -39,6 +40,41 @@ function renderCatalog(
     />,
   );
   return { onSelect, onOpenSettings, onClone };
+}
+
+async function openSelect(testId: string): Promise<HTMLElement> {
+  const select = screen.getByTestId(testId);
+  fireEvent.mouseDown(select.querySelector(".ant-select-selector") ?? select);
+
+  let dropdown: HTMLElement | undefined;
+  await waitFor(() => {
+    dropdown = Array.from(
+      document.querySelectorAll<HTMLElement>(".ant-select-dropdown"),
+    ).find(
+      (candidate) =>
+        !candidate.classList.contains("ant-select-dropdown-hidden") &&
+        candidate.querySelector(".ant-select-item-option-content") !== null,
+    );
+    expect(dropdown).not.toBeUndefined();
+  });
+  return dropdown as HTMLElement;
+}
+
+async function chooseOption(testId: string, label: string): Promise<void> {
+  const dropdown = await openSelect(testId);
+  const content = Array.from(
+    dropdown.querySelectorAll<HTMLElement>(".ant-select-item-option-content"),
+  ).find((option) => option.textContent === label);
+  if (content === undefined) {
+    throw new Error(`Select option not found: ${label}`);
+  }
+  fireEvent.click(content.closest(".ant-select-item-option") ?? content);
+}
+
+function visibleNames(): string[] {
+  return screen.getAllByTestId("adapter-item").map((item) =>
+    item.querySelector(".catalog-item-name")?.textContent?.trim() ?? "",
+  );
 }
 
 it("exposes each Task and Webhook runtime status and type in the catalog item name", () => {
@@ -154,43 +190,83 @@ it("does not select the row when clicking the three-dot button", () => {
   expect(onSelect).toHaveBeenCalledTimes(1);
 });
 
-it("combines the keyword search with the embedded multi-select type filter", async () => {
+it("marks the three-dot menu button with the visual state of its card (M5.8-007)", () => {
+  renderCatalog(
+    [makeAdapter(1, "alpha"), makeAdapter(2, "beta")],
+    vi.fn(),
+    vi.fn(),
+    vi.fn(),
+    2,
+  );
+
+  const menus = screen.getAllByTestId("adapter-item-menu");
+  expect(menus[0].classList.contains("catalog-item-menu-selected")).toBe(false);
+  expect(menus[1].classList.contains("catalog-item-menu-selected")).toBe(true);
+  // 可访问性不变：仍是原生 button 且 aria-label 保持原样。
+  expect(menus[1].getAttribute("aria-label")).toBe("beta 更多操作");
+});
+
+it("lays out [类型][状态][搜索] as one continuous row (M5.8-008)", () => {
+  renderCatalog([makeAdapter(1, "alpha")]);
+
+  const control = document.querySelector(".catalog-search-control");
+  expect(control).not.toBeNull();
+  const typeSelect = screen.getByTestId("adapter-type-filter");
+  const statusSelect = screen.getByTestId("adapter-status-filter");
+  const searchInput = screen.getByTestId("adapter-search");
+  expect(control?.contains(typeSelect)).toBe(true);
+  expect(control?.contains(statusSelect)).toBe(true);
+  expect(control?.contains(searchInput)).toBe(true);
+  // DOM 顺序：类型在最左，状态居中，搜索在最右。
+  expect(
+    typeSelect.compareDocumentPosition(statusSelect) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(
+    statusSelect.compareDocumentPosition(searchInput) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  // 默认显示全部类型 / 全部状态。
+  expect(typeSelect.textContent).toContain("全部类型");
+  expect(statusSelect.textContent).toContain("全部状态");
+});
+
+it("stacks type, status and keyword filters (M5.8-008)", async () => {
   const adapters = [
     makeAdapter(1, "manual-sync", { description: "sync source" }),
     makeAdapter(2, "scheduled-sync", { run_mode: "schedule" }),
     makeAdapter(3, "incoming-sync", { adapter_type: "webhook" }),
+    makeAdapter(4, "manual-live", { running_execution_id: 41 }),
   ];
   renderCatalog(adapters);
+  expect(screen.getAllByTestId("adapter-item")).toHaveLength(4);
 
-  const filterButton = screen.getByTestId("adapter-type-filter") as HTMLButtonElement;
-  filterButton.focus();
-  expect(document.activeElement).toBe(filterButton);
-  fireEvent.click(filterButton);
-  const menu = await screen.findByTestId("adapter-type-filter-menu");
-  expect(menu.getAttribute("aria-label")).toBe("适配器类型筛选");
+  // 类型筛选：只保留任务型（手动）。
+  await chooseOption("adapter-type-filter", "任务型（手动）");
+  expect(visibleNames()).toEqual(["manual-sync", "manual-live"]);
 
-  fireEvent.click(within(menu).getByRole("checkbox", { name: "任务型（手动）" }));
-  expect(screen.getAllByTestId("adapter-item")).toHaveLength(1);
+  // 状态筛选叠加：运行中只剩 manual-live。
+  await chooseOption("adapter-status-filter", "运行中");
+  expect(visibleNames()).toEqual(["manual-live"]);
 
-  fireEvent.change(screen.getByTestId("adapter-search"), { target: { value: "manual" } });
-  expect(screen.getAllByTestId("adapter-item")).toHaveLength(1);
+  // 关键词继续叠加：不命中时显示无匹配。
+  fireEvent.change(screen.getByTestId("adapter-search"), { target: { value: "sync" } });
+  expect(screen.queryAllByTestId("adapter-item")).toHaveLength(0);
+  expect(screen.getByText("没有匹配的适配器")).toBeTruthy();
+  fireEvent.change(screen.getByTestId("adapter-search"), { target: { value: "live" } });
+  expect(visibleNames()).toEqual(["manual-live"]);
+
+  // 状态回到全部状态后，类型与关键词仍生效。
+  await chooseOption("adapter-status-filter", "全部状态");
+  expect(visibleNames()).toEqual(["manual-live"]);
   fireEvent.change(screen.getByTestId("adapter-search"), { target: { value: "" } });
-  expect(screen.getAllByTestId("adapter-item")).toHaveLength(1);
+  expect(visibleNames()).toEqual(["manual-sync", "manual-live"]);
 
-  fireEvent.click(within(menu).getByRole("checkbox", { name: "Webhook" }));
-  expect(screen.getAllByTestId("adapter-item")).toHaveLength(2);
-
-  fireEvent.click(within(menu).getByTestId("adapter-type-select-all"));
-  expect(screen.getAllByTestId("adapter-item")).toHaveLength(3);
-  expect((within(menu).getByRole("checkbox", { name: "任务型（定时）" }) as HTMLInputElement).checked).toBe(true);
-
-  fireEvent.click(within(menu).getByTestId("adapter-type-clear"));
-  expect(screen.getAllByTestId("adapter-item")).toHaveLength(3);
-  expect((within(menu).getByRole("checkbox", { name: "Webhook" }) as HTMLInputElement).checked).toBe(false);
-
-  fireEvent.change(screen.getByTestId("adapter-search"), { target: { value: "scheduled" } });
-  expect(screen.getAllByTestId("adapter-item")).toHaveLength(1);
-  fireEvent.click(within(menu).getByTestId("adapter-filter-clear-all"));
-  expect((screen.getByTestId("adapter-search") as HTMLInputElement).value).toBe("");
-  expect(screen.getAllByTestId("adapter-item")).toHaveLength(3);
+  // 已停止状态：只过滤列表，三个停止的适配器都保留在结果中。
+  await chooseOption("adapter-type-filter", "全部类型");
+  await chooseOption("adapter-status-filter", "已停止");
+  expect(visibleNames()).toEqual(["manual-sync", "scheduled-sync", "incoming-sync"]);
+  // 状态筛选不改变真实运行状态：运行中的适配器仍显示运行态圆点。
+  await chooseOption("adapter-status-filter", "全部状态");
+  expect(
+    screen.getAllByTestId("adapter-item")[3].querySelector(".catalog-status-running"),
+  ).not.toBeNull();
 });

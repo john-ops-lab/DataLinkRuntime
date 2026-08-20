@@ -2,19 +2,14 @@
 
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Button, Drawer, Dropdown, Input, Radio, Space } from "antd";
+import { Button, Drawer, Dropdown, Input, Radio, Select, Space } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { LANGUAGE_LABELS } from "../languages";
 import type { Adapter, AdapterLanguage, AdapterType, Worker } from "../types";
 
 type AdapterTypeFilter = "task-manual" | "task-schedule" | "webhook";
-
-const ADAPTER_TYPE_FILTERS: ReadonlyArray<{ value: AdapterTypeFilter }> = [
-  { value: "task-manual" },
-  { value: "task-schedule" },
-  { value: "webhook" },
-];
+type AdapterStatusFilter = "all" | "running" | "stopped";
 
 function matchesTypeFilter(adapter: Adapter, filter: AdapterTypeFilter): boolean {
   if (filter === "webhook") {
@@ -168,8 +163,8 @@ export default function AdapterCatalog({
   const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
-  const [typeFilters, setTypeFilters] = useState<AdapterTypeFilter[]>([]);
-  const [typeFilterOpen, setTypeFilterOpen] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<AdapterTypeFilter | "all">("all");
+  const [statusFilter, setStatusFilter] = useState<AdapterStatusFilter>("all");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [language, setLanguage] = useState<AdapterLanguage>("python");
@@ -200,78 +195,32 @@ export default function AdapterCatalog({
 
   const keyword = search.trim().toLowerCase();
   const inView = adapters.filter((adapter) => !adapter.archived_at);
+  // M5.8-008：类型 / 状态 / 关键词三个筛选条件叠加生效；状态筛选只过滤列表，
+  // 不改变 Adapter 的真实运行状态。
   const typeFiltered =
-    typeFilters.length === 0
+    typeFilter === "all"
       ? inView
-      : inView.filter((adapter) => typeFilters.some((filter) => matchesTypeFilter(adapter, filter)));
+      : inView.filter((adapter) => matchesTypeFilter(adapter, typeFilter));
+  const statusFiltered =
+    statusFilter === "all"
+      ? typeFiltered
+      : typeFiltered.filter((adapter) => catalogRuntimeStatus(adapter).dot === statusFilter);
   const visible = keyword === ""
-    ? typeFiltered
-    : typeFiltered.filter((adapter) =>
+    ? statusFiltered
+    : statusFiltered.filter((adapter) =>
         [adapter.name, adapter.description].some((value) => value.toLowerCase().includes(keyword)),
       );
-  const typeFilterLabel = typeFilters.length === 0
-    ? t("catalog.filter")
-    : t("catalog.filterSelected", { count: typeFilters.length });
-  const typeFilterPanel = (
-    <div
-      className="catalog-type-filter-menu"
-      data-testid="adapter-type-filter-menu"
-      role="group"
-      aria-label={t("catalog.filterAria")}
-      onMouseDown={(event) => event.stopPropagation()}
-      onClick={(event) => event.stopPropagation()}
-    >
-      <div className="catalog-type-filter-actions">
-        <Button
-          type="link"
-          size="small"
-          data-testid="adapter-type-select-all"
-          onClick={() => setTypeFilters(ADAPTER_TYPE_FILTERS.map((option) => option.value))}
-        >
-          {t("catalog.selectAll")}
-        </Button>
-        <Button
-          type="link"
-          size="small"
-          data-testid="adapter-type-clear"
-          onClick={() => setTypeFilters([])}
-        >
-          {t("catalog.clear")}
-        </Button>
-        <Button
-          type="link"
-          size="small"
-          data-testid="adapter-filter-clear-all"
-          onClick={() => {
-            setTypeFilters([]);
-            setSearch("");
-          }}
-        >
-          {t("catalog.clearAll")}
-        </Button>
-      </div>
-      {ADAPTER_TYPE_FILTERS.map((option) => {
-        const optionLabel = t(
-          `catalog.${option.value === "task-manual" ? "taskManual" : option.value === "task-schedule" ? "taskSchedule" : "webhook"}`,
-        );
-        return (
-        <label className="catalog-type-filter-option" key={option.value}>
-          <input
-            type="checkbox"
-            checked={typeFilters.includes(option.value)}
-            aria-label={optionLabel}
-            onChange={() => {
-              setTypeFilters((current) => current.includes(option.value)
-                ? current.filter((value) => value !== option.value)
-                : [...current, option.value]);
-            }}
-          />
-          <span>{optionLabel}</span>
-        </label>
-        );
-      })}
-    </div>
-  );
+  const typeFilterOptions: Array<{ value: AdapterTypeFilter | "all"; label: string }> = [
+    { value: "all", label: t("catalog.filterTypeAll") },
+    { value: "task-manual", label: t("catalog.taskManual") },
+    { value: "task-schedule", label: t("catalog.taskSchedule") },
+    { value: "webhook", label: t("catalog.webhook") },
+  ];
+  const statusFilterOptions: Array<{ value: AdapterStatusFilter; label: string }> = [
+    { value: "all", label: t("catalog.filterStatusAll") },
+    { value: "running", label: t("catalog.running") },
+    { value: "stopped", label: t("catalog.stopped") },
+  ];
 
   return (
     <aside className="catalog" data-testid="adapter-catalog">
@@ -293,7 +242,26 @@ export default function AdapterCatalog({
       </div>
 
       <div className="catalog-search">
+        {/* M5.8-008：[类型][状态][搜索] 连续单行一体化筛选控件。 */}
         <Space.Compact className="catalog-search-control" style={{ width: "100%" }}>
+          <Select<AdapterTypeFilter | "all">
+            size="small"
+            className="catalog-filter-type"
+            data-testid="adapter-type-filter"
+            aria-label={t("catalog.filterTypeAria")}
+            value={typeFilter}
+            options={typeFilterOptions}
+            onChange={(value) => setTypeFilter(value)}
+          />
+          <Select<AdapterStatusFilter>
+            size="small"
+            className="catalog-filter-status"
+            data-testid="adapter-status-filter"
+            aria-label={t("catalog.filterStatusAria")}
+            value={statusFilter}
+            options={statusFilterOptions}
+            onChange={(value) => setStatusFilter(value)}
+          />
           <Input
             data-testid="adapter-search"
             aria-label={t("catalog.search")}
@@ -303,26 +271,6 @@ export default function AdapterCatalog({
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
-          <Dropdown
-            open={typeFilterOpen}
-            onOpenChange={setTypeFilterOpen}
-            trigger={["click"]}
-            popupRender={() => typeFilterPanel}
-          >
-            <Button
-              type="text"
-              size="small"
-              className="catalog-type-filter-trigger"
-              data-testid="adapter-type-filter"
-              aria-label={typeFilters.length === 0
-                ? t("catalog.filterAriaAll")
-                : t("catalog.filterAriaSelected", { count: typeFilters.length })}
-              aria-haspopup="true"
-              aria-expanded={typeFilterOpen}
-            >
-              {typeFilterLabel}
-            </Button>
-          </Dropdown>
         </Space.Compact>
       </div>
 
@@ -396,7 +344,9 @@ export default function AdapterCatalog({
                   <Button
                     size="small"
                     type="text"
-                    className="catalog-item-menu"
+                    className={adapter.id === selectedId
+                      ? "catalog-item-menu catalog-item-menu-selected"
+                      : "catalog-item-menu"}
                     disabled={busy}
                     aria-label={t("catalog.moreActions", { name: adapter.name })}
                     data-testid="adapter-item-menu"

@@ -2744,16 +2744,17 @@ it("shows the brand area and the token card on the login page", async () => {
   await screen.findByTestId("admin-token-input");
   expect(screen.getByText("DataLinkRuntime")).toBeTruthy();
   expect(screen.getByText("欢迎登录 DLR 控制台")).toBeTruthy();
-  expect(screen.getByText("轻量数据适配运行平台")).toBeTruthy();
-  // 长期产品定位直接展示（Issue #8 产品视觉决策补充），“AI 辅助”仅为定位文案。
-  expect(screen.getByText("轻量易用")).toBeTruthy();
-  expect(screen.getByText("核心精简，快速部署")).toBeTruthy();
-  expect(screen.getByText("多元适配")).toBeTruthy();
-  expect(screen.getByText("代码驱动，灵活接入")).toBeTruthy();
-  expect(screen.getByText("在线开发")).toBeTruthy();
-  expect(screen.getByText("编辑、测试、运行、日志一体")).toBeTruthy();
-  expect(screen.getByText("AI 辅助")).toBeTruthy();
-  expect(screen.getByText("生成、修改、调试更高效")).toBeTruthy();
+  // M5.8-011：首页收敛为已确认的产品文案，不再堆叠功能列表。
+  expect(screen.getByText("Code your data connections.")).toBeTruthy();
+  expect(screen.getByText("把数据连接逻辑写成 Adapter（适配器），然后直接运行。")).toBeTruthy();
+  expect(document.querySelector(".login-brand-intro")?.textContent).toBe(
+    "从代码编辑、依赖配置到执行、日志与历史追踪，\nDataLinkRuntime 提供一个轻量、自托管的完整运行环境。",
+  );
+  expect(screen.getByText("Develop → Run → Observe")).toBeTruthy();
+  expect(screen.getByText("© 2026 DataLinkRuntime · MIT License")).toBeTruthy();
+  expect(screen.queryByText(/轻量 · 连接 · 适配 · 运行/)).toBeNull();
+  expect(screen.queryByText("轻量易用")).toBeNull();
+  expect(screen.queryByText("多元适配")).toBeNull();
 });
 
 it("renders the console shell with catalog, workbench header and the three main tabs", async () => {

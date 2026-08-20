@@ -2,8 +2,11 @@
   "product": {
     "name": "DataLinkRuntime",
     "tagline": "Lightweight data adapter runtime platform",
-    "description": "Edit Adapters, save revisions, run them manually, inspect live logs, and review execution history in the browser; a single server with Docker Compose runs the complete platform.",
-    "copyright": "© DataLinkRuntime (DLR) · Connect · Adapt · Run"
+    "headline": "Code your data connections.",
+    "intro1": "Write your data connection logic as Adapters, then run them directly.",
+    "intro2": "From code editing and dependency setup to execution, logs, and history tracking,\nDataLinkRuntime provides a lightweight, self-hosted, complete runtime environment.",
+    "flow": "Develop → Run → Observe",
+    "copyright": "© 2026 DataLinkRuntime · MIT License"
   },
   "auth": {
     "loginTitle": "Welcome to the DLR Console",
@@ -13,13 +16,7 @@
     "login": "Log in",
     "tokenStorageNotice": "The Token is stored only in this browser session and is never written to the database.",
     "loginFailed": "Login failed. Check the Token and try again",
-    "sessionRejected": "The session Token was rejected. Please log in again.",
-    "feature": {
-      "lightweight": { "title": "Lightweight", "text": "Focused core, fast deployment" },
-      "adapters": { "title": "Flexible adapters", "text": "Code-driven integration" },
-      "online": { "title": "Online development", "text": "Edit, test, run, and inspect logs" },
-      "ai": { "title": "AI assistance", "text": "Generate, modify, and debug faster" }
-    }
+    "sessionRejected": "The session Token was rejected. Please log in again."
   },
   "translation": {
     "unavailable": "Translation unavailable"

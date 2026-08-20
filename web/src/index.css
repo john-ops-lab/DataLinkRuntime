@@ -163,48 +163,13 @@ body {
   min-width: 0;
 }
 
-.catalog-type-filter-trigger {
-  height: 100%;
-  border: 0;
-  border-radius: 0;
-  color: var(--dlr-text-secondary);
+/* M5.8-008：[类型][状态][搜索] 连续单行；两个下拉固定宽度，搜索框占据剩余空间。 */
+.catalog-search-control > .catalog-filter-type {
+  flex: 0 0 96px;
 }
 
-.catalog-type-filter-trigger:hover,
-.catalog-type-filter-trigger:focus-visible {
-  color: #0958d9;
-  background: #e6f4ff;
-}
-
-.catalog-type-filter-menu {
-  min-width: 188px;
-  padding: 8px;
-  background: var(--dlr-workspace-bg);
-  border: 1px solid var(--dlr-border);
-  border-radius: 6px;
-  box-shadow: 0 6px 16px rgba(16, 24, 40, 0.12);
-}
-
-.catalog-type-filter-actions {
-  display: flex;
-  justify-content: space-between;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--dlr-border);
-}
-
-.catalog-type-filter-option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  padding: 4px 2px;
-  cursor: pointer;
-  color: var(--dlr-text);
-}
-
-.catalog-type-filter-option input {
-  margin: 0;
-  accent-color: #1677ff;
+.catalog-search-control > .catalog-filter-status {
+  flex: 0 0 88px;
 }
 
 .catalog-list {
@@ -239,14 +204,37 @@ body {
   cursor: pointer;
 }
 
+/* M5.8-007：三点菜单颜色跟随卡片状态——普通态与次级文本协调，行高亮时加深，
+   选中态与选中卡片的名称同色；hover/focus 仍保持可辨识与键盘可访问。 */
 .catalog-item-menu {
   flex: 0 0 auto;
-  color: var(--dlr-text-secondary);
+  color: var(--dlr-text-weak);
+}
+
+.catalog-row:hover .catalog-item-menu {
+  color: var(--dlr-text);
+}
+
+.catalog-item-menu.catalog-item-menu-selected,
+.catalog-row:hover .catalog-item-menu.catalog-item-menu-selected {
+  color: #0958d9;
+}
+
+.catalog-item-menu:hover:not(:disabled) {
+  color: #0958d9;
+  background: #e6f4ff;
+}
+
+.catalog-item-menu:active:not(:disabled) {
+  color: #0958d9;
+  background: #bae0ff;
 }
 
 .catalog-item-menu:focus-visible {
   outline: 2px solid #1677ff;
   outline-offset: -2px;
+  color: #0958d9;
+  background: #e6f4ff;
 }
 
 .catalog-item:hover:not(:disabled) {
@@ -2225,32 +2213,17 @@ body {
   line-height: 1.7;
 }
 
-.login-features {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  max-width: 480px;
-  margin-top: 8px;
+/* M5.8-011：第二段说明保留确认文案中的手动换行。 */
+.login-brand-intro {
+  white-space: pre-line;
 }
 
-.login-feature {
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.75);
-  border: 1px solid var(--dlr-border);
-  border-radius: 6px;
-}
-
-.login-feature-title {
-  display: block;
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--dlr-text);
-}
-
-.login-feature-text {
-  display: block;
-  margin-top: 2px;
-  font-size: 0.75rem;
+/* Develop → Run → Observe：弱强调辅助信息。 */
+.login-brand-flow {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
   color: var(--dlr-text-weak);
 }
 
