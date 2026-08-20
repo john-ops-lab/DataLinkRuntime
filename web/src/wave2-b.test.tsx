@@ -466,11 +466,11 @@ it("switches AI Candidate/Diff/Apply copy between the two locales", async () => 
   expect(screen.getByText("AI assistant")).toBeTruthy();
   expect(screen.getByLabelText("AI instruction")).toBeTruthy();
   expect(screen.getByTestId("ai-candidate-ready").textContent).toBe("Code generated");
-  // The Candidate diff stays open across the switch and its pane labels are
-  // re-derived at render time, exactly like the Workbench diff.
+  // The code-only Candidate diff stays open across the switch and its pane
+  // label is re-derived at render time, exactly like the Workbench diff.
   expect(screen.getByTestId("version-diff").textContent).toContain("Current code");
   expect(screen.getByTestId("version-diff").textContent).toContain("Code");
-  expect(screen.getByTestId("version-diff").textContent).toContain("Runtime parameters");
+  expect(screen.getByTestId("version-diff").textContent).not.toContain("Runtime parameters");
   expect(screen.getByTestId("diff-apply-candidate").textContent).toBe("Apply changes");
 });
 

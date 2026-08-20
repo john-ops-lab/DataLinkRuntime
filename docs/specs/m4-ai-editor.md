@@ -158,8 +158,6 @@ AI 生成建议，不改变 Working Copy 基线、Candidate schema、stale 判�
   "candidate": {
     "summary": "增加 next_token 分页处理",
     "code": "...完整候选代码...",
-    "requirements": "...完整候选依赖声明...",
-    "runtime_config": {},
     "required_secret_keys": ["API_TOKEN"]
   },
   "provider": "custom_openai_compatible",
@@ -174,17 +172,19 @@ AI 生成建议，不改变 Working Copy 基线、Candidate schema、stale 判�
 
 ### 4.1 Candidate Schema
 
-非空 Candidate 必须同时满足：
+M5.8-003 起，非空 Candidate 的 AI 可修改内容只有 `code`。必须满足：
 
 - `summary`：string；
 - `code`：non-empty string；
-- `requirements`：string；
-- `runtime_config`：JSON object；
 - `required_secret_keys`：string[]。
 
-Candidate 是完整快照，不是 patch；不包含 language、Credential 真值、production Worker、
-Version / Execution 指针或 production state。无论 Provider 是否声明 Structured Output，
-Control 都必须执行本地 Schema Validation；禁止用正则截代码、猜 JSON 或模糊应用 patch。
+Candidate 是完整代码快照，不是 patch；不包含 requirements、runtime_config、Credential
+Binding、Worker / Schedule / Webhook 等人工运行配置，也不包含 language、Credential 真值、
+production Worker、Version / Execution 指针或 production state。旧 Provider 若仍返回
+`requirements` / `runtime_config`，二者仅作为可选兼容回显，必须与本轮 Working Copy 完全
+一致；任意差异均按 Provider 合同违规拒绝，前端 Diff / Apply 永不展示或应用它们。无论
+Provider 是否声明 Structured Output，Control 都必须执行本地 Schema Validation；禁止用正则
+截代码、猜 JSON 或模糊应用 patch。
 
 ### 4.2 OpenAI-compatible 薄适配
 
@@ -201,9 +201,9 @@ Control 都必须执行本地 Schema Validation；禁止用正则截代码、猜
 
 M4 不维护动态插件、模型版本大清单、模型路由、负载均衡或 fallback。
 
-OpenAI 不使用 strict `json_schema`：Candidate 的 `runtime_config` 按产品合同必须允许任意
+OpenAI 不使用 strict `json_schema`：历史兼容回显中的 Candidate `runtime_config` 可能是任意
 JSON object，而 OpenAI strict schema 要求所有 object 都是 closed object；强行生成该
-schema 会错误收窄运行参数合同。因此 OpenAI 使用 JSON mode，最终结果仍统一经过 DLR
+schema 会错误收窄兼容字段合同。因此 OpenAI 使用 JSON mode，最终结果仍统一经过 DLR
 本地 `AiModelOutput` 严格校验。
 
 `reasoning_mode=default` 时不发送 reasoning override。OpenAI 选择 `enabled` 但未指定 effort
@@ -235,13 +235,14 @@ Provider Adapter 只向上层交付 `final_text`：
 - 对话与 Candidate 绑定当前 Adapter；切换 Adapter 时清空会话。
 - 请求使用 generation + adapter id 防护；旧响应不得写入新 Adapter。
 - 发出请求时保存 code / requirements / runtime_config 的 base snapshot。响应回来时若当前
-  Working Copy 与 base 不同，Candidate 标为 stale；管理员仍可查看相对当前内容的 Diff，
-  但必须明确点击“仍然应用”。
-- Diff 按 Adapter.language 使用正确 Monaco language，并覆盖 code、requirements 与
-  runtime_config；required_secret_keys 单独展示，不自动创建绑定。
+  Working Copy 的 code 与 base 不同，Candidate 标为 stale；requirements / runtime_config
+  的人工修改不影响代码 Candidate 的 stale 判定。
+- Diff 按 Adapter.language 使用正确 Monaco language，只展示 code；required_secret_keys
+  单独展示，不自动创建绑定。
 - 缺少建议 Secret binding 时显示警告，但不阻止管理员审阅 Candidate。
 - 已归档 Adapter 只读，不允许 Apply。
-- Apply 只替换浏览器 snapshot 并进入既有 dirty 状态，不调用 Save / Test / Publish API。
+- Apply 只替换浏览器 Working Copy 的 code 并进入既有 dirty 状态，不调用 Save / Test /
+  Publish API；requirements、runtime_config 与 Credential Binding 始终保持人工编辑值。
 
 ### 5.1 上下文片段（M5.5.13）
 

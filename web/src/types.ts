@@ -244,9 +244,11 @@ export interface AiModelSetting extends AiModelSettingDraft {
 export interface AiCandidate {
   summary: string;
   code: string;
-  requirements: string;
-  runtime_config: Record<string, unknown>;
   required_secret_keys: string[];
+  /** M5.8-003: deprecated Provider compatibility echo; never applied by Web. */
+  requirements?: string;
+  /** M5.8-003: deprecated Provider compatibility echo; never applied by Web. */
+  runtime_config?: Record<string, unknown>;
 }
 
 export interface AiConversationMessage {

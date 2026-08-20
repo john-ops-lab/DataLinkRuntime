@@ -17,7 +17,7 @@ from conftest import WORKER_TOKEN
 from dlr.common.config import Settings, settings
 from dlr.control.ai import providers
 from dlr.control.models import AdapterVersion, AiModelSetting, Execution
-from dlr.control.schemas.ai import AiSettingDraft
+from dlr.control.schemas.ai import AiModelOutput, AiSettingDraft
 
 PROVIDER_TOKEN = "provider-token-plaintext-sentinel"
 BUSINESS_SECRET = "business-secret-plaintext-sentinel"
@@ -1034,6 +1034,99 @@ def test_assist_prompt_uses_language_contract_and_secret_names_only(
     assert "sensitive-user" not in system_prompt
 
 
+@pytest.mark.parametrize("language", ["python", "javascript", "java"])
+def test_m5_8_003_candidate_is_code_only_for_all_adapter_languages(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    language: str,
+) -> None:
+    """Configuration stays manual across the three runtime languages."""
+    adapter = create_adapter(api_client, f"code-only-{language}", language)
+    configure(api_client)
+    working_code = {
+        "python": "def handle(context, input):\n    return input\n",
+        "javascript": "export async function handle(context, input) { return input; }\n",
+        "java": "public class Adapter { public Object handle(Context c, Object i) { return i; } }",
+    }[language]
+    working_copy = {
+        "code": working_code,
+        "requirements": f"manual-{language}-dependency\n",
+        "runtime_config": {"manual": language, "enabled": True},
+    }
+    body = assist_body(working_code)
+    body["working_copy"] = working_copy
+    captured: dict[str, object] = {}
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        captured["payload"] = payload or {}
+        return fake_chat_response(
+            {
+                "message": "Code candidate only",
+                "candidate": {
+                    "summary": "Code change",
+                    "code": working_code + "\n# changed\n",
+                    "required_secret_keys": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["candidate"]["code"].endswith("# changed\n")
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    system_prompt = payload["messages"][0]["content"]  # type: ignore[index]
+    assert "requirements, runtime_config, Credential Binding" in system_prompt
+    assert "manually managed by the administrator" in system_prompt
+    assert f'"requirements": "manual-{language}-dependency\\n"' in system_prompt
+
+    # A legacy configuration field is accepted only as an exact echo; a
+    # natural-language dependency suggestion is a Provider contract error.
+    def changed_requirements(*_: object, **__: object) -> object:
+        return fake_chat_response(
+            {
+                "message": "Please install this",
+                "candidate": {
+                    "summary": "bad",
+                    "code": working_code,
+                    "requirements": "Install requests by hand",
+                    "required_secret_keys": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(providers, "_request_json", changed_requirements)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "ai_response_invalid"
+
+    def changed_runtime_config(*_: object, **__: object) -> object:
+        return fake_chat_response(
+            {
+                "message": "Please change runtime settings",
+                "candidate": {
+                    "summary": "bad",
+                    "code": working_code,
+                    "runtime_config": {"manual": "provider-changed"},
+                    "required_secret_keys": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(providers, "_request_json", changed_runtime_config)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "ai_response_invalid"
+
+
 def test_assist_prompt_carries_exact_selection_snapshot_without_secret_values(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1288,6 +1381,200 @@ def test_assist_can_answer_without_candidate(
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
     assert response.status_code == 200
     assert response.json()["candidate"] is None
+
+
+@pytest.mark.parametrize(
+    (
+        "scenario",
+        "first_message",
+        "second_message",
+        "assistant_text",
+        "candidate_round",
+        "second_code",
+        "expect_second_candidate",
+    ),
+    [
+        (
+            "1-greeting-to-greeting",
+            "nihao",
+            "nihao",
+            "你好！",
+            False,
+            "def handle(context, input):\n    return input\n",
+            False,
+        ),
+        (
+            "2-success-to-log-explanation",
+            "普通对话",
+            "解释这段日志",
+            "日志显示任务正常完成。",
+            False,
+            "def handle(context, input):\n    return input\n",
+            False,
+        ),
+        (
+            "3-candidate-to-non-code",
+            "生成代码",
+            "解释刚才的修改并改名",
+            "候选代码已生成。",
+            True,
+            "def handle(context, input):\n    return {'new': input}\n",
+            False,
+        ),
+        (
+            "4-candidate-to-code",
+            "生成代码",
+            "现在写出 handler",
+            "候选代码已生成。",
+            True,
+            "def handle(context, input):\n    return {'new': input}\n",
+            True,
+        ),
+        (
+            "5-strict-history-envelope",
+            "普通对话",
+            "继续说明",
+            "上一轮说明。",
+            False,
+            "def handle(context, input):\n    return input\n",
+            False,
+        ),
+        (
+            "6-strict-no-code-response",
+            "普通对话",
+            "请确认状态",
+            "当前没有代码变化。",
+            False,
+            "def handle(context, input):\n    return input\n",
+            False,
+        ),
+        (
+            "7-working-copy-is-authority",
+            "生成代码",
+            "现在写出 handler",
+            "候选代码已生成。",
+            True,
+            "def handle(context, input):\n    return {'current': input}\n",
+            True,
+        ),
+    ],
+)
+def test_m5_8_005_history_assistant_is_strict_json_envelope(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    first_message: str,
+    second_message: str,
+    assistant_text: str,
+    candidate_round: bool,
+    second_code: str,
+    expect_second_candidate: bool,
+) -> None:
+    """Fake-provider regression for the seven contracted multi-round paths.
+
+    The test covers greeting -> greeting, prose -> log explanation,
+    Candidate -> Apply -> non-code and Candidate -> Apply -> code requests.
+    Historical Candidate/code state is intentionally absent from the
+    Provider-facing history; only the visible assistant text is wrapped.
+    """
+    adapter = create_adapter(api_client, f"history-envelope-{scenario}")
+    configure(api_client)
+    captured_payloads: list[dict[str, object]] = []
+    old_candidate_code = "def handle(context, input):\n    return {'old': True}\n"
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        request = payload or {}
+        captured_payloads.append(request)
+        if len(captured_payloads) == 1:
+            return fake_chat_response(
+                {
+                    "message": assistant_text,
+                    "candidate": {
+                        "summary": "generated",
+                        "code": old_candidate_code,
+                        "required_secret_keys": [],
+                    }
+                    if candidate_round
+                    else None,
+                }
+            )
+        return fake_chat_response(
+            {
+                "message": "second round",
+                "candidate": (
+                    {
+                        "summary": "new code",
+                        "code": second_code,
+                        "required_secret_keys": [],
+                    }
+                    if expect_second_candidate
+                    else None
+                ),
+            }
+        )
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    first_body = assist_body()
+    first_body["message"] = first_message
+    first_response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=first_body)
+    assert first_response.status_code == 200, first_response.text
+
+    second_body = assist_body(second_code)
+    second_body["message"] = second_message
+    second_body["recent_messages"] = [
+        {"role": "user", "content": first_message},
+        {"role": "assistant", "content": assistant_text},
+    ]
+    second_response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=second_body)
+    assert second_response.status_code == 200, second_response.text
+    assert len(captured_payloads) == 2
+
+    second_messages = captured_payloads[1]["messages"]
+    assert isinstance(second_messages, list)
+    assistant_history = [
+        message
+        for message in second_messages
+        if isinstance(message, dict) and message.get("role") == "assistant"
+    ]
+    assert len(assistant_history) == 1
+    provider_history = assistant_history[0]["content"]
+    assert isinstance(provider_history, str)
+    envelope = json.loads(provider_history)
+    assert envelope == {"message": assistant_text, "candidate": None}
+    assert AiModelOutput.model_validate(envelope, strict=True).candidate is None
+
+    system_prompt = second_messages[0]["content"]
+    assert isinstance(system_prompt, str)
+    assert json.dumps(second_code, ensure_ascii=False) in system_prompt
+    assert json.dumps(old_candidate_code, ensure_ascii=False) not in system_prompt
+    assert json.dumps(old_candidate_code, ensure_ascii=False) not in json.dumps(
+        second_messages, ensure_ascii=False
+    )
+    assert "candidate:null" in system_prompt
+    if not expect_second_candidate:
+        assert second_response.json()["candidate"] is None
+
+
+def test_m5_8_005_strict_parser_rejects_bare_provider_prose(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The history fix does not weaken final response parsing."""
+    adapter = create_adapter(api_client, "strict-final-envelope")
+    configure(api_client)
+
+    def fake_request(*_: object, **__: object) -> object:
+        return fake_chat_response("这是裸 prose，不是 JSON")
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "ai_response_invalid"
 
 
 def test_assist_accepts_candidate_code_containing_literal_think_tags(

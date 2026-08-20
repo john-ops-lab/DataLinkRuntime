@@ -87,10 +87,11 @@ class ProviderAdapter:
 
 
 PROVIDERS: dict[AiProvider, ProviderAdapter] = {
-    # Candidate.runtime_config is intentionally an arbitrary JSON object.
-    # OpenAI strict Structured Outputs requires closed object schemas, so a
-    # strict json_schema would misrepresent this contract. Use JSON mode plus
-    # the explicit prompt and mandatory local strict validation instead.
+    # A legacy Candidate runtime_config echo is intentionally an arbitrary JSON
+    # object. OpenAI strict Structured Outputs requires closed object schemas,
+    # so a strict json_schema would misrepresent that compatibility envelope.
+    # Use JSON mode plus the explicit prompt and mandatory local strict
+    # validation instead; M5.8-003 never lets AI apply this field.
     "openai": ProviderAdapter(
         "openai",
         "json_object",

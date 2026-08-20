@@ -346,6 +346,22 @@ def _secret_env_keys(session: Session, adapter_id: int) -> list[str]:
     )
 
 
+def _provider_history_content(role: str, content: str) -> str:
+    """Serialize visible history into the Provider-facing protocol.
+
+    The browser intentionally stores only the visible assistant message. The
+    Provider conversation, however, must keep the same strict final-answer
+    protocol as the current request. Wrapping historical assistant text with
+    ``candidate:null`` prevents a Provider from treating earlier prose as an
+    example of an allowed bare response; historical Candidates and code are
+    deliberately not reconstructed here.
+    """
+    if role != "assistant":
+        return content
+    envelope = AiModelOutput(message=content, candidate=None).model_dump(mode="json")
+    return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+
+
 def _assist_messages(
     session: Session,
     adapter_id: int,
@@ -438,8 +454,17 @@ def _assist_messages(
         f"{no_tool_phrase}or reasoning. "
         "The object must strictly match this JSON Schema:\n"
         f"{json.dumps(output_schema, ensure_ascii=False, sort_keys=True)}\n"
-        "A non-null candidate is a complete snapshot. Never include or change language, "
-        "adapter_type, runtime_worker_id, or any lifecycle action. "
+        "A non-null candidate is a complete code snapshot. Never include or change language, "
+        "adapter_type, runtime_worker_id, or any lifecycle action. The Candidate is code-only: "
+        "requirements, runtime_config, Credential Binding, Worker/Schedule/Webhook and every "
+        "other runtime setting are manually managed by the administrator and must never be "
+        "changed by AI. If a legacy Provider contract still returns requirements or "
+        "runtime_config, omit those fields; if you include them, echo the current Working Copy "
+        "values exactly and never propose a difference. If the code needs a dependency, runtime "
+        "parameter or Secret, explain that manual configuration in message and use "
+        "required_secret_keys only as a non-binding hint. Greeting, explanation, log analysis, "
+        "clarification and advice that do not change the Working Copy must return candidate:null "
+        "inside this same strict envelope; never return bare prose or Markdown. "
         "Never request, invent, or reveal secret values; use only "
         'context.secrets.get("ENV_KEY") with an available key name.\n'
         "The context_snippets array, when present, carries exact administrator-provided "
@@ -459,7 +484,11 @@ def _assist_messages(
     )
     messages: list[providers.JsonObject] = [{"role": "system", "content": system_prompt}]
     messages.extend(
-        {"role": item.role, "content": item.content} for item in payload.recent_messages
+        {
+            "role": item.role,
+            "content": _provider_history_content(item.role, item.content),
+        }
+        for item in payload.recent_messages
     )
     if native_images:
         # M5.7 Wave B2: provider-native multimodal input (capability-table
@@ -520,6 +549,38 @@ def _parse_model_output(final_text: str, api_key: str | None = None) -> AiModelO
             "ai_response_invalid",
             "The AI provider returned an invalid response",
         ) from None
+
+
+def _reject_candidate_configuration_changes(
+    output: AiModelOutput, payload: AiAssistRequest
+) -> None:
+    """Keep the AI boundary code-only while accepting old envelope echoes.
+
+    A Provider may omit the historical configuration fields entirely. If it
+    sends either field, however, the value is a compatibility echo and must
+    match the browser Working Copy structurally. This prevents natural-
+    language requirements or runtime settings from ever becoming an
+    applicable Candidate while keeping the strict response parser intact.
+    """
+    candidate = output.candidate
+    if candidate is None:
+        return
+    fields_set = candidate.model_fields_set
+    if "requirements" in fields_set and candidate.requirements != payload.working_copy.requirements:
+        raise domain_error(
+            502,
+            "ai_response_invalid",
+            "The AI provider returned an invalid response",
+        )
+    if (
+        "runtime_config" in fields_set
+        and candidate.runtime_config != payload.working_copy.runtime_config
+    ):
+        raise domain_error(
+            502,
+            "ai_response_invalid",
+            "The AI provider returned an invalid response",
+        )
 
 
 def attachment_capabilities() -> AiAttachmentCapabilitiesResponse:
@@ -707,6 +768,7 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
             )
     assert final_content is not None  # the loop only breaks on a final answer
     output = _parse_model_output(final_content, api_key)
+    _reject_candidate_configuration_changes(output, payload)
     return AiAssistResponse(
         message=output.message,
         candidate=output.candidate,
