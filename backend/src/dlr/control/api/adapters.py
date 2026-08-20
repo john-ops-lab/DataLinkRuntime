@@ -15,10 +15,10 @@ from dlr.control.schemas.adapter import (
     VersionDetail,
     VersionSummary,
 )
-from dlr.control.security import require_admin_token
+from dlr.control.security import require_principal
 from dlr.control.services import adapter as adapter_service
 
-router = APIRouter(dependencies=[Depends(require_admin_token)])
+router = APIRouter(dependencies=[Depends(require_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 

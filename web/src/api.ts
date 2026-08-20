@@ -7,6 +7,7 @@ import type {
   AdapterScheduleDraft,
   AdapterWebhook,
   AdapterWebhookDraft,
+  AccountPrincipal,
   AdapterType,
   TaskRunMode,
   AiAssistResponse,
@@ -112,9 +113,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (authToken !== null) {
     headers.Authorization = `Bearer ${authToken}`;
   }
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    const csrf = document.cookie
+      .split(";")
+      .map((item) => item.trim())
+      .find((item) => item.startsWith("dlr_account_csrf="))
+      ?.slice("dlr_account_csrf=".length);
+    if (csrf) {
+      headers["X-CSRF-Token"] = decodeURIComponent(csrf);
+    }
+  }
   let response: Response;
   try {
-    response = await fetch(path, { headers, ...init });
+    response = await fetch(path, { ...init, credentials: "same-origin", headers });
   } catch {
     throw new ApiError(0, "network_error", "Control is unreachable");
   }
@@ -139,6 +151,31 @@ export const api = {
     request("/api/locale", { method: "PUT", body: JSON.stringify({ locale }) }),
 
   verifyAdminToken: (): Promise<{ status: string }> => request("/api/auth/admin/verify"),
+
+  // --- M5.9 Wave A account identity ----------------------------------------
+
+  getAccountCsrf: (): Promise<{ status: string }> => request("/api/auth/account/csrf"),
+
+  loginAccount: (payload: { username: string; password: string }): Promise<{ principal: AccountPrincipal }> =>
+    request("/api/auth/account/login", { method: "POST", body: JSON.stringify(payload) }),
+
+  getAccountPrincipal: (): Promise<{ principal: AccountPrincipal }> =>
+    request("/api/auth/account/me"),
+
+  logoutAccount: (): Promise<{ status: string }> =>
+    request("/api/auth/account/logout", { method: "POST" }),
+
+  changeAccountPassword: (payload: {
+    current_password: string;
+    new_password: string;
+  }): Promise<{ status: string }> =>
+    request("/api/auth/account/change-password", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  resetAccountPassword: (payload: { username: string; new_password: string }): Promise<{ status: string }> =>
+    request("/api/auth/account/reset", { method: "POST", body: JSON.stringify(payload) }),
 
   listAdapters: (): Promise<Adapter[]> => request("/api/adapters"),
 

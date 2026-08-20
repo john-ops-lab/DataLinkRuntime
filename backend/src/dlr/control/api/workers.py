@@ -14,15 +14,15 @@ from dlr.control.schemas.execution import (
     ProgressReport,
 )
 from dlr.control.schemas.worker import WorkerRegister, WorkerResponse
-from dlr.control.security import require_admin_token, require_worker_token
+from dlr.control.security import require_principal, require_worker_token
 from dlr.control.services import execution as execution_service
 from dlr.control.services import worker as worker_service
 from dlr.control.services import worker_availability
 
 router = APIRouter(dependencies=[Depends(require_worker_token)])
 # M3: the read-only Worker list is an admin-facing observability API, so it
-# lives on its own router with the admin token requirement.
-admin_router = APIRouter(dependencies=[Depends(require_admin_token)])
+# lives on its own router with the unified Principal requirement.
+admin_router = APIRouter(dependencies=[Depends(require_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 

@@ -4,10 +4,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SERVICES=(postgres control worker web)
+SERVICES=(postgres control worker web account-web)
 TIMEOUT_SECONDS=${COMPOSE_SMOKE_TIMEOUT:-240}
 export COMPOSE_PROJECT_NAME=${COMPOSE_SMOKE_PROJECT:-dlr-smoke-${GITHUB_RUN_ID:-$$}}
 export DLR_WEB_HOST_PORT=${COMPOSE_SMOKE_WEB_PORT:-8880}
+export DLR_ACCOUNT_WEB_HOST_PORT=${COMPOSE_SMOKE_ACCOUNT_WEB_PORT:-8881}
 export DLR_ADMIN_TOKEN=${DLR_ADMIN_TOKEN:-smoke-admin-token-$$}
 export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
 export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-env-secret-$$}
@@ -42,6 +43,8 @@ AI_FAKE_CONTAINER_ID=""
 AI_FAKE_DISABLED_CONTAINER_ID=""
 IMA_FAKE_CONTAINER_ID=""
 AO_DOCKER_LABEL="ao.session=${AO_SESSION_ID:-compose-smoke}"
+ACCOUNT_COOKIE_FILE=""
+ACCOUNT_STALE_COOKIE_FILE=""
 
 cleanup() {
   if [ -n "$AI_FAKE_CONTAINER_ID" ]; then
@@ -53,11 +56,14 @@ cleanup() {
   if [ -n "$IMA_FAKE_CONTAINER_ID" ]; then
     docker rm -f "$IMA_FAKE_CONTAINER_ID" >/dev/null 2>&1 || true
   fi
+  if [ -n "$ACCOUNT_COOKIE_FILE" ]; then
+    rm -f "$ACCOUNT_COOKIE_FILE" "$ACCOUNT_STALE_COOKIE_FILE"
+  fi
   docker compose -p "$COMPOSE_PROJECT_NAME" down --volumes --remove-orphans
 }
 trap cleanup EXIT
 
-echo "==> smoke project: $COMPOSE_PROJECT_NAME (web port: $DLR_WEB_HOST_PORT)"
+echo "==> smoke project: $COMPOSE_PROJECT_NAME (Token port: $DLR_WEB_HOST_PORT; account port: $DLR_ACCOUNT_WEB_HOST_PORT)"
 # M5.5.8: the optional DNS override file must always parse, and the default
 # compose config must stay valid without any DNS-related .env variables.
 docker compose -f docker-compose.yml config -q
@@ -133,6 +139,8 @@ done
 echo "==> checking web, health and authentication boundaries"
 curl -fsS "http://localhost:${DLR_WEB_HOST_PORT}/" | grep -q "DataLinkRuntime"
 curl -fsS "http://localhost:${DLR_WEB_HOST_PORT}/api/health" | grep -q '"database":true'
+curl -fsS "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/" | grep -q "DataLinkRuntime"
+curl -fsS "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/health" | grep -q '"database":true'
 no_token_status=$(curl -s -o /dev/null -w '%{http_code}' \
   "http://localhost:${DLR_WEB_HOST_PORT}/api/adapters")
 [ "$no_token_status" = "401" ]
@@ -140,6 +148,51 @@ wrong_token_status=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer ${DLR_WORKER_TOKEN}" \
   "http://localhost:${DLR_WEB_HOST_PORT}/api/adapters")
 [ "$wrong_token_status" = "401" ]
+
+echo "==> checking the account entry, forced password change and logout"
+ACCOUNT_COOKIE_FILE=$(mktemp)
+ACCOUNT_STALE_COOKIE_FILE=$(mktemp)
+curl -fsS -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/csrf" >/dev/null
+account_csrf=$(awk '$6 == "dlr_account_csrf" { print $7 }' "$ACCOUNT_COOKIE_FILE")
+[ -n "$account_csrf" ]
+account_login_body=$(curl -fsS -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
+  -H "Content-Type: application/json" -H "X-CSRF-Token: $account_csrf" \
+  -d '{"username":"admin","password":"admin123"}' \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/login")
+echo "$account_login_body" | grep -q '"must_change_password":true'
+cp "$ACCOUNT_COOKIE_FILE" "$ACCOUNT_STALE_COOKIE_FILE"
+forced_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -b "$ACCOUNT_COOKIE_FILE" \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/adapters")
+[ "$forced_status" = "403" ]
+account_csrf=$(awk '$6 == "dlr_account_csrf" { print $7 }' "$ACCOUNT_COOKIE_FILE")
+change_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
+  -H "Content-Type: application/json" -H "X-CSRF-Token: $account_csrf" \
+  -d '{"current_password":"admin123","new_password":"wave-a-new-admin-123"}' \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/change-password")
+[ "$change_status" = "200" ]
+stale_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -b "$ACCOUNT_STALE_COOKIE_FILE" \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/me")
+[ "$stale_status" = "401" ]
+curl -fsS -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/csrf" >/dev/null
+account_csrf=$(awk '$6 == "dlr_account_csrf" { print $7 }' "$ACCOUNT_COOKIE_FILE")
+account_login_body=$(curl -fsS -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
+  -H "Content-Type: application/json" -H "X-CSRF-Token: $account_csrf" \
+  -d '{"username":"admin","password":"wave-a-new-admin-123"}' \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/login")
+echo "$account_login_body" | grep -q '"must_change_password":false'
+account_csrf=$(awk '$6 == "dlr_account_csrf" { print $7 }' "$ACCOUNT_COOKIE_FILE")
+curl -fsS -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
+  -H "X-CSRF-Token: $account_csrf" -X POST \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/logout" >/dev/null
+logout_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -b "$ACCOUNT_COOKIE_FILE" \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/me")
+[ "$logout_status" = "401" ]
 
 echo "==> verifying the default DNS fallback wiring (host-side)"
 for service in control worker; do
@@ -245,32 +298,32 @@ docker compose exec -T \
   control python - < scripts/compose-smoke.py
 
 echo "==> verifying secrets did not enter service logs"
-if docker compose logs control worker web | grep -F "$SMOKE_STORED_SECRET" >/dev/null; then
+if docker compose logs control worker web account-web | grep -F "$SMOKE_STORED_SECRET" >/dev/null; then
   echo "ERROR: stored secret appeared in service logs" >&2
   exit 1
 fi
 # M5.5.5/5.13: the administrator-selected code and the masked log snippet
 # are request payload, never log lines.
-if docker compose logs control worker web | grep -F "$SMOKE_SELECTED_TEXT" >/dev/null; then
+if docker compose logs control worker web account-web | grep -F "$SMOKE_SELECTED_TEXT" >/dev/null; then
   echo "ERROR: selected code appeared in service logs" >&2
   exit 1
 fi
-if docker compose logs control worker web | grep -F "$SMOKE_LOG_TEXT" >/dev/null; then
+if docker compose logs control worker web account-web | grep -F "$SMOKE_LOG_TEXT" >/dev/null; then
   echo "ERROR: log snippet appeared in service logs" >&2
   exit 1
 fi
 # M5.7 Wave B2: attachment body text never enters service logs either.
-if docker compose logs control worker web | grep -F "$SMOKE_ATTACH_TEXT" >/dev/null; then
+if docker compose logs control worker web account-web | grep -F "$SMOKE_ATTACH_TEXT" >/dev/null; then
   echo "ERROR: attachment text appeared in service logs" >&2
   exit 1
 fi
 # M5.7 Wave C2: the ima credential truth must never enter service logs
 # (the fake ima service echoes the API Key inside the read content on purpose).
-if docker compose logs control worker web | grep -F "$SMOKE_IMA_TOKEN" >/dev/null; then
+if docker compose logs control worker web account-web | grep -F "$SMOKE_IMA_TOKEN" >/dev/null; then
   echo "ERROR: ima credential appeared in service logs" >&2
   exit 1
 fi
-if docker compose logs control worker web | grep -F "$SMOKE_IMA_CLIENT_ID" >/dev/null; then
+if docker compose logs control worker web account-web | grep -F "$SMOKE_IMA_CLIENT_ID" >/dev/null; then
   echo "ERROR: ima client id appeared in service logs" >&2
   exit 1
 fi

@@ -58,7 +58,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0020_m5_8_006_ks_settings"
+    assert revision == "0021_m5_9_wave_a_accounts"
     assert {
         "adapter_type",
         "run_mode",

@@ -88,7 +88,7 @@ def _truncate(engine: Engine) -> None:
                 "workers, executions, "
                 "knowledge_source_settings, credentials, adapter_credential_bindings, "
                 "package_sources, ai_model_settings, "
-                "system_settings "
+                "system_settings, user_sessions, users "
                 "RESTART IDENTITY CASCADE"
             )
         )

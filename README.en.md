@@ -280,9 +280,15 @@ docker compose ps
 When all services are healthy:
 
 - Web Console: `http://localhost:8080`
+- Account Console: `http://localhost:8081`
 - Health API: `http://localhost:8080/api/health`
 
 Enter `DLR_ADMIN_TOKEN` on the first Web Console visit.
+
+The account entry starts with `admin / admin123` and requires a password change.
+Only a server-side password hash is stored. The 8080 Token entry and 8081
+account entry share one Control service, PostgreSQL database and Web build; the
+account host port can be changed with `DLR_ACCOUNT_WEB_HOST_PORT`.
 
 Remove the local stack and database volume with:
 
