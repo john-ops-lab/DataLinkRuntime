@@ -284,8 +284,10 @@ _ENTRIES: tuple[DocEntry, ...] = (
             "runtime_config is an arbitrary JSON object saved with each Revision. It must contain "
             "only finite JSON values (no NaN / Infinity, no duplicate keys) and is exposed to the "
             "runtime as context.config (Python), context.config (JavaScript) or context.config() "
-            "(Java). The AI Candidate may propose runtime_config changes; lifecycle fields such as "
-            "language, adapter_type and runtime_worker_id can never be changed by AI."
+            "(Java). It is manually managed configuration: the AI Candidate must not propose "
+            "runtime_config changes. Legacy Provider responses may echo it only when it exactly "
+            "matches the current Working Copy; lifecycle fields such as language, adapter_type "
+            "and runtime_worker_id can never be changed by AI."
         ),
     ),
 )

@@ -3306,13 +3306,9 @@ it("expands and collapses the AI panel and blocks send without an Adapter", asyn
   expect(screen.queryByTestId("ai-assistant-panel")).toBeNull();
 });
 
-it.each([
-  ["python", "Python 依赖"],
-  ["javascript", "JavaScript 依赖"],
-  ["java", "Java 依赖"],
-] as const)(
-  "sends the %s Working Copy, shows Candidate Diff with Apply, and applies browser-only",
-  async (language, dependencyLabel) => {
+it.each(["python", "javascript", "java"] as const)(
+  "M5.8-003 keeps %s Candidate Diff/Apply code-only across languages",
+  async (language) => {
     const adapter = makeAdapter({ language, latest_version_id: 10 });
     const version = makeVersion({
       code: `base-${language}\n`,
@@ -3402,13 +3398,9 @@ it.each([
     fireEvent.click(screen.getByTestId("ai-view-diff"));
     const diffModal = await screen.findByTestId("version-diff");
     expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe(language);
-    expect(within(diffModal).getByText(dependencyLabel)).toBeTruthy();
-    fireEvent.click(within(diffModal).getByText(dependencyLabel));
-    expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe(
-      "plaintext",
-    );
-    fireEvent.click(within(diffModal).getByText("运行参数"));
-    expect(screen.getByTestId("diff-editor").getAttribute("data-monaco-language")).toBe("json");
+    expect(within(diffModal).getByText("代码")).toBeTruthy();
+    expect(within(diffModal).queryByText(/依赖/)).toBeNull();
+    expect(within(diffModal).queryByText(/运行参数/)).toBeNull();
 
     // Apply 只发生在 Diff 内（M5.5.4 单一路径）；成功后 Diff 自动关闭
     // （M5.5.13），返回 Monaco/Workbench。
@@ -3416,8 +3408,8 @@ it.each([
     await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
     expect(valueOf("code-editor")).toBe("candidate-code\n");
     expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
-    expect(valueOf("requirements-input")).toBe("candidate-dependency\n");
-    // M5.5.9：运行参数（JSON）已退出编辑页；候选参数只随工作副本进入保存。
+    expect(valueOf("requirements-input")).toBe(`base-dependency-${language}\n`);
+    // M5.8-003：运行参数（JSON）仍由人工 Working Copy 管理，Candidate 不会覆盖它。
     expect(screen.queryByText("运行参数（JSON）")).toBeNull();
     // 候选已应用 = 工作副本变 dirty：运行按钮被“请先保存当前修改”门禁拦截。
     await waitFor(() => {

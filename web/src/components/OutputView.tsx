@@ -1,6 +1,6 @@
 /** Result viewers: formatted Output plus the unified terminal log (M3 §8). */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -89,6 +89,10 @@ export function LogView(props: {
 }) {
   const { t } = useTranslation("runtime");
   const preRef = useRef<HTMLPreElement | null>(null);
+  // The scroll offset is part of the user's view state. Keeping it separate
+  // from React state lets a live-log append restore the exact paused/history
+  // position after the new DOM text has been committed.
+  const scrollTopRef = useRef(0);
   const followControls = props.followControls ?? true;
   const mode = props.mode ?? "live";
   // The user owns the live scroll position once they scroll up or pause; a
@@ -162,19 +166,28 @@ export function LogView(props: {
     props.onAddContext?.(text, startLine, endLine);
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = preRef.current;
-    if (element !== null && followTail.current) {
+    if (element === null) {
+      return;
+    }
+    if (followTail.current) {
       element.scrollTop = element.scrollHeight;
+      scrollTopRef.current = element.scrollTop;
+    } else {
+      // Appending live output or refreshing a terminal Execution must not
+      // reclaim the bottom after the user paused or inspected history.
+      element.scrollTop = scrollTopRef.current;
     }
   }, [displayContent]);
 
   function handleScroll() {
-    if (!followControls) {
-      return;
-    }
     const element = preRef.current;
     if (element === null) {
+      return;
+    }
+    scrollTopRef.current = element.scrollTop;
+    if (!followControls) {
       return;
     }
     const nearBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 24;
@@ -188,6 +201,7 @@ export function LogView(props: {
     const element = preRef.current;
     if (element !== null) {
       element.scrollTop = element.scrollHeight;
+      scrollTopRef.current = element.scrollTop;
     }
   }
 
@@ -216,6 +230,10 @@ export function LogView(props: {
               size="small"
               data-testid={props.testId ? `${props.testId}-pause` : "log-pause"}
               onClick={() => {
+                const element = preRef.current;
+                if (element !== null) {
+                  scrollTopRef.current = element.scrollTop;
+                }
                 followTail.current = false;
                 setPaused(true);
               }}

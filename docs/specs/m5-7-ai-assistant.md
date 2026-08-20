@@ -102,7 +102,14 @@ React 19 + TypeScript + Vite + Ant Design + Monaco
 M5.7 继续保持：
 
 - 当前 Working Copy 是本轮请求唯一权威代码快照；
+- M5.8-003：AI Candidate 只允许修改 Adapter `code`；requirements、runtime_config、
+  Credential Binding 与 Worker / Schedule / Webhook 等运行配置只能人工修改。旧 Provider
+  若返回配置字段只能作为与 Working Copy 完全一致的兼容回显，Diff / Apply 不展示或应用；
 - `recent_messages` 只含浏览器可见 `user / assistant` 消息并保持有界，当前上限 8 条；
+  发往 Provider 时历史 `user` 保持 prose，历史 `assistant` 必须重新序列化为合法
+  `{"message":"...","candidate":null}` envelope；历史 Candidate / 旧代码快照不得回灌，
+  当前 Working Copy 仍是唯一权威代码快照。无代码改动请求也必须由 Provider 返回同一严格
+  envelope，不能返回裸 prose / Markdown。
 - Candidate 是完整 Snapshot，不是 patch；
 - Candidate 必须经过 DLR 本地严格 Schema Validation；
 - AI 不得修改 `language / adapter_type / runtime_worker_id` 或生命周期字段；

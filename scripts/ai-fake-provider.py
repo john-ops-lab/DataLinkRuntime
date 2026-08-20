@@ -337,8 +337,6 @@ def candidate_for(
         "candidate": {
             "summary": f"Exercise the {language} AI assist contract",
             "code": code,
-            "requirements": "",
-            "runtime_config": {"ai_smoke": language},
             "required_secret_keys": [],
         },
     }

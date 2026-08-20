@@ -893,13 +893,10 @@ function AdapterConsole() {
     ) {
       return;
     }
-    // Human-in-the-loop boundary: this updates browser state only. Persisting,
-    // testing and lifecycle actions remain separate explicit administrator actions.
-    setSnapshot({
-      code: candidate.code,
-      requirements: candidate.requirements,
-      runtimeConfigText: JSON.stringify(candidate.runtime_config, null, 2),
-    });
+    // M5.8-003: AI Apply is code-only. Requirements, runtime_config,
+    // Credential Binding and runtime configuration remain the administrator's
+    // manual Working Copy and are never replaced by a Candidate.
+    setSnapshot((current) => ({ ...current, code: candidate.code }));
   }
 
   // M5.5.13：把 Monaco 当前选区作为精确快照追加进 AI 上下文，并自动展开

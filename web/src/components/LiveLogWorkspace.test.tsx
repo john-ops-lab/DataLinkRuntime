@@ -1,8 +1,25 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
+import { applySystemLocale, DEFAULT_SYSTEM_LOCALE } from "../i18n";
 import type { Execution } from "../types";
 import LiveLogWorkspace from "./LiveLogWorkspace";
+import { LogView } from "./OutputView";
+
+afterEach(async () => {
+  await applySystemLocale(DEFAULT_SYSTEM_LOCALE);
+});
+
+function setScrollMetrics(element: HTMLElement, scrollHeight: number, clientHeight: number) {
+  Object.defineProperty(element, "scrollHeight", {
+    configurable: true,
+    value: scrollHeight,
+  });
+  Object.defineProperty(element, "clientHeight", {
+    configurable: true,
+    value: clientHeight,
+  });
+}
 
 function makeExecution(overrides: Partial<Execution> = {}): Execution {
   return {
@@ -96,6 +113,108 @@ it("pauses and resumes following the log tail", () => {
 
   fireEvent.click(screen.getByTestId("live-log-resume"));
   expect(screen.getByTestId("live-log-pause")).toBeTruthy();
+});
+
+it("keeps receiving appended logs at the paused scroll position", () => {
+  const { rerender } = render(
+    <LogView
+      testId="paused-log"
+      content="line-1\nline-2\n"
+      truncated={false}
+      mode="live"
+    />,
+  );
+  const pre = screen.getByTestId("paused-log");
+  setScrollMetrics(pre, 400, 100);
+  pre.scrollTop = 70;
+  fireEvent.click(screen.getByTestId("paused-log-pause"));
+
+  setScrollMetrics(pre, 700, 100);
+  rerender(
+    <LogView
+      testId="paused-log"
+      content="line-1\nline-2\nline-3\n"
+      truncated={false}
+      mode="live"
+    />,
+  );
+  expect(pre.scrollTop).toBe(70);
+  expect(screen.getByTestId("paused-log-resume")).toBeTruthy();
+
+  fireEvent.click(screen.getByTestId("paused-log-resume"));
+  expect(pre.scrollTop).toBe(700);
+  expect(screen.getByTestId("paused-log-pause")).toBeTruthy();
+});
+
+it("manual history inspection stays put when the terminal detail refreshes", () => {
+  const { rerender } = render(
+    <LogView
+      testId="history-log"
+      content="old-1\nold-2\n"
+      truncated={false}
+      mode="history"
+      followControls={false}
+    />,
+  );
+  const pre = screen.getByTestId("history-log");
+  setScrollMetrics(pre, 500, 100);
+  pre.scrollTop = 125;
+  fireEvent.scroll(pre);
+
+  setScrollMetrics(pre, 800, 100);
+  rerender(
+    <LogView
+      testId="history-log"
+      content="old-1\nold-2\nterminal-refresh\n"
+      truncated={false}
+      mode="history"
+      followControls={false}
+    />,
+  );
+  expect(pre.scrollTop).toBe(125);
+  expect(screen.queryByTestId("history-log-pause")).toBeNull();
+  expect(screen.queryByTestId("history-log-resume")).toBeNull();
+});
+
+it("keeps the same follow semantics after an Execution reaches a terminal state", () => {
+  const { rerender } = render(
+    <LiveLogWorkspace
+      execution={makeExecution()}
+      liveStdout="line-1\n"
+      liveStderr=""
+      fallbackExhausted={false}
+      waitingForWebhook={false}
+    />,
+  );
+  const pre = screen.getByTestId("live-log");
+  setScrollMetrics(pre, 400, 100);
+  pre.scrollTop = 80;
+  fireEvent.click(screen.getByTestId("live-log-pause"));
+
+  setScrollMetrics(pre, 700, 100);
+  rerender(
+    <LiveLogWorkspace
+      execution={makeExecution({ status: "succeeded", ended_at: "2026-08-15T00:00:02Z" })}
+      liveStdout="line-1\nterminal\n"
+      liveStderr=""
+      fallbackExhausted={false}
+      waitingForWebhook={false}
+    />,
+  );
+  expect(pre.scrollTop).toBe(80);
+  expect(screen.getByTestId("live-log-resume")).toBeTruthy();
+});
+
+it("localizes follow state in both Chinese and English", async () => {
+  renderWorkspace();
+  expect(screen.getByTestId("live-log-pause").textContent).toBe("暂停跟随");
+
+  await act(async () => {
+    await applySystemLocale("en");
+  });
+  expect(screen.getByTestId("live-log-pause").textContent).toBe("Pause following");
+  fireEvent.click(screen.getByTestId("live-log-pause"));
+  expect(screen.getByTestId("live-log-resume").textContent).toBe("Resume following");
 });
 
 it("shows the Webhook waiting state without inventing an Execution", () => {

@@ -174,6 +174,19 @@ class AiRecentMessage(_StrictSchema):
     role: Literal["user", "assistant"]
     content: str
 
+    @field_validator("content", mode="before")
+    @classmethod
+    def validate_content(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ai_request_invalid",
+                    "message": "AI request contains an invalid recent message",
+                },
+            ) from None
+        return value
+
 
 class AiAttachment(_StrictSchema):
     """M5.7 Wave B2: one browser-uploaded attachment for this request only.
@@ -419,13 +432,22 @@ class AiAssistRequest(_StrictSchema):
 
 
 class AiCandidate(_StrictSchema):
-    """A complete candidate snapshot. It never carries lifecycle fields."""
+    """A code-only Candidate with legacy configuration fields for compatibility.
+
+    ``requirements`` and ``runtime_config`` remain optional so older Providers
+    can keep returning the historical envelope while M5.8-003 makes them
+    immutable at the service boundary. They are never required for a new
+    Provider response and are never an AI-owned part of the Candidate.
+    """
 
     summary: str
     code: str
-    requirements: str
-    runtime_config: dict[str, JsonValue]
     required_secret_keys: list[str]
+    # M5.8-003: deprecated compatibility echoes. The service accepts these
+    # only when they exactly match the request Working Copy; omitted fields
+    # mean that the Provider is not proposing a configuration change.
+    requirements: str = ""
+    runtime_config: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("runtime_config", mode="before")
     @classmethod

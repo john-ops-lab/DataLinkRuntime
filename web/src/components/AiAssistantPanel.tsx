@@ -71,7 +71,7 @@ import {
   formatAttachmentSize,
   validateAttachmentAdd,
 } from "../attachment-client";
-import { dependencyUiFor, LANGUAGE_LABELS } from "../languages";
+import { LANGUAGE_LABELS } from "../languages";
 import type {
   Adapter,
   AiAttachment,
@@ -210,25 +210,25 @@ function isValidAiCandidate(value: unknown): value is AiCandidate {
     return false;
   }
   const candidate = value as Record<string, unknown>;
+  const hasRequirements = Object.prototype.hasOwnProperty.call(candidate, "requirements");
+  const hasRuntimeConfig = Object.prototype.hasOwnProperty.call(candidate, "runtime_config");
   return (
     typeof candidate.summary === "string" &&
     typeof candidate.code === "string" &&
     candidate.code.trim() !== "" &&
-    typeof candidate.requirements === "string" &&
-    typeof candidate.runtime_config === "object" &&
-    candidate.runtime_config !== null &&
-    !Array.isArray(candidate.runtime_config) &&
+    (!hasRequirements || typeof candidate.requirements === "string") &&
+    (!hasRuntimeConfig || (
+      typeof candidate.runtime_config === "object" &&
+      candidate.runtime_config !== null &&
+      !Array.isArray(candidate.runtime_config)
+    )) &&
     Array.isArray(candidate.required_secret_keys) &&
     candidate.required_secret_keys.every((key) => typeof key === "string")
   );
 }
 
-function snapshotsEqual(left: AiWorkingCopy, right: AiWorkingCopy): boolean {
-  return (
-    left.code === right.code &&
-    left.requirements === right.requirements &&
-    left.runtimeConfigText === right.runtimeConfigText
-  );
+function codeSnapshotsEqual(left: AiWorkingCopy, right: AiWorkingCopy): boolean {
+  return left.code === right.code;
 }
 
 /** M5.7 Wave A: recent_messages 仍只取浏览器可见 user/assistant 对话，
@@ -1233,18 +1233,6 @@ async function resolveComposerAttachment(
           original: props.workingCopy.code,
           modified: candidate.code,
         },
-        {
-          key: "requirements",
-          language: "plaintext",
-          original: props.workingCopy.requirements,
-          modified: candidate.requirements,
-        },
-        {
-          key: "runtime-config",
-          language: "json",
-          original: props.workingCopy.runtimeConfigText,
-          modified: JSON.stringify(candidate.runtime_config, null, 2),
-        },
       ],
     });
   }
@@ -1495,7 +1483,7 @@ async function resolveComposerAttachment(
                 const stale =
                   candidateState !== null &&
                   !candidateState.applied &&
-                  !snapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
+                  !codeSnapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
                 const missingKeys =
                   candidateState === null
                     ? []
@@ -1676,7 +1664,7 @@ async function resolveComposerAttachment(
     }
     const stale =
       !candidateState.applied &&
-      !snapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
+      !codeSnapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
     const applyBlockedReason = candidateState.applied
       ? t("assistant.diff.applyBlockedApplied")
       : props.adapter?.archived_at
@@ -1706,12 +1694,7 @@ async function resolveComposerAttachment(
         modifiedTitle={t("assistant.diff.modified")}
         panes={(candidateDiff?.panes ?? []).map((pane) => ({
           ...pane,
-          label:
-            pane.key === "code"
-              ? t("assistant.diff.code")
-              : pane.key === "requirements"
-                ? dependencyUiFor(props.adapter?.language ?? "python").label
-                : t("assistant.diff.runtimeConfig"),
+          label: t("assistant.diff.code"),
         }))}
         theme={props.theme}
         onClose={() => setCandidateDiff(null)}
