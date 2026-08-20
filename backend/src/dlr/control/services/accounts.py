@@ -12,10 +12,11 @@ from time import monotonic
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.control.models.account import User, UserSession
-from dlr.control.schemas.account import AccountPrincipalResponse
+from dlr.control.schemas.account import AccountPrincipalResponse, AccountUserResponse
 from dlr.control.services.adapter import domain_error
 
 DEFAULT_ADMIN_USERNAME = "admin"
@@ -263,6 +264,19 @@ def principal_response(user: User) -> AccountPrincipalResponse:
     )
 
 
+def user_response(user: User) -> AccountUserResponse:
+    """Build a secret-free account-management response."""
+    return AccountUserResponse(
+        id=user.id,
+        username=user.username,
+        role=user.role,  # type: ignore[arg-type]
+        enabled=user.enabled,
+        must_change_password=user.must_change_password,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+    )
+
+
 def bootstrap_default_admin(session: Session) -> None:
     """Idempotently insert the first admin without persisting its plaintext password."""
     statement = (
@@ -335,14 +349,157 @@ def change_password(session: Session, current: AccountSession, new_password: str
     session.commit()
 
 
-def reset_password(session: Session, username: str, new_password: str) -> None:
-    """Perform the narrow superadmin reset operation."""
-    user = session.scalar(select(User).where(User.username == username))
+def list_users(session: Session) -> list[User]:
+    """List account rows without ever selecting password hashes for a response."""
+    return list(session.scalars(select(User).order_by(User.username, User.id)).all())
+
+
+def get_user(session: Session, user_id: int) -> User:
+    """Load one account or return the stable not-found domain error."""
+    user = session.get(User, user_id)
     if user is None:
         raise domain_error(404, "account_not_found", "Account not found")
+    return user
+
+
+def create_user(session: Session, username: str, password: str, role: str) -> User:
+    """Create an enabled account whose first login must change its password."""
+    user = User(
+        username=username,
+        password_hash=hash_password(password),
+        role=role,
+        enabled=True,
+        must_change_password=True,
+    )
+    session.add(user)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise domain_error(
+            409,
+            "account_username_conflict",
+            "Account username already exists",
+        ) from None
+    session.refresh(user)
+    return user
+
+
+def _lock_enabled_admins(session: Session) -> list[User]:
+    """Serialize every operation that could remove the final enabled admin."""
+    return list(
+        session.scalars(
+            select(User)
+            .where(User.enabled.is_(True), User.role == "admin")
+            .order_by(User.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+
+
+def update_user(
+    session: Session,
+    user_id: int,
+    *,
+    username: str | None = None,
+    role: str | None = None,
+    enabled: bool | None = None,
+    fields_set: set[str] | None = None,
+) -> User:
+    """Update profile/lifecycle fields while preserving one enabled admin."""
+    supplied = (
+        fields_set
+        if fields_set is not None
+        else {
+            field
+            for field, value in (("username", username), ("role", role), ("enabled", enabled))
+            if value is not None
+        }
+    )
+    if not supplied:
+        raise domain_error(422, "account_update_empty", "Account update is empty")
+    if "username" in supplied and username is None:
+        raise domain_error(422, "account_username_invalid", "Account username is required")
+    if "role" in supplied and role is None:
+        raise domain_error(422, "account_role_invalid", "Account role is required")
+    if "enabled" in supplied and enabled is None:
+        raise domain_error(422, "account_enabled_invalid", "Account enabled state is required")
+
+    # Use one lock order for every account update. Locking the enabled-admin
+    # set first prevents two concurrent demotions/disables from each deciding
+    # that they are not the final administrator, and avoids target-vs-admin
+    # lock inversions when two targets are changed at once.
+    enabled_admins = _lock_enabled_admins(session)
+    current = session.scalar(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if current is None:
+        raise domain_error(404, "account_not_found", "Account not found")
+
+    requested_role = role if role is not None else current.role
+    requested_enabled = enabled if enabled is not None else current.enabled
+    removing_admin = (
+        current.role == "admin"
+        and current.enabled
+        and (requested_role != "admin" or not requested_enabled)
+    )
+    if removing_admin and not any(user.id != current.id for user in enabled_admins):
+        raise domain_error(
+            409,
+            "last_admin_protected",
+            "At least one enabled administrator account must remain",
+        )
+    username_changed = "username" in supplied and username != current.username
+    role_changed = "role" in supplied and role != current.role
+    enabled_changed = "enabled" in supplied and enabled != current.enabled
+    if username_changed:
+        current.username = username  # type: ignore[assignment]
+    if role_changed:
+        current.role = role  # type: ignore[assignment]
+    if enabled_changed:
+        current.enabled = enabled  # type: ignore[assignment]
+    if username_changed or role_changed or enabled_changed:
+        current.updated_at = datetime.now(UTC)
+
+    if role_changed or (enabled_changed and not current.enabled):
+        # Role changes and disable operations invalidate every old Session,
+        # including a caller's own Session. No browser token is returned.
+        invalidate_user_sessions(session, current.id)
+
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise domain_error(
+            409,
+            "account_username_conflict",
+            "Account username already exists",
+        ) from None
+    session.refresh(current)
+    return current
+
+
+def reset_password_for_user(session: Session, user_id: int, new_password: str) -> None:
+    """Reset one account password, force a change, and invalidate all Sessions."""
+    user = session.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None:
+        raise domain_error(404, "account_not_found", "Account not found")
+    username = user.username
     user.password_hash = hash_password(new_password)
     user.must_change_password = True
     user.updated_at = datetime.now(UTC)
     invalidate_user_sessions(session, user.id)
     session.commit()
     account_login_throttle.reset_username(username)
+
+
+def reset_password(session: Session, username: str, new_password: str) -> None:
+    """Perform the legacy superadmin reset operation by username."""
+    user = session.scalar(select(User).where(User.username == username))
+    if user is None:
+        raise domain_error(404, "account_not_found", "Account not found")
+    reset_password_for_user(session, user.id, new_password)

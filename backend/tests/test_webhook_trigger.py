@@ -329,6 +329,25 @@ def test_success_creates_execution_from_latest_revision_on_runtime_worker(
     assert execution.input == {"event": "created"}
 
 
+def test_bearer_webhook_ingress_survives_account_entry_without_csrf(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter, version, worker, _, webhook = setup_webhook(api_client, "webhook-account-entry")
+    response = api_client.post(
+        f"/__dlr_account/api/hooks/{webhook['public_id']}",
+        content=json.dumps({"entry": "account"}).encode(),
+        headers={"Authorization": f"Bearer {WEBHOOK_TOKEN}"},
+    )
+    assert response.status_code == 202, response.text
+    with session_factory() as session:
+        execution = session.get(Execution, response.json()["execution_id"])
+        assert execution is not None
+        assert execution.adapter_id == adapter["id"]
+        assert execution.version_id == version["id"]
+        assert execution.target_worker_id == worker["id"]
+
+
 def test_disabled_save_then_reenabled_webhook_uses_new_latest_revision(
     api_client: TestClient,
     session_factory: sessionmaker[Session],

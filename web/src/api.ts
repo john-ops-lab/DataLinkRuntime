@@ -8,6 +8,7 @@ import type {
   AdapterWebhook,
   AdapterWebhookDraft,
   AccountPrincipal,
+  AccountUser,
   AdapterType,
   TaskRunMode,
   AiAssistResponse,
@@ -176,6 +177,30 @@ export const api = {
 
   resetAccountPassword: (payload: { username: string; new_password: string }): Promise<{ status: string }> =>
     request("/api/auth/account/reset", { method: "POST", body: JSON.stringify(payload) }),
+
+  // --- M5.9 Wave B account management --------------------------------------
+
+  listUsers: (): Promise<AccountUser[]> => request("/api/users"),
+
+  createUser: (payload: {
+    username: string;
+    password: string;
+    role: "admin" | "user";
+  }): Promise<AccountUser> => request("/api/users", { method: "POST", body: JSON.stringify(payload) }),
+
+  getUser: (userId: number): Promise<AccountUser> => request(`/api/users/${userId}`),
+
+  updateUser: (
+    userId: number,
+    payload: { username?: string; role?: "admin" | "user"; enabled?: boolean },
+  ): Promise<AccountUser> =>
+    request(`/api/users/${userId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+
+  resetUserPassword: (userId: number, newPassword: string): Promise<AccountUser> =>
+    request(`/api/users/${userId}/reset-password`, {
+      method: "POST",
+      body: JSON.stringify({ new_password: newPassword }),
+    }),
 
   listAdapters: (): Promise<Adapter[]> => request("/api/adapters"),
 

@@ -9,11 +9,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from dlr.control import db
-from dlr.control.security import require_principal
+from dlr.control.security import require_business_principal
 from dlr.control.services import events as events_service
 from dlr.control.services import execution as execution_service
 
-router = APIRouter(dependencies=[Depends(require_principal)])
+router = APIRouter(dependencies=[Depends(require_business_principal)])
 
 
 @router.get("/api/executions/{execution_id}/events")

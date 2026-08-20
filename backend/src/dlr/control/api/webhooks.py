@@ -28,11 +28,11 @@ from sqlalchemy.orm import Session
 from dlr.common.config import settings
 from dlr.control import db
 from dlr.control.schemas.webhook import WebhookResponse, WebhookUpsert
-from dlr.control.security import AuthorizationHeader, require_principal
+from dlr.control.security import AuthorizationHeader, require_business_principal
 from dlr.control.services import webhook as webhook_service
 from dlr.control.services.adapter import domain_error
 
-router = APIRouter(dependencies=[Depends(require_principal)])
+router = APIRouter(dependencies=[Depends(require_business_principal)])
 public_router = APIRouter()
 
 DbSession = Annotated[Session, Depends(db.get_session)]

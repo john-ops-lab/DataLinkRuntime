@@ -26,6 +26,7 @@ import WebhookTriggerPanel from "./components/WebhookTriggerPanel";
 import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/WebhookTriggerPanel";
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
+import UserManagementDrawer from "./components/UserManagementDrawer";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
 import { applySystemLocale, currentSystemLocale, i18n, isSystemLocale, resolveSystemLocale } from "./i18n";
 import { currentEntryMode } from "./entry-mode";
@@ -256,6 +257,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   // M3.2：编辑页次级配置 Tabs 与系统设置抽屉（凭据管理 + Python 包源）。
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
+  const [userManagementOpen, setUserManagementOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   // M5.5.13：已确认的多上下文片段（Monaco 代码选区 / 实时日志脱敏文本选区），
   // 属于当前 Adapter / 当前会话，光标后续移动不会改变已加入的快照。
@@ -315,6 +317,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   const selectedAdapterId = selected?.id ?? null;
   const activeExecutionId = selected?.running_execution_id ?? null;
   const selectedTriggerLocked = selected?.runtime_locked === true;
+  const canManageUsers = accountPrincipal === undefined || accountPrincipal.role === "admin";
 
   useEffect(() => {
     liveWatchRef.current = liveWatcher.watch;
@@ -1064,13 +1067,24 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
             <span className={`health-dot ${healthDotClass}`.trim()} />
             <span data-testid="control-status">{healthText}</span>
           </span>
-          <Button
-            size="small"
-            data-testid="system-settings"
-            onClick={() => setSystemSettingsOpen(true)}
-          >
-            {t("actions.systemSettings")}
-          </Button>
+          {canManageUsers && (
+            <>
+              <Button
+                size="small"
+                data-testid="user-management"
+                onClick={() => setUserManagementOpen(true)}
+              >
+                {t("actions.userManagement")}
+              </Button>
+              <Button
+                size="small"
+                data-testid="system-settings"
+                onClick={() => setSystemSettingsOpen(true)}
+              >
+                {t("actions.systemSettings")}
+              </Button>
+            </>
+          )}
           {accountPrincipal && onAccountLogout && (
             <>
               <span className="account-principal" data-testid="account-principal">
@@ -1379,6 +1393,13 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
         open={systemSettingsOpen}
         onClose={() => setSystemSettingsOpen(false)}
       />
+
+      {canManageUsers && (
+        <UserManagementDrawer
+          open={userManagementOpen}
+          onClose={() => setUserManagementOpen(false)}
+        />
+      )}
 
       <VersionDiffModal
         open={diffView !== null}

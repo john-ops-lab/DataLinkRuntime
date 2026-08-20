@@ -16,6 +16,12 @@ export interface AccountPrincipal {
   must_change_password: boolean;
 }
 
+/** Secret-free account row returned by the Wave B user-management API. */
+export interface AccountUser extends AccountPrincipal {
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SystemLocaleResponse {
   locale: SystemLocale;
 }

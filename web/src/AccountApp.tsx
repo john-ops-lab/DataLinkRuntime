@@ -10,8 +10,9 @@ import { userErrorMessage } from "./user-message";
 import { AdapterConsole } from "./App";
 import AccountLoginPage from "./components/AccountLoginPage";
 import AccountPasswordPage from "./components/AccountPasswordPage";
+import AccountUserPage from "./components/AccountUserPage";
 
-type AccountScreen = "loading" | "login" | "change-password" | "console";
+type AccountScreen = "loading" | "login" | "change-password" | "console" | "user-profile";
 
 export default function AccountApp() {
   const { i18n, t } = useTranslation("common");
@@ -33,7 +34,13 @@ export default function AccountApp() {
   const showPrincipal = useCallback((next: AccountPrincipal) => {
     setPrincipal(next);
     setNotice(null);
-    setScreen(next.must_change_password ? "change-password" : "console");
+    setScreen(
+      next.must_change_password
+        ? "change-password"
+        : next.role === "admin"
+          ? "console"
+          : "user-profile",
+    );
   }, []);
 
   const returnToLogin = useCallback((nextNotice: string | null) => {
@@ -117,6 +124,16 @@ export default function AccountApp() {
   }
   if (principal === null) {
     return <AccountLoginPage notice={notice} onSubmit={handleLogin} />;
+  }
+  if (screen === "user-profile") {
+    return (
+      <AccountUserPage
+        principal={principal}
+        onPrincipalChange={setPrincipal}
+        onPasswordChanged={() => returnToLogin(t("users.passwordChanged"))}
+        onLogout={handleLogout}
+      />
+    );
   }
   return <AdapterConsole accountPrincipal={principal} onAccountLogout={handleLogout} />;
 }

@@ -13,10 +13,10 @@ from dlr.control.schemas.package_source import (
     PackageSourceUpdate,
     ReachabilityResponse,
 )
-from dlr.control.security import require_principal
+from dlr.control.security import require_admin_principal
 from dlr.control.services import package_source as package_source_service
 
-router = APIRouter(dependencies=[Depends(require_principal)])
+router = APIRouter(dependencies=[Depends(require_admin_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 
