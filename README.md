@@ -5,11 +5,7 @@
 </p>
 
 <p align="center">
-  把数据连接逻辑写成 <strong>Adapter（适配器）</strong>，然后直接运行。
-</p>
-
-<p align="center">
-  从代码编辑、依赖配置到执行、日志与历史追踪，<br>
+  把数据连接逻辑写成 <strong>Adapter（适配器）</strong>，从代码编辑、依赖配置到执行、日志与历史追踪，<br>
   DataLinkRuntime 提供一个轻量、自托管的数据适配开发与运行环境。
 </p>
 
