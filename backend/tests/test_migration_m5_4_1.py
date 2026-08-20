@@ -1,4 +1,4 @@
-"""Fresh-schema assertions for the current M5.6 Alembic head."""
+"""Fresh-schema assertions for the current Alembic head."""
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -58,7 +58,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0019_m5_6_3_preset_ids"
+    assert revision == "0020_m5_8_006_ks_settings"
     assert {
         "adapter_type",
         "run_mode",

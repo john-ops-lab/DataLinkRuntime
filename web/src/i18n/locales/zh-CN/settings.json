@@ -9,7 +9,8 @@
   "tabs": {
     "credentials": "凭据管理",
     "packageSources": "依赖源",
-    "aiModel": "AI 模型"
+    "aiModel": "AI 模型",
+    "knowledgeSources": "知识库"
   },
   "credentialTypes": {
     "password": "密码",
@@ -151,5 +152,47 @@
     "timeout": "超时",
     "authFailed": "认证失败",
     "testDetailUnknown": "请检查 URL、凭据和网络"
+  },
+  "knowledgeSources": {
+    "description": "配置只读知识源并验证当前可访问的知识库。首版支持腾讯 ima。",
+    "enabled": "启用知识库",
+    "credential": "访问凭据（access_key）",
+    "credentialPlaceholder": "选择 access_key 凭据",
+    "credentialNotice": "这里只保存现有凭据的引用；Client ID、API Key 等 Secret 真值不会展示或回显。",
+    "endpointLabel": "服务地址",
+    "endpointNotice": "默认使用腾讯 ima 官方地址；自定义地址仅允许通过部署级环境变量 DLR_IMA_ENDPOINT 覆盖。",
+    "save": "保存配置",
+    "test": "测试连接并列出知识库",
+    "saved": "知识库配置已保存",
+    "testSucceeded": "连接验证成功，已刷新可访问知识库",
+    "testFailed": "连接验证失败，请检查凭据与部署网络",
+    "knowledgeBasesTitle": "可访问知识库",
+    "noKnowledgeBases": "尚未列出知识库，请先测试连接。",
+    "knowledgeBaseName": "名称",
+    "knowledgeBaseStatus": "状态",
+    "status": {
+      "disabled": "已停用",
+      "unconfigured": "未配置",
+      "configured": "已配置，待验证",
+      "connected": "连接正常",
+      "error": "连接异常",
+      "accessible": "可访问"
+    },
+    "errorCodes": {
+      "ks_not_configured": "知识库尚未配置",
+      "ks_credential_invalid": "知识库访问凭据无效或不是 access_key",
+      "ks_config_invalid": "知识库配置无效",
+      "ks_auth_failed": "知识库服务拒绝了访问凭据",
+      "ks_dns_failed": "知识库服务域名解析失败",
+      "ks_unreachable": "知识库服务不可达",
+      "ks_rate_limited": "知识库服务触发频率限制",
+      "ks_timeout": "知识库服务请求超时",
+      "ks_response_invalid": "知识库服务返回了无法解析的响应",
+      "ks_too_large": "知识库服务响应超过大小限制",
+      "ks_unsupported": "知识库服务不支持该只读操作",
+      "ks_upstream_error": "知识库服务返回上游错误",
+      "network_error": "无法连接控制服务",
+      "unknown_error": "知识库连接验证失败"
+    }
   }
 }

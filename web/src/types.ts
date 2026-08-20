@@ -212,6 +212,45 @@ export interface PackageSourceDefaults {
   maven: DefaultPackageSourceInfo;
 }
 
+// --- M5.8-006: productized read-only KnowledgeSource configuration ---------
+
+export type KnowledgeSourceConfigStatus = "disabled" | "unconfigured" | "configured";
+export type KnowledgeSourceTestStatus =
+  | "disabled"
+  | "unconfigured"
+  | "connected"
+  | "error";
+
+/** Metadata only; KnowledgeSource Credential values are never returned. */
+export interface KnowledgeSource {
+  source_id: "ima";
+  kind: "ima";
+  name: string;
+  endpoint: string;
+  enabled: boolean;
+  status: KnowledgeSourceConfigStatus;
+  credential_id: number | null;
+  credential_name: string | null;
+  credential_type: string | null;
+  config_source: "database" | "environment";
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  status: "accessible";
+}
+
+export interface KnowledgeSourceTestResult {
+  ok: boolean;
+  status: KnowledgeSourceTestStatus;
+  error_code: string | null;
+  message: string;
+  knowledge_bases: KnowledgeBase[];
+}
+
 // --- M4: AI Editor ----------------------------------------------------------
 
 export type AiProvider =

@@ -32,6 +32,8 @@ import { packageSourceKindLabel, packageSourcePresetLabel } from "../package-sou
 import type {
   Credential,
   CredentialType,
+  KnowledgeBase,
+  KnowledgeSource,
   PackageSource,
   PackageSourceDefaults,
   SystemLocale,
@@ -863,6 +865,254 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   );
 }
 
+// --- 知识库 -------------------------------------------------------------------
+
+interface KnowledgeSourceFormState {
+  enabled: boolean;
+  credential_id: number | null;
+}
+
+const EMPTY_KNOWLEDGE_SOURCE_FORM: KnowledgeSourceFormState = {
+  enabled: true,
+  credential_id: null,
+};
+
+type KnowledgeSourceDisplayStatus =
+  | KnowledgeSource["status"]
+  | "connected"
+  | "error";
+
+function KnowledgeSourcesPanel(props: { active: boolean; onError: (message: string) => void }) {
+  const { t } = useTranslation(["settings", "common"]);
+  const { active, onError } = props;
+  const [source, setSource] = useState<KnowledgeSource | null>(null);
+  const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [form, setForm] = useState<KnowledgeSourceFormState>(EMPTY_KNOWLEDGE_SOURCE_FORM);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [panelError, setPanelError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [testStatus, setTestStatus] = useState<KnowledgeSourceDisplayStatus | null>(null);
+  const [testErrorCode, setTestErrorCode] = useState<string | null>(null);
+
+  const fail = useCallback(
+    (message: string) => {
+      setPanelError(message);
+      setNotice(null);
+      onError(message);
+    },
+    [onError],
+  );
+
+  const load = useCallback(async (): Promise<boolean> => {
+    setLoading(true);
+    try {
+      const [sourceResult, credentialList] = await Promise.all([
+        api.getKnowledgeSource("ima"),
+        api.listCredentials(),
+      ]);
+      setSource(sourceResult);
+      setCredentials(credentialList);
+      setForm({ enabled: sourceResult.enabled, credential_id: sourceResult.credential_id });
+      setTestStatus(null);
+      setTestErrorCode(null);
+      setKnowledgeBases([]);
+      setPanelError(null);
+      return true;
+    } catch (error) {
+      fail(errorMessage(error));
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [fail]);
+
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    // 仅在用户打开知识库 Tab 时加载，避免隐藏面板在每个设置测试中触发网络请求。
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 打开 Tab 时有意异步同步服务端配置
+    void load();
+  }, [active, load]);
+
+  useEffect(() => {
+    if (!active) {
+      return undefined;
+    }
+    return subscribeCredentialCatalog(() => {
+      void api
+        .listCredentials()
+        .then((credentialList) => setCredentials(credentialList))
+        .catch((error) => fail(errorMessage(error)));
+    });
+  }, [active, fail]);
+
+  async function handleSave() {
+    if (saving || source === null) {
+      return;
+    }
+    setSaving(true);
+    setPanelError(null);
+    setNotice(null);
+    try {
+      const updated = await api.updateKnowledgeSource("ima", {
+        enabled: form.enabled,
+        credential_id: form.credential_id,
+      });
+      setSource(updated);
+      setForm({ enabled: updated.enabled, credential_id: updated.credential_id });
+      setTestStatus(null);
+      setTestErrorCode(null);
+      setKnowledgeBases([]);
+      setNotice(t("knowledgeSources.saved"));
+    } catch (error) {
+      fail(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest() {
+    if (testing || source === null || !form.enabled) {
+      return;
+    }
+    setTesting(true);
+    setPanelError(null);
+    setNotice(null);
+    try {
+      const result = await api.testKnowledgeSource("ima");
+      setTestStatus(result.status);
+      setTestErrorCode(result.error_code);
+      setKnowledgeBases(result.knowledge_bases);
+      if (result.ok) {
+        setNotice(t("knowledgeSources.testSucceeded"));
+      }
+    } catch (error) {
+      setTestStatus("error");
+      setTestErrorCode(error instanceof Error ? "network_error" : "unknown_error");
+      fail(errorMessage(error));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const displayedStatus: KnowledgeSourceDisplayStatus = testStatus ?? source?.status ?? "unconfigured";
+  const statusColor = displayedStatus === "connected"
+    ? "green"
+    : displayedStatus === "error"
+      ? "red"
+      : displayedStatus === "unconfigured"
+        ? "gold"
+        : displayedStatus === "disabled"
+          ? "default"
+          : "blue";
+  const displayedError = testErrorCode === null
+    ? null
+    : t(`knowledgeSources.errorCodes.${testErrorCode}`, {
+      defaultValue: t("knowledgeSources.testFailed"),
+    });
+
+  return (
+    <div className="settings-panel knowledge-sources-panel" data-testid="knowledge-sources-panel">
+      <Typography.Text type="secondary">{t("knowledgeSources.description")}</Typography.Text>
+      {loading ? (
+        <Spin />
+      ) : source === null ? null : (
+        <>
+          <div className="knowledge-source-summary" data-testid="knowledge-source-summary">
+            <div>
+              <Typography.Text strong>{source.name}</Typography.Text>
+              <Tag color={statusColor} data-testid="knowledge-source-status">
+                {t(`knowledgeSources.status.${displayedStatus}`)}
+              </Tag>
+            </div>
+            <Typography.Text type="secondary">
+              {t("knowledgeSources.endpointLabel")}: <code data-testid="knowledge-source-endpoint">{source.endpoint}</code>
+            </Typography.Text>
+            <Typography.Text type="secondary">{t("knowledgeSources.endpointNotice")}</Typography.Text>
+          </div>
+
+          <div className="settings-inline-form knowledge-source-form" data-testid="knowledge-source-form">
+            <Checkbox
+              data-testid="knowledge-source-enabled"
+              checked={form.enabled}
+              onChange={(event) => {
+                setForm((current) => ({ ...current, enabled: event.target.checked }));
+                setTestStatus(null);
+                setTestErrorCode(null);
+              }}
+            >
+              {t("knowledgeSources.enabled")}
+            </Checkbox>
+            <Select
+              data-testid="knowledge-source-credential"
+              aria-label={t("knowledgeSources.credential")}
+              placeholder={t("knowledgeSources.credentialPlaceholder")}
+              allowClear
+              style={{ minWidth: 260 }}
+              value={form.credential_id ?? undefined}
+              options={credentials
+                .filter((credential) => credential.type === "access_key")
+                .map((credential) => ({ label: credential.name, value: credential.id }))}
+              onChange={(value) => setForm((current) => ({ ...current, credential_id: value ?? null }))}
+            />
+            <Button
+              type="primary"
+              data-testid="save-knowledge-source"
+              loading={saving}
+              onClick={() => void handleSave()}
+            >
+              {t("knowledgeSources.save")}
+            </Button>
+            <Button
+              data-testid="test-knowledge-source"
+              loading={testing}
+              disabled={!form.enabled || testing}
+              onClick={() => void handleTest()}
+            >
+              {t("knowledgeSources.test")}
+            </Button>
+          </div>
+
+          <Typography.Text type="secondary">{t("knowledgeSources.credentialNotice")}</Typography.Text>
+          {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
+          {displayedError !== null && (
+            <p className="settings-panel-error" role="alert" data-testid="knowledge-source-test-error">
+              {displayedError} ({testErrorCode})
+            </p>
+          )}
+          {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
+
+          <div className="knowledge-source-bases" data-testid="knowledge-source-bases">
+            <Typography.Title level={5}>{t("knowledgeSources.knowledgeBasesTitle")}</Typography.Title>
+            {knowledgeBases.length === 0 ? (
+              <Typography.Text type="secondary">{t("knowledgeSources.noKnowledgeBases")}</Typography.Text>
+            ) : (
+              <Table<KnowledgeBase>
+                rowKey="id"
+                size="small"
+                pagination={false}
+                dataSource={knowledgeBases}
+                columns={[
+                  { title: t("knowledgeSources.knowledgeBaseName"), dataIndex: "name" },
+                  {
+                    title: t("knowledgeSources.knowledgeBaseStatus"),
+                    dataIndex: "status",
+                    render: () => <Tag color="green">{t("knowledgeSources.status.accessible")}</Tag>,
+                  },
+                ]}
+              />
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // --- 抽屉外壳 -----------------------------------------------------------------
 
 interface SystemSettingsDrawerProps {
@@ -928,6 +1178,7 @@ function SystemLocaleControl() {
 
 export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
   const { t } = useTranslation("settings");
+  const [activeTab, setActiveTab] = useState("credentials");
   return (
     <Drawer
       title={t("title")}
@@ -938,6 +1189,8 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
     >
       <SystemLocaleControl />
       <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: "credentials",
@@ -953,6 +1206,11 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
             key: "ai-model",
             label: t("tabs.aiModel"),
             children: <AiModelSettingsPanel onError={keepErrorInline} />,
+          },
+          {
+            key: "knowledge-sources",
+            label: t("tabs.knowledgeSources"),
+            children: <KnowledgeSourcesPanel active={activeTab === "knowledge-sources"} onError={keepErrorInline} />,
           },
         ]}
       />

@@ -22,6 +22,9 @@ import type {
   CredentialType,
   Execution,
   ExecutionHistoryPage,
+  KnowledgeBase,
+  KnowledgeSource,
+  KnowledgeSourceTestResult,
   PackageSource,
   PackageSourceDefaults,
   ReachabilityResult,
@@ -319,6 +322,31 @@ export const api = {
   /** Reset one kind back to its canonical default source (restore default). */
   restorePackageSourceDefault: (kind: "pypi" | "npm" | "maven"): Promise<PackageSource> =>
     request(`/api/package-sources/defaults/${kind}`, { method: "POST" }),
+
+  // --- M5.8-006: productized read-only KnowledgeSource ----------------------
+
+  listKnowledgeSources: (): Promise<KnowledgeSource[]> => request("/api/knowledge-sources"),
+
+  getKnowledgeSource: (sourceId: "ima" = "ima"): Promise<KnowledgeSource> =>
+    request(`/api/knowledge-sources/${sourceId}`),
+
+  updateKnowledgeSource: (
+    sourceId: "ima",
+    payload: { enabled: boolean; credential_id: number | null },
+  ): Promise<KnowledgeSource> =>
+    request(`/api/knowledge-sources/${sourceId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  testKnowledgeSource: (sourceId: "ima" = "ima"): Promise<KnowledgeSourceTestResult> =>
+    request(`/api/knowledge-sources/${sourceId}/test`, { method: "POST" }),
+
+  validateKnowledgeSource: (sourceId: "ima" = "ima"): Promise<KnowledgeSourceTestResult> =>
+    request(`/api/knowledge-sources/${sourceId}/validate`, { method: "POST" }),
+
+  listKnowledgeBases: (sourceId: "ima" = "ima"): Promise<KnowledgeBase[]> =>
+    request(`/api/knowledge-sources/${sourceId}/knowledge-bases`),
 
   // --- M4: AI Editor ---------------------------------------------------------
 

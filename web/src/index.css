@@ -2058,6 +2058,39 @@ body {
   color: var(--dlr-text-weak);
 }
 
+.knowledge-sources-panel {
+  align-items: stretch;
+}
+
+.knowledge-source-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  background: var(--dlr-workspace-bg);
+}
+
+.knowledge-source-summary > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.knowledge-source-form {
+  align-items: center;
+}
+
+.knowledge-source-bases {
+  width: 100%;
+}
+
+.knowledge-source-bases h5 {
+  margin: 4px 0 0;
+}
+
 .ai-model-settings {
   align-items: stretch;
 }

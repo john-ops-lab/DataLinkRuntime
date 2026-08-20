@@ -69,7 +69,6 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dlr.common.config import settings
 from dlr.control.ai import providers
 from dlr.control.ai.knowledge import (
     KS_AUTH_FAILED,
@@ -95,6 +94,7 @@ from dlr.control.ai.knowledge import (
     KnowledgeSourceError,
 )
 from dlr.control.models import Credential
+from dlr.control.services import knowledge_source as knowledge_source_service
 from dlr.control.services import secrets as secrets_service
 
 logger = logging.getLogger("dlr.ai.knowledge")
@@ -625,22 +625,28 @@ def _resolve_auth(session: Session | None) -> dict[str, str]:
     in memory for the duration of one tool call and is redacted by value
     from every summary/result/log path.
     """
-    credential_name = settings.dlr_ima_credential_name
-    if not credential_name:
-        raise KnowledgeSourceError(
-            KS_CREDENTIAL_INVALID,
-            "knowledge source requires a bound Credential",
-        )
     if session is None:
         raise KnowledgeSourceError(
             KS_CREDENTIAL_INVALID,
             "knowledge source requires a bound Credential",
         )
-    credential = session.scalar(select(Credential).where(Credential.name == credential_name))
+    config = knowledge_source_service.effective_ima_config(session)
+    if not config.enabled or not config.endpoint:
+        raise KnowledgeSourceError(KS_NOT_CONFIGURED, "knowledge source is not configured")
+    credential = (
+        session.get(Credential, config.credential_id)
+        if config.credential_id is not None
+        else session.scalar(select(Credential).where(Credential.name == config.credential_name))
+    )
     if credential is None:
         raise KnowledgeSourceError(
             KS_CREDENTIAL_INVALID,
             "knowledge source requires a bound Credential",
+        )
+    if credential.type != "access_key":
+        raise KnowledgeSourceError(
+            KS_CREDENTIAL_INVALID,
+            "knowledge source requires an access_key Credential",
         )
     try:
         fields = secrets_service.decrypt_fields(credential.ciphertext)
@@ -667,31 +673,31 @@ def secret_values(session: Session | None) -> tuple[str, ...]:
     the assist request itself is never blocked by redaction preparation; the
     actual tool call still surfaces the stable error.
     """
-    if not settings.dlr_ima_credential_name:
+    try:
+        return tuple(sorted({value for value in _resolve_auth(session).values() if value}))
+    except KnowledgeSourceError:
         return ()
-    return tuple(sorted({value for value in _resolve_auth(session).values() if value}))
 
 
 def build_source(session: Session | None) -> TencentImaKnowledgeSource:
-    """Build one per-call adapter from the deployment configuration.
+    """Build one per-call adapter from the effective product/env configuration.
 
-    The endpoint defaults to the official base URL ``https://ima.qq.com``;
-    an explicitly empty endpoint means the source is not configured
-    (``ks_not_configured``) and missing/invalid Credentials map to
-    ``ks_credential_invalid`` — both stable and actionable without ever
-    echoing config or Secret truth.
+    A saved database row supplies the product configuration.  Without one,
+    the existing environment-variable configuration remains compatible.  The
+    official endpoint is the product default; a custom endpoint is a
+    deployment-only environment override and is never accepted from the API.
     """
-    endpoint = settings.dlr_ima_endpoint
-    if not endpoint:
+    config = knowledge_source_service.effective_ima_config(session)
+    if not config.enabled or not config.endpoint:
         raise KnowledgeSourceError(
             KS_NOT_CONFIGURED,
             "knowledge source is not configured",
         )
     auth = _resolve_auth(session)
     return TencentImaKnowledgeSource(
-        endpoint=endpoint,
+        endpoint=config.endpoint,
         auth=auth,
-        timeout_seconds=settings.dlr_ima_timeout_seconds,
-        allowed_hosts=_parse_allowed_hosts(settings.dlr_ima_allowed_hosts),
-        allow_http=settings.dlr_ima_allow_http,
+        timeout_seconds=config.timeout_seconds,
+        allowed_hosts=_parse_allowed_hosts(config.allowed_hosts),
+        allow_http=config.allow_http,
     )

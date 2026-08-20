@@ -49,8 +49,9 @@ services:
       # production; DLR_IMA_ALLOW_HTTP is the explicit test/smoke escape
       # hatch (fake official service on a private network only). Client ID /
       # API Key / Token come from a DLR Credential (Secret Store) referenced
-      # by DLR_IMA_CREDENTIAL_NAME — never from plaintext env.
-      DLR_IMA_ENDPOINT: ${DLR_IMA_ENDPOINT:-}
+      # by DLR_IMA_CREDENTIAL_NAME — never from plaintext env. The product
+      # default is the official endpoint; a custom endpoint is deployment-only.
+      DLR_IMA_ENDPOINT: ${DLR_IMA_ENDPOINT-https://ima.qq.com}
       DLR_IMA_CREDENTIAL_NAME: ${DLR_IMA_CREDENTIAL_NAME:-}
       DLR_IMA_ALLOWED_HOSTS: ${DLR_IMA_ALLOWED_HOSTS:-ima.qq.com}
       DLR_IMA_ALLOW_HTTP: ${DLR_IMA_ALLOW_HTTP:-false}
