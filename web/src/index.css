@@ -2267,6 +2267,36 @@ body {
   text-align: center;
 }
 
+/* --- Account entry ------------------------------------------------------- */
+
+.account-login-page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(160deg, #eaf2ff 0%, #f5f6f8 55%);
+}
+
+.account-auth-card {
+  width: 100%;
+  max-width: 420px;
+}
+
+.account-loading {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  color: var(--dlr-text-secondary);
+}
+
+.account-principal {
+  color: var(--dlr-text-secondary);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 .login-notice {
   margin: 0;
   padding: 6px 10px;

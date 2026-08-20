@@ -7,6 +7,7 @@ import zhCN from "antd/locale/zh_CN";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
+import AccountApp from "./AccountApp";
 import AdapterCatalog from "./components/AdapterCatalog";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
 import AiAssistantPanel, {
@@ -27,6 +28,7 @@ import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
 import { applySystemLocale, currentSystemLocale, i18n, isSystemLocale, resolveSystemLocale } from "./i18n";
+import { currentEntryMode } from "./entry-mode";
 import {
   dependencyNoteFor,
   dependencyUiFor,
@@ -36,6 +38,7 @@ import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { isTerminal } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
+  AccountPrincipal,
   Adapter,
   AdapterLanguage,
   AdapterType,
@@ -209,7 +212,12 @@ function activeNameConflict(
   );
 }
 
-function AdapterConsole() {
+interface AdapterConsoleProps {
+  accountPrincipal?: AccountPrincipal;
+  onAccountLogout?: () => Promise<void>;
+}
+
+export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterConsoleProps = {}) {
   const { t } = useTranslation(["common", "adapter", "runtime"]);
   const [messageApi, messageContextHolder] = message.useMessage();
   const [health, setHealth] = useState<HealthStatus>("loading");
@@ -1063,6 +1071,20 @@ function AdapterConsole() {
           >
             {t("actions.systemSettings")}
           </Button>
+          {accountPrincipal && onAccountLogout && (
+            <>
+              <span className="account-principal" data-testid="account-principal">
+                {accountPrincipal.username} · {t(`auth.role.${accountPrincipal.role}`)}
+              </span>
+              <Button
+                size="small"
+                data-testid="account-logout"
+                onClick={() => void onAccountLogout()}
+              >
+                {t("auth.logout")}
+              </Button>
+            </>
+          )}
           <WorkerStatus workers={workers} loading={workersLoading} error={workersError} />
         </div>
       </header>
@@ -1458,7 +1480,7 @@ function AdapterConsole() {
 // Minimal admin token input shown while no valid token is present;
 // the M3.1 login page keeps the M2 auth contract unchanged.
 
-export default function App() {
+function TokenApp() {
   const { i18n, t } = useTranslation("common");
   const [authed, setAuthed] = useState<boolean>(() => {
     const stored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
@@ -1524,4 +1546,8 @@ export default function App() {
       )}
     </ConfigProvider>
   );
+}
+
+export default function App() {
+  return currentEntryMode() === "account" ? <AccountApp /> : <TokenApp />;
 }

@@ -3,13 +3,14 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from dlr.control import db
 from dlr.control.api import (
@@ -27,6 +28,7 @@ from dlr.control.api import (
     webhooks,
     workers,
 )
+from dlr.control.services import accounts as account_service
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
 
@@ -45,6 +47,7 @@ async def _demo_bootstrap_loop() -> None:
     while True:
         try:
             with db.SessionLocal() as session:
+                account_service.bootstrap_default_admin(session)
                 bootstrap_demo_credentials(session)
             return
         except Exception:
@@ -81,6 +84,32 @@ def create_app() -> FastAPI:
     """Create the Control Node FastAPI application."""
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def _entry_boundary(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Assign account mode only from the private reverse-proxy URI prefix.
+
+        The account Nginx server rewrites public ``/api/...`` requests to
+        ``/__dlr_account/api/...``. That prefix is not proxied by the token
+        server and Control itself is not published as a host port, so this
+        boundary does not trust a client-controlled request header.
+        """
+        account_prefix = "/__dlr_account"
+        path = request.scope["path"]
+        if path == account_prefix or path.startswith(f"{account_prefix}/"):
+            if path == account_prefix:
+                return JSONResponse(status_code=404, content={"detail": "Not found"})
+            request.scope["dlr_entry_mode"] = "account"
+            request.scope["path"] = path[len(account_prefix) :]
+            raw_path = request.scope.get("raw_path")
+            if isinstance(raw_path, bytes):
+                request.scope["raw_path"] = raw_path[len(account_prefix) :]
+        else:
+            request.scope["dlr_entry_mode"] = "token"
+        return await call_next(request)
+
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(
         request: Request, exc: RequestValidationError
@@ -98,6 +127,16 @@ def create_app() -> FastAPI:
                     "detail": {
                         "code": "ks_config_invalid",
                         "message": "Knowledge source configuration is invalid",
+                    }
+                },
+            )
+        if request.url.path.startswith("/api/auth/account/"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "account_request_invalid",
+                        "message": "Account request is invalid",
                     }
                 },
             )

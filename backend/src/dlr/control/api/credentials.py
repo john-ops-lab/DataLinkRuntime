@@ -17,10 +17,10 @@ from dlr.control.schemas.credential import (
     CredentialResponse,
     CredentialUpdate,
 )
-from dlr.control.security import require_admin_token
+from dlr.control.security import require_principal
 from dlr.control.services import secrets as secrets_service
 
-router = APIRouter(dependencies=[Depends(require_admin_token)])
+router = APIRouter(dependencies=[Depends(require_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 

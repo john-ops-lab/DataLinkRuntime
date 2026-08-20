@@ -12,10 +12,10 @@ from sqlalchemy.orm import Session
 
 from dlr.control import db
 from dlr.control.schemas.schedule import ScheduleResponse, ScheduleUpsert
-from dlr.control.security import require_admin_token
+from dlr.control.security import require_principal
 from dlr.control.services import schedule as schedule_service
 
-router = APIRouter(dependencies=[Depends(require_admin_token)])
+router = APIRouter(dependencies=[Depends(require_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 

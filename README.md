@@ -276,9 +276,15 @@ docker compose ps
 全部服务健康后访问：
 
 - Web Console：`http://localhost:8080`
+- Account Console：`http://localhost:8081`
 - Health API：`http://localhost:8080/api/health`
 
 首次进入 Web Console 时输入 `DLR_ADMIN_TOKEN`。
+
+账号入口首次登录使用 `admin / admin123`，随后必须修改密码；密码只保存为
+服务端安全 Hash。8080 Token 入口与 8081 账号入口共用同一个 Control、PostgreSQL
+和 Web 构建，不复制业务数据。账号入口宿主机端口可通过
+`DLR_ACCOUNT_WEB_HOST_PORT` 配置。
 
 清理本地环境与数据库卷：
 

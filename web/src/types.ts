@@ -5,6 +5,17 @@ export type AdapterType = "task" | "webhook";
 export type TaskRunMode = "manual" | "schedule";
 export type SystemLocale = "zh-CN" | "en";
 
+export type AccountRole = "admin" | "user";
+
+/** Secret-free identity returned by the account Session endpoints. */
+export interface AccountPrincipal {
+  id: number;
+  username: string;
+  role: AccountRole;
+  enabled: boolean;
+  must_change_password: boolean;
+}
+
 export interface SystemLocaleResponse {
   locale: SystemLocale;
 }
