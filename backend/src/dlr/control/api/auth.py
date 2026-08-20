@@ -2,9 +2,10 @@
 
 import secrets
 from datetime import UTC, datetime
+from time import sleep
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -69,6 +70,11 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(CSRF_COOKIE_NAME, path="/")
 
 
+def _account_login_source(request: Request) -> str:
+    """Use the socket peer, never client-controlled forwarding headers."""
+    return request.client.host if request.client is not None else "unknown"
+
+
 @router.get("/api/auth/admin/verify")
 def verify_admin_token(_: None = Depends(require_admin_token)) -> dict[str, str]:
     """Minimal probe the legacy Web UI uses to validate an admin Token."""
@@ -93,22 +99,46 @@ def login_account(
     """Create a server-side account Session after CSRF and password checks."""
     require_entry(request, "account")
     require_csrf(request)
-    user = session.scalar(select(User).where(User.username == payload.username))
-    if user is None or not account_service.verify_password(
-        payload.password.get_secret_value(), user.password_hash
-    ):
-        raise domain_error(
-            401,
-            "account_invalid_credentials",
-            "Invalid username or password",
+    key = account_service.login_throttle_key(_account_login_source(request), payload.username)
+    decision = account_service.account_login_throttle.begin(key)
+    permit = decision.permit
+    if permit is None:
+        raise HTTPException(
+            status_code=429,
+            headers={
+                "Retry-After": str(decision.retry_after_seconds or 1),
+            },
+            detail={
+                "code": "account_login_rate_limited",
+                "message": "Too many account login attempts",
+            },
         )
-    if not user.enabled:
-        raise domain_error(403, "account_disabled", "Account is disabled")
+    if permit.delay_seconds:
+        sleep(permit.delay_seconds)
 
-    raw_token = account_service.create_session(session, user)
-    _set_session_cookie(response, request, raw_token)
-    _set_csrf_cookie(response, request)
-    return AccountLoginResponse(principal=account_service.principal_response(user))
+    settled = False
+    try:
+        user = session.scalar(select(User).where(User.username == payload.username))
+        if user is None or not account_service.verify_password(
+            payload.password.get_secret_value(), user.password_hash
+        ):
+            raise domain_error(
+                401,
+                "account_invalid_credentials",
+                "Invalid username or password",
+            )
+        if not user.enabled:
+            raise domain_error(403, "account_disabled", "Account is disabled")
+
+        account_service.account_login_throttle.record_success(permit)
+        settled = True
+        raw_token = account_service.create_session(session, user)
+        _set_session_cookie(response, request, raw_token)
+        _set_csrf_cookie(response, request)
+        return AccountLoginResponse(principal=account_service.principal_response(user))
+    finally:
+        if not settled:
+            account_service.account_login_throttle.record_failure(permit)
 
 
 @router.get("/api/auth/account/me", response_model=AccountSessionResponse)

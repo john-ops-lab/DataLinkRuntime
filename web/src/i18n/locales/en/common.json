@@ -221,6 +221,7 @@
     "account_session_required": "The account Session is missing or expired",
     "account_invalid_credentials": "Invalid username or password",
     "account_disabled": "The account is disabled",
+    "account_login_rate_limited": "Too many login attempts. Try again later",
     "account_password_change_required": "Change the password before using the system",
     "account_current_password_invalid": "The current password is invalid",
     "account_password_reuse": "The new password must differ from the current password",

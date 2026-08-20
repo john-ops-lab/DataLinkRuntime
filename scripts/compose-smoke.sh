@@ -156,6 +156,26 @@ curl -fsS -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
   "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/csrf" >/dev/null
 account_csrf=$(awk '$6 == "dlr_account_csrf" { print $7 }' "$ACCOUNT_COOKIE_FILE")
 [ -n "$account_csrf" ]
+
+echo "==> checking account login throttling and proxy-header boundary"
+for attempt in 1 2 3 4 5; do
+  throttle_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
+    -H "Content-Type: application/json" -H "X-CSRF-Token: $account_csrf" \
+    -H "X-Forwarded-For: 198.51.100.$attempt" \
+    -H "X-Real-IP: 203.0.113.$attempt" \
+    -d '{"username":"throttle-probe","password":"wrong-password"}' \
+    "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/login")
+  [ "$throttle_status" = "401" ]
+done
+throttle_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
+  -H "Content-Type: application/json" -H "X-CSRF-Token: $account_csrf" \
+  -H "X-Forwarded-For: 192.0.2.200" -H "X-Real-IP: 192.0.2.200" \
+  -d '{"username":"throttle-probe","password":"wrong-password"}' \
+  "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/auth/account/login")
+[ "$throttle_status" = "429" ]
+
 account_login_body=$(curl -fsS -c "$ACCOUNT_COOKIE_FILE" -b "$ACCOUNT_COOKIE_FILE" \
   -H "Content-Type: application/json" -H "X-CSRF-Token: $account_csrf" \
   -d '{"username":"admin","password":"admin123"}' \

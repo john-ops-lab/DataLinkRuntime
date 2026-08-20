@@ -1,6 +1,8 @@
 """M5.9 Wave A account identity, session and security contract tests."""
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,8 +15,14 @@ from dlr.control.services.accounts import (
     CSRF_COOKIE_NAME,
     DEFAULT_ADMIN_PASSWORD,
     DEFAULT_ADMIN_USERNAME,
+    LOGIN_THROTTLE_BASE_DELAY_SECONDS,
+    LOGIN_THROTTLE_MAX_FAILURES,
+    LOGIN_THROTTLE_WINDOW_SECONDS,
     SESSION_COOKIE_NAME,
+    LoginThrottle,
+    account_login_throttle,
     bootstrap_default_admin,
+    login_throttle_key,
     verify_password,
 )
 
@@ -30,9 +38,13 @@ def account_client(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> Iterator[TestClient]:
+    account_login_throttle.reset()
     with session_factory() as session:
         bootstrap_default_admin(session)
-    yield api_client
+    try:
+        yield api_client
+    finally:
+        account_login_throttle.reset()
 
 
 def csrf(client: TestClient) -> str:
@@ -262,3 +274,80 @@ def test_entry_boundary_does_not_trust_cross_entry_credentials(
     wrong_entry = account_client.get("/api/auth/account/me")
     assert wrong_entry.status_code == 401
     assert wrong_entry.json()["detail"]["code"] == "account_entry_required"
+
+
+def test_account_login_throttle_ignores_spoofed_forwarded_source_headers(
+    account_client: TestClient,
+) -> None:
+    token = csrf(account_client)
+    headers = {"X-CSRF-Token": token, "Content-Type": "application/json"}
+    for attempt in range(LOGIN_THROTTLE_MAX_FAILURES):
+        response = account_client.post(
+            account_path("/api/auth/account/login"),
+            headers={
+                **headers,
+                "X-Forwarded-For": f"198.51.100.{attempt + 1}",
+                "X-Real-IP": f"203.0.113.{attempt + 1}",
+            },
+            json={"username": "throttle-probe", "password": "wrong-password"},
+        )
+        assert response.status_code == 401
+        assert "wrong-password" not in response.text
+
+    blocked = account_client.post(
+        account_path("/api/auth/account/login"),
+        headers={
+            **headers,
+            "X-Forwarded-For": "192.0.2.200",
+            "X-Real-IP": "192.0.2.200",
+        },
+        json={"username": "throttle-probe", "password": "wrong-password"},
+    )
+    assert blocked.status_code == 429
+    assert int(blocked.headers["Retry-After"]) >= 1
+    assert "wrong-password" not in blocked.text
+    assert "scrypt$" not in blocked.text
+
+
+def test_login_throttle_covers_concurrency_window_and_success_reset() -> None:
+    class FakeClock:
+        now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = FakeClock()
+    throttle = LoginThrottle(clock=clock)
+    key = login_throttle_key("trusted-proxy", "Admin")
+    barrier = Barrier(LOGIN_THROTTLE_MAX_FAILURES + 3)
+
+    def reserve() -> object:
+        barrier.wait()
+        return throttle.begin(key)
+
+    with ThreadPoolExecutor(max_workers=LOGIN_THROTTLE_MAX_FAILURES + 3) as pool:
+        decisions = list(pool.map(lambda _: reserve(), range(LOGIN_THROTTLE_MAX_FAILURES + 3)))
+
+    permits = [decision.permit for decision in decisions if decision.permit is not None]
+    blocked = [decision for decision in decisions if decision.permit is None]
+    assert len(permits) == LOGIN_THROTTLE_MAX_FAILURES
+    assert len(blocked) == 3
+    assert all(decision.retry_after_seconds is not None for decision in blocked)
+    for permit in permits:
+        throttle.record_failure(permit)
+    assert throttle.begin(key).permit is None
+
+    clock.now = LOGIN_THROTTLE_WINDOW_SECONDS + 0.001
+    reopened = throttle.begin(key).permit
+    assert reopened is not None
+    throttle.record_failure(reopened)
+
+    first = throttle.begin(key).permit
+    assert first is not None
+    assert first.delay_seconds == LOGIN_THROTTLE_BASE_DELAY_SECONDS * 2
+    throttle.record_success(first)
+    # A stale concurrent failure cannot recreate the cleared bucket.
+    throttle.record_failure(reopened)
+    fresh = throttle.begin(key).permit
+    assert fresh is not None
+    assert fresh.delay_seconds == LOGIN_THROTTLE_BASE_DELAY_SECONDS
