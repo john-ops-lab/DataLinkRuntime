@@ -16,12 +16,20 @@ from dlr.control.schemas.ai import (
     AiSettingDraft,
     AiSettingResponse,
 )
-from dlr.control.security import require_admin_principal
+from dlr.control.security import (
+    Principal,
+    require_admin_principal,
+    require_business_principal,
+    require_principal,
+)
+from dlr.control.services import adapter_access
 from dlr.control.services import ai as ai_service
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
+adapter_router = APIRouter(dependencies=[Depends(require_business_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
+CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
 
 
 @router.get("/api/ai/settings", response_model=AiSettingResponse | None)
@@ -55,8 +63,12 @@ def get_ai_attachment_capabilities() -> AiAttachmentCapabilitiesResponse:
     return ai_service.attachment_capabilities()
 
 
-@router.post("/api/adapters/{adapter_id}/ai/assist", response_model=AiAssistResponse)
+@adapter_router.post("/api/adapters/{adapter_id}/ai/assist", response_model=AiAssistResponse)
 def assist_adapter(
-    adapter_id: int, payload: AiAssistRequest, session: DbSession
+    adapter_id: int,
+    payload: AiAssistRequest,
+    principal: CurrentPrincipal,
+    session: DbSession,
 ) -> AiAssistResponse:
+    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
     return ai_service.assist(session, adapter_id, payload)

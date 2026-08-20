@@ -28,7 +28,13 @@ from sqlalchemy.orm import Session
 from dlr.common.config import settings
 from dlr.control import db
 from dlr.control.schemas.webhook import WebhookResponse, WebhookUpsert
-from dlr.control.security import AuthorizationHeader, require_business_principal
+from dlr.control.security import (
+    AuthorizationHeader,
+    Principal,
+    require_business_principal,
+    require_principal,
+)
+from dlr.control.services import adapter_access
 from dlr.control.services import webhook as webhook_service
 from dlr.control.services.adapter import domain_error
 
@@ -36,24 +42,34 @@ router = APIRouter(dependencies=[Depends(require_business_principal)])
 public_router = APIRouter()
 
 DbSession = Annotated[Session, Depends(db.get_session)]
+CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
 
 
 @router.get("/api/adapters/{adapter_id}/webhook", response_model=WebhookResponse)
-def get_webhook(adapter_id: int, session: DbSession) -> WebhookResponse:
+def get_webhook(
+    adapter_id: int, principal: CurrentPrincipal, session: DbSession
+) -> WebhookResponse:
     """Return the Adapter's Webhook; 404 ``webhook_not_configured`` if absent.
 
     Never returns Credential plaintext or ciphertext.
     """
+    adapter_access.require_adapter_access(session, adapter_id, principal, "read")
     return webhook_service.get_webhook(session, adapter_id)
 
 
 @router.put("/api/adapters/{adapter_id}/webhook", response_model=WebhookResponse)
-def put_webhook(adapter_id: int, payload: WebhookUpsert, session: DbSession) -> WebhookResponse:
+def put_webhook(
+    adapter_id: int,
+    payload: WebhookUpsert,
+    principal: CurrentPrincipal,
+    session: DbSession,
+) -> WebhookResponse:
     """Replace stopped settings or start/stop Webhook receiving.
 
     ``public_id`` is editable while stopped. A referenced Credential must
     exist and be type ``token``; starting also enforces runtime readiness.
     """
+    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
     return webhook_service.upsert_webhook(session, adapter_id, payload)
 
 
