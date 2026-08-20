@@ -2,6 +2,8 @@
 
 import type {
   Adapter,
+  AdapterPermission,
+  AdapterPermissionCandidate,
   AdapterLanguage,
   AdapterSchedule,
   AdapterScheduleDraft,
@@ -252,6 +254,27 @@ export const api = {
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}/clone`, { method: "POST", body: JSON.stringify(payload) }),
 
+  // --- M5.9 Wave D: Adapter sharing ---------------------------------------
+
+  listAdapterPermissions: (adapterId: number): Promise<AdapterPermission[]> =>
+    request(`/api/adapters/${adapterId}/permissions`),
+
+  listAdapterPermissionCandidates: (adapterId: number): Promise<AdapterPermissionCandidate[]> =>
+    request(`/api/adapters/${adapterId}/permission-candidates`),
+
+  setAdapterPermission: (
+    adapterId: number,
+    userId: number,
+    permission: "read" | "edit",
+  ): Promise<AdapterPermission> =>
+    request(`/api/adapters/${adapterId}/permissions/${userId}`, {
+      method: "PUT",
+      body: JSON.stringify({ permission }),
+    }),
+
+  revokeAdapterPermission: (adapterId: number, userId: number): Promise<void> =>
+    request(`/api/adapters/${adapterId}/permissions/${userId}`, { method: "DELETE" }),
+
   // --- M5.2: Schedule Trigger -------------------------------------------------
 
   /** Singleton Schedule config; throws ApiError schedule_not_configured (404) before configuration. */
@@ -334,6 +357,10 @@ export const api = {
 
   listAdapterBindings: (adapterId: number): Promise<CredentialBinding[]> =>
     request(`/api/adapters/${adapterId}/credential-bindings`),
+
+  /** Metadata-only choices for the current Adapter owner/admin binding UI. */
+  listAdapterCredentialOptions: (adapterId: number): Promise<Credential[]> =>
+    request(`/api/adapters/${adapterId}/credential-options`),
 
   /** Full replacement: the submitted list becomes the complete binding set. */
   setAdapterBindings: (

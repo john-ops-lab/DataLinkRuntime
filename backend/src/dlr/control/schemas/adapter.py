@@ -12,6 +12,8 @@ DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300
 MIN_EXECUTION_TIMEOUT_SECONDS = 1
 MAX_EXECUTION_TIMEOUT_SECONDS = 24 * 60 * 60  # 24 hours; no "unlimited" option.
 
+AdapterAccessLevel = Literal["admin", "owner", "edit", "read"]
+
 
 def _validate_name(value: object) -> str:
     """Trim an incoming adapter name and enforce the M1 length contract."""
@@ -127,6 +129,11 @@ class AdapterResponse(BaseModel):
     run_mode: str
     timeout_seconds: int
     owner_user_id: int | None
+    # M5.9 Wave D: the caller's effective Adapter relationship. This is
+    # derived server-side for UI gating; the ACL service remains authoritative.
+    access_level: AdapterAccessLevel | None = None
+    # Safe display metadata only; system-owned Adapters keep this null.
+    owner_username: str | None = None
     latest_version_id: int | None
     runtime_worker_id: int | None
     runtime_locked: bool = False
@@ -189,3 +196,14 @@ class AdapterPermissionResponse(BaseModel):
     username: str
     enabled: bool
     permission: Literal["read", "edit"]
+
+
+class AdapterPermissionCandidate(BaseModel):
+    """Minimal account metadata used only by the Adapter sharing picker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    username: str
+    role: Literal["admin", "user"]
+    enabled: bool

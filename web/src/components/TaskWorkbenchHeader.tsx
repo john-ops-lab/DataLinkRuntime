@@ -20,11 +20,13 @@ interface TaskWorkbenchHeaderProps {
   onRunOnce: () => void;
   onStopExecution: () => void;
   onToggleSchedule: () => void;
+  readOnly?: boolean;
 }
 
 export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
   const { t } = useTranslation(["runtime", "common"]);
   const archived = !!props.adapter.archived_at;
+  const readOnly = props.readOnly === true;
   const runtimeLocked = props.adapter.runtime_locked === true;
   const activeExecution = props.runtimeState.activeExecution;
   const scheduleMode = props.adapter.run_mode === "schedule";
@@ -33,7 +35,9 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
     : scheduleMode && props.runtimeState.scheduleEnabled
       ? t("task.status.scheduled")
       : t("task.status.stopped");
-  const saveBlockedReason = archived
+  const saveBlockedReason = readOnly
+    ? t("task.reasons.readOnly")
+    : archived
     ? t("task.reasons.deleted")
     : runtimeLocked
       ? scheduleMode && props.runtimeState.scheduleEnabled
@@ -87,49 +91,55 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
       </div>
       <div className="workbench-controls">
         <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>{t("actions.settings", { ns: "common" })}</Button>
-        <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveBlockedReason}>
-          <Button type="primary" data-testid="save-version" disabled={saveBlockedReason !== null} onClick={props.onSave}>
-            {t("actions.save", { ns: "common" })}
-          </Button>
-        </ActionWithReason>
-        {scheduleMode ? (
+        {readOnly ? (
+          <Tag data-testid="adapter-read-only">{t("task.reasons.readOnly")}</Tag>
+        ) : (
           <>
-            <ActionWithReason
-              label={props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}
-              reason={scheduleToggleReason}
-            >
-              <Button
-                danger={props.runtimeState.scheduleEnabled}
-                data-testid="header-task-schedule-toggle"
-                loading={props.runtimeState.loading}
-                disabled={scheduleToggleReason !== null}
-                onClick={props.onToggleSchedule}
-              >
-                {props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}
+            <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveBlockedReason}>
+              <Button type="primary" data-testid="save-version" disabled={saveBlockedReason !== null} onClick={props.onSave}>
+                {t("actions.save", { ns: "common" })}
               </Button>
             </ActionWithReason>
-            {activeExecution ? (
+            {scheduleMode ? (
+              <>
+                <ActionWithReason
+                  label={props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}
+                  reason={scheduleToggleReason}
+                >
+                  <Button
+                    danger={props.runtimeState.scheduleEnabled}
+                    data-testid="header-task-schedule-toggle"
+                    loading={props.runtimeState.loading}
+                    disabled={scheduleToggleReason !== null}
+                    onClick={props.onToggleSchedule}
+                  >
+                    {props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}
+                  </Button>
+                </ActionWithReason>
+                {activeExecution ? (
+                  <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
+                    {t("actions.stopCurrentExecution", { ns: "common" })}
+                  </Button>
+                ) : (
+                  <ActionWithReason label={t("actions.runImmediatelyOnce", { ns: "common" })} reason={runBlockedReason}>
+                    <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
+                      {t("actions.runImmediatelyOnce", { ns: "common" })}
+                    </Button>
+                  </ActionWithReason>
+                )}
+              </>
+            ) : activeExecution ? (
               <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
-                {t("actions.stopCurrentExecution", { ns: "common" })}
+                {t("actions.stop", { ns: "common" })}
               </Button>
             ) : (
-              <ActionWithReason label={t("actions.runImmediatelyOnce", { ns: "common" })} reason={runBlockedReason}>
+              <ActionWithReason label={t("actions.runOnce", { ns: "common" })} reason={runBlockedReason}>
                 <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
-                  {t("actions.runImmediatelyOnce", { ns: "common" })}
+                  {t("actions.runOnce", { ns: "common" })}
                 </Button>
               </ActionWithReason>
             )}
           </>
-        ) : activeExecution ? (
-          <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
-            {t("actions.stop", { ns: "common" })}
-          </Button>
-        ) : (
-          <ActionWithReason label={t("actions.runOnce", { ns: "common" })} reason={runBlockedReason}>
-            <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
-              {t("actions.runOnce", { ns: "common" })}
-            </Button>
-          </ActionWithReason>
         )}
       </div>
     </header>

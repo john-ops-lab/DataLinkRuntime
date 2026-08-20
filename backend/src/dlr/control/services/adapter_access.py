@@ -15,7 +15,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from dlr.control.models import Adapter, AdapterPermission, Execution, User
-from dlr.control.schemas.adapter import AdapterPermissionResponse
+from dlr.control.schemas.adapter import (
+    AdapterPermissionCandidate,
+    AdapterPermissionResponse,
+)
 from dlr.control.services.adapter import domain_error
 
 if TYPE_CHECKING:
@@ -187,6 +190,50 @@ def list_permissions(
         )
         for grant, user in rows
     ]
+
+
+def list_permission_candidates(
+    session: Session, adapter_id: int, principal: Principal
+) -> list[AdapterPermissionCandidate]:
+    """Return only account metadata needed by the Adapter sharing picker.
+
+    This is intentionally not an alias for the account-management API. Owners
+    may discover ordinary-user grantees for their own Adapter; administrators
+    may also see account-admin rows so the UI can explain that those accounts
+    already bypass Adapter ACL. No password, Session or lifecycle fields are
+    selected here.
+    """
+    adapter = require_adapter_access(session, adapter_id, principal, "manage").adapter
+    query = select(User.id, User.username, User.role, User.enabled)
+    if adapter.owner_user_id is not None:
+        query = query.where(User.id != adapter.owner_user_id)
+    if not _is_admin(principal):
+        query = query.where(User.role == "user")
+    users = session.execute(query.order_by(User.username, User.id)).all()
+    return [
+        AdapterPermissionCandidate(
+            id=user_id,
+            username=username,
+            role=cast(Literal["admin", "user"], role),
+            enabled=enabled,
+        )
+        for user_id, username, role, enabled in users
+    ]
+
+
+def response_metadata(
+    session: Session, adapter: Adapter, principal: Principal
+) -> tuple[AccessLevel, str | None]:
+    """Resolve safe relationship labels for an already-authorized response."""
+    level = _level(session, adapter, principal)
+    if level is None:
+        _adapter_not_found()
+    owner_username = None
+    if adapter.owner_user_id is not None:
+        owner_username = session.scalar(
+            select(User.username).where(User.id == adapter.owner_user_id)
+        )
+    return level, owner_username
 
 
 def set_permission(

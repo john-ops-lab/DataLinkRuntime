@@ -30,6 +30,7 @@
       "stopped": "Stopped"
     },
     "reasons": {
+      "readOnly": "This Adapter is a read-only share; editing, saving, running and schedule changes are unavailable.",
       "deleted": "The Adapter was deleted and cannot be edited",
       "scheduleEnabledSave": "Disable the schedule before saving",
       "runningSave": "Stop the current run before saving",
@@ -92,6 +93,7 @@
       "stopped": "Stopped"
     },
     "reasons": {
+      "readOnly": "This Adapter is a read-only share; saving and Webhook receiving changes are unavailable.",
       "deleted": "The Adapter was deleted and cannot be edited",
       "lockedSave": "Receiving is active or a call is running. Stop receiving and wait for the current call to finish",
       "contentNotReady": "Content is not ready",

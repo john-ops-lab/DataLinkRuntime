@@ -42,6 +42,7 @@ interface TaskRunSettingsPanelProps {
   onExecutionStarted: (execution: Execution) => void;
   onRuntimeStateChange: (state: TaskRuntimeState) => void;
   onError: (message: string | null) => void;
+  readOnly?: boolean;
 }
 
 // M5.5.11 单次执行超时合同（秒为权威值）。
@@ -75,6 +76,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const { i18n, t } = useTranslation(["runtime", "common"]);
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const adapterId = props.adapter.id;
+  const readOnly = props.readOnly === true;
   const onAdapterChange = props.onAdapterChange;
   const onError = props.onError;
   const onRuntimeStateChange = props.onRuntimeStateChange;
@@ -187,7 +189,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function saveRunConfig() {
-    if (savingRuntime || props.adapter.runtime_locked) {
+    if (readOnly || savingRuntime || props.adapter.runtime_locked) {
       return;
     }
     if (workerId === null) {
@@ -252,6 +254,9 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function saveSchedule(enabled: boolean) {
+    if (readOnly) {
+      return;
+    }
     if (enabled && activeExecution) {
       onError(t("task.reasons.activeSchedule"));
       return;
@@ -284,6 +289,9 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function runOnce() {
+    if (readOnly) {
+      return;
+    }
     // M5.5.9：未保存修改时不得启动运行，先保存。
     if (props.dirty) {
       onError(t("task.reasons.dirtyRun"));
@@ -309,6 +317,9 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function stopExecution() {
+    if (readOnly) {
+      return;
+    }
     const watchedExecutionId =
       props.execution !== null &&
       props.execution.adapter_id === adapterId &&
@@ -362,6 +373,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     worker.capabilities.includes(props.adapter.language),
   );
   const canRun =
+    !readOnly &&
     !props.dirty &&
     !props.adapter.archived_at &&
     props.adapter.latest_version_id !== null &&
@@ -410,7 +422,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               value={workerId ?? undefined}
               placeholder={t("task.settings.workerPlaceholder")}
               loading={props.workersLoading}
-              disabled={runtimeLocked || savingRuntime || props.workersLoading}
+              disabled={readOnly || runtimeLocked || savingRuntime || props.workersLoading}
               onChange={(value: number) => setWorkerOverride(value)}
               options={compatibleWorkers.map((worker) => ({
                 value: worker.id,
@@ -431,7 +443,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <Radio.Group
               data-testid="task-run-mode"
               value={runMode}
-              disabled={runtimeLocked || savingRuntime}
+              disabled={readOnly || runtimeLocked || savingRuntime}
               onChange={(event) => {
                 const nextRunMode = event.target.value as TaskRunMode;
                 setRunModeOverride(nextRunMode);
@@ -449,7 +461,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <Radio.Group
               data-testid="task-timeout-preset"
               value={effectiveCustom ? "custom" : presetMinutesFor(effectiveTimeoutSeconds)}
-              disabled={runtimeLocked || savingRuntime}
+              disabled={readOnly || runtimeLocked || savingRuntime}
               onChange={(event) => {
                 const value = event.target.value as number | "custom";
                 if (value === "custom") {
@@ -475,7 +487,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 precision={0}
                 value={effectiveTimeoutSeconds}
                 addonAfter={t("task.settings.seconds")}
-                disabled={runtimeLocked || savingRuntime}
+                disabled={readOnly || runtimeLocked || savingRuntime}
                 onChange={(value) => setTimeoutOverride(value ?? null)}
               />
             )}
@@ -502,15 +514,15 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             <Space direction="vertical" size="middle" className="schedule-form">
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.cron")}</span>
-                <Input data-testid="task-schedule-cron" value={cron} disabled={scheduleFieldsLocked} onChange={(event) => { setCron(event.target.value); setScheduleTouched(true); }} />
+                <Input data-testid="task-schedule-cron" value={cron} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setCron(event.target.value); setScheduleTouched(true); }} />
               </label>
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.timezone")}</span>
-                <Input data-testid="task-schedule-timezone" value={timezone} disabled={scheduleFieldsLocked} onChange={(event) => { setTimezone(event.target.value); setScheduleTouched(true); }} />
+                <Input data-testid="task-schedule-timezone" value={timezone} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setTimezone(event.target.value); setScheduleTouched(true); }} />
               </label>
               <label className="settings-field">
                 <span className="settings-field-label">{t("task.settings.input")}</span>
-                <Input.TextArea data-testid="task-schedule-input" rows={4} value={scheduleInput} disabled={scheduleFieldsLocked} onChange={(event) => { setScheduleInput(event.target.value); setScheduleTouched(true); }} />
+                <Input.TextArea data-testid="task-schedule-input" rows={4} value={scheduleInput} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setScheduleInput(event.target.value); setScheduleTouched(true); }} />
               </label>
               <div className="settings-field">
                 <span className="settings-field-label">{t("task.settings.scheduleStatus")}</span>
@@ -530,7 +542,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
           <Typography.Title level={5}>{t("task.settings.manualTitle")}</Typography.Title>
           <label className="settings-field">
             <span className="settings-field-label">{t("task.settings.input")}</span>
-            <Input.TextArea data-testid="task-manual-input" rows={4} value={manualInput} disabled={activeExecution} onChange={(event) => setManualInput(event.target.value)} />
+            <Input.TextArea data-testid="task-manual-input" rows={4} value={manualInput} disabled={readOnly || activeExecution} onChange={(event) => setManualInput(event.target.value)} />
           </label>
         </section>
       )}
@@ -540,7 +552,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         className="task-run-config-save"
         data-testid="save-task-runtime"
         loading={savingRuntime}
-        disabled={runtimeLocked || workerId === null}
+        disabled={readOnly || runtimeLocked || workerId === null}
         onClick={() => void saveRunConfig()}
       >
         {t("task.settings.save")}

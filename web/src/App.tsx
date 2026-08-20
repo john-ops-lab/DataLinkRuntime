@@ -7,6 +7,7 @@ import zhCN from "antd/locale/zh_CN";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
+import { adapterAccessLevel, canEditAdapter, canManageAdapter } from "./adapter-access";
 import AccountApp from "./AccountApp";
 import AdapterCatalog from "./components/AdapterCatalog";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
@@ -41,6 +42,7 @@ import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
   AccountPrincipal,
   Adapter,
+  AdapterAccessLevel,
   AdapterLanguage,
   AdapterType,
   AiCandidate,
@@ -216,9 +218,14 @@ function activeNameConflict(
 interface AdapterConsoleProps {
   accountPrincipal?: AccountPrincipal;
   onAccountLogout?: () => Promise<void>;
+  onOpenAccountProfile?: () => void;
 }
 
-export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterConsoleProps = {}) {
+export function AdapterConsole({
+  accountPrincipal,
+  onAccountLogout,
+  onOpenAccountProfile,
+}: AdapterConsoleProps = {}) {
   const { t } = useTranslation(["common", "adapter", "runtime"]);
   const [messageApi, messageContextHolder] = message.useMessage();
   const [health, setHealth] = useState<HealthStatus>("loading");
@@ -318,6 +325,21 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   const activeExecutionId = selected?.running_execution_id ?? null;
   const selectedTriggerLocked = selected?.runtime_locked === true;
   const canManageUsers = accountPrincipal === undefined || accountPrincipal.role === "admin";
+  const selectedAccessLevel: AdapterAccessLevel = selected === null
+    ? "admin"
+    : adapterAccessLevel(selected, accountPrincipal);
+  const selectedCanEdit = canEditAdapter(selectedAccessLevel);
+  const selectedCanManage = canManageAdapter(selectedAccessLevel);
+  const selectedCanUseAi = selectedCanEdit;
+
+  useEffect(() => {
+    if (!selectedCanUseAi) {
+      // ACL changes close an already-open AI surface immediately; the backend
+      // remains authoritative for any in-flight request.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAiPanelOpen(false);
+    }
+  }, [selectedCanUseAi]);
 
   useEffect(() => {
     liveWatchRef.current = liveWatcher.watch;
@@ -711,7 +733,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   }
 
   async function persistVersion(runtimeWorkerId?: number) {
-    if (!selected || busy || !contentReady || selected.runtime_locked === true) {
+    if (!selected || !selectedCanEdit || busy || !contentReady || selected.runtime_locked === true) {
       return;
     }
     const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
@@ -782,7 +804,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   }
 
   function handleSaveVersion() {
-    if (!selected || busy || !contentReady || selected.runtime_locked === true) {
+    if (!selected || !selectedCanEdit || busy || !contentReady || selected.runtime_locked === true) {
       return;
     }
     if (parseRuntimeConfig(snapshot.runtimeConfigText) === null) {
@@ -810,7 +832,11 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
 
   function handleClone(source?: Adapter) {
     const cloneTarget = source ?? selected;
-    if (!cloneTarget || busy) {
+    if (
+      !cloneTarget ||
+      busy ||
+      !canEditAdapter(adapterAccessLevel(cloneTarget, accountPrincipal))
+    ) {
       return;
     }
     setCloneSource(cloneTarget);
@@ -834,7 +860,12 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   }
 
   async function performClone() {
-    if (cloneSource === null || cloneName.trim() === "" || busy) {
+    if (
+      cloneSource === null ||
+      cloneName.trim() === "" ||
+      !canEditAdapter(adapterAccessLevel(cloneSource, accountPrincipal)) ||
+      busy
+    ) {
       return;
     }
     const source = cloneSource;
@@ -897,6 +928,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   function handleApplyAiCandidate(candidate: AiCandidate) {
     if (
       !selected ||
+      !selectedCanUseAi ||
       selected.archived_at ||
       selected.runtime_locked === true ||
       !contentReady ||
@@ -915,7 +947,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   // 已加入的上下文；新片段追加，不覆盖已有片段。
   function handleAddSelectedContext() {
     const editor = editorRef.current;
-    if (editor === null || busy || !contentReady) {
+    if (!selectedCanUseAi || editor === null || busy || !contentReady) {
       return;
     }
     const selection = editor.getSelection();
@@ -946,6 +978,9 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
 
   /** 实时日志 Tab：选中浏览器可见的已脱敏日志文本后加入上下文。 */
   function handleAddLogContext(snippet: AiContextSnippet) {
+    if (!selectedCanUseAi) {
+      return;
+    }
     appendContextSnippet(snippet);
   }
 
@@ -960,7 +995,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   }
 
   async function handleUpdateDetails() {
-    if (!selected || busy) {
+    if (!selected || !selectedCanEdit || busy) {
       return;
     }
     // M5.5.9：重命名预检——trim 后与活跃同名拒绝。
@@ -996,7 +1031,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
   }
 
   async function handleDelete() {
-    if (!selected || busy) {
+    if (!selected || !selectedCanManage || busy) {
       return;
     }
     const warning = dirty ? t("messages.discardWarning") : "";
@@ -1090,6 +1125,15 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
               <span className="account-principal" data-testid="account-principal">
                 {accountPrincipal.username} · {t(`auth.role.${accountPrincipal.role}`)}
               </span>
+              {onOpenAccountProfile && (
+                <Button
+                  size="small"
+                  data-testid="account-profile"
+                  onClick={onOpenAccountProfile}
+                >
+                  {t("auth.profile")}
+                </Button>
+              )}
               <Button
                 size="small"
                 data-testid="account-logout"
@@ -1120,6 +1164,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
           workers={workers}
           onOpenSettings={handleCatalogOpenSettings}
           onClone={(adapter) => void handleClone(adapter)}
+          accountPrincipal={accountPrincipal}
         />
 
         {/*
@@ -1141,6 +1186,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
           onOpen={() => setAiPanelOpen(true)}
           onClose={() => setAiPanelOpen(false)}
           onApply={handleApplyAiCandidate}
+          canUseAi={selectedCanUseAi}
           onRemoveContextSnippet={handleRemoveContextSnippet}
           onClearContextSnippets={handleClearContextSnippets}
         />
@@ -1158,6 +1204,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                   dirty={dirty}
                   busy={busy}
                   contentReady={contentReady}
+                  readOnly={!selectedCanEdit}
                   onSave={() => void handleSaveVersion()}
                   onOpenSettings={() => setSettingsOpen(true)}
                   onRunOnce={() => taskRuntimeRef.current?.runOnce()}
@@ -1171,6 +1218,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                 runtimeState={webhookRuntimeState}
                 busy={busy}
                 contentReady={contentReady}
+                readOnly={!selectedCanEdit}
                 onSave={() => void handleSaveVersion()}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onToggleReceiving={() => webhookRuntimeRef.current?.toggleReceiving()}
@@ -1211,7 +1259,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                           <Button
                             size="small"
                             data-testid="add-ai-selection"
-                            disabled={busy || !contentReady || !editorHasSelection}
+                            disabled={!selectedCanUseAi || busy || !contentReady || !editorHasSelection}
                             onClick={handleAddSelectedContext}
                           >
                             {t("actions.addContext")}
@@ -1237,7 +1285,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                             onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
                             options={{
                               minimap: { enabled: false },
-                              readOnly: busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true,
+                              readOnly: busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selected.runtime_locked === true,
                             }}
                           />
                         </div>
@@ -1258,7 +1306,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                                       data-testid="requirements-input"
                                       rows={4}
                                       value={snapshot.requirements}
-                                      disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
+                                      disabled={busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
                                       placeholder={dependencyUiFor(selected.language).placeholder}
                                       onChange={(event) =>
                                         setSnapshot((current) => ({
@@ -1279,7 +1327,9 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                                 children: (
                                   <CredentialBindingsEditor
                                     adapterId={selected.id}
-                                    disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
+                                    disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true || !selectedCanManage}
+                                    accessLevel={selectedAccessLevel}
+                                    useScopedCredentialOptions={accountPrincipal !== undefined}
                                     onError={setError}
                                     onOpenSettings={() => setSystemSettingsOpen(true)}
                                   />
@@ -1310,6 +1360,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                             onExecutionStarted={handleExecutionStarted}
                             onRuntimeStateChange={handleTaskRuntimeStateChange}
                             onError={setError}
+                            readOnly={!selectedCanEdit}
                           />
                         ),
                       }
@@ -1329,6 +1380,9 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                             onReceivingChange={handleWebhookReceivingChange}
                             onRuntimeStateChange={handleWebhookRuntimeStateChange}
                             onError={setError}
+                            readOnly={!selectedCanEdit}
+                            canManageCredentials={selectedCanManage}
+                            useScopedCredentialOptions={accountPrincipal !== undefined}
                           />
                         ),
                       },
@@ -1363,7 +1417,7 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
                           waitingForWebhook &&
                           liveExecution === null
                         }
-                        onAddContext={handleAddLogContext}
+                        onAddContext={selectedCanUseAi ? handleAddLogContext : undefined}
                       />
                     ),
                   },
@@ -1387,6 +1441,8 @@ export function AdapterConsole({ accountPrincipal, onAccountLogout }: AdapterCon
         onUpdate={() => void handleUpdateDetails()}
         onDelete={() => void handleDelete()}
         onClone={() => void handleClone()}
+        accessLevel={selectedAccessLevel}
+        onPermissionsChanged={() => void refreshAdapters()}
       />
 
       <SystemSettingsDrawer

@@ -5,8 +5,15 @@ import type { FormEvent } from "react";
 import { Button, Drawer, Dropdown, Input, Radio, Select, Space } from "antd";
 import { useTranslation } from "react-i18next";
 
+import { adapterAccessLevel } from "../adapter-access";
 import { LANGUAGE_LABELS } from "../languages";
-import type { Adapter, AdapterLanguage, AdapterType, Worker } from "../types";
+import type {
+  AccountPrincipal,
+  Adapter,
+  AdapterLanguage,
+  AdapterType,
+  Worker,
+} from "../types";
 
 type AdapterTypeFilter = "task-manual" | "task-schedule" | "webhook";
 type AdapterStatusFilter = "all" | "running" | "stopped";
@@ -43,6 +50,7 @@ interface AdapterCatalogProps {
   // M5.5.9：列表项三点菜单——“设置”直接进入该 Adapter 设置；“复制”进入 Clone 流程。
   onOpenSettings: (adapter: Adapter) => void;
   onClone: (adapter: Adapter) => void;
+  accountPrincipal?: AccountPrincipal;
 }
 
 function versionLabel(
@@ -149,6 +157,27 @@ function catalogSubtitle(
   return { primary, attention, full: fullParts.join(" · ") };
 }
 
+function relationshipLabel(
+  adapter: Adapter,
+  principal: AccountPrincipal | undefined,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const level = adapterAccessLevel(adapter, principal);
+  if (level === "owner") {
+    return translate("access.mine");
+  }
+  if (level === "edit") {
+    return translate("access.sharedEdit");
+  }
+  if (level === "read") {
+    return translate("access.sharedRead");
+  }
+  if (adapter.owner_user_id == null) {
+    return translate("access.systemAdmin");
+  }
+  return translate("access.adminAll");
+}
+
 export default function AdapterCatalog({
   adapters,
   selectedId,
@@ -159,6 +188,7 @@ export default function AdapterCatalog({
   workers,
   onOpenSettings,
   onClone,
+  accountPrincipal,
 }: AdapterCatalogProps) {
   const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
@@ -280,6 +310,7 @@ export default function AdapterCatalog({
         ) : (
           visible.map((adapter) => {
             const runtimeStatusKey = catalogRuntimeStatus(adapter);
+            const accessLevel = adapterAccessLevel(adapter, accountPrincipal);
             const runtimeStatus = {
               ...runtimeStatusKey,
               label: t(`catalog.${runtimeStatusKey.label}`),
@@ -296,7 +327,16 @@ export default function AdapterCatalog({
               workersById,
               (key, options) => t(key, options),
             );
+            const relationship = relationshipLabel(adapter, accountPrincipal, (key, options) =>
+              t(key, options),
+            );
+            const ownerLabel = adapter.owner_user_id == null
+              ? t("access.systemOwner")
+              : adapter.owner_username ?? t("access.ownerUnknown");
             const accessibleRuntimeFact = statusDescription;
+            const ariaLabel = adapter.access_level !== undefined || accountPrincipal !== undefined
+              ? `${adapter.name}，${relationship}，${ownerLabel}，${subtitle.full.replace(runtimeStatus.fact, accessibleRuntimeFact)}`
+              : `${adapter.name}，${subtitle.full.replace(runtimeStatus.fact, accessibleRuntimeFact)}`;
             return (
               <div key={adapter.id} className="catalog-row">
                 <button
@@ -305,7 +345,7 @@ export default function AdapterCatalog({
                   className={adapter.id === selectedId ? "catalog-item selected" : "catalog-item"}
                   disabled={busy}
                   title={`${adapter.name}${adapter.description ? ` — ${adapter.description}` : ""}\n${subtitle.full}`}
-                  aria-label={`${adapter.name}，${subtitle.full.replace(runtimeStatus.fact, accessibleRuntimeFact)}`}
+                  aria-label={ariaLabel}
                   onClick={() => onSelect(adapter)}
                 >
                   <span className="catalog-item-name">
@@ -314,6 +354,12 @@ export default function AdapterCatalog({
                       title={statusDescription}
                     />
                     {adapter.name}
+                  </span>
+                  <span className="catalog-item-access" data-testid="adapter-access">
+                    {relationship}
+                    {adapter.owner_user_id == null && relationship !== t("access.systemAdmin") && (
+                      <> · {ownerLabel}</>
+                    )}
                   </span>
                   <span className="catalog-item-sub" title={subtitle.full}>
                     <span>{subtitle.primary}</span>
@@ -329,8 +375,10 @@ export default function AdapterCatalog({
                   placement="bottomRight"
                   menu={{
                     items: [
-                       { key: "settings", label: t("catalog.settings") },
-                       { key: "clone", label: t("catalog.clone") },
+                      { key: "settings", label: t("catalog.settings") },
+                      ...(accessLevel === "read"
+                        ? []
+                        : [{ key: "clone", label: t("catalog.clone") }]),
                     ],
                     onClick: ({ key }) => {
                       if (key === "settings") {

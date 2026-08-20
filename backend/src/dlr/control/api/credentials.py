@@ -1,7 +1,9 @@
 """Credential (Secret Store) and Adapter binding endpoints of the Control Node.
 
-All endpoints are admin-only. Responses carry metadata only: plaintext field
-values are accepted in create/update bodies and never returned afterwards.
+Global Credential CRUD is admin-only. Adapter binding metadata is readable
+through the Adapter ACL, while credential choices and binding writes remain
+owner/admin-only. Responses carry metadata only: plaintext field values are
+accepted in create/update bodies and never returned afterwards.
 """
 
 from typing import Annotated
@@ -72,6 +74,20 @@ def list_adapter_bindings(
 ) -> list[BindingResponse]:
     adapter_access.require_adapter_access(session, adapter_id, principal, "read")
     return secrets_service.list_adapter_bindings(session, adapter_id)
+
+
+@adapter_router.get(
+    "/api/adapters/{adapter_id}/credential-options", response_model=list[CredentialResponse]
+)
+def list_adapter_credential_options(
+    adapter_id: int, principal: CurrentPrincipal, session: DbSession
+) -> list[CredentialResponse]:
+    """Return metadata-only Credential choices for an owner/admin binding UI."""
+    adapter_access.require_adapter_access(session, adapter_id, principal, "owner")
+    return [
+        CredentialResponse.model_validate(credential)
+        for credential in secrets_service.list_credentials(session)
+    ]
 
 
 @adapter_router.put(

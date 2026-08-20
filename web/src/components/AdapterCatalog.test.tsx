@@ -206,6 +206,36 @@ it("marks the three-dot menu button with the visual state of its card (M5.8-007)
   expect(menus[1].getAttribute("aria-label")).toBe("beta 更多操作");
 });
 
+it("labels owned and shared relationships and hides cloning for read-only shares", async () => {
+  render(
+    <AdapterCatalog
+      adapters={[
+        makeAdapter(1, "mine", { owner_user_id: 7, access_level: "owner", owner_username: "me" }),
+        makeAdapter(2, "editable", { owner_user_id: 7, access_level: "edit", owner_username: "me" }),
+        makeAdapter(3, "readonly", { owner_user_id: 7, access_level: "read", owner_username: "me" }),
+      ]}
+      selectedId={null}
+      busy={false}
+      onSelect={vi.fn()}
+      onCreate={vi.fn(async () => false)}
+      versionSeqById={new Map()}
+      workers={[]}
+      onOpenSettings={vi.fn()}
+      onClone={vi.fn()}
+      accountPrincipal={{ id: 7, username: "me", role: "user", enabled: true, must_change_password: false }}
+    />,
+  );
+
+  expect(screen.getByText("我的")).toBeTruthy();
+  expect(screen.getByText("共享 · 可编辑")).toBeTruthy();
+  expect(screen.getByText("共享 · 只读")).toBeTruthy();
+
+  fireEvent.click(screen.getAllByTestId("adapter-item-menu")[2]);
+  const menu = await screen.findByRole("menu");
+  expect(within(menu).getByRole("menuitem", { name: "设置" })).toBeTruthy();
+  expect(within(menu).queryByRole("menuitem", { name: "复制" })).toBeNull();
+});
+
 it("lays out [类型][状态][搜索] as one continuous row (M5.8-008)", () => {
   renderCatalog([makeAdapter(1, "alpha")]);
 

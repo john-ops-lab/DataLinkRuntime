@@ -105,6 +105,7 @@
       "staleDescription": "该候选修改基于较早的编辑内容生成，应用会覆盖当前代码。",
       "applyBlockedApplied": "该候选修改已应用到当前代码",
       "applyBlockedArchived": "适配器已删除，候选修改只能查看，不能应用",
+      "applyBlockedPermission": "当前共享权限不允许使用 AI 或应用候选修改",
       "applyBlockedNotReady": "当前代码尚未加载完成，请稍后重试",
       "applyBlockedBusy": "其他操作正在进行，请等待完成",
       "applyBlockedLocked": "适配器正在运行，不能应用候选修改",

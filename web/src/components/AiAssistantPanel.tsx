@@ -170,6 +170,8 @@ interface AiAssistantPanelProps {
   onOpen: () => void;
   onClose: () => void;
   onApply: (candidate: AiCandidate) => void;
+  /** Adapter ACL gate; the backend remains authoritative for every request. */
+  canUseAi?: boolean;
   onRemoveContextSnippet: (id: number) => void;
   onClearContextSnippets: () => void;
 }
@@ -640,6 +642,7 @@ function contextSnippetLabel(
 
 export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const { t, i18n } = useTranslation(["ai", "common"]);
+  const canUseAi = props.canUseAi !== false;
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -729,7 +732,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
 
   const adapterId = props.adapter?.id ?? null;
   useEffect(() => {
-    if (!props.open || adapterId === null) {
+    if (!canUseAi || !props.open || adapterId === null) {
       return;
     }
     const generation = ++bindingsGeneration.current;
@@ -759,13 +762,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [adapterId, props.open]);
+  }, [adapterId, canUseAi, props.open]);
 
   // M5.7 Wave B3: load the stable B2 capability table (limits + accepted MIME
   // types) while the panel is open. Fail-soft: the canonical B2 defaults keep
   // the upload UI bounded; the server remains the authoritative validator.
   useEffect(() => {
-    if (!props.open || adapterId === null) {
+    if (!canUseAi || !props.open || adapterId === null) {
       return;
     }
     let cancelled = false;
@@ -784,7 +787,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [adapterId, props.open]);
+  }, [adapterId, canUseAi, props.open]);
 
   // M5.7 Wave B3: Adapter switch isolates every historical run state — the
   // composer's pending attachments are cleared (nothing composed for the old
@@ -910,6 +913,7 @@ async function resolveComposerAttachment(
     const adapter = props.adapter;
     if (
       adapter === null ||
+      !canUseAi ||
       !props.contentReady ||
       props.busy ||
       sending ||
@@ -1112,6 +1116,7 @@ async function resolveComposerAttachment(
     const adapter = props.adapter;
     if (
       adapter === null ||
+      !canUseAi ||
       !props.contentReady ||
       props.busy ||
       sending ||
@@ -1198,7 +1203,7 @@ async function resolveComposerAttachment(
     messages,
     isRunning: sending,
     isDisabled:
-      props.adapter === null || !props.contentReady || props.busy || sending,
+      !canUseAi || props.adapter === null || !props.contentReady || props.busy || sending,
     convertMessage: toThreadMessageLike,
     adapters: { attachments: attachmentAdapter },
     onNew: async (message: AppendMessage) => {
@@ -1212,6 +1217,9 @@ async function resolveComposerAttachment(
     // message.
     onReload: async (parentId: string | null) => {
       if (parentId === null) {
+        return;
+      }
+      if (!canUseAi) {
         return;
       }
       const userMessage = messages.find(
@@ -1255,6 +1263,7 @@ async function resolveComposerAttachment(
 
   function applyCandidate(messageId: number, candidate: AiCandidate) {
     if (
+      !canUseAi ||
       !props.contentReady ||
       props.busy ||
       props.adapter?.archived_at ||
@@ -1397,7 +1406,7 @@ async function resolveComposerAttachment(
       : t("assistant.context.version", { seq: props.selectedVersionSeq });
 
   const composerDisabled =
-    props.adapter === null || !props.contentReady || props.busy || sending;
+    !canUseAi || props.adapter === null || !props.contentReady || props.busy || sending;
 
   const expandedPanel = (
     <aside
@@ -1574,6 +1583,7 @@ async function resolveComposerAttachment(
                             }
                             retry={message.role === "user"}
                             disabled={
+                              !canUseAi ||
                               sending ||
                               props.busy ||
                               !props.contentReady ||
@@ -1626,7 +1636,7 @@ async function resolveComposerAttachment(
                               size="small"
                               type="primary"
                               data-testid="ai-view-diff"
-                              disabled={!props.contentReady || props.busy}
+                              disabled={!canUseAi || !props.contentReady || props.busy}
                               onClick={() => openCandidateDiff(message.id, candidateState)}
                             >
                               {stale ? t("actions.viewCurrentChanges", { ns: "common" }) : t("actions.viewChanges", { ns: "common" })}
@@ -1703,7 +1713,9 @@ async function resolveComposerAttachment(
       ? t("assistant.diff.applyBlockedApplied")
       : props.adapter?.archived_at
         ? t("assistant.diff.applyBlockedArchived")
-        : !props.contentReady
+        : !canUseAi
+          ? t("assistant.diff.applyBlockedPermission")
+          : !props.contentReady
           ? t("assistant.diff.applyBlockedNotReady")
           : props.busy
             ? t("assistant.diff.applyBlockedBusy")
@@ -1718,6 +1730,10 @@ async function resolveComposerAttachment(
       onApply: () => applyCandidate(candidateDiffState.messageId, candidateState.value),
     };
   })();
+
+  if (!canUseAi) {
+    return null;
+  }
 
   return (
     <>

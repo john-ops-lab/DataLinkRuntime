@@ -6,8 +6,10 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
 from dlr.control import db
+from dlr.control.models import Adapter
 from dlr.control.schemas.adapter import (
     AdapterCreate,
+    AdapterPermissionCandidate,
     AdapterPermissionResponse,
     AdapterPermissionUpsert,
     AdapterResponse,
@@ -27,24 +29,46 @@ DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
 
 
+def _decorate_response(
+    session: Session,
+    adapter: Adapter,
+    principal: Principal,
+    response: AdapterResponse,
+) -> AdapterResponse:
+    """Attach server-resolved relationship metadata for UI display/gating."""
+    level, owner_username = adapter_access.response_metadata(session, adapter, principal)
+    return response.model_copy(update={"access_level": level, "owner_username": owner_username})
+
+
+def _adapter_response(session: Session, adapter: Adapter, principal: Principal) -> AdapterResponse:
+    return _decorate_response(
+        session,
+        adapter,
+        principal,
+        adapter_service.adapter_response(session, adapter),
+    )
+
+
 @router.get("/api/adapters", response_model=list[AdapterResponse])
 def list_adapters(principal: CurrentPrincipal, session: DbSession) -> list[AdapterResponse]:
     adapters = adapter_access.list_visible_adapters(session, principal)
-    return adapter_service.adapter_responses(session, adapters)
+    responses = adapter_service.adapter_responses(session, adapters)
+    return [
+        _decorate_response(session, adapter, principal, response)
+        for adapter, response in zip(adapters, responses, strict=True)
+    ]
 
 
 @router.post("/api/adapters", status_code=201, response_model=AdapterResponse)
 def create_adapter(
     payload: AdapterCreate, principal: CurrentPrincipal, session: DbSession
 ) -> AdapterResponse:
-    return adapter_service.adapter_response(
+    adapter = adapter_service.create_adapter(
         session,
-        adapter_service.create_adapter(
-            session,
-            payload,
-            owner_user_id=adapter_access.owner_user_id_for_create(principal),
-        ),
+        payload,
+        owner_user_id=adapter_access.owner_user_id_for_create(principal),
     )
+    return _adapter_response(session, adapter, principal)
 
 
 @router.get("/api/adapters/{adapter_id}", response_model=AdapterResponse)
@@ -52,9 +76,7 @@ def get_adapter(
     adapter_id: int, principal: CurrentPrincipal, session: DbSession
 ) -> AdapterResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "read")
-    return adapter_service.adapter_response(
-        session, adapter_service.get_adapter(session, adapter_id)
-    )
+    return _adapter_response(session, adapter_service.get_adapter(session, adapter_id), principal)
 
 
 @router.patch("/api/adapters/{adapter_id}", response_model=AdapterResponse)
@@ -62,8 +84,10 @@ def update_adapter(
     adapter_id: int, payload: AdapterUpdate, principal: CurrentPrincipal, session: DbSession
 ) -> AdapterResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
-    return adapter_service.adapter_response(
-        session, adapter_service.update_adapter(session, adapter_id, payload)
+    return _adapter_response(
+        session,
+        adapter_service.update_adapter(session, adapter_id, payload),
+        principal,
     )
 
 
@@ -114,15 +138,13 @@ def clone_adapter(
 ) -> AdapterResponse:
     """Copy common Adapter facts into a stopped clone with its own Revision 1."""
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
-    return adapter_service.adapter_response(
+    cloned = adapter_service.clone_adapter(
         session,
-        adapter_service.clone_adapter(
-            session,
-            adapter_id,
-            payload,
-            owner_user_id=adapter_access.owner_user_id_for_create(principal),
-        ),
+        adapter_id,
+        payload,
+        owner_user_id=adapter_access.owner_user_id_for_create(principal),
     )
+    return _adapter_response(session, cloned, principal)
 
 
 @router.get(
@@ -134,6 +156,17 @@ def list_adapter_permissions(
 ) -> list[AdapterPermissionResponse]:
     """List ACL metadata; only the owner and administrators may inspect it."""
     return adapter_access.list_permissions(session, adapter_id, principal)
+
+
+@router.get(
+    "/api/adapters/{adapter_id}/permission-candidates",
+    response_model=list[AdapterPermissionCandidate],
+)
+def list_permission_candidates(
+    adapter_id: int, principal: CurrentPrincipal, session: DbSession
+) -> list[AdapterPermissionCandidate]:
+    """Return minimal account rows for the owner/admin sharing picker."""
+    return adapter_access.list_permission_candidates(session, adapter_id, principal)
 
 
 @router.put(

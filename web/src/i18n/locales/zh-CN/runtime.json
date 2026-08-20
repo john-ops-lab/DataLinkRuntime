@@ -30,6 +30,7 @@
       "stopped": "已停止"
     },
     "reasons": {
+      "readOnly": "当前适配器为只读共享，不能修改、保存、运行或改变定时配置。",
       "deleted": "适配器已删除，不能继续编辑",
       "scheduleEnabledSave": "定时已启用，请先停用定时后再保存",
       "runningSave": "适配器正在运行，请先停止当前运行后再保存",
@@ -92,6 +93,7 @@
       "stopped": "已停止"
     },
     "reasons": {
+      "readOnly": "当前适配器为只读共享，不能保存或改变 Webhook 接收状态。",
       "deleted": "适配器已删除，不能继续编辑",
       "lockedSave": "正在接收或存在运行中的调用，请先停止接收并等待当前调用完成",
       "contentNotReady": "内容尚未就绪",
