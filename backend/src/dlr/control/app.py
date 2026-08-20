@@ -6,7 +6,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -25,9 +25,11 @@ from dlr.control.api import (
     locale,
     package_sources,
     schedules,
+    users,
     webhooks,
     workers,
 )
+from dlr.control.security import require_csrf
 from dlr.control.services import accounts as account_service
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
@@ -108,6 +110,20 @@ def create_app() -> FastAPI:
                 request.scope["raw_path"] = raw_path[len(account_prefix) :]
         else:
             request.scope["dlr_entry_mode"] = "token"
+        # Every non-safe request arriving through the account reverse-proxy
+        # boundary is cookie-authenticated and must carry the double-submit
+        # token. Token superadmin requests deliberately bypass this check so
+        # the legacy entry remains compatible even when account cookies exist
+        # for the same host on another port.
+        if request.scope["dlr_entry_mode"] == "account" and request.method.upper() not in {
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        }:
+            try:
+                require_csrf(request)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
         return await call_next(request)
 
     @app.exception_handler(RequestValidationError)
@@ -130,7 +146,9 @@ def create_app() -> FastAPI:
                     }
                 },
             )
-        if request.url.path.startswith("/api/auth/account/"):
+        if request.url.path.startswith("/api/auth/account/") or request.url.path.startswith(
+            "/api/users"
+        ):
             return JSONResponse(
                 status_code=422,
                 content={
@@ -146,6 +164,7 @@ def create_app() -> FastAPI:
     app.include_router(locale.public_router)
     app.include_router(locale.router)
     app.include_router(auth.router)
+    app.include_router(users.router)
     app.include_router(adapters.router)
     app.include_router(ai.router)
     app.include_router(credentials.router)

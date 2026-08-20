@@ -11,10 +11,10 @@ from dlr.control.schemas.execution import (
     ExecutionHistoryPage,
     ExecutionResponse,
 )
-from dlr.control.security import require_principal
+from dlr.control.security import require_business_principal
 from dlr.control.services import execution as execution_service
 
-router = APIRouter(dependencies=[Depends(require_principal)])
+router = APIRouter(dependencies=[Depends(require_business_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 

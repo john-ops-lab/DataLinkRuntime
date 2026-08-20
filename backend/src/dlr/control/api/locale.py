@@ -7,11 +7,11 @@ from sqlalchemy.orm import Session
 
 from dlr.control import db
 from dlr.control.schemas.locale import SystemLocaleResponse, SystemLocaleUpdate
-from dlr.control.security import require_principal
+from dlr.control.security import require_admin_principal
 from dlr.control.services import locale as locale_service
 
 public_router = APIRouter()
-router = APIRouter(dependencies=[Depends(require_principal)])
+router = APIRouter(dependencies=[Depends(require_admin_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 

@@ -2297,6 +2297,53 @@ body {
   white-space: nowrap;
 }
 
+.user-management-panel {
+  align-items: stretch;
+}
+
+.user-create-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.user-reset-dialog {
+  margin-top: 16px;
+}
+
+.user-reset-dialog-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  background: #fafbfc;
+}
+
+.account-user-page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 24px;
+  background: var(--dlr-shell-bg);
+}
+
+.account-user-card {
+  width: 100%;
+  max-width: 640px;
+}
+
+.account-user-password {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dlr-border);
+}
+
 .login-notice {
   margin: 0;
   padding: 6px 10px;

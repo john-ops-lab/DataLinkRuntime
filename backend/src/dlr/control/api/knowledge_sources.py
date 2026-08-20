@@ -12,10 +12,10 @@ from dlr.control.schemas.knowledge_source import (
     KnowledgeSourceTestResponse,
     KnowledgeSourceUpdate,
 )
-from dlr.control.security import require_principal
+from dlr.control.security import require_admin_principal
 from dlr.control.services import knowledge_source as knowledge_source_service
 
-router = APIRouter(dependencies=[Depends(require_principal)])
+router = APIRouter(dependencies=[Depends(require_admin_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 

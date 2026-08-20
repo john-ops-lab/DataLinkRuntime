@@ -170,6 +170,36 @@ def require_principal(
     return _account_principal(matched)
 
 
+def require_admin_principal(
+    principal: Annotated[Principal, Depends(require_principal)],
+) -> Principal:
+    """Require the deployment superadmin or an account-level admin."""
+    if principal.kind == "superadmin" or principal.role == "admin":
+        return principal
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "account_admin_required",
+            "message": "Administrator privileges are required",
+        },
+    )
+
+
+def require_business_principal(
+    principal: Annotated[Principal, Depends(require_principal)],
+) -> Principal:
+    """Keep Wave B account users off business APIs until Wave C ACL exists."""
+    if principal.kind == "superadmin" or principal.role == "admin":
+        return principal
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "account_user_business_forbidden",
+            "message": "Account users cannot access this application API yet",
+        },
+    )
+
+
 def require_csrf(request: Request) -> None:
     """Double-submit CSRF protection for cookie-authenticated account writes."""
     cookie_token = request.cookies.get("dlr_account_csrf")
