@@ -4841,7 +4841,13 @@ it("rejects whitespace-only selections and supports single delete and clear-all"
     { source: "code", text: "second snippet\n", start_line: 4, end_line: 5 },
   ]);
 
-  // 清空全部：列表消失，后续发送不再携带任何片段。
+  // M5.8-002：请求进入发送后，本轮片段自动从待发送区消失；历史消息仍保留。
+  expect(screen.queryByTestId("ai-context-snippets")).toBeNull();
+
+  // 清空全部仍可用于用户手工移除尚未发送的新片段。
+  selectInEditor("third snippet\n", 6, 6);
+  fireEvent.click(screen.getByTestId("add-ai-selection"));
+  expect(screen.getByTestId("ai-context-snippets")).toBeTruthy();
   fireEvent.click(screen.getByTestId("ai-clear-all-snippets"));
   expect(screen.queryByTestId("ai-context-snippets")).toBeNull();
 });

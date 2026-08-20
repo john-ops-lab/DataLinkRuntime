@@ -825,6 +825,19 @@ body {
   border-left: 1px solid var(--dlr-border);
 }
 
+/* M5.8-001：在同一个面板实例上切换布局，覆盖主工作区但不卸载
+   AssistantRuntimeProvider，因此会话、草稿、附件、Candidate 和进行中的
+   请求都留在原状态中。父级 .console-body 已提供 position: relative。 */
+.ai-assistant-expanded.ai-assistant-maximized {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  width: auto;
+  min-width: 0;
+  border-left: none;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.28), 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
 /* M5.5.13：AI 面板抬头使用主操作蓝色；关闭按钮与次级文字改白色保证对比度。 */
 .ai-assistant-header {
   flex: 0 0 auto;
@@ -849,7 +862,14 @@ body {
   line-height: 1.45;
 }
 
-.ai-assistant-header .ant-btn {
+.ai-assistant-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.ai-assistant-header-actions .ant-btn {
   color: #fff;
 }
 
@@ -1381,6 +1401,10 @@ body {
 .ai-attachment-privacy {
   flex-basis: 100%;
   color: #ad4e00;
+}
+
+.ai-attachment-privacy strong {
+  font-weight: 600;
 }
 
 .ai-attachment-panel-error {

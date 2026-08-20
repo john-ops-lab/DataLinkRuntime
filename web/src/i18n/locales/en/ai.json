@@ -3,6 +3,8 @@
   "assistant": {
     "open": "Open AI assistant",
     "close": "Collapse AI assistant",
+    "maximize": "Maximize AI assistant",
+    "restore": "Restore AI assistant",
     "title": "AI assistant",
     "notice": "Candidates are written only to the browser; they are not saved, tested or run automatically.",
     "noAdapter": "Select an Adapter first.",
@@ -31,7 +33,8 @@
       "add": "Attach files",
       "addAria": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX and text / code files",
       "hint": "Images / PDF / DOCX / text and code files: up to {{count}}, {{size}} each, {{total}} total",
-      "privacyNotice": "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials; DLR does not promise to detect sensitive information in attachments automatically.",
+      "privacyNoticeLead": "Attachment content is sent to the model service configured by the administrator.",
+      "privacyNoticeSensitive": "Do not upload passwords, keys or other sensitive credentials.",
       "remove": "Remove attachment {{name}}",
       "ready": "Ready",
       "category": {

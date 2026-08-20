@@ -126,6 +126,9 @@ interface AssistRoundSnapshot {
   baseVersionId: number | null;
   recentMessages: AiConversationMessage[];
   contextSnippets: AiContextSnippet[];
+  /** UI-only identities used to consume exactly the snippets frozen for this
+   * round; IDs never enter the provider-facing payload. */
+  contextSnippetIds: number[];
   attachments: AiAttachment[];
   locale: string;
 }
@@ -533,7 +536,8 @@ function ComposerAttachmentArea(props: {
           })}
         </span>
         <span className="ai-attachment-privacy" data-testid="ai-attachment-privacy">
-          {t("assistant.attachments.privacyNotice")}
+          {t("assistant.attachments.privacyNoticeLead")}{" "}
+          <strong>{t("assistant.attachments.privacyNoticeSensitive")}</strong>
         </span>
         <Button
           size="small"
@@ -644,6 +648,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [bindingsVerified, setBindingsVerified] = useState(false);
   const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
   const [progressStage, setProgressStage] = useState<ProgressStage | null>(null);
+  const [maximized, setMaximized] = useState(false);
   // M5.5.13: the floating entry is draggable within the viewport. The position
   // is deliberately NOT persisted anywhere (no localStorage/sessionStorage/
   // database): a refresh restores the product default (CSS right: 16px).
@@ -900,6 +905,7 @@ async function resolveComposerAttachment(
   async function runAssist(
     snapshot: AssistRoundSnapshot,
     replaceAssistantMessageId: number | null,
+    onRequestStarted?: () => void,
   ) {
     const adapter = props.adapter;
     if (
@@ -933,6 +939,11 @@ async function resolveComposerAttachment(
         return;
       }
       setProgressStage("requesting");
+      // The request payload is frozen and the send path is entering the
+      // provider call. Consume only the context entries captured for this
+      // round; snippets added while an attachment was being read remain for a
+      // later request.
+      onRequestStarted?.();
       const response = await api.assistAdapter(requestAdapterId, {
         // Wave B1: the frozen round snapshot, never the current editor,
         // Adapter or config.
@@ -1078,6 +1089,7 @@ async function resolveComposerAttachment(
           end_line,
         }),
       ),
+      contextSnippetIds: props.contextSnippets.map(({ id }) => id),
       attachments,
       locale: i18n.language,
     };
@@ -1170,7 +1182,11 @@ async function resolveComposerAttachment(
       };
       setMessages((current) => [...current, userMessage]);
       setAttachmentError(null);
-      await runAssist(snapshot, null);
+      await runAssist(snapshot, null, () => {
+        for (const id of snapshot.contextSnippetIds) {
+          props.onRemoveContextSnippet(id);
+        }
+      });
     } finally {
       attachmentSendInFlightRef.current = false;
     }
@@ -1384,7 +1400,11 @@ async function resolveComposerAttachment(
     props.adapter === null || !props.contentReady || props.busy || sending;
 
   const expandedPanel = (
-    <aside className="ai-assistant ai-assistant-expanded" data-testid="ai-assistant-panel">
+    <aside
+      className={`ai-assistant ai-assistant-expanded${maximized ? " ai-assistant-maximized" : ""}`}
+      data-testid="ai-assistant-panel"
+      data-layout={maximized ? "maximized" : "sidebar"}
+    >
       <AssistantRuntimeProvider runtime={runtime}>
         <ThreadPrimitive.Root className="ai-thread">
           <div className="ai-assistant-header">
@@ -1392,15 +1412,29 @@ async function resolveComposerAttachment(
               <strong>{t("assistant.title")}</strong>
               <p>{t("assistant.notice")}</p>
             </div>
-            <Button
-              type="text"
-              data-testid="close-ai-assistant"
-              aria-label={t("assistant.close")}
-              aria-expanded={true}
-              onClick={props.onClose}
-            >
-              ×
-            </Button>
+            <div className="ai-assistant-header-actions">
+              <Button
+                type="text"
+                data-testid={maximized ? "restore-ai-assistant" : "maximize-ai-assistant"}
+                aria-label={maximized ? t("assistant.restore") : t("assistant.maximize")}
+                aria-pressed={maximized}
+                title={maximized ? t("assistant.restore") : t("assistant.maximize")}
+                onClick={() => setMaximized((current) => !current)}
+              >
+                {maximized
+                  ? t("actions.restore", { ns: "common" })
+                  : t("actions.maximize", { ns: "common" })}
+              </Button>
+              <Button
+                type="text"
+                data-testid="close-ai-assistant"
+                aria-label={t("assistant.close")}
+                aria-expanded={true}
+                onClick={props.onClose}
+              >
+                ×
+              </Button>
+            </div>
           </div>
 
           <div className="ai-assistant-context" data-testid="ai-current-context">
