@@ -265,6 +265,17 @@ body {
   white-space: nowrap;
 }
 
+.catalog-item-access {
+  display: block;
+  margin-top: 1px;
+  color: #0958d9;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .catalog-item.selected .catalog-item-name {
   color: #0958d9;
   font-weight: 600;

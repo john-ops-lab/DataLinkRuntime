@@ -17,13 +17,17 @@ interface Props {
   onSave: () => void;
   onOpenSettings: () => void;
   onToggleReceiving: () => void;
+  readOnly?: boolean;
 }
 
 export default function WebhookWorkbenchHeader(props: Props) {
   const { t } = useTranslation(["runtime", "common"]);
   const archived = !!props.adapter.archived_at;
+  const readOnly = props.readOnly === true;
   const locked = props.adapter.runtime_locked === true || props.runtimeState.enabled;
-  const saveReason = archived
+  const saveReason = readOnly
+    ? t("webhook.reasons.readOnly")
+    : archived
     ? t("webhook.reasons.deleted")
     : locked
       ? t("webhook.reasons.lockedSave")
@@ -72,20 +76,26 @@ export default function WebhookWorkbenchHeader(props: Props) {
       </div>
       <div className="workbench-controls">
         <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>{t("actions.settings", { ns: "common" })}</Button>
-        <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveReason}>
-          <Button type="primary" data-testid="save-version" disabled={saveReason !== null} onClick={props.onSave}>{t("actions.save", { ns: "common" })}</Button>
-        </ActionWithReason>
-        <ActionWithReason label={props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })} reason={receiveReason}>
-          <Button
-            danger={props.runtimeState.enabled}
-            data-testid="header-webhook-toggle"
-            loading={props.runtimeState.changingState}
-            disabled={!props.runtimeState.enabled && receiveReason !== null}
-            onClick={props.onToggleReceiving}
-          >
-            {props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })}
-          </Button>
-        </ActionWithReason>
+        {readOnly ? (
+          <Tag data-testid="adapter-read-only">{t("webhook.reasons.readOnly")}</Tag>
+        ) : (
+          <>
+            <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveReason}>
+              <Button type="primary" data-testid="save-version" disabled={saveReason !== null} onClick={props.onSave}>{t("actions.save", { ns: "common" })}</Button>
+            </ActionWithReason>
+            <ActionWithReason label={props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })} reason={receiveReason}>
+              <Button
+                danger={props.runtimeState.enabled}
+                data-testid="header-webhook-toggle"
+                loading={props.runtimeState.changingState}
+                disabled={!props.runtimeState.enabled && receiveReason !== null}
+                onClick={props.onToggleReceiving}
+              >
+                {props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })}
+              </Button>
+            </ActionWithReason>
+          </>
+        )}
       </div>
     </header>
   );

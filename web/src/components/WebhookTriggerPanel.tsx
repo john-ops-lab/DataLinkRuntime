@@ -114,6 +114,11 @@ interface Props {
   onReceivingChange: (enabled: boolean) => void;
   onRuntimeStateChange: (state: WebhookRuntimeState) => void;
   onError: (message: string | null) => void;
+  readOnly?: boolean;
+  canManageCredentials?: boolean;
+  /** Account entry uses the Adapter-scoped metadata endpoint; Token entry
+   * keeps the existing global admin endpoint. */
+  useScopedCredentialOptions?: boolean;
 }
 
 export interface WebhookRuntimeState {
@@ -164,7 +169,11 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       onError(null);
       try {
         const [credentialList, webhook, adapter] = await Promise.all([
-          api.listCredentials(),
+          props.canManageCredentials === true
+            ? props.useScopedCredentialOptions === true
+              ? api.listAdapterCredentialOptions(adapterId)
+              : api.listCredentials()
+            : Promise.resolve([]),
           api.getWebhook(adapterId),
           api.getAdapter(adapterId),
         ]);
@@ -193,19 +202,29 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       cancelled = true;
     };
     // publicId changes are local edits and must not reload the form.
-  }, [adapterId, onAdapterChange, onError]);
+  }, [
+    adapterId,
+    onAdapterChange,
+    onError,
+    props.canManageCredentials,
+    props.useScopedCredentialOptions,
+  ]);
 
   // 凭据增删改后仅刷新 token 凭据选项（UX-003）；不会重载 Webhook 配置，
   // 未保存的本地编辑保持不变。
   useEffect(
     () =>
       subscribeCredentialCatalog(() => {
-        void api
-          .listCredentials()
+        if (props.canManageCredentials !== true) {
+          return;
+        }
+        void (props.useScopedCredentialOptions === true
+          ? api.listAdapterCredentialOptions(adapterId)
+          : api.listCredentials())
           .then((credentialList) => setCredentials(credentialList))
           .catch((error) => onError(errorMessage(error, "", runtimeTranslate)));
       }),
-    [onError],
+    [adapterId, onError, props.canManageCredentials, props.useScopedCredentialOptions],
   );
 
   const archived = !!props.adapter.archived_at;
@@ -234,7 +253,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
       saved.credential_id !== credentialId ||
       (props.adapter.runtime_worker_id ?? null) !== workerId ||
       timeoutDirty);
-  const canConfigure = !archived && !runtimeLocked && !saving && !changingState;
+  const canConfigure = !props.readOnly && !archived && !runtimeLocked && !saving && !changingState;
   const startBlockedReason =
     props.adapter.latest_version_id === null
       ? t("webhook.reasons.noVersion")
@@ -273,7 +292,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   ]);
 
   async function handleToggleReceiving() {
-    if (saved === null || changingState) return;
+    if (props.readOnly || saved === null || changingState) return;
     if (!enabled) {
       await startReceiving();
       return;
@@ -441,6 +460,9 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   return (
     <div className="webhook-trigger-panel" data-testid="webhook-run-settings">
        <Typography.Title level={5}>{t("webhook.settings.title")}</Typography.Title>
+      {props.readOnly && (
+        <Alert type="info" showIcon data-testid="webhook-read-only" message={t("webhook.reasons.readOnly")} />
+      )}
       <Space direction="vertical" size="middle" className="webhook-form">
         <div className="settings-field">
            <span className="settings-field-label">{t("webhook.settings.path")}</span>
@@ -489,7 +511,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         </div>
         <label className="settings-field">
            <span className="settings-field-label">{t("webhook.settings.credential")}</span>
-          {canConfigure ? (
+          {canConfigure && props.canManageCredentials === true ? (
             <>
               <Select
                 data-testid="webhook-credential"

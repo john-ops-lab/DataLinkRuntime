@@ -6,6 +6,7 @@ export type TaskRunMode = "manual" | "schedule";
 export type SystemLocale = "zh-CN" | "en";
 
 export type AccountRole = "admin" | "user";
+export type AdapterAccessLevel = "admin" | "owner" | "edit" | "read";
 
 /** Secret-free identity returned by the account Session endpoints. */
 export interface AccountPrincipal {
@@ -37,6 +38,10 @@ export interface Adapter {
   timeout_seconds?: number;
   /** M5.9 Wave C: null means a system-owned Adapter. */
   owner_user_id?: number | null;
+  /** M5.9 Wave D: server-resolved relationship for the current Principal. */
+  access_level?: AdapterAccessLevel | null;
+  /** Safe owner display metadata; null means system-owned. */
+  owner_username?: string | null;
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;
@@ -44,6 +49,21 @@ export interface Adapter {
   running_execution_id?: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AdapterPermission {
+  user_id: number;
+  username: string;
+  enabled: boolean;
+  permission: "read" | "edit";
+}
+
+/** Minimal account metadata returned only for Adapter sharing. */
+export interface AdapterPermissionCandidate {
+  id: number;
+  username: string;
+  role: AccountRole;
+  enabled: boolean;
 }
 
 export interface VersionSummary {

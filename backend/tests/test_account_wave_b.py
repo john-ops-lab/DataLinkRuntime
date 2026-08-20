@@ -266,8 +266,10 @@ def test_account_user_cannot_bypass_management_but_reaches_acl_checked_business_
     assert role_attempt.status_code == 403
     assert role_attempt.json()["detail"]["code"] == "account_user_profile_forbidden"
 
+    workers = user_client.get(account_path("/api/workers"))
+    assert workers.status_code == 200, workers.text
+
     for path in (
-        "/api/workers",
         "/api/credentials",
         "/api/package-sources",
         "/api/knowledge-sources",

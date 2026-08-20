@@ -1,11 +1,14 @@
 /** Low-frequency Adapter metadata, clone and soft-delete actions. */
 
+import { useState } from "react";
 import { Alert, Button, Divider, Drawer, Input, Space } from "antd";
 import { useTranslation } from "react-i18next";
 
+import { canEditAdapter, canManageAdapter } from "../adapter-access";
 import { LANGUAGE_LABELS } from "../languages";
-import type { Adapter } from "../types";
+import type { Adapter, AdapterAccessLevel } from "../types";
 import ActionWithReason from "./ActionWithReason";
+import AdapterPermissionsPanel from "./AdapterPermissionsPanel";
 
 interface Props {
   open: boolean;
@@ -20,12 +23,18 @@ interface Props {
   onUpdate: () => void;
   onDelete: () => void;
   onClone: () => void;
+  accessLevel?: AdapterAccessLevel;
+  onPermissionsChanged?: () => void;
 }
 
 export default function AdapterSettingsDrawer(props: Props) {
   const { t } = useTranslation(["adapter", "common"]);
   const adapter = props.adapter;
+  const [sharingOpen, setSharingOpen] = useState(false);
   const archived = !!adapter?.archived_at;
+  const accessLevel = adapter === null ? "read" : props.accessLevel ?? "admin";
+  const canEdit = canEditAdapter(accessLevel);
+  const canManage = canManageAdapter(accessLevel);
   return (
     <Drawer
       title={adapter?.adapter_type === "webhook" ? t("settings.webhookTitle") : t("settings.taskTitle")}
@@ -38,7 +47,7 @@ export default function AdapterSettingsDrawer(props: Props) {
         <div className="settings-form">
           <label className="settings-field">
             <span className="settings-field-label">{t("settings.name")}</span>
-            <Input data-testid="adapter-name" value={props.name} disabled={props.busy || archived} onChange={(event) => props.onNameChange(event.target.value)} />
+            <Input data-testid="adapter-name" value={props.name} disabled={props.busy || archived || !canEdit} onChange={(event) => props.onNameChange(event.target.value)} />
           </label>
           <label className="settings-field">
             <span className="settings-field-label">{t("settings.language")}</span>
@@ -46,10 +55,34 @@ export default function AdapterSettingsDrawer(props: Props) {
           </label>
           <label className="settings-field">
             <span className="settings-field-label">{t("settings.description")}</span>
-            <Input data-testid="adapter-description" value={props.description} disabled={props.busy || archived} onChange={(event) => props.onDescriptionChange(event.target.value)} />
+            <Input data-testid="adapter-description" value={props.description} disabled={props.busy || archived || !canEdit} onChange={(event) => props.onDescriptionChange(event.target.value)} />
           </label>
-          <Button type="primary" data-testid="update-details" disabled={props.busy || !props.contentReady || archived} onClick={props.onUpdate}>{t("settings.update")}</Button>
+          <Button type="primary" data-testid="update-details" disabled={props.busy || !props.contentReady || archived || !canEdit} onClick={props.onUpdate}>{t("settings.update")}</Button>
+          {!canEdit && (
+            <Alert type="info" showIcon data-testid="adapter-access-read-only" message={t("settings.readOnlyAccess")} />
+          )}
+          {canEdit && !canManage && (
+            <Alert type="info" showIcon data-testid="adapter-access-edit" message={t("settings.editAccess")} />
+          )}
           <Divider />
+          {canManage && !archived && (
+            <>
+              <Button
+                data-testid="open-adapter-permissions"
+                onClick={() => setSharingOpen((current) => !current)}
+              >
+                {t("sharing.open")}
+              </Button>
+              {sharingOpen && (
+                <AdapterPermissionsPanel
+                  adapterId={adapter.id}
+                  ownerLabel={adapter.owner_username ?? t("access.systemOwner")}
+                  onChanged={props.onPermissionsChanged}
+                />
+              )}
+              <Divider />
+            </>
+          )}
           {archived ? (
             <Alert
               type="info"
@@ -60,19 +93,23 @@ export default function AdapterSettingsDrawer(props: Props) {
             />
           ) : (
             <Space direction="vertical" className="settings-lifecycle-actions">
-               <Button data-testid="clone-adapter" disabled={props.busy} onClick={props.onClone}>{t("settings.clone")}</Button>
-              <ActionWithReason
-                 label={t("settings.delete")}
-                 reason={adapter.runtime_locked === true ? t("settings.deleteReasonLocked") : props.busy ? t("settings.deleteReasonBusy") : null}
-              >
-                <Button danger data-testid="delete-adapter" disabled={props.busy || adapter.runtime_locked === true} onClick={props.onDelete}>{t("settings.delete")}</Button>
-              </ActionWithReason>
+              {canEdit && (
+                <Button data-testid="clone-adapter" disabled={props.busy} onClick={props.onClone}>{t("settings.clone")}</Button>
+              )}
+              {canManage && (
+                <ActionWithReason
+                  label={t("settings.delete")}
+                  reason={adapter.runtime_locked === true ? t("settings.deleteReasonLocked") : props.busy ? t("settings.deleteReasonBusy") : null}
+                >
+                  <Button danger data-testid="delete-adapter" disabled={props.busy || adapter.runtime_locked === true} onClick={props.onDelete}>{t("settings.delete")}</Button>
+                </ActionWithReason>
+              )}
             </Space>
           )}
           {adapter.runtime_locked === true && (
            <Alert type="warning" showIcon message={adapter.adapter_type === "webhook" ? t("settings.deleteWarningWebhook") : t("settings.deleteWarningTask")} />
           )}
-           {!archived && <p className="settings-danger-hint">{t("settings.dangerHint")}</p>}
+           {!archived && canManage && <p className="settings-danger-hint">{t("settings.dangerHint")}</p>}
         </div>
       )}
     </Drawer>

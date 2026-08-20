@@ -485,3 +485,124 @@ def test_acl_upsert_is_concurrent_and_unique(
                 )
             )
         session.rollback()
+
+
+def test_wave_d_relationship_metadata_grantee_discovery_and_immediate_acl_changes(
+    api_client: TestClient,
+    wave_c_accounts: dict[str, Any],
+) -> None:
+    """Wave D exposes only safe relationship/grantee metadata to the UI."""
+    owner_client = wave_c_accounts["owner_client"]
+    reader_client = wave_c_accounts["reader_client"]
+    editor_client = wave_c_accounts["editor_client"]
+    admin_client = wave_c_accounts["account_admin_client"]
+    reader_id = int(wave_c_accounts["reader"]["id"])
+    editor_id = int(wave_c_accounts["editor"]["id"])
+
+    system = create_adapter(api_client, "wave-d-system")
+    owned = create_account_adapter(owner_client, "wave-d-owned")
+    owned_id = int(owned["id"])
+    system_id = int(system["id"])
+
+    owner_row = owner_client.get(account_path("/api/adapters")).json()[0]
+    assert owner_row["id"] == owned_id
+    assert owner_row["access_level"] == "owner"
+    assert owner_row["owner_username"] == wave_c_accounts["owner"]["username"]
+
+    assert grant(owner_client, owned_id, reader_id, "read").status_code == 200
+    assert grant(owner_client, owned_id, editor_id, "edit").status_code == 200
+
+    reader_row = reader_client.get(account_path("/api/adapters")).json()[0]
+    editor_row = editor_client.get(account_path("/api/adapters")).json()[0]
+    assert reader_row["access_level"] == "read"
+    assert editor_row["access_level"] == "edit"
+    assert reader_row["owner_username"] == wave_c_accounts["owner"]["username"]
+
+    token_system = api_client.get(f"/api/adapters/{system_id}")
+    assert token_system.status_code == 200, token_system.text
+    assert token_system.json()["access_level"] == "admin"
+    assert token_system.json()["owner_username"] is None
+
+    admin_system = admin_client.get(account_path(f"/api/adapters/{system_id}"))
+    assert admin_system.status_code == 200, admin_system.text
+    assert admin_system.json()["access_level"] == "admin"
+
+    system_candidates = admin_client.get(
+        account_path(f"/api/adapters/{system_id}/permission-candidates")
+    )
+    assert system_candidates.status_code == 200, system_candidates.text
+    assert {row["id"] for row in system_candidates.json()} >= {reader_id, editor_id}
+
+    candidates = owner_client.get(account_path(f"/api/adapters/{owned_id}/permission-candidates"))
+    assert candidates.status_code == 200, candidates.text
+    candidate_rows = candidates.json()
+    assert {row["id"] for row in candidate_rows} >= {reader_id, editor_id}
+    assert all(set(row) == {"id", "username", "role", "enabled"} for row in candidate_rows)
+    assert all(row["role"] == "user" for row in candidate_rows)
+    assert "wave-c-owner" not in {row["username"] for row in candidate_rows}
+    assert not any(
+        secret_key in candidates.text
+        for secret_key in ("password", "password_hash", "session", "must_change_password")
+    )
+
+    admin_candidates = admin_client.get(
+        account_path(f"/api/adapters/{owned_id}/permission-candidates")
+    )
+    assert admin_candidates.status_code == 200, admin_candidates.text
+    assert {row["role"] for row in admin_candidates.json()} == {"admin", "user"}
+
+    for client in (reader_client, editor_client):
+        forbidden = client.get(account_path(f"/api/adapters/{owned_id}/permission-candidates"))
+        assert forbidden.status_code == 403, forbidden.text
+        assert forbidden.json()["detail"]["code"] == "adapter_permission_management_forbidden"
+
+    revoked = account_write(
+        owner_client,
+        "DELETE",
+        f"/api/adapters/{owned_id}/permissions/{reader_id}",
+    )
+    assert revoked.status_code == 204, revoked.text
+    assert reader_client.get(account_path("/api/adapters")).json() == []
+    guessed = reader_client.get(account_path(f"/api/adapters/{owned_id}"))
+    assert guessed.status_code == 404
+    assert guessed.json()["detail"]["code"] == "adapter_not_found"
+
+    assert grant(owner_client, owned_id, reader_id, "edit").status_code == 200
+    refreshed = reader_client.get(account_path(f"/api/adapters/{owned_id}"))
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["access_level"] == "edit"
+
+
+def test_wave_d_business_metadata_and_credential_binding_permissions(
+    api_client: TestClient,
+    wave_c_accounts: dict[str, Any],
+) -> None:
+    owner_client = wave_c_accounts["owner_client"]
+    editor_client = wave_c_accounts["editor_client"]
+    reader_client = wave_c_accounts["reader_client"]
+    editor_id = int(wave_c_accounts["editor"]["id"])
+    reader_id = int(wave_c_accounts["reader"]["id"])
+    adapter = create_account_adapter(owner_client, "wave-d-credential")
+    adapter_id = int(adapter["id"])
+    credential = api_client.post(
+        "/api/credentials",
+        json={"name": "wave-d-safe", "type": "token", "fields": {"token": "wave-d-secret"}},
+    )
+    assert credential.status_code == 201, credential.text
+    credential_id = credential.json()["id"]
+    assert grant(owner_client, adapter_id, editor_id, "edit").status_code == 200
+    assert grant(owner_client, adapter_id, reader_id, "read").status_code == 200
+
+    options = owner_client.get(account_path(f"/api/adapters/{adapter_id}/credential-options"))
+    assert options.status_code == 200, options.text
+    assert options.json()[0]["id"] == credential_id
+    assert "wave-d-secret" not in options.text
+    assert "ciphertext" not in options.text
+
+    for client in (editor_client, reader_client):
+        forbidden = client.get(account_path(f"/api/adapters/{adapter_id}/credential-options"))
+        assert forbidden.status_code == 403, forbidden.text
+        assert forbidden.json()["detail"]["code"] == "adapter_owner_required"
+
+    workers = reader_client.get(account_path("/api/workers"))
+    assert workers.status_code == 200, workers.text

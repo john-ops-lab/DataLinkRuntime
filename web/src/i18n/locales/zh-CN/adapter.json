@@ -6,6 +6,15 @@
     "taskAdapter": "任务型适配器",
     "webhookAdapter": "Webhook 适配器"
   },
+  "access": {
+    "mine": "我的",
+    "sharedEdit": "共享 · 可编辑",
+    "sharedRead": "共享 · 只读",
+    "systemAdmin": "系统所有 · 管理员 / Token",
+    "adminAll": "管理员全局访问",
+    "systemOwner": "系统所有者",
+    "ownerUnknown": "所有者未知"
+  },
   "catalog": {
     "title": "适配器",
     "new": "新建",
@@ -56,6 +65,8 @@
     "language": "开发语言",
     "description": "描述",
     "update": "更新信息",
+    "readOnlyAccess": "这是只读共享：仅可查看代码、依赖、配置、日志和历史，不能写入、运行、调用 AI 或管理生命周期。",
+    "editAccess": "这是可编辑共享：可以编辑、保存、运行和配置触发器，但不能删除适配器或管理共享权限。",
     "archivedMessage": "已删除适配器仅支持查看",
     "archivedDescription": "该适配器已从活跃列表移除。",
     "clone": "复制适配器",
@@ -65,6 +76,28 @@
     "deleteWarningWebhook": "接收中或调用活跃期间不能删除适配器。",
     "deleteWarningTask": "定时启用或执行活跃期间不能删除适配器。",
     "dangerHint": "删除后适配器会从活跃列表消失；运行历史按平台保留策略处理。"
+  },
+  "sharing": {
+    "open": "权限与共享",
+    "title": "权限与共享",
+    "owner": "所有者：{{owner}}。管理员 / Token 对所有适配器始终拥有完整权限。",
+    "grantedTitle": "已授权用户",
+    "addTitle": "添加共享用户",
+    "account": "账户",
+    "accountPlaceholder": "选择账户",
+    "permission": "权限",
+    "permissionFor": "{{username}} 的共享权限",
+    "read": "只读",
+    "edit": "可编辑",
+    "admin": "管理员（已有全局权限）",
+    "disabled": "已禁用",
+    "grant": "授予",
+    "revoke": "移除",
+    "none": "暂无共享用户",
+    "noCandidates": "暂无可添加的账户",
+    "loadFailed": "共享权限加载失败",
+    "saveFailed": "共享权限保存失败",
+    "revokeFailed": "共享权限移除失败"
   },
   "clone": {
     "title": "复制适配器",

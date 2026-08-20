@@ -93,7 +93,7 @@ it("renders bilingual user management and never displays a submitted password", 
   expect(screen.getByText(/密码提交后不会再次返回或展示/)).toBeTruthy();
 });
 
-it("hides system management and business console from an account user", async () => {
+it("shows the ACL-scoped business console while keeping system management hidden", async () => {
   const requests: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -108,14 +108,28 @@ it("hides system management and business console from an account user", async ()
     if (url === "/api/auth/account/me") {
       return jsonResponse({ principal: { ...users[1], must_change_password: false } });
     }
+    if (url === "/api/health") {
+      return jsonResponse({ status: "ok", database: true });
+    }
+    if (url === "/api/adapters") {
+      return jsonResponse([]);
+    }
+    if (url === "/api/workers") {
+      return jsonResponse([]);
+    }
     throw new Error(`unexpected request: ${url}`);
   }));
 
   window.__DLR_ENTRY_MODE__ = "account";
   render(<App />);
-  await screen.findByTestId("account-profile-username");
-  expect(screen.getByDisplayValue("ordinary")).toBeTruthy();
+  await screen.findByTestId("account-principal");
+  expect(screen.getByTestId("account-profile")).toBeTruthy();
   expect(screen.queryByTestId("user-management")).toBeNull();
   expect(screen.queryByTestId("system-settings")).toBeNull();
-  expect(requests.some((url) => url === "/api/adapters" || url === "/api/workers")).toBe(false);
+  expect(requests).toContain("/api/adapters");
+  expect(requests).toContain("/api/workers");
+
+  fireEvent.click(screen.getByTestId("account-profile"));
+  await screen.findByTestId("account-profile-username");
+  expect(screen.getByDisplayValue("ordinary")).toBeTruthy();
 });

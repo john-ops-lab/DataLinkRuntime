@@ -105,6 +105,7 @@
       "staleDescription": "This candidate was generated from an earlier version; applying it will overwrite the current code.",
       "applyBlockedApplied": "This candidate has already been applied to the current code",
       "applyBlockedArchived": "The Adapter was deleted; the candidate can only be viewed, not applied",
+      "applyBlockedPermission": "The current sharing permission does not allow AI or applying a candidate",
       "applyBlockedNotReady": "The current code has not finished loading. Try again later",
       "applyBlockedBusy": "Another operation is in progress. Wait for it to finish",
       "applyBlockedLocked": "The Adapter is running; the candidate cannot be applied",

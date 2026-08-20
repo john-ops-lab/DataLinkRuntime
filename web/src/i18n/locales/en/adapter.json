@@ -6,6 +6,15 @@
     "taskAdapter": "Task Adapter",
     "webhookAdapter": "Webhook Adapter"
   },
+  "access": {
+    "mine": "Mine",
+    "sharedEdit": "Shared · editable",
+    "sharedRead": "Shared · read-only",
+    "systemAdmin": "System-owned · administrator / Token",
+    "adminAll": "Administrator · full access",
+    "systemOwner": "System owner",
+    "ownerUnknown": "Owner unavailable"
+  },
   "catalog": {
     "title": "Adapters",
     "new": "New",
@@ -56,6 +65,8 @@
     "language": "Development language",
     "description": "Description",
     "update": "Update details",
+    "readOnlyAccess": "This is a read-only share: code, dependencies, configuration, logs and history can be viewed, but writes, runs, AI and lifecycle actions are unavailable.",
+    "editAccess": "This is an editable share: editing, saving, running and trigger configuration are allowed, but deleting the Adapter and managing sharing permissions are unavailable.",
     "archivedMessage": "Deleted Adapter is view-only",
     "archivedDescription": "This Adapter has been removed from the active list.",
     "clone": "Clone Adapter",
@@ -65,6 +76,28 @@
     "deleteWarningWebhook": "An Adapter cannot be deleted while it is receiving or has active calls.",
     "deleteWarningTask": "An Adapter cannot be deleted while its schedule or execution is active.",
     "dangerHint": "Deleting removes the Adapter from the active list; execution history follows the platform retention policy."
+  },
+  "sharing": {
+    "open": "Permissions and sharing",
+    "title": "Permissions and sharing",
+    "owner": "Owner: {{owner}}. Administrators / Token always have full access to every Adapter.",
+    "grantedTitle": "Granted accounts",
+    "addTitle": "Share with an account",
+    "account": "Account",
+    "accountPlaceholder": "Select an account",
+    "permission": "Permission",
+    "permissionFor": "Sharing permission for {{username}}",
+    "read": "Read-only",
+    "edit": "Editable",
+    "admin": "Administrator (already has global access)",
+    "disabled": "Disabled",
+    "grant": "Grant",
+    "revoke": "Remove",
+    "none": "No shared accounts",
+    "noCandidates": "No accounts can be added",
+    "loadFailed": "Sharing permissions could not be loaded",
+    "saveFailed": "Sharing permissions could not be saved",
+    "revokeFailed": "Sharing permission could not be removed"
   },
   "clone": {
     "title": "Clone Adapter",

@@ -1,6 +1,7 @@
 /** Account-entry session bootstrap and the smallest forced-change/app loop. */
 
 import { useCallback, useEffect, useState } from "react";
+import { Drawer } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -12,13 +13,14 @@ import AccountLoginPage from "./components/AccountLoginPage";
 import AccountPasswordPage from "./components/AccountPasswordPage";
 import AccountUserPage from "./components/AccountUserPage";
 
-type AccountScreen = "loading" | "login" | "change-password" | "console" | "user-profile";
+type AccountScreen = "loading" | "login" | "change-password" | "console";
 
 export default function AccountApp() {
   const { i18n, t } = useTranslation("common");
   const [screen, setScreen] = useState<AccountScreen>("loading");
   const [principal, setPrincipal] = useState<AccountPrincipal | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const refreshSystemLocale = useCallback(async () => {
     try {
@@ -34,17 +36,17 @@ export default function AccountApp() {
   const showPrincipal = useCallback((next: AccountPrincipal) => {
     setPrincipal(next);
     setNotice(null);
+    setProfileOpen(false);
     setScreen(
       next.must_change_password
         ? "change-password"
-        : next.role === "admin"
-          ? "console"
-          : "user-profile",
+        : "console",
     );
   }, []);
 
   const returnToLogin = useCallback((nextNotice: string | null) => {
     setPrincipal(null);
+    setProfileOpen(false);
     setNotice(nextNotice);
     setScreen("login");
   }, []);
@@ -125,15 +127,27 @@ export default function AccountApp() {
   if (principal === null) {
     return <AccountLoginPage notice={notice} onSubmit={handleLogin} />;
   }
-  if (screen === "user-profile") {
-    return (
-      <AccountUserPage
-        principal={principal}
-        onPrincipalChange={setPrincipal}
-        onPasswordChanged={() => returnToLogin(t("users.passwordChanged"))}
-        onLogout={handleLogout}
+  return (
+    <>
+      <AdapterConsole
+        accountPrincipal={principal}
+        onAccountLogout={handleLogout}
+        onOpenAccountProfile={() => setProfileOpen(true)}
       />
-    );
-  }
-  return <AdapterConsole accountPrincipal={principal} onAccountLogout={handleLogout} />;
+      <Drawer
+        title={t("users.profileTitle")}
+        width={460}
+        open={profileOpen}
+        destroyOnHidden
+        onClose={() => setProfileOpen(false)}
+      >
+        <AccountUserPage
+          principal={principal}
+          onPrincipalChange={setPrincipal}
+          onPasswordChanged={() => returnToLogin(t("users.passwordChanged"))}
+          onLogout={handleLogout}
+        />
+      </Drawer>
+    </>
+  );
 }

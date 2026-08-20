@@ -7,13 +7,15 @@ import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import { credentialFieldLabel, credentialFields } from "../credential-fields";
 import { subscribeCredentialCatalog } from "../credential-catalog";
-import type { Credential } from "../types";
+import type { AdapterAccessLevel, Credential, CredentialBinding } from "../types";
 import { userErrorMessage } from "../user-message";
 
 interface BindingRow {
   env_key: string;
   credential_id: number | null;
   field: string;
+  credential_name?: string;
+  credential_type?: string;
 }
 
 interface CredentialBindingsEditorProps {
@@ -24,23 +26,30 @@ interface CredentialBindingsEditorProps {
   onSaved?: () => void;
   /** 打开「系统设置 → 凭据管理」的入口（M5.5.7：不在编辑页重复实现新建表单）。 */
   onOpenSettings?: () => void;
+  accessLevel?: AdapterAccessLevel;
+  /** Account entry uses the Adapter-scoped metadata endpoint; Token entry
+   * keeps the existing global admin endpoint. */
+  useScopedCredentialOptions?: boolean;
 }
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
 
-function toRows(bindings: { env_key: string; credential_id: number; field: string }[]): BindingRow[] {
+function toRows(bindings: CredentialBinding[]): BindingRow[] {
   return bindings.map((binding) => ({
     env_key: binding.env_key,
     credential_id: binding.credential_id,
     field: binding.field,
+    credential_name: binding.credential_name,
+    credential_type: binding.credential_type,
   }));
 }
 
 export default function CredentialBindingsEditor(props: CredentialBindingsEditorProps) {
   const { t } = useTranslation("settings");
   const { adapterId, onError } = props;
+  const canManageBindings = props.accessLevel === undefined || props.accessLevel === "admin" || props.accessLevel === "owner";
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [rows, setRows] = useState<BindingRow[]>([]);
   const [baseline, setBaseline] = useState<BindingRow[]>([]);
@@ -48,12 +57,21 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const loadCredentialOptions = useCallback((): Promise<Credential[]> => {
+    if (!canManageBindings) {
+      return Promise.resolve([]);
+    }
+    return props.useScopedCredentialOptions !== true
+      ? api.listCredentials()
+      : api.listAdapterCredentialOptions(adapterId);
+  }, [adapterId, canManageBindings, props.useScopedCredentialOptions]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setNotice(null);
     try {
       const [credentialList, bindingList] = await Promise.all([
-        api.listCredentials(),
+        loadCredentialOptions(),
         api.listAdapterBindings(adapterId),
       ]);
       setCredentials(credentialList);
@@ -65,7 +83,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
     } finally {
       setLoading(false);
     }
-  }, [adapterId, onError]);
+  }, [adapterId, loadCredentialOptions, onError]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 挂载时拉取凭据与绑定的初始加载是有意的异步同步
@@ -76,12 +94,14 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   useEffect(
     () =>
       subscribeCredentialCatalog(() => {
-        void api
-          .listCredentials()
+        if (!canManageBindings) {
+          return;
+        }
+        void loadCredentialOptions()
           .then((credentialList) => setCredentials(credentialList))
           .catch((error) => onError(errorMessage(error)));
       }),
-    [onError],
+    [canManageBindings, loadCredentialOptions, onError],
   );
 
   function updateRow(index: number, patch: Partial<BindingRow>) {
@@ -157,23 +177,29 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   return (
     <div className="binding-editor" data-testid="credential-bindings">
       <Typography.Paragraph type="secondary" className="binding-editor-help">
-         {t("bindings.help")} {" "}
-         <code>context.secrets.get(&quot;PASSWORD&quot;)</code>{t("bindings.helpSuffix")} {" "}
-         <code>DLR_SECRET_{"{env_key}"}</code> {t("bindings.injectedSuffix")}
+        {t("bindings.help")} {" "}
+        <code>context.secrets.get(&quot;PASSWORD&quot;)</code>{t("bindings.helpSuffix")} {" "}
+        <code>DLR_SECRET_{"{env_key}"}</code> {t("bindings.injectedSuffix")}
       </Typography.Paragraph>
-      <Typography.Paragraph type="secondary" className="binding-editor-help">
-         {t("bindings.openSettingsHint")}
-        {props.onOpenSettings !== undefined && (
+      <Alert
+        type="warning"
+        showIcon
+        data-testid="credential-binding-risk"
+        message={t(canManageBindings ? "bindings.ownerRisk" : "bindings.editRisk")}
+      />
+      {canManageBindings && props.onOpenSettings !== undefined && (
+        <Typography.Paragraph type="secondary" className="binding-editor-help">
+          {t("bindings.openSettingsHint")}
           <Button
             size="small"
             type="link"
             data-testid="open-settings-for-credentials"
             onClick={props.onOpenSettings}
           >
-             {t("actions.openSettings", { ns: "common" })}
+            {t("actions.openSettings", { ns: "common" })}
           </Button>
-        )}
-      </Typography.Paragraph>
+        </Typography.Paragraph>
+      )}
       {envKeyRenamed && (
         <Alert
           type="warning"
@@ -213,66 +239,81 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
                   disabled={props.disabled || saving}
                   onChange={(event) => updateRow(index, { env_key: event.target.value })}
                 />
-                <Select
-                  data-testid="binding-credential"
-                   aria-label={t("bindings.credential", { index: index + 1 })}
-                   placeholder={t("bindings.credentialPlaceholder")}
-                  style={{ minWidth: 160 }}
-                  value={row.credential_id ?? undefined}
-                  disabled={props.disabled || saving}
-                  options={credentials.map((candidate) => ({
-                    label: candidate.name,
-                    value: candidate.id,
-                  }))}
-                  onChange={(value) => handleCredentialChange(index, value)}
-                />
-                <Select
-                  data-testid="binding-field"
-                   aria-label={t("bindings.field", { index: index + 1 })}
-                   placeholder={t("bindings.fieldPlaceholder")}
-                  style={{ minWidth: 120 }}
-                  value={row.field !== "" ? row.field : undefined}
-                  disabled={props.disabled || saving || fieldOptions.length === 0}
-                  options={fieldOptions}
-                  onChange={(value) => updateRow(index, { field: value })}
-                />
-                <Button
-                  danger
-                  data-testid="remove-binding"
-                   aria-label={t("bindings.delete", { index: index + 1 })}
-                  disabled={props.disabled || saving}
-                  onClick={() => updateRows((current) => current.filter((_, i) => i !== index))}
-                >
-            {t("actions.remove", { ns: "common" })}
-                </Button>
+                {canManageBindings ? (
+                  <>
+                    <Select
+                      data-testid="binding-credential"
+                      aria-label={t("bindings.credential", { index: index + 1 })}
+                      placeholder={t("bindings.credentialPlaceholder")}
+                      style={{ minWidth: 160 }}
+                      value={row.credential_id ?? undefined}
+                      disabled={props.disabled || saving}
+                      options={credentials.map((candidate) => ({
+                        label: candidate.name,
+                        value: candidate.id,
+                      }))}
+                      onChange={(value) => handleCredentialChange(index, value)}
+                    />
+                    <Select
+                      data-testid="binding-field"
+                      aria-label={t("bindings.field", { index: index + 1 })}
+                      placeholder={t("bindings.fieldPlaceholder")}
+                      style={{ minWidth: 120 }}
+                      value={row.field !== "" ? row.field : undefined}
+                      disabled={props.disabled || saving || fieldOptions.length === 0}
+                      options={fieldOptions}
+                      onChange={(value) => updateRow(index, { field: value })}
+                    />
+                    <Button
+                      danger
+                      data-testid="remove-binding"
+                      aria-label={t("bindings.delete", { index: index + 1 })}
+                      disabled={props.disabled || saving}
+                      onClick={() => updateRows((current) => current.filter((_, i) => i !== index))}
+                    >
+                      {t("actions.remove", { ns: "common" })}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <span className="binding-readonly-value" data-testid="binding-credential-readonly">
+                      {row.credential_name ?? `#${row.credential_id ?? "?"}`}
+                    </span>
+                    <span className="binding-readonly-value" data-testid="binding-field-readonly">
+                      {row.field}
+                    </span>
+                  </>
+                )}
               </Space>
             );
           })}
         </div>
       )}
-      <Space className="binding-actions">
-        <Button
-          data-testid="add-binding"
-          disabled={props.disabled || saving}
-          onClick={() =>
-            updateRows((current) => [
-              ...current,
-              { env_key: "", credential_id: null, field: "" },
-            ])
-          }
-        >
-           {t("actions.addBinding", { ns: "common" })}
-        </Button>
-        <Button
-          type="primary"
-          data-testid="save-bindings"
-          loading={saving}
-          disabled={props.disabled || !dirty}
-          onClick={() => void handleSave()}
-        >
-           {t("bindings.save")}
-        </Button>
-      </Space>
+      {canManageBindings && (
+        <Space className="binding-actions">
+          <Button
+            data-testid="add-binding"
+            disabled={props.disabled || saving}
+            onClick={() =>
+              updateRows((current) => [
+                ...current,
+                { env_key: "", credential_id: null, field: "" },
+              ])
+            }
+          >
+            {t("actions.addBinding", { ns: "common" })}
+          </Button>
+          <Button
+            type="primary"
+            data-testid="save-bindings"
+            loading={saving}
+            disabled={props.disabled || !dirty}
+            onClick={() => void handleSave()}
+          >
+            {t("bindings.save")}
+          </Button>
+        </Space>
+      )}
     </div>
   );
 }
