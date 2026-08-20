@@ -130,7 +130,7 @@ body {
 /* --- Adapter Catalog（左侧固定导航区） ---------------------------------- */
 
 .catalog {
-  flex: 0 0 260px;
+  flex: 0 0 300px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -155,7 +155,7 @@ body {
 
 .catalog-search {
   flex: 0 0 auto;
-  padding: 0 12px 8px;
+  padding: 0 8px 8px;
 }
 
 .catalog-search-control > .ant-input-affix-wrapper {
@@ -163,13 +163,25 @@ body {
   min-width: 0;
 }
 
-/* M5.8-008：[类型][状态][搜索] 连续单行；两个下拉固定宽度，搜索框占据剩余空间。 */
+/* M5.8-008：[类型][状态][搜索] 连续单行；收窄 antd small Select 内部留白后，
+   两个下拉宽度按双语最长默认标签（en "All types"/"All statuses"）设定，
+   保证默认选中项不截断，搜索框占据剩余空间。 */
+.catalog-search-control > .catalog-filter-type .ant-select-selector,
+.catalog-search-control > .catalog-filter-status .ant-select-selector {
+  padding-inline: 6px 2px;
+}
+
+.catalog-search-control > .catalog-filter-type .ant-select-arrow,
+.catalog-search-control > .catalog-filter-status .ant-select-arrow {
+  margin-inline-start: 2px;
+}
+
 .catalog-search-control > .catalog-filter-type {
-  flex: 0 0 96px;
+  flex: 0 0 88px;
 }
 
 .catalog-search-control > .catalog-filter-status {
-  flex: 0 0 88px;
+  flex: 0 0 104px;
 }
 
 .catalog-list {
@@ -2091,7 +2103,7 @@ body {
 
 @media (max-width: 1400px) {
   .catalog {
-    flex-basis: 230px;
+    flex-basis: 268px;
   }
 
   .ai-assistant-expanded {
