@@ -7,7 +7,13 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 
 import { api } from "../api";
-import type { Credential, CredentialType, PackageSourceDefaults } from "../types";
+import { applySystemLocale } from "../i18n";
+import type {
+  Credential,
+  CredentialType,
+  KnowledgeSource,
+  PackageSourceDefaults,
+} from "../types";
 import SystemSettingsDrawer from "./SystemSettingsDrawer";
 
 const CANONICAL_DEFAULTS: PackageSourceDefaults = {
@@ -429,4 +435,161 @@ it("依赖源 HTTP 应答保持可达语义，测试请求失败会清除旧状�
   fireEvent.click(testButton);
   await waitFor(() => expect(result.textContent).toContain("未测试"));
   expect(testSource).toHaveBeenCalledTimes(2);
+});
+
+it("M5.8-006：知识库配置只保存 access_key 引用，官方地址不可编辑", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([
+    credentialMetadata(7, "ima-access", "access_key"),
+    credentialMetadata(8, "not-an-access-key", "token"),
+  ]);
+  const source: KnowledgeSource = {
+    source_id: "ima",
+    kind: "ima",
+    name: "Tencent ima",
+    endpoint: "https://ima.qq.com",
+    enabled: true,
+    status: "unconfigured",
+    credential_id: null,
+    credential_name: null,
+    credential_type: null,
+    config_source: "environment",
+    created_at: null,
+    updated_at: null,
+  };
+  vi.spyOn(api, "getKnowledgeSource").mockResolvedValue(source);
+  const update = vi.spyOn(api, "updateKnowledgeSource").mockResolvedValue({
+    ...source,
+    status: "configured",
+    credential_id: 7,
+    credential_name: "ima-access",
+    credential_type: "access_key",
+    config_source: "database",
+  });
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("tab", { name: "知识库" }));
+  await screen.findByTestId("knowledge-source-summary");
+
+  expect(screen.getByTestId("knowledge-source-endpoint").textContent).toBe(
+    "https://ima.qq.com",
+  );
+  expect(screen.queryByRole("textbox", { name: "服务地址" })).toBeNull();
+
+  const credentialDropdown = await openSelect("knowledge-source-credential");
+  expect(optionLabels(credentialDropdown)).toEqual(["ima-access"]);
+  clickOption(credentialDropdown, "ima-access");
+  fireEvent.click(screen.getByTestId("save-knowledge-source"));
+
+  await screen.findByText("知识库配置已保存");
+  expect(update).toHaveBeenCalledWith("ima", { enabled: true, credential_id: 7 });
+  expect(update.mock.calls[0]?.[1]).not.toHaveProperty("access_key_secret");
+  expect(document.body.textContent).not.toContain("ima-api-key-test-sentinel");
+});
+
+it("M5.8-006：测试连接后展示可访问知识库名称与状态，错误只显示稳定代码", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([
+    credentialMetadata(7, "ima-access", "access_key"),
+  ]);
+  const source: KnowledgeSource = {
+    source_id: "ima",
+    kind: "ima",
+    name: "Tencent ima",
+    endpoint: "https://ima.qq.com",
+    enabled: true,
+    status: "configured",
+    credential_id: 7,
+    credential_name: "ima-access",
+    credential_type: "access_key",
+    config_source: "database",
+    created_at: "2026-08-20T00:00:00Z",
+    updated_at: "2026-08-20T00:00:00Z",
+  };
+  vi.spyOn(api, "getKnowledgeSource").mockResolvedValue(source);
+  const testConnection = vi
+    .spyOn(api, "testKnowledgeSource")
+    .mockResolvedValueOnce({
+      ok: true,
+      status: "connected",
+      error_code: null,
+      message: "validated",
+      knowledge_bases: [{ id: "kb-1", name: "产品知识库", status: "accessible" }],
+    })
+    .mockResolvedValueOnce({
+      ok: false,
+      status: "error",
+      error_code: "ks_auth_failed",
+      message: "upstream-secret-must-not-render",
+      knowledge_bases: [],
+    });
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("tab", { name: "知识库" }));
+  await screen.findByTestId("knowledge-source-summary");
+
+  fireEvent.click(screen.getByTestId("test-knowledge-source"));
+  await screen.findByText("产品知识库");
+  expect(screen.getByTestId("knowledge-source-status").textContent).toContain("连接正常");
+  expect(screen.getByText("可访问")).toBeTruthy();
+  expect(document.body.textContent).not.toContain("upstream-secret-must-not-render");
+
+  await waitFor(() => expect(screen.getByTestId("test-knowledge-source")).not.toHaveProperty("disabled", true));
+  fireEvent.click(screen.getByTestId("test-knowledge-source"));
+  await screen.findByTestId("knowledge-source-test-error");
+  expect(screen.getByTestId("knowledge-source-test-error").textContent).toContain(
+    "知识库服务拒绝了访问凭据",
+  );
+  expect(screen.getByTestId("knowledge-source-test-error").textContent).toContain(
+    "ks_auth_failed",
+  );
+  expect(document.body.textContent).not.toContain("upstream-secret-must-not-render");
+  expect(testConnection).toHaveBeenCalledTimes(2);
+});
+
+it("M5.8-006：知识库设置与错误状态可切换到 English", async () => {
+  await applySystemLocale("en");
+  try {
+    vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+    vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+    vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+    vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+    vi.spyOn(api, "getKnowledgeSource").mockResolvedValue({
+      source_id: "ima",
+      kind: "ima",
+      name: "Tencent ima",
+      endpoint: "https://ima.qq.com",
+      enabled: true,
+      status: "configured",
+      credential_id: null,
+      credential_name: null,
+      credential_type: null,
+      config_source: "environment",
+      created_at: null,
+      updated_at: null,
+    });
+    vi.spyOn(api, "testKnowledgeSource").mockResolvedValue({
+      ok: false,
+      status: "error",
+      error_code: "ks_auth_failed",
+      message: "server-secret-must-not-render",
+      knowledge_bases: [],
+    });
+
+    render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("tab", { name: "Knowledge bases" }));
+    await screen.findByTestId("knowledge-source-summary");
+    fireEvent.click(screen.getByTestId("test-knowledge-source"));
+
+    const error = await screen.findByTestId("knowledge-source-test-error");
+    expect(error.textContent).toContain("The knowledge source rejected the Credential");
+    expect(error.textContent).toContain("ks_auth_failed");
+    expect(document.body.textContent).not.toContain("server-secret-must-not-render");
+  } finally {
+    await applySystemLocale("zh-CN");
+  }
 });

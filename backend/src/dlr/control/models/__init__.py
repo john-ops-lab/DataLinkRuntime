@@ -2,6 +2,7 @@
 
 from dlr.control.models.adapter import Adapter, AdapterVersion
 from dlr.control.models.execution import Execution, Worker
+from dlr.control.models.knowledge_source import KnowledgeSourceSetting
 from dlr.control.models.platform import (
     AdapterCredentialBinding,
     AiModelSetting,
@@ -21,6 +22,7 @@ __all__ = [
     "AiModelSetting",
     "Credential",
     "Execution",
+    "KnowledgeSourceSetting",
     "PackageSource",
     "SystemSetting",
     "Worker",

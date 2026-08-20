@@ -6,7 +6,10 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from dlr.control import db
 from dlr.control.api import (
@@ -17,6 +20,7 @@ from dlr.control.api import (
     events,
     executions,
     health,
+    knowledge_sources,
     locale,
     package_sources,
     schedules,
@@ -76,6 +80,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Create the Control Node FastAPI application."""
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Do not echo rejected KnowledgeSource request values.
+
+        In particular, a malformed client must not make FastAPI's generic
+        validation payload reflect an access_key_secret. Other API routes
+        retain FastAPI's default validation response for compatibility.
+        """
+        if request.url.path.startswith("/api/knowledge-sources/"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "ks_config_invalid",
+                        "message": "Knowledge source configuration is invalid",
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
+
     app.include_router(health.router)
     app.include_router(locale.public_router)
     app.include_router(locale.router)
@@ -84,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(ai.router)
     app.include_router(credentials.router)
     app.include_router(package_sources.router)
+    app.include_router(knowledge_sources.router)
     app.include_router(schedules.router)
     app.include_router(webhooks.router)
     # M5.4.3: the external Webhook ingress has its own Bearer authentication

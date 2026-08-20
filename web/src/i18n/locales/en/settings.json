@@ -9,7 +9,8 @@
   "tabs": {
     "credentials": "Credentials",
     "packageSources": "Package sources",
-    "aiModel": "AI model"
+    "aiModel": "AI model",
+    "knowledgeSources": "Knowledge bases"
   },
   "credentialTypes": {
     "password": "Password",
@@ -151,5 +152,47 @@
     "timeout": "Timeout",
     "authFailed": "Authentication failed",
     "testDetailUnknown": "Check the URL, Credential and network"
+  },
+  "knowledgeSources": {
+    "description": "Configure a read-only knowledge source and verify the knowledge bases it can access. Tencent ima is supported first.",
+    "enabled": "Enable knowledge source",
+    "credential": "Access Credential (access_key)",
+    "credentialPlaceholder": "Select an access_key Credential",
+    "credentialNotice": "Only the existing Credential reference is saved here; Client ID, API Key and other Secret values are never shown or echoed.",
+    "endpointLabel": "Service address",
+    "endpointNotice": "The Tencent ima official address is used by default. A custom address is allowed only through the deployment environment variable DLR_IMA_ENDPOINT.",
+    "save": "Save configuration",
+    "test": "Test connection and list knowledge bases",
+    "saved": "Knowledge source configuration saved",
+    "testSucceeded": "Connection validated; accessible knowledge bases refreshed",
+    "testFailed": "Connection validation failed. Check the Credential and deployment network.",
+    "knowledgeBasesTitle": "Accessible knowledge bases",
+    "noKnowledgeBases": "No knowledge bases listed yet. Test the connection first.",
+    "knowledgeBaseName": "Name",
+    "knowledgeBaseStatus": "Status",
+    "status": {
+      "disabled": "Disabled",
+      "unconfigured": "Not configured",
+      "configured": "Configured, not tested",
+      "connected": "Connected",
+      "error": "Connection error",
+      "accessible": "Accessible"
+    },
+    "errorCodes": {
+      "ks_not_configured": "The knowledge source is not configured",
+      "ks_credential_invalid": "The knowledge source Credential is invalid or not an access_key",
+      "ks_config_invalid": "The knowledge source configuration is invalid",
+      "ks_auth_failed": "The knowledge source rejected the Credential",
+      "ks_dns_failed": "The knowledge source hostname could not be resolved",
+      "ks_unreachable": "The knowledge source is unreachable",
+      "ks_rate_limited": "The knowledge source rate limit was reached",
+      "ks_timeout": "The knowledge source request timed out",
+      "ks_response_invalid": "The knowledge source returned an unparseable response",
+      "ks_too_large": "The knowledge source response exceeds the size limit",
+      "ks_unsupported": "The knowledge source does not support this read-only operation",
+      "ks_upstream_error": "The knowledge source returned an upstream error",
+      "network_error": "The Control service is unreachable",
+      "unknown_error": "Knowledge source connection validation failed"
+    }
   }
 }
