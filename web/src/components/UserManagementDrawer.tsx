@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { Button, Drawer, Input, Select, Space, Table, Tag, Typography } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button, Drawer, Form, Input, Select, Space, Tag, Typography } from "antd";
+import {
+  ModalForm,
+  ProForm,
+  ProTable,
+  QueryFilter,
+} from "@ant-design/pro-components";
+import type { ProColumns } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
 import { api } from "../api";
@@ -19,6 +25,22 @@ interface CreateForm {
   role: AccountRole;
 }
 
+interface UserFilters {
+  keyword: string;
+  role: "all" | AccountRole;
+  status: "all" | "enabled" | "disabled";
+}
+
+interface ResetForm {
+  password: string;
+}
+
+const EMPTY_FILTERS: UserFilters = {
+  keyword: "",
+  role: "all",
+  status: "all",
+};
+
 function emptyCreateForm(): CreateForm {
   return { username: "", password: "", role: "user" };
 }
@@ -34,6 +56,8 @@ export default function UserManagementDrawer({
   const [form, setForm] = useState<CreateForm>(emptyCreateForm);
   const [resetTarget, setResetTarget] = useState<AccountUser | null>(null);
   const [resetPassword, setResetPassword] = useState("");
+  const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
+  const [filters, setFilters] = useState<UserFilters>(EMPTY_FILTERS);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -59,20 +83,22 @@ export default function UserManagementDrawer({
     return () => window.clearTimeout(task);
   }, [loadUsers, open]);
 
-  async function handleCreate() {
-    if (busy || !form.username.trim() || !form.password) {
-      return;
+  async function handleCreate(values: CreateForm): Promise<boolean> {
+    if (busy) {
+      return false;
     }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
       const created = await api.createUser({
-        username: form.username.trim(),
-        password: form.password,
-        role: form.role,
+        username: values.username.trim(),
+        password: values.password,
+        role: values.role,
       });
-      setUsers((current) => [...current, created].sort((a, b) => a.username.localeCompare(b.username)));
+      setUsers((current) =>
+        [...current, created].sort((a, b) => a.username.localeCompare(b.username)),
+      );
       setForm(emptyCreateForm());
       setNotice(t("users.created"));
     } catch (err) {
@@ -80,6 +106,7 @@ export default function UserManagementDrawer({
     } finally {
       setBusy(false);
     }
+    return false;
   }
 
   async function handleEnabledChange(user: AccountUser) {
@@ -112,7 +139,12 @@ export default function UserManagementDrawer({
     if (
       busy ||
       nextRole === user.role ||
-      !window.confirm(t("users.confirmRole", { username: user.username, role: t(`users.role.${nextRole}`) }))
+      !window.confirm(
+        t("users.confirmRole", {
+          username: user.username,
+          role: t(`users.role.${nextRole}`),
+        }),
+      )
     ) {
       return;
     }
@@ -130,40 +162,104 @@ export default function UserManagementDrawer({
     }
   }
 
-  async function handleResetPassword() {
-    if (busy || resetTarget === null || !resetPassword) {
+  async function handleBulkEnabledChange(enabled: boolean) {
+    if (busy || selectedUserIds.length === 0) {
       return;
     }
-    if (!window.confirm(t("users.confirmReset", { username: resetTarget.username }))) {
+    const targets = users.filter((user) => selectedUserIds.includes(user.id));
+    const changedTargets = targets.filter((user) => user.enabled !== enabled);
+    if (changedTargets.length === 0) {
+      setSelectedUserIds([]);
+      return;
+    }
+    if (
+      !window.confirm(
+        enabled
+          ? t("users.confirmBulkEnable", { count: changedTargets.length })
+          : t("users.confirmBulkDisable", { count: changedTargets.length }),
+      )
+    ) {
       return;
     }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const updated = await api.resetUserPassword(resetTarget.id, resetPassword);
-      setUsers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      setResetTarget(null);
-      setResetPassword("");
-      setNotice(t("users.resetNotice"));
+      // The current API exposes one-user PATCH only. Keep the bulk action as a
+      // small client-side batch of those established calls; do not invent a
+      // new backend route or weaken the existing role/CSRF contract.
+      for (const user of changedTargets) {
+        const updated = await api.updateUser(user.id, { enabled });
+        setUsers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      }
+      setSelectedUserIds([]);
+      setNotice(
+        t(enabled ? "users.bulkEnabled" : "users.bulkDisabled", {
+          count: changedTargets.length,
+        }),
+      );
     } catch (err) {
-      setError(userErrorMessage(err, t("users.resetFailed"), locale));
+      setError(userErrorMessage(err, t("users.updateFailed"), locale));
     } finally {
       setBusy(false);
     }
   }
 
-  const columns: ColumnsType<AccountUser> = [
+  async function handleResetPassword(values: ResetForm): Promise<boolean> {
+    if (busy || resetTarget === null || !values.password) {
+      return false;
+    }
+    if (!window.confirm(t("users.confirmReset", { username: resetTarget.username }))) {
+      return false;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await api.resetUserPassword(resetTarget.id, values.password);
+      setUsers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setResetTarget(null);
+      setResetPassword("");
+      setNotice(t("users.resetNotice"));
+      return true;
+    } catch (err) {
+      setError(userErrorMessage(err, t("users.resetFailed"), locale));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const filteredUsers = useMemo(() => {
+    const keyword = filters.keyword.trim().toLowerCase();
+    return users.filter((user) => {
+      if (keyword !== "" && !user.username.toLowerCase().includes(keyword)) {
+        return false;
+      }
+      if (filters.role !== "all" && user.role !== filters.role) {
+        return false;
+      }
+      if (filters.status === "enabled" && !user.enabled) {
+        return false;
+      }
+      if (filters.status === "disabled" && user.enabled) {
+        return false;
+      }
+      return true;
+    });
+  }, [filters, users]);
+
+  const columns: ProColumns<AccountUser>[] = [
     {
       title: t("users.username"),
       dataIndex: "username",
       key: "username",
-      render: (username: string) => <Typography.Text>{username}</Typography.Text>,
+      render: (username) => <Typography.Text>{username}</Typography.Text>,
     },
     {
       title: t("users.roleTitle"),
       key: "role",
-      render: (_, user) => (
+      render: (_: unknown, user: AccountUser) => (
         <Select<AccountRole>
           aria-label={t("users.roleTitle")}
           value={user.role}
@@ -179,7 +275,7 @@ export default function UserManagementDrawer({
     {
       title: t("users.status"),
       key: "enabled",
-      render: (_, user) => (
+      render: (_: unknown, user: AccountUser) => (
         <Tag color={user.enabled ? "green" : "default"}>
           {user.enabled ? t("users.enabledLabel") : t("users.disabledLabel")}
         </Tag>
@@ -188,7 +284,7 @@ export default function UserManagementDrawer({
     {
       title: t("users.actions"),
       key: "actions",
-      render: (_, user) => (
+      render: (_: unknown, user: AccountUser) => (
         <Space wrap>
           <Button
             size="small"
@@ -231,86 +327,189 @@ export default function UserManagementDrawer({
         {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
         <section className="user-create-section" aria-labelledby="user-create-title">
           <h3 id="user-create-title" className="settings-section-title">{t("users.createTitle")}</h3>
-          <div className="settings-inline-form">
-            <Input
-              aria-label={t("users.username")}
-              data-testid="user-create-username"
-              placeholder={t("users.username")}
-              value={form.username}
-              disabled={busy}
-              onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))}
-            />
-            <Input.Password
-              aria-label={t("users.password")}
-              data-testid="user-create-password"
-              placeholder={t("users.password")}
-              value={form.password}
-              disabled={busy}
-              onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
-            />
-            <Select<AccountRole>
-              aria-label={t("users.roleTitle")}
-              data-testid="user-create-role"
-              value={form.role}
-              disabled={busy}
+          <ProForm<CreateForm>
+            key={`${open}-${notice === null}`}
+            className="wave-c-form"
+            layout="vertical"
+            initialValues={form}
+            submitter={{
+              render: () => [
+                <Button
+                  key="submit"
+                  type="primary"
+                  htmlType="submit"
+                  data-testid="user-create-submit"
+                  loading={busy}
+                  disabled={busy}
+                >
+                  {t("users.create")}
+                </Button>,
+              ],
+            }}
+            onValuesChange={(_, values) => setForm(values)}
+            onFinish={handleCreate}
+          >
+            <ProForm.Item
+              name="username"
+              label={t("users.username")}
+              rules={[{ required: true, whitespace: true }]}
+            >
+              <Input
+                aria-label={t("users.username")}
+                data-testid="user-create-username"
+                placeholder={t("users.username")}
+                disabled={busy}
+              />
+            </ProForm.Item>
+            <ProForm.Item
+              name="password"
+              label={t("users.password")}
+              rules={[{ required: true }]}
+            >
+              <Input.Password
+                aria-label={t("users.password")}
+                data-testid="user-create-password"
+                placeholder={t("users.password")}
+                autoComplete="new-password"
+                disabled={busy}
+              />
+            </ProForm.Item>
+            <ProForm.Item name="role" label={t("users.roleTitle")}>
+              <Select<AccountRole>
+                aria-label={t("users.roleTitle")}
+                data-testid="user-create-role"
+                disabled={busy}
+                options={[
+                  { value: "admin", label: t("users.role.admin") },
+                  { value: "user", label: t("users.role.user") },
+                ]}
+              />
+            </ProForm.Item>
+          </ProForm>
+        </section>
+        <QueryFilter<UserFilters>
+          className="wave-c-query-filter"
+          layout="vertical"
+          defaultCollapsed={false}
+          defaultColsNumber={3}
+          defaultFormItemsNumber={3}
+          labelWidth="auto"
+          submitter={false}
+          initialValues={EMPTY_FILTERS}
+          onValuesChange={(_, values) =>
+            setFilters({
+              keyword: values.keyword ?? "",
+              role: values.role ?? "all",
+              status: values.status ?? "all",
+            })
+          }
+        >
+          <Form.Item name="keyword" label={t("users.filterKeyword")}>
+            <Input allowClear aria-label={t("users.filterKeyword")} />
+          </Form.Item>
+          <Form.Item name="role" label={t("users.filterRole")}>
+            <Select<"all" | AccountRole>
+              aria-label={t("users.filterRole")}
               options={[
+                { value: "all", label: t("users.filterAll") },
                 { value: "admin", label: t("users.role.admin") },
                 { value: "user", label: t("users.role.user") },
               ]}
-              onChange={(role) => setForm((current) => ({ ...current, role }))}
             />
-            <Button
-              type="primary"
-              data-testid="user-create-submit"
-              loading={busy}
-              disabled={!form.username.trim() || !form.password}
-              onClick={() => void handleCreate()}
-            >
-              {t("users.create")}
-            </Button>
-          </div>
-        </section>
+          </Form.Item>
+          <Form.Item name="status" label={t("users.filterStatus")}>
+            <Select<"all" | "enabled" | "disabled">
+              aria-label={t("users.filterStatus")}
+              options={[
+                { value: "all", label: t("users.filterAll") },
+                { value: "enabled", label: t("users.enabledLabel") },
+                { value: "disabled", label: t("users.disabledLabel") },
+              ]}
+            />
+          </Form.Item>
+        </QueryFilter>
         <div className="settings-panel-toolbar">
           <Button size="small" loading={loading} onClick={() => void loadUsers()}>
             {t("users.refresh")}
           </Button>
         </div>
-        <Table<AccountUser>
+        <Space className="user-bulk-actions" wrap>
+          <Typography.Text type="secondary">
+            {t("users.bulkSelected", { count: selectedUserIds.length })}
+          </Typography.Text>
+          <Button
+            size="small"
+            data-testid="users-bulk-enable"
+            disabled={busy || selectedUserIds.length === 0}
+            onClick={() => void handleBulkEnabledChange(true)}
+          >
+            {t("users.bulkEnable")}
+          </Button>
+          <Button
+            size="small"
+            danger
+            data-testid="users-bulk-disable"
+            disabled={busy || selectedUserIds.length === 0}
+            onClick={() => void handleBulkEnabledChange(false)}
+          >
+            {t("users.bulkDisable")}
+          </Button>
+        </Space>
+        <ProTable<AccountUser>
           rowKey="id"
           loading={loading}
           columns={columns}
-          dataSource={users}
-          pagination={false}
+          dataSource={filteredUsers}
+          search={false}
+          options={false}
+          rowSelection={{
+            selectedRowKeys: selectedUserIds,
+            onChange: (keys) => setSelectedUserIds(keys.map((key) => Number(key))),
+          }}
+          pagination={{ pageSize: 8, showSizeChanger: true }}
           locale={{ emptyText: t("users.empty") }}
+          scroll={{ x: 620 }}
         />
       </div>
-      <div className="user-reset-dialog">
-        {resetTarget !== null && (
-          <div role="dialog" aria-modal="true" className="user-reset-dialog-inner">
-            <h3 className="settings-section-title">{t("users.resetTitle", { username: resetTarget.username })}</h3>
-            <Input.Password
-              aria-label={t("users.newPassword")}
-              data-testid="user-reset-password"
-              placeholder={t("users.newPassword")}
-              value={resetPassword}
+      <ModalForm<ResetForm>
+        title={resetTarget === null ? t("users.resetPassword") : t("users.resetTitle", { username: resetTarget.username })}
+        open={resetTarget !== null}
+        modalProps={{ destroyOnHidden: true, onCancel: () => setResetTarget(null) }}
+        submitter={{
+          render: (submitterProps) => [
+            <Button key="cancel" onClick={() => setResetTarget(null)} disabled={busy}>
+              {t("actions.cancel")}
+            </Button>,
+            <Button
+              key="submit"
+              type="primary"
+              data-testid="user-reset-submit"
+              loading={busy}
               disabled={busy}
-              onChange={(event) => setResetPassword(event.target.value)}
-            />
-            <Space>
-              <Button disabled={busy} onClick={() => setResetTarget(null)}>{t("actions.cancel")}</Button>
-              <Button
-                type="primary"
-                loading={busy}
-                disabled={!resetPassword}
-                data-testid="user-reset-submit"
-                onClick={() => void handleResetPassword()}
-              >
-                {t("users.resetPassword")}
-              </Button>
-            </Space>
-          </div>
-        )}
-      </div>
+              onClick={submitterProps.submit}
+            >
+              {t("users.resetPassword")}
+            </Button>,
+          ],
+        }}
+        onFinish={handleResetPassword}
+      >
+        <ProForm.Item
+          name="password"
+          label={t("users.newPassword")}
+          rules={[{ required: true }]}
+        >
+          <Input.Password
+            aria-label={t("users.newPassword")}
+            data-testid="user-reset-password"
+            placeholder={t("users.newPassword")}
+            autoComplete="new-password"
+            disabled={busy}
+            value={resetPassword}
+            onChange={(event) => setResetPassword(event.target.value)}
+          />
+        </ProForm.Item>
+      </ModalForm>
     </Drawer>
   );
 }

@@ -6,17 +6,23 @@ import {
   Checkbox,
   Drawer,
   Empty,
+  Form,
   Input,
   Select,
   Space,
   Spin,
-  Table,
   Tabs,
   Tag,
   Tooltip,
   Typography,
 } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import {
+  ModalForm,
+  ProForm,
+  ProTable,
+  QueryFilter,
+} from "@ant-design/pro-components";
+import type { ProColumns } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
 import { api } from "../api";
@@ -64,6 +70,17 @@ interface CredentialFormState {
   fields: Record<string, string>;
 }
 
+interface CredentialFormValues {
+  name: string;
+  type: CredentialType;
+  fields: Record<string, string>;
+}
+
+interface CredentialFilters {
+  keyword: string;
+  type: CredentialType | "all";
+}
+
 function emptyForm(): CredentialFormState {
   return { editingId: null, name: "", type: "password", fields: {} };
 }
@@ -78,6 +95,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [filters, setFilters] = useState<CredentialFilters>({ keyword: "", type: "all" });
 
   const fail = useCallback(
     (message: string) => {
@@ -128,22 +146,23 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
     setForm((current) => ({ ...current, type, fields: {} }));
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(values: CredentialFormValues): Promise<boolean> {
     if (submitting) {
-      return;
+      return false;
     }
-    const name = form.name.trim();
+    const name = values.name.trim();
     if (name === "") {
       fail(t("credentials.nameRequired"));
-      return;
+      return false;
     }
-    const required = credentialFields(form.type);
+    const type = values.type;
+    const required = credentialFields(type);
     const fields: Record<string, string> = {};
     for (const key of required) {
-      const value = (form.fields[key] ?? "").trim();
+      const value = (values.fields?.[key] ?? "").trim();
       if (value === "") {
         fail(t("credentials.fieldRequired", { field: credentialFieldLabel(key) }));
-        return;
+        return false;
       }
       fields[key] = value;
     }
@@ -154,7 +173,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
         t("confirm.createCredential", { ns: "common" }),
       );
       if (!confirmed) {
-        return;
+        return false;
       }
     }
     setNotice(null);
@@ -162,7 +181,7 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
     try {
       setPanelError(null);
       if (form.editingId === null) {
-        await api.createCredential({ name, type: form.type, fields });
+        await api.createCredential({ name, type, fields });
       } else {
         await api.updateCredential(form.editingId, { name, fields });
       }
@@ -176,8 +195,10 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
       // 跨设置同步（UX-003）：让 AI 模型 / 绑定 / 依赖源等选择器无需 F5 即可
       // 看到新凭据。只通知变化，不携带任何 Secret 数据。
       notifyCredentialCatalogChanged();
+      return true;
     } catch (error) {
       fail(errorMessage(error));
+      return false;
     } finally {
       setSubmitting(false);
     }
@@ -204,6 +225,11 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
   }
 
   const formFieldKeys = credentialFields(form.type);
+  const visibleCredentials = credentials.filter((credential) => {
+    const keyword = filters.keyword.trim().toLowerCase();
+    return (filters.type === "all" || credential.type === filters.type) &&
+      (keyword === "" || credential.name.toLowerCase().includes(keyword));
+  });
 
   return (
     <div className="settings-panel" data-testid="credentials-panel">
@@ -246,88 +272,149 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
       {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
 
-      {formOpen && (
-        <div className="settings-inline-form" data-testid="credential-form">
-          <Input
-            data-testid="credential-name"
-            aria-label={t("credentials.name")}
-            placeholder={t("labels.name", { ns: "common" })}
-            value={form.name}
-            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+      <QueryFilter<CredentialFilters>
+        className="wave-c-query-filter"
+        layout="vertical"
+        defaultCollapsed={false}
+        defaultColsNumber={2}
+        defaultFormItemsNumber={2}
+        labelWidth="auto"
+        submitter={false}
+        initialValues={filters}
+        onValuesChange={(_, values) =>
+          setFilters({
+            keyword: values.keyword ?? "",
+            type: values.type ?? "all",
+          })
+        }
+      >
+        <Form.Item name="keyword" label={t("credentials.filterKeyword")}>
+          <Input allowClear aria-label={t("credentials.filterKeyword")} />
+        </Form.Item>
+        <Form.Item name="type" label={t("credentials.filterType")}>
+          <Select<CredentialType | "all">
+            aria-label={t("credentials.filterType")}
+            options={[
+              { value: "all", label: t("credentials.filterAll") },
+              ...Object.keys(CREDENTIAL_TYPE_FIELDS).map((type) => ({
+                value: type as CredentialType,
+                label: credentialTypeLabel(type),
+              })),
+            ]}
           />
-          <Select
-            data-testid="credential-type"
-            aria-label={t("credentials.type")}
-            style={{ minWidth: 200 }}
-            value={form.type}
-            disabled={form.editingId !== null}
-            options={Object.keys(CREDENTIAL_TYPE_FIELDS).map((type) => ({
-              label: t("credentials.typeOption", {
-                type: credentialTypeLabel(type),
-                fields: credentialFields(type).join(" + "),
-              }),
-              value: type,
-            }))}
-            onChange={(value) => handleTypeChange(value)}
-          />
-          {formFieldKeys.map((key) => (
-            <Input.Password
-              key={key}
-              data-testid={`credential-field-${key}`}
-              aria-label={t("credentials.fieldAria", { field: key })}
-              placeholder={credentialFieldLabel(key)}
-              value={form.fields[key] ?? ""}
-              autoComplete="new-password"
-              onChange={(event) =>
-                setForm((current) => ({
-                  ...current,
-                  fields: { ...current.fields, [key]: event.target.value },
-                }))
-              }
-            />
-          ))}
-          <Space>
+        </Form.Item>
+      </QueryFilter>
+
+      <ModalForm<CredentialFormValues>
+        key={`credential-form-${formOpen}-${form.editingId ?? "new"}-${form.type}`}
+        title={form.editingId === null ? t("credentials.submitCreate") : t("credentials.submitUpdate")}
+        open={formOpen}
+        initialValues={{ name: form.name, type: form.type, fields: form.fields }}
+        modalProps={{ destroyOnHidden: true, onCancel: () => setFormOpen(false) }}
+        submitter={{
+          render: () => [
             <Button
+              key="submit"
               type="primary"
               data-testid="submit-credential"
               loading={submitting}
-              onClick={() => void handleSubmit()}
+              onClick={() =>
+                void handleSubmit({
+                  name: form.name,
+                  type: form.type,
+                  fields: form.fields,
+                })
+              }
             >
               {form.editingId === null ? t("credentials.submitCreate") : t("credentials.submitUpdate")}
-            </Button>
-            <Button onClick={() => setFormOpen(false)}>{t("credentials.cancel")}</Button>
-          </Space>
+            </Button>,
+            <Button key="cancel" onClick={() => setFormOpen(false)} disabled={submitting}>
+              {t("credentials.cancel")}
+            </Button>,
+          ],
+        }}
+        onValuesChange={(changed, values) => {
+          const nextType = values.type ?? form.type;
+          setForm((current) => ({
+            ...current,
+            name: values.name ?? current.name,
+            type: nextType,
+            fields: changed.type === undefined ? (values.fields ?? current.fields) : {},
+          }));
+          if (changed.type !== undefined) {
+            handleTypeChange(nextType);
+          }
+        }}
+        onFinish={handleSubmit}
+      >
+        <div className="settings-inline-form" data-testid="credential-form">
+          <Form.Item name="name" noStyle>
+            <Input
+              data-testid="credential-name"
+              aria-label={t("credentials.name")}
+              placeholder={t("labels.name", { ns: "common" })}
+            />
+          </Form.Item>
+          <Form.Item name="type" noStyle>
+            <Select<CredentialType>
+              data-testid="credential-type"
+              aria-label={t("credentials.type")}
+              style={{ minWidth: 200 }}
+              disabled={form.editingId !== null}
+              options={Object.keys(CREDENTIAL_TYPE_FIELDS).map((type) => ({
+                label: t("credentials.typeOption", {
+                  type: credentialTypeLabel(type),
+                  fields: credentialFields(type).join(" + "),
+                }),
+                value: type as CredentialType,
+              }))}
+            />
+          </Form.Item>
+          {formFieldKeys.map((key) => (
+            <Form.Item key={key} name={["fields", key]} noStyle>
+              <Input.Password
+                data-testid={`credential-field-${key}`}
+                aria-label={t("credentials.fieldAria", { field: key })}
+                placeholder={credentialFieldLabel(key)}
+                autoComplete="new-password"
+              />
+            </Form.Item>
+          ))}
           {form.editingId !== null && (
             <Typography.Text type="secondary">
               {t("credentials.updateHint")}
             </Typography.Text>
           )}
         </div>
-      )}
+      </ModalForm>
 
       {loading ? (
         <Spin />
       ) : credentials.length === 0 ? (
         <Empty description={t("empty.noCredentials", { ns: "common" })} />
       ) : (
-        <Table<Credential>
+        <ProTable<Credential>
           rowKey="id"
           size="small"
-          pagination={false}
-          dataSource={credentials}
+          search={false}
+          options={false}
+          pagination={{ pageSize: 8, showSizeChanger: true }}
+          dataSource={visibleCredentials}
+          scroll={{ x: 520 }}
+          locale={{ emptyText: t("empty.noCredentials", { ns: "common" }) }}
           columns={[
-            { title: t("credentials.tableName"), dataIndex: "name", render: (name: string) => <span data-testid="credential-row">{name}</span> },
+            { title: t("credentials.tableName"), dataIndex: "name", render: (name) => <span data-testid="credential-row">{name}</span> },
             {
               title: t("credentials.tableType"),
               dataIndex: "type",
               width: 120,
-               render: (type: string) => credentialTypeLabel(type),
+              render: (type) => credentialTypeLabel(String(type)),
             },
             {
               title: t("credentials.tableActions"),
               width: 160,
               render: (_, credential) => (
-                <Space>
+                <Space wrap>
                   <Button
                     size="small"
                     data-testid="update-credential"
@@ -369,6 +456,12 @@ interface PackageSourceFormState {
   credential_id: number | null;
 }
 
+interface PackageSourceFilters {
+  keyword: string;
+  kind: PackageSourceKind | "all";
+  defaultOnly: "all" | "default" | "custom";
+}
+
 type PackageSourceTestStatus = "reachable" | "unreachable" | "timeout" | "auth-failed";
 
 interface PackageSourceTestResult {
@@ -393,12 +486,18 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<PackageSourceFormState>(EMPTY_SOURCE_FORM);
+  const [sourceForm] = ProForm.useForm<PackageSourceFormState>();
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
   const [restoring, setRestoring] = useState<"pypi" | "npm" | "maven" | null>(null);
   const [testResults, setTestResults] = useState<Map<number, PackageSourceTestResult>>(new Map());
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [filters, setFilters] = useState<PackageSourceFilters>({
+    keyword: "",
+    kind: "all",
+    defaultOnly: "all",
+  });
 
   const fail = useCallback(
     (message: string) => {
@@ -447,15 +546,15 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
     [fail],
   );
 
-  async function handleSubmit() {
+  async function handleSubmit(): Promise<boolean> {
     if (submitting) {
-      return;
+      return false;
     }
     const name = form.name.trim();
     const indexUrl = form.index_url.trim();
     if (name === "" || indexUrl === "") {
       fail(t("packageSources.nameAndUrlRequired"));
-      return;
+      return false;
     }
     setNotice(null);
     setSubmitting(true);
@@ -475,8 +574,10 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       } else {
         setPanelError(t("packageSources.createRefreshFailed"));
       }
+      return true;
     } catch (error) {
       fail(errorMessage(error));
+      return false;
     } finally {
       setSubmitting(false);
     }
@@ -595,18 +696,30 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
 
   const kinds: ("pypi" | "npm" | "maven")[] = ["pypi", "npm", "maven"];
 
-  const columns: ColumnsType<PackageSource> = [
+  const visibleSources = sources.filter((source) => {
+    const keyword = filters.keyword.trim().toLowerCase();
+    const matchesKeyword = keyword === "" ||
+      [source.name, source.index_url, source.credential_name ?? ""].some((value) =>
+        value.toLowerCase().includes(keyword),
+      );
+    const matchesKind = filters.kind === "all" || source.kind === filters.kind;
+    const matchesDefault = filters.defaultOnly === "all" ||
+      (filters.defaultOnly === "default" ? source.is_default : !source.is_default);
+    return matchesKeyword && matchesKind && matchesDefault;
+  });
+
+  const columns: ProColumns<PackageSource>[] = [
     {
       title: t("labels.type", { ns: "common" }),
       dataIndex: "kind",
       width: 90,
-      render: (kind: PackageSource["kind"]) => packageSourceKindLabel(kind),
+      render: (_, source) => packageSourceKindLabel(source.kind),
     },
     {
       title: t("labels.name", { ns: "common" }),
       dataIndex: "name",
       width: 190,
-      render: (_name: string, source) => (
+      render: (_, source) => (
         <Tooltip title={packageSourcePresetLabel(source)}>
           <span className="package-source-cell" data-testid="package-source-row">
             {packageSourcePresetLabel(source)}
@@ -623,9 +736,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       title: t("labels.repositoryUrl", { ns: "common" }),
       dataIndex: "index_url",
       width: 300,
-      render: (url: string) => (
-        <Tooltip title={url}>
-          <span className="package-source-cell">{url}</span>
+      render: (_, source) => (
+        <Tooltip title={source.index_url}>
+          <span className="package-source-cell">{source.index_url}</span>
         </Tooltip>
       ),
     },
@@ -633,7 +746,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       title: t("labels.accessCredential", { ns: "common" }),
       dataIndex: "credential_name",
       width: 110,
-      render: (name: string | null) => name ?? "—",
+      render: (_, source) => source.credential_name ?? "—",
     },
     {
       title: t("labels.reachability", { ns: "common" }),
@@ -714,6 +827,9 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           data-testid="new-package-source"
           onClick={() => {
             setNotice(null);
+            setForm(EMPTY_SOURCE_FORM);
+            sourceForm.resetFields();
+            sourceForm.setFieldsValue(EMPTY_SOURCE_FORM);
             setFormOpen(true);
           }}
         >
@@ -775,86 +891,150 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
       {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
 
-      {formOpen && (
-        <div className="settings-inline-form" data-testid="package-source-form">
-          <Input
-            data-testid="package-source-name"
-            aria-label={t("packageSources.name")}
-            placeholder={t("labels.name", { ns: "common" })}
-            value={form.name}
-            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-          />
-          <Select
-            data-testid="package-source-kind"
-            aria-label={t("packageSources.kind")}
-            value={form.kind}
-            style={{ minWidth: 180 }}
+      <QueryFilter<PackageSourceFilters>
+        className="wave-c-query-filter"
+        layout="vertical"
+        defaultCollapsed={false}
+        defaultColsNumber={3}
+        defaultFormItemsNumber={3}
+        labelWidth="auto"
+        submitter={false}
+        initialValues={filters}
+        onValuesChange={(_, values) =>
+          setFilters({
+            keyword: values.keyword ?? "",
+            kind: values.kind ?? "all",
+            defaultOnly: values.defaultOnly ?? "all",
+          })
+        }
+      >
+        <Form.Item name="keyword" label={t("packageSources.filterKeyword")}>
+          <Input allowClear aria-label={t("packageSources.filterKeyword")} />
+        </Form.Item>
+        <Form.Item name="kind" label={t("packageSources.filterKind")}>
+          <Select<PackageSourceKind | "all">
+            aria-label={t("packageSources.filterKind")}
             options={[
-              { label: "PyPI", value: "pypi" },
-              { label: "npm", value: "npm" },
-              { label: "Maven", value: "maven" },
+              { value: "all", label: t("packageSources.filterAll") },
+              ...kinds.map((kind) => ({ value: kind, label: kindLabel(kind) })),
             ]}
-            onChange={(kind: PackageSource["kind"]) =>
-              setForm((current) => ({ ...current, kind, credential_id: null }))
-            }
           />
-          <Input
-            data-testid="package-source-url"
-            aria-label={t("packageSources.repositoryUrl")}
-            placeholder={t("packageSources.urlPlaceholder")}
-            value={form.index_url}
-            onChange={(event) => setForm((current) => ({ ...current, index_url: event.target.value }))}
+        </Form.Item>
+        <Form.Item name="defaultOnly" label={t("packageSources.filterDefault")}>
+          <Select<PackageSourceFilters["defaultOnly"]>
+            aria-label={t("packageSources.filterDefault")}
+            options={[
+              { value: "all", label: t("packageSources.filterAll") },
+              { value: "default", label: t("labels.default", { ns: "common" }) },
+              { value: "custom", label: t("packageSources.filterCustom") },
+            ]}
           />
-          <Checkbox
-            data-testid="package-source-default"
-            checked={form.is_default}
-            onChange={(event) => setForm((current) => ({ ...current, is_default: event.target.checked }))}
-            >
-             {t("packageSources.defaultCheckbox")}
-          </Checkbox>
-          <Select
-            data-testid="package-source-credential"
-            aria-label={t("packageSources.credential")}
-            placeholder={t("packageSources.credentialPlaceholder")}
-            allowClear
-            style={{ minWidth: 220 }}
-            value={form.credential_id ?? undefined}
-            options={credentials
-              .filter((credential) =>
-                form.kind === "npm"
-                  ? credential.type === "password" || credential.type === "token"
-                  : credential.type === "password",
-              )
-              .map((credential) => ({
-                label: credential.name,
-                value: credential.id,
-              }))}
-            onChange={(value) => setForm((current) => ({ ...current, credential_id: value ?? null }))}
-          />
-          <Space>
+        </Form.Item>
+      </QueryFilter>
+
+      <ModalForm<PackageSourceFormState>
+        key={`package-source-form-${formOpen}`}
+        form={sourceForm}
+        title={t("packageSources.new")}
+        open={formOpen}
+        initialValues={form}
+        modalProps={{ destroyOnHidden: true, onCancel: () => setFormOpen(false) }}
+        submitter={{
+          render: (submitterProps) => [
             <Button
+              key="submit"
               type="primary"
               data-testid="submit-package-source"
               loading={submitting}
-              onClick={() => void handleSubmit()}
+              onClick={submitterProps.submit}
             >
               {t("actions.create", { ns: "common" })}
-            </Button>
-            <Button onClick={() => setFormOpen(false)}>{t("actions.cancel", { ns: "common" })}</Button>
-          </Space>
+            </Button>,
+            <Button key="cancel" onClick={() => setFormOpen(false)} disabled={submitting}>
+              {t("actions.cancel", { ns: "common" })}
+            </Button>,
+          ],
+        }}
+        onValuesChange={(changed, values) => {
+          const kindChanged = changed.kind !== undefined && values.kind !== form.kind;
+          if (kindChanged) {
+            sourceForm.setFieldValue("credential_id", null);
+          }
+          setForm((current) => {
+            const nextKind = values.kind ?? current.kind;
+            return {
+              ...current,
+              name: values.name ?? current.name,
+              kind: nextKind,
+              index_url: values.index_url ?? current.index_url,
+              is_default: values.is_default ?? current.is_default,
+              credential_id: kindChanged || nextKind !== current.kind
+                ? null
+                : values.credential_id ?? null,
+            };
+          });
+        }}
+        onFinish={handleSubmit}
+      >
+        <div className="settings-inline-form" data-testid="package-source-form">
+          <Form.Item name="name" noStyle>
+            <Input
+              data-testid="package-source-name"
+              aria-label={t("packageSources.name")}
+              placeholder={t("labels.name", { ns: "common" })}
+            />
+          </Form.Item>
+          <Form.Item name="kind" noStyle>
+            <Select<PackageSourceKind>
+              data-testid="package-source-kind"
+              aria-label={t("packageSources.kind")}
+              style={{ minWidth: 180 }}
+              options={kinds.map((kind) => ({ label: kindLabel(kind), value: kind }))}
+            />
+          </Form.Item>
+          <Form.Item name="index_url" noStyle>
+            <Input
+              data-testid="package-source-url"
+              aria-label={t("packageSources.repositoryUrl")}
+              placeholder={t("packageSources.urlPlaceholder")}
+            />
+          </Form.Item>
+          <Form.Item name="is_default" valuePropName="checked" noStyle>
+            <Checkbox data-testid="package-source-default">
+              {t("packageSources.defaultCheckbox")}
+            </Checkbox>
+          </Form.Item>
+          <Form.Item name="credential_id" noStyle>
+            <Select<number>
+              data-testid="package-source-credential"
+              aria-label={t("packageSources.credential")}
+              placeholder={t("packageSources.credentialPlaceholder")}
+              allowClear
+              style={{ minWidth: 220 }}
+              options={credentials
+                .filter((credential) =>
+                  form.kind === "npm"
+                    ? credential.type === "password" || credential.type === "token"
+                    : credential.type === "password",
+                )
+                .map((credential) => ({ label: credential.name, value: credential.id }))}
+            />
+          </Form.Item>
         </div>
-      )}
+      </ModalForm>
 
       {loading ? (
         <Spin />
       ) : sources.length === 0 ? (
         <Empty description={t("empty.noPackageSources", { ns: "common" })} />
       ) : (
-        <Table<PackageSource>
+        <ProTable<PackageSource>
           rowKey="id"
           size="small"
-          pagination={false}
-          dataSource={sources}
+          search={false}
+          options={false}
+          pagination={{ pageSize: 8, showSizeChanger: true }}
+          dataSource={visibleSources}
           className="package-source-table"
           tableLayout="fixed"
           scroll={{ x: 1060 }}
@@ -950,9 +1130,9 @@ function KnowledgeSourcesPanel(props: { active: boolean; onError: (message: stri
     });
   }, [active, fail]);
 
-  async function handleSave() {
+  async function handleSave(): Promise<boolean> {
     if (saving || source === null) {
-      return;
+      return false;
     }
     setSaving(true);
     setPanelError(null);
@@ -968,8 +1148,10 @@ function KnowledgeSourcesPanel(props: { active: boolean; onError: (message: stri
       setTestErrorCode(null);
       setKnowledgeBases([]);
       setNotice(t("knowledgeSources.saved"));
+      return true;
     } catch (error) {
       fail(errorMessage(error));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -1035,47 +1217,66 @@ function KnowledgeSourcesPanel(props: { active: boolean; onError: (message: stri
             <Typography.Text type="secondary">{t("knowledgeSources.endpointNotice")}</Typography.Text>
           </div>
 
-          <div className="settings-inline-form knowledge-source-form" data-testid="knowledge-source-form">
-            <Checkbox
-              data-testid="knowledge-source-enabled"
-              checked={form.enabled}
-              onChange={(event) => {
-                setForm((current) => ({ ...current, enabled: event.target.checked }));
-                setTestStatus(null);
-                setTestErrorCode(null);
-              }}
-            >
-              {t("knowledgeSources.enabled")}
-            </Checkbox>
-            <Select
-              data-testid="knowledge-source-credential"
-              aria-label={t("knowledgeSources.credential")}
-              placeholder={t("knowledgeSources.credentialPlaceholder")}
-              allowClear
-              style={{ minWidth: 260 }}
-              value={form.credential_id ?? undefined}
-              options={credentials
-                .filter((credential) => credential.type === "access_key")
-                .map((credential) => ({ label: credential.name, value: credential.id }))}
-              onChange={(value) => setForm((current) => ({ ...current, credential_id: value ?? null }))}
-            />
-            <Button
-              type="primary"
-              data-testid="save-knowledge-source"
-              loading={saving}
-              onClick={() => void handleSave()}
-            >
-              {t("knowledgeSources.save")}
-            </Button>
-            <Button
-              data-testid="test-knowledge-source"
-              loading={testing}
-              disabled={!form.enabled || testing}
-              onClick={() => void handleTest()}
-            >
-              {t("knowledgeSources.test")}
-            </Button>
-          </div>
+          <ProForm<KnowledgeSourceFormState>
+            className="settings-inline-form knowledge-source-form wave-c-form"
+            data-testid="knowledge-source-form"
+            layout="vertical"
+            submitter={{
+              render: () => [
+                <Button
+                  key="save"
+                  type="primary"
+                  data-testid="save-knowledge-source"
+                  loading={saving}
+                  onClick={() => void handleSave()}
+                >
+                  {t("knowledgeSources.save")}
+                </Button>,
+                <Button
+                  key="test"
+                  data-testid="test-knowledge-source"
+                  loading={testing}
+                  disabled={!form.enabled || testing}
+                  onClick={() => void handleTest()}
+                >
+                  {t("knowledgeSources.test")}
+                </Button>,
+              ],
+            }}
+            onFinish={handleSave}
+          >
+            <ProForm.Item label={t("knowledgeSources.enabled")}>
+              <Checkbox
+                data-testid="knowledge-source-enabled"
+                checked={form.enabled}
+                onChange={(event) => {
+                  setForm((current) => ({ ...current, enabled: event.target.checked }));
+                  setTestStatus(null);
+                  setTestErrorCode(null);
+                }}
+              >
+                {t("knowledgeSources.enabled")}
+              </Checkbox>
+            </ProForm.Item>
+            <ProForm.Item label={t("knowledgeSources.credential")}>
+              <Select<number>
+                data-testid="knowledge-source-credential"
+                aria-label={t("knowledgeSources.credential")}
+                placeholder={t("knowledgeSources.credentialPlaceholder")}
+                allowClear
+                style={{ minWidth: 260 }}
+                value={form.credential_id ?? undefined}
+                options={credentials
+                  .filter((credential) => credential.type === "access_key")
+                  .map((credential) => ({ label: credential.name, value: credential.id }))}
+                onChange={(value) => {
+                  setForm((current) => ({ ...current, credential_id: value ?? null }));
+                  setTestStatus(null);
+                  setTestErrorCode(null);
+                }}
+              />
+            </ProForm.Item>
+          </ProForm>
 
           <Typography.Text type="secondary">{t("knowledgeSources.credentialNotice")}</Typography.Text>
           {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
@@ -1091,10 +1292,12 @@ function KnowledgeSourcesPanel(props: { active: boolean; onError: (message: stri
             {knowledgeBases.length === 0 ? (
               <Typography.Text type="secondary">{t("knowledgeSources.noKnowledgeBases")}</Typography.Text>
             ) : (
-              <Table<KnowledgeBase>
+              <ProTable<KnowledgeBase>
                 rowKey="id"
                 size="small"
-                pagination={false}
+                search={false}
+                options={false}
+                pagination={{ pageSize: 8, showSizeChanger: true }}
                 dataSource={knowledgeBases}
                 columns={[
                   { title: t("knowledgeSources.knowledgeBaseName"), dataIndex: "name" },
@@ -1152,25 +1355,26 @@ function SystemLocaleControl() {
 
   return (
     <div className="settings-locale-control" data-testid="system-locale-control">
-      <label className="settings-field">
-        <span className="settings-field-label">{t("language")}</span>
-        <Select
-          aria-label={t("language")}
-          data-testid="system-locale-select"
-          value={currentLocale}
-          loading={updating}
-          disabled={updating}
-          options={[
-            { value: "zh-CN", label: t("localeOptions.zh-CN") },
-            { value: "en", label: t("localeOptions.en") },
-          ]}
-          onChange={(value: string) => {
-            if (isSystemLocale(value)) {
-              void handleChange(value);
-            }
-          }}
-        />
-      </label>
+      <ProForm className="settings-locale-form" layout="vertical" submitter={false}>
+        <ProForm.Item label={t("language")}>
+          <Select
+            aria-label={t("language")}
+            data-testid="system-locale-select"
+            value={currentLocale}
+            loading={updating}
+            disabled={updating}
+            options={[
+              { value: "zh-CN", label: t("localeOptions.zh-CN") },
+              { value: "en", label: t("localeOptions.en") },
+            ]}
+            onChange={(value: string) => {
+              if (isSystemLocale(value)) {
+                void handleChange(value);
+              }
+            }}
+          />
+        </ProForm.Item>
+      </ProForm>
       {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
     </div>
   );

@@ -1183,6 +1183,12 @@ it("creates an adapter and selects it", async () => {
   expect(screen.getByRole("textbox", { name: "适配器名称" })).toBeTruthy();
   expect(screen.getByRole("textbox", { name: "适配器描述" })).toBeTruthy();
   expect(screen.getByRole("radiogroup", { name: "适配器开发语言" })).toBeTruthy();
+  fireEvent.click(screen.getByTestId("create-adapter"));
+  expect(
+    fetchMock.mock.calls.some(
+      ([url, init]) => url === "/api/adapters" && init?.method === "POST",
+    ),
+  ).toBe(false);
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "cmdb-sync" } });
   fireEvent.change(screen.getByTestId("new-adapter-description"), {
     target: { value: "sync cmdb" },
@@ -1191,6 +1197,7 @@ it("creates an adapter and selects it", async () => {
 
   // Created adapter becomes selected; metadata moved to the settings drawer.
   await screen.findByRole("heading", { name: "cmdb-sync" });
+  expect(screen.queryByTestId("new-adapter-name")).toBeNull();
   fireEvent.click(screen.getByTestId("adapter-settings"));
   await screen.findByTestId("adapter-name");
   expect(valueOf("adapter-name")).toBe("cmdb-sync");
@@ -1892,7 +1899,7 @@ it("keeps the create form open when creation is cancelled by the discard confirm
   fireEvent.change(screen.getByTestId("new-adapter-name"), { target: { value: "new-one" } });
   fireEvent.click(screen.getByTestId("create-adapter"));
 
-  expect(confirmSpy).toHaveBeenCalled();
+  await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
   // Form stays open with the typed name; nothing was created.
   expect(valueOf("new-adapter-name")).toBe("new-one");
   expect(screen.getByRole("heading", { name: "adapter-a" })).toBeTruthy();

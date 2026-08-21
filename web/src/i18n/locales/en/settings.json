@@ -77,7 +77,12 @@
     "tableType": "Type",
     "tableActions": "Actions",
     "bindingInvalid": "",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "filterAll": "All",
+    "filterKeyword": "Filter credentials",
+    "filterType": "Filter credential type",
+    "filterDefault": "Default status",
+    "filterCustom": "Custom only"
   },
   "bindings": {
     "help": "The code Credential name lets the script read the bound sensitive value, for example",
@@ -123,6 +128,11 @@
     },
     "new": "New package source",
     "description": "There can be at most one default source per type; the Worker tries its local cache first and then the default source for the language.",
+    "filterAll": "All",
+    "filterKeyword": "Filter package sources",
+    "filterKind": "Filter package source type",
+    "filterDefault": "Default status",
+    "filterCustom": "Custom only",
     "nameAndUrlRequired": "Package source name and index URL are required",
     "refreshList": "Package source list refreshed",
     "name": "Package source name",

@@ -12,6 +12,7 @@ import type {
   Credential,
   CredentialType,
   KnowledgeSource,
+  PackageSource,
   PackageSourceDefaults,
 } from "../types";
 import SystemSettingsDrawer from "./SystemSettingsDrawer";
@@ -244,6 +245,58 @@ it("跨 Tab 同步：依赖源新建表单中的凭据选择器在凭据增删�
   expect(document.body.textContent).not.toContain("source-secret-one");
   expect(document.body.textContent).not.toContain("source-secret-two");
 }, 20000);
+
+it("切换依赖源类型时清除不兼容的凭据选择", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([
+    credentialMetadata(7, "npm-token", "token"),
+  ]);
+  const createdSource: PackageSource = {
+    id: 1,
+    name: "kind-switch-source",
+    kind: "pypi",
+    index_url: "https://index.example.com/simple",
+    is_default: false,
+    credential_id: null,
+    credential_name: null,
+    created_at: "2026-08-16T00:00:00Z",
+    updated_at: "2026-08-16T00:00:00Z",
+  };
+  const createPackageSource = vi
+    .spyOn(api, "createPackageSource")
+    .mockResolvedValue(createdSource);
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  await screen.findByTestId("package-sources-panel");
+  fireEvent.click(screen.getByTestId("new-package-source"));
+
+  let dropdown = await openSelect("package-source-kind");
+  clickOption(dropdown, "npm");
+  dropdown = await openSelect("package-source-credential");
+  clickOption(dropdown, "npm-token");
+  dropdown = await openSelect("package-source-kind");
+  clickOption(dropdown, "PyPI");
+
+  fireEvent.change(screen.getByTestId("package-source-name"), {
+    target: { value: "kind-switch-source" },
+  });
+  fireEvent.change(screen.getByTestId("package-source-url"), {
+    target: { value: "https://index.example.com/simple" },
+  });
+  fireEvent.click(screen.getByTestId("submit-package-source"));
+  await screen.findByText("依赖源已创建");
+
+  expect(createPackageSource).toHaveBeenCalledWith({
+    name: "kind-switch-source",
+    kind: "pypi",
+    index_url: "https://index.example.com/simple",
+    is_default: false,
+    credential_id: null,
+  });
+});
 
 it("订阅在组件卸载后自动取消，不会影响其他面板", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);

@@ -991,19 +991,25 @@ export function AdapterConsole({
     setAiContextSnippets([]);
   }
 
-  async function handleUpdateDetails() {
+  async function handleUpdateDetails(
+    nextName = name,
+    nextDescription = description,
+  ) {
     if (!selected || !selectedCanEdit || busy) {
       return;
     }
     // M5.5.9：重命名预检——trim 后与活跃同名拒绝。
-    if (name.trim() !== "" && activeNameConflict(adapters, name, selected.id)) {
+    if (nextName.trim() !== "" && activeNameConflict(adapters, nextName, selected.id)) {
       messageApi.error(t("messages.nameConflict"));
       return;
     }
     setBusy(true);
     try {
       setError(null);
-      const refreshed = await api.updateAdapter(selected.id, { name, description });
+      const refreshed = await api.updateAdapter(selected.id, {
+        name: nextName,
+        description: nextDescription,
+      });
       setSelected(refreshed);
       setName(refreshed.name);
       setDescription(refreshed.description);
@@ -1415,9 +1421,9 @@ export function AdapterConsole({
         busy={busy}
         contentReady={contentReady}
         onClose={() => setSettingsOpen(false)}
-        onNameChange={setName}
-        onDescriptionChange={setDescription}
-        onUpdate={() => void handleUpdateDetails()}
+        onUpdate={(nextName, nextDescription) =>
+          void handleUpdateDetails(nextName, nextDescription)
+        }
         onDelete={() => void handleDelete()}
         onClone={() => void handleClone()}
         accessLevel={selectedAccessLevel}

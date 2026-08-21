@@ -256,18 +256,71 @@ body {
   padding: 0 12px 8px;
 }
 
-.catalog-search-control > .ant-input-affix-wrapper {
-  flex: 1;
+/* M5.10 Wave C：QueryFilter 在 Catalog 窄栏内按字段堆叠，避免长中文/英文把
+   搜索框或筛选下拉挤到不可用宽度。保留稳定的 test hook 供浏览器审计使用。 */
+.catalog-search-control,
+.catalog-query-filter,
+.catalog-query-filter .ant-form,
+.catalog-query-filter .ant-row,
+.catalog-query-filter .ant-col,
+.catalog-query-filter .ant-form-item,
+.catalog-query-filter .ant-form-item-control,
+.catalog-query-filter .ant-form-item-control-input,
+.catalog-query-filter .ant-form-item-control-input-content {
+  width: 100%;
   min-width: 0;
 }
 
-/* M5.8-008：[类型][状态][搜索] 连续单行；两个下拉固定宽度，搜索框占据剩余空间。 */
-.catalog-search-control > .catalog-filter-type {
-  flex: 0 0 96px;
+.catalog-query-filter .ant-form-item {
+  margin-bottom: 6px;
 }
 
-.catalog-search-control > .catalog-filter-status {
-  flex: 0 0 88px;
+.catalog-query-filter .ant-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.catalog-query-filter .ant-select,
+.catalog-query-filter .ant-input-affix-wrapper {
+  width: 100%;
+  min-width: 0;
+}
+
+/* M5.10 Wave C：ProForm/QueryFilter/ProTable surfaces keep controls usable
+   when translated labels and long URLs consume more inline space. */
+.wave-c-form,
+.wave-c-query-filter {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.wave-c-form .ant-form-item,
+.wave-c-query-filter .ant-form-item {
+  min-width: 0;
+}
+
+.wave-c-form .ant-form-item-label > label,
+.wave-c-query-filter .ant-form-item-label > label {
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.wave-c-form .ant-input,
+.wave-c-form .ant-input-affix-wrapper,
+.wave-c-form .ant-select,
+.wave-c-form .ant-picker,
+.wave-c-query-filter .ant-input,
+.wave-c-query-filter .ant-input-affix-wrapper,
+.wave-c-query-filter .ant-select {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.wave-c-query-filter .ant-form-item-control,
+.wave-c-query-filter .ant-form-item-control-input,
+.wave-c-query-filter .ant-form-item-control-input-content {
+  min-width: 0;
 }
 
 .catalog-list {
@@ -2078,6 +2131,8 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .settings-locale-control {
@@ -2091,6 +2146,15 @@ body {
 
 .settings-locale-control .settings-field {
   width: 220px;
+}
+
+.settings-locale-form {
+  width: min(100%, 260px);
+  margin: 0;
+}
+
+.settings-locale-form .ant-form-item {
+  margin-bottom: 0;
 }
 
 .settings-panel-toolbar {
@@ -2119,6 +2183,48 @@ body {
   border: 1px solid var(--dlr-border);
   border-radius: 6px;
   background: #fafbfc;
+}
+
+.settings-inline-form.wave-c-form,
+.knowledge-source-form.wave-c-form {
+  align-items: stretch;
+}
+
+.settings-inline-form.wave-c-form .ant-form-item,
+.knowledge-source-form.wave-c-form .ant-form-item {
+  flex: 1 1 220px;
+  min-width: min(100%, 220px);
+  margin-bottom: 0;
+}
+
+.settings-panel .ant-table-wrapper {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.settings-panel .ant-table-cell {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.settings-panel .ant-pagination {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.ai-model-form .ant-form-item,
+.account-auth-form .ant-form-item,
+.account-user-form .ant-form-item,
+.settings-form .ant-form-item {
+  width: 100%;
+}
+
+.ai-model-form .ant-form-item-control-input-content,
+.account-auth-form .ant-form-item-control-input-content,
+.account-user-form .ant-form-item-control-input-content,
+.settings-form .ant-form-item-control-input-content {
+  min-width: 0;
 }
 
 .settings-package-source-defaults {

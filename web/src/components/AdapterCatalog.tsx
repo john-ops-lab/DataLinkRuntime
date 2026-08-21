@@ -1,8 +1,12 @@
 /** 左侧 Adapter Catalog：高密度行式导航 + 新建表单（M3.1 §7，业务合同仍沿用 M1）。 */
 
-import { useState } from "react";
-import type { FormEvent } from "react";
-import { Button, Drawer, Dropdown, Empty, Input, Radio, Select, Space } from "antd";
+import { useEffect, useState } from "react";
+import { Button, Dropdown, Empty, Form, Input, Radio, Select } from "antd";
+import {
+  DrawerForm,
+  ProForm,
+  QueryFilter,
+} from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
 import { adapterAccessLevel } from "../adapter-access";
@@ -17,6 +21,26 @@ import type {
 
 type AdapterTypeFilter = "task-manual" | "task-schedule" | "webhook";
 type AdapterStatusFilter = "all" | "running" | "stopped";
+
+interface CreateAdapterValues {
+  name: string;
+  description: string;
+  language: AdapterLanguage;
+  adapterType: AdapterType;
+}
+
+interface CatalogFilterValues {
+  search: string;
+  type: AdapterTypeFilter | "all";
+  status: AdapterStatusFilter;
+}
+
+const DEFAULT_CREATE_ADAPTER_VALUES: CreateAdapterValues = {
+  name: "",
+  description: "",
+  language: "python",
+  adapterType: "task",
+};
 
 function matchesTypeFilter(adapter: Adapter, filter: AdapterTypeFilter): boolean {
   if (filter === "webhook") {
@@ -192,49 +216,57 @@ export default function AdapterCatalog({
 }: AdapterCatalogProps) {
   const { t } = useTranslation(["adapter", "common"]);
   const [creating, setCreating] = useState(false);
-  const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState<AdapterTypeFilter | "all">("all");
-  const [statusFilter, setStatusFilter] = useState<AdapterStatusFilter>("all");
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [language, setLanguage] = useState<AdapterLanguage>("python");
-  const [adapterType, setAdapterType] = useState<AdapterType>("task");
+  const [createForm] = ProForm.useForm<CreateAdapterValues>();
+  const [filters, setFilters] = useState<CatalogFilterValues>({
+    search: "",
+    type: "all",
+    status: "all",
+  });
   const [submitting, setSubmitting] = useState(false);
   const workersById = new Map(workers.map((worker) => [worker.id, worker]));
 
-  async function handleCreate(event: FormEvent) {
-    event.preventDefault();
-    const trimmed = name.trim();
+  useEffect(() => {
+    if (creating) {
+      createForm.setFieldsValue(DEFAULT_CREATE_ADAPTER_VALUES);
+    }
+  }, [createForm, creating]);
+
+  async function handleCreate(values: CreateAdapterValues): Promise<boolean> {
+    const trimmed = values.name.trim();
     if (!trimmed || busy || submitting) {
-      return;
+      return false;
     }
     setSubmitting(true);
     try {
-      const created = await onCreate(trimmed, description, language, adapterType);
+      const created = await onCreate(
+        trimmed,
+        values.description,
+        values.language,
+        values.adapterType,
+      );
       if (created) {
-        setName("");
-        setDescription("");
-        setLanguage("python");
-        setAdapterType("task");
+        createForm.resetFields();
         setCreating(false);
       }
+      return created;
     } finally {
       setSubmitting(false);
     }
   }
 
-  const keyword = search.trim().toLowerCase();
+  const keyword = filters.search.trim().toLowerCase();
   const inView = adapters.filter((adapter) => !adapter.archived_at);
   // M5.8-008：类型 / 状态 / 关键词三个筛选条件叠加生效；状态筛选只过滤列表，
   // 不改变 Adapter 的真实运行状态。
+  const selectedTypeFilter = filters.type;
   const typeFiltered =
-    typeFilter === "all"
+    selectedTypeFilter === "all"
       ? inView
-      : inView.filter((adapter) => matchesTypeFilter(adapter, typeFilter));
+      : inView.filter((adapter) => matchesTypeFilter(adapter, selectedTypeFilter));
   const statusFiltered =
-    statusFilter === "all"
+    filters.status === "all"
       ? typeFiltered
-      : typeFiltered.filter((adapter) => catalogRuntimeStatus(adapter).dot === statusFilter);
+      : typeFiltered.filter((adapter) => catalogRuntimeStatus(adapter).dot === filters.status);
   const visible = keyword === ""
     ? statusFiltered
     : statusFiltered.filter((adapter) =>
@@ -262,8 +294,6 @@ export default function AdapterCatalog({
           data-testid="show-create-form"
           disabled={busy}
           onClick={() => {
-            setLanguage("python");
-            setAdapterType("task");
             setCreating(true);
           }}
         >
@@ -272,36 +302,54 @@ export default function AdapterCatalog({
       </div>
 
       <div className="catalog-search">
-        {/* M5.8-008：[类型][状态][搜索] 连续单行一体化筛选控件。 */}
-        <Space.Compact className="catalog-search-control" style={{ width: "100%" }}>
-          <Select<AdapterTypeFilter | "all">
-            size="small"
-            className="catalog-filter-type"
-            data-testid="adapter-type-filter"
-            aria-label={t("catalog.filterTypeAria")}
-            value={typeFilter}
-            options={typeFilterOptions}
-            onChange={(value) => setTypeFilter(value)}
-          />
-          <Select<AdapterStatusFilter>
-            size="small"
-            className="catalog-filter-status"
-            data-testid="adapter-status-filter"
-            aria-label={t("catalog.filterStatusAria")}
-            value={statusFilter}
-            options={statusFilterOptions}
-            onChange={(value) => setStatusFilter(value)}
-          />
-          <Input
-            data-testid="adapter-search"
-            aria-label={t("catalog.search")}
-            placeholder={t("catalog.search")}
-            allowClear
-            size="small"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </Space.Compact>
+        <div className="catalog-search-control">
+          <QueryFilter<CatalogFilterValues>
+            className="catalog-query-filter"
+            layout="vertical"
+            defaultCollapsed={false}
+            defaultColsNumber={1}
+            defaultFormItemsNumber={3}
+            span={24}
+            labelWidth={0}
+            submitter={false}
+            initialValues={filters}
+            onValuesChange={(_, values) =>
+              setFilters({
+                search: values.search ?? "",
+                type: values.type ?? "all",
+                status: values.status ?? "all",
+              })
+            }
+          >
+            <Form.Item name="type" noStyle>
+              <Select<AdapterTypeFilter | "all">
+                size="small"
+                className="catalog-filter-type"
+                data-testid="adapter-type-filter"
+                aria-label={t("catalog.filterTypeAria")}
+                options={typeFilterOptions}
+              />
+            </Form.Item>
+            <Form.Item name="status" noStyle>
+              <Select<AdapterStatusFilter>
+                size="small"
+                className="catalog-filter-status"
+                data-testid="adapter-status-filter"
+                aria-label={t("catalog.filterStatusAria")}
+                options={statusFilterOptions}
+              />
+            </Form.Item>
+            <Form.Item name="search" noStyle>
+              <Input
+                data-testid="adapter-search"
+                aria-label={t("catalog.search")}
+                placeholder={t("catalog.search")}
+                allowClear
+                size="small"
+              />
+            </Form.Item>
+          </QueryFilter>
+        </div>
       </div>
 
       <div className="catalog-list">
@@ -412,73 +460,89 @@ export default function AdapterCatalog({
         )}
       </div>
 
-      <Drawer
+      <DrawerForm<CreateAdapterValues>
+        form={createForm}
         title={t("catalog.createTitle")}
         width={360}
         open={creating}
-        destroyOnHidden
-        onClose={() => setCreating(false)}
+        formKey={creating ? "adapter-create" : "adapter-create-closed"}
+        initialValues={{
+          ...DEFAULT_CREATE_ADAPTER_VALUES,
+        }}
+        drawerProps={{ destroyOnHidden: true }}
+        onOpenChange={(open) => {
+          if (!open) {
+            createForm.resetFields();
+          }
+          createForm.setFieldsValue(DEFAULT_CREATE_ADAPTER_VALUES);
+          setCreating(open);
+        }}
+        onFinish={(values) => handleCreate(values ?? createForm.getFieldsValue(true))}
+        submitter={{
+          render: (submitterProps) => [
+            <Button
+              key="submit"
+              type="primary"
+              data-testid="create-adapter"
+              loading={submitting}
+              disabled={busy}
+              onClick={submitterProps.submit}
+            >
+              {t("catalog.create")}
+            </Button>,
+            <Button key="cancel" onClick={() => setCreating(false)}>
+              {t("actions.cancel", { ns: "common" })}
+            </Button>,
+          ],
+        }}
       >
-        <form className="create-form" onSubmit={(event) => void handleCreate(event)}>
+        <ProForm.Item
+          name="name"
+          label={t("catalog.name")}
+          rules={[{ required: true, whitespace: true, message: t("catalog.namePlaceholder") }]}
+        >
           <Input
             data-testid="new-adapter-name"
             aria-label={t("catalog.name")}
             placeholder={t("catalog.namePlaceholder")}
-            value={name}
             disabled={busy}
-            onChange={(event) => setName(event.target.value)}
           />
-          <div className="settings-field" role="radiogroup" aria-label={t("catalog.type")}>
-            <span className="settings-field-label">{t("catalog.type")}</span>
+        </ProForm.Item>
+        <div role="radiogroup" aria-label={t("catalog.type")}>
+          <ProForm.Item name="adapterType" label={t("catalog.type")}>
             <Radio.Group
               data-testid="new-adapter-type"
-              value={adapterType}
               disabled={busy}
-              onChange={(event) => setAdapterType(event.target.value as AdapterType)}
-            >
-              <Radio value="task">{t("types.taskAdapter")}</Radio>
-              <Radio value="webhook">{t("types.webhookAdapter")}</Radio>
-            </Radio.Group>
-          </div>
-          <div
-            className="settings-field"
-            role="radiogroup"
-            aria-label={t("catalog.language")}
-          >
-            <span className="settings-field-label">{t("catalog.languageField")}</span>
+              options={[
+                { value: "task", label: t("types.taskAdapter") },
+                { value: "webhook", label: t("types.webhookAdapter") },
+              ]}
+            />
+          </ProForm.Item>
+        </div>
+        <div role="radiogroup" aria-label={t("catalog.language")}>
+          <ProForm.Item name="language" label={t("catalog.languageField")}>
             <Radio.Group
               data-testid="new-adapter-language"
-              value={language}
               disabled={busy}
-              onChange={(event) => setLanguage(event.target.value as AdapterLanguage)}
-            >
-              <Radio value="python">Python</Radio>
-              <Radio value="javascript">JavaScript</Radio>
-              <Radio value="java">Java</Radio>
-            </Radio.Group>
-          </div>
-          <Input
+              options={[
+                { value: "python", label: "Python" },
+                { value: "javascript", label: "JavaScript" },
+                { value: "java", label: "Java" },
+              ]}
+            />
+          </ProForm.Item>
+        </div>
+        <ProForm.Item name="description" label={t("catalog.description")}>
+          <Input.TextArea
             data-testid="new-adapter-description"
             aria-label={t("catalog.description")}
             placeholder={t("catalog.descriptionPlaceholder")}
-            value={description}
             disabled={busy}
-            onChange={(event) => setDescription(event.target.value)}
+            rows={3}
           />
-          <Space className="create-form-actions">
-            <Button
-              type="primary"
-              htmlType="submit"
-              data-testid="create-adapter"
-              loading={submitting}
-              disabled={busy}
-            >
-              {t("catalog.create")}
-            </Button>
-            <Button onClick={() => setCreating(false)}>{t("actions.cancel", { ns: "common" })}</Button>
-          </Space>
-        </form>
-      </Drawer>
+        </ProForm.Item>
+      </DrawerForm>
     </aside>
   );
 }
