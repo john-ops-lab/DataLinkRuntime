@@ -11,6 +11,7 @@ import AccountApp from "./AccountApp";
 import AdapterCatalog from "./components/AdapterCatalog";
 import AdapterSettingsDrawer from "./components/AdapterSettingsDrawer";
 import AiAssistantPanel, {
+  type AiCandidateDiffModalState,
   type AiContextSnippetEntry,
 } from "./components/AiAssistantPanel";
 import CredentialBindingsEditor from "./components/CredentialBindingsEditor";
@@ -263,6 +264,10 @@ export function AdapterConsole({
   const [userManagementOpen, setUserManagementOpen] = useState(false);
   const [shellSection, setShellSection] = useState<ShellSection>("adapters");
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiCandidateDiff, setAiCandidateDiff] = useState<AiCandidateDiffModalState | null>(null);
+  const handleAiCandidateDiffChange = useCallback((next: AiCandidateDiffModalState | null) => {
+    setAiCandidateDiff(next);
+  }, []);
   // M5.5.13：已确认的多上下文片段（Monaco 代码选区 / 实时日志脱敏文本选区），
   // 属于当前 Adapter / 当前会话，光标后续移动不会改变已加入的快照。
   // editorRef 只在点击「加入对话上下文」时读取本次实际选择；editorHasSelection
@@ -923,7 +928,7 @@ export function AdapterConsole({
     });
   }
 
-  function handleApplyAiCandidate(candidate: AiCandidate) {
+  const handleApplyAiCandidate = useCallback((candidate: AiCandidate) => {
     if (
       !selected ||
       !selectedCanUseAi ||
@@ -938,7 +943,7 @@ export function AdapterConsole({
     // Credential Binding and runtime configuration remain the administrator's
     // manual Working Copy and are never replaced by a Candidate.
     setSnapshot((current) => ({ ...current, code: candidate.code }));
-  }
+  }, [busy, contentReady, selected, selectedCanUseAi]);
 
   // M5.5.13：把 Monaco 当前选区作为精确快照追加进 AI 上下文，并自动展开
   // AI 面板。文本与行号在点击瞬间从编辑器读取，之后光标移动不会偷偷改变
@@ -1159,6 +1164,7 @@ export function AdapterConsole({
           canUseAi={selectedCanUseAi}
           onRemoveContextSnippet={handleRemoveContextSnippet}
           onClearContextSnippets={handleClearContextSnippets}
+          onCandidateDiffChange={handleAiCandidateDiffChange}
         />
 
         <main className="workbench">
@@ -1474,6 +1480,17 @@ export function AdapterConsole({
         }))}
         theme={editorTheme}
         onClose={() => setDiffView(null)}
+      />
+
+      <VersionDiffModal
+        open={aiCandidateDiff !== null}
+        title={t("assistant.diff.title", { ns: "ai" })}
+        originalTitle={t("assistant.diff.original", { ns: "ai" })}
+        modifiedTitle={t("assistant.diff.modified", { ns: "ai" })}
+        panes={aiCandidateDiff?.panes ?? []}
+        theme={editorTheme}
+        onClose={() => aiCandidateDiff?.onClose()}
+        applyAction={aiCandidateDiff?.applyAction ?? null}
       />
 
       <Modal

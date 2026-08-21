@@ -1,6 +1,6 @@
 /** 版本差异弹窗：Monaco DiffEditor 对比 code/依赖/参数（M3.2 §Diff）。 */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { Button, Modal, Tabs } from "antd";
 import { CheckOutlined, CloseOutlined } from "@ant-design/icons";
@@ -46,9 +46,27 @@ interface VersionDiffModalProps {
 export default function VersionDiffModal(props: VersionDiffModalProps) {
   const { t } = useTranslation(["ai", "common"]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [cachedPanes, setCachedPanes] = useState<DiffPane[]>(props.panes);
+
+  useEffect(() => {
+    if (props.open && props.panes.length > 0) {
+      // This state intentionally mirrors the last non-empty panes so the
+      // hidden Modal can keep its DiffEditor mounted between opens.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCachedPanes((currentPanes) => {
+        const unchanged = currentPanes.length === props.panes.length && currentPanes.every((pane, index) => {
+          const nextPane = props.panes[index];
+          return nextPane !== undefined && pane.key === nextPane.key && pane.language === nextPane.language && pane.original === nextPane.original && pane.modified === nextPane.modified;
+        });
+        return unchanged ? currentPanes : props.panes;
+      });
+    }
+  }, [props.open, props.panes]);
+
+  const panes = props.panes.length > 0 ? props.panes : cachedPanes;
 
   const current =
-    props.panes.find((pane) => pane.key === activeKey) ?? props.panes[0] ?? null;
+    panes.find((pane) => pane.key === activeKey) ?? panes[0] ?? null;
 
   const applyAction = props.applyAction ?? null;
 
@@ -59,6 +77,8 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
       width="min(960px, calc(100vw - 32px))"
       centered
       keyboard
+      // Allow the cached child tree to update its hidden state while closed.
+      forceRender
       footer={
         applyAction === null ? null : (
           <div className="diff-modal-footer">
@@ -93,10 +113,13 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
         )
       }
       onCancel={props.onClose}
-      destroyOnHidden
+      // Keep the DiffEditor mounted after close. With Monaco 0.56, unmounting
+      // it at the same time as its Modal can emit
+      // "AbstractContextKeyService has been disposed" in the page.
+      destroyOnHidden={false}
     >
       {current !== null && (
-        <div className="diff-modal" data-testid="version-diff" role="region" aria-label={props.title}>
+        <div className="diff-modal" data-testid={props.open ? "version-diff" : undefined} role="region" aria-label={props.title}>
           <div className="diff-modal-titles">
             <span>{props.originalTitle}</span>
             <span>{props.modifiedTitle}</span>
