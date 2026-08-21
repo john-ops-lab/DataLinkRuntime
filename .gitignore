@@ -22,6 +22,8 @@ dist/
 .qoder-cn/
 .qoder/specs/
 .wide-shots/
+web/playwright-report/
+web/test-results/
 
 # OS
 .DS_Store

@@ -16,5 +16,15 @@ export default defineConfig({
     // Heavy Console render tests (drawer cross-Tab sync, whole-console locale
     // switches) can exceed the 5s default under parallel CI load.
     testTimeout: 15000,
+    // Playwright owns the real-browser suite under this path; keep Vitest's
+    // jsdom runner from importing Playwright's test API.
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/cypress/**",
+      "**/.{idea,git,cache,output,temp}/**",
+      "**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*",
+      "tests/e2e/**",
+    ],
   },
 });

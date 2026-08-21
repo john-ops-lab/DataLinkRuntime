@@ -1,0 +1,573 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "antd": "5.29.3",
+  "pro_components": "2.8.10",
+  "playwright": "1.62.1",
+  "browser": "chromium",
+  "browser_version": "151.0.7922.34",
+  "node_version": "v23.11.0",
+  "platform": "darwin",
+  "color_scheme": "light",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "viewport_height": 900,
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "scenarios": [
+    "token-login-workbench",
+    "account-login-read-permission"
+  ],
+  "records": [
+    {
+      "locale": "en",
+      "width": 1280,
+      "scenario": "account-read",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/en-1280-account-read.png",
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        },
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "account_principal": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "read_only_permission": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "scenario": "token",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/en-1280-token.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "admin_runtime_action": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "scenario": "account-read",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/en-1440-account-read.png",
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        },
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "account_principal": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "read_only_permission": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "scenario": "token",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/en-1440-token.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "admin_runtime_action": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "scenario": "account-read",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/en-1680-account-read.png",
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        },
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "account_principal": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "read_only_permission": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "scenario": "token",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/en-1680-token.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "admin_runtime_action": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "scenario": "account-read",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/en-1920-account-read.png",
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        },
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "account_principal": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "read_only_permission": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "scenario": "token",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/en-1920-token.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "admin_runtime_action": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "scenario": "account-read",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/zh-CN-1280-account-read.png",
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        },
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "account_principal": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "read_only_permission": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "scenario": "token",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/zh-CN-1280-token.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "admin_runtime_action": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "scenario": "account-read",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/zh-CN-1440-account-read.png",
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        },
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "account_principal": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "read_only_permission": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "scenario": "token",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/zh-CN-1440-token.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "admin_runtime_action": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "scenario": "account-read",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/zh-CN-1680-account-read.png",
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        },
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "account_principal": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "read_only_permission": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "scenario": "token",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/zh-CN-1680-token.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "admin_runtime_action": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "scenario": "account-read",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/zh-CN-1920-account-read.png",
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        },
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "account_principal": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "read_only_permission": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "scenario": "token",
+      "screenshot": "docs/ui/m5-10-wave-a/baseline/zh-CN-1920-token.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "unexpected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_checkpoints": {
+        "login": true,
+        "adapter_catalog": true,
+        "control_status": true,
+        "workbench_header": true,
+        "editor_main": true,
+        "admin_runtime_action": true
+      }
+    }
+  ]
+}
