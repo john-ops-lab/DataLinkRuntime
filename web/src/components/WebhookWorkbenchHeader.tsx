@@ -1,6 +1,12 @@
 /** Webhook Adapter header: identity, receive state and explicit actions. */
 
-import { Button, Tag } from "antd";
+import { Button, Tag, Tooltip } from "antd";
+import {
+  SaveOutlined,
+  SettingOutlined,
+  StopOutlined,
+  PlayCircleOutlined,
+} from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
 import { LANGUAGE_LABELS } from "../languages";
@@ -75,18 +81,38 @@ export default function WebhookWorkbenchHeader(props: Props) {
         )}
       </div>
       <div className="workbench-controls">
-        <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>{t("actions.settings", { ns: "common" })}</Button>
+        <Tooltip title={t("actions.settings", { ns: "common" })} trigger={["hover", "focus"]}>
+          <Button
+            data-testid="adapter-settings"
+            icon={<SettingOutlined aria-hidden="true" />}
+            aria-label={t("actions.settings", { ns: "common" })}
+            onClick={props.onOpenSettings}
+          >
+            {t("actions.settings", { ns: "common" })}
+          </Button>
+        </Tooltip>
         {readOnly ? (
           <Tag data-testid="adapter-read-only">{t("webhook.reasons.readOnly")}</Tag>
         ) : (
           <>
             <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveReason}>
-              <Button type="primary" data-testid="save-version" disabled={saveReason !== null} onClick={props.onSave}>{t("actions.save", { ns: "common" })}</Button>
+              <Button
+                type="primary"
+                data-testid="save-version"
+                icon={<SaveOutlined aria-hidden="true" />}
+                aria-label={t("actions.save", { ns: "common" })}
+                disabled={saveReason !== null}
+                onClick={props.onSave}
+              >
+                {t("actions.save", { ns: "common" })}
+              </Button>
             </ActionWithReason>
             <ActionWithReason label={props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })} reason={receiveReason}>
               <Button
                 danger={props.runtimeState.enabled}
                 data-testid="header-webhook-toggle"
+                icon={props.runtimeState.enabled ? <StopOutlined aria-hidden="true" /> : <PlayCircleOutlined aria-hidden="true" />}
+                aria-label={props.runtimeState.enabled ? t("actions.stopReceiving", { ns: "common" }) : t("actions.startReceiving", { ns: "common" })}
                 loading={props.runtimeState.changingState}
                 disabled={!props.runtimeState.enabled && receiveReason !== null}
                 onClick={props.onToggleReceiving}

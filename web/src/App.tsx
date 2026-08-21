@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { Alert, Button, Input, message, Modal, Result, Segmented, Select, Tabs, Typography } from "antd";
+import { DiffOutlined, MessageOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -1220,7 +1221,7 @@ export function AdapterConsole({
                     label: t("labels.edit"),
                     children: (
                       <div className="editor-pane">
-                        <div className="editor-toolbar">
+                        <div className="editor-toolbar" role="toolbar" aria-label={t("editor.toolbarAria", { ns: "common" })}>
                           <span className="editor-toolbar-label">{t("editor.theme")}</span>
                           <Segmented
                             size="small"
@@ -1236,6 +1237,8 @@ export function AdapterConsole({
                           <Button
                             size="small"
                             data-testid="working-diff"
+                            icon={<DiffOutlined aria-hidden="true" />}
+                            aria-label={t("actions.viewDiff")}
                             disabled={busy || !contentReady}
                             onClick={handleOpenWorkingDiff}
                           >
@@ -1244,13 +1247,21 @@ export function AdapterConsole({
                           <Button
                             size="small"
                             data-testid="add-ai-selection"
+                            icon={<MessageOutlined aria-hidden="true" />}
+                            aria-label={t("actions.addContext")}
                             disabled={!selectedCanUseAi || busy || !contentReady || !editorHasSelection}
                             onClick={handleAddSelectedContext}
                           >
                             {t("actions.addContext")}
                           </Button>
                         </div>
-                        <div className="editor-main" data-testid="editor-main" data-monaco-theme={editorTheme}>
+                        <div
+                          className="editor-main"
+                          data-testid="editor-main"
+                          data-monaco-theme={editorTheme}
+                          role="region"
+                          aria-label={t("editor.ariaLabel", { ns: "common" })}
+                        >
                           <Editor
                             height="100%"
                             theme={editorTheme}
@@ -1270,6 +1281,7 @@ export function AdapterConsole({
                             onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
                             options={{
                               minimap: { enabled: false },
+                              ariaLabel: t("editor.ariaLabel", { ns: "common" }),
                               readOnly: busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selected.runtime_locked === true,
                             }}
                           />

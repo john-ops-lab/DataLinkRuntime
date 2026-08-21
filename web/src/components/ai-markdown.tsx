@@ -9,6 +9,8 @@
  */
 
 import { useState } from "react";
+import { Button, Tooltip } from "antd";
+import { CopyOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import remarkGfm from "remark-gfm";
 import type { ExtraProps } from "react-markdown";
@@ -68,20 +70,24 @@ function MarkdownCodeHeader({ language, code }: CodeHeaderProps) {
   return (
     <div className="ai-code-header">
       <span className="ai-code-lang">{label}</span>
-      <button
-        type="button"
-        className="ai-code-copy"
-        data-testid="ai-code-copy"
-        aria-label={t("assistant.code.copy")}
-        onClick={() => {
-          void copyTextToClipboard(code).then(() => {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
-          });
-        }}
-      >
-        {copied ? t("assistant.code.copied") : t("assistant.code.copy")}
-      </button>
+      <Tooltip title={copied ? t("assistant.code.copied") : t("assistant.code.copy")} trigger={["hover", "focus"]}>
+        <Button
+          type="text"
+          size="small"
+          icon={<CopyOutlined aria-hidden="true" />}
+          className="ai-code-copy"
+          data-testid="ai-code-copy"
+          aria-label={t("assistant.code.copy")}
+          onClick={() => {
+            void copyTextToClipboard(code).then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+        >
+          {copied ? t("assistant.code.copied") : t("assistant.code.copy")}
+        </Button>
+      </Tooltip>
     </div>
   );
 }

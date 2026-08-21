@@ -700,6 +700,7 @@ body {
 /* Workbench Header：Adapter 上下文 + 版本与主操作。 */
 .workbench-header {
   flex: 0 0 auto;
+  min-width: 0;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -739,6 +740,7 @@ body {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 
 .workbench-context {
@@ -851,6 +853,12 @@ body {
   border-bottom: 1px solid var(--dlr-border);
 }
 
+.workbench-tabs > .ant-tabs-nav .ant-tabs-nav-wrap {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
 .workbench-tabs > .ant-tabs-content-holder {
   flex: 1;
   min-height: 0;
@@ -892,6 +900,7 @@ body {
 .editor-main {
   flex: 1;
   min-height: 300px;
+  min-width: 0;
   border: 1px solid var(--dlr-border);
   border-radius: 6px;
   overflow: hidden;
@@ -903,7 +912,9 @@ body {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 
 .editor-toolbar-label {
@@ -980,7 +991,8 @@ body {
 
 .ai-assistant-expanded {
   flex: 0 0 auto;
-  width: 390px;
+  width: clamp(340px, 29vw, 440px);
+  min-width: 0;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--dlr-border);
@@ -1006,6 +1018,7 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
   padding: 12px 14px 10px;
   background: #0958d9;
   color: #fff;
@@ -1014,6 +1027,7 @@ body {
 
 .ai-assistant-header strong {
   color: #fff;
+  overflow-wrap: anywhere;
 }
 
 .ai-assistant-header p {
@@ -1021,6 +1035,7 @@ body {
   color: rgba(255, 255, 255, 0.85);
   font-size: 0.72rem;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .ai-assistant-header-actions {
@@ -1047,6 +1062,7 @@ body {
 
 .ai-assistant-context span {
   color: var(--dlr-text-weak);
+  overflow-wrap: anywhere;
 }
 
 /* M5.5.13：已加入的上下文片段列表（代码 / 实时日志，可单删或清空全部）。 */
@@ -1122,7 +1138,8 @@ body {
 }
 
 .ai-message {
-  max-width: 94%;
+  max-width: 100%;
+  min-width: 0;
   padding: 8px 10px;
   border: 1px solid var(--dlr-border);
   border-radius: 7px;
@@ -1216,6 +1233,8 @@ body {
   font-size: 0.8rem;
   line-height: 1.55;
   overflow-wrap: break-word;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .ai-markdown > :first-child {
@@ -1477,6 +1496,7 @@ body {
 .ai-attachment {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
   padding: 3px 8px;
@@ -1493,12 +1513,12 @@ body {
 
 .ai-attachment-name {
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 1 1 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-  max-width: 220px;
+  max-width: 100%;
 }
 
 .ai-attachment-meta {
@@ -1508,7 +1528,7 @@ body {
 }
 
 .ai-attachment-ready {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   color: #237804;
   white-space: nowrap;
 }
@@ -1524,6 +1544,7 @@ body {
 
 .ai-attachment-remove {
   flex: 0 0 auto;
+  margin-left: auto;
   border: none;
   background: transparent;
   color: var(--dlr-text-weak);
@@ -1550,6 +1571,7 @@ body {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 10px;
+  min-width: 0;
 }
 
 .ai-attachment-hint,
@@ -1842,7 +1864,7 @@ body {
 /* 最大化在原组件上切换布局，保留日志内容、选区、跟随状态和 SSE 订阅。 */
 .log-pane-maximized {
   position: fixed;
-  inset: 16px;
+  inset: clamp(0px, 1.25vw, 16px);
   z-index: 1000;
   box-sizing: border-box;
   flex: none;
@@ -2348,6 +2370,7 @@ body {
 .diff-modal-titles {
   display: flex;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   font-size: 0.8rem;
   color: var(--dlr-text-secondary);
@@ -2364,6 +2387,7 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* --- Worker 弹层 --------------------------------------------------------- */
@@ -2617,5 +2641,35 @@ body {
 
   .login-side {
     flex: 1;
+  }
+}
+
+@media (max-width: 1180px) {
+  .ai-assistant-expanded:not(.ai-assistant-maximized) {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(100%, 420px);
+    z-index: 35;
+    border-left: 1px solid var(--dlr-border);
+    box-shadow: -12px 0 32px rgba(16, 24, 40, 0.16);
+  }
+}
+
+@media (max-width: 700px) {
+  .workbench-header,
+  .editor-pane {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .ai-assistant-expanded:not(.ai-assistant-maximized) {
+    width: 100%;
+    border-left: none;
+  }
+
+  .log-pane-maximized {
+    border-radius: 0;
   }
 }

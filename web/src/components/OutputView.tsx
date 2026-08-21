@@ -1,7 +1,8 @@
 /** Result viewers: formatted Output plus the unified terminal log (M3 §8). */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Alert, Button } from "antd";
+import { Alert, Button, Tooltip } from "antd";
+import { FullscreenExitOutlined, FullscreenOutlined, PauseOutlined, PlayCircleOutlined, PlusOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
 import type { Execution } from "../types";
@@ -22,7 +23,7 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
             size: execution.output_size ?? t("output.unknownSize"),
           })}
         />
-        <pre className="terminal-view" data-testid="output-preview">
+        <pre className="terminal-view" data-testid="output-preview" aria-label={t("output.contentLabel")}>
           {execution.output_preview ?? ""}
         </pre>
       </div>
@@ -36,7 +37,7 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
     );
   }
   return (
-    <pre className="output-view" data-testid={props.testId ?? "output-content"}>
+    <pre className="output-view" data-testid={props.testId ?? "output-content"} aria-label={t("output.contentLabel")}>
       {JSON.stringify(execution.output, null, 2)}
     </pre>
   );
@@ -101,8 +102,32 @@ export function LogView(props: {
   const [paused, setPaused] = useState(false);
   const [hasSelection, setHasSelection] = useState(false);
   const [maximized, setMaximized] = useState(false);
+  const maximizeButtonRef = useRef<HTMLButtonElement>(null);
+  const wasMaximizedRef = useRef(false);
   const displayContent =
     props.maxLines === undefined ? props.content : tailLogLines(props.content, props.maxLines);
+
+  useEffect(() => {
+    if (!maximized) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      setMaximized(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [maximized]);
+
+  useEffect(() => {
+    if (wasMaximizedRef.current && !maximized) {
+      maximizeButtonRef.current?.focus();
+    }
+    wasMaximizedRef.current = maximized;
+  }, [maximized]);
 
   function rangeIsInside(element: HTMLElement, range: Range): boolean {
     return element.contains(range.startContainer) && element.contains(range.endContainer);
@@ -214,13 +239,20 @@ export function LogView(props: {
     .join(" ");
 
   return (
-    <div className={paneClassName} data-log-view-mode={mode}>
+    <div
+      className={paneClassName}
+      data-log-view-mode={mode}
+      role="region"
+      aria-label={t("logs.title")}
+    >
       <div className="log-toolbar">
         {followControls &&
           (paused ? (
             <Button
               size="small"
               data-testid={props.testId ? `${props.testId}-resume` : "log-resume"}
+              icon={<PlayCircleOutlined aria-hidden="true" />}
+              aria-label={t("logs.resume")}
               onClick={resumeFollowing}
             >
               {t("logs.resume")}
@@ -229,6 +261,8 @@ export function LogView(props: {
             <Button
               size="small"
               data-testid={props.testId ? `${props.testId}-pause` : "log-pause"}
+              icon={<PauseOutlined aria-hidden="true" />}
+              aria-label={t("logs.pause")}
               onClick={() => {
                 const element = preRef.current;
                 if (element !== null) {
@@ -246,26 +280,30 @@ export function LogView(props: {
             size="small"
             data-testid={props.testId ? `${props.testId}-add-context` : "log-add-context"}
             disabled={!hasSelection}
+            icon={<PlusOutlined aria-hidden="true" />}
+            aria-label={props.addContextLabel ?? t("actions.addContext", { ns: "common" })}
             title={t("logs.addContextTitle")}
             onClick={handleAddContext}
           >
             {props.addContextLabel ?? t("actions.addContext", { ns: "common" })}
           </Button>
         )}
-        <Button
-          size="small"
-          data-testid={
-            props.testId
-              ? `${props.testId}-${maximized ? "restore" : "maximize"}`
-              : `log-${maximized ? "restore" : "maximize"}`
-          }
-          aria-label={maximized ? t("logs.restore") : t("logs.maximize")}
-          onClick={() => setMaximized((current) => !current)}
-        >
-          {maximized
-            ? t("actions.restore", { ns: "common" })
-            : t("actions.maximize", { ns: "common" })}
-        </Button>
+        <Tooltip title={maximized ? t("logs.restore") : t("logs.maximize")} trigger={["hover", "focus"]}>
+          <Button
+            ref={maximizeButtonRef}
+            size="small"
+            type="text"
+            data-testid={
+              props.testId
+                ? `${props.testId}-${maximized ? "restore" : "maximize"}`
+                : `log-${maximized ? "restore" : "maximize"}`
+            }
+            aria-label={maximized ? t("logs.restore") : t("logs.maximize")}
+            aria-pressed={maximized}
+            icon={maximized ? <FullscreenExitOutlined aria-hidden="true" /> : <FullscreenOutlined aria-hidden="true" />}
+            onClick={() => setMaximized((current) => !current)}
+          />
+        </Tooltip>
         {props.truncated && (
           <Alert type="warning" showIcon banner message={t("logs.truncated")} />
         )}
@@ -274,6 +312,7 @@ export function LogView(props: {
         ref={preRef}
         className="terminal-view"
         data-testid={props.testId ?? "log-view"}
+        aria-label={t("logs.contentLabel")}
         onScroll={handleScroll}
       >
         {displayContent === "" ? (props.emptyHint ?? t("logs.empty")) : displayContent}
