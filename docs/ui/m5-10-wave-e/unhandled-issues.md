@@ -29,5 +29,3 @@
 
 除上述边界外，本 Wave 不保留已知的页面、状态、键盘、错误或 overflow 阻塞问题；
 approved/nonblocking 观察不改变已验证的代码 head。
-
-\n

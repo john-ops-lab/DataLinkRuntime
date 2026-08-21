@@ -55,5 +55,3 @@ DLR_WAVE_E_OUTPUT_DIR=../docs/ui/m5-10-wave-e \
 
 该命令只能使用本地确定性 fixture，不需要 Control API、数据库、AI provider 或任何
 真实凭据。
-
-\n
