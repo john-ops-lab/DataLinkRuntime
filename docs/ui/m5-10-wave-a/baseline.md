@@ -14,7 +14,7 @@
 | Color scheme | `light` |
 | Locale | `zh-CN`, `en` |
 | Viewport widths | `1280`, `1440`, `1680`, `1920`；height `900` |
-| Worker policy | `1`，retries `0`，固定 Vite `4173` |
+| Worker policy | `1`，retries `0`；默认由 Vite dev server 提供 `4173` |
 | API | Playwright route fixture；不写入真实账号、Token 或后端数据 |
 
 首次准备和重复运行：
@@ -27,6 +27,12 @@ npm run test:browser
 ```
 
 也可以用 `DLR_BASELINE_OUTPUT_DIR` 指向另一个复核目录；默认输出到本目录。测试入口为 `web/tests/e2e/m5-10-wave-a-baseline.spec.ts`，配置为 `web/playwright.config.ts`。
+
+默认基线通过 `npm run dev` 启动 Vite dev server，截图和 console 记录反映
+React dev build，不是 production bundle。若设置 `DLR_BROWSER_BASE_URL`，Playwright
+使用该外部/预览地址并不会启动本地 `4173` webServer。相对的
+`DLR_BASELINE_OUTPUT_DIR` 基于测试文件目录解析，而不是基于当前工作目录解析，
+因此从 `web` 目录或仓库根目录运行都写入同一仓库内基线目录。
 
 ## 覆盖与记录
 

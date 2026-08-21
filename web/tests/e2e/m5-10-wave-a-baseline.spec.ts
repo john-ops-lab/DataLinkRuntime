@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { expect, test, type Page, type Route } from "@playwright/test";
 
@@ -8,10 +9,11 @@ type BaselineScenario = "token" | "account-read";
 
 const LOCALES: readonly BaselineLocale[] = ["zh-CN", "en"];
 const VIEWPORTS = [1280, 1440, 1680, 1920] as const;
+const baselineSpecDir = dirname(fileURLToPath(import.meta.url));
 
 const baselineOutputDir = resolve(
-  process.cwd(),
-  process.env.DLR_BASELINE_OUTPUT_DIR ?? "../docs/ui/m5-10-wave-a/baseline",
+  baselineSpecDir,
+  process.env.DLR_BASELINE_OUTPUT_DIR ?? "../../../docs/ui/m5-10-wave-a/baseline",
 );
 
 const adapter = {

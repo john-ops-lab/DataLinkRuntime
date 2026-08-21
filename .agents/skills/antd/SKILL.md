@@ -6,13 +6,22 @@ description: >
   antd versions, or analyzing antd usage in a project. Triggers on antd-related
   code, imports from 'antd', or explicit antd questions.
 allowed-tools:
-  - Bash(antd *)
-  - Bash(antd bug*)
-  - Bash(antd bug-cli*)
-  - Bash(antd upgrade*)
-  - Bash(npm install -g @ant-design/cli*)
-  - Bash(which antd)
+  - Bash(npx --yes @ant-design/cli@6.6.1 --version 5.29.3 *)
 ---
+
+## DataLinkRuntime override
+
+In DataLinkRuntime, the Ant Design CLI snapshot is fixed. Do not install
+`@ant-design/cli` globally, do not run `antd upgrade`, and do not use an
+unversioned `antd` command. The only supported entry point is:
+
+```bash
+npx --yes @ant-design/cli@6.6.1 --version 5.29.3 <command> --format json
+```
+
+The upstream setup and command examples below remain available as reference,
+but this repository override takes precedence over their installation and
+upgrade instructions.
 
 # Ant Design CLI
 
