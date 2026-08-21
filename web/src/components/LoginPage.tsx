@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Button, Card, Input } from "antd";
+import { ProForm } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
 import { resolveSystemLocale } from "../i18n";
@@ -12,20 +13,24 @@ interface LoginPageProps {
   onSubmit: (token: string) => Promise<void>;
 }
 
+interface LoginValues {
+  token: string;
+}
+
 export default function LoginPage(props: LoginPageProps) {
   const { i18n, t } = useTranslation("common");
-  const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function handleSubmit() {
-    if (busy || !token.trim()) {
-      return;
+  async function handleSubmit(values: LoginValues): Promise<boolean> {
+    if (busy) {
+      return false;
     }
     setBusy(true);
     setError(null);
     try {
-      await props.onSubmit(token.trim());
+      await props.onSubmit(values.token.trim());
+      return true;
     } catch (err) {
       setError(
         userErrorMessage(
@@ -34,6 +39,7 @@ export default function LoginPage(props: LoginPageProps) {
           resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language),
         ),
       );
+      return false;
     } finally {
       setBusy(false);
     }
@@ -70,25 +76,40 @@ export default function LoginPage(props: LoginPageProps) {
                   {error}
                 </p>
               )}
-              <Input.Password
-                data-testid="admin-token-input"
-                aria-label={t("auth.tokenLabel")}
-                placeholder={t("auth.tokenPlaceholder")}
-                value={token}
-                disabled={busy}
-                onChange={(event) => setToken(event.target.value)}
-                onPressEnter={() => void handleSubmit()}
-              />
-              <Button
-                type="primary"
-                block
-                data-testid="admin-token-submit"
-                loading={busy}
-                disabled={busy || !token.trim()}
-                onClick={() => void handleSubmit()}
+              <ProForm<LoginValues>
+                className="account-auth-form"
+                layout="vertical"
+                submitter={{
+                  render: () => [
+                    <Button
+                      key="submit"
+                      type="primary"
+                      block
+                      htmlType="submit"
+                      data-testid="admin-token-submit"
+                      loading={busy}
+                      disabled={busy}
+                    >
+                      {t("auth.login")}
+                    </Button>,
+                  ],
+                }}
+                onFinish={handleSubmit}
               >
-                {t("auth.login")}
-              </Button>
+                <ProForm.Item
+                  name="token"
+                  label={t("auth.tokenLabel")}
+                  rules={[{ required: true, whitespace: true }]}
+                >
+                  <Input.Password
+                    data-testid="admin-token-input"
+                    aria-label={t("auth.tokenLabel")}
+                    placeholder={t("auth.tokenPlaceholder")}
+                    autoComplete="current-password"
+                    disabled={busy}
+                  />
+                </ProForm.Item>
+              </ProForm>
               <p className="login-card-subtitle" style={{ margin: 0 }}>
                 {t("auth.tokenStorageNotice")}
               </p>

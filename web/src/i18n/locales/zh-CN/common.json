@@ -107,7 +107,18 @@
     "changePassword": "修改密码",
     "passwordChanged": "密码修改成功，请使用新密码重新登录。",
     "passwordChangeFailed": "密码修改失败",
-    "passwordMismatch": "两次输入的新密码不一致"
+    "passwordMismatch": "两次输入的新密码不一致",
+    "filterKeyword": "搜索账号",
+    "filterRole": "按角色筛选",
+    "filterStatus": "按状态筛选",
+    "filterAll": "全部",
+    "bulkSelected": "已选择 {{count}} 个账号",
+    "bulkEnable": "批量启用",
+    "bulkDisable": "批量禁用",
+    "confirmBulkEnable": "确定启用选中的 {{count}} 个账号吗？",
+    "confirmBulkDisable": "确定禁用选中的 {{count}} 个账号吗？所有已有 Session 将失效。",
+    "bulkEnabled": "已批量启用 {{count}} 个账号",
+    "bulkDisabled": "已批量禁用 {{count}} 个账号；已有 Session 已失效。"
   },
   "translation": {
     "unavailable": "暂不可用"

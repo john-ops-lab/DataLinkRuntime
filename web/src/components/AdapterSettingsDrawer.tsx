@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Alert, Button, Divider, Drawer, Input, Space } from "antd";
+import { ProForm } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
 import { canEditAdapter, canManageAdapter } from "../adapter-access";
@@ -18,9 +19,7 @@ interface Props {
   busy: boolean;
   contentReady: boolean;
   onClose: () => void;
-  onNameChange: (value: string) => void;
-  onDescriptionChange: (value: string) => void;
-  onUpdate: () => void;
+  onUpdate: (name: string, description: string) => void;
   onDelete: () => void;
   onClone: () => void;
   accessLevel?: AdapterAccessLevel;
@@ -44,20 +43,42 @@ export default function AdapterSettingsDrawer(props: Props) {
       onClose={props.onClose}
     >
       {adapter !== null && (
-        <div className="settings-form">
-          <label className="settings-field">
-            <span className="settings-field-label">{t("settings.name")}</span>
-            <Input data-testid="adapter-name" value={props.name} disabled={props.busy || archived || !canEdit} onChange={(event) => props.onNameChange(event.target.value)} />
-          </label>
-          <label className="settings-field">
-            <span className="settings-field-label">{t("settings.language")}</span>
+        <ProForm<{ name: string; description: string }>
+          key={`adapter-settings-${adapter.id}-${props.open ? "open" : "closed"}`}
+          className="settings-form"
+          layout="vertical"
+          initialValues={{ name: props.name, description: props.description }}
+          submitter={{
+            render: () => [
+              <Button
+                key="submit"
+                type="primary"
+                htmlType="submit"
+                data-testid="update-details"
+                disabled={props.busy || !props.contentReady || archived || !canEdit}
+              >
+                {t("settings.update")}
+              </Button>,
+            ],
+          }}
+          onFinish={async (values) => {
+            props.onUpdate(values.name, values.description);
+            return false;
+          }}
+        >
+          <ProForm.Item
+            name="name"
+            label={t("settings.name")}
+            rules={[{ required: true, whitespace: true, message: t("settings.name") }]}
+          >
+            <Input data-testid="adapter-name" disabled={props.busy || archived || !canEdit} />
+          </ProForm.Item>
+          <ProForm.Item label={t("settings.language")}>
             <Input data-testid="adapter-language" value={LANGUAGE_LABELS[adapter.language]} disabled />
-          </label>
-          <label className="settings-field">
-            <span className="settings-field-label">{t("settings.description")}</span>
-            <Input data-testid="adapter-description" value={props.description} disabled={props.busy || archived || !canEdit} onChange={(event) => props.onDescriptionChange(event.target.value)} />
-          </label>
-          <Button type="primary" data-testid="update-details" disabled={props.busy || !props.contentReady || archived || !canEdit} onClick={props.onUpdate}>{t("settings.update")}</Button>
+          </ProForm.Item>
+          <ProForm.Item name="description" label={t("settings.description")}>
+            <Input data-testid="adapter-description" disabled={props.busy || archived || !canEdit} />
+          </ProForm.Item>
           {!canEdit && (
             <Alert type="info" showIcon data-testid="adapter-access-read-only" message={t("settings.readOnlyAccess")} />
           )}
@@ -109,8 +130,8 @@ export default function AdapterSettingsDrawer(props: Props) {
           {adapter.runtime_locked === true && (
            <Alert type="warning" showIcon message={adapter.adapter_type === "webhook" ? t("settings.deleteWarningWebhook") : t("settings.deleteWarningTask")} />
           )}
-           {!archived && canManage && <p className="settings-danger-hint">{t("settings.dangerHint")}</p>}
-        </div>
+          {!archived && canManage && <p className="settings-danger-hint">{t("settings.dangerHint")}</p>}
+        </ProForm>
       )}
     </Drawer>
   );

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Button, Collapse, Input, Select, Space, Spin, Typography } from "antd";
+import { ProForm } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
 import { i18n } from "../i18n";
@@ -111,12 +112,6 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       : option,
   );
 
-  function editForm(updater: (current: AiModelSettingDraft) => AiModelSettingDraft) {
-    setPanelError(null);
-    setNotice(null);
-    setForm(updater);
-  }
-
   const fail = useCallback(
     (message: string) => {
       setPanelError(message);
@@ -174,6 +169,12 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     () => subscribeCredentialCatalog(() => void loadCredentials()),
     [loadCredentials],
   );
+
+  function editForm(updater: (current: AiModelSettingDraft) => AiModelSettingDraft) {
+    setPanelError(null);
+    setNotice(null);
+    setForm(updater);
+  }
 
   function currentPayload(): AiModelSettingDraft | null {
     const baseUrl = form.base_url.trim();
@@ -254,7 +255,8 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     setSaving(true);
     try {
       const saved = await api.updateAiSetting(payload);
-      setForm(normalizeSetting(saved));
+      const normalized = normalizeSetting(saved);
+      setForm(normalized);
        setNotice(t("model.saveNotice"));
     } catch (error) {
       fail(errorMessage(error, t("model.requestFailed")));
@@ -301,203 +303,199 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       <Alert
         type="info"
         showIcon
-         message={t("model.notice")}
-         description={t("model.boundary")}
+        message={t("model.notice")}
+        description={t("model.boundary")}
         data-testid="ai-data-boundary-warning"
       />
-
-      <label className="settings-field">
-         <span>{t("model.provider.label")}</span>
-        <Select<AiProvider>
-          data-testid="ai-provider"
-          disabled={actionBusy}
-          value={form.provider}
-           options={providerOptions}
-          onChange={(provider) =>
-            editForm((current) => ({
-              ...current,
-              provider,
-              reasoning_effort: normalizeReasoningEffort(
+      <ProForm<AiModelSettingDraft>
+        className="wave-c-form ai-model-form"
+        layout="vertical"
+        submitter={false}
+      >
+        <ProForm.Item label={t("model.provider.label")}>
+          <Select<AiProvider>
+            data-testid="ai-provider"
+            disabled={actionBusy}
+            value={form.provider}
+            options={providerOptions}
+            onChange={(provider) =>
+              editForm((current) => ({
+                ...current,
                 provider,
-                current.reasoning_mode,
-                current.reasoning_effort,
-              ),
-            }))
+                reasoning_effort: normalizeReasoningEffort(
+                  provider,
+                  current.reasoning_mode,
+                  current.reasoning_effort,
+                ),
+              }))
+            }
+          />
+        </ProForm.Item>
+
+        <ProForm.Item label={t("model.baseUrl")}>
+          <Input
+            data-testid="ai-base-url"
+            disabled={actionBusy}
+            placeholder="https://api.example.com"
+            value={form.base_url}
+            onChange={(event) =>
+              editForm((current) => ({ ...current, base_url: event.target.value }))
+            }
+          />
+          <Typography.Text type="secondary">{t("model.baseUrlHint")}</Typography.Text>
+        </ProForm.Item>
+
+        <ProForm.Item label={t("model.credential")}>
+          <Select<number>
+            data-testid="ai-credential"
+            disabled={actionBusy}
+            allowClear
+            placeholder={t("model.credentialPlaceholder")}
+            value={form.credential_id ?? undefined}
+            options={credentials.map((credential) => ({
+              label: credential.name,
+              value: credential.id,
+            }))}
+            onChange={(credentialId) =>
+              editForm((current) => ({ ...current, credential_id: credentialId ?? null }))
+            }
+          />
+        </ProForm.Item>
+
+        <ProForm.Item label={t("model.modelId")}>
+          <Input
+            data-testid="ai-model-input"
+            disabled={actionBusy}
+            list="ai-model-suggestions"
+            placeholder={t("model.modelPlaceholder")}
+            value={form.model}
+            onChange={(event) => editForm((current) => ({ ...current, model: event.target.value }))}
+          />
+          <datalist id="ai-model-suggestions" data-testid="ai-model-suggestions">
+            {modelOptions.map((model) => (
+              <option key={model} value={model} />
+            ))}
+          </datalist>
+        </ProForm.Item>
+
+        <Space wrap>
+          <Button
+            data-testid="ai-refresh-models"
+            loading={refreshingModels}
+            disabled={actionBusy}
+            onClick={() => void handleRefreshModels()}
+          >
+            {t("model.refreshModels")}
+          </Button>
+          <Typography.Text type="secondary">{t("model.refreshHint")}</Typography.Text>
+        </Space>
+
+        <Collapse
+          ghost
+          size="small"
+          collapsible={actionBusy ? "disabled" : "header"}
+          activeKey={advancedOpen ? ["reasoning"] : []}
+          onChange={(key) =>
+            setAdvancedOpen(Array.isArray(key) ? key.includes("reasoning") : key === "reasoning")
           }
-        />
-      </label>
-
-      <label className="settings-field">
-         <span>{t("model.baseUrl")}</span>
-        <Input
-          data-testid="ai-base-url"
-          disabled={actionBusy}
-          placeholder="https://api.example.com"
-          value={form.base_url}
-          onChange={(event) =>
-            editForm((current) => ({ ...current, base_url: event.target.value }))
-          }
-        />
-        <Typography.Text type="secondary">
-          {t("model.baseUrlHint")}
-        </Typography.Text>
-      </label>
-
-      <label className="settings-field">
-         <span>{t("model.credential")}</span>
-        <Select<number>
-          data-testid="ai-credential"
-          disabled={actionBusy}
-          allowClear
-          placeholder={t("model.credentialPlaceholder")}
-          value={form.credential_id ?? undefined}
-          options={credentials.map((credential) => ({
-            label: credential.name,
-            value: credential.id,
-          }))}
-          onChange={(credentialId) =>
-            editForm((current) => ({ ...current, credential_id: credentialId ?? null }))
-          }
-        />
-      </label>
-
-      <label className="settings-field">
-         <span>{t("model.modelId")}</span>
-        <Input
-          data-testid="ai-model-input"
-          disabled={actionBusy}
-          list="ai-model-suggestions"
-          placeholder={t("model.modelPlaceholder")}
-          value={form.model}
-          onChange={(event) => editForm((current) => ({ ...current, model: event.target.value }))}
-        />
-        <datalist id="ai-model-suggestions" data-testid="ai-model-suggestions">
-          {modelOptions.map((model) => (
-            <option key={model} value={model} />
-          ))}
-        </datalist>
-      </label>
-
-      <Space wrap>
-        <Button
-          data-testid="ai-refresh-models"
-          loading={refreshingModels}
-          disabled={actionBusy}
-          onClick={() => void handleRefreshModels()}
-        >
-          {t("model.refreshModels")}
-        </Button>
-        <Typography.Text type="secondary">
-          {t("model.refreshHint")}
-        </Typography.Text>
-      </Space>
-
-      <Collapse
-        ghost
-        size="small"
-        collapsible={actionBusy ? "disabled" : "header"}
-        activeKey={advancedOpen ? ["reasoning"] : []}
-        onChange={(key) =>
-          setAdvancedOpen(Array.isArray(key) ? key.includes("reasoning") : key === "reasoning")
-        }
-        items={[
-          {
-            key: "reasoning",
-             label: t("model.advanced", { value:
-               form.reasoning_mode === "default"
-                 ? t("model.reasoningDefault")
-                 : form.reasoning_mode === "enabled"
-                   ? t("model.reasoningEnabled")
-                   : t("model.reasoningDisabled")
-             }),
-            children: (
-              <div className="settings-advanced">
-                <label className="settings-field">
-                   <span>{t("model.reasoningMode")}</span>
-                  <Select<AiReasoningMode>
-                    data-testid="ai-reasoning-mode"
-                    disabled={actionBusy}
-                    value={form.reasoning_mode}
-                    options={[
-                       { label: t("model.reasoningDefault"), value: "default" },
-                       { label: t("model.reasoningOpen"), value: "enabled" },
-                       { label: t("model.reasoningClose"), value: "disabled" },
-                    ]}
-                    onChange={(reasoningMode) =>
-                      editForm((current) => ({
-                        ...current,
-                        reasoning_mode: reasoningMode,
-                        reasoning_effort: normalizeReasoningEffort(
-                          current.provider,
-                          reasoningMode,
-                          current.reasoning_effort,
-                        ),
-                      }))
-                    }
-                  />
-                </label>
-
-                {reasoningEfforts.length > 0 && (
-                  <label className="settings-field">
-                   <span>{form.provider === "openai" ? t("model.reasoningEffort") : t("model.reasoningEffortOptional")}</span>
-                    <Select<AiReasoningEffort>
-                      data-testid="ai-reasoning-effort"
+          items={[
+            {
+              key: "reasoning",
+              label: t("model.advanced", {
+                value:
+                  form.reasoning_mode === "default"
+                    ? t("model.reasoningDefault")
+                    : form.reasoning_mode === "enabled"
+                      ? t("model.reasoningEnabled")
+                      : t("model.reasoningDisabled"),
+              }),
+              children: (
+                <div className="settings-advanced">
+                  <ProForm.Item label={t("model.reasoningMode")}>
+                    <Select<AiReasoningMode>
+                      data-testid="ai-reasoning-mode"
                       disabled={actionBusy}
-                      allowClear={form.provider !== "openai"}
-                      placeholder={
-                         form.provider === "openai" ? t("model.reasoningEffortPlaceholder") : t("model.reasoningEffortDefault")
-                      }
-                      value={form.reasoning_effort ?? undefined}
-                      options={reasoningEfforts.map((effort) => ({ label: effort, value: effort }))}
-                      onChange={(reasoningEffort) =>
+                      value={form.reasoning_mode}
+                      options={[
+                        { label: t("model.reasoningDefault"), value: "default" },
+                        { label: t("model.reasoningOpen"), value: "enabled" },
+                        { label: t("model.reasoningClose"), value: "disabled" },
+                      ]}
+                      onChange={(reasoningMode) =>
                         editForm((current) => ({
                           ...current,
-                          reasoning_effort: reasoningEffort ?? null,
+                          reasoning_mode: reasoningMode,
+                          reasoning_effort: normalizeReasoningEffort(
+                            current.provider,
+                            reasoningMode,
+                            current.reasoning_effort,
+                          ),
                         }))
                       }
                     />
-                  </label>
-                )}
+                  </ProForm.Item>
 
-                <Typography.Text type="secondary">
-                   {t("model.reasoningHint")}
-                </Typography.Text>
-              </div>
-            ),
-          },
-        ]}
-      />
+                  {reasoningEfforts.length > 0 && (
+                    <ProForm.Item label={form.provider === "openai" ? t("model.reasoningEffort") : t("model.reasoningEffortOptional")}>
+                      <Select<AiReasoningEffort>
+                        data-testid="ai-reasoning-effort"
+                        disabled={actionBusy}
+                        allowClear={form.provider !== "openai"}
+                        placeholder={
+                          form.provider === "openai"
+                            ? t("model.reasoningEffortPlaceholder")
+                            : t("model.reasoningEffortDefault")
+                        }
+                        value={form.reasoning_effort ?? undefined}
+                        options={reasoningEfforts.map((effort) => ({ label: effort, value: effort }))}
+                        onChange={(reasoningEffort) =>
+                          editForm((current) => ({
+                            ...current,
+                            reasoning_effort: reasoningEffort ?? null,
+                          }))
+                        }
+                      />
+                    </ProForm.Item>
+                  )}
 
-      {panelError !== null && (
-        <p className="settings-panel-error" role="alert" data-testid="ai-settings-error">
-          {panelError}
-        </p>
-      )}
-      {notice !== null && (
-        <p className="settings-panel-success" role="status" data-testid="ai-settings-notice">
-          {notice}
-        </p>
-      )}
+                  <Typography.Text type="secondary">{t("model.reasoningHint")}</Typography.Text>
+                </div>
+              ),
+            },
+          ]}
+        />
 
-      <Space>
-        <Button
-          data-testid="ai-test-connection"
-          loading={testing}
-          disabled={actionBusy}
-          onClick={() => void handleTest()}
-        >
-           {t("actions.testConnection", { ns: "common" })}
-        </Button>
-        <Button
-          type="primary"
-          data-testid="ai-save-settings"
-          loading={saving}
-          disabled={actionBusy}
-          onClick={() => void handleSave()}
-        >
-           {t("actions.save", { ns: "common" })}
-        </Button>
-      </Space>
+        {panelError !== null && (
+          <p className="settings-panel-error" role="alert" data-testid="ai-settings-error">
+            {panelError}
+          </p>
+        )}
+        {notice !== null && (
+          <p className="settings-panel-success" role="status" data-testid="ai-settings-notice">
+            {notice}
+          </p>
+        )}
+
+        <Space>
+          <Button
+            data-testid="ai-test-connection"
+            loading={testing}
+            disabled={actionBusy}
+            onClick={() => void handleTest()}
+          >
+            {t("actions.testConnection", { ns: "common" })}
+          </Button>
+          <Button
+            type="primary"
+            data-testid="ai-save-settings"
+            loading={saving}
+            disabled={actionBusy}
+            onClick={() => void handleSave()}
+          >
+            {t("actions.save", { ns: "common" })}
+          </Button>
+        </Space>
+      </ProForm>
     </div>
   );
 }

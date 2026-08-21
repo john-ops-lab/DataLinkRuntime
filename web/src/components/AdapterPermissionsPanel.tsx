@@ -1,7 +1,7 @@
 /** Adapter-level read/edit sharing management (M5.9 Wave D). */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Button, Divider, Empty, Select, Space, Spin, Tag, Typography } from "antd";
+import { Alert, Button, Divider, Empty, List, Select, Space, Spin, Tag, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { api } from "../api";
@@ -105,35 +105,39 @@ export default function AdapterPermissionsPanel({ adapterId, ownerLabel, onChang
       {permissions.length === 0 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("sharing.none")} />
       ) : (
-        <Space direction="vertical" className="adapter-permission-list" style={{ width: "100%" }}>
-          {permissions.map((grant) => (
-            <div className="adapter-permission-row" key={grant.user_id} data-testid="adapter-permission-row">
+        <List
+          className="adapter-permission-list"
+          dataSource={permissions}
+          renderItem={(grant) => (
+            <List.Item className="adapter-permission-row" key={grant.user_id} data-testid="adapter-permission-row">
               <span>
                 <strong>{grant.username}</strong>
                 {!grant.enabled && <Tag color="warning">{t("sharing.disabled")}</Tag>}
               </span>
-              <Select<"read" | "edit">
-                aria-label={t("sharing.permissionFor", { username: grant.username })}
-                value={grant.permission}
-                disabled={saving}
-                options={[
-                  { value: "read", label: t("sharing.read") },
-                  { value: "edit", label: t("sharing.edit") },
-                ]}
-                onChange={(value) => void saveGrant(grant.user_id, value)}
-              />
-              <Button
-                danger
-                size="small"
-                data-testid="revoke-adapter-permission"
-                disabled={saving}
-                onClick={() => void revoke(grant.user_id)}
-              >
-                {t("sharing.revoke")}
-              </Button>
-            </div>
-          ))}
-        </Space>
+              <Space wrap>
+                <Select<"read" | "edit">
+                  aria-label={t("sharing.permissionFor", { username: grant.username })}
+                  value={grant.permission}
+                  disabled={saving}
+                  options={[
+                    { value: "read", label: t("sharing.read") },
+                    { value: "edit", label: t("sharing.edit") },
+                  ]}
+                  onChange={(value) => void saveGrant(grant.user_id, value)}
+                />
+                <Button
+                  danger
+                  size="small"
+                  data-testid="revoke-adapter-permission"
+                  disabled={saving}
+                  onClick={() => void revoke(grant.user_id)}
+                >
+                  {t("sharing.revoke")}
+                </Button>
+              </Space>
+            </List.Item>
+          )}
+        />
       )}
       <Divider orientation="left" plain>{t("sharing.addTitle")}</Divider>
       <Space wrap>

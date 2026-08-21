@@ -107,7 +107,18 @@
     "changePassword": "Change password",
     "passwordChanged": "Password changed. Log in again with the new password.",
     "passwordChangeFailed": "Password change failed",
-    "passwordMismatch": "The new passwords do not match"
+    "passwordMismatch": "The new passwords do not match",
+    "filterKeyword": "Search users",
+    "filterRole": "Filter by role",
+    "filterStatus": "Filter by status",
+    "filterAll": "All",
+    "bulkSelected": "{{count}} users selected",
+    "bulkEnable": "Enable selected",
+    "bulkDisable": "Disable selected",
+    "confirmBulkEnable": "Enable the selected {{count}} users?",
+    "confirmBulkDisable": "Disable the selected {{count}} users? Existing Sessions will be invalidated.",
+    "bulkEnabled": "Enabled {{count}} users",
+    "bulkDisabled": "Disabled {{count}} users; existing Sessions were invalidated."
   },
   "translation": {
     "unavailable": "Translation unavailable"

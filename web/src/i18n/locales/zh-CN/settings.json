@@ -77,7 +77,12 @@
     "tableType": "类型",
     "tableActions": "操作",
     "bindingInvalid": "",
-    "cancel": "取消"
+    "cancel": "取消",
+    "filterAll": "全部",
+    "filterKeyword": "筛选凭据",
+    "filterType": "筛选凭据类型",
+    "filterDefault": "默认状态",
+    "filterCustom": "仅自定义"
   },
   "bindings": {
     "help": "代码中的凭据名用于脚本读取绑定后的敏感信息，例如",
@@ -123,6 +128,11 @@
     },
     "new": "新建依赖源",
     "description": "每种类型最多一个默认源；运行节点会先尝试本地缓存，再使用对应语言的默认依赖源。",
+    "filterAll": "全部",
+    "filterKeyword": "筛选依赖源",
+    "filterKind": "筛选依赖源类型",
+    "filterDefault": "默认状态",
+    "filterCustom": "仅自定义",
     "nameAndUrlRequired": "包源名称与索引 URL 均不能为空",
     "refreshList": "依赖源列表已刷新",
     "name": "依赖源名称",
