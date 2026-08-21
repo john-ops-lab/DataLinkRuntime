@@ -486,6 +486,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<PackageSourceFormState>(EMPTY_SOURCE_FORM);
+  const [sourceForm] = ProForm.useForm<PackageSourceFormState>();
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
   const [restoring, setRestoring] = useState<"pypi" | "npm" | "maven" | null>(null);
@@ -827,6 +828,8 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
           onClick={() => {
             setNotice(null);
             setForm(EMPTY_SOURCE_FORM);
+            sourceForm.resetFields();
+            sourceForm.setFieldsValue(EMPTY_SOURCE_FORM);
             setFormOpen(true);
           }}
         >
@@ -931,6 +934,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
 
       <ModalForm<PackageSourceFormState>
         key={`package-source-form-${formOpen}`}
+        form={sourceForm}
         title={t("packageSources.new")}
         open={formOpen}
         initialValues={form}
@@ -951,16 +955,25 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
             </Button>,
           ],
         }}
-        onValuesChange={(_, values) =>
-          setForm((current) => ({
-            ...current,
-            name: values.name ?? current.name,
-            kind: values.kind ?? current.kind,
-            index_url: values.index_url ?? current.index_url,
-            is_default: values.is_default ?? current.is_default,
-            credential_id: values.credential_id ?? null,
-          }))
-        }
+        onValuesChange={(changed, values) => {
+          const kindChanged = changed.kind !== undefined && values.kind !== form.kind;
+          if (kindChanged) {
+            sourceForm.setFieldValue("credential_id", null);
+          }
+          setForm((current) => {
+            const nextKind = values.kind ?? current.kind;
+            return {
+              ...current,
+              name: values.name ?? current.name,
+              kind: nextKind,
+              index_url: values.index_url ?? current.index_url,
+              is_default: values.is_default ?? current.is_default,
+              credential_id: kindChanged || nextKind !== current.kind
+                ? null
+                : values.credential_id ?? null,
+            };
+          });
+        }}
         onFinish={handleSubmit}
       >
         <div className="settings-inline-form" data-testid="package-source-form">

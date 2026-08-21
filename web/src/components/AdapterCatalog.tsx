@@ -245,7 +245,8 @@ export default function AdapterCatalog({
         values.adapterType,
       );
       if (created) {
-        createForm.setFieldsValue(DEFAULT_CREATE_ADAPTER_VALUES);
+        createForm.resetFields();
+        setCreating(false);
       }
       return created;
     } finally {
@@ -478,14 +479,14 @@ export default function AdapterCatalog({
         }}
         onFinish={(values) => handleCreate(values ?? createForm.getFieldsValue(true))}
         submitter={{
-          render: () => [
+          render: (submitterProps) => [
             <Button
               key="submit"
               type="primary"
               data-testid="create-adapter"
               loading={submitting}
               disabled={busy}
-              onClick={() => void handleCreate(createForm.getFieldsValue(true))}
+              onClick={submitterProps.submit}
             >
               {t("catalog.create")}
             </Button>,
