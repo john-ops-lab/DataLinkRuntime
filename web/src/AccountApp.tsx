@@ -1,7 +1,7 @@
 /** Account-entry session bootstrap and the smallest forced-change/app loop. */
 
 import { useCallback, useEffect, useState } from "react";
-import { Drawer } from "antd";
+import { Drawer, Skeleton } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -110,7 +110,14 @@ export default function AccountApp() {
   }
 
   if (screen === "loading") {
-    return <main className="account-loading" aria-busy="true">{t("auth.accountLoading")}</main>;
+    return (
+      <main className="account-loading" aria-busy="true" aria-live="polite">
+        <div className="account-loading-content">
+          <Skeleton active title={{ width: "58%" }} paragraph={{ rows: 3 }} />
+          <span>{t("auth.accountLoading")}</span>
+        </div>
+      </main>
+    );
   }
   if (screen === "login") {
     return <AccountLoginPage notice={notice} onSubmit={handleLogin} />;

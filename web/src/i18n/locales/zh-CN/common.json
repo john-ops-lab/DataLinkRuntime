@@ -8,6 +8,17 @@
     "flow": "Develop → Run → Observe",
     "copyright": "© 2026 DataLinkRuntime · MIT License"
   },
+  "shell": {
+    "console": "控制台",
+    "adapters": "适配器",
+    "workbench": "工作台",
+    "navigation": "控制台导航",
+    "workspaceTitle": "适配器工作区",
+    "workspaceSubtitle": "请选择一个适配器，查看代码、运行设置与执行记录。",
+    "workbenchEmptyTitle": "尚未选择适配器",
+    "readOnlyTitle": "只读访问",
+    "readOnlyDescription": "你可以查看此共享适配器，但编辑、保存、运行和 AI 应用修改均已禁用。"
+  },
   "auth": {
     "loginTitle": "欢迎登录 DLR 控制台",
     "loginSubtitle": "请输入管理员 Token 以继续",
