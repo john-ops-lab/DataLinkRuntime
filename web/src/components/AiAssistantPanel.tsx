@@ -36,7 +36,7 @@
  * no Thread persistence, no general Agent Runtime.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, Spin, Tooltip } from "antd";
 import {
   CloseOutlined,
@@ -97,7 +97,7 @@ import { userErrorMessage } from "../user-message";
 import { i18n } from "../i18n";
 import { AssistantMarkdownText } from "./ai-markdown";
 import { DlrToolCallUI } from "./ai-tool-call";
-import VersionDiffModal, { type DiffPane } from "./VersionDiffModal";
+import VersionDiffModal, { type DiffApplyAction, type DiffPane } from "./VersionDiffModal";
 
 export interface AiWorkingCopy {
   code: string;
@@ -108,6 +108,12 @@ export interface AiWorkingCopy {
 /** M5.5.13: one confirmed context snippet with a client-side identity; the
  * wire shape stays the API's AiContextSnippet. */
 export type AiContextSnippetEntry = AiContextSnippet & { id: number };
+
+export interface AiCandidateDiffModalState {
+  panes: DiffPane[];
+  applyAction: DiffApplyAction;
+  onClose: () => void;
+}
 
 interface CandidateState {
   value: AiCandidate;
@@ -184,6 +190,8 @@ interface AiAssistantPanelProps {
   canUseAi?: boolean;
   onRemoveContextSnippet: (id: number) => void;
   onClearContextSnippets: () => void;
+  /** Stable host keeps Monaco DiffEditor mounted across the keyed AI panel switch. */
+  onCandidateDiffChange?: (state: AiCandidateDiffModalState | null) => void;
 }
 
 /** M5.5.5: DLR-known request lifecycle stages. Reasoning/CoT is never
@@ -657,8 +665,18 @@ function contextSnippetLabel(
 }
 
 export default function AiAssistantPanel(props: AiAssistantPanelProps) {
-  const { t, i18n } = useTranslation(["ai", "common"]);
+  const { t } = useTranslation(["ai", "common"]);
   const canUseAi = props.canUseAi !== false;
+  const { onCandidateDiffChange } = props;
+  const { busy, contentReady, onApply } = props;
+  const adapterArchived = props.adapter?.archived_at;
+  const adapterRuntimeLocked = props.adapter?.runtime_locked;
+  const candidateTranslate = useMemo(
+    () => i18n.getFixedT(i18n.language, ["ai", "common"]),
+    // The singleton's language changes through i18next events and invalidates this translator.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [i18n.language],
+  );
   const [messages, setMessages] = useState<VisibleMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -1301,17 +1319,17 @@ async function resolveComposerAttachment(
     });
   }
 
-  function applyCandidate(messageId: number, candidate: AiCandidate) {
+  const applyCandidate = useCallback((messageId: number, candidate: AiCandidate) => {
     if (
       !canUseAi ||
-      !props.contentReady ||
-      props.busy ||
-      props.adapter?.archived_at ||
-      props.adapter?.runtime_locked === true
+      !contentReady ||
+      busy ||
+      adapterArchived ||
+      adapterRuntimeLocked === true
     ) {
       return;
     }
-    props.onApply(candidate);
+    onApply(candidate);
     setMessages((current) =>
       current.map((message) =>
         message.id === messageId && message.candidate !== null
@@ -1324,7 +1342,7 @@ async function resolveComposerAttachment(
     // button stays disabled with its reason), so the Diff and its error/stale
     // information are preserved in every failure path.
     setCandidateDiff(null);
-  }
+  }, [adapterArchived, adapterRuntimeLocked, busy, canUseAi, contentReady, onApply]);
 
   // M5.5.13: drag the floating entry within the visible work area without
   // triggering a click. Pointer events are used so the drag works for mouse
@@ -1757,7 +1775,7 @@ async function resolveComposerAttachment(
   );
 
   const candidateDiffState = candidateDiff;
-  const diffApplyAction = (() => {
+  const diffApplyAction = useMemo<DiffApplyAction | null>(() => {
     if (candidateDiffState === null) {
       return null;
     }
@@ -1773,26 +1791,62 @@ async function resolveComposerAttachment(
       !candidateState.applied &&
       !codeSnapshotsEqual(props.workingCopy, candidateState.baseSnapshot);
     const applyBlockedReason = candidateState.applied
-      ? t("assistant.diff.applyBlockedApplied")
+      ? candidateTranslate("assistant.diff.applyBlockedApplied")
       : props.adapter?.archived_at
-        ? t("assistant.diff.applyBlockedArchived")
+        ? candidateTranslate("assistant.diff.applyBlockedArchived")
         : !canUseAi
-          ? t("assistant.diff.applyBlockedPermission")
+          ? candidateTranslate("assistant.diff.applyBlockedPermission")
           : !props.contentReady
-          ? t("assistant.diff.applyBlockedNotReady")
+          ? candidateTranslate("assistant.diff.applyBlockedNotReady")
           : props.busy
-            ? t("assistant.diff.applyBlockedBusy")
+            ? candidateTranslate("assistant.diff.applyBlockedBusy")
             : props.adapter?.runtime_locked === true
-              ? t("assistant.diff.applyBlockedLocked")
+              ? candidateTranslate("assistant.diff.applyBlockedLocked")
               : null;
     return {
-      label: stale ? t("assistant.diff.applyStale") : t("actions.apply", { ns: "common" }),
+      label: stale ? candidateTranslate("assistant.diff.applyStale") : candidateTranslate("actions.apply", { ns: "common" }),
       reason: applyBlockedReason,
       applied: candidateState.applied,
       stale,
       onApply: () => applyCandidate(candidateDiffState.messageId, candidateState.value),
     };
-  })();
+  }, [
+    canUseAi,
+    candidateDiffState,
+    messages,
+    props.adapter?.archived_at,
+    props.adapter?.runtime_locked,
+    props.busy,
+    props.contentReady,
+    props.workingCopy,
+    candidateTranslate,
+    applyCandidate,
+  ]);
+
+  useEffect(() => {
+    if (onCandidateDiffChange === undefined) {
+      return;
+    }
+    if (candidateDiff === null || diffApplyAction === null) {
+      onCandidateDiffChange(null);
+      return;
+    }
+    onCandidateDiffChange({
+      panes: candidateDiff.panes.map((pane) => ({
+        ...pane,
+        label: candidateTranslate("assistant.diff.code"),
+      })),
+      applyAction: diffApplyAction,
+      onClose: () => setCandidateDiff(null),
+    });
+  }, [candidateDiff, candidateTranslate, diffApplyAction, onCandidateDiffChange]);
+
+  useEffect(() => {
+    if (onCandidateDiffChange === undefined) {
+      return;
+    }
+    return () => onCandidateDiffChange(null);
+  }, [onCandidateDiffChange]);
 
   if (!canUseAi) {
     return null;
@@ -1800,19 +1854,21 @@ async function resolveComposerAttachment(
 
   return (
     <>
-      <VersionDiffModal
-        open={candidateDiff !== null}
-        title={t("assistant.diff.title")}
-        originalTitle={t("assistant.diff.original")}
-        modifiedTitle={t("assistant.diff.modified")}
-        panes={(candidateDiff?.panes ?? []).map((pane) => ({
-          ...pane,
-          label: t("assistant.diff.code"),
-        }))}
-        theme={props.theme}
-        onClose={() => setCandidateDiff(null)}
-        applyAction={diffApplyAction}
-      />
+      {onCandidateDiffChange === undefined && (
+        <VersionDiffModal
+          open={candidateDiff !== null}
+          title={t("assistant.diff.title")}
+          originalTitle={t("assistant.diff.original")}
+          modifiedTitle={t("assistant.diff.modified")}
+          panes={(candidateDiff?.panes ?? []).map((pane) => ({
+            ...pane,
+            label: t("assistant.diff.code"),
+          }))}
+          theme={props.theme}
+          onClose={() => setCandidateDiff(null)}
+          applyAction={diffApplyAction}
+        />
+      )}
       {props.open ? expandedPanel : collapsedEntry}
     </>
   );

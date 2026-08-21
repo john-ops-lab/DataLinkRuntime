@@ -1,0 +1,6033 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "wave": "M5.10 Wave E",
+  "scope": "complete reachable-page real-browser audit after Waves A-D",
+  "antd": "5.29.3",
+  "pro_components": "2.8.10",
+  "playwright": "1.62.1",
+  "browser": "chromium",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "viewport_height": 900,
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "deterministic_fixtures": true,
+  "real_credentials": false,
+  "records": [
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-account-admin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-account-admin-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-account-admin-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": true,
+        "owner_or_shared_access": false,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-account-admin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-account-admin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-account-admin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "empty",
+      "stage": "loading",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-empty-loading.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "loading_skeleton": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "empty",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-empty-state.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "catalog_empty": true,
+        "workbench_disabled": true,
+        "api_error_feedback": false,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "error",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-error-state.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "catalog_empty": false,
+        "workbench_disabled": false,
+        "api_error_feedback": true,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "force-password",
+      "stage": "force-password",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-force-password-force-password.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "forced_password_page": true,
+        "password_form": true,
+        "logout_action": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "force-password",
+      "stage": "force-password-complete",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-force-password-force-password-complete.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "forced_password_completed": true,
+        "return_to_login": true,
+        "success_notice": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-owner-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "owner-settings",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-owner-owner-settings.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "owner_acl": true,
+        "permission_list": true,
+        "grant_controls": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-owner-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-owner-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-owner-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "shared-edit",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-shared-edit-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "shared-edit",
+      "stage": "shared-edit",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-shared-edit-shared-edit.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": false,
+        "ai_enabled_for_edit": true,
+        "ai_hidden_for_read": false,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "shared-edit",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-shared-edit-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "shared-read",
+      "stage": "login-error-unshared",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-shared-read-login-error-unshared.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "login_error": true,
+        "direct_unshared_404": true,
+        "no_console_or_page_error": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "shared-read",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-shared-read-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "shared-read",
+      "stage": "shared-read",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-shared-read-shared-read.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": true,
+        "ai_enabled_for_edit": false,
+        "ai_hidden_for_read": true,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "shared-read",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-shared-read-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": true,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-superadmin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "shell-catalog",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-superadmin-shell-catalog.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "navigation": true,
+        "catalog_search": true,
+        "catalog_select_filter": true,
+        "keyboard_focus": true,
+        "top_bar": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-superadmin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-superadmin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-superadmin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "webhook",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-superadmin-webhook.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "webhook_workbench": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "webhook_history_empty": true,
+        "adapter_switch_state_isolation": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "webhook-runtime",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1280-superadmin-webhook-runtime.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "webhook_runtime_settings": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "modal_drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-account-admin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-account-admin-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-account-admin-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": true,
+        "owner_or_shared_access": false,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-account-admin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-account-admin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-account-admin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "empty",
+      "stage": "loading",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-empty-loading.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "loading_skeleton": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "empty",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-empty-state.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "catalog_empty": true,
+        "workbench_disabled": true,
+        "api_error_feedback": false,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "error",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-error-state.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "catalog_empty": false,
+        "workbench_disabled": false,
+        "api_error_feedback": true,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "force-password",
+      "stage": "force-password",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-force-password-force-password.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "forced_password_page": true,
+        "password_form": true,
+        "logout_action": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "force-password",
+      "stage": "force-password-complete",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-force-password-force-password-complete.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "forced_password_completed": true,
+        "return_to_login": true,
+        "success_notice": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-owner-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "owner-settings",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-owner-owner-settings.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "owner_acl": true,
+        "permission_list": true,
+        "grant_controls": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-owner-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-owner-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-owner-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "shared-edit",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-shared-edit-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "shared-edit",
+      "stage": "shared-edit",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-shared-edit-shared-edit.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": false,
+        "ai_enabled_for_edit": true,
+        "ai_hidden_for_read": false,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "shared-edit",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-shared-edit-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "shared-read",
+      "stage": "login-error-unshared",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-shared-read-login-error-unshared.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "login_error": true,
+        "direct_unshared_404": true,
+        "no_console_or_page_error": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "shared-read",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-shared-read-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "shared-read",
+      "stage": "shared-read",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-shared-read-shared-read.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": true,
+        "ai_enabled_for_edit": false,
+        "ai_hidden_for_read": true,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "shared-read",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-shared-read-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": true,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-superadmin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "shell-catalog",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-superadmin-shell-catalog.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "navigation": true,
+        "catalog_search": true,
+        "catalog_select_filter": true,
+        "keyboard_focus": true,
+        "top_bar": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-superadmin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-superadmin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-superadmin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "webhook",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-superadmin-webhook.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "webhook_workbench": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "webhook_history_empty": true,
+        "adapter_switch_state_isolation": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "webhook-runtime",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1440-superadmin-webhook-runtime.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "webhook_runtime_settings": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "modal_drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-account-admin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-account-admin-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-account-admin-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": true,
+        "owner_or_shared_access": false,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-account-admin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-account-admin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-account-admin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "empty",
+      "stage": "loading",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-empty-loading.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "loading_skeleton": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "empty",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-empty-state.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "catalog_empty": true,
+        "workbench_disabled": true,
+        "api_error_feedback": false,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "error",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-error-state.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "catalog_empty": false,
+        "workbench_disabled": false,
+        "api_error_feedback": true,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "force-password",
+      "stage": "force-password",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-force-password-force-password.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "forced_password_page": true,
+        "password_form": true,
+        "logout_action": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "force-password",
+      "stage": "force-password-complete",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-force-password-force-password-complete.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "forced_password_completed": true,
+        "return_to_login": true,
+        "success_notice": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-owner-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "owner-settings",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-owner-owner-settings.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "owner_acl": true,
+        "permission_list": true,
+        "grant_controls": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-owner-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-owner-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-owner-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "shared-edit",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-shared-edit-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "shared-edit",
+      "stage": "shared-edit",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-shared-edit-shared-edit.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": false,
+        "ai_enabled_for_edit": true,
+        "ai_hidden_for_read": false,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "shared-edit",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-shared-edit-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "shared-read",
+      "stage": "login-error-unshared",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-shared-read-login-error-unshared.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "login_error": true,
+        "direct_unshared_404": true,
+        "no_console_or_page_error": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "shared-read",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-shared-read-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "shared-read",
+      "stage": "shared-read",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-shared-read-shared-read.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": true,
+        "ai_enabled_for_edit": false,
+        "ai_hidden_for_read": true,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "shared-read",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-shared-read-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": true,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-superadmin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "shell-catalog",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-superadmin-shell-catalog.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "navigation": true,
+        "catalog_search": true,
+        "catalog_select_filter": true,
+        "keyboard_focus": true,
+        "top_bar": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-superadmin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-superadmin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-superadmin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "webhook",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-superadmin-webhook.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "webhook_workbench": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "webhook_history_empty": true,
+        "adapter_switch_state_isolation": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "webhook-runtime",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1680-superadmin-webhook-runtime.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "webhook_runtime_settings": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "modal_drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-account-admin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-account-admin-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-account-admin-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": true,
+        "owner_or_shared_access": false,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-account-admin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-account-admin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-account-admin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "empty",
+      "stage": "loading",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-empty-loading.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "loading_skeleton": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "empty",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-empty-state.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "catalog_empty": true,
+        "workbench_disabled": true,
+        "api_error_feedback": false,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "error",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-error-state.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "catalog_empty": false,
+        "workbench_disabled": false,
+        "api_error_feedback": true,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "force-password",
+      "stage": "force-password",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-force-password-force-password.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "forced_password_page": true,
+        "password_form": true,
+        "logout_action": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "force-password",
+      "stage": "force-password-complete",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-force-password-force-password-complete.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "forced_password_completed": true,
+        "return_to_login": true,
+        "success_notice": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-owner-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "owner-settings",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-owner-owner-settings.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "owner_acl": true,
+        "permission_list": true,
+        "grant_controls": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-owner-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-owner-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-owner-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "shared-edit",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-shared-edit-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "shared-edit",
+      "stage": "shared-edit",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-shared-edit-shared-edit.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": false,
+        "ai_enabled_for_edit": true,
+        "ai_hidden_for_read": false,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "shared-edit",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-shared-edit-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "shared-read",
+      "stage": "login-error-unshared",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-shared-read-login-error-unshared.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "login_error": true,
+        "direct_unshared_404": true,
+        "no_console_or_page_error": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "shared-read",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-shared-read-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "shared-read",
+      "stage": "shared-read",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-shared-read-shared-read.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": true,
+        "ai_enabled_for_edit": false,
+        "ai_hidden_for_read": true,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "shared-read",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-shared-read-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": true,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-superadmin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "shell-catalog",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-superadmin-shell-catalog.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "navigation": true,
+        "catalog_search": true,
+        "catalog_select_filter": true,
+        "keyboard_focus": true,
+        "top_bar": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-superadmin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-superadmin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-superadmin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "webhook",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-superadmin-webhook.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "webhook_workbench": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "webhook_history_empty": true,
+        "adapter_switch_state_isolation": true
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "webhook-runtime",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/en-1920-superadmin-webhook-runtime.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "webhook_runtime_settings": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "modal_drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-account-admin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-account-admin-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-account-admin-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": true,
+        "owner_or_shared_access": false,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-account-admin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-account-admin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "account-admin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-account-admin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "empty",
+      "stage": "loading",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-empty-loading.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "loading_skeleton": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "empty",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-empty-state.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "catalog_empty": true,
+        "workbench_disabled": true,
+        "api_error_feedback": false,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "error",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-error-state.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "catalog_empty": false,
+        "workbench_disabled": false,
+        "api_error_feedback": true,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "force-password",
+      "stage": "force-password",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-force-password-force-password.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "forced_password_page": true,
+        "password_form": true,
+        "logout_action": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "force-password",
+      "stage": "force-password-complete",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-force-password-force-password-complete.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "forced_password_completed": true,
+        "return_to_login": true,
+        "success_notice": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-owner-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "owner-settings",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-owner-owner-settings.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "owner_acl": true,
+        "permission_list": true,
+        "grant_controls": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-owner-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-owner-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "owner",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-owner-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "shared-edit",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-shared-edit-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "shared-edit",
+      "stage": "shared-edit",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-shared-edit-shared-edit.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": false,
+        "ai_enabled_for_edit": true,
+        "ai_hidden_for_read": false,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "shared-edit",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-shared-edit-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "shared-read",
+      "stage": "login-error-unshared",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-shared-read-login-error-unshared.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "login_error": true,
+        "direct_unshared_404": true,
+        "no_console_or_page_error": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "shared-read",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-shared-read-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "shared-read",
+      "stage": "shared-read",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-shared-read-shared-read.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": true,
+        "ai_enabled_for_edit": false,
+        "ai_hidden_for_read": true,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "shared-read",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-shared-read-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": true,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-superadmin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "shell-catalog",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-superadmin-shell-catalog.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "shell": true,
+        "navigation": true,
+        "catalog_search": true,
+        "catalog_select_filter": true,
+        "keyboard_focus": true,
+        "top_bar": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-superadmin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-superadmin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-superadmin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "webhook",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-superadmin-webhook.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "webhook_workbench": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "webhook_history_empty": true,
+        "adapter_switch_state_isolation": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "persona": "superadmin",
+      "stage": "webhook-runtime",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1280-superadmin-webhook-runtime.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "webhook_runtime_settings": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "modal_drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-account-admin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-account-admin-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-account-admin-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": true,
+        "owner_or_shared_access": false,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-account-admin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-account-admin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "account-admin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-account-admin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "empty",
+      "stage": "loading",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-empty-loading.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "loading_skeleton": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "empty",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-empty-state.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "catalog_empty": true,
+        "workbench_disabled": true,
+        "api_error_feedback": false,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "error",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-error-state.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "catalog_empty": false,
+        "workbench_disabled": false,
+        "api_error_feedback": true,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "force-password",
+      "stage": "force-password",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-force-password-force-password.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "forced_password_page": true,
+        "password_form": true,
+        "logout_action": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "force-password",
+      "stage": "force-password-complete",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-force-password-force-password-complete.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "forced_password_completed": true,
+        "return_to_login": true,
+        "success_notice": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-owner-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "owner-settings",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-owner-owner-settings.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "owner_acl": true,
+        "permission_list": true,
+        "grant_controls": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-owner-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-owner-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "owner",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-owner-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "shared-edit",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-shared-edit-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "shared-edit",
+      "stage": "shared-edit",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-shared-edit-shared-edit.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": false,
+        "ai_enabled_for_edit": true,
+        "ai_hidden_for_read": false,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "shared-edit",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-shared-edit-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "shared-read",
+      "stage": "login-error-unshared",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-shared-read-login-error-unshared.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "login_error": true,
+        "direct_unshared_404": true,
+        "no_console_or_page_error": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "shared-read",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-shared-read-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "shared-read",
+      "stage": "shared-read",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-shared-read-shared-read.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": true,
+        "ai_enabled_for_edit": false,
+        "ai_hidden_for_read": true,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "shared-read",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-shared-read-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": true,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-superadmin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "shell-catalog",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-superadmin-shell-catalog.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "shell": true,
+        "navigation": true,
+        "catalog_search": true,
+        "catalog_select_filter": true,
+        "keyboard_focus": true,
+        "top_bar": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-superadmin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-superadmin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-superadmin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "webhook",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-superadmin-webhook.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "webhook_workbench": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "webhook_history_empty": true,
+        "adapter_switch_state_isolation": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "persona": "superadmin",
+      "stage": "webhook-runtime",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1440-superadmin-webhook-runtime.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "webhook_runtime_settings": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "modal_drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-account-admin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-account-admin-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-account-admin-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": true,
+        "owner_or_shared_access": false,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-account-admin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-account-admin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "account-admin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-account-admin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "empty",
+      "stage": "loading",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-empty-loading.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "loading_skeleton": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "empty",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-empty-state.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "catalog_empty": true,
+        "workbench_disabled": true,
+        "api_error_feedback": false,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "error",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-error-state.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "catalog_empty": false,
+        "workbench_disabled": false,
+        "api_error_feedback": true,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "force-password",
+      "stage": "force-password",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-force-password-force-password.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "forced_password_page": true,
+        "password_form": true,
+        "logout_action": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "force-password",
+      "stage": "force-password-complete",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-force-password-force-password-complete.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "forced_password_completed": true,
+        "return_to_login": true,
+        "success_notice": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-owner-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "owner-settings",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-owner-owner-settings.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "owner_acl": true,
+        "permission_list": true,
+        "grant_controls": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-owner-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-owner-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "owner",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-owner-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "shared-edit",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-shared-edit-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "shared-edit",
+      "stage": "shared-edit",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-shared-edit-shared-edit.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": false,
+        "ai_enabled_for_edit": true,
+        "ai_hidden_for_read": false,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "shared-edit",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-shared-edit-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "shared-read",
+      "stage": "login-error-unshared",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-shared-read-login-error-unshared.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "login_error": true,
+        "direct_unshared_404": true,
+        "no_console_or_page_error": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "shared-read",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-shared-read-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "shared-read",
+      "stage": "shared-read",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-shared-read-shared-read.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": true,
+        "ai_enabled_for_edit": false,
+        "ai_hidden_for_read": true,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "shared-read",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-shared-read-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": true,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-superadmin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "shell-catalog",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-superadmin-shell-catalog.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "shell": true,
+        "navigation": true,
+        "catalog_search": true,
+        "catalog_select_filter": true,
+        "keyboard_focus": true,
+        "top_bar": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-superadmin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-superadmin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-superadmin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "webhook",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-superadmin-webhook.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "webhook_workbench": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "webhook_history_empty": true,
+        "adapter_switch_state_isolation": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "persona": "superadmin",
+      "stage": "webhook-runtime",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1680-superadmin-webhook-runtime.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "webhook_runtime_settings": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "modal_drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-account-admin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-account-admin-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-account-admin-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": true,
+        "owner_or_shared_access": false,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-account-admin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-account-admin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "account-admin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-account-admin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "empty",
+      "stage": "loading",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-empty-loading.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "loading_skeleton": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "empty",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-empty-state.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "catalog_empty": true,
+        "workbench_disabled": true,
+        "api_error_feedback": false,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "error",
+      "stage": "state",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-error-state.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "catalog_empty": false,
+        "workbench_disabled": false,
+        "api_error_feedback": true,
+        "disabled_primary_actions": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "force-password",
+      "stage": "force-password",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-force-password-force-password.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "forced_password_page": true,
+        "password_form": true,
+        "logout_action": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "force-password",
+      "stage": "force-password-complete",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-force-password-force-password-complete.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "forced_password_completed": true,
+        "return_to_login": true,
+        "success_notice": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-owner-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "owner-settings",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-owner-owner-settings.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "owner_acl": true,
+        "permission_list": true,
+        "grant_controls": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-owner-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-owner-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": false
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "owner",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-owner-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "shared-edit",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-shared-edit-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "shared-edit",
+      "stage": "shared-edit",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-shared-edit-shared-edit.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": false,
+        "ai_enabled_for_edit": true,
+        "ai_hidden_for_read": false,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "shared-edit",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-shared-edit-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": false,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "shared-read",
+      "stage": "login-error-unshared",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-shared-read-login-error-unshared.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "login_error": true,
+        "direct_unshared_404": true,
+        "no_console_or_page_error": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "shared-read",
+      "stage": "profile",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-shared-read-profile.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "profile_drawer": true,
+        "profile_form": true,
+        "password_form": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "shared-read",
+      "stage": "shared-read",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-shared-read-shared-read.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shared_adapter": true,
+        "permission_denied": true,
+        "ai_enabled_for_edit": false,
+        "ai_hidden_for_read": true,
+        "webhook_state_surface": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "shared-read",
+      "stage": "shell-access",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-shared-read-shell-access.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "account_principal": true,
+        "account_admin_controls": false,
+        "owner_or_shared_access": true,
+        "permission_denied": true,
+        "unshared_adapter_hidden": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "candidate-diff",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-superadmin-candidate-diff.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "ai_candidate_diff": true,
+        "diff_code_only": true,
+        "diff_modal_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "shell-catalog",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-superadmin-shell-catalog.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "shell": true,
+        "navigation": true,
+        "catalog_search": true,
+        "catalog_select_filter": true,
+        "keyboard_focus": true,
+        "top_bar": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "system-settings-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-superadmin-system-settings-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "system_settings_drawer": true,
+        "credentials_form": true,
+        "package_sources_form": true,
+        "knowledge_source": true,
+        "ai_model_form": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "task-ai",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-superadmin-task-ai.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "task_workbench": true,
+        "monaco_accessible": true,
+        "live_log": true,
+        "log_maximize_restore": true,
+        "history_detail": true,
+        "history_log_maximize_restore": true,
+        "ai_markdown_code": true,
+        "ai_candidate": true,
+        "ai_diff_apply": true,
+        "ai_attachment": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "user-management",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-superadmin-user-management.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "user_management_drawer": true,
+        "user_search": true,
+        "user_pagination": true,
+        "user_bulk_action": true,
+        "user_create_form": true,
+        "password_not_visible": true,
+        "drawer_overflow": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "webhook",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-superadmin-webhook.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "webhook_workbench": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "webhook_history_empty": true,
+        "adapter_switch_state_isolation": true
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "persona": "superadmin",
+      "stage": "webhook-runtime",
+      "screenshot": "docs/ui/m5-10-wave-e/browser/zh-CN-1920-superadmin-webhook-runtime.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "webhook_runtime_settings": true,
+        "webhook_url": true,
+        "webhook_credential": true,
+        "modal_drawer_overflow": true
+      }
+    }
+  ]
+}
