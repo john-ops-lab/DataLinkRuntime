@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
-import { Button, Input, message, Modal, Segmented, Select, Tabs, Typography } from "antd";
+import { Alert, Button, Input, message, Modal, Result, Segmented, Select, Tabs, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -24,8 +24,8 @@ import VersionDiffModal, { type DiffPane } from "./components/VersionDiffModal";
 import WebhookTriggerPanel from "./components/WebhookTriggerPanel";
 import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/WebhookTriggerPanel";
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
-import WorkerStatus from "./components/WorkerStatus";
 import UserManagementDrawer from "./components/UserManagementDrawer";
+import ApplicationShell, { type ShellSection } from "./components/ApplicationShell";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
 import { applySystemLocale, currentSystemLocale, i18n, isSystemLocale } from "./i18n";
 import { currentEntryMode } from "./entry-mode";
@@ -260,6 +260,7 @@ export function AdapterConsole({
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
   const [userManagementOpen, setUserManagementOpen] = useState(false);
+  const [shellSection, setShellSection] = useState<ShellSection>("adapters");
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   // M5.5.13：已确认的多上下文片段（Monaco 代码选区 / 实时日志脱敏文本选区），
   // 属于当前 Adapter / 当前会话，光标后续移动不会改变已加入的快照。
@@ -613,6 +614,7 @@ export function AdapterConsole({
     const generation = ++requestGeneration.current;
     // Reset content state synchronously so the previous adapter's snapshot can never
     // appear (or be saved) under the newly selected adapter.
+    setShellSection("workbench");
     setSelected(adapter);
     setName(adapter.name);
     setDescription(adapter.description);
@@ -1085,68 +1087,34 @@ export function AdapterConsole({
           : "";
 
   return (
-    <div className="app-shell">
+    <ApplicationShell
+      healthText={healthText}
+      healthDotClass={healthDotClass}
+      workers={workers}
+      workersLoading={workersLoading}
+      workersError={workersError}
+      canManageUsers={canManageUsers}
+      accountPrincipal={accountPrincipal}
+      onOpenUserManagement={() => setUserManagementOpen(true)}
+      onOpenSystemSettings={() => setSystemSettingsOpen(true)}
+      onOpenAccountProfile={onOpenAccountProfile}
+      onAccountLogout={onAccountLogout}
+      selectedAdapterName={selected?.name ?? null}
+      section={shellSection}
+      onSectionChange={setShellSection}
+    >
       {messageContextHolder}
-      <header className="app-header">
-        <div className="app-header-brand">
-          <h1 className="app-header-logo">DLR</h1>
-          <span className="app-header-product">{t("product.tagline")}</span>
-        </div>
-        <div className="app-header-status">
-          <span className="health-status">
-            <span className={`health-dot ${healthDotClass}`.trim()} />
-            <span data-testid="control-status">{healthText}</span>
-          </span>
-          {canManageUsers && (
-            <>
-              <Button
-                size="small"
-                data-testid="user-management"
-                onClick={() => setUserManagementOpen(true)}
-              >
-                {t("actions.userManagement")}
-              </Button>
-              <Button
-                size="small"
-                data-testid="system-settings"
-                onClick={() => setSystemSettingsOpen(true)}
-              >
-                {t("actions.systemSettings")}
-              </Button>
-            </>
-          )}
-          {accountPrincipal && onAccountLogout && (
-            <>
-              <span className="account-principal" data-testid="account-principal">
-                {accountPrincipal.username} · {t(`auth.role.${accountPrincipal.role}`)}
-              </span>
-              {onOpenAccountProfile && (
-                <Button
-                  size="small"
-                  data-testid="account-profile"
-                  onClick={onOpenAccountProfile}
-                >
-                  {t("auth.profile")}
-                </Button>
-              )}
-              <Button
-                size="small"
-                data-testid="account-logout"
-                onClick={() => void onAccountLogout()}
-              >
-                {t("auth.logout")}
-              </Button>
-            </>
-          )}
-          <WorkerStatus workers={workers} loading={workersLoading} error={workersError} />
-        </div>
-      </header>
-
-      {error && (
-        <p className="error-banner" role="alert" data-testid="error-banner">
-          {error}
-        </p>
-      )}
+      <div className="app-global-feedback">
+        {error && (
+          <Alert
+            type="error"
+            showIcon
+            role="alert"
+            data-testid="error-banner"
+            message={error}
+          />
+        )}
+      </div>
 
       <div className="console-body">
         <AdapterCatalog
@@ -1188,9 +1156,25 @@ export function AdapterConsole({
 
         <main className="workbench">
           {selected === null ? (
-            <div className="workbench-empty">{t("empty.noAdapter")}</div>
+            <div className="workbench-empty" data-testid="workbench-empty">
+              <Result
+                status="info"
+                title={t("shell.workbenchEmptyTitle")}
+                subTitle={t("empty.noAdapter")}
+              />
+            </div>
           ) : (
             <section className="detail">
+              {!selectedCanEdit && (
+                <Alert
+                  className="workbench-permission-alert"
+                  type="info"
+                  showIcon
+                  data-testid="adapter-read-only-notice"
+                  message={t("shell.readOnlyTitle")}
+                  description={t("shell.readOnlyDescription")}
+                />
+              )}
               {selected.adapter_type === "task" ? (
                 <TaskWorkbenchHeader
                   adapter={selected}
@@ -1545,7 +1529,7 @@ export function AdapterConsole({
           )}
         </div>
       </Modal>
-    </div>
+    </ApplicationShell>
   );
 }
 

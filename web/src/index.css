@@ -28,51 +28,103 @@ body {
 
 #root {
   height: 100%;
+  min-height: 100%;
 }
 
 /* --- App Shell --------------------------------------------------------- */
 
-.app-shell {
+.dlr-app-layout {
+  height: 100%;
+  min-height: 100%;
+}
+
+.dlr-app-layout > .ant-layout {
+  min-height: 100%;
+}
+
+.dlr-app-layout .ant-pro-layout-container {
+  min-width: 0;
+}
+
+.app-menu-brand {
   display: flex;
-  flex-direction: column;
-  height: 100vh;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 8px;
+  color: var(--dlr-text);
+}
+
+.app-menu-logo {
+  flex: 0 0 auto;
+  color: #1677ff;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.app-menu-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.app-menu-footer {
+  padding: 10px 16px 14px;
+  color: var(--dlr-text-weak);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .app-header {
+  box-sizing: border-box;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: var(--dlr-header-height);
-  padding: 0 16px;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  min-height: var(--dlr-header-height);
+  padding: 6px 20px;
   background: var(--dlr-workspace-bg);
   border-bottom: 1px solid var(--dlr-border);
 }
 
-.app-header-brand {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.app-header-logo {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: #1677ff;
-  letter-spacing: 0.5px;
+.app-header-context {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .app-header-product {
   font-size: 0.8rem;
   color: var(--dlr-text-weak);
+  overflow-wrap: anywhere;
 }
 
 .app-header-status {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   font-size: 0.8rem;
+}
+
+.app-header-status .ant-btn {
+  flex: 0 1 auto;
+  max-width: 100%;
+  white-space: normal;
+  text-align: start;
+}
+
+.app-header-status .ant-btn-icon {
+  flex: 0 0 auto;
 }
 
 .health-status {
@@ -80,6 +132,7 @@ body {
   align-items: center;
   gap: 6px;
   color: var(--dlr-text-secondary);
+  white-space: nowrap;
 }
 
 .health-dot {
@@ -101,13 +154,58 @@ body {
   background: #ff4d4f;
 }
 
+.dlr-page-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.dlr-page-container .ant-pro-page-container-children-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  padding: 0;
+}
+
+.dlr-page-container .ant-page-header-heading-title,
+.dlr-page-container .ant-page-header-heading-sub-title {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.app-page-title {
+  overflow-wrap: anywhere;
+}
+
+.app-page-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.app-global-feedback {
+  flex: 0 0 auto;
+  padding: 0 16px;
+}
+
+.app-global-feedback .ant-alert {
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+
 /* Shell 主体：左侧 Catalog + 中间 Workbench；M4 悬浮助手入口以
    position:absolute 悬浮在右侧，默认不占用布局、不压缩 Monaco。 */
 .console-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   position: relative;
+  overflow: hidden;
 }
 
 .error-banner {
@@ -345,6 +443,17 @@ body {
   justify-content: center;
   color: var(--dlr-text-secondary);
   font-size: 0.9rem;
+}
+
+.workbench-empty .ant-result {
+  max-width: 520px;
+  padding: 48px 24px;
+}
+
+.workbench-permission-alert {
+  flex: 0 0 auto;
+  margin: 10px 16px 0;
+  overflow-wrap: anywhere;
 }
 
 .detail {
@@ -2300,6 +2409,18 @@ body {
   display: grid;
   place-items: center;
   color: var(--dlr-text-secondary);
+}
+
+.account-loading-content {
+  width: min(420px, calc(100% - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-loading-content > span {
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .account-principal {

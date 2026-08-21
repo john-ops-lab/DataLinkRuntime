@@ -2878,7 +2878,8 @@ it("restores the persisted Monaco theme preference after remount", async () => {
 
 it("follows the browser color scheme when the Monaco theme preference is 跟随系统", async () => {
   // jsdom has no matchMedia: stub it with a controllable media query list.
-  const listeners = new Set<() => void>();
+  type MediaListener = (event?: { matches: boolean }) => void;
+  const listeners = new Set<MediaListener>();
   const media = { matches: false };
   vi.stubGlobal(
     "matchMedia",
@@ -2886,10 +2887,16 @@ it("follows the browser color scheme when the Monaco theme preference is 跟随�
       get matches() {
         return media.matches;
       },
-      addEventListener: (_: string, listener: () => void) => {
+      addEventListener: (_: string, listener: MediaListener) => {
         listeners.add(listener);
       },
-      removeEventListener: (_: string, listener: () => void) => {
+      removeEventListener: (_: string, listener: MediaListener) => {
+        listeners.delete(listener);
+      },
+      addListener: (listener: MediaListener) => {
+        listeners.add(listener);
+      },
+      removeListener: (listener: MediaListener) => {
         listeners.delete(listener);
       },
     })),
@@ -2905,7 +2912,7 @@ it("follows the browser color scheme when the Monaco theme preference is 跟随�
   act(() => {
     media.matches = true;
     for (const listener of [...listeners]) {
-      listener();
+      listener({ matches: media.matches });
     }
   });
   await waitFor(() => {

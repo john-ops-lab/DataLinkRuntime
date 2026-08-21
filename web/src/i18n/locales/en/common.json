@@ -8,6 +8,17 @@
     "flow": "Develop → Run → Observe",
     "copyright": "© 2026 DataLinkRuntime · MIT License"
   },
+  "shell": {
+    "console": "Console",
+    "adapters": "Adapters",
+    "workbench": "Workbench",
+    "navigation": "Console navigation",
+    "workspaceTitle": "Adapter workspace",
+    "workspaceSubtitle": "Select an Adapter to inspect code, runtime settings, and execution history.",
+    "workbenchEmptyTitle": "No Adapter selected",
+    "readOnlyTitle": "Read-only access",
+    "readOnlyDescription": "You can inspect this shared Adapter, but editing, saving, running, and AI apply are disabled."
+  },
   "auth": {
     "loginTitle": "Welcome to the DLR Console",
     "loginSubtitle": "Enter the administrator Token to continue",

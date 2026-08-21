@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Button, Drawer, Dropdown, Input, Radio, Select, Space } from "antd";
+import { Button, Drawer, Dropdown, Empty, Input, Radio, Select, Space } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { adapterAccessLevel } from "../adapter-access";
@@ -306,7 +306,11 @@ export default function AdapterCatalog({
 
       <div className="catalog-list">
         {visible.length === 0 ? (
-          <p className="catalog-empty">{inView.length === 0 ? t("catalog.empty") : t("catalog.noMatch")}</p>
+          <Empty
+            className="catalog-empty"
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={inView.length === 0 ? t("catalog.empty") : t("catalog.noMatch")}
+          />
         ) : (
           visible.map((adapter) => {
             const runtimeStatusKey = catalogRuntimeStatus(adapter);
