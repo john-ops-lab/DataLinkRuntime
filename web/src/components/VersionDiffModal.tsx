@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { Button, Modal, Tabs } from "antd";
+import { CheckOutlined, CloseOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
 import ActionWithReason from "./ActionWithReason";
@@ -55,7 +56,9 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
     <Modal
       title={props.title}
       open={props.open}
-      width={960}
+      width="min(960px, calc(100vw - 32px))"
+      centered
+      keyboard
       footer={
         applyAction === null ? null : (
           <div className="diff-modal-footer">
@@ -75,13 +78,14 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
                 <Button
                   type="primary"
                   data-testid="diff-apply-candidate"
+                  icon={<CheckOutlined aria-hidden="true" />}
                   disabled={applyAction.reason !== null}
                   onClick={applyAction.onApply}
                 >
                   {applyAction.applied ? t("actions.applied", { ns: "common" }) : applyAction.label}
                 </Button>
               </ActionWithReason>
-              <Button data-testid="diff-close" onClick={props.onClose}>
+              <Button data-testid="diff-close" icon={<CloseOutlined aria-hidden="true" />} onClick={props.onClose}>
                 {t("actions.close", { ns: "common" })}
               </Button>
             </div>
@@ -92,7 +96,7 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
       destroyOnHidden
     >
       {current !== null && (
-        <div className="diff-modal" data-testid="version-diff">
+        <div className="diff-modal" data-testid="version-diff" role="region" aria-label={props.title}>
           <div className="diff-modal-titles">
             <span>{props.originalTitle}</span>
             <span>{props.modifiedTitle}</span>
@@ -104,7 +108,7 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
             items={props.panes.map((pane) => ({ key: pane.key, label: pane.label }))}
           />
           <DiffEditor
-            height="420px"
+            height="min(420px, 55vh)"
             language={current.language}
             original={current.original}
             modified={current.modified}
@@ -135,7 +139,7 @@ export default function VersionDiffModal(props: VersionDiffModalProps) {
                 monaco.editor.setModelLanguage(model.modified, current.language);
               }
             }}
-            options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false } }}
+            options={{ ariaLabel: props.title, readOnly: true, renderSideBySide: true, minimap: { enabled: false } }}
           />
         </div>
       )}

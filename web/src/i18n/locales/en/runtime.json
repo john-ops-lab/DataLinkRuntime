@@ -175,16 +175,19 @@
     "truncated": "Output exceeded the platform retention limit; the complete content was not saved",
     "truncatedDescription": "Actual size: {{size}} bytes; the content below is a preview, not complete JSON",
     "unknownSize": "Unknown",
-    "empty": "No Output"
+    "empty": "No Output",
+    "contentLabel": "Execution output"
   },
   "logs": {
+    "title": "Execution logs",
     "pause": "Pause following",
     "resume": "Resume following",
     "addContextTitle": "Add the selected log text to the AI conversation context (only masked text visible in the browser is used)",
     "maximize": "Maximize logs",
     "restore": "Restore log size",
     "truncated": "Logs exceeded the platform retention limit; some content was truncated",
-    "empty": "No logs"
+    "empty": "No logs",
+    "contentLabel": "Execution log content"
   },
   "units": {
     "seconds": "{{value}} seconds",

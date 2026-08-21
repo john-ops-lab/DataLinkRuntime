@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag } from "antd";
+import { DownOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useTranslation } from "react-i18next";
 
@@ -239,7 +240,13 @@ export default function ExecutionHistoryPanel(props: {
   return (
     <div className="history-panel">
       <Space className="history-toolbar">
-        <Button data-testid="history-refresh" loading={loading} onClick={() => void loadPage(null)}>
+        <Button
+          data-testid="history-refresh"
+          icon={<ReloadOutlined aria-hidden="true" />}
+          aria-label={t("history.refresh")}
+          loading={loading}
+          onClick={() => void loadPage(null)}
+        >
           {t("history.refresh")}
         </Button>
         {loadError && <span className="history-error" role="alert">{loadError}</span>}
@@ -277,6 +284,8 @@ export default function ExecutionHistoryPanel(props: {
       {nextBeforeId !== null && (
         <Button
           data-testid="history-load-more"
+          icon={<DownOutlined aria-hidden="true" />}
+          aria-label={t("history.loadMore")}
           loading={loading}
           onClick={() => void loadPage(nextBeforeId)}
         >
@@ -286,7 +295,8 @@ export default function ExecutionHistoryPanel(props: {
 
       <Drawer
         title={t("history.detailTitle")}
-        width={640}
+        width="min(640px, 100vw)"
+        keyboard
         open={drawerOpen}
         onClose={() => {
           detailRequestRef.current += 1; // invalidate any in-flight detail load
@@ -309,7 +319,7 @@ export default function ExecutionHistoryPanel(props: {
             )}
             <Descriptions
               size="small"
-              column={2}
+              column={{ xs: 1, sm: 2 }}
               items={[
                 { key: "status", label: t("labels.status", { ns: "common" }), children: <Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag> },
                 {

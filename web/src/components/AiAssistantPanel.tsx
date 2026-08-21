@@ -37,7 +37,17 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, Spin } from "antd";
+import { Button, Spin, Tooltip } from "antd";
+import {
+  CloseOutlined,
+  DeleteOutlined,
+  DiffOutlined,
+  FullscreenExitOutlined,
+  FullscreenOutlined,
+  PaperClipOutlined,
+  ReloadOutlined,
+  SendOutlined,
+} from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import {
   AssistantRuntimeProvider,
@@ -352,6 +362,7 @@ function ComposerSubmitButton(props: {
       }}
     >
       {props.sending && <Spin size="small" />}
+      <SendOutlined aria-hidden="true" />
       {t("assistant.send")}
     </ComposerPrimitive.Send>
   );
@@ -426,14 +437,18 @@ function AttachmentItem(props: { attachment: Attachment }) {
           {t("assistant.attachments.ready")}
         </span>
       )}
-      <AttachmentPrimitive.Remove
-        className="ai-attachment-remove"
-        data-testid="ai-attachment-remove"
-        aria-label={t("assistant.attachments.remove", { name: attachment.name })}
+      <Tooltip
         title={t("assistant.attachments.remove", { name: attachment.name })}
+        trigger={["hover", "focus"]}
       >
-        ×
-      </AttachmentPrimitive.Remove>
+        <AttachmentPrimitive.Remove
+          className="ai-attachment-remove"
+          data-testid="ai-attachment-remove"
+          aria-label={t("assistant.attachments.remove", { name: attachment.name })}
+        >
+          <DeleteOutlined aria-hidden="true" />
+        </AttachmentPrimitive.Remove>
+      </Tooltip>
     </div>
   );
 }
@@ -545,6 +560,7 @@ function ComposerAttachmentArea(props: {
           size="small"
           className="ai-attachment-add"
           data-testid="ai-attachment-add"
+          icon={<PaperClipOutlined aria-hidden="true" />}
           disabled={props.disabled}
           aria-label={t("assistant.attachments.addAria")}
           title={t("assistant.attachments.addAria")}
@@ -601,11 +617,11 @@ function RegenerateButton(props: {
       data-testid={props.retry ? "ai-retry" : "ai-regenerate"}
       disabled={props.disabled}
       aria-label={ariaLabel}
-      title={ariaLabel}
       onClick={() => {
         void aui.thread.startRun({ parentId: String(props.userMessageId) });
       }}
     >
+      <ReloadOutlined aria-hidden="true" />
       {label}
     </Button>
   );
@@ -652,6 +668,8 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
   const [progressStage, setProgressStage] = useState<ProgressStage | null>(null);
   const [maximized, setMaximized] = useState(false);
+  const maximizeButtonRef = useRef<HTMLButtonElement>(null);
+  const wasMaximizedRef = useRef(false);
   // M5.5.13: the floating entry is draggable within the viewport. The position
   // is deliberately NOT persisted anywhere (no localStorage/sessionStorage/
   // database): a refresh restores the product default (CSS right: 16px).
@@ -709,6 +727,28 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   useEffect(() => {
     translateRef.current = t;
   }, [t]);
+
+  useEffect(() => {
+    if (!maximized) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      setMaximized(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [maximized]);
+
+  useEffect(() => {
+    if (wasMaximizedRef.current && !maximized) {
+      maximizeButtonRef.current?.focus();
+    }
+    wasMaximizedRef.current = maximized;
+  }, [maximized]);
 
   useLayoutEffect(() => {
     if (props.open && !previousOpenRef.current) {
@@ -1413,6 +1453,8 @@ async function resolveComposerAttachment(
       className={`ai-assistant ai-assistant-expanded${maximized ? " ai-assistant-maximized" : ""}`}
       data-testid="ai-assistant-panel"
       data-layout={maximized ? "maximized" : "sidebar"}
+      role="region"
+      aria-label={t("assistant.title")}
     >
       <AssistantRuntimeProvider runtime={runtime}>
         <ThreadPrimitive.Root className="ai-thread">
@@ -1421,28 +1463,41 @@ async function resolveComposerAttachment(
               <strong>{t("assistant.title")}</strong>
               <p>{t("assistant.notice")}</p>
             </div>
-            <div className="ai-assistant-header-actions">
-              <Button
-                type="text"
-                data-testid={maximized ? "restore-ai-assistant" : "maximize-ai-assistant"}
-                aria-label={maximized ? t("assistant.restore") : t("assistant.maximize")}
-                aria-pressed={maximized}
+            <div
+              className="ai-assistant-header-actions"
+              role="toolbar"
+              aria-label={t("assistant.headerActions")}
+            >
+              <Tooltip
                 title={maximized ? t("assistant.restore") : t("assistant.maximize")}
-                onClick={() => setMaximized((current) => !current)}
+                trigger={["hover", "focus"]}
               >
-                {maximized
-                  ? t("actions.restore", { ns: "common" })
-                  : t("actions.maximize", { ns: "common" })}
-              </Button>
-              <Button
-                type="text"
-                data-testid="close-ai-assistant"
-                aria-label={t("assistant.close")}
-                aria-expanded={true}
-                onClick={props.onClose}
-              >
-                ×
-              </Button>
+                <Button
+                  ref={maximizeButtonRef}
+                  type="text"
+                  data-testid={maximized ? "restore-ai-assistant" : "maximize-ai-assistant"}
+                  aria-label={maximized ? t("assistant.restore") : t("assistant.maximize")}
+                  aria-pressed={maximized}
+                  onClick={() => setMaximized((current) => !current)}
+                  icon={
+                    maximized ? (
+                      <FullscreenExitOutlined aria-hidden="true" />
+                    ) : (
+                      <FullscreenOutlined aria-hidden="true" />
+                    )
+                  }
+                />
+              </Tooltip>
+              <Tooltip title={t("assistant.close")} trigger={["hover", "focus"]}>
+                <Button
+                  type="text"
+                  data-testid="close-ai-assistant"
+                  aria-label={t("assistant.close")}
+                  aria-expanded={true}
+                  icon={<CloseOutlined aria-hidden="true" />}
+                  onClick={props.onClose}
+                />
+              </Tooltip>
             </div>
           </div>
 
@@ -1465,8 +1520,9 @@ async function resolveComposerAttachment(
                   size="small"
                   type="text"
                   data-testid="ai-clear-all-snippets"
-                   aria-label={t("assistant.clearSnippets")}
+                  aria-label={t("assistant.clearSnippets")}
                   onClick={props.onClearContextSnippets}
+                  icon={<DeleteOutlined aria-hidden="true" />}
                 >
                   {t("actions.clearAll", { ns: "common" })}
                 </Button>
@@ -1487,10 +1543,11 @@ async function resolveComposerAttachment(
                         size="small"
                         type="text"
                         data-testid={`ai-remove-snippet-${snippet.id}`}
-                         aria-label={t("assistant.removeSnippet")}
+                        aria-label={t("assistant.removeSnippet")}
                         onClick={() => props.onRemoveContextSnippet(snippet.id)}
+                        icon={<DeleteOutlined aria-hidden="true" />}
                       >
-                         {t("assistant.remove")}
+                        {t("assistant.remove")}
                       </Button>
                     </div>
                   ));
@@ -1593,7 +1650,12 @@ async function resolveComposerAttachment(
                         </div>
                       ) : null}
                       {candidateState !== null && (
-                        <div className="ai-candidate" data-testid="ai-candidate">
+                        <div
+                          className="ai-candidate"
+                          data-testid="ai-candidate"
+                          role="region"
+                          aria-label={t("assistant.candidateReady")}
+                        >
                           <p className="ai-candidate-ready" data-testid="ai-candidate-ready">
                              {t("assistant.candidateReady")}
                           </p>
@@ -1636,6 +1698,7 @@ async function resolveComposerAttachment(
                               size="small"
                               type="primary"
                               data-testid="ai-view-diff"
+                              icon={<DiffOutlined aria-hidden="true" />}
                               disabled={!canUseAi || !props.contentReady || props.busy}
                               onClick={() => openCandidateDiff(message.id, candidateState)}
                             >

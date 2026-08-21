@@ -6,6 +6,7 @@
     "maximize": "Maximize AI assistant",
     "restore": "Restore AI assistant",
     "title": "AI assistant",
+    "headerActions": "AI assistant actions",
     "notice": "Candidates are written only to the browser; they are not saved, tested or run automatically.",
     "noAdapter": "Select an Adapter first.",
     "contextSnippets": "Added context snippets",

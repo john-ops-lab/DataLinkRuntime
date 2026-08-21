@@ -1,6 +1,13 @@
 /** Task Adapter header: identity, runtime context and type-specific actions. */
 
-import { Button, Tag } from "antd";
+import { Button, Tag, Tooltip } from "antd";
+import {
+  CalendarOutlined,
+  PlayCircleOutlined,
+  SaveOutlined,
+  SettingOutlined,
+  StopOutlined,
+} from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
 import { LANGUAGE_LABELS } from "../languages";
@@ -90,13 +97,29 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
         )}
       </div>
       <div className="workbench-controls">
-        <Button data-testid="adapter-settings" onClick={props.onOpenSettings}>{t("actions.settings", { ns: "common" })}</Button>
+        <Tooltip title={t("actions.settings", { ns: "common" })} trigger={["hover", "focus"]}>
+          <Button
+            data-testid="adapter-settings"
+            icon={<SettingOutlined aria-hidden="true" />}
+            aria-label={t("actions.settings", { ns: "common" })}
+            onClick={props.onOpenSettings}
+          >
+            {t("actions.settings", { ns: "common" })}
+          </Button>
+        </Tooltip>
         {readOnly ? (
           <Tag data-testid="adapter-read-only">{t("task.reasons.readOnly")}</Tag>
         ) : (
           <>
             <ActionWithReason label={t("actions.save", { ns: "common" })} reason={saveBlockedReason}>
-              <Button type="primary" data-testid="save-version" disabled={saveBlockedReason !== null} onClick={props.onSave}>
+              <Button
+                type="primary"
+                data-testid="save-version"
+                icon={<SaveOutlined aria-hidden="true" />}
+                aria-label={t("actions.save", { ns: "common" })}
+                disabled={saveBlockedReason !== null}
+                onClick={props.onSave}
+              >
                 {t("actions.save", { ns: "common" })}
               </Button>
             </ActionWithReason>
@@ -109,6 +132,8 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
                   <Button
                     danger={props.runtimeState.scheduleEnabled}
                     data-testid="header-task-schedule-toggle"
+                    icon={<CalendarOutlined aria-hidden="true" />}
+                    aria-label={props.runtimeState.scheduleEnabled ? t("actions.disableSchedule", { ns: "common" }) : t("actions.enableSchedule", { ns: "common" })}
                     loading={props.runtimeState.loading}
                     disabled={scheduleToggleReason !== null}
                     onClick={props.onToggleSchedule}
@@ -117,24 +142,50 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
                   </Button>
                 </ActionWithReason>
                 {activeExecution ? (
-                  <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
+                  <Button
+                    danger
+                    data-testid="header-task-stop"
+                    icon={<StopOutlined aria-hidden="true" />}
+                    aria-label={t("actions.stopCurrentExecution", { ns: "common" })}
+                    loading={props.runtimeState.loading}
+                    onClick={props.onStopExecution}
+                  >
                     {t("actions.stopCurrentExecution", { ns: "common" })}
                   </Button>
                 ) : (
                   <ActionWithReason label={t("actions.runImmediatelyOnce", { ns: "common" })} reason={runBlockedReason}>
-                    <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
+                    <Button
+                      data-testid="header-task-run-once"
+                      icon={<PlayCircleOutlined aria-hidden="true" />}
+                      aria-label={t("actions.runImmediatelyOnce", { ns: "common" })}
+                      disabled={runBlockedReason !== null}
+                      onClick={props.onRunOnce}
+                    >
                       {t("actions.runImmediatelyOnce", { ns: "common" })}
                     </Button>
                   </ActionWithReason>
                 )}
               </>
             ) : activeExecution ? (
-              <Button danger data-testid="header-task-stop" loading={props.runtimeState.loading} onClick={props.onStopExecution}>
+              <Button
+                danger
+                data-testid="header-task-stop"
+                icon={<StopOutlined aria-hidden="true" />}
+                aria-label={t("actions.stop", { ns: "common" })}
+                loading={props.runtimeState.loading}
+                onClick={props.onStopExecution}
+              >
                 {t("actions.stop", { ns: "common" })}
               </Button>
             ) : (
               <ActionWithReason label={t("actions.runOnce", { ns: "common" })} reason={runBlockedReason}>
-                <Button data-testid="header-task-run-once" disabled={runBlockedReason !== null} onClick={props.onRunOnce}>
+                <Button
+                  data-testid="header-task-run-once"
+                  icon={<PlayCircleOutlined aria-hidden="true" />}
+                  aria-label={t("actions.runOnce", { ns: "common" })}
+                  disabled={runBlockedReason !== null}
+                  onClick={props.onRunOnce}
+                >
                   {t("actions.runOnce", { ns: "common" })}
                 </Button>
               </ActionWithReason>
