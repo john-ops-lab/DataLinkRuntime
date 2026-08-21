@@ -8,13 +8,16 @@
     "build": "npm run typecheck && vite build",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.node.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:browser": "playwright test --config playwright.config.ts"
   },
   "dependencies": {
+    "@ant-design/pro-components": "2.8.10",
+    "@ant-design/v5-patch-for-react-19": "1.0.3",
     "@assistant-ui/react": "^0.15.15",
     "@assistant-ui/react-markdown": "^0.14.11",
     "@monaco-editor/react": "^4.7.0",
-    "antd": "^5.29.3",
+    "antd": "5.29.3",
     "i18next": "^25.6.2",
     "monaco-editor": "^0.56.0",
     "react": "^19.0.0",
@@ -23,6 +26,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@testing-library/react": "^16.0.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",

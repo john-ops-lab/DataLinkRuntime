@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
-import { Button, ConfigProvider, Input, message, Modal, Segmented, Select, Tabs, Typography } from "antd";
-import enUS from "antd/locale/en_US";
-import zhCN from "antd/locale/zh_CN";
+import { Button, Input, message, Modal, Segmented, Select, Tabs, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -29,8 +27,10 @@ import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import WorkerStatus from "./components/WorkerStatus";
 import UserManagementDrawer from "./components/UserManagementDrawer";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
-import { applySystemLocale, currentSystemLocale, i18n, isSystemLocale, resolveSystemLocale } from "./i18n";
+import { applySystemLocale, currentSystemLocale, i18n, isSystemLocale } from "./i18n";
 import { currentEntryMode } from "./entry-mode";
+import DlrDesignSystemProvider from "./design-system";
+export { ANT_DESIGN_LOCALES } from "./design-system";
 import {
   dependencyNoteFor,
   dependencyUiFor,
@@ -124,11 +124,6 @@ export const TOKEN_STORAGE_KEY = "dlr-admin-token";
 type EditorThemePreference = "dark" | "light" | "system";
 
 export const EDITOR_THEME_STORAGE_KEY = "dlr-editor-theme";
-
-export const ANT_DESIGN_LOCALES = {
-  "zh-CN": zhCN,
-  en: enUS,
-} as const;
 
 function readEditorThemePreference(): EditorThemePreference {
   const stored = window.localStorage.getItem(EDITOR_THEME_STORAGE_KEY);
@@ -1558,7 +1553,7 @@ export function AdapterConsole({
 // the M3.1 login page keeps the M2 auth contract unchanged.
 
 function TokenApp() {
-  const { i18n, t } = useTranslation("common");
+  const { t } = useTranslation("common");
   const [authed, setAuthed] = useState<boolean>(() => {
     const stored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
     if (stored !== null) {
@@ -1608,23 +1603,20 @@ function TokenApp() {
     setAuthed(true);
   }
 
-  const systemLocale = resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
-  const antdLocale = ANT_DESIGN_LOCALES[systemLocale];
-
-  return (
-    <ConfigProvider locale={antdLocale} theme={{ token: { colorBgLayout: "#f5f6f8", borderRadius: 4 } }}>
-      {authed ? (
-        <AdapterConsole />
-      ) : (
-        <LoginPage
-          notice={noticeKey === null ? null : t(noticeKey)}
-          onSubmit={handleLogin}
-        />
-      )}
-    </ConfigProvider>
+  return authed ? (
+    <AdapterConsole />
+  ) : (
+    <LoginPage
+      notice={noticeKey === null ? null : t(noticeKey)}
+      onSubmit={handleLogin}
+    />
   );
 }
 
 export default function App() {
-  return currentEntryMode() === "account" ? <AccountApp /> : <TokenApp />;
+  return (
+    <DlrDesignSystemProvider>
+      {currentEntryMode() === "account" ? <AccountApp /> : <TokenApp />}
+    </DlrDesignSystemProvider>
+  );
 }
