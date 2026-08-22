@@ -1218,6 +1218,48 @@ body {
   background: #fff;
 }
 
+.ai-message-copy {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.ai-message-copy .ant-btn {
+  color: var(--dlr-text-weak);
+}
+
+.ai-message-copy .ant-btn:hover,
+.ai-message-copy .ant-btn:focus-visible {
+  color: #0958d9;
+}
+
+.ai-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+  margin-top: 6px;
+  color: var(--dlr-text-secondary);
+  font-size: 0.72rem;
+}
+
+.ai-message-attachment-name {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: min(100%, 260px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.ai-message-attachment-name:focus-visible {
+  outline: 2px solid #0958d9;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .ai-message-user {
   align-self: flex-end;
   background: #e6f4ff;
@@ -1654,12 +1696,25 @@ body {
 }
 
 .ai-attachment-privacy {
-  flex-basis: 100%;
-  color: #ad4e00;
+  color: var(--dlr-text-weak);
 }
 
 .ai-attachment-privacy strong {
   font-weight: 600;
+}
+
+.ai-knowledge-search-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--dlr-text-weak);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.ai-knowledge-search-control > span:last-child {
+  overflow-wrap: anywhere;
 }
 
 .ai-attachment-panel-error {
@@ -1699,6 +1754,28 @@ body {
 .ai-composer-send:disabled {
   background: #b7c4d9;
   cursor: not-allowed;
+}
+
+.ai-custom-providers {
+  margin-bottom: 8px;
+}
+
+.ai-custom-provider-list,
+.ai-custom-provider-editor {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.ai-custom-provider-row {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--dlr-border);
+}
+
+.ai-custom-provider-editor .ant-input,
+.ai-custom-provider-editor .ant-select {
+  width: 100%;
 }
 
 /* M5.7 Wave A：assistant-ui Thread 原语容器：占满面板纵向空间。 */

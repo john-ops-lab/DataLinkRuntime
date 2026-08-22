@@ -159,6 +159,17 @@ def config_status(session: Session, config: ImaEffectiveConfig) -> KnowledgeSour
     return "configured"
 
 
+def knowledge_search_capability(session: Session) -> tuple[bool, str | None]:
+    """Return safe capability metadata without reading or decrypting a Secret."""
+    config = effective_ima_config(session)
+    status = config_status(session, config)
+    if status == "configured":
+        return True, None
+    if status == "disabled":
+        return False, "knowledge_search_disabled"
+    return False, "knowledge_search_unconfigured"
+
+
 def setting_response(session: Session, source_id: str = IMA_SOURCE_ID) -> KnowledgeSourceResponse:
     """Build the metadata-only configuration response."""
     _ensure_ima_source(source_id)

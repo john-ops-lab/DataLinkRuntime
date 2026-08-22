@@ -37,9 +37,11 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, Spin, Tooltip } from "antd";
+import { Button, Spin, Switch, Tooltip } from "antd";
 import {
+  CheckOutlined,
   CloseOutlined,
+  CopyOutlined,
   DeleteOutlined,
   DiffOutlined,
   FullscreenExitOutlined,
@@ -91,6 +93,7 @@ import type {
   AiConversationMessage,
   AiContextSnippet,
   AiToolCallSummary,
+  AiKnowledgeCapability,
 } from "../types";
 import { logSnippetTimeLabel } from "../unified-log";
 import { userErrorMessage } from "../user-message";
@@ -146,6 +149,10 @@ interface AssistRoundSnapshot {
    * round; IDs never enter the provider-facing payload. */
   contextSnippetIds: number[];
   attachments: AiAttachment[];
+  /** Display-only names frozen from the successful attachment snapshot. */
+  attachmentNames: string[];
+  /** Knowledge search opt-in frozen for this round and its retries. */
+  knowledgeSearchEnabled: boolean;
   locale: string;
 }
 
@@ -319,11 +326,25 @@ function appendMessageText(message: AppendMessage): string {
 function attachmentServerErrorMessage(error: unknown, fallback: string): string {
   if (
     error instanceof ApiError &&
-    (error.code.startsWith("ai_attachment_") || error.code.startsWith("ai_tool_"))
+    (error.code.startsWith("ai_attachment_") ||
+      error.code.startsWith("ai_tool_") ||
+      error.code === "ai_knowledge_unavailable" ||
+      error.code === "ai_gateway_payload_too_large" ||
+      error.code === "ai_gateway_timeout")
   ) {
-    const key = `errors.${error.code}`;
-    if (i18n.exists(key, { ns: "common" })) {
-      const message = i18n.getFixedT(i18n.language, "common")(key);
+    const isGatewayError =
+      error.code === "ai_gateway_payload_too_large" || error.code === "ai_gateway_timeout";
+    const isKnowledgeError = error.code === "ai_knowledge_unavailable";
+    const key = isGatewayError
+      ? error.code === "ai_gateway_payload_too_large"
+        ? "assistant.errors.gatewayPayloadTooLarge"
+        : "assistant.errors.gatewayTimeout"
+      : isKnowledgeError
+        ? "assistant.errors.knowledgeUnavailable"
+        : `errors.${error.code}`;
+    const namespace = isGatewayError || isKnowledgeError ? "ai" : "common";
+    if (i18n.exists(key, { ns: namespace })) {
+      const message = i18n.getFixedT(i18n.language, namespace)(key);
       const locale = i18n.language === "en" ? "en" : "zh-CN";
       return locale === "en"
         ? `${message} (Error code: ${error.code})`
@@ -472,6 +493,10 @@ function ComposerAttachmentArea(props: {
   supportedContentTypes: readonly string[];
   error: string | null;
   onErrorChange: (message: string | null) => void;
+  knowledgeCapability: AiKnowledgeCapability | null;
+  knowledgeCapabilityLoading: boolean;
+  knowledgeSearchEnabled: boolean;
+  onKnowledgeSearchChange: (enabled: boolean) => void;
   onSend: (text: string, attachments: readonly Attachment[]) => void;
 }) {
   const { t } = useTranslation(["ai"]);
@@ -564,6 +589,32 @@ function ComposerAttachmentArea(props: {
           {t("assistant.attachments.privacyNoticeLead")}{" "}
           <strong>{t("assistant.attachments.privacyNoticeSensitive")}</strong>
         </span>
+        <Tooltip
+          title={
+            props.knowledgeCapabilityLoading
+              ? t("assistant.knowledgeSearch.loading")
+              : props.knowledgeCapability?.available
+                ? t("assistant.knowledgeSearch.available")
+                : t("assistant.knowledgeSearch.unavailable")
+          }
+          trigger={["hover", "focus"]}
+        >
+          <span className="ai-knowledge-search-control">
+            <Switch
+              size="small"
+              checked={props.knowledgeSearchEnabled}
+              loading={props.knowledgeCapabilityLoading}
+              disabled={
+                props.disabled ||
+                props.knowledgeCapabilityLoading ||
+                props.knowledgeCapability?.available !== true
+              }
+              aria-label={t("assistant.knowledgeSearch.label")}
+              onChange={props.onKnowledgeSearchChange}
+            />
+            <span>{t("assistant.knowledgeSearch.label")}</span>
+          </span>
+        </Tooltip>
         <Button
           size="small"
           className="ai-attachment-add"
@@ -686,6 +737,11 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
   const [progressStage, setProgressStage] = useState<ProgressStage | null>(null);
   const [maximized, setMaximized] = useState(false);
+  const [knowledgeCapability, setKnowledgeCapability] =
+    useState<AiKnowledgeCapability | null>(null);
+  const [knowledgeCapabilityLoading, setKnowledgeCapabilityLoading] = useState(false);
+  const [knowledgeSearchEnabled, setKnowledgeSearchEnabled] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   const maximizeButtonRef = useRef<HTMLButtonElement>(null);
   const wasMaximizedRef = useRef(false);
   // M5.5.13: the floating entry is draggable within the viewport. The position
@@ -822,6 +878,39 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     };
   }, [adapterId, canUseAi, props.open]);
 
+  // Wave D: capability is metadata-only and ACL-checked by Control. The
+  // toggle remains off unless this round's adapter can use a configured,
+  // server-approved read-only knowledge source.
+  useEffect(() => {
+    if (!canUseAi || !props.open || adapterId === null) {
+      return;
+    }
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- opening the panel starts an intentional capability load
+    setKnowledgeCapabilityLoading(true);
+    setKnowledgeSearchEnabled(false);
+    void api
+      .getAiKnowledgeCapability(adapterId)
+      .then((capability) => {
+        if (!cancelled) {
+          setKnowledgeCapability(capability);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setKnowledgeCapability({ available: false, reason: "knowledge_search_unavailable" });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setKnowledgeCapabilityLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [adapterId, canUseAi, props.open]);
+
   // M5.7 Wave B3: load the stable B2 capability table (limits + accepted MIME
   // types) while the panel is open. Fail-soft: the canonical B2 defaults keep
   // the upload UI bounded; the server remains the authoritative validator.
@@ -860,13 +949,19 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     previousAdapterIdRef.current = nextAdapterId;
     setMessages((current) =>
       current.map((message) =>
-        message.snapshot !== null && message.snapshot.attachments.length > 0
-          ? { ...message, snapshot: { ...message.snapshot, attachments: [] } }
+        message.snapshot !== null &&
+        (message.snapshot.attachments.length > 0 || message.snapshot.attachmentNames.length > 0)
+          ? {
+              ...message,
+              snapshot: { ...message.snapshot, attachments: [], attachmentNames: [] },
+            }
           : message,
       ),
     );
     void composerControlsRef.current?.clearAttachments();
     setAttachmentError(null);
+    setKnowledgeCapability(null);
+    setKnowledgeSearchEnabled(false);
   }, [props.adapter?.id]);
 
   /** M5.7 Wave B3: type predicate — the runtime's Attachment union nests the
@@ -1030,6 +1125,12 @@ async function resolveComposerAttachment(
         ...(snapshot.attachments.length === 0
           ? {}
           : { attachments: snapshot.attachments }),
+        // Keep the historical attachment-free/default request shape stable;
+        // the backend default is disabled and only an explicit opt-in needs
+        // to cross the wire.
+        ...(snapshot.knowledgeSearchEnabled
+          ? { knowledge_search_enabled: true }
+          : {}),
       });
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
@@ -1153,6 +1254,8 @@ async function resolveComposerAttachment(
       ),
       contextSnippetIds: props.contextSnippets.map(({ id }) => id),
       attachments,
+      attachmentNames: attachments.map((attachment) => attachment.filename),
+      knowledgeSearchEnabled,
       locale: i18n.language,
     };
   }
@@ -1252,6 +1355,44 @@ async function resolveComposerAttachment(
       });
     } finally {
       attachmentSendInFlightRef.current = false;
+    }
+  }
+
+  async function copyVisibleMessage(message: VisibleMessage) {
+    try {
+      let copied = false;
+      if (navigator.clipboard?.writeText !== undefined) {
+        try {
+          await navigator.clipboard.writeText(message.content);
+          copied = true;
+        } catch {
+          // Some embedded browsers expose Clipboard.writeText but reject it
+          // without a user-granted permission. Keep the local fallback for
+          // that case as well as for browsers without the API.
+        }
+      }
+      if (!copied) {
+        const textarea = document.createElement("textarea");
+        textarea.value = message.content;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        try {
+          textarea.select();
+          if (!document.execCommand("copy")) {
+            throw new Error("copy failed");
+          }
+        } finally {
+          textarea.remove();
+        }
+      }
+      setCopiedMessageId(message.id);
+      window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === message.id ? null : current));
+      }, 1500);
+    } catch {
+      setPanelError(t("assistant.copyFailed"));
     }
   }
 
@@ -1458,11 +1599,6 @@ async function resolveComposerAttachment(
     </aside>
   );
 
-  const contextVersion =
-    props.selectedVersionSeq === null
-      ? t("assistant.context.unsavedVersion")
-      : t("assistant.context.version", { seq: props.selectedVersionSeq });
-
   const composerDisabled =
     !canUseAi || props.adapter === null || !props.contentReady || props.busy || sending;
 
@@ -1525,7 +1661,7 @@ async function resolveComposerAttachment(
             ) : (
               <>
                 <strong>{props.adapter.name}</strong>
-                <span>{LANGUAGE_LABELS[props.adapter.language]} · {contextVersion}</span>
+                <span>{LANGUAGE_LABELS[props.adapter.language]}</span>
               </>
             )}
           </div>
@@ -1634,6 +1770,55 @@ async function resolveComposerAttachment(
                           tools: { Fallback: DlrToolCallUI },
                         }}
                       />
+                      {message.role === "user" && message.snapshot !== null &&
+                        message.snapshot.attachmentNames.length > 0 && (
+                          <div className="ai-message-attachments" data-testid="ai-message-attachments">
+                            {message.snapshot.attachmentNames.map((name, attachmentIndex) => (
+                              <Tooltip
+                                key={`${message.id}-${attachmentIndex}-${name}`}
+                                title={name}
+                                trigger={["hover", "focus"]}
+                              >
+                                <span
+                                  className="ai-message-attachment-name"
+                                  tabIndex={0}
+                                  aria-label={name}
+                                >
+                                  <PaperClipOutlined aria-hidden="true" /> {name}
+                                </span>
+                              </Tooltip>
+                            ))}
+                          </div>
+                        )}
+                      <div className="ai-message-copy">
+                        <Tooltip
+                          title={
+                            copiedMessageId === message.id
+                              ? t("assistant.copied")
+                              : t("assistant.copy")
+                          }
+                          trigger={["hover", "focus"]}
+                        >
+                          <Button
+                            type="text"
+                            size="small"
+                            data-testid={`ai-copy-message-${message.id}`}
+                            aria-label={
+                              copiedMessageId === message.id
+                                ? t("assistant.copied")
+                                : t("assistant.copy")
+                            }
+                            icon={
+                              copiedMessageId === message.id ? (
+                                <CheckOutlined aria-hidden="true" />
+                              ) : (
+                                <CopyOutlined aria-hidden="true" />
+                              )
+                            }
+                            onClick={() => void copyVisibleMessage(message)}
+                          />
+                        </Tooltip>
+                      </div>
                       {/* M5.7 Wave B1: Regenerate entry — one per assistant
                           round; the previous message is always the round's
                           user message (DLR appends strictly alternating
@@ -1765,6 +1950,14 @@ async function resolveComposerAttachment(
               limits={attachmentLimits}
               supportedContentTypes={supportedContentTypes}
               error={attachmentError}
+              knowledgeCapability={knowledgeCapability}
+              knowledgeCapabilityLoading={knowledgeCapabilityLoading}
+              knowledgeSearchEnabled={knowledgeSearchEnabled}
+              onKnowledgeSearchChange={(enabled) => {
+                if (knowledgeCapability?.available === true) {
+                  setKnowledgeSearchEnabled(enabled);
+                }
+              }}
               onErrorChange={(message) => setAttachmentError(message)}
               onSend={(text, attachments) => void sendMessage(text, attachments)}
             />

@@ -19,8 +19,12 @@ import type {
   AiConnectionTestResult,
   AiConversationMessage,
   AiContextSnippet,
+  AiCustomProvider,
+  AiCustomProviderDraft,
+  AiKnowledgeCapability,
   AiModelSetting,
   AiModelSettingDraft,
+  AiProviderCapability,
   Credential,
   CredentialBinding,
   CredentialType,
@@ -106,7 +110,14 @@ async function parseError(response: Response): Promise<ApiError> {
       }
     }
   } catch {
-    // keep the fallback message when the body is not JSON
+    // Nginx/proxies commonly return an HTML/plain-text 413/504. Preserve a
+    // stable code so the Assistant can render a localized actionable fallback
+    // without exposing the proxy body.
+    if (response.status === 413) {
+      code = "ai_gateway_payload_too_large";
+    } else if (response.status === 504) {
+      code = "ai_gateway_timeout";
+    }
   }
   return new ApiError(response.status, code, message, params);
 }
@@ -441,6 +452,36 @@ export const api = {
 
   getAiSetting: (): Promise<AiModelSetting | null> => request("/api/ai/settings"),
 
+  getAiProviders: (): Promise<{ providers: AiProviderCapability[] }> =>
+    request("/api/ai/providers"),
+
+  listAiCustomProviders: (): Promise<{ providers: AiCustomProvider[] }> =>
+    request("/api/ai/custom-providers"),
+
+  createAiCustomProvider: (payload: AiCustomProviderDraft): Promise<AiCustomProvider> =>
+    request("/api/ai/custom-providers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  updateAiCustomProvider: (
+    providerId: number,
+    payload: AiCustomProviderDraft,
+  ): Promise<AiCustomProvider> =>
+    request(`/api/ai/custom-providers/${providerId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteAiCustomProvider: (providerId: number): Promise<void> =>
+    request(`/api/ai/custom-providers/${providerId}`, { method: "DELETE" }),
+
+  testAiCustomProvider: (providerId: number, model: string): Promise<AiConnectionTestResult> =>
+    request(`/api/ai/custom-providers/${providerId}/test`, {
+      method: "POST",
+      body: JSON.stringify({ model }),
+    }),
+
   updateAiSetting: (payload: AiModelSettingDraft): Promise<AiModelSetting> =>
     request("/api/ai/settings", { method: "PUT", body: JSON.stringify(payload) }),
 
@@ -451,12 +492,16 @@ export const api = {
     provider: AiModelSettingDraft["provider"];
     base_url: string;
     credential_id: number | null;
+    custom_provider_id?: number | null;
   }): Promise<{ models: string[] }> =>
     request("/api/ai/models/refresh", { method: "POST", body: JSON.stringify(payload) }),
 
   /** M5.7 Wave B2: stable attachment limits/MIME/capability contract. */
   getAiAttachmentCapabilities: (): Promise<AiAttachmentCapabilities> =>
     request("/api/ai/attachment-capabilities"),
+
+  getAiKnowledgeCapability: (adapterId: number): Promise<AiKnowledgeCapability> =>
+    request(`/api/adapters/${adapterId}/ai/knowledge-capability`),
 
   assistAdapter: (
     adapterId: number,
@@ -473,6 +518,8 @@ export const api = {
       context_snippets?: AiContextSnippet[];
       /** M5.7 Wave B2: request-only attachments (base64 bodies). */
       attachments?: AiAttachment[];
+      /** M5.11 Wave D: opt-in knowledge search, frozen for this round. */
+      knowledge_search_enabled?: boolean;
     },
   ): Promise<AiAssistResponse> =>
     request(`/api/adapters/${adapterId}/ai/assist`, {

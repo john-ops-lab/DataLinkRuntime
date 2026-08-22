@@ -11,8 +11,14 @@ from dlr.control.schemas.ai import (
     AiAssistResponse,
     AiAttachmentCapabilitiesResponse,
     AiConnectionTestResponse,
+    AiCustomProviderDraft,
+    AiCustomProviderResponse,
+    AiCustomProvidersResponse,
+    AiCustomProviderTestRequest,
+    AiKnowledgeCapabilityResponse,
     AiModelsResponse,
     AiProviderDraft,
+    AiProvidersResponse,
     AiSettingDraft,
     AiSettingResponse,
 )
@@ -38,6 +44,47 @@ def get_ai_setting(session: DbSession) -> AiSettingResponse | None:
     return None if setting is None else ai_service.setting_response(session, setting)
 
 
+@router.get("/api/ai/providers", response_model=AiProvidersResponse)
+def list_ai_providers() -> AiProvidersResponse:
+    return ai_service.provider_catalog()
+
+
+@router.get("/api/ai/custom-providers", response_model=AiCustomProvidersResponse)
+def list_custom_ai_providers(session: DbSession) -> AiCustomProvidersResponse:
+    return ai_service.list_custom_providers(session)
+
+
+@router.post("/api/ai/custom-providers", response_model=AiCustomProviderResponse)
+def create_custom_ai_provider(
+    payload: AiCustomProviderDraft, session: DbSession
+) -> AiCustomProviderResponse:
+    return ai_service.create_custom_provider(session, payload)
+
+
+@router.put("/api/ai/custom-providers/{provider_id}", response_model=AiCustomProviderResponse)
+def update_custom_ai_provider(
+    provider_id: int, payload: AiCustomProviderDraft, session: DbSession
+) -> AiCustomProviderResponse:
+    return ai_service.update_custom_provider(session, provider_id, payload)
+
+
+@router.delete("/api/ai/custom-providers/{provider_id}", status_code=204)
+def delete_custom_ai_provider(provider_id: int, session: DbSession) -> None:
+    ai_service.delete_custom_provider(session, provider_id)
+
+
+@router.post(
+    "/api/ai/custom-providers/{provider_id}/test",
+    response_model=AiConnectionTestResponse,
+)
+def test_custom_ai_provider(
+    provider_id: int,
+    payload: AiCustomProviderTestRequest,
+    session: DbSession,
+) -> AiConnectionTestResponse:
+    return ai_service.test_custom_provider(session, provider_id, payload)
+
+
 @router.put("/api/ai/settings", response_model=AiSettingResponse)
 def put_ai_setting(payload: AiSettingDraft, session: DbSession) -> AiSettingResponse:
     setting = ai_service.save_setting(session, payload)
@@ -61,6 +108,19 @@ def get_ai_attachment_capabilities() -> AiAttachmentCapabilitiesResponse:
     """M5.7 Wave B2: stable attachment limits, accepted MIME types and the
     per-Provider native-attachment capability table for the Wave B3 UI."""
     return ai_service.attachment_capabilities()
+
+
+@adapter_router.get(
+    "/api/adapters/{adapter_id}/ai/knowledge-capability",
+    response_model=AiKnowledgeCapabilityResponse,
+)
+def get_ai_knowledge_capability(
+    adapter_id: int,
+    principal: CurrentPrincipal,
+    session: DbSession,
+) -> AiKnowledgeCapabilityResponse:
+    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    return ai_service.knowledge_capability(session)
 
 
 @adapter_router.post("/api/adapters/{adapter_id}/ai/assist", response_model=AiAssistResponse)

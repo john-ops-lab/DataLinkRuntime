@@ -30,6 +30,17 @@
     "regenerateAria": "Regenerate this reply (reusing the original code and context from when it was sent)",
     "retry": "Retry",
     "retryAria": "Retry this round (reusing the original code, context and attachments from when it was sent)",
+    "copy": "Copy message",
+    "copied": "Copied",
+    "copyFailed": "Copy failed; select the text manually",
+    "knowledgeSearch": {
+      "label": "Knowledge search",
+      "available": "Read-only tools for the configured knowledge source are allowed this round",
+      "unavailable": "Knowledge search is not enabled or configured; no external source will be contacted",
+      "loading": "Checking knowledge capability…",
+      "disabledReason": "Knowledge search is off by default and applies only to this round",
+      "notConfigured": "The knowledge source is not configured; an administrator can configure it in Settings"
+    },
     "attachments": {
       "add": "Attach files",
       "addAria": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX and text / code files",
@@ -114,7 +125,10 @@
       "close": "Close"
     },
     "errors": {
-      "requestFailed": "AI request failed"
+      "requestFailed": "AI request failed",
+      "gatewayPayloadTooLarge": "The attachment request exceeds the 32 MiB gateway limit; remove or compress files and try again",
+      "gatewayTimeout": "The model service timed out after 660 seconds; check the network or try again later",
+      "knowledgeUnavailable": "Knowledge search is unavailable for this round; ask an administrator to configure an available source"
     }
   },
   "model": {
@@ -124,12 +138,14 @@
       "label": "Model provider",
       "custom": "Custom OpenAI-compatible service"
     },
+    "customOption": "Custom: {{name}}",
     "baseUrl": "Base URL",
     "baseUrlHint": "Enter the model service root URL; it may end with /v1 or omit it.",
     "credential": "API Key Credential (optional, token type only)",
     "credentialPlaceholder": "No authentication / choose a token Credential",
     "modelId": "Model ID",
     "modelPlaceholder": "Choose from discovered models or enter an ID manually",
+    "modelSearch": "Choose a discovered model",
     "refreshModels": "Refresh models",
     "refreshHint": "A failed refresh does not affect manual input; a successful refresh does not change the saved Model ID.",
     "refreshEmpty": "Refresh succeeded, but no available models were found. Enter a Model ID manually.",
@@ -155,6 +171,24 @@
     "testSuccess": "Connection test passed: the model returned a parseable minimal response.",
     "testFailed": "Connection test failed. Check the model service configuration and network.",
     "testFailedDetail": "Connection test failed: {{detail}}",
-    "requestFailed": "AI settings request failed"
+    "requestFailed": "AI settings request failed",
+    "customProviders": "Custom model services",
+    "customProvidersHint": "Save multiple custom services. The protocol and capabilities must match the real service contract; only token metadata is referenced.",
+    "customName": "Service name",
+    "customImages": "Native images",
+    "customFiles": "Native files",
+    "customTools": "Read-only tools",
+    "customCreate": "Add service",
+    "customUpdate": "Save service",
+    "customEdit": "Edit",
+    "customTest": "Test",
+    "customDelete": "Delete",
+    "customCancel": "Cancel",
+    "customDeleteConfirm": "Delete this custom model service?",
+    "customDeleteReferenced": "The active AI setting still references this service; the server will reject deletion.",
+    "customReferenced": "Referenced by active setting",
+    "customRequired": "Service name and Base URL are required",
+    "customSaved": "Custom model service saved",
+    "customDeleted": "Custom model service deleted"
   }
 }

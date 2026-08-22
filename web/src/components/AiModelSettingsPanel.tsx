@@ -1,7 +1,19 @@
 /** One global active AI model setting (M4); Credential values never enter this component. */
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Button, Collapse, Input, Select, Space, Spin, Typography } from "antd";
+import {
+  Alert,
+  Button,
+  Card,
+  Collapse,
+  Input,
+  Popconfirm,
+  Select,
+  Space,
+  Spin,
+  Switch,
+  Typography,
+} from "antd";
 import { ProForm } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
@@ -12,6 +24,10 @@ import { subscribeCredentialCatalog } from "../credential-catalog";
 import type {
   AiModelSetting,
   AiModelSettingDraft,
+  AiCustomProvider,
+  AiCustomProviderDraft,
+  AiProviderCapability,
+  AiProviderProtocol,
   AiProvider,
   AiReasoningEffort,
   AiReasoningMode,
@@ -26,6 +42,7 @@ interface AiModelSettingsPanelProps {
 
 const DEFAULT_SETTING: AiModelSettingDraft = {
   provider: "openai",
+  custom_provider_id: null,
   base_url: "",
   model: "",
   credential_id: null,
@@ -35,21 +52,65 @@ const DEFAULT_SETTING: AiModelSettingDraft = {
 
 const PROVIDER_OPTIONS: { label: string; value: AiProvider }[] = [
   { label: "OpenAI", value: "openai" },
+  { label: "Anthropic Claude", value: "anthropic" },
+  { label: "Google Gemini", value: "gemini" },
   { label: "DeepSeek", value: "deepseek" },
+  { label: "Alibaba Qwen", value: "qwen" },
   { label: "Kimi", value: "kimi" },
   { label: "MiniMax", value: "minimax" },
+  { label: "GLM", value: "glm" },
+  { label: "Doubao", value: "doubao" },
+  { label: "Hunyuan", value: "hunyuan" },
+  { label: "OpenRouter", value: "openrouter" },
+  { label: "SiliconFlow", value: "siliconflow" },
+  { label: "Ollama", value: "ollama" },
   { label: "custom_openai_compatible", value: "custom_openai_compatible" },
 ];
+
+const PROVIDER_DEFAULT_BASE_URLS: Partial<Record<AiProvider, string>> = {
+  openai: "https://api.openai.com",
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com",
+  deepseek: "https://api.deepseek.com",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode",
+  kimi: "https://api.moonshot.cn",
+  minimax: "https://api.minimax.chat",
+  glm: "https://open.bigmodel.cn/api/paas",
+  doubao: "https://ark.cn-beijing.volces.com/api/v3",
+  hunyuan: "https://api.hunyuan.cloud.tencent.com",
+  openrouter: "https://openrouter.ai/api",
+  siliconflow: "https://api.siliconflow.cn",
+  ollama: "http://ollama:11434",
+};
 
 const REASONING_EFFORTS_BY_PROVIDER: Record<
   AiProvider,
   readonly AiReasoningEffort[]
 > = {
   openai: ["low", "medium", "high", "xhigh"],
+  anthropic: [],
+  gemini: [],
   deepseek: ["high", "max"],
+  qwen: [],
   kimi: [],
   minimax: [],
+  glm: [],
+  doubao: [],
+  hunyuan: [],
+  openrouter: [],
+  siliconflow: [],
+  ollama: [],
   custom_openai_compatible: [],
+};
+
+const DEFAULT_CUSTOM_PROVIDER: AiCustomProviderDraft = {
+  name: "",
+  protocol: "openai_compatible",
+  base_url: "",
+  credential_id: null,
+  images_native: false,
+  files_native: false,
+  tools_supported: false,
 };
 
 function supportedReasoningEfforts(
@@ -80,6 +141,7 @@ function normalizeSetting(setting: AiModelSetting | null): AiModelSettingDraft {
   }
   return {
     provider: setting.provider,
+    custom_provider_id: setting.custom_provider_id ?? null,
     base_url: setting.base_url,
     model: setting.model,
     credential_id: setting.credential_id,
@@ -98,6 +160,13 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const [form, setForm] = useState<AiModelSettingDraft>({ ...DEFAULT_SETTING });
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [providerCatalog, setProviderCatalog] = useState<AiProviderCapability[]>([]);
+  const [customProviders, setCustomProviders] = useState<AiCustomProvider[]>([]);
+  const [customDraft, setCustomDraft] = useState<AiCustomProviderDraft>({
+    ...DEFAULT_CUSTOM_PROVIDER,
+  });
+  const [editingCustomId, setEditingCustomId] = useState<number | null>(null);
+  const [customBusy, setCustomBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshingModels, setRefreshingModels] = useState(false);
@@ -106,12 +175,20 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const reasoningEfforts = supportedReasoningEfforts(form.provider, form.reasoning_mode);
-  const actionBusy = saving || refreshingModels || testing;
+  const actionBusy = saving || refreshingModels || testing || customBusy;
+  const catalogById = new Map(providerCatalog.map((provider) => [provider.id, provider]));
   const providerOptions = PROVIDER_OPTIONS.map((option) =>
     option.value === "custom_openai_compatible"
       ? { ...option, label: t("model.provider.custom") }
-      : option,
+      : { ...option, label: catalogById.get(option.value)?.name ?? option.label },
   );
+  const providerSelectOptions = [
+    ...providerOptions,
+    ...customProviders.map((provider) => ({
+      label: t("model.customOption", { name: provider.name }),
+      value: `custom:${provider.id}`,
+    })),
+  ];
 
   const fail = useCallback(
     (message: string) => {
@@ -133,9 +210,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [settingResult, credentialsResult] = await Promise.allSettled([
+    const [settingResult, credentialsResult, catalogResult, customResult] = await Promise.allSettled([
       api.getAiSetting(),
       api.listCredentials(),
+      api.getAiProviders(),
+      api.listAiCustomProviders(),
     ]);
 
     if (settingResult.status === "fulfilled") {
@@ -155,6 +234,12 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       );
     } else {
       fail(userErrorMessage(credentialsResult.reason, i18n.t("model.requestFailed")));
+    }
+    if (catalogResult.status === "fulfilled") {
+      setProviderCatalog(catalogResult.value.providers);
+    }
+    if (customResult.status === "fulfilled") {
+      setCustomProviders(customResult.value.providers);
     }
     setLoading(false);
   }, [fail]);
@@ -197,7 +282,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       fail(t("model.openaiReasoningRequired"));
       return null;
     }
-    return {
+    const payload: AiModelSettingDraft = {
       provider: form.provider,
       base_url: baseUrl,
       model,
@@ -205,6 +290,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       reasoning_mode: form.reasoning_mode,
       reasoning_effort: reasoningEffort,
     };
+    if (form.custom_provider_id !== null && form.custom_provider_id !== undefined) {
+      payload.custom_provider_id = form.custom_provider_id;
+    }
+    return payload;
   }
 
   async function handleRefreshModels() {
@@ -220,11 +309,15 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     }
     setRefreshingModels(true);
     try {
-      const response = await api.refreshAiModels({
+      const refreshPayload: Parameters<typeof api.refreshAiModels>[0] = {
         provider: form.provider,
         base_url: baseUrl,
         credential_id: form.credential_id,
-      });
+      };
+      if (form.custom_provider_id !== null && form.custom_provider_id !== undefined) {
+        refreshPayload.custom_provider_id = form.custom_provider_id;
+      }
+      const response = await api.refreshAiModels(refreshPayload);
       setModelOptions(response.models);
       setNotice(
         response.models.length === 0
@@ -296,6 +389,125 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     }
   }
 
+  function editCustomDraft(updater: (current: AiCustomProviderDraft) => AiCustomProviderDraft) {
+    setPanelError(null);
+    setNotice(null);
+    setCustomDraft(updater);
+  }
+
+  function startCustomEdit(provider: AiCustomProvider) {
+    setEditingCustomId(provider.id);
+    setCustomDraft({
+      name: provider.name,
+      protocol: provider.protocol,
+      base_url: provider.base_url,
+      credential_id: provider.credential_id,
+      images_native: provider.images_native,
+      files_native: provider.files_native,
+      tools_supported: provider.tools_supported,
+    });
+    setPanelError(null);
+    setNotice(null);
+  }
+
+  function resetCustomEditor() {
+    setEditingCustomId(null);
+    setCustomDraft({ ...DEFAULT_CUSTOM_PROVIDER });
+  }
+
+  async function handleCustomSave() {
+    if (actionBusy) {
+      return;
+    }
+    if (customDraft.name.trim() === "" || customDraft.base_url.trim() === "") {
+      fail(t("model.customRequired"));
+      return;
+    }
+    setCustomBusy(true);
+    setPanelError(null);
+    setNotice(null);
+    try {
+      const saved = editingCustomId === null
+        ? await api.createAiCustomProvider({ ...customDraft, name: customDraft.name.trim(), base_url: customDraft.base_url.trim() })
+        : await api.updateAiCustomProvider(editingCustomId, {
+            ...customDraft,
+            name: customDraft.name.trim(),
+            base_url: customDraft.base_url.trim(),
+          });
+      setCustomProviders((current) => {
+        const withoutSaved = current.filter((provider) => provider.id !== saved.id);
+        return [...withoutSaved, saved].sort((left, right) => left.name.localeCompare(right.name));
+      });
+      if (form.custom_provider_id === saved.id) {
+        editForm((current) => ({
+          ...current,
+          provider: "custom_openai_compatible",
+          custom_provider_id: saved.id,
+          base_url: saved.base_url,
+          credential_id: saved.credential_id,
+        }));
+      }
+      setNotice(t("model.customSaved"));
+      resetCustomEditor();
+    } catch (error) {
+      fail(errorMessage(error, t("model.requestFailed")));
+    } finally {
+      setCustomBusy(false);
+    }
+  }
+
+  async function handleCustomTest(provider: AiCustomProvider) {
+    if (actionBusy || form.model.trim() === "") {
+      fail(t("model.baseUrlModelRequired"));
+      return;
+    }
+    setCustomBusy(true);
+    setPanelError(null);
+    setNotice(null);
+    try {
+      const result = await api.testAiCustomProvider(provider.id, form.model.trim());
+      if (result.ok) {
+        setNotice(t("model.testSuccess"));
+      } else {
+        fail(result.message.trim() || t("model.testFailed"));
+      }
+    } catch (error) {
+      fail(errorMessage(error, t("model.requestFailed")));
+    } finally {
+      setCustomBusy(false);
+    }
+  }
+
+  async function handleCustomDelete(provider: AiCustomProvider) {
+    if (actionBusy) {
+      return;
+    }
+    setCustomBusy(true);
+    setPanelError(null);
+    setNotice(null);
+    try {
+      await api.deleteAiCustomProvider(provider.id);
+      setCustomProviders((current) => current.filter((item) => item.id !== provider.id));
+      if (form.custom_provider_id === provider.id) {
+        editForm((current) => ({
+          ...current,
+          provider: "custom_openai_compatible",
+          custom_provider_id: null,
+          base_url: "",
+          credential_id: null,
+        }));
+      }
+      if (editingCustomId === provider.id) {
+        resetCustomEditor();
+      }
+      setNotice(t("model.customDeleted"));
+    } catch (error) {
+      fail(errorMessage(error, t("model.requestFailed")));
+    } finally {
+      setCustomBusy(false);
+    }
+  }
+
   if (loading) {
     return <Spin />;
   }
@@ -315,24 +527,182 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         submitter={false}
       >
         <ProForm.Item label={t("model.provider.label")}>
-          <Select<AiProvider>
+          <Select<string>
             data-testid="ai-provider"
             disabled={actionBusy}
-            value={form.provider}
-            options={providerOptions}
-            onChange={(provider) =>
+            showSearch
+            virtual={false}
+            optionFilterProp="label"
+            value={
+              form.custom_provider_id === null || form.custom_provider_id === undefined
+                ? form.provider
+                : `custom:${form.custom_provider_id}`
+            }
+            options={providerSelectOptions}
+            onChange={(selection) => {
+              setModelOptions([]);
+              if (selection.startsWith("custom:")) {
+                const providerId = Number(selection.slice("custom:".length));
+                const custom = customProviders.find((item) => item.id === providerId);
+                if (custom !== undefined) {
+                  editForm((current) => ({
+                    ...current,
+                    provider: "custom_openai_compatible",
+                    custom_provider_id: custom.id,
+                    base_url: custom.base_url,
+                    credential_id: custom.credential_id,
+                    reasoning_effort: null,
+                  }));
+                }
+                return;
+              }
+              const provider = selection as AiProvider;
               editForm((current) => ({
                 ...current,
                 provider,
+                custom_provider_id: null,
+                base_url:
+                  current.base_url.trim() === ""
+                    ? catalogById.get(provider)?.base_url ??
+                      PROVIDER_DEFAULT_BASE_URLS[provider] ??
+                      current.base_url
+                    : current.base_url,
                 reasoning_effort: normalizeReasoningEffort(
                   provider,
                   current.reasoning_mode,
                   current.reasoning_effort,
                 ),
-              }))
-            }
+              }));
+            }}
           />
         </ProForm.Item>
+
+        <Card
+          size="small"
+          title={t("model.customProviders")}
+          className="ai-custom-providers"
+          data-testid="ai-custom-providers"
+        >
+          <Typography.Text type="secondary">{t("model.customProvidersHint")}</Typography.Text>
+          <Space direction="vertical" size="small" className="ai-custom-provider-list">
+            {customProviders.map((provider) => (
+              <Space key={provider.id} wrap className="ai-custom-provider-row">
+                <Typography.Text strong>{provider.name}</Typography.Text>
+                <Typography.Text type="secondary">{provider.protocol}</Typography.Text>
+                {provider.referenced && (
+                  <Typography.Text type="secondary">{t("model.customReferenced")}</Typography.Text>
+                )}
+                <Button size="small" onClick={() => startCustomEdit(provider)} disabled={actionBusy}>
+                  {t("model.customEdit")}
+                </Button>
+                <Button
+                  size="small"
+                  onClick={() => void handleCustomTest(provider)}
+                  disabled={actionBusy}
+                >
+                  {t("model.customTest")}
+                </Button>
+                <Popconfirm
+                  title={t("model.customDeleteConfirm")}
+                  description={provider.referenced ? t("model.customDeleteReferenced") : undefined}
+                  okText={t("model.customDelete")}
+                  cancelText={t("model.customCancel")}
+                  onConfirm={() => void handleCustomDelete(provider)}
+                >
+                  <Button size="small" danger disabled={actionBusy}>
+                    {t("model.customDelete")}
+                  </Button>
+                </Popconfirm>
+              </Space>
+            ))}
+          </Space>
+          <Space direction="vertical" size="small" className="ai-custom-provider-editor">
+            <Input
+              data-testid="ai-custom-name"
+              disabled={actionBusy}
+              placeholder={t("model.customName")}
+              value={customDraft.name}
+              onChange={(event) =>
+                editCustomDraft((current) => ({ ...current, name: event.target.value }))
+              }
+            />
+            <Select<AiProviderProtocol>
+              data-testid="ai-custom-protocol"
+              disabled={actionBusy}
+              value={customDraft.protocol}
+              options={[
+                { label: "OpenAI-compatible", value: "openai_compatible" },
+                { label: "Anthropic Messages", value: "anthropic" },
+                { label: "Google Gemini", value: "gemini" },
+              ]}
+              onChange={(protocol) => editCustomDraft((current) => ({ ...current, protocol }))}
+            />
+            <Input
+              data-testid="ai-custom-base-url"
+              disabled={actionBusy}
+              placeholder={t("model.baseUrl")}
+              value={customDraft.base_url}
+              onChange={(event) =>
+                editCustomDraft((current) => ({ ...current, base_url: event.target.value }))
+              }
+            />
+            <Select<number>
+              data-testid="ai-custom-credential"
+              disabled={actionBusy}
+              allowClear
+              placeholder={t("model.credentialPlaceholder")}
+              value={customDraft.credential_id ?? undefined}
+              options={credentials.map((credential) => ({
+                label: credential.name,
+                value: credential.id,
+              }))}
+              onChange={(credentialId) =>
+                editCustomDraft((current) => ({ ...current, credential_id: credentialId ?? null }))
+              }
+            />
+            <Space wrap>
+              <Typography.Text>{t("model.customImages")}</Typography.Text>
+              <Switch
+                checked={customDraft.images_native}
+                disabled={actionBusy}
+                onChange={(images_native) =>
+                  editCustomDraft((current) => ({ ...current, images_native }))
+                }
+              />
+              <Typography.Text>{t("model.customTools")}</Typography.Text>
+              <Switch
+                checked={customDraft.tools_supported}
+                disabled={actionBusy}
+                onChange={(tools_supported) =>
+                  editCustomDraft((current) => ({ ...current, tools_supported }))
+                }
+              />
+              <Typography.Text>{t("model.customFiles")}</Typography.Text>
+              <Switch
+                checked={customDraft.files_native}
+                disabled={actionBusy}
+                onChange={(files_native) =>
+                  editCustomDraft((current) => ({ ...current, files_native }))
+                }
+              />
+            </Space>
+            <Space>
+              <Button
+                type="primary"
+                data-testid="ai-custom-save"
+                disabled={actionBusy}
+                onClick={() => void handleCustomSave()}
+              >
+                {editingCustomId === null ? t("model.customCreate") : t("model.customUpdate")}
+              </Button>
+              {editingCustomId !== null && (
+                <Button disabled={actionBusy} onClick={resetCustomEditor}>
+                  {t("model.customCancel")}
+                </Button>
+              )}
+            </Space>
+          </Space>
+        </Card>
 
         <ProForm.Item label={t("model.baseUrl")}>
           <Input
@@ -340,9 +710,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
             disabled={actionBusy}
             placeholder="https://api.example.com"
             value={form.base_url}
-            onChange={(event) =>
-              editForm((current) => ({ ...current, base_url: event.target.value }))
-            }
+            onChange={(event) => {
+              setModelOptions([]);
+              editForm((current) => ({ ...current, base_url: event.target.value }));
+            }}
           />
           <Typography.Text type="secondary">{t("model.baseUrlHint")}</Typography.Text>
         </ProForm.Item>
@@ -378,6 +749,20 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
               <option key={model} value={model} />
             ))}
           </datalist>
+          <Select<string>
+            data-testid="ai-model-search"
+            disabled={actionBusy || modelOptions.length === 0}
+            showSearch
+            allowClear
+            optionFilterProp="label"
+            placeholder={t("model.modelSearch")}
+            options={modelOptions.map((model) => ({ label: model, value: model }))}
+            onChange={(model) => {
+              if (model !== undefined) {
+                editForm((current) => ({ ...current, model }));
+              }
+            }}
+          />
         </ProForm.Item>
 
         <Space wrap>
