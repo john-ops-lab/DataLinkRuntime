@@ -290,7 +290,7 @@ assert demo_finished["output"]["leaked"] == "[REDACTED]", demo_finished
 assert "demo password: [REDACTED]" in demo_finished["stdout"], demo_finished
 
 # Task foundation: immutable Revisions, fixed runtime Worker, latest execution,
-# unified active lock, metadata exception, clone and soft delete.
+# unified active lock, metadata exception, clone and permanent delete.
 task = create_adapter("smoke-m541-task", "python", "task")
 task_id = task["id"]
 assert (
@@ -510,22 +510,18 @@ assert request("POST", f"/adapters/{task_id}/production/start", expected=404)
 assert request("POST", f"/adapters/{task_id}/production/stop", {}, expected=404)
 
 request("DELETE", f"/adapters/{task_id}", expected=204)
-deleted = request("GET", f"/adapters/{task_id}")
-assert deleted["archived_at"] is not None and deleted["latest_version_id"] == v2["id"]
-assert len(request("GET", f"/adapters/{task_id}/versions")) == 2
-deleted_history = request("GET", f"/adapters/{task_id}/executions")["items"]
-assert len(deleted_history) == 4
-assert [item["trigger"] for item in deleted_history].count("manual") == 3
-assert [item["trigger"] for item in deleted_history].count("schedule") == 1
-deleted_save = save(task_id, v2_code, expected=409)
-assert deleted_save["detail"]["code"] == "adapter_deleted", deleted_save
+assert request("GET", f"/adapters/{task_id}", expected=404)["detail"]["code"] == "adapter_not_found"
+deleted_save = save(task_id, v2_code, expected=404)
+assert deleted_save["detail"]["code"] == "adapter_not_found", deleted_save
 with SessionLocal() as session:
-    assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v1["id"])) is not None
-    assert session.scalar(select(Execution).where(Execution.id == run1["id"])) is not None
+    assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v1["id"])) is None
+    assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v2["id"])) is None
+    assert session.scalar(select(Execution).where(Execution.id == run1["id"])) is None
 
-# Final Webhook model: random stopped path, first-save Worker/Token gates,
-# readable path, immediate Stop without cancelling active work, and Clone
-# upgrade takeover while the public URL remains unchanged.
+# Final Webhook model: random stopped path, saved Revision decoupled from the
+# Worker/Token start gate, readable path, immediate Stop without cancelling
+# active work, and Clone upgrade takeover while the public URL remains
+# unchanged.
 webhook_adapter = create_adapter("smoke-m543-webhook", "python", "webhook")
 webhook_id = webhook_adapter["id"]
 initial_webhook = request("GET", f"/adapters/{webhook_id}/webhook")
