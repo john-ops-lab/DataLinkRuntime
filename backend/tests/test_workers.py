@@ -183,6 +183,39 @@ def test_claim_delivers_adapter_cleanup_and_accepts_secret_free_result(
         assert row is not None and row.status == "completed"
 
 
+def test_worker_restart_requeues_claimed_adapter_cleanup(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    worker = register_worker(api_client, name="worker-cleanup-restart-node")
+    adapter = create_adapter(api_client, name="worker-cleanup-restart")
+    save_version(api_client, adapter["id"])
+    assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
+
+    claimed = claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+    cleanup_id = claimed.json()["cleanup_id"]
+    with session_factory() as session:
+        row = session.get(WorkerCleanupRequest, cleanup_id)
+        assert row is not None and row.status == "running"
+
+    restarted = register_worker(api_client, name="worker-cleanup-restart-node")
+    assert restarted["id"] == worker["id"]
+    with session_factory() as session:
+        row = session.get(WorkerCleanupRequest, cleanup_id)
+        assert row is not None and row.status == "pending"
+
+    retried = claim(api_client, worker["id"])
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["cleanup_id"] == cleanup_id
+    completed = api_client.post(
+        f"/api/workers/{worker['id']}/cleanups/{cleanup_id}/result",
+        json={"success": True},
+        headers=WORKER_HEADERS,
+    )
+    assert completed.status_code == 204, completed.text
+
+
 def test_claim_serves_sequential_executions(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="worker-order")
     save_version(api_client, adapter["id"])

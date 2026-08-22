@@ -7,7 +7,7 @@ parallel. Long polling simply retries the atomic claim until the deadline.
 
 import time
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
@@ -39,7 +39,13 @@ def list_workers(session: Session) -> list[Worker]:
 
 
 def register_worker(session: Session, data: WorkerRegister) -> Worker:
-    """Upsert by name: restarts reuse the existing row."""
+    """Upsert by name: restarts reuse the existing row.
+
+    A process can die after claiming an adapter cleanup but before reporting
+    the result. Re-registration is the safe ownership boundary at which to
+    return that request to the queue; no Control-side filesystem fallback is
+    attempted while the Worker is offline.
+    """
     worker = session.scalar(select(Worker).where(Worker.name == data.name).with_for_update())
     if worker is None:
         worker = Worker(
@@ -53,6 +59,14 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
         worker.status = "online"
         worker.last_heartbeat = func.now()
         worker.capabilities = data.capabilities
+        session.execute(
+            update(WorkerCleanupRequest)
+            .where(
+                WorkerCleanupRequest.worker_id == worker.id,
+                WorkerCleanupRequest.status == "running",
+            )
+            .values(status="pending", error_code=None)
+        )
     session.commit()
     session.refresh(worker)
     return worker
