@@ -366,6 +366,77 @@ it("keeps only the newest 2000 live-log lines", () => {
   expect(displayedLines).toHaveLength(2000);
 });
 
+it("distinguishes the 2000-line browser window and offers server history", () => {
+  const lines = Array.from({ length: 2005 }, (_, index) => `line-${index}`).join("\n");
+  const onViewServerLog = vi.fn();
+  renderWorkspace({
+    execution: makeExecution({ stdout: lines }),
+    liveStdout: lines,
+    onViewServerLog,
+  });
+
+  expect(screen.getByTestId("live-log-browser-window").textContent).toContain("2000");
+  fireEvent.click(screen.getByTestId("live-log-view-server"));
+  expect(onViewServerLog).toHaveBeenCalledTimes(1);
+});
+
+it("shows the browser-window notice while SSE is still appending saved lines", () => {
+  renderWorkspace({
+    execution: makeExecution({ stdout: "line-2200\n" }),
+    liveStdout: "line-2200\n",
+    serverLogLineCount: 2201,
+  });
+
+  expect(screen.getByTestId("live-log-browser-window").textContent).toContain("2000");
+});
+
+it("shows the number of lines appended while live reading is paused", () => {
+  const { rerender } = render(
+    <LogView testId="counted-log" content={"line-1\n"} truncated={false} mode="live" />,
+  );
+  fireEvent.click(screen.getByTestId("counted-log-pause"));
+  rerender(
+    <LogView
+      testId="counted-log"
+      content={"line-1\nline-2\nline-3\n"}
+      truncated={false}
+      mode="live"
+    />,
+  );
+  expect(screen.getByTestId("counted-log-new-count").textContent).toContain("2");
+});
+
+it("keeps full history searchable and copies the unfiltered saved content", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  const saved = "before needle\nother line\nafter needle\n";
+  render(
+    <LogView
+      testId="history-tools"
+      content={saved}
+      truncated={false}
+      mode="history"
+      followControls={false}
+    />,
+  );
+
+  fireEvent.change(screen.getByTestId("history-tools-search"), {
+    target: { value: "needle" },
+  });
+  expect(screen.getByTestId("history-tools").textContent).toContain("before needle");
+  expect(screen.getByTestId("history-tools").textContent).not.toContain("other line");
+  expect(screen.getByText("匹配 2 行")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.click(screen.getByTestId("history-tools-copy"));
+  });
+  expect(writeText).toHaveBeenCalledWith(saved);
+  expect(screen.getByRole("status").textContent).toContain("已复制");
+});
+
 it("maximizes and restores the live log without replacing its content", () => {
   renderWorkspace({ liveStdout: "line-1\nline-2\n" });
 
@@ -374,7 +445,13 @@ it("maximizes and restores the live log without replacing its content", () => {
   fireEvent.click(screen.getByTestId("live-log-maximize"));
   expect(screen.getByTestId("live-log-restore")).toBeTruthy();
   expect(screen.getByTestId("live-log").textContent).toBe(log.textContent);
+  expect(document.activeElement).toBe(screen.getByTestId("live-log-restore"));
 
   fireEvent.click(screen.getByTestId("live-log-restore"));
+  expect(screen.getByTestId("live-log-maximize")).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByTestId("live-log-maximize"));
+
+  fireEvent.click(screen.getByTestId("live-log-maximize"));
+  fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.getByTestId("live-log-maximize")).toBeTruthy();
 });

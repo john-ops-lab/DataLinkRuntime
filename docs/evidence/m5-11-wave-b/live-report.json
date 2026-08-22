@@ -1,0 +1,31 @@
+{
+  "kind": "live",
+  "locale": "zh-CN",
+  "width": 1440,
+  "height": 820,
+  "dpr": 1.25,
+  "adapterId": 13,
+  "executionId": 24,
+  "state": {
+    "pausedObserved": true,
+    "newLineCountObserved": true,
+    "resumeAvailable": true,
+    "browserWindowNotice": true,
+    "aiPanelOpen": true,
+    "maximizedWithAi": true,
+    "maximizeEscape": true
+  },
+  "failedRequests": [],
+  "consoleMessages": [
+    "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+    "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+  ],
+  "pageErrors": [],
+  "unknownPathnames": [],
+  "overflow": {
+    "document": false,
+    "body": false,
+    "documentWidth": 1440,
+    "viewportWidth": 1440
+  }
+}

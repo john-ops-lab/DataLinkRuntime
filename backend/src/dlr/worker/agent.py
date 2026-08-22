@@ -20,6 +20,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from dlr.common.platform_logging import configure_platform_logging
 from dlr.worker import executor, i18n
 from dlr.worker import venv as venv_manager
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
@@ -310,6 +311,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    configure_platform_logging("worker")
     config = WorkerConfig()
     if not config.token:
         raise SystemExit("DLR_WORKER_TOKEN is not configured; refusing to start")

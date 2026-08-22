@@ -11,24 +11,33 @@ import { useTranslation } from "react-i18next";
 
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { AiContextSnippet, Execution } from "../types";
-import { LIVE_LOG_MAX_LINES, unifiedLogContent } from "../unified-log";
+import { LIVE_LOG_MAX_LINES, logLineCount, unifiedLogContent } from "../unified-log";
 import { LogView, OutputView } from "./OutputView";
 
 interface Props {
   execution: Execution | null;
   liveStdout: string;
   liveStderr: string;
+  /** Logical count of the server-saved streams; unlike liveStdout this is not capped. */
+  serverLogLineCount?: number;
   fallbackExhausted: boolean;
   waitingForWebhook: boolean;
   /** M5.5.13: user selected masked browser-visible log text to add to the AI
    * context. Only the already-rendered (masked) text ever leaves this view. */
   onAddContext?: (snippet: AiContextSnippet) => void;
+  /** Switch to the history drawer for the server-saved Execution content. */
+  onViewServerLog?: () => void;
 }
 
 export default function LiveLogWorkspace(props: Props) {
   const { t } = useTranslation("runtime");
   const execution = props.execution;
   const content = unifiedLogContent(props.liveStdout, props.liveStderr);
+  const serverContent = execution === null
+    ? ""
+    : unifiedLogContent(execution.stdout, execution.stderr, execution.error);
+  const serverLineCount = props.serverLogLineCount ?? logLineCount(serverContent);
+  const browserWindowTruncated = serverLineCount > LIVE_LOG_MAX_LINES;
 
   function handleAddContext(text: string, startLine: number, endLine: number) {
     if (props.onAddContext === undefined) {
@@ -92,6 +101,9 @@ export default function LiveLogWorkspace(props: Props) {
                     emptyHint={t("logs.empty")}
                     maxLines={LIVE_LOG_MAX_LINES}
                     mode="live"
+                    browserWindowTruncated={browserWindowTruncated}
+                    browserWindowLines={LIVE_LOG_MAX_LINES}
+                    onViewServerLog={props.onViewServerLog}
                     addContextLabel={t("actions.addContext", { ns: "common" })}
                     onAddContext={handleAddContext}
                   />

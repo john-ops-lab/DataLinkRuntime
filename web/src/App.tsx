@@ -282,6 +282,9 @@ export function AdapterConsole({
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Controlled Workbench tab.
   const [activeTabKey, setActiveTabKey] = useState<WorkbenchTabKey>("edit");
+  // Set only when the live-log browser window explicitly hands off to the
+  // server-saved history detail; ordinary history navigation stays manual.
+  const [historyExecutionId, setHistoryExecutionId] = useState<number | null>(null);
   // M3.2：编辑页次级配置 Tabs 与系统设置中心（凭据管理 + Python 包源）。
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [userManagementOpen, setUserManagementOpen] = useState(false);
@@ -590,6 +593,7 @@ export function AdapterConsole({
     // M5.5.10：用户手动触发的运行直接切换到「实时日志」Tab。
     refreshedTerminalExecutionId.current = null;
     liveWatchRef.current(execution);
+    setHistoryExecutionId(null);
     setWaitingForWebhook(false);
     setActiveTabKey("live");
   }, []);
@@ -698,6 +702,7 @@ export function AdapterConsole({
     setContentReady(false);
     setSettingsOpen(false);
     setActiveTabKey("edit");
+    setHistoryExecutionId(null);
     setConfigTabKey("requirements");
     liveWatcher.stop();
     setWaitingForWebhook(false);
@@ -1473,6 +1478,8 @@ export function AdapterConsole({
                         adapterId={selected.id}
                         trigger={selected.adapter_type === "webhook" ? "webhook" : undefined}
                         recordKind={selected.adapter_type === "webhook" ? "call" : "execution"}
+                        autoOpenExecutionId={historyExecutionId}
+                        onAutoOpenHandled={() => setHistoryExecutionId(null)}
                       />
                     ),
                   },
@@ -1487,12 +1494,19 @@ export function AdapterConsole({
                         execution={liveExecution}
                         liveStdout={liveWatcher.liveStdout}
                         liveStderr={liveWatcher.liveStderr}
+                        serverLogLineCount={liveWatcher.serverLogLineCount}
                         fallbackExhausted={liveWatcher.fallbackExhausted}
                         waitingForWebhook={
                           selected.adapter_type === "webhook" &&
                           waitingForWebhook &&
                           liveExecution === null
                         }
+                        onViewServerLog={() => {
+                          if (liveExecution !== null) {
+                            setHistoryExecutionId(liveExecution.id);
+                            setActiveTabKey("history");
+                          }
+                        }}
                         onAddContext={selectedCanUseAi ? handleAddLogContext : undefined}
                       />
                     ),

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from dlr.common.config import settings
 from dlr.control.models import Credential, Execution, Worker
 from dlr.control.services import secrets as secrets_service
+from dlr.control.services.retention import cleanup_execution_retention
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential
 from test_workers import register_worker
@@ -561,7 +562,7 @@ def test_concurrent_start_and_token_update_serialize_to_one_consistent_value(
     assert post_hook(api_client, webhook["public_id"], accepted_token, {}).status_code == 202
 
 
-def test_retention_keeps_latest_100_webhook_calls_only(
+def test_retention_keeps_latest_configured_webhook_calls_only(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -572,6 +573,9 @@ def test_retention_keeps_latest_100_webhook_calls_only(
         )
         assert response.status_code == 202, response.text
         finish_active(session_factory, adapter["id"])
+    with session_factory() as session:
+        report = cleanup_execution_retention(session)
+    assert report.deleted == 1
     rows = executions_of(session_factory, adapter["id"])
     assert len(rows) == 100
     assert [row.input["sequence"] for row in rows] == list(range(1, 101))
@@ -616,7 +620,7 @@ def test_retention_never_deletes_task_or_active_execution(
                 .select_from(Execution)
                 .where(Execution.adapter_id == adapter["id"], Execution.trigger == "webhook")
             )
-            == 100
+            == 101
         )
         assert (
             session.scalar(

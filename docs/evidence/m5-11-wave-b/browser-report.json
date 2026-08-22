@@ -1,0 +1,237 @@
+{
+  "generatedAt": "2026-08-22T07:03:14.443Z",
+  "results": [
+    {
+      "kind": "history",
+      "locale": "zh-CN",
+      "width": 1280,
+      "height": 720,
+      "dpr": 1,
+      "tools": {
+        "searchMatch": true,
+        "matchCount": true,
+        "noFollowControls": true,
+        "copied": true,
+        "download": "execution-2.log",
+        "maximized": true,
+        "escapeRestored": true
+      },
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1280,
+        "viewportWidth": 1280
+      }
+    },
+    {
+      "kind": "history",
+      "locale": "zh-CN",
+      "width": 1440,
+      "height": 900,
+      "dpr": 1,
+      "tools": {
+        "searchMatch": true,
+        "matchCount": true,
+        "noFollowControls": true,
+        "copied": true,
+        "download": "execution-2.log",
+        "maximized": true,
+        "escapeRestored": true
+      },
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1440,
+        "viewportWidth": 1440
+      }
+    },
+    {
+      "kind": "history",
+      "locale": "zh-CN",
+      "width": 1680,
+      "height": 900,
+      "dpr": 1,
+      "tools": {
+        "searchMatch": true,
+        "matchCount": true,
+        "noFollowControls": true,
+        "copied": true,
+        "download": "execution-2.log",
+        "maximized": true,
+        "escapeRestored": true
+      },
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1680,
+        "viewportWidth": 1680
+      }
+    },
+    {
+      "kind": "history",
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 900,
+      "dpr": 1.25,
+      "tools": {
+        "searchMatch": true,
+        "matchCount": true,
+        "noFollowControls": true,
+        "copied": true,
+        "download": "execution-2.log",
+        "maximized": true,
+        "escapeRestored": true
+      },
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1920,
+        "viewportWidth": 1920
+      }
+    },
+    {
+      "kind": "history",
+      "locale": "en",
+      "width": 1280,
+      "height": 720,
+      "dpr": 1,
+      "tools": {
+        "searchMatch": true,
+        "matchCount": true,
+        "noFollowControls": true,
+        "copied": true,
+        "download": "execution-2.log",
+        "maximized": true,
+        "escapeRestored": true
+      },
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1280,
+        "viewportWidth": 1280
+      }
+    },
+    {
+      "kind": "history",
+      "locale": "en",
+      "width": 1440,
+      "height": 900,
+      "dpr": 1,
+      "tools": {
+        "searchMatch": true,
+        "matchCount": true,
+        "noFollowControls": true,
+        "copied": true,
+        "download": "execution-2.log",
+        "maximized": true,
+        "escapeRestored": true
+      },
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1440,
+        "viewportWidth": 1440
+      }
+    },
+    {
+      "kind": "history",
+      "locale": "en",
+      "width": 1680,
+      "height": 900,
+      "dpr": 1,
+      "tools": {
+        "searchMatch": true,
+        "matchCount": true,
+        "noFollowControls": true,
+        "copied": true,
+        "download": "execution-2.log",
+        "maximized": true,
+        "escapeRestored": true
+      },
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1680,
+        "viewportWidth": 1680
+      }
+    },
+    {
+      "kind": "history",
+      "locale": "en",
+      "width": 1920,
+      "height": 900,
+      "dpr": 1.25,
+      "tools": {
+        "searchMatch": true,
+        "matchCount": true,
+        "noFollowControls": true,
+        "copied": true,
+        "download": "execution-2.log",
+        "maximized": true,
+        "escapeRestored": true
+      },
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1920,
+        "viewportWidth": 1920
+      }
+    }
+  ]
+}

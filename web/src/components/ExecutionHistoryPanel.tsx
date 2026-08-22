@@ -10,7 +10,7 @@ import { api } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { ExecutionSummary } from "../types";
-import { HISTORY_LOG_MAX_LINES, unifiedLogContent } from "../unified-log";
+import { unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import { LogView, OutputView } from "./OutputView";
 
@@ -63,6 +63,8 @@ export default function ExecutionHistoryPanel(props: {
   trigger?: "webhook";
   /** Start 成功后自动打开该 Execution 的详情抽屉（含执行日志）。 */
   autoOpenExecutionId?: number | null;
+  /** App has consumed the one-shot auto-open request. */
+  onAutoOpenHandled?: () => void;
   recordKind?: "execution" | "call";
 }) {
   const { i18n, t } = useTranslation(["runtime", "common"]);
@@ -174,6 +176,7 @@ export default function ExecutionHistoryPanel(props: {
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 自动打开抽屉的同步 setState 是有意的（与行点击共用 openExecution）
     void openExecution(autoOpenId);
+    props.onAutoOpenHandled?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoOpenId]);
 
@@ -373,11 +376,11 @@ export default function ExecutionHistoryPanel(props: {
                   children: (
                     <LogView
                       testId="detail-log"
-                      content={unifiedLogContent(watcher.liveStdout, watcher.liveStderr, visibleDetail.error)}
+                      content={unifiedLogContent(visibleDetail.stdout, visibleDetail.stderr, visibleDetail.error)}
                       truncated={visibleDetail.stdout_truncated || visibleDetail.stderr_truncated}
-                      maxLines={HISTORY_LOG_MAX_LINES}
                       mode="history"
                       followControls={false}
+                      downloadFileName={`execution-${visibleDetail.id}`}
                     />
                   ),
                 },

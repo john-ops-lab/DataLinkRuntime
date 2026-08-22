@@ -48,6 +48,47 @@ class Settings(BaseSettings):
     execution_stream_max_bytes: int = Field(
         default=1024 * 1024, validation_alias="DLR_EXECUTION_STREAM_MAX_BYTES"
     )
+
+    # M5.11 Wave B: terminal Execution retention.  Cleanup is shared by
+    # manual/Webhook/Task/Schedule history, runs in retryable batches, and
+    # never selects pending or running rows.  The per-trigger defaults keep
+    # Webhook history bounded without forcing long-running Task/Schedule
+    # adapters into the old fixed-100 behavior.
+    execution_retention_webhook_days: int = Field(
+        default=30, ge=1, validation_alias="DLR_EXECUTION_RETENTION_WEBHOOK_DAYS"
+    )
+    execution_retention_webhook_max_per_adapter: int = Field(
+        default=100, ge=1, validation_alias="DLR_EXECUTION_RETENTION_WEBHOOK_MAX_PER_ADAPTER"
+    )
+    execution_retention_task_days: int = Field(
+        default=30, ge=1, validation_alias="DLR_EXECUTION_RETENTION_TASK_DAYS"
+    )
+    execution_retention_task_max_per_adapter: int = Field(
+        default=1000, ge=1, validation_alias="DLR_EXECUTION_RETENTION_TASK_MAX_PER_ADAPTER"
+    )
+    execution_retention_schedule_days: int = Field(
+        default=90, ge=1, validation_alias="DLR_EXECUTION_RETENTION_SCHEDULE_DAYS"
+    )
+    execution_retention_schedule_max_per_adapter: int = Field(
+        default=1000, ge=1, validation_alias="DLR_EXECUTION_RETENTION_SCHEDULE_MAX_PER_ADAPTER"
+    )
+    execution_retention_batch_size: int = Field(
+        default=100, ge=1, le=10_000, validation_alias="DLR_EXECUTION_RETENTION_BATCH_SIZE"
+    )
+    execution_retention_interval_seconds: float = Field(
+        default=3600.0,
+        ge=60.0,
+        le=86_400.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_EXECUTION_RETENTION_INTERVAL_SECONDS",
+    )
+
+    # M5.11 Wave B: platform service logs are written to a watched file under
+    # this root.  Compose maps the host value to the same fixed in-container
+    # path so external logrotate can rename files without restarting DLR.
+    platform_log_root: str = Field(
+        default="/var/lib/dlr/platform-logs", validation_alias="DLR_PLATFORM_LOG_ROOT"
+    )
     # Timeout sent to the Worker in every task payload.
     execution_timeout_seconds: int = Field(
         default=300, validation_alias="DLR_EXECUTION_TIMEOUT_SECONDS"

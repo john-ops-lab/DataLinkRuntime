@@ -2,7 +2,14 @@
  * execution history detail. */
 
 export const LIVE_LOG_MAX_LINES = 2000;
-export const HISTORY_LOG_MAX_LINES = 500;
+
+/** Count logical lines without imposing a browser rendering limit. */
+export function logLineCount(content: string): number {
+  if (content === "") {
+    return 0;
+  }
+  return content.endsWith("\n") ? content.split("\n").length - 1 : content.split("\n").length;
+}
 
 /** Merged display content: the unified stdout-channel stream plus any legacy
  * stderr content (pre-M5.5.10 rows), so one view always carries everything. */

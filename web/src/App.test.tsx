@@ -2166,6 +2166,71 @@ it("runs a Task from the Workbench header and follows it in the 实时日志 tab
   ).toBe(true);
 });
 
+it("reopens the same server log after closing the live-to-history drawer", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  const pending = makeExecution();
+  const savedLog = Array.from({ length: 2001 }, (_, index) => `line-${index}`).join("\n");
+  const succeeded = makeExecution({
+    status: "succeeded",
+    worker_id: 1,
+    target_worker_id: 1,
+    stdout: savedLog,
+    output: { ok: true },
+    output_size: 11,
+    ended_at: "2026-08-15T00:00:02Z",
+    duration_ms: 1000,
+  });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({
+        body: [{ id: 1, name: "task-worker", status: "online", last_heartbeat: "", capabilities: ["python"] }],
+      }),
+    },
+    { method: "POST", match: "/api/adapters/1/executions", respond: () => ({ status: 201, body: pending }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({
+        stream: `event: execution\ndata: ${JSON.stringify(succeeded)}\n\n`,
+      }),
+    },
+    { method: "GET", match: "/api/executions/5", respond: () => ({ body: succeeded }) },
+    {
+      method: "GET",
+      match: /\/api\/adapters\/1\/executions\?/,
+      respond: () => ({ body: { items: [makeSummary({ id: 5 })], next_before_id: null } }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => {
+    expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(false);
+  });
+  fireEvent.click(screen.getByTestId("header-task-run-once"));
+
+  await screen.findByTestId("live-log-view-server");
+  fireEvent.click(screen.getByTestId("live-log-view-server"));
+  await screen.findByTestId("detail-input");
+
+  const closeButton = document.querySelector(".ant-drawer-close");
+  if (!(closeButton instanceof HTMLButtonElement)) {
+    throw new Error("Execution detail drawer close button not found");
+  }
+  fireEvent.click(closeButton);
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  await screen.findByTestId("live-log-view-server");
+
+  // The handoff request is one-shot: after the drawer closes, the same
+  // execution id must be accepted again instead of React bailing on setState.
+  fireEvent.click(screen.getByTestId("live-log-view-server"));
+  expect(await screen.findByTestId("detail-input")).toBeTruthy();
+});
+
 it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
   const versions: VersionSummary[] = [
@@ -2529,10 +2594,10 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   expect(within(drawer).queryByTestId("detail-log-pause")).toBeNull();
   expect(within(drawer).getByTestId("detail-log-maximize")).toBeTruthy();
   const historyLogLines = (within(drawer).getByTestId("detail-log").textContent ?? "").split("\n");
-  expect(historyLogLines).not.toContain("line-0");
+  expect(historyLogLines).toContain("line-0");
   expect(historyLogLines).toContain("line-1");
   expect(historyLogLines).toContain("line-500");
-  expect(historyLogLines).toHaveLength(500);
+  expect(historyLogLines).toHaveLength(501);
 
   fireEvent.click(drawer.querySelector(".ant-drawer-close") as HTMLButtonElement);
   secondRow.focus();

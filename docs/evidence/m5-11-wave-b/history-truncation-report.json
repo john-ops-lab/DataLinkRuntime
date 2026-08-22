@@ -1,0 +1,14 @@
+{
+  "executionId": 1,
+  "warningVisible": true,
+  "contentCharacters": 1048544,
+  "headPresent": true,
+  "markerPresent": true,
+  "tailPresent": true,
+  "failedRequests": [],
+  "pageErrors": [],
+  "consoleMessages": [
+    "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+    "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+  ]
+}
