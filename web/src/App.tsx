@@ -1479,6 +1479,7 @@ export function AdapterConsole({
                         trigger={selected.adapter_type === "webhook" ? "webhook" : undefined}
                         recordKind={selected.adapter_type === "webhook" ? "call" : "execution"}
                         autoOpenExecutionId={historyExecutionId}
+                        onAutoOpenHandled={() => setHistoryExecutionId(null)}
                       />
                     ),
                   },

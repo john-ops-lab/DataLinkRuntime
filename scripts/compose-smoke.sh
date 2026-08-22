@@ -9,6 +9,20 @@ TIMEOUT_SECONDS=${COMPOSE_SMOKE_TIMEOUT:-240}
 export COMPOSE_PROJECT_NAME=${COMPOSE_SMOKE_PROJECT:-dlr-smoke-${GITHUB_RUN_ID:-$$}}
 export DLR_WEB_HOST_PORT=${COMPOSE_SMOKE_WEB_PORT:-8880}
 export DLR_ACCOUNT_WEB_HOST_PORT=${COMPOSE_SMOKE_ACCOUNT_WEB_PORT:-8881}
+# Compose binds platform logs from the host.  A fresh CI runner cannot rely on
+# /var/lib/dlr being writable by PostgreSQL's unprivileged container user, so
+# keep the smoke run isolated under the runner temp directory (or an ignored
+# repository-local directory for Docker Desktop, whose file-sharing layer does
+# not preserve mode bits for arbitrary macOS temp paths).  Production
+# deployments still use their explicitly configured DLR_PLATFORM_LOG_ROOT.
+SMOKE_PLATFORM_LOG_ROOT="${RUNNER_TEMP:-${PWD}/.tmp-platform-logs}/${COMPOSE_PROJECT_NAME}-platform-logs"
+export DLR_PLATFORM_LOG_ROOT="${DLR_PLATFORM_LOG_ROOT:-$SMOKE_PLATFORM_LOG_ROOT}"
+mkdir -p "$DLR_PLATFORM_LOG_ROOT"/{control,worker,web,account-web,postgres}
+if [ "$DLR_PLATFORM_LOG_ROOT" = "$SMOKE_PLATFORM_LOG_ROOT" ]; then
+  # The pinned postgres image drops to its postgres UID after initialization;
+  # this directory is disposable smoke data, never a production path.
+  chmod 0777 "$DLR_PLATFORM_LOG_ROOT/postgres"
+fi
 export DLR_ADMIN_TOKEN=${DLR_ADMIN_TOKEN:-smoke-admin-token-$$}
 export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
 export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-env-secret-$$}
@@ -60,6 +74,9 @@ cleanup() {
     rm -f "$ACCOUNT_COOKIE_FILE" "$ACCOUNT_STALE_COOKIE_FILE"
   fi
   docker compose -p "$COMPOSE_PROJECT_NAME" down --volumes --remove-orphans
+  if [ "$DLR_PLATFORM_LOG_ROOT" = "$SMOKE_PLATFORM_LOG_ROOT" ]; then
+    rm -rf "$DLR_PLATFORM_LOG_ROOT"
+  fi
 }
 trap cleanup EXIT
 

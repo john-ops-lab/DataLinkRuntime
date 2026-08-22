@@ -63,6 +63,8 @@ export default function ExecutionHistoryPanel(props: {
   trigger?: "webhook";
   /** Start 成功后自动打开该 Execution 的详情抽屉（含执行日志）。 */
   autoOpenExecutionId?: number | null;
+  /** App has consumed the one-shot auto-open request. */
+  onAutoOpenHandled?: () => void;
   recordKind?: "execution" | "call";
 }) {
   const { i18n, t } = useTranslation(["runtime", "common"]);
@@ -174,6 +176,7 @@ export default function ExecutionHistoryPanel(props: {
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 自动打开抽屉的同步 setState 是有意的（与行点击共用 openExecution）
     void openExecution(autoOpenId);
+    props.onAutoOpenHandled?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoOpenId]);
 
