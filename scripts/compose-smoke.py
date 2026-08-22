@@ -232,11 +232,12 @@ with SessionLocal() as session:
     assert row is not None and row.status == "online"
 
 # M5.5.7: the demo Credentials are bootstrapped on fresh deployments with
-# random values, metadata-only APIs, and brand-new Task/Webhook Adapters
-# default-bind PASSWORD/TOKEN to them while the Webhook receiving Token
-# Credential stays explicitly chosen (M5.4 lifecycle unchanged). The Control
-# background bootstrap retries until the migrated schema exists, so poll for
-# the rows instead of assuming they are present on the first request.
+# random values, metadata-only APIs, and brand-new Task Adapters default-bind
+# PASSWORD to the demo Credential. Webhook entry authentication is a separate
+# Bearer Token configuration and is never injected into code Credential
+# bindings. The Control background bootstrap retries until the migrated schema
+# exists, so poll for the rows instead of assuming they are present on the
+# first request.
 deadline = time.monotonic() + 60
 credential_names: dict[str, dict[str, Any]] = {}
 while time.monotonic() < deadline:
@@ -264,15 +265,7 @@ assert demo_task_bindings == [
 ], demo_task_bindings
 demo_webhook = create_adapter("smoke-m557-demo-webhook", "python", "webhook")
 demo_webhook_bindings = request("GET", f"/adapters/{demo_webhook['id']}/credential-bindings")
-assert demo_webhook_bindings == [
-    {
-        "env_key": "TOKEN",
-        "credential_id": credential_names["demo-token"]["id"],
-        "field": "token",
-        "credential_name": "demo-token",
-        "credential_type": "token",
-    }
-], demo_webhook_bindings
+assert demo_webhook_bindings == [], demo_webhook_bindings
 demo_webhook_row = request("GET", f"/adapters/{demo_webhook['id']}/webhook")
 assert demo_webhook_row["credential_id"] is None, demo_webhook_row
 # The default demo binding really resolves at claim time: the Starter Code
