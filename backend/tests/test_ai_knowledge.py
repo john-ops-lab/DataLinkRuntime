@@ -58,6 +58,14 @@ IMA_API_KEY = "ima-api-key-plaintext-sentinel-9f3a"
 
 CREDENTIAL_NAME = "ima-test-cred"
 
+
+def knowledge_assist_body() -> dict[str, object]:
+    """Opt into the Wave D default-off knowledge boundary for these tests."""
+    body = assist_body()
+    body["knowledge_search_enabled"] = True
+    return body
+
+
 # The user-designated non-sensitive test knowledge base; matched by NAME only.
 TEST_KB_NAME = "DLR接口库"
 
@@ -897,7 +905,9 @@ def test_ima_token_type_credential_rejected(
         "_request_json",
         _knowledge_then_final([_call("list_knowledge_bases", '{"source": "ima"}')]),
     )
-    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+    )
     assert response.status_code == 200, response.text
     summary = response.json()["tool_calls"][0]
     assert summary["status"] == "error"
@@ -953,7 +963,9 @@ def test_secret_truth_never_reaches_prompt_ui_provider_or_logs(
         caplog.at_level(logging.INFO, logger="dlr.ai.tools"),
         caplog.at_level(logging.INFO, logger="dlr.ai.knowledge"),
     ):
-        response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+        response = api_client.post(
+            f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+        )
     assert response.status_code == 200, response.text
     body = response.json()
     assert len(body["tool_calls"]) == 3
@@ -1007,7 +1019,9 @@ def test_secret_truth_absent_from_error_paths(
         caplog.at_level(logging.INFO, logger="dlr.ai.tools"),
         caplog.at_level(logging.INFO, logger="dlr.ai.knowledge"),
     ):
-        response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+        response = api_client.post(
+            f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+        )
     assert response.status_code == 200, response.text
     summary = response.json()["tool_calls"][0]
     assert summary["status"] == "error"
@@ -1061,7 +1075,7 @@ def test_assist_knowledge_chain_final_output_candidate_null_and_attachments(
         )
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
-    body = assist_body()
+    body = knowledge_assist_body()
     body["attachments"] = [
         {
             "filename": "notes.txt",
@@ -1108,7 +1122,9 @@ def test_assist_knowledge_chain_with_candidate_and_adapter_isolation(
         )
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
-    response_a = api_client.post(f"/api/adapters/{adapter_a['id']}/ai/assist", json=assist_body())
+    response_a = api_client.post(
+        f"/api/adapters/{adapter_a['id']}/ai/assist", json=knowledge_assist_body()
+    )
     assert response_a.status_code == 200, response_a.text
     result_a = response_a.json()
     assert result_a["candidate"] is not None
@@ -1116,7 +1132,9 @@ def test_assist_knowledge_chain_with_candidate_and_adapter_isolation(
     # Adapter B keeps the plain single-shot path with its own conversation:
     # tool summaries never cross adapters, and recent_messages stays empty
     # (tool data never enters the conversation history).
-    response_b = api_client.post(f"/api/adapters/{adapter_b['id']}/ai/assist", json=assist_body())
+    response_b = api_client.post(
+        f"/api/adapters/{adapter_b['id']}/ai/assist", json=knowledge_assist_body()
+    )
     assert response_b.status_code == 200, response_b.text
     assert response_b.json()["candidate"] is not None
 
@@ -1141,7 +1159,7 @@ def test_assist_knowledge_unknown_source_and_recent_messages_shape(
         return _tool_response([_call("list_knowledge_bases", '{"source": "bogus"}')])
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
-    body = assist_body()
+    body = knowledge_assist_body()
     body["recent_messages"] = [
         {"role": "user", "content": "Please check the docs."},
         {"role": "assistant", "content": "I will check."},
