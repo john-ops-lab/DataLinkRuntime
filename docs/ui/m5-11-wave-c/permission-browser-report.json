@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "wave": "M5.11 Wave C permission differences",
+  "records": [
+    {
+      "locale": "zh-CN",
+      "permission": "read",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "screenshot": "docs/ui/m5-11-wave-c/browser/account-read-zh-CN-1280-settings.png",
+      "visible_states": {
+        "name_disabled": true,
+        "read_only_notice": true,
+        "edit_notice": false,
+        "clone_visible": false,
+        "delete_visible": false
+      },
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "permission": "edit",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "screenshot": "docs/ui/m5-11-wave-c/browser/account-edit-zh-CN-1280-settings.png",
+      "visible_states": {
+        "name_disabled": false,
+        "read_only_notice": false,
+        "edit_notice": true,
+        "clone_visible": true,
+        "delete_visible": false
+      },
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "en",
+      "permission": "read",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "screenshot": "docs/ui/m5-11-wave-c/browser/account-read-en-1280-settings.png",
+      "visible_states": {
+        "name_disabled": true,
+        "read_only_notice": true,
+        "edit_notice": false,
+        "clone_visible": false,
+        "delete_visible": false
+      },
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "en",
+      "permission": "edit",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "screenshot": "docs/ui/m5-11-wave-c/browser/account-edit-en-1280-settings.png",
+      "visible_states": {
+        "name_disabled": false,
+        "read_only_notice": false,
+        "edit_notice": true,
+        "clone_visible": true,
+        "delete_visible": false
+      },
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    }
+  ]
+}

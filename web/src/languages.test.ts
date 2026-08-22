@@ -36,14 +36,14 @@ it.each(["python", "javascript", "java"] as const)(
 );
 
 it.each(["python", "javascript", "java"] as const)(
-  "%s Webhook starter really reads the TOKEN binding and never leaks it",
+  "%s Webhook starter leaves entry Bearer authentication outside code secrets",
   (language) => {
     const starter = WEBHOOK_STARTER_CODE[language];
-    expect(starter).toContain('context.secrets.get("TOKEN")');
-    expect(starter).not.toMatch(/token\s*=\s*["']/i);
+    expect(starter).not.toContain('context.secrets.get("TOKEN")');
+    expect(starter).not.toMatch(/token\s*=\s*/i);
     expect(starter).not.toMatch(/print\(/i);
     expect(starter).not.toMatch(/console\.log/i);
-    expect(starter).toContain("不要把真实 Token 直接写进代码");
+    expect(starter).toContain("Bearer");
   },
 );
 
@@ -56,22 +56,17 @@ it.each(["python", "javascript", "java"] as const)(
 );
 
 it.each(["python", "javascript", "java"] as const)(
-  "%s webhook starter reads input, logs Webhook start/end boundaries and returns output in order",
+  "%s webhook starter reads input, logs receipt and returns output",
   (language) => {
     const starter = WEBHOOK_STARTER_CODE[language];
     expect(starter).toContain("input");
     expect(starter).toContain("return");
     expect(starter).toContain("context.logger");
     expect(starter).toContain("收到 Webhook 请求");
-    expect(starter).toContain("处理完 Webhook 请求");
-    // logger is emitted exactly once at each boundary
-    expect(starter.match(/context\.logger/g)).toHaveLength(2);
-    // start boundary -> return -> end boundary
+    // The starter does not force a second secret-dependent boundary.
+    expect(starter.match(/context\.logger/g)).toHaveLength(1);
     expect(starter.indexOf("收到 Webhook 请求")).toBeLessThan(
       starter.indexOf("return"),
-    );
-    expect(starter.indexOf("return")).toBeLessThan(
-      starter.indexOf("处理完 Webhook 请求"),
     );
   },
 );

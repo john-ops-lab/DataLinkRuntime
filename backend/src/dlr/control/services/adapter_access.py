@@ -116,7 +116,7 @@ def require_adapter_access(
     Known read-only shares receive a stable 403 for attempted writes.
     """
     adapter = session.get(Adapter, adapter_id, with_for_update=for_update)
-    if adapter is None:
+    if adapter is None or adapter.archived_at is not None:
         _adapter_not_found()
     level = _level(session, adapter, principal)
     if level is None:
@@ -132,9 +132,9 @@ def require_adapter_access(
 
 
 def list_visible_adapters(session: Session, principal: Principal) -> list[Adapter]:
-    """List every Adapter visible to the principal, including archived rows."""
+    """List every active Adapter visible to the principal."""
     if _is_admin(principal):
-        query = select(Adapter)
+        query = select(Adapter).where(Adapter.archived_at.is_(None))
     else:
         if principal.user_id is None:
             return []
@@ -145,7 +145,8 @@ def list_visible_adapters(session: Session, principal: Principal) -> list[Adapte
             or_(
                 Adapter.owner_user_id == principal.user_id,
                 Adapter.id.in_(shared_ids),
-            )
+            ),
+            Adapter.archived_at.is_(None),
         )
     return list(session.scalars(query.order_by(Adapter.updated_at.desc(), Adapter.id.desc())).all())
 

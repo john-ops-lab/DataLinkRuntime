@@ -229,8 +229,8 @@ export const api = {
   ): Promise<Adapter> =>
     request(`/api/adapters/${adapterId}`, { method: "PATCH", body: JSON.stringify(payload) }),
 
-  deleteAdapter: (adapterId: number): Promise<void> =>
-    request(`/api/adapters/${adapterId}`, { method: "DELETE" }),
+  deleteAdapter: (adapterId: number, stop = false): Promise<{ detail?: { code?: string } } | void> =>
+    request(`/api/adapters/${adapterId}${stop ? "?stop=true" : ""}`, { method: "DELETE" }),
 
   listVersions: (adapterId: number): Promise<VersionSummary[]> =>
     request(`/api/adapters/${adapterId}/versions`),

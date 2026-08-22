@@ -222,12 +222,16 @@ class Agent:
     def _track_start(self, task: dict[str, Any]) -> None:
         with self._state_lock:
             self._in_flight += 1
+            if task.get("kind") == "adapter_cleanup":
+                return
             key = (int(task["adapter_id"]), int(task["version_id"]))
             self._active_versions[key] = self._active_versions.get(key, 0) + 1
 
     def _track_end(self, task: dict[str, Any]) -> None:
         with self._state_lock:
             self._in_flight -= 1
+            if task.get("kind") == "adapter_cleanup":
+                return
             key = (int(task["adapter_id"]), int(task["version_id"]))
             count = self._active_versions.get(key, 0)
             if count <= 1:
@@ -236,6 +240,9 @@ class Agent:
                 self._active_versions[key] = count - 1
 
     def _execute_task(self, worker_id: int, task: dict[str, Any]) -> None:
+        if task.get("kind") == "adapter_cleanup":
+            self._execute_cleanup_task(worker_id, task)
+            return
         execution_id = int(task["execution_id"])
         logger.info(
             "executing execution %s (adapter %s version %s)",
@@ -267,6 +274,42 @@ class Agent:
             }
         self._report_with_retry(worker_id, execution_id, result)
         self._cleanup_version_environments(task)
+
+    def _execute_cleanup_task(self, worker_id: int, task: dict[str, Any]) -> None:
+        cleanup_id = int(task["cleanup_id"])
+        adapter_id = int(task["adapter_id"])
+        try:
+            venv_manager.cleanup_adapter_environment(self._config.runtime_root, adapter_id)
+        except Exception:  # noqa: BLE001 - cleanup result is retried by Control
+            logger.warning(
+                "adapter environment cleanup failed for adapter %s",
+                adapter_id,
+                exc_info=True,
+            )
+            self._report_cleanup_with_retry(worker_id, cleanup_id, success=False)
+            return
+        self._report_cleanup_with_retry(worker_id, cleanup_id, success=True)
+
+    def _report_cleanup_with_retry(self, worker_id: int, cleanup_id: int, *, success: bool) -> None:
+        """Bounded transport retries; never send filesystem error text."""
+        delay = 2.0
+        for attempt in range(1, REPORT_ATTEMPTS + 1):
+            try:
+                self._client.report_cleanup(worker_id, cleanup_id, success=success)
+                return
+            except ControlUnavailableError as error:
+                logger.warning(
+                    "cleanup report attempt %s/%s failed: %s",
+                    attempt,
+                    REPORT_ATTEMPTS,
+                    error,
+                )
+            except ClientError as error:
+                logger.error("cleanup report rejected by control: %s", error)
+                return
+            self._stop.wait(delay)
+            delay *= 2
+        logger.error("gave up reporting cleanup %s after %s attempts", cleanup_id, REPORT_ATTEMPTS)
 
     def _report_with_retry(self, worker_id: int, execution_id: int, result: dict[str, Any]) -> None:
         """Limited transport-level retries; not a business re-run."""

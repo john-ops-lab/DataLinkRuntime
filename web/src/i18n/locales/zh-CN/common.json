@@ -260,7 +260,8 @@
   },
   "confirm": {
     "discardChanges": "存在未保存的修改，确定放弃吗？",
-    "deleteAdapter": "确定删除适配器“{{name}}”吗？删除后它会从活跃列表移除。{{warning}}",
+    "deleteAdapter": "确定永久删除适配器“{{name}}”吗？此操作不可恢复，将删除执行历史、权限共享和代码凭据绑定，但不会删除 Credential 本体。{{warning}}",
+    "stopDeleteAdapter": "适配器“{{name}}”仍在接收或执行。确定先停止并请求 Worker 取消，再永久删除吗？Worker 离线或超时会安全阻断，不会强制清理。{{warning}}",
     "deleteCredential": "确定删除凭据 “{{name}}” 吗？引用它的绑定与包源将失效。",
     "deletePackageSource": "确定删除包源 “{{name}}” 吗？",
     "createCredential": "保存后密码、Token、密钥等敏感内容无法再次通过浏览器查看，请先妥善保存或复制。\n\n确定创建该凭据吗？"
@@ -279,6 +280,8 @@
     "versionListRefreshFailed": "刷新版本列表失败：{{error}}",
     "adapterRefreshFailed": "刷新适配器失败：{{error}}",
     "adapterSavedRefreshSummary": "适配器已保存，但{{details}}",
+    "deleteWaitingForWorker": "已请求 Worker 取消当前执行；收到 cancelled 后才会继续永久删除。",
+    "deleteWaitingTimeout": "仍未收到 Worker 的 cancelled 确认，已安全停止等待；未执行强制删除，请确认 Worker 状态后重试。",
     "discardWarning": "该适配器存在未保存的编辑器修改。",
     "deletedAdapterWarning": "删除后它会从活跃列表移除。{{warning}}"
   },

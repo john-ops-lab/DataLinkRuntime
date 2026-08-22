@@ -2,14 +2,24 @@
 
 import secrets as stdlib_secrets
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from dlr.control.models import Adapter, AdapterSchedule, AdapterVersion, AdapterWebhook, Worker
+from dlr.control.models import (
+    Adapter,
+    AdapterPermission,
+    AdapterSchedule,
+    AdapterVersion,
+    AdapterWebhook,
+    Execution,
+    Worker,
+    WorkerCleanupRequest,
+)
 from dlr.control.models.platform import AdapterCredentialBinding
 from dlr.control.schemas.adapter import (
     AdapterCreate,
@@ -19,6 +29,16 @@ from dlr.control.schemas.adapter import (
     VersionCreate,
 )
 from dlr.control.services import adapter_runtime, worker_availability
+from dlr.control.services.execution_cancellation import lock_active_execution, request_cancellation
+
+
+@dataclass(frozen=True)
+class AdapterDeleteResult:
+    """Outcome of one permanent-delete request."""
+
+    waiting_for_worker: bool = False
+    active_execution_id: int | None = None
+    cleanup_request_id: int | None = None
 
 
 def domain_error(
@@ -42,14 +62,16 @@ def domain_error(
 def list_adapters(session: Session) -> list[Adapter]:
     return list(
         session.scalars(
-            select(Adapter).order_by(Adapter.updated_at.desc(), Adapter.id.desc())
+            select(Adapter)
+            .where(Adapter.archived_at.is_(None))
+            .order_by(Adapter.updated_at.desc(), Adapter.id.desc())
         ).all()
     )
 
 
 def get_adapter(session: Session, adapter_id: int) -> Adapter:
     adapter = session.get(Adapter, adapter_id)
-    if adapter is None:
+    if adapter is None or adapter.archived_at is not None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     return adapter
 
@@ -94,26 +116,22 @@ def adapter_responses(session: Session, adapters: list[Adapter]) -> list[Adapter
 def _add_default_demo_binding(session: Session, adapter: Adapter) -> None:
     """Bind the M5.5.7 demo Credential to a brand-new Adapter.
 
-    Task Adapters get ``PASSWORD`` -> ``demo-passwd.password`` and Webhook
-    Adapters ``TOKEN`` -> ``demo-token.token``, mirroring the Starter Code
-    default. The binding is only created when the demo Credential exists, so
-    deployments without a Secret Store or with the demo rows deleted simply
-    start without bindings. The lazy import keeps the secrets service (which
-    imports ``domain_error`` from here) cycle-free.
+    Task Adapters get ``PASSWORD`` -> ``demo-passwd.password``. Webhook
+    invocation authentication is a separate Bearer Token configuration and
+    is never injected into ``context.secrets``. The binding is only created
+    when the demo Credential exists, so deployments without a Secret Store or
+    with the demo rows deleted simply start without bindings. The lazy import
+    keeps the secrets service (which imports ``domain_error`` from here)
+    cycle-free.
     """
     from dlr.control.services.secrets import (
         DEMO_PASSWORD_CREDENTIAL_NAME,
-        DEMO_TOKEN_CREDENTIAL_NAME,
         demo_credential_id,
     )
 
-    demo = {
-        "task": (DEMO_PASSWORD_CREDENTIAL_NAME, "PASSWORD", "password"),
-        "webhook": (DEMO_TOKEN_CREDENTIAL_NAME, "TOKEN", "token"),
-    }.get(adapter.adapter_type)
-    if demo is None:
+    if adapter.adapter_type != "task":
         return
-    demo_name, env_key, field = demo
+    demo_name, env_key, field = DEMO_PASSWORD_CREDENTIAL_NAME, "PASSWORD", "password"
     demo_id = demo_credential_id(session, demo_name)
     if demo_id is None:
         return
@@ -299,16 +317,133 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
     return adapter
 
 
-def delete_adapter(session: Session, adapter_id: int) -> None:
-    """Soft-delete an unlocked Adapter while retaining Revision/Execution facts."""
-    adapter = session.get(Adapter, adapter_id, with_for_update=True)
-    if adapter is None:
-        raise domain_error(404, "adapter_not_found", "Adapter not found")
-    if adapter.archived_at is not None:
+def _disable_trigger_for_delete(session: Session, adapter: Adapter) -> None:
+    """Stop Schedule/Webhook delivery as part of an explicit stop-delete."""
+    if adapter.adapter_type == "task":
+        schedule = session.scalar(
+            select(AdapterSchedule)
+            .where(AdapterSchedule.adapter_id == adapter.id)
+            .with_for_update()
+        )
+        if schedule is not None:
+            schedule.enabled = False
+            schedule.next_run_at = None
         return
-    adapter_runtime.require_runtime_unlocked(session, adapter)
-    adapter.archived_at = func.now()
+    webhook = session.scalar(
+        select(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter.id).with_for_update()
+    )
+    if webhook is not None:
+        webhook.enabled = False
+
+
+def _require_cleanup_workers(session: Session, adapter: Adapter) -> list[int]:
+    """Require live Workers for every private environment known to the Adapter.
+
+    The runtime Worker can change after a completed Execution. Collecting the
+    actual historical Workers before deleting Execution rows prevents an old
+    Worker-local environment from becoming unreachable cleanup residue.
+    """
+    if adapter.latest_version_id is None:
+        return []
+    worker_ids: set[int] = set()
+    if adapter.runtime_worker_id is not None:
+        worker_ids.add(adapter.runtime_worker_id)
+    worker_ids.update(
+        worker_id
+        for worker_id in session.scalars(
+            select(Execution.worker_id).where(
+                Execution.adapter_id == adapter.id,
+                Execution.worker_id.is_not(None),
+            )
+        ).all()
+        if worker_id is not None
+    )
+    for worker_id in sorted(worker_ids):
+        worker = session.get(Worker, worker_id)
+        if worker is None or not worker_availability.is_effectively_online(
+            worker, now=worker_availability.current_time(session)
+        ):
+            raise domain_error(
+                409,
+                "worker_offline",
+                "A Worker owning the Adapter's private environment is offline; "
+                "permanent deletion is safely blocked",
+            )
+    return sorted(worker_ids)
+
+
+def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> AdapterDeleteResult:
+    """Permanently delete one Adapter after safe runtime quiescence.
+
+    A pending Execution is cancelled inside this transaction. A running
+    Execution is only marked for cancellation and the request returns a
+    waiting result; the caller must retry after the Worker reports the
+    terminal ``cancelled`` state. No Control-side fallback can remove a live
+    Worker's private environment.
+    """
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    if adapter is None or adapter.archived_at is not None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+
+    active = lock_active_execution(session, adapter.id)
+    if active is not None:
+        if not stop:
+            adapter_runtime.require_runtime_unlocked(session, adapter)
+        if active.status == "running":
+            worker = session.get(Worker, active.worker_id) if active.worker_id is not None else None
+            if worker is None or not worker_availability.is_effectively_online(
+                worker, now=worker_availability.current_time(session)
+            ):
+                raise domain_error(
+                    409,
+                    "worker_offline",
+                    "The Worker running this Execution is offline; deletion is safely blocked",
+                    {"active_execution_id": active.id},
+                )
+            if stop:
+                _disable_trigger_for_delete(session, adapter)
+                request_cancellation(active)
+                session.commit()
+                return AdapterDeleteResult(
+                    waiting_for_worker=True,
+                    active_execution_id=active.id,
+                )
+            raise AssertionError("running execution must block deletion")
+        if stop:
+            _disable_trigger_for_delete(session, adapter)
+            request_cancellation(active)
+        else:
+            adapter_runtime.require_runtime_unlocked(session, adapter)
+    elif stop:
+        _disable_trigger_for_delete(session, adapter)
+    else:
+        adapter_runtime.require_runtime_unlocked(session, adapter)
+
+    cleanup_worker_ids = _require_cleanup_workers(session, adapter)
+
+    # Child rows are deleted explicitly so the permanent-delete contract is
+    # visible in the transaction and remains correct if a future FK changes
+    # from CASCADE to RESTRICT. Credential rows are intentionally untouched.
+    session.execute(delete(Execution).where(Execution.adapter_id == adapter.id))
+    session.execute(
+        delete(AdapterCredentialBinding).where(AdapterCredentialBinding.adapter_id == adapter.id)
+    )
+    session.execute(delete(AdapterPermission).where(AdapterPermission.adapter_id == adapter.id))
+    session.execute(delete(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter.id))
+    session.execute(delete(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter.id))
+    adapter.latest_version_id = None
+    session.flush()
+    session.execute(delete(AdapterVersion).where(AdapterVersion.adapter_id == adapter.id))
+    session.delete(adapter)
+    cleanup_request_id = None
+    for cleanup_worker_id in cleanup_worker_ids:
+        cleanup = WorkerCleanupRequest(worker_id=cleanup_worker_id, adapter_id=adapter.id)
+        session.add(cleanup)
+        session.flush()
+        if cleanup_request_id is None:
+            cleanup_request_id = cleanup.id
     session.commit()
+    return AdapterDeleteResult(cleanup_request_id=cleanup_request_id)
 
 
 def list_versions(session: Session, adapter_id: int) -> list[AdapterVersion]:
@@ -337,17 +472,7 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(adapter)
     adapter_runtime.require_runtime_unlocked(session, adapter)
-    if adapter.latest_version_id is None:
-        if adapter.adapter_type == "webhook":
-            webhook = session.scalar(
-                select(AdapterWebhook).where(AdapterWebhook.adapter_id == adapter.id)
-            )
-            if webhook is None or webhook.credential_id is None:
-                raise domain_error(
-                    409,
-                    "webhook_token_required",
-                    "Choose a Token Credential before the first Webhook Revision is saved",
-                )
+    if adapter.latest_version_id is None and adapter.adapter_type == "task":
         resolve_runtime_worker(
             session,
             adapter,

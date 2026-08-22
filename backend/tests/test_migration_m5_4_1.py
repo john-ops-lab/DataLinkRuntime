@@ -58,7 +58,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0022_m5_9_wave_c_adapter_acl"
+    assert revision == "0023_m5_11_wave_c_adapter_delete"
     assert {
         "adapter_type",
         "run_mode",

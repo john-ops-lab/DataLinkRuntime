@@ -13,7 +13,7 @@ from dlr.control.schemas.execution import (
     ProgressAck,
     ProgressReport,
 )
-from dlr.control.schemas.worker import WorkerRegister, WorkerResponse
+from dlr.control.schemas.worker import CleanupResult, WorkerRegister, WorkerResponse
 from dlr.control.security import require_business_principal, require_worker_token
 from dlr.control.services import execution as execution_service
 from dlr.control.services import worker as worker_service
@@ -85,6 +85,15 @@ def report_progress(
     """
     cancel_requested = execution_service.apply_progress(session, worker_id, execution_id, payload)
     return ProgressAck(cancel_requested=cancel_requested)
+
+
+@router.post("/api/workers/{worker_id}/cleanups/{cleanup_id}/result", status_code=204)
+def report_cleanup(
+    worker_id: int, cleanup_id: int, payload: CleanupResult, session: DbSession
+) -> Response:
+    """Acknowledge adapter-private filesystem cleanup without raw errors."""
+    worker_service.apply_cleanup_result(session, worker_id, cleanup_id, payload)
+    return Response(status_code=204)
 
 
 @admin_router.get("/api/workers", response_model=list[WorkerResponse])

@@ -13,6 +13,7 @@ from dlr.control.models.platform import (
 from dlr.control.models.schedule import AdapterSchedule
 from dlr.control.models.system import SystemSetting
 from dlr.control.models.webhook import AdapterWebhook
+from dlr.control.models.worker_cleanup import WorkerCleanupRequest
 
 __all__ = [
     "Adapter",
@@ -28,6 +29,7 @@ __all__ = [
     "PackageSource",
     "SystemSetting",
     "Worker",
+    "WorkerCleanupRequest",
     "User",
     "UserSession",
 ]

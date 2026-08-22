@@ -2057,6 +2057,15 @@ body {
   width: 100%;
 }
 
+.webhook-timeout-unit {
+  display: inline-flex;
+  align-items: center;
+  padding-inline: 8px;
+  border: 1px solid var(--dlr-border);
+  border-left: 0;
+  background: var(--dlr-surface-muted, rgba(128, 128, 128, 0.06));
+}
+
 .webhook-example {
   margin: 0;
   padding: 8px 12px;
@@ -2076,6 +2085,65 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 12px;
+}
+
+.adapter-settings-drawer .ant-drawer-body {
+  overflow-x: hidden;
+}
+
+.adapter-settings-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.adapter-settings-title > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adapter-settings-form {
+  width: 100%;
+  min-width: 0;
+}
+
+.adapter-settings-form .ant-alert-description {
+  min-width: 0;
+}
+
+.adapter-settings-form .ant-descriptions-item-content {
+  overflow-wrap: anywhere;
+}
+
+.adapter-settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
+}
+
+.adapter-settings-drawer .ant-drawer-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--dlr-surface, #fff);
+}
+
+@media (max-width: 560px) {
+  .adapter-settings-drawer .ant-drawer-footer {
+    padding-inline: 12px;
+  }
+
+  .adapter-settings-footer {
+    justify-content: stretch;
+  }
+
+  .adapter-settings-footer .ant-btn {
+    flex: 1;
+  }
 }
 
 .create-form-actions {

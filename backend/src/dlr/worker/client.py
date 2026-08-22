@@ -123,3 +123,12 @@ class ControlClient:
         )
         body = json.loads(raw) if raw else {}
         return bool(body.get("cancel_requested", False))
+
+    def report_cleanup(self, worker_id: int, cleanup_id: int, *, success: bool) -> None:
+        """Report only a cleanup outcome; filesystem details stay local."""
+        self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/cleanups/{cleanup_id}/result",
+            {"success": success},
+            expected=204,
+        )

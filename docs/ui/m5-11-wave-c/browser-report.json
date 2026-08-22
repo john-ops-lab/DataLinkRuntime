@@ -1,0 +1,385 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "wave": "M5.11 Wave C",
+  "browser": "chromium",
+  "base_url": "http://127.0.0.1:8892",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "narrow_viewport": 520,
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "records": [
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "height": 800,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-zh-CN-1280-settings.png",
+      "drawer": {
+        "width": 520,
+        "body": {
+          "clientHeight": 694,
+          "scrollHeight": 1215,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "height": 900,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-zh-CN-1440-settings.png",
+      "drawer": {
+        "width": 520,
+        "body": {
+          "clientHeight": 794,
+          "scrollHeight": 1215,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 1440,
+        "documentScrollWidth": 1440,
+        "bodyScrollWidth": 1440
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "height": 900,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-zh-CN-1680-settings.png",
+      "drawer": {
+        "width": 520,
+        "body": {
+          "clientHeight": 794,
+          "scrollHeight": 1215,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 1680,
+        "documentScrollWidth": 1680,
+        "bodyScrollWidth": 1680
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-zh-CN-1920-settings.png",
+      "drawer": {
+        "width": 520,
+        "body": {
+          "clientHeight": 974,
+          "scrollHeight": 1215,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 1920,
+        "documentScrollWidth": 1920,
+        "bodyScrollWidth": 1920
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 520,
+      "height": 780,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-zh-CN-520-settings.png",
+      "drawer": {
+        "width": 504,
+        "body": {
+          "clientHeight": 674,
+          "scrollHeight": 1215,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 520,
+        "documentScrollWidth": 520,
+        "bodyScrollWidth": 520
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "height": 800,
+      "scenario": "token-admin-webhook-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/webhook-zh-CN-1280-runtime-settings.png",
+      "visible_states": {
+        "bearer_only_hint": true,
+        "code_context_secrets_excluded": true,
+        "save_without_token_or_worker": true,
+        "no_worker_receive_gate": true,
+        "no_token_receive_gate_after_worker_save": true
+      },
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "height": 800,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-en-1280-settings.png",
+      "drawer": {
+        "width": 520,
+        "body": {
+          "clientHeight": 694,
+          "scrollHeight": 1287,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "height": 900,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-en-1440-settings.png",
+      "drawer": {
+        "width": 520,
+        "body": {
+          "clientHeight": 794,
+          "scrollHeight": 1287,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 1440,
+        "documentScrollWidth": 1440,
+        "bodyScrollWidth": 1440
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "height": 900,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-en-1680-settings.png",
+      "drawer": {
+        "width": 520,
+        "body": {
+          "clientHeight": 794,
+          "scrollHeight": 1287,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 1680,
+        "documentScrollWidth": 1680,
+        "bodyScrollWidth": 1680
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "height": 1080,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-en-1920-settings.png",
+      "drawer": {
+        "width": 520,
+        "body": {
+          "clientHeight": 974,
+          "scrollHeight": 1287,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 1920,
+        "documentScrollWidth": 1920,
+        "bodyScrollWidth": 1920
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 520,
+      "height": 780,
+      "scenario": "token-admin-adapter-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/admin-en-520-settings.png",
+      "drawer": {
+        "width": 504,
+        "body": {
+          "clientHeight": 674,
+          "scrollHeight": 1287,
+          "overflowX": "hidden",
+          "overflowY": "auto"
+        },
+        "footerVisible": true
+      },
+      "overflow": {
+        "innerWidth": 520,
+        "documentScrollWidth": 520,
+        "bodyScrollWidth": 520
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "height": 800,
+      "scenario": "token-admin-webhook-settings",
+      "screenshot": "docs/ui/m5-11-wave-c/browser/webhook-en-1280-runtime-settings.png",
+      "visible_states": {
+        "bearer_only_hint": true,
+        "code_context_secrets_excluded": true,
+        "save_without_token_or_worker": true,
+        "no_worker_receive_gate": true,
+        "no_token_receive_gate_after_worker_save": true
+      },
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [],
+      "unknown_requests": [],
+      "http_errors": []
+    }
+  ],
+  "interactions": {
+    "fixture": "disposable Compose fixtures only",
+    "credentialBindingTypes": [
+      "password",
+      "token",
+      "access_key",
+      "secret"
+    ],
+    "bindingRowCount": 4,
+    "adminActions": {
+      "unsavedCloseMessage": "设置中有未保存的修改，确定关闭并放弃吗？",
+      "permissionDrawerCount": 1,
+      "cloneHistoryText": "复制适配器\n\n将复制当前代码、依赖、运行配置（含单次执行超时）、凭据引用和运行节点。\n\n执行历史不会复制；新适配器创建后保持停止，不会自动运行。\n\n新适配器名称\n取 消\n复 制",
+      "deleteConfirmMessage": "确定永久删除适配器“Wave C Task Fixture mt4b0h6y”吗？此操作不可恢复，将删除执行历史、权限共享和代码凭据绑定，但不会删除 Credential 本体。"
+    },
+    "stopAndDelete": {
+      "confirm_message": "适配器“Wave C Task Fixture mt4b0h6y”仍在接收或执行。确定先停止并请求 Worker 取消，再永久删除吗？Worker 离线或超时会安全阻断，不会强制清理。",
+      "worker_cancelled_then_deleted": true,
+      "worker_offline_force_delete": false,
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280
+      },
+      "console_errors": [],
+      "page_errors": [],
+      "failed_requests": [],
+      "aborted_requests": [
+        "DELETE /api/adapters/20",
+        "GET /api/executions/9/events"
+      ],
+      "unknown_requests": []
+    }
+  },
+  "permission_records": []
+}

@@ -371,7 +371,7 @@ def test_patch_adapter_cannot_change_forbidden_fields(api_client: TestClient) ->
     assert body["latest_version_id"] == version["id"]
 
 
-def test_delete_adapter_soft_deletes_and_preserves_versions(api_client: TestClient) -> None:
+def test_delete_adapter_permanently_removes_versions(api_client: TestClient) -> None:
     created = create_adapter(api_client)
     version = save_version(api_client, created["id"])
 
@@ -379,10 +379,9 @@ def test_delete_adapter_soft_deletes_and_preserves_versions(api_client: TestClie
     assert response.status_code == 204
 
     deleted = api_client.get(f"/api/adapters/{created['id']}")
-    assert deleted.status_code == 200
-    assert deleted.json()["archived_at"] is not None
+    assert deleted.status_code == 404
     kept_version = api_client.get(f"/api/adapters/{created['id']}/versions/{version['id']}")
-    assert kept_version.status_code == 200
+    assert kept_version.status_code == 404
 
 
 def test_delete_adapter_not_found(api_client: TestClient) -> None:

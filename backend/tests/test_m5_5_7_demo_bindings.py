@@ -2,8 +2,9 @@
 access_key field standardization (access_key_id / access_key_secret).
 
 Covers the Issue contract: demo Credentials carry fresh random values (never
-fixed, never readable), new Task/Webhook Adapters default-bind
-PASSWORD/TOKEN to them, and legacy access_key ciphertext/bindings keep
+fixed, never readable), new Task Adapters default-bind PASSWORD to the demo
+Credential while Webhook entry authentication stays separate, and legacy access_key
+ciphertext/bindings keep
 working after the field rename without exposing plaintext.
 """
 
@@ -108,7 +109,7 @@ def test_new_task_default_binds_demo_passwd_password(
     assert bindings[0]["credential_type"] == "password"
 
 
-def test_new_webhook_default_binds_demo_token_token(
+def test_new_webhook_does_not_inject_entry_token_into_code_bindings(
     api_client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
     session = session_factory()
@@ -118,13 +119,9 @@ def test_new_webhook_default_binds_demo_token_token(
         session.close()
     adapter = create_adapter(api_client, name="demo-webhook", adapter_type="webhook")
     bindings = list_bindings(api_client, adapter["id"])
-    assert len(bindings) == 1
-    assert bindings[0]["env_key"] == "TOKEN"
-    assert bindings[0]["field"] == "token"
-    assert bindings[0]["credential_name"] == "demo-token"
-    assert bindings[0]["credential_type"] == "token"
-    # M5.4 Webhook lifecycle unchanged: the receiving Token Credential is
-    # still explicitly chosen by the user and never preset to the demo row.
+    assert bindings == []
+    # The receiving Token Credential is a separate Bearer entry credential,
+    # never preset and never injected into context.secrets.
     webhook = api_client.get(f"/api/adapters/{adapter['id']}/webhook")
     assert webhook.status_code == 200
     assert webhook.json()["credential_id"] is None

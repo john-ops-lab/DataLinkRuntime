@@ -895,6 +895,12 @@ export function AdapterConsole({
       void persistVersion();
       return;
     }
+    // Wave C: saving a Webhook Revision is independent from its receiving
+    // gate. The Worker and entry Bearer Token are checked only on Start.
+    if (selected.adapter_type === "webhook") {
+      void persistVersion();
+      return;
+    }
     const compatibleOnlineWorkers = workers.filter(
       (worker) => worker.status === "online" && worker.capabilities.includes(selected.language),
     );
@@ -1073,14 +1079,14 @@ export function AdapterConsole({
   async function handleUpdateDetails(
     nextName = name,
     nextDescription = description,
-  ) {
+  ): Promise<boolean> {
     if (!selected || !selectedCanEdit || busy) {
-      return;
+      return false;
     }
     // M5.5.9：重命名预检——trim 后与活跃同名拒绝。
     if (nextName.trim() !== "" && activeNameConflict(adapters, nextName, selected.id)) {
       messageApi.error(t("messages.nameConflict"));
-      return;
+      return false;
     }
     setBusy(true);
     try {
@@ -1101,31 +1107,72 @@ export function AdapterConsole({
         );
         setError(t("messages.adapterInfoSavedRefreshFailed"));
       }
+      return true;
     } catch (err) {
       if (err instanceof ApiError && err.code === "adapter_name_conflict") {
         messageApi.error(t("messages.nameConflict"));
       } else {
         setError(errorMessage(err));
       }
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleDelete() {
+  async function handleDelete(stopAndDelete = false) {
     if (!selected || !selectedCanManage || busy) {
       return;
     }
     const warning = dirty ? t("messages.discardWarning") : "";
     if (
-      !window.confirm(t("confirm.deleteAdapter", { name: selected.name, warning }))
+      !window.confirm(
+        t(stopAndDelete ? "confirm.stopDeleteAdapter" : "confirm.deleteAdapter", {
+          name: selected.name,
+          warning,
+        }),
+      )
     ) {
       return;
     }
     setBusy(true);
     try {
       setError(null);
-      await api.deleteAdapter(selected.id);
+      const deletion = await api.deleteAdapter(selected.id, stopAndDelete);
+      if (
+        deletion?.detail?.code === "adapter_delete_waiting_for_worker"
+      ) {
+        messageApi.info(t("messages.deleteWaitingForWorker"));
+        const adapterId = selected.id;
+        const deadline = Date.now() + 60_000;
+        let deleted = false;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          try {
+            const current = await api.getAdapter(adapterId);
+            if (current.running_execution_id != null) {
+              continue;
+            }
+            const completed = await api.deleteAdapter(adapterId, true);
+            if (completed?.detail?.code === "adapter_delete_waiting_for_worker") {
+              continue;
+            }
+            deleted = true;
+            break;
+          } catch (pollError) {
+            if (pollError instanceof ApiError && pollError.code === "adapter_not_found") {
+              deleted = true;
+            } else {
+              throw pollError;
+            }
+            break;
+          }
+        }
+        if (!deleted) {
+          setError(t("messages.deleteWaitingTimeout"));
+          return;
+        }
+      }
       starterLocaleByAdapter.current.delete(selected.id);
       requestGeneration.current += 1;
       setSelected(null);
@@ -1529,9 +1576,9 @@ export function AdapterConsole({
         contentReady={contentReady}
         onClose={() => setSettingsOpen(false)}
         onUpdate={(nextName, nextDescription) =>
-          void handleUpdateDetails(nextName, nextDescription)
+          handleUpdateDetails(nextName, nextDescription)
         }
-        onDelete={() => void handleDelete()}
+        onDelete={(stopAndDelete) => void handleDelete(stopAndDelete)}
         onClone={() => void handleClone()}
         accessLevel={selectedAccessLevel}
         onPermissionsChanged={() => void refreshAdapters()}

@@ -139,7 +139,7 @@ def test_put_requires_token_credential_and_never_returns_secret(api_client: Test
     assert "ciphertext" not in serialized
 
 
-def test_first_revision_requires_token_and_start_creates_no_execution(
+def test_first_revision_is_decoupled_from_entry_token_and_start_still_requires_it(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -152,12 +152,16 @@ def test_first_revision_requires_token_and_start_creates_no_execution(
         == 200
     )
 
-    missing_token = api_client.post(
+    saved_without_token = api_client.post(
         f"/api/adapters/{adapter['id']}/versions",
         json={"code": "def handle(context, input):\n    return input\n"},
     )
-    assert missing_token.status_code == 409
-    assert missing_token.json()["detail"]["code"] == "webhook_token_required"
+    assert saved_without_token.status_code == 201, saved_without_token.text
+    assert executions_of(session_factory, adapter["id"]) == []
+
+    start_without_token = put_webhook(api_client, adapter["id"], None, enabled=True)
+    assert start_without_token.status_code == 409
+    assert start_without_token.json()["detail"]["code"] == "webhook_token_required"
 
     credential = create_credential(
         api_client,

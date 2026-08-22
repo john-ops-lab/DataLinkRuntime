@@ -47,9 +47,9 @@ class Adapter(Base):
             "timeout_seconds BETWEEN 1 AND 86400",
             name="ck_adapters_timeout_seconds",
         ),
-        # M5.5.9: names must be unique among active Adapters only; soft-deleted
-        # names are reusable. This partial index is the database final defense
-        # for concurrent create/rename (service pre-checks are authoritative).
+        # M5.5.9 compatibility: legacy archived rows do not block names. New
+        # Adapter deletion is permanent; this partial index remains the final
+        # defense for any pre-Wave-C archived rows and concurrent create/rename.
         Index(
             "uq_adapters_active_name",
             "name",
@@ -102,7 +102,7 @@ class Adapter(Base):
         ForeignKey("workers.id", ondelete="SET NULL", name="fk_adapters_runtime_worker_id"),
         nullable=True,
     )
-    # Soft-delete marker; NULL means the Adapter is active.
+    # Legacy soft-delete marker; new Wave C deletes remove the row entirely.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
