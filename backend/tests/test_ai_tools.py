@@ -23,6 +23,7 @@ from test_ai import (
     assist_body,
     configure,
     create_adapter,
+    create_credential,
     fake_chat_response,
     save_version,
     valid_output,
@@ -174,6 +175,17 @@ def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_too
     directly, and the response stays shape-compatible (tool_calls empty)."""
     adapter = create_adapter(api_client, "tool-capable-zero")
     configure(api_client)
+    ima_credential = create_credential(
+        api_client,
+        name="tool-ima-credential",
+        credential_type="access_key",
+        fields={"access_key_id": "tool-ima-client", "access_key_secret": "tool-ima-key"},
+    )
+    configured = api_client.put(
+        "/api/knowledge-sources/ima",
+        json={"enabled": True, "credential_id": ima_credential["id"]},
+    )
+    assert configured.status_code == 200, configured.text
     captured: dict[str, object] = {}
 
     def fake_request(

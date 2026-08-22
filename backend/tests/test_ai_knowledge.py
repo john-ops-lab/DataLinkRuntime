@@ -398,8 +398,13 @@ def execute(
     *,
     session: Session | None = None,
     secret_values: list[str] | None = None,
+    knowledge_search_enabled: bool = True,
 ) -> tools_service.ToolExecution:
-    context = tools_service.ToolExecutionContext(session=session, secret_values=secret_values or [])
+    context = tools_service.ToolExecutionContext(
+        session=session,
+        secret_values=secret_values or [],
+        knowledge_search_enabled=knowledge_search_enabled,
+    )
     return tools_service.execute_tool_call(name, json.dumps(args), None, context=context)
 
 
@@ -908,10 +913,8 @@ def test_ima_token_type_credential_rejected(
     response = api_client.post(
         f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
     )
-    assert response.status_code == 200, response.text
-    summary = response.json()["tool_calls"][0]
-    assert summary["status"] == "error"
-    assert summary["error_code"] == knowledge.KS_CREDENTIAL_INVALID
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "ai_knowledge_unavailable"
 
 
 def test_redact_values_for_pre_resolution(ima_session: Session) -> None:
@@ -1146,6 +1149,12 @@ def test_assist_knowledge_unknown_source_and_recent_messages_shape(
 ) -> None:
     adapter = create_adapter(api_client, "knowledge-unknown-source")
     configure(api_client)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
 
     def fake_request(
         _method: str,
