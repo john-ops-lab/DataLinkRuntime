@@ -294,10 +294,21 @@ export interface KnowledgeSourceTestResult {
 
 export type AiProvider =
   | "openai"
+  | "anthropic"
+  | "gemini"
   | "deepseek"
+  | "qwen"
   | "kimi"
   | "minimax"
+  | "glm"
+  | "doubao"
+  | "hunyuan"
+  | "openrouter"
+  | "siliconflow"
+  | "ollama"
   | "custom_openai_compatible";
+
+export type AiProviderProtocol = "openai_compatible" | "anthropic" | "gemini";
 
 export type AiReasoningMode = "default" | "enabled" | "disabled";
 export type AiReasoningEffort = "low" | "medium" | "high" | "max" | "xhigh";
@@ -305,6 +316,7 @@ export type AiReasoningEffort = "low" | "medium" | "high" | "max" | "xhigh";
 /** Metadata-only global setting. The referenced Credential value never reaches the browser. */
 export interface AiModelSettingDraft {
   provider: AiProvider;
+  custom_provider_id?: number | null;
   base_url: string;
   model: string;
   credential_id: number | null;
@@ -317,6 +329,48 @@ export interface AiModelSetting extends AiModelSettingDraft {
   credential_name: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AiProviderCapability {
+  id: string;
+  name: string;
+  preset: boolean;
+  protocol: AiProviderProtocol;
+  base_url: string;
+  images_native: boolean;
+  files_native: boolean;
+  tools_supported: boolean;
+  reasoning_efforts: AiReasoningEffort[];
+}
+
+export interface AiCustomProvider {
+  id: number;
+  name: string;
+  protocol: AiProviderProtocol;
+  base_url: string;
+  credential_id: number | null;
+  credential_name: string | null;
+  images_native: boolean;
+  files_native: boolean;
+  tools_supported: boolean;
+  referenced: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AiCustomProviderDraft {
+  name: string;
+  protocol: AiProviderProtocol;
+  base_url: string;
+  credential_id: number | null;
+  images_native: boolean;
+  files_native: boolean;
+  tools_supported: boolean;
+}
+
+export interface AiKnowledgeCapability {
+  available: boolean;
+  reason: string | null;
 }
 
 export interface AiCandidate {

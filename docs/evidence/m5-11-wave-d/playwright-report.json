@@ -1,0 +1,737 @@
+{
+  "generated_at": "2026-08-22T13:49:20.360Z",
+  "base_url": "http://127.0.0.1:18884",
+  "synthetic_data_only": true,
+  "secret_values_recorded": false,
+  "widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "setup": {
+    "adapter_id": 1,
+    "adapter_version_id": 1,
+    "worker_id": 1,
+    "knowledge_capability": {
+      "available": false,
+      "reason": "knowledge_search_unconfigured"
+    },
+    "custom_provider_count": 1,
+    "custom_provider_metadata": [
+      {
+        "id": 1,
+        "name": "M511 Wave D Synthetic OpenAI Compatible",
+        "protocol": "openai_compatible",
+        "base_url": "http://127.0.0.1:18080",
+        "credential_name": null,
+        "images_native": false,
+        "files_native": false,
+        "tools_supported": false
+      }
+    ],
+    "locale_before": "zh-CN",
+    "locale_restored_to": "zh-CN"
+  },
+  "interactions": {
+    "initial_language": "DLR\nDataLinkRuntime\n控制服务正常\n运行节点 · 1/1 在线\n管理员 Token\n适配器\n新 建\n全部类型\n全部状态\nm511-wave-d-browser\n系统所有 · 管理员 / Token\n[任务] Python · 手动运行 · 空闲\n···\nAI 助手\n\n候选修改仅写入浏览器，不会自动保存、测试或运行。\n\nm511-wave-d-browser\nPython\n\n描述你的需求，可引用原代码片段。建议不要在代码中直接写入密码、Token、密钥等凭据，请使用「凭据绑定」功能，避免敏感凭据随代码发送给 AI。\n\n支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB\n附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。\n知识库检索\n添加附件\n发送\nm511-wave-d-browser\n任务\nPython\n已停止\n运行节点：worker-1\n设置\n保存\n运行一次\n编辑\n运行设置\n执行记录\n实时日志\n编辑器主题\n深色\n浅色\n跟随系统\n查看差异\n加入对话上下文\n1\n2\n3\ndef handle(context, input):\n    return input\nPython 依赖\n凭据绑定\nWorker 执行前会安装这些依赖。安装源需在“系统设置”中配置；如为离线/企业网络环境，可由管理员预置对应依赖源或缓存。不填写则平台不会额外检查依赖是否齐全，缺少依赖可能在运行时直接报错。",
+    "no_business_version_label": true,
+    "knowledge_default_checked": "false",
+    "knowledge_disabled_unconfigured": true,
+    "knowledge_capability": {
+      "available": false,
+      "reason": "knowledge_search_unconfigured"
+    },
+    "maximized_layout": "maximized",
+    "restored_layout": "sidebar",
+    "attachment_name_visible_before_send": [
+      "m511-wave-d-private-demo.txt"
+    ],
+    "privacy_notice_visible": true,
+    "attachment_body_redacted_before_send": true,
+    "attachment_name_visible_in_thread": [
+      " m511-wave-d-private-demo.txt"
+    ],
+    "attachment_body_redacted_in_thread": true,
+    "copy_button_count": 2,
+    "copy_button_aria_after_click": "已复制",
+    "long_session_user_messages": 13,
+    "long_session_assistant_messages": 13,
+    "long_session_scroll": {
+      "scroll_height": 2902,
+      "client_height": 510,
+      "scroll_top": 2392
+    },
+    "scrolled_up_scroll_top": 0,
+    "error_413_text": "附件请求超过网关上限（32 MiB），请减少或压缩附件后重试（错误码：ai_gateway_payload_too_large）",
+    "error_504_text": "模型服务响应超时（660 秒），请检查网络或稍后重试（错误码：ai_gateway_timeout）",
+    "zh_ai_model_settings": {
+      "provider_control": true,
+      "custom_provider_card": true,
+      "manual_model_input": true,
+      "body_has_synthetic_name": true
+    },
+    "locale_switched_to_en": true,
+    "en_ai_model_settings": {
+      "provider_control": true,
+      "custom_provider_card": true,
+      "manual_model_input": true,
+      "body_has_synthetic_name": true
+    },
+    "permission_capability_switch_disabled": true,
+    "permission_capability_switch_checked": "false",
+    "permission_api_forbidden_observed": true,
+    "assist_requests": [
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [
+          "m511-wave-d-private-demo.txt"
+        ],
+        "recent_message_count": 0
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 2
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 4
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 6
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "success",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "413",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      },
+      {
+        "mode": "504",
+        "knowledge_search_enabled": false,
+        "attachment_names": [],
+        "recent_message_count": 8
+      }
+    ],
+    "assist_default_knowledge_false": true,
+    "assist_attachment_filename_only": true
+  },
+  "layouts": [
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "screenshot": "/Users/king/.ao/data/worktrees/datalinkruntime/datalinkruntime-73/docs/evidence/m5-11-wave-d/assistant-zh-CN-1280.png",
+      "document_width": 1280,
+      "scroll_width": 1280,
+      "body_scroll_width": 1280,
+      "horizontal_overflow": false,
+      "panel_layout": "sidebar"
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "screenshot": "/Users/king/.ao/data/worktrees/datalinkruntime/datalinkruntime-73/docs/evidence/m5-11-wave-d/assistant-zh-CN-1440.png",
+      "document_width": 1440,
+      "scroll_width": 1440,
+      "body_scroll_width": 1440,
+      "horizontal_overflow": false,
+      "panel_layout": "sidebar"
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "screenshot": "/Users/king/.ao/data/worktrees/datalinkruntime/datalinkruntime-73/docs/evidence/m5-11-wave-d/assistant-zh-CN-1680.png",
+      "document_width": 1680,
+      "scroll_width": 1680,
+      "body_scroll_width": 1680,
+      "horizontal_overflow": false,
+      "panel_layout": "sidebar"
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "screenshot": "/Users/king/.ao/data/worktrees/datalinkruntime/datalinkruntime-73/docs/evidence/m5-11-wave-d/assistant-zh-CN-1920.png",
+      "document_width": 1920,
+      "scroll_width": 1920,
+      "body_scroll_width": 1920,
+      "horizontal_overflow": false,
+      "panel_layout": "sidebar"
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "screenshot": "/Users/king/.ao/data/worktrees/datalinkruntime/datalinkruntime-73/docs/evidence/m5-11-wave-d/assistant-en-1280.png",
+      "document_width": 1280,
+      "scroll_width": 1280,
+      "body_scroll_width": 1280,
+      "horizontal_overflow": false,
+      "panel_layout": "sidebar"
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "screenshot": "/Users/king/.ao/data/worktrees/datalinkruntime/datalinkruntime-73/docs/evidence/m5-11-wave-d/assistant-en-1440.png",
+      "document_width": 1440,
+      "scroll_width": 1440,
+      "body_scroll_width": 1440,
+      "horizontal_overflow": false,
+      "panel_layout": "sidebar"
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "screenshot": "/Users/king/.ao/data/worktrees/datalinkruntime/datalinkruntime-73/docs/evidence/m5-11-wave-d/assistant-en-1680.png",
+      "document_width": 1680,
+      "scroll_width": 1680,
+      "body_scroll_width": 1680,
+      "horizontal_overflow": false,
+      "panel_layout": "sidebar"
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "screenshot": "/Users/king/.ao/data/worktrees/datalinkruntime/datalinkruntime-73/docs/evidence/m5-11-wave-d/assistant-en-1920.png",
+      "document_width": 1920,
+      "scroll_width": 1920,
+      "body_scroll_width": 1920,
+      "horizontal_overflow": false,
+      "panel_layout": "sidebar"
+    }
+  ],
+  "api_requests": [
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/admin/verify"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions/1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/ai/knowledge-capability"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/attachment-capabilities"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/settings"
+    },
+    {
+      "method": "GET",
+      "path": "/api/credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/providers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/custom-providers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/settings"
+    },
+    {
+      "method": "GET",
+      "path": "/api/credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/providers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/custom-providers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions/1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/ai/knowledge-capability"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/attachment-capabilities"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/settings"
+    },
+    {
+      "method": "GET",
+      "path": "/api/credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/providers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/custom-providers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/settings"
+    },
+    {
+      "method": "GET",
+      "path": "/api/credentials"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/providers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/custom-providers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions/1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/credential-bindings"
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/ai/knowledge-capability"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ai/attachment-capabilities"
+    }
+  ],
+  "api_errors": [
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist",
+      "status": 413
+    },
+    {
+      "method": "POST",
+      "path": "/api/adapters/1/ai/assist",
+      "status": 504
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/ai/knowledge-capability",
+      "status": 403
+    }
+  ],
+  "unknown_api_requests": [],
+  "console_errors": [
+    "Failed to load resource: the server responded with a status of 413 (Payload Too Large)",
+    "Failed to load resource: the server responded with a status of 504 (Gateway Timeout)",
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)"
+  ],
+  "page_errors": [],
+  "generated_at_finished": "2026-08-22T13:49:30.422Z",
+  "browser_source_mode": "current worktree Vite dev server; relative API requests proxied by Playwright to isolated Compose Nginx token entry",
+  "api_boundary_base_url": "http://127.0.0.1:18882",
+  "expected_console_errors_for_state_probes": true
+}

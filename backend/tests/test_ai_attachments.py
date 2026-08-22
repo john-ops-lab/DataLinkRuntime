@@ -186,15 +186,40 @@ def test_attachment_capabilities_endpoint_exposes_stable_contract(
     by_provider = {item["provider"]: item for item in body["providers"]}
     assert set(by_provider) == {
         "openai",
+        "anthropic",
+        "gemini",
         "deepseek",
+        "qwen",
         "kimi",
         "minimax",
+        "glm",
+        "doubao",
+        "hunyuan",
+        "openrouter",
+        "siliconflow",
+        "ollama",
         "custom_openai_compatible",
     }
-    # Capability is explicit, never assumed: only openai images_native.
-    assert by_provider["openai"]["images_native"] is True
-    assert by_provider["openai"]["files_native"] is False
-    for name in ("deepseek", "kimi", "minimax", "custom_openai_compatible"):
+    # Capability is explicit, never inferred from a model name or URL. Native
+    # multimodal input is guaranteed only by the OpenAI, Anthropic and Gemini
+    # protocol adapters in this build; other OpenAI-compatible entries fall
+    # back to bounded server-side parsing unless a custom profile opts in.
+    for name in ("openai", "anthropic", "gemini"):
+        assert by_provider[name]["images_native"] is True
+        assert by_provider[name]["files_native"] is False
+    for name in (
+        "deepseek",
+        "qwen",
+        "kimi",
+        "minimax",
+        "glm",
+        "doubao",
+        "hunyuan",
+        "openrouter",
+        "siliconflow",
+        "ollama",
+        "custom_openai_compatible",
+    ):
         assert by_provider[name]["images_native"] is False
         assert by_provider[name]["files_native"] is False
 

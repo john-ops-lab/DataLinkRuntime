@@ -11,11 +11,21 @@ from dlr.control.ai.attachments import MAX_ATTACHMENTS, MAX_FILE_BYTES
 
 AiProvider = Literal[
     "openai",
+    "anthropic",
+    "gemini",
     "deepseek",
+    "qwen",
     "kimi",
     "minimax",
+    "glm",
+    "doubao",
+    "hunyuan",
+    "openrouter",
+    "siliconflow",
+    "ollama",
     "custom_openai_compatible",
 ]
+AiProviderProtocol = Literal["openai_compatible", "anthropic", "gemini"]
 ReasoningMode = Literal["default", "enabled", "disabled"]
 ReasoningEffort = Literal["low", "medium", "high", "max", "xhigh"]
 
@@ -102,6 +112,7 @@ class AiProviderDraft(_StrictSchema):
     provider: AiProvider
     base_url: str
     credential_id: int | None = None
+    custom_provider_id: int | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -134,6 +145,77 @@ class AiSettingResponse(AiSettingDraft):
     credential_name: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class AiProviderCapability(_StrictSchema):
+    """Non-secret provider catalog metadata used by the settings UI."""
+
+    id: str
+    name: str
+    preset: bool
+    protocol: AiProviderProtocol
+    base_url: str
+    images_native: bool
+    files_native: bool
+    tools_supported: bool
+    reasoning_efforts: list[ReasoningEffort] = Field(default_factory=list)
+
+
+class AiProvidersResponse(_StrictSchema):
+    providers: list[AiProviderCapability]
+
+
+class AiCustomProviderDraft(_StrictSchema):
+    """One administrator-owned provider profile; no credential value is accepted."""
+
+    name: str
+    protocol: AiProviderProtocol
+    base_url: str
+    credential_id: int | None = None
+    images_native: bool = False
+    files_native: bool = False
+    tools_supported: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unicode_surrogates(cls, value: object) -> object:
+        return _reject_request_surrogates(value)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> str:
+        return _non_blank(value, "name", 128)
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def validate_base_url(cls, value: object) -> str:
+        return _base_url(value)
+
+
+class AiCustomProviderResponse(AiCustomProviderDraft):
+    id: int
+    credential_name: str | None = None
+    referenced: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class AiCustomProvidersResponse(_StrictSchema):
+    providers: list[AiCustomProviderResponse]
+
+
+class AiCustomProviderTestRequest(_StrictSchema):
+    model: str
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def normalize_model(cls, value: object) -> str:
+        return _non_blank(value, "model", 256)
+
+
+class AiKnowledgeCapabilityResponse(_StrictSchema):
+    available: bool
+    reason: str | None = None
 
 
 class AiModelsResponse(_StrictSchema):
@@ -390,6 +472,9 @@ class AiAssistRequest(_StrictSchema):
     # M5.7 Wave B2: request-only attachments (base64 bodies). Omitted or
     # empty keeps the pre-attachment request contract byte-for-byte.
     attachments: list[AiAttachment] = Field(default_factory=list)
+    # Knowledge search is deliberately opt-in. The value is frozen by the
+    # browser per round/retry and revalidated against ACL/config server-side.
+    knowledge_search_enabled: bool = False
 
     @model_validator(mode="after")
     def validate_snippet_count(self) -> "AiAssistRequest":

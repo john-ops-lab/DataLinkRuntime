@@ -14,23 +14,38 @@ from dlr.control.ai import attachments as attachments_service
 from dlr.control.ai import knowledge as knowledge_service
 from dlr.control.ai import providers
 from dlr.control.ai import tools as tools_service
-from dlr.control.models import AdapterCredentialBinding, AdapterVersion, AiModelSetting, Credential
+from dlr.control.models import (
+    AdapterCredentialBinding,
+    AdapterVersion,
+    AiCustomProvider,
+    AiModelSetting,
+    Credential,
+)
 from dlr.control.schemas.ai import (
     AiAssistRequest,
     AiAssistResponse,
     AiAttachmentCapabilitiesResponse,
     AiAttachmentLimits,
     AiConnectionTestResponse,
+    AiCustomProviderDraft,
+    AiCustomProviderResponse,
+    AiCustomProvidersResponse,
+    AiCustomProviderTestRequest,
+    AiKnowledgeCapabilityResponse,
     AiModelOutput,
     AiModelsResponse,
     AiProviderAttachmentCapability,
+    AiProviderCapability,
     AiProviderDraft,
+    AiProvidersResponse,
     AiSettingDraft,
     AiSettingResponse,
     AiToolCallSummary,
     contains_unicode_surrogate,
 )
 from dlr.control.services import adapter as adapter_service
+from dlr.control.services import knowledge_source as knowledge_source_service_config
+from dlr.control.services import locale as locale_service
 from dlr.control.services import secrets as secrets_service
 from dlr.control.services.adapter import domain_error
 
@@ -95,6 +110,19 @@ _PROVIDER_ERRORS: dict[str, tuple[int, str]] = {
     "ai_tool_result_too_large": (
         502,
         "AI 工具结果累计超过大小上限：已安全停止，请缩小查询范围后重试",
+    ),
+    "ai_knowledge_unavailable": (
+        409,
+        "知识库检索当前不可用：请确认管理员已启用并配置可用的知识源",
+    ),
+    "ai_knowledge_disabled": (
+        422,
+        "本轮未启用知识库检索：请通过对话框中的开关重新发送",
+    ),
+    "ai_custom_provider_not_found": (404, "自定义模型服务不存在，请刷新设置后重试"),
+    "ai_custom_provider_referenced": (
+        409,
+        "自定义模型服务仍被当前 AI 设置引用，请先切换模型服务后再删除",
     ),
 }
 
@@ -183,10 +211,14 @@ def _resolve_api_key(session: Session, credential_id: int | None) -> str | None:
     return token
 
 
-def _validate_reasoning(data: AiSettingDraft) -> None:
+def _validate_reasoning(
+    data: AiSettingDraft, adapter: providers.ProviderAdapter | None = None
+) -> None:
     try:
         providers.validate_reasoning(
-            providers.get_provider(data.provider), data.reasoning_mode, data.reasoning_effort
+            adapter or providers.get_provider(data.provider),
+            data.reasoning_mode,
+            data.reasoning_effort,
         )
     except providers.AiProviderError as error:
         _raise_provider_error(error)
@@ -229,6 +261,41 @@ def get_setting(session: Session) -> AiModelSetting | None:
     return session.get(AiModelSetting, _SINGLETON_ID)
 
 
+def _custom_provider(session: Session, provider_id: int) -> AiCustomProvider:
+    provider = session.get(AiCustomProvider, provider_id)
+    if provider is None:
+        raise domain_error(
+            404,
+            "ai_custom_provider_not_found",
+            "Custom AI provider not found",
+        )
+    return provider
+
+
+def _adapter_for_setting(session: Session, data: AiSettingDraft) -> providers.ProviderAdapter:
+    if data.provider != "custom_openai_compatible" or data.custom_provider_id is None:
+        if data.custom_provider_id is not None:
+            raise domain_error(
+                422, "ai_custom_provider_invalid", "Custom provider reference invalid"
+            )
+        return providers.get_provider(data.provider)
+    custom = _custom_provider(session, data.custom_provider_id)
+    return providers.custom_provider_adapter(
+        custom.protocol,  # type: ignore[arg-type]
+        images_native=custom.images_native,
+        files_native=custom.files_native,
+        tools_supported=custom.tools_supported,
+    )
+
+
+def _validate_setting(session: Session, data: AiSettingDraft) -> providers.ProviderAdapter:
+    adapter = _adapter_for_setting(session, data)
+    _validate_base_url(data.base_url)
+    _validate_reasoning(data, adapter)
+    _resolve_api_key(session, data.credential_id)
+    return adapter
+
+
 def setting_response(session: Session, setting: AiModelSetting) -> AiSettingResponse:
     credential_name = None
     if setting.credential_id is not None:
@@ -240,6 +307,7 @@ def setting_response(session: Session, setting: AiModelSetting) -> AiSettingResp
         base_url=setting.base_url,
         model=setting.model,
         credential_id=setting.credential_id,
+        custom_provider_id=setting.custom_provider_id,
         credential_name=credential_name,
         reasoning_mode=setting.reasoning_mode,  # type: ignore[arg-type]
         reasoning_effort=setting.reasoning_effort,  # type: ignore[arg-type]
@@ -250,9 +318,7 @@ def setting_response(session: Session, setting: AiModelSetting) -> AiSettingResp
 
 def save_setting(session: Session, data: AiSettingDraft) -> AiModelSetting:
     """Atomically create or replace the singleton configuration."""
-    _validate_base_url(data.base_url)
-    _validate_reasoning(data)
-    _resolve_api_key(session, data.credential_id)
+    _validate_setting(session, data)
     normalized_base_url = providers.normalize_base_url(data.base_url)
     statement = insert(AiModelSetting).values(
         id=_SINGLETON_ID,
@@ -260,6 +326,7 @@ def save_setting(session: Session, data: AiSettingDraft) -> AiModelSetting:
         base_url=normalized_base_url,
         model=data.model,
         credential_id=data.credential_id,
+        custom_provider_id=data.custom_provider_id,
         reasoning_mode=data.reasoning_mode,
         reasoning_effort=data.reasoning_effort,
     )
@@ -270,6 +337,7 @@ def save_setting(session: Session, data: AiSettingDraft) -> AiModelSetting:
             "base_url": statement.excluded.base_url,
             "model": statement.excluded.model,
             "credential_id": statement.excluded.credential_id,
+            "custom_provider_id": statement.excluded.custom_provider_id,
             "reasoning_mode": statement.excluded.reasoning_mode,
             "reasoning_effort": statement.excluded.reasoning_effort,
             "updated_at": statement.excluded.created_at,
@@ -286,9 +354,17 @@ def save_setting(session: Session, data: AiSettingDraft) -> AiModelSetting:
 
 def refresh_models(session: Session, data: AiProviderDraft) -> AiModelsResponse:
     _validate_base_url(data.base_url)
+    setting_data = AiSettingDraft(
+        provider=data.provider,
+        base_url=data.base_url,
+        model="manual-model",
+        credential_id=data.credential_id,
+        custom_provider_id=data.custom_provider_id,
+    )
+    adapter = _adapter_for_setting(session, setting_data)
     api_key = _resolve_api_key(session, data.credential_id)
     try:
-        models = providers.fetch_models(data.provider, data.base_url, api_key)
+        models = providers.fetch_models(data.provider, data.base_url, api_key, adapter)
     except providers.AiProviderError as error:
         _raise_provider_error(error)
     _reject_secret_reflection(models, api_key)
@@ -296,8 +372,7 @@ def refresh_models(session: Session, data: AiProviderDraft) -> AiModelsResponse:
 
 
 def test_connection(session: Session, data: AiSettingDraft) -> AiConnectionTestResponse:
-    _validate_base_url(data.base_url)
-    _validate_reasoning(data)
+    adapter = _validate_setting(session, data)
     api_key = _resolve_api_key(session, data.credential_id)
     messages: list[providers.JsonObject] = [
         {
@@ -307,7 +382,7 @@ def test_connection(session: Session, data: AiSettingDraft) -> AiConnectionTestR
         {"role": "user", "content": "Reply with OK."},
     ]
     try:
-        providers.chat(data, api_key, messages, structured=False)
+        providers.chat(data, api_key, messages, structured=False, adapter=adapter)
     except providers.AiProviderError as error:
         _raise_provider_error(error)
     return AiConnectionTestResponse(ok=True, message="模型服务返回了可解析的最小响应")
@@ -319,9 +394,161 @@ def _setting_draft(setting: AiModelSetting) -> AiSettingDraft:
         base_url=setting.base_url,
         model=setting.model,
         credential_id=setting.credential_id,
+        custom_provider_id=setting.custom_provider_id,
         reasoning_mode=setting.reasoning_mode,  # type: ignore[arg-type]
         reasoning_effort=setting.reasoning_effort,  # type: ignore[arg-type]
     )
+
+
+def provider_catalog() -> AiProvidersResponse:
+    """Return the fixed preset catalog and explicit protocol capabilities."""
+    return AiProvidersResponse(
+        providers=[
+            AiProviderCapability(
+                id=provider,
+                name=providers.PROVIDER_DISPLAY_NAMES[provider],
+                preset=True,
+                protocol=adapter.protocol,
+                base_url=providers.PROVIDER_DEFAULT_BASE_URLS[provider],
+                images_native=adapter.images_native,
+                files_native=adapter.files_native,
+                tools_supported=adapter.tools_supported,
+                reasoning_efforts=sorted(adapter.reasoning_efforts),
+            )
+            for provider, adapter in providers.PROVIDERS.items()
+        ]
+    )
+
+
+def _custom_provider_response(
+    session: Session, provider: AiCustomProvider
+) -> AiCustomProviderResponse:
+    credential_name = None
+    if provider.credential_id is not None:
+        credential = session.get(Credential, provider.credential_id)
+        credential_name = credential.name if credential is not None else None
+    referenced = (
+        session.scalar(
+            select(AiModelSetting.id).where(AiModelSetting.custom_provider_id == provider.id)
+        )
+        is not None
+    )
+    return AiCustomProviderResponse(
+        id=provider.id,
+        name=provider.name,
+        protocol=provider.protocol,  # type: ignore[arg-type]
+        base_url=provider.base_url,
+        credential_id=provider.credential_id,
+        credential_name=credential_name,
+        images_native=provider.images_native,
+        files_native=provider.files_native,
+        tools_supported=provider.tools_supported,
+        referenced=referenced,
+        created_at=provider.created_at,
+        updated_at=provider.updated_at,
+    )
+
+
+def list_custom_providers(session: Session) -> AiCustomProvidersResponse:
+    rows = session.scalars(select(AiCustomProvider).order_by(AiCustomProvider.name.asc())).all()
+    return AiCustomProvidersResponse(
+        providers=[_custom_provider_response(session, row) for row in rows]
+    )
+
+
+def _validate_custom_provider(session: Session, data: AiCustomProviderDraft) -> None:
+    _validate_base_url(data.base_url)
+    _resolve_api_key(session, data.credential_id)
+
+
+def create_custom_provider(
+    session: Session, data: AiCustomProviderDraft
+) -> AiCustomProviderResponse:
+    _validate_custom_provider(session, data)
+    duplicate = session.scalar(
+        select(AiCustomProvider.id).where(AiCustomProvider.name == data.name)
+    )
+    if duplicate is not None:
+        raise domain_error(
+            409, "ai_custom_provider_name_taken", "Custom provider name is already used"
+        )
+    provider = AiCustomProvider(**data.model_dump())
+    session.add(provider)
+    session.commit()
+    session.refresh(provider)
+    return _custom_provider_response(session, provider)
+
+
+def update_custom_provider(
+    session: Session, provider_id: int, data: AiCustomProviderDraft
+) -> AiCustomProviderResponse:
+    provider = _custom_provider(session, provider_id)
+    _validate_custom_provider(session, data)
+    duplicate = session.scalar(
+        select(AiCustomProvider.id).where(
+            AiCustomProvider.name == data.name, AiCustomProvider.id != provider_id
+        )
+    )
+    if duplicate is not None:
+        raise domain_error(
+            409, "ai_custom_provider_name_taken", "Custom provider name is already used"
+        )
+    for key, value in data.model_dump().items():
+        setattr(provider, key, value)
+    session.commit()
+    session.refresh(provider)
+    return _custom_provider_response(session, provider)
+
+
+def delete_custom_provider(session: Session, provider_id: int) -> None:
+    provider = _custom_provider(session, provider_id)
+    if (
+        session.scalar(
+            select(AiModelSetting.id).where(AiModelSetting.custom_provider_id == provider_id)
+        )
+        is not None
+    ):
+        raise domain_error(
+            409,
+            "ai_custom_provider_referenced",
+            "Custom provider is referenced by the active AI setting",
+        )
+    session.delete(provider)
+    session.commit()
+
+
+def test_custom_provider(
+    session: Session, provider_id: int, data: AiCustomProviderTestRequest
+) -> AiConnectionTestResponse:
+    provider = _custom_provider(session, provider_id)
+    draft = AiSettingDraft(
+        provider="custom_openai_compatible",
+        custom_provider_id=provider.id,
+        base_url=provider.base_url,
+        model=data.model,
+        credential_id=provider.credential_id,
+    )
+    adapter = _validate_setting(session, draft)
+    api_key = _resolve_api_key(session, provider.credential_id)
+    try:
+        providers.chat(
+            draft,
+            api_key,
+            [
+                {"role": "system", "content": "This is a connection test. Reply with OK."},
+                {"role": "user", "content": "Reply with OK."},
+            ],
+            structured=False,
+            adapter=adapter,
+        )
+    except providers.AiProviderError as error:
+        _raise_provider_error(error)
+    return AiConnectionTestResponse(ok=True, message="模型服务返回了可解析的最小响应")
+
+
+def knowledge_capability(session: Session) -> AiKnowledgeCapabilityResponse:
+    available, reason = knowledge_source_service_config.knowledge_search_capability(session)
+    return AiKnowledgeCapabilityResponse(available=available, reason=reason)
 
 
 def _base_version(
@@ -366,11 +593,13 @@ def _assist_messages(
     session: Session,
     adapter_id: int,
     language: str,
+    system_locale: str,
     payload: AiAssistRequest,
     *,
     parsed_attachments: list[attachments_service.ParsedText] | None = None,
     native_images: list[attachments_service.NativeImage] | None = None,
     tools_enabled: bool = False,
+    knowledge_search_enabled: bool = False,
 ) -> list[providers.JsonObject]:
     context = {
         "adapter_id": adapter_id,
@@ -429,20 +658,23 @@ def _assist_messages(
     # Providers without tool capability keep the exact pre-C1 prompt (and a
     # payload without the ``tools`` key) byte-for-byte.
     if tools_enabled:
+        knowledge_tools = ""
+        if knowledge_search_enabled:
+            knowledge_tools = (
+                " Read-only knowledge sources such as Tencent ima are also available: "
+                "first call list_knowledge_bases, then pass the returned knowledge_base_id "
+                "to search_knowledge and the returned media_id to read_knowledge."
+            )
         tool_instructions = (
             "You may call DLR's registered read-only tools when you need the "
             "app-shipped DLR platform help documentation (dlr_docs_list / "
-            "dlr_docs_search / dlr_docs_read) or read-only knowledge sources "
-            "such as Tencent ima (list_knowledge_bases / search_knowledge / "
-            "read_knowledge). For knowledge sources, first call "
-            "list_knowledge_bases, then pass the returned knowledge_base_id "
-            "to search_knowledge and the returned media_id to read_knowledge. "
-            "Tool calls are executed by DLR with "
-            "fixed bounds; arguments and results are sanitized server-side. Only "
-            "call the registered read-only tools; never invent, chain or repeat "
-            "tool calls beyond what the current request needs, and never attempt "
-            "write operations. After any tool calls you must still return exactly "
-            "one final JSON object matching the schema below.\n"
+            "dlr_docs_search / dlr_docs_read)."
+            + knowledge_tools
+            + " Tool calls are executed by DLR with fixed bounds; arguments and "
+            "results are sanitized server-side. Only call the registered read-only "
+            "tools; never invent, chain or repeat tool calls beyond what the current "
+            "request needs, and never attempt write operations. After any tool calls "
+            "you must still return exactly one final JSON object matching the schema below.\n"
         )
         no_tool_phrase = ""
     else:
@@ -454,15 +686,18 @@ def _assist_messages(
         f"{no_tool_phrase}or reasoning. "
         "The object must strictly match this JSON Schema:\n"
         f"{json.dumps(output_schema, ensure_ascii=False, sort_keys=True)}\n"
+        f"Use natural language matching the server system locale {system_locale}; keep code "
+        "identifiers, configuration keys and protocol names exact.\n"
         "A non-null candidate is a complete code snapshot. Never include or change language, "
         "adapter_type, runtime_worker_id, or any lifecycle action. The Candidate is code-only: "
         "requirements, runtime_config, Credential Binding, Worker/Schedule/Webhook and every "
         "other runtime setting are manually managed by the administrator and must never be "
-        "changed by AI. If a legacy Provider contract still returns requirements or "
-        "runtime_config, omit those fields; if you include them, echo the current Working Copy "
-        "values exactly and never propose a difference. If the code needs a dependency, runtime "
-        "parameter or Secret, explain that manual configuration in message and use "
-        "required_secret_keys only as a non-binding hint. Greeting, explanation, log analysis, "
+        "changed by AI. If a legacy Provider contract "
+        "returns requirements or runtime_config, omit those fields; if you include them, echo "
+        "the current Working Copy values exactly and never propose a difference. Only when the "
+        "requested code specifically needs a dependency, runtime parameter or Secret, explain "
+        "that manual configuration in message and use required_secret_keys only as a non-binding "
+        "hint. Greeting, explanation, log analysis, "
         "clarification and advice that do not change the Working Copy must return candidate:null "
         "inside this same strict envelope; never return bare prose or Markdown. "
         "Never request, invent, or reveal secret values; use only "
@@ -623,8 +858,7 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
     if setting is None:
         raise domain_error(409, "ai_not_configured", "AI model is not configured")
     draft = _setting_draft(setting)
-    _validate_base_url(draft.base_url)
-    _validate_reasoning(draft)
+    provider_adapter = _validate_setting(session, draft)
     api_key = _resolve_api_key(session, draft.credential_id)
     parsed_attachments: list[attachments_service.ParsedText] = []
     native_images: list[attachments_service.NativeImage] = []
@@ -636,7 +870,6 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
         # per-file cap) so the context stays deterministic and bounded
         # regardless of file count. Decoded sizes accumulate against the total
         # byte limit in request order.
-        provider_adapter = providers.get_provider(draft.provider)
         char_budget = min(
             attachments_service.MAX_PARSED_CHARS_PER_FILE,
             attachments_service.MAX_PARSED_TOTAL_CHARS // len(payload.attachments),
@@ -660,17 +893,29 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
                     parsed_attachments.append(result)
         except attachments_service.AttachmentError as error:
             _raise_attachment_error(error)
-    tools_enabled = providers.get_provider(draft.provider).tools_supported
+    knowledge_search_enabled = payload.knowledge_search_enabled
+    if knowledge_search_enabled:
+        available, _reason = knowledge_source_service_config.knowledge_search_capability(session)
+        if not available:
+            _raise_tool_error("ai_knowledge_unavailable")
+    tools_enabled = provider_adapter.tools_supported
+    system_locale = locale_service.get_system_locale(session)
     messages = _assist_messages(
         session,
         adapter.id,
         adapter.language,
+        system_locale,
         payload,
         parsed_attachments=parsed_attachments,
         native_images=native_images,
         tools_enabled=tools_enabled,
+        knowledge_search_enabled=knowledge_search_enabled,
     )
-    tools_payload = tools_service.tools_payload() if tools_enabled else None
+    tools_payload = (
+        tools_service.tools_payload(include_knowledge=knowledge_search_enabled)
+        if tools_enabled
+        else None
+    )
     # M5.7 Wave C2: per-execution tool context. The request's DB session lets
     # knowledge handlers resolve DLR Credentials inside the Secret Store;
     # ``secret_values`` collects the resolved knowledge-source credential
@@ -680,8 +925,9 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
     tool_context = tools_service.ToolExecutionContext(
         session=session,
         secret_values=list(
-            knowledge_service.redact_values_for("ima", session) if tools_enabled else ()
+            knowledge_service.redact_values_for("ima", session) if knowledge_search_enabled else ()
         ),
+        knowledge_search_enabled=knowledge_search_enabled,
     )
     executed_tools: list[AiToolCallSummary] = []
     total_tool_calls = 0
@@ -695,6 +941,7 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
                 messages,
                 tools=tools_payload,
                 image_input=bool(native_images),
+                adapter=provider_adapter,
             )
         except providers.AiProviderError as error:
             _raise_provider_error(error)

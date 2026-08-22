@@ -1097,6 +1097,7 @@ knowledge = request(
         "working_copy": working_copy,
         "recent_messages": [],
         "base_version_id": ai_revision["id"],
+        "knowledge_search_enabled": True,
     },
 )
 assert knowledge["candidate"] is not None, knowledge

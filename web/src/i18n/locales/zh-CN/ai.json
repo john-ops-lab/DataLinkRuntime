@@ -30,6 +30,17 @@
     "regenerateAria": "重新生成该回复（复用发送时的原始代码与上下文）",
     "retry": "重试",
     "retryAria": "重试该轮请求（复用发送时的原始代码、上下文与附件）",
+    "copy": "复制消息",
+    "copied": "已复制",
+    "copyFailed": "复制失败，请手动选择文本",
+    "knowledgeSearch": {
+      "label": "知识库检索",
+      "available": "本轮允许使用已配置知识源的只读检索工具",
+      "unavailable": "知识库未启用或尚未配置；不会访问外部知识源",
+      "loading": "正在检查知识库能力…",
+      "disabledReason": "知识库检索默认关闭；开启后仅对本轮生效",
+      "notConfigured": "知识源未配置，管理员可在设置中心配置；不会发送请求"
+    },
     "attachments": {
       "add": "添加附件",
       "addAria": "添加附件：支持图片（PNG / JPEG / WebP）、PDF、DOCX 与文本 / 代码文件",
@@ -114,7 +125,10 @@
       "close": "关闭"
     },
     "errors": {
-      "requestFailed": "AI 请求失败"
+      "requestFailed": "AI 请求失败",
+      "gatewayPayloadTooLarge": "附件请求超过网关上限（32 MiB），请减少或压缩附件后重试",
+      "gatewayTimeout": "模型服务响应超时（660 秒），请检查网络或稍后重试",
+      "knowledgeUnavailable": "本轮知识库检索不可用：请确认管理员已配置可用知识源"
     }
   },
   "model": {
@@ -124,12 +138,14 @@
       "label": "模型服务商",
       "custom": "自定义 OpenAI 兼容服务"
     },
+    "customOption": "自定义：{{name}}",
     "baseUrl": "基础 URL",
     "baseUrlHint": "填写模型服务根 URL；末尾带或不带 /v1 均可。",
     "credential": "API Key 凭据（可选，仅 token 类型）",
     "credentialPlaceholder": "无鉴权 / 选择 token 凭据",
     "modelId": "模型 ID",
     "modelPlaceholder": "可从模型列表选择，也可手工输入",
+    "modelSearch": "从已发现模型中选择",
     "refreshModels": "刷新模型",
     "refreshHint": "刷新失败不影响手工输入；刷新成功也不会自动切换已保存模型 ID。",
     "refreshEmpty": "刷新成功，但未发现可用模型；可手工填写模型 ID。",
@@ -155,6 +171,24 @@
     "testSuccess": "连接测试通过：模型返回可解析的最小响应。",
     "testFailed": "连接测试失败；请检查模型服务配置与网络。",
     "testFailedDetail": "连接测试失败：{{detail}}",
-    "requestFailed": "AI 设置请求失败"
+    "requestFailed": "AI 设置请求失败",
+    "customProviders": "自定义模型服务",
+    "customProvidersHint": "可保存多个自定义服务。协议和能力必须与服务真实契约一致；凭据只引用 token 元数据。",
+    "customName": "服务名称",
+    "customImages": "原生图片",
+    "customFiles": "原生文件",
+    "customTools": "只读工具调用",
+    "customCreate": "新增服务",
+    "customUpdate": "保存服务",
+    "customEdit": "编辑",
+    "customTest": "测试",
+    "customDelete": "删除",
+    "customCancel": "取消",
+    "customDeleteConfirm": "确认删除这个自定义模型服务？",
+    "customDeleteReferenced": "该服务仍被当前 AI 设置引用，服务端会拒绝删除。",
+    "customReferenced": "当前设置正在引用",
+    "customRequired": "服务名称和基础 URL 不能为空",
+    "customSaved": "自定义模型服务已保存",
+    "customDeleted": "自定义模型服务已删除"
   }
 }

@@ -23,6 +23,7 @@ from test_ai import (
     assist_body,
     configure,
     create_adapter,
+    create_credential,
     fake_chat_response,
     save_version,
     valid_output,
@@ -139,12 +140,11 @@ def test_assist_without_tool_capability_keeps_pre_c1_payload_and_prompt(
     assert response.json()["tool_calls"] == []
 
 
-def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_tools(
+def test_assist_knowledge_retrieval_is_default_off(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Zero tool calls: the payload carries the whitelist, the model answers
-    directly, and the response stays shape-compatible (tool_calls empty)."""
-    adapter = create_adapter(api_client, "tool-capable-zero")
+    """A tool-capable Provider gets only DLR docs until the round opts in."""
+    adapter = create_adapter(api_client, "knowledge-default-off")
     configure(api_client)
     captured: dict[str, object] = {}
 
@@ -160,6 +160,48 @@ def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_too
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+    assert response.status_code == 200, response.text
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    names = [entry["function"]["name"] for entry in payload["tools"]]
+    assert names == ["dlr_docs_list", "dlr_docs_search", "dlr_docs_read"]
+    assert "list_knowledge_bases" not in payload["messages"][0]["content"]
+
+
+def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_tools(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero tool calls: the payload carries the whitelist, the model answers
+    directly, and the response stays shape-compatible (tool_calls empty)."""
+    adapter = create_adapter(api_client, "tool-capable-zero")
+    configure(api_client)
+    ima_credential = create_credential(
+        api_client,
+        name="tool-ima-credential",
+        credential_type="access_key",
+        fields={"access_key_id": "tool-ima-client", "access_key_secret": "tool-ima-key"},
+    )
+    configured = api_client.put(
+        "/api/knowledge-sources/ima",
+        json={"enabled": True, "credential_id": ima_credential["id"]},
+    )
+    assert configured.status_code == 200, configured.text
+    captured: dict[str, object] = {}
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        captured["payload"] = payload or {}
+        return _final_response()
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    body = assist_body()
+    body["knowledge_search_enabled"] = True
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
     payload = captured["payload"]
     assert isinstance(payload, dict)

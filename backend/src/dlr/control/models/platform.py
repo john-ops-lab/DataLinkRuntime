@@ -161,7 +161,10 @@ class AiModelSetting(Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_ai_model_settings_singleton"),
         CheckConstraint(
-            "provider IN ('openai', 'deepseek', 'kimi', 'minimax', 'custom_openai_compatible')",
+            "provider IN ("
+            "'openai', 'anthropic', 'gemini', 'deepseek', 'qwen', 'kimi', 'minimax', "
+            "'glm', 'doubao', 'hunyuan', 'openrouter', 'siliconflow', 'ollama', "
+            "'custom_openai_compatible')",
             name="ck_ai_model_settings_provider",
         ),
         CheckConstraint(
@@ -186,10 +189,52 @@ class AiModelSetting(Base):
         ForeignKey("credentials.id", ondelete="SET NULL"),
         nullable=True,
     )
+    custom_provider_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("ai_custom_providers.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     reasoning_mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="default", server_default=text("'default'")
     )
     reasoning_effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AiCustomProvider(Base):
+    """One reusable, metadata-only custom Provider profile."""
+
+    __tablename__ = "ai_custom_providers"
+    __table_args__ = (
+        CheckConstraint(
+            "protocol IN ('openai_compatible', 'anthropic', 'gemini')",
+            name="ck_ai_custom_providers_protocol",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    protocol: Mapped[str] = mapped_column(String(24), nullable=False)
+    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    credential_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("credentials.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    images_native: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    files_native: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    tools_supported: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

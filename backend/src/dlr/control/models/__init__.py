@@ -6,6 +6,7 @@ from dlr.control.models.execution import Execution, Worker
 from dlr.control.models.knowledge_source import KnowledgeSourceSetting
 from dlr.control.models.platform import (
     AdapterCredentialBinding,
+    AiCustomProvider,
     AiModelSetting,
     Credential,
     PackageSource,
@@ -23,6 +24,7 @@ __all__ = [
     "AdapterVersion",
     "AdapterWebhook",
     "AiModelSetting",
+    "AiCustomProvider",
     "Credential",
     "Execution",
     "KnowledgeSourceSetting",

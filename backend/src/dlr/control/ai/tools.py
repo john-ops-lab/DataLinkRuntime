@@ -69,6 +69,7 @@ CODE_UNKNOWN_TOOL = "ai_tool_unknown"
 CODE_ARGS_INVALID = "ai_tool_args_invalid"
 CODE_TIMEOUT = "ai_tool_timeout"
 CODE_FAILED = "ai_tool_failed"
+CODE_KNOWLEDGE_DISABLED = "ai_knowledge_disabled"
 
 # Common secret shapes redacted wherever tool args/results could be rendered
 # (browser, model context or error messages). The round's API key is also
@@ -114,6 +115,7 @@ class ToolExecutionContext:
 
     session: Any = None
     secret_values: list[str] = field(default_factory=list)
+    knowledge_search_enabled: bool = False
 
 
 # Execution is strictly sequential (MAX_TOOL_CONCURRENCY is fixed at 1), so
@@ -536,8 +538,19 @@ _TOOLS: dict[str, ToolSpec] = {
 }
 
 
-def tools_payload() -> list[dict[str, Any]]:
-    """OpenAI Chat Completions ``tools`` definitions for the whitelist."""
+def tools_payload(include_knowledge: bool | None = None) -> list[dict[str, Any]]:
+    """Build provider-neutral tool definitions for the active capability set.
+
+    ``None`` preserves the historical complete registry for direct callers and
+    unit tests. Assist requests pass an explicit boolean so the default-off
+    knowledge boundary cannot be bypassed by a forged Provider call.
+    """
+    specs = [
+        spec
+        for spec in _TOOLS.values()
+        if include_knowledge is not False
+        or spec.name not in {"list_knowledge_bases", "search_knowledge", "read_knowledge"}
+    ]
     return [
         {
             "type": "function",
@@ -547,7 +560,7 @@ def tools_payload() -> list[dict[str, Any]]:
                 "parameters": spec.parameters,
             },
         }
-        for spec in _TOOLS.values()
+        for spec in specs
     ]
 
 
@@ -686,6 +699,17 @@ def execute_tool_call(
             CODE_UNKNOWN_TOOL,
             elapsed_ms,
         )
+    if spec.name in {"list_knowledge_bases", "search_knowledge", "read_knowledge"} and (
+        context is None or not context.knowledge_search_enabled
+    ):
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "ai_tool tool=%s status=error code=%s duration_ms=%d size=0",
+            spec.name,
+            CODE_KNOWLEDGE_DISABLED,
+            elapsed_ms,
+        )
+        return _error_execution(spec.name, "", CODE_KNOWLEDGE_DISABLED, elapsed_ms)
     try:
         validated_args = ToolArgsValidator(spec.parameters).validate(raw_arguments)
     except ToolFailure as error:

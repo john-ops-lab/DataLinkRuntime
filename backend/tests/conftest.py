@@ -87,7 +87,7 @@ def _truncate(engine: Engine) -> None:
                 "TRUNCATE TABLE adapters, adapter_versions, adapter_schedules, adapter_webhooks, "
                 "workers, executions, adapter_permissions, worker_cleanup_requests, "
                 "knowledge_source_settings, credentials, adapter_credential_bindings, "
-                "package_sources, ai_model_settings, "
+                "package_sources, ai_custom_providers, ai_model_settings, "
                 "system_settings, user_sessions, users "
                 "RESTART IDENTITY CASCADE"
             )
