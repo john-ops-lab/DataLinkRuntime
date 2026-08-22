@@ -955,6 +955,21 @@ def normalize_models(response: object) -> list[str]:
     return models
 
 
+def _normalize_gemini_models(response: object) -> list[str]:
+    """Normalize the native Gemini ``models[].name`` discovery response."""
+    if not isinstance(response, dict):
+        raise AiProviderError("ai_response_invalid")
+    raw_models = response.get("models")
+    if not isinstance(raw_models, list):
+        raise AiProviderError("ai_response_invalid")
+    mapped = {
+        "data": [
+            {"id": item.get("name")} if isinstance(item, dict) else item for item in raw_models
+        ]
+    }
+    return normalize_models(mapped)
+
+
 def fetch_models(
     provider: AiProvider,
     base_url: str,
@@ -982,9 +997,9 @@ def fetch_models(
         model_discovery=True,
     )
     try:
-        models = normalize_models(response)
         if adapter.protocol == "gemini":
+            models = _normalize_gemini_models(response)
             return [model.removeprefix("models/") for model in models]
-        return models
+        return normalize_models(response)
     except AiProviderError:
         raise AiProviderError("ai_models_not_supported") from None
