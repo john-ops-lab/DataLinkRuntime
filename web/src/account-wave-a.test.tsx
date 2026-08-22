@@ -143,7 +143,8 @@ it("shows the current Principal on the protected account console and logs out", 
   expect(requests.some((request) => request.url === "/api/adapters")).toBe(true);
   expect(requests.some((request) => request.init?.headers && "Authorization" in (request.init.headers as Record<string, string>))).toBe(false);
 
-  fireEvent.click(screen.getByTestId("account-logout"));
+  fireEvent.click(screen.getByTestId("user-menu"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: /退出登录|Log out/ }));
   await screen.findByTestId("account-username-input");
   expect(screen.getByTestId("account-auth-notice").textContent).toContain("已退出登录");
 });

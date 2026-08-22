@@ -21,6 +21,7 @@
     "search": "Search Adapters",
     "filterTypeAll": "All types",
     "filterTypeAria": "Adapter type filter",
+    "filterGroupAria": "Adapter filters",
     "filterStatusAll": "All statuses",
     "filterStatusAria": "Adapter status filter",
     "taskManual": "Task (manual)",

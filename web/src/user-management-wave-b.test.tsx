@@ -123,13 +123,14 @@ it("shows the ACL-scoped business console while keeping system management hidden
   window.__DLR_ENTRY_MODE__ = "account";
   render(<App />);
   await screen.findByTestId("account-principal");
-  expect(screen.getByTestId("account-profile")).toBeTruthy();
+  expect(screen.queryByTestId("account-profile")).toBeNull();
   expect(screen.queryByTestId("user-management")).toBeNull();
   expect(screen.queryByTestId("system-settings")).toBeNull();
   expect(requests).toContain("/api/adapters");
   expect(requests).toContain("/api/workers");
 
-  fireEvent.click(screen.getByTestId("account-profile"));
+  fireEvent.click(screen.getByTestId("user-menu"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Account profile" }));
   await screen.findByTestId("account-profile-username");
   expect(screen.getByDisplayValue("ordinary")).toBeTruthy();
 });

@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 
 import { resolveSystemLocale } from "../i18n";
 import { userErrorMessage } from "../user-message";
+import LoginShell from "./LoginShell";
 
 interface AccountPasswordPageProps {
   username: string;
@@ -57,90 +58,88 @@ export default function AccountPasswordPage({
   }
 
   return (
-    <main className="account-login-page">
-      <section className="account-auth-card">
-        <Card>
-          <div className="login-card-inner">
-            <h1 className="login-card-title">{t("auth.forcePasswordTitle")}</h1>
-            <p className="login-card-subtitle">
-              {t("auth.forcePasswordSubtitle", { username })}
+    <LoginShell testId="account-password-page">
+      <Card className="auth-card">
+        <div className="login-card-inner">
+          <h1 className="login-card-title">{t("auth.forcePasswordTitle")}</h1>
+          <p className="login-card-subtitle">
+            {t("auth.forcePasswordSubtitle", { username })}
+          </p>
+          {error && (
+            <p className="error-banner" role="alert" data-testid="account-password-error">
+              {error}
             </p>
-            {error && (
-              <p className="error-banner" role="alert" data-testid="account-password-error">
-                {error}
-              </p>
-            )}
-            <ProForm<PasswordValues>
-              className="account-auth-form"
-              layout="vertical"
-              submitter={{
-                render: () => [
-                  <Button
-                    key="submit"
-                    type="primary"
-                    block
-                    htmlType="submit"
-                    data-testid="account-password-submit"
-                    loading={busy}
-                    disabled={busy}
-                  >
-                    {t("auth.changePassword")}
-                  </Button>,
-                ],
-              }}
-              onFinish={handleSubmit}
+          )}
+          <ProForm<PasswordValues>
+            className="account-auth-form"
+            layout="vertical"
+            submitter={{
+              render: () => [
+                <Button
+                  key="submit"
+                  type="primary"
+                  block
+                  htmlType="submit"
+                  data-testid="account-password-submit"
+                  loading={busy}
+                  disabled={busy}
+                >
+                  {t("auth.changePassword")}
+                </Button>,
+              ],
+            }}
+            onFinish={handleSubmit}
+          >
+            <ProForm.Item
+              name="currentPassword"
+              label={t("auth.currentPasswordLabel")}
+              rules={[{ required: true }]}
             >
-              <ProForm.Item
-                name="currentPassword"
-                label={t("auth.currentPasswordLabel")}
-                rules={[{ required: true }]}
-              >
-                <Input.Password
-                  data-testid="account-current-password-input"
-                  aria-label={t("auth.currentPasswordLabel")}
-                  placeholder={t("auth.currentPasswordPlaceholder")}
-                  autoComplete="current-password"
-                  disabled={busy}
-                />
-              </ProForm.Item>
-              <ProForm.Item
-                name="newPassword"
-                label={t("auth.newPasswordLabel")}
-                rules={[{ required: true }]}
-              >
-                <Input.Password
-                  data-testid="account-new-password-input"
-                  aria-label={t("auth.newPasswordLabel")}
-                  placeholder={t("auth.newPasswordPlaceholder")}
-                  autoComplete="new-password"
-                  disabled={busy}
-                />
-              </ProForm.Item>
-              <ProForm.Item
-                name="confirmPassword"
-                label={t("auth.confirmPasswordLabel")}
-                rules={[{ required: true }]}
-              >
-                <Input.Password
-                  data-testid="account-confirm-password-input"
-                  aria-label={t("auth.confirmPasswordLabel")}
-                  placeholder={t("auth.confirmPasswordPlaceholder")}
-                  autoComplete="new-password"
-                  disabled={busy}
-                />
-              </ProForm.Item>
-            </ProForm>
-            <Button
-              block
-              data-testid="account-password-logout"
-              disabled={busy}
-              onClick={() => void onLogout()}
+              <Input.Password
+                data-testid="account-current-password-input"
+                aria-label={t("auth.currentPasswordLabel")}
+                placeholder={t("auth.currentPasswordPlaceholder")}
+                autoComplete="current-password"
+                disabled={busy}
+              />
+            </ProForm.Item>
+            <ProForm.Item
+              name="newPassword"
+              label={t("auth.newPasswordLabel")}
+              rules={[{ required: true }]}
             >
-              {t("auth.logout")}
-            </Button>
-          </div>
-        </Card>
-      </section>
-    </main>
+              <Input.Password
+                data-testid="account-new-password-input"
+                aria-label={t("auth.newPasswordLabel")}
+                placeholder={t("auth.newPasswordPlaceholder")}
+                autoComplete="new-password"
+                disabled={busy}
+              />
+            </ProForm.Item>
+            <ProForm.Item
+              name="confirmPassword"
+              label={t("auth.confirmPasswordLabel")}
+              rules={[{ required: true }]}
+            >
+              <Input.Password
+                data-testid="account-confirm-password-input"
+                aria-label={t("auth.confirmPasswordLabel")}
+                placeholder={t("auth.confirmPasswordPlaceholder")}
+                autoComplete="new-password"
+                disabled={busy}
+              />
+            </ProForm.Item>
+          </ProForm>
+          <Button
+            block
+            data-testid="account-password-logout"
+            disabled={busy}
+            onClick={() => void onLogout()}
+          >
+            {t("auth.logout")}
+          </Button>
+        </div>
+      </Card>
+    </LoginShell>
   );
 }

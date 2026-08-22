@@ -3194,9 +3194,11 @@ it("manages credentials and package sources from the system settings drawer", as
     },
   ]);
   render(<App />);
-  fireEvent.click(await screen.findByTestId("system-settings"));
+  fireEvent.click(await screen.findByTestId("user-menu"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "系统设置" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "凭据" }));
 
-  // 凭据管理为默认页签：只展示元数据，API 不会回传明文。
+  // 凭据中心只展示元数据，API 不会回传明文。
   await screen.findByTestId("credentials-panel");
   await screen.findByTestId("credential-row");
   expect(screen.getByTestId("credential-row").textContent).toBe("db-password");
@@ -3938,8 +3940,9 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
     },
   ]);
   render(<App />);
-  fireEvent.click(await screen.findByTestId("system-settings"));
-  fireEvent.click(await screen.findByText("AI 模型"));
+  fireEvent.click(await screen.findByTestId("user-menu"));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "系统设置" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "AI 模型" }));
   await screen.findByTestId("ai-model-settings-panel");
 
   expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("AI 使用说明");

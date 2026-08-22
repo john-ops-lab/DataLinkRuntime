@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 
 import { resolveSystemLocale } from "../i18n";
 import { userErrorMessage } from "../user-message";
+import LoginShell from "./LoginShell";
 
 interface AccountLoginPageProps {
   notice: string | null;
@@ -47,75 +48,70 @@ export default function AccountLoginPage({ notice, onSubmit }: AccountLoginPageP
   }
 
   return (
-    <main className="account-login-page">
-      <section className="account-auth-card">
-        <Card>
-          <div className="login-card-inner">
-            <h1 className="login-card-title">{t("auth.accountLoginTitle")}</h1>
-            <p className="login-card-subtitle">{t("auth.accountLoginSubtitle")}</p>
-            {notice && (
-              <p className="login-notice" data-testid="account-auth-notice">
-                {notice}
-              </p>
-            )}
-            {error && (
-              <p className="error-banner" role="alert" data-testid="account-login-error">
-                {error}
-              </p>
-            )}
-            <ProForm<LoginValues>
-              className="account-auth-form"
-              layout="vertical"
-              submitter={{
-                render: () => [
-                  <Button
-                    key="submit"
-                    type="primary"
-                    block
-                    htmlType="submit"
-                    data-testid="account-login-submit"
-                    loading={busy}
-                    disabled={busy}
-                  >
-                    {t("auth.accountLogin")}
-                  </Button>,
-                ],
-              }}
-              onFinish={handleSubmit}
-            >
-              <ProForm.Item
-                name="username"
-                label={t("auth.usernameLabel")}
-                rules={[{ required: true, whitespace: true }]}
-              >
-                <Input
-                  data-testid="account-username-input"
-                  aria-label={t("auth.usernameLabel")}
-                  placeholder={t("auth.usernamePlaceholder")}
-                  autoComplete="username"
-                  disabled={busy}
-                />
-              </ProForm.Item>
-              <ProForm.Item
-                name="password"
-                label={t("auth.passwordLabel")}
-                rules={[{ required: true }]}
-              >
-                <Input.Password
-                  data-testid="account-password-input"
-                  aria-label={t("auth.passwordLabel")}
-                  placeholder={t("auth.passwordPlaceholder")}
-                  autoComplete="current-password"
-                  disabled={busy}
-                />
-              </ProForm.Item>
-            </ProForm>
-            <p className="login-card-subtitle" style={{ margin: 0 }}>
-              {t("auth.accountSessionNotice")}
+    <LoginShell testId="account-login-page">
+      <Card className="auth-card">
+        <div className="login-card-inner">
+          <h1 className="login-card-title">{t("auth.accountLoginTitle")}</h1>
+          <p className="login-card-subtitle">{t("auth.accountLoginSubtitle")}</p>
+          {notice && (
+            <p className="login-notice" data-testid="account-auth-notice">
+              {notice}
             </p>
-          </div>
-        </Card>
-      </section>
-    </main>
+          )}
+          {error && (
+            <p className="error-banner" role="alert" data-testid="account-login-error">
+              {error}
+            </p>
+          )}
+          <ProForm<LoginValues>
+            className="account-auth-form"
+            layout="vertical"
+            submitter={{
+              render: () => [
+                <Button
+                  key="submit"
+                  type="primary"
+                  block
+                  htmlType="submit"
+                  data-testid="account-login-submit"
+                  loading={busy}
+                  disabled={busy}
+                >
+                  {t("auth.accountLogin")}
+                </Button>,
+              ],
+            }}
+            onFinish={handleSubmit}
+          >
+            <ProForm.Item
+              name="username"
+              label={t("auth.usernameLabel")}
+              rules={[{ required: true, whitespace: true }]}
+            >
+              <Input
+                data-testid="account-username-input"
+                aria-label={t("auth.usernameLabel")}
+                placeholder={t("auth.usernamePlaceholder")}
+                autoComplete="username"
+                disabled={busy}
+              />
+            </ProForm.Item>
+            <ProForm.Item
+              name="password"
+              label={t("auth.passwordLabel")}
+              rules={[{ required: true }]}
+            >
+              <Input.Password
+                data-testid="account-password-input"
+                aria-label={t("auth.passwordLabel")}
+                placeholder={t("auth.passwordPlaceholder")}
+                autoComplete="current-password"
+                disabled={busy}
+              />
+            </ProForm.Item>
+          </ProForm>
+        </div>
+      </Card>
+    </LoginShell>
   );
 }

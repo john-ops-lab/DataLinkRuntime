@@ -62,6 +62,11 @@ export async function applySystemLocale(locale: SystemLocale): Promise<void> {
   await i18n.changeLanguage(locale);
 }
 
+/** Change the current browser UI locale without changing the deployment default cache. */
+export async function applyUiLocale(locale: SystemLocale): Promise<void> {
+  await i18n.changeLanguage(locale);
+}
+
 export function currentSystemLocale(): SystemLocale {
   return resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
 }

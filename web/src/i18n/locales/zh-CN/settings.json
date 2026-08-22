@@ -1,6 +1,25 @@
 {
   "title": "系统设置",
   "language": "语言",
+  "backToAdapters": "返回适配器",
+  "categoryNavigation": "设置分类",
+  "confirm": {
+    "unsavedChanges": "放弃未保存的修改并离开设置中心吗？"
+  },
+  "categories": {
+    "general": "常规",
+    "credentials": "凭据",
+    "packageSources": "依赖源",
+    "aiModel": "AI 模型",
+    "knowledgeSources": "知识库"
+  },
+  "descriptions": {
+    "general": "管理部署级默认值；浏览器有明确偏好时不会覆盖该偏好。",
+    "credentials": "管理可复用的凭据引用，不展示 Secret 真值。",
+    "packageSources": "配置依赖仓库及其可选凭据引用。",
+    "aiModel": "配置 Assistant 使用的已保存模型连接。",
+    "knowledgeSources": "配置只读知识库并验证其可用状态。"
+  },
   "localeOptions": {
     "zh-CN": "简体中文",
     "en": "English"

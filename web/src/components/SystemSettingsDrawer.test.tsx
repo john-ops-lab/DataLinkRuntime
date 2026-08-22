@@ -136,24 +136,27 @@ it("跨 Tab 同步：新建/更新凭据后 AI 模型凭据选择器无需 F5 �
   expect(screen.queryByText("secret-one-value")).toBeNull();
 
   // 切到 AI 模型 Tab：挂载时拉取一次凭据，应能看到第一个凭据。
-  fireEvent.click(screen.getByRole("tab", { name: "AI 模型" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "AI 模型" }));
   await screen.findByTestId("ai-model-settings-panel");
   let aiDropdown = await openSelect("ai-credential");
   expect(optionLabels(aiDropdown)).toEqual(["ai-token-one"]);
 
-  // AI 面板保持挂载（不刷新页面），切回凭据管理再新建第二个凭据。
-  fireEvent.click(screen.getByRole("tab", { name: "凭据管理" }));
+  // 当前内容切换回凭据管理，再新建第二个凭据；返回 AI 时重新加载元数据。
+  fireEvent.click(screen.getByRole("menuitem", { name: "凭据" }));
+  await screen.findByTestId("credentials-panel");
   await createCredential("ai-token-two", "secret-two-value");
   expect(createCredentialApi).toHaveBeenCalledTimes(2);
 
   // 订阅触发的刷新必须在"仍挂载"的 AI 面板上生效：无需重新打开/刷新即可看到。
   await waitFor(() => expect(listCredentials.mock.calls.length).toBeGreaterThanOrEqual(5));
-  fireEvent.click(screen.getByRole("tab", { name: "AI 模型" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "AI 模型" }));
+  await screen.findByTestId("ai-model-settings-panel");
   aiDropdown = await openSelect("ai-credential");
   expect(optionLabels(aiDropdown)).toEqual(["ai-token-one", "ai-token-two"]);
 
   // 更新既有凭据同样同步（改名后选择器跟随，不要求 F5）。
-  fireEvent.click(screen.getByRole("tab", { name: "凭据管理" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "凭据" }));
+  await screen.findByTestId("credentials-panel");
   fireEvent.click(screen.getAllByTestId("update-credential")[0]);
   fireEvent.change(screen.getByTestId("credential-name"), {
     target: { value: "ai-token-one-renamed" },
@@ -166,7 +169,8 @@ it("跨 Tab 同步：新建/更新凭据后 AI 模型凭据选择器无需 F5 �
   await screen.findByText("凭据已更新");
   expect(updateCredentialApi).toHaveBeenCalledTimes(1);
 
-  fireEvent.click(screen.getByRole("tab", { name: "AI 模型" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "AI 模型" }));
+  await screen.findByTestId("ai-model-settings-panel");
   aiDropdown = await openSelect("ai-credential");
   expect(optionLabels(aiDropdown)).toEqual(["ai-token-one-renamed", "ai-token-two"]);
 
@@ -210,23 +214,29 @@ it("跨 Tab 同步：依赖源新建表单中的凭据选择器在凭据增删�
 
   await createCredential("source-pass-one", "source-secret-one", "password");
   // 依赖源面板首次挂载即可看到第一个凭据。
-  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
   await screen.findByTestId("package-sources-panel");
   fireEvent.click(screen.getByTestId("new-package-source"));
+  await screen.findByTestId("package-source-form");
   let sourceDropdown = await openSelect("package-source-credential");
   expect(optionLabels(sourceDropdown)).toEqual(["source-pass-one"]);
 
-  // 面板保持挂载时新建第二个凭据，选择器应自动同步。
-  fireEvent.click(screen.getByRole("tab", { name: "凭据管理" }));
+  // 当前内容切换回凭据管理，再新建第二个凭据；返回依赖源时重新加载元数据。
+  fireEvent.click(screen.getByRole("menuitem", { name: "凭据" }));
+  await screen.findByTestId("credentials-panel");
   await createCredential("source-pass-two", "source-secret-two", "password");
   await waitFor(() => expect(listCredentials.mock.calls.length).toBeGreaterThanOrEqual(4));
 
-  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
+  await screen.findByTestId("package-sources-panel");
+  fireEvent.click(screen.getByTestId("new-package-source"));
+  await screen.findByTestId("package-source-form");
   sourceDropdown = await openSelect("package-source-credential");
   expect(optionLabels(sourceDropdown)).toEqual(["source-pass-one", "source-pass-two"]);
 
   // 删除凭据后选择器同样失效（不要求 F5）。
-  fireEvent.click(screen.getByRole("tab", { name: "凭据管理" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "凭据" }));
+  await screen.findByTestId("credentials-panel");
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   fireEvent.click(screen.getAllByTestId("delete-credential")[0]);
   await screen.findByText("凭据已删除");
@@ -237,7 +247,10 @@ it("跨 Tab 同步：依赖源新建表单中的凭据选择器在凭据增删�
       "source-pass-two",
     ]),
   );
-  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
+  await screen.findByTestId("package-sources-panel");
+  fireEvent.click(screen.getByTestId("new-package-source"));
+  await screen.findByTestId("package-source-form");
   sourceDropdown = await openSelect("package-source-credential");
   expect(optionLabels(sourceDropdown)).toEqual(["source-pass-two"]);
 
@@ -269,7 +282,7 @@ it("切换依赖源类型时清除不兼容的凭据选择", async () => {
     .mockResolvedValue(createdSource);
 
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
-  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
   await screen.findByTestId("package-sources-panel");
   fireEvent.click(screen.getByTestId("new-package-source"));
 
@@ -406,7 +419,7 @@ it("M5.5.8：无默认源时展示明确回退提示，恢复默认调用对应�
     });
 
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
-  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
   await screen.findByTestId("package-sources-panel");
 
   // 三种语言都展示恢复默认入口与明确的清空回退提示。
@@ -445,7 +458,7 @@ it("M5.5.8：已有默认源时不显示该类型的回退提示", async () => {
   ]);
 
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
-  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
   await screen.findByTestId("package-sources-panel");
 
   expect(screen.queryByTestId("no-default-source-pypi")).toBeNull();
@@ -475,7 +488,7 @@ it("依赖源 HTTP 应答保持可达语义，测试请求失败会清除旧状�
     .mockRejectedValueOnce(new Error("probe failed"));
 
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
-  fireEvent.click(screen.getByRole("tab", { name: "依赖源" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
   await screen.findByTestId("package-sources-panel");
 
   const result = screen.getByTestId("package-source-test-result");
@@ -523,7 +536,7 @@ it("M5.8-006：知识库配置只保存 access_key 引用，官方地址不可�
   });
 
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
-  fireEvent.click(screen.getByRole("tab", { name: "知识库" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "知识库" }));
   await screen.findByTestId("knowledge-source-summary");
 
   expect(screen.getByTestId("knowledge-source-endpoint").textContent).toBe(
@@ -582,7 +595,7 @@ it("M5.8-006：测试连接后展示可访问知识库名称与状态，错误�
     });
 
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
-  fireEvent.click(screen.getByRole("tab", { name: "知识库" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "知识库" }));
   await screen.findByTestId("knowledge-source-summary");
 
   fireEvent.click(screen.getByTestId("test-knowledge-source"));
@@ -634,7 +647,7 @@ it("M5.8-006：知识库设置与错误状态可切换到 English", async () => 
     });
 
     render(<SystemSettingsDrawer open onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("tab", { name: "Knowledge bases" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Knowledge base" }));
     await screen.findByTestId("knowledge-source-summary");
     fireEvent.click(screen.getByTestId("test-knowledge-source"));
 

@@ -1,21 +1,22 @@
 /** 系统设置抽屉：凭据管理 + 三语言依赖源（M3.3，全局平台配置）。 */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ChangeEvent, type MouseEvent } from "react";
 import {
   Button,
   Checkbox,
-  Drawer,
+  Collapse,
   Empty,
   Form,
   Input,
+  Menu,
   Select,
   Space,
   Spin,
-  Tabs,
   Tag,
   Tooltip,
   Typography,
 } from "antd";
+import { ArrowLeftOutlined } from "@ant-design/icons";
 import {
   ModalForm,
   ProForm,
@@ -33,7 +34,12 @@ import {
   credentialTypeLabel,
 } from "../credential-fields";
 import { notifyCredentialCatalogChanged, subscribeCredentialCatalog } from "../credential-catalog";
-import { applySystemLocale, isSystemLocale, resolveSystemLocale } from "../i18n";
+import {
+  applySystemLocale,
+  isSystemLocale,
+  readCachedSystemLocale,
+  resolveSystemLocale,
+} from "../i18n";
 import { packageSourceKindLabel, packageSourcePresetLabel } from "../package-source-catalog";
 import type {
   Credential,
@@ -46,6 +52,7 @@ import type {
 } from "../types";
 import { userErrorMessage } from "../user-message";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
+import type { SettingsCategory } from "../settings-route";
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
@@ -85,9 +92,9 @@ function emptyForm(): CredentialFormState {
   return { editingId: null, name: "", type: "password", fields: {} };
 }
 
-function CredentialsPanel(props: { onError: (message: string) => void }) {
+function CredentialsPanel(props: { onError: (message: string) => void; expandGuide?: boolean }) {
   const { t } = useTranslation(["settings", "common"]);
-  const { onError } = props;
+  const { onError, expandGuide = false } = props;
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
@@ -233,26 +240,37 @@ function CredentialsPanel(props: { onError: (message: string) => void }) {
 
   return (
     <div className="settings-panel" data-testid="credentials-panel">
-      <div className="credential-type-guide" data-testid="credential-type-guide">
-         <Typography.Title level={5}>{t("credentialGuide.title")}</Typography.Title>
-        <Typography.Paragraph type="secondary">
-           {t("credentialGuide.description")}
-        </Typography.Paragraph>
-        <ul className="credential-type-guide-list">
-           {CREDENTIAL_TYPE_GUIDE.map((type) => (
-             <li key={type} data-testid={`credential-type-guide-${type}`}>
-               <strong>{credentialTypeLabel(type)}</strong>
-               {t("credentialGuide.lineSuffix", {
-                 fieldsLabel: t("credentialGuide.fields"),
-                 fields: t(`credentialGuide.items.${type}.fields`),
-                 scenariosLabel: t("credentialGuide.scenarios"),
-                 scenarios: t(`credentialGuide.items.${type}.scenarios`),
-                 hint: t(`credentialGuide.${type === "password" ? "createHint" : type === "token" ? "tokenHint" : type === "access_key" ? "accessKeyHint" : "secretHint"}`),
-               })}
-            </li>
-          ))}
-        </ul>
-      </div>
+      <Collapse
+        className="credential-type-guide"
+        data-testid="credential-type-guide"
+        ghost
+        defaultActiveKey={expandGuide ? ["guide"] : undefined}
+        items={[{
+          key: "guide",
+          label: t("credentialGuide.title"),
+          children: (
+            <>
+              <Typography.Paragraph type="secondary">
+                {t("credentialGuide.description")}
+              </Typography.Paragraph>
+              <ul className="credential-type-guide-list">
+                {CREDENTIAL_TYPE_GUIDE.map((type) => (
+                  <li key={type} data-testid={`credential-type-guide-${type}`}>
+                    <strong>{credentialTypeLabel(type)}</strong>
+                    {t("credentialGuide.lineSuffix", {
+                      fieldsLabel: t("credentialGuide.fields"),
+                      fields: t(`credentialGuide.items.${type}.fields`),
+                      scenariosLabel: t("credentialGuide.scenarios"),
+                      scenarios: t(`credentialGuide.items.${type}.scenarios`),
+                      hint: t(`credentialGuide.${type === "password" ? "createHint" : type === "token" ? "tokenHint" : type === "access_key" ? "accessKeyHint" : "secretHint"}`),
+                    })}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ),
+        }]}
+      />
       <Space className="settings-panel-toolbar">
         <Button type="primary" data-testid="new-credential" onClick={openCreate}>
            {t("credentials.new")}
@@ -1321,6 +1339,8 @@ function KnowledgeSourcesPanel(props: { active: boolean; onError: (message: stri
 interface SystemSettingsDrawerProps {
   open: boolean;
   onClose: () => void;
+  category?: SettingsCategory;
+  onCategoryChange?: (category: SettingsCategory) => void;
 }
 
 // Settings panels render their own persistent alert next to the failed action.
@@ -1330,12 +1350,13 @@ function keepErrorInline(): void {}
 
 function SystemLocaleControl() {
   const { i18n, t } = useTranslation("settings");
-  const currentLocale = resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
+  const currentUiLocale = resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
+  const deploymentLocale = readCachedSystemLocale();
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleChange(nextLocale: SystemLocale) {
-    if (updating || nextLocale === currentLocale) {
+    if (updating || nextLocale === deploymentLocale) {
       return;
     }
     setUpdating(true);
@@ -1347,7 +1368,7 @@ function SystemLocaleControl() {
       }
       await applySystemLocale(response.locale);
     } catch (err) {
-      setError(userErrorMessage(err, t("localeUpdateFailed"), currentLocale));
+      setError(userErrorMessage(err, t("localeUpdateFailed"), currentUiLocale));
     } finally {
       setUpdating(false);
     }
@@ -1360,7 +1381,7 @@ function SystemLocaleControl() {
           <Select
             aria-label={t("language")}
             data-testid="system-locale-select"
-            value={currentLocale}
+            value={deploymentLocale}
             loading={updating}
             disabled={updating}
             options={[
@@ -1382,42 +1403,123 @@ function SystemLocaleControl() {
 
 export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
   const { t } = useTranslation("settings");
-  const [activeTab, setActiveTab] = useState("credentials");
+  const standalone = props.category === undefined;
+  const [localActiveCategory, setLocalActiveCategory] = useState<SettingsCategory>(props.category ?? "credentials");
+  const [dirty, setDirty] = useState(false);
+  const activeCategory = props.category ?? localActiveCategory;
+
+  if (!props.open) {
+    return null;
+  }
+
+  function confirmLeave(): boolean {
+    if (!dirty) {
+      return true;
+    }
+    return window.confirm(t("confirm.unsavedChanges"));
+  }
+
+  function selectCategory(nextCategory: SettingsCategory): void {
+    if (nextCategory === activeCategory) {
+      return;
+    }
+    if (!confirmLeave()) {
+      return;
+    }
+    setDirty(false);
+    setLocalActiveCategory(nextCategory);
+    props.onCategoryChange?.(nextCategory);
+  }
+
+  function close(): void {
+    if (confirmLeave()) {
+      props.onClose();
+    }
+  }
+
+  const categoryItems = [
+    { key: "general", label: t("categories.general") },
+    { key: "credentials", label: t("categories.credentials") },
+    { key: "package-sources", label: t("categories.packageSources") },
+    { key: "ai-model", label: t("categories.aiModel") },
+    { key: "knowledge-sources", label: t("categories.knowledgeSources") },
+  ];
+  const categoryCopy: Record<SettingsCategory, { title: string; description: string }> = {
+    general: { title: t("categories.general"), description: t("descriptions.general") },
+    credentials: { title: t("categories.credentials"), description: t("descriptions.credentials") },
+    "package-sources": { title: t("categories.packageSources"), description: t("descriptions.packageSources") },
+    "ai-model": { title: t("categories.aiModel"), description: t("descriptions.aiModel") },
+    "knowledge-sources": { title: t("categories.knowledgeSources"), description: t("descriptions.knowledgeSources") },
+  };
+  const copy = categoryCopy[activeCategory];
+
+  function markDirty(event: ChangeEvent<HTMLElement>): void {
+    const target = event.target as HTMLElement;
+    if (target.closest("[data-testid=system-locale-select]")) {
+      return;
+    }
+    setDirty(true);
+  }
+
+  function markSaved(event: MouseEvent<HTMLElement>): void {
+    const target = event.target as HTMLElement;
+    if (target.closest("[data-testid=save-knowledge-source], [data-testid=submit-credential], [data-testid=submit-package-source], [data-testid=ai-save-settings]")) {
+      setDirty(false);
+    }
+  }
+
   return (
-    <Drawer
-      title={t("title")}
-      width={720}
-      open={props.open}
-      destroyOnHidden
-      onClose={props.onClose}
-    >
-      <SystemLocaleControl />
-      <Tabs
-        activeKey={activeTab}
-        onChange={setActiveTab}
-        items={[
-          {
-            key: "credentials",
-            label: t("tabs.credentials"),
-            children: <CredentialsPanel onError={keepErrorInline} />,
-          },
-          {
-            key: "package-sources",
-            label: t("tabs.packageSources"),
-            children: <PackageSourcesPanel onError={keepErrorInline} />,
-          },
-          {
-            key: "ai-model",
-            label: t("tabs.aiModel"),
-            children: <AiModelSettingsPanel onError={keepErrorInline} />,
-          },
-          {
-            key: "knowledge-sources",
-            label: t("tabs.knowledgeSources"),
-            children: <KnowledgeSourcesPanel active={activeTab === "knowledge-sources"} onError={keepErrorInline} />,
-          },
-        ]}
-      />
-    </Drawer>
+    <section className="settings-center" data-testid="system-settings-center" aria-labelledby="system-settings-title">
+      <div className="settings-center-header">
+        <Button
+          type="link"
+          icon={<ArrowLeftOutlined aria-hidden="true" />}
+          data-testid="settings-back"
+          aria-label={t("backToAdapters")}
+          onClick={close}
+        >
+          {t("backToAdapters")}
+        </Button>
+        <Typography.Title id="system-settings-title" level={2} className="settings-center-title">
+          {t("title")}
+        </Typography.Title>
+      </div>
+      <div className="settings-center-layout">
+        <nav className="settings-center-nav" aria-label={t("categoryNavigation")}>
+          <Menu
+            mode="inline"
+            selectedKeys={[activeCategory]}
+            items={categoryItems}
+            onClick={({ key }) => {
+              if (typeof key === "string" && categoryItems.some((item) => item.key === key)) {
+                selectCategory(key as SettingsCategory);
+              }
+            }}
+          />
+        </nav>
+        <section
+          className="settings-center-content"
+          onChangeCapture={markDirty}
+          onClickCapture={markSaved}
+          tabIndex={-1}
+          aria-labelledby="settings-category-title"
+        >
+          <div className="settings-center-content-inner">
+            <header className="settings-category-header">
+              <Typography.Title id="settings-category-title" level={3}>{copy.title}</Typography.Title>
+              <Typography.Paragraph type="secondary">{copy.description}</Typography.Paragraph>
+            </header>
+            {standalone && activeCategory !== "general" && <SystemLocaleControl />}
+            {activeCategory === "general" && <SystemLocaleControl />}
+            {activeCategory === "credentials" && <CredentialsPanel onError={keepErrorInline} expandGuide={standalone} />}
+            {activeCategory === "package-sources" && <PackageSourcesPanel onError={keepErrorInline} />}
+            {activeCategory === "ai-model" && <AiModelSettingsPanel onError={keepErrorInline} />}
+            {activeCategory === "knowledge-sources" && (
+              <KnowledgeSourcesPanel active onError={keepErrorInline} />
+            )}
+          </div>
+        </section>
+      </div>
+    </section>
   );
 }

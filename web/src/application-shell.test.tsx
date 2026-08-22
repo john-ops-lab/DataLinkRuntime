@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 
@@ -37,19 +37,18 @@ function renderShell(overrides: Partial<ComponentProps<typeof ApplicationShell>>
   );
 }
 
-it("renders the ProLayout shell, PageContainer hierarchy, and a disabled workbench menu before selection", async () => {
+it("renders the compact shell with one Adapter navigation surface", async () => {
   renderShell();
 
-  expect(document.querySelector(".ant-pro-layout")).toBeTruthy();
-  expect(document.querySelector(".ant-pro-page-container")).toBeTruthy();
-  expect((await screen.findByTestId("page-title")).textContent).toBe("适配器工作区");
-  expect(await screen.findByRole("menu", { name: "控制台导航" })).toBeTruthy();
-  expect(await screen.findByRole("menuitem", { name: "适配器" })).toBeTruthy();
-  expect((await screen.findByRole("menuitem", { name: "工作台" })).getAttribute("aria-disabled")).toBe("true");
+  expect(document.querySelector(".dlr-app-layout")).toBeTruthy();
+  expect(document.querySelector(".app-header")).toBeTruthy();
+  expect(document.querySelector(".ant-pro-layout")).toBeNull();
+  expect(document.querySelector(".ant-pro-page-container")).toBeNull();
+  expect(document.querySelector(".app-header-product")?.textContent).toBe("DataLinkRuntime");
   expect(await screen.findByTestId("shell-child")).toBeTruthy();
 });
 
-it("keeps global account actions named and available through keyboard-accessible buttons", async () => {
+it("keeps account actions in the avatar menu with accessible names", async () => {
   renderShell({
     accountPrincipal: {
       id: 7,
@@ -62,9 +61,10 @@ it("keeps global account actions named and available through keyboard-accessible
     onAccountLogout: async () => undefined,
   });
 
-  expect(await screen.findByRole("button", { name: "用户管理" })).toBeTruthy();
-  expect(await screen.findByRole("button", { name: "系统设置" })).toBeTruthy();
-  expect(await screen.findByRole("button", { name: "账号资料" })).toBeTruthy();
-  expect(await screen.findByRole("button", { name: "退出登录" })).toBeTruthy();
+  fireEvent.click(await screen.findByTestId("user-menu"));
+  expect(await screen.findByRole("menuitem", { name: "用户管理" })).toBeTruthy();
+  expect(await screen.findByRole("menuitem", { name: "系统设置" })).toBeTruthy();
+  expect(await screen.findByRole("menuitem", { name: "账号资料" })).toBeTruthy();
+  expect(await screen.findByRole("menuitem", { name: "退出登录" })).toBeTruthy();
   expect((await screen.findByTestId("control-status")).getAttribute("aria-live")).toBe("polite");
 });

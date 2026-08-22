@@ -5,7 +5,8 @@ import { Drawer, Skeleton } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
-import { applySystemLocale, isSystemLocale, resolveSystemLocale } from "./i18n";
+import { cacheSystemLocale, isSystemLocale, resolveSystemLocale } from "./i18n";
+import { applyLoginLocalePreference } from "./login-locale";
 import type { AccountPrincipal } from "./types";
 import { userErrorMessage } from "./user-message";
 import { AdapterConsole } from "./App";
@@ -26,7 +27,8 @@ export default function AccountApp() {
     try {
       const response = await api.getSystemLocale();
       if (isSystemLocale(response.locale)) {
-        await applySystemLocale(response.locale);
+        cacheSystemLocale(response.locale);
+        await applyLoginLocalePreference(response.locale);
       }
     } catch {
       // Keep the cached locale when the public bootstrap read is unavailable.

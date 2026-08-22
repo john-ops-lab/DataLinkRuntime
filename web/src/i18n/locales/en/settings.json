@@ -1,6 +1,25 @@
 {
   "title": "System settings",
   "language": "Language",
+  "backToAdapters": "Back to Adapters",
+  "categoryNavigation": "Settings categories",
+  "confirm": {
+    "unsavedChanges": "Discard unsaved changes and leave this settings page?"
+  },
+  "categories": {
+    "general": "General",
+    "credentials": "Credentials",
+    "packageSources": "Package sources",
+    "aiModel": "AI model",
+    "knowledgeSources": "Knowledge base"
+  },
+  "descriptions": {
+    "general": "Deployment-wide defaults that apply when a browser has no explicit preference.",
+    "credentials": "Manage reusable credential references without exposing Secret values.",
+    "packageSources": "Configure package registries and their optional credential references.",
+    "aiModel": "Configure the saved model connection used by the Assistant.",
+    "knowledgeSources": "Configure the read-only knowledge source and verify its availability."
+  },
   "localeOptions": {
     "zh-CN": "简体中文",
     "en": "English"
