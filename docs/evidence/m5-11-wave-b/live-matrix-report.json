@@ -1,0 +1,320 @@
+{
+  "generatedAt": "2026-08-22T07:56:17.044Z",
+  "cases": [
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "height": 720,
+      "dpr": 1
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "height": 820,
+      "dpr": 1.25
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "height": 900,
+      "dpr": 1
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "dpr": 1.25
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "height": 720,
+      "dpr": 1
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "height": 820,
+      "dpr": 1.25
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "height": 900,
+      "dpr": 1
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "height": 1080,
+      "dpr": 1.25
+    }
+  ],
+  "results": [
+    {
+      "kind": "live",
+      "locale": "zh-CN",
+      "width": 1280,
+      "height": 720,
+      "dpr": 1,
+      "adapterId": 12,
+      "adapterName": "M5.11 Wave B live final 2 zh-CN 1280",
+      "versionId": 23,
+      "executionId": 23,
+      "aiRequested": false,
+      "pausedObserved": true,
+      "newLineCountObserved": true,
+      "resumeAvailable": true,
+      "browserWindowNotice": true,
+      "maximizedWithAi": false,
+      "maximizeEscape": true,
+      "screenshot": "live-final-zh-CN-1280.png",
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1280,
+        "viewportWidth": 1280
+      }
+    },
+    {
+      "kind": "live",
+      "locale": "zh-CN",
+      "width": 1440,
+      "height": 820,
+      "dpr": 1.25,
+      "adapterId": 13,
+      "adapterName": "M5.11 Wave B live final 2 zh-CN 1440",
+      "versionId": 24,
+      "executionId": 24,
+      "aiRequested": true,
+      "pausedObserved": true,
+      "newLineCountObserved": true,
+      "resumeAvailable": true,
+      "browserWindowNotice": true,
+      "aiPanelOpen": true,
+      "maximizedWithAi": true,
+      "maximizeEscape": true,
+      "screenshot": "live-final-zh-CN-1440.png",
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1440,
+        "viewportWidth": 1440
+      }
+    },
+    {
+      "kind": "live",
+      "locale": "zh-CN",
+      "width": 1680,
+      "height": 900,
+      "dpr": 1,
+      "adapterId": 14,
+      "adapterName": "M5.11 Wave B live final 2 zh-CN 1680",
+      "versionId": 31,
+      "executionId": 31,
+      "pausedObserved": true,
+      "newLineCountObserved": true,
+      "resumeAvailable": true,
+      "browserWindowNotice": true,
+      "maximizeEscape": true,
+      "screenshot": "live-final-zh-CN-1680.png",
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1680,
+        "viewportWidth": 1680
+      }
+    },
+    {
+      "kind": "live",
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "dpr": 1.25,
+      "adapterId": 15,
+      "adapterName": "M5.11 Wave B live final 2 zh-CN 1920",
+      "versionId": 26,
+      "executionId": 26,
+      "aiRequested": false,
+      "pausedObserved": true,
+      "newLineCountObserved": true,
+      "resumeAvailable": true,
+      "browserWindowNotice": true,
+      "maximizedWithAi": false,
+      "maximizeEscape": true,
+      "screenshot": "live-final-zh-CN-1920.png",
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1920,
+        "viewportWidth": 1920
+      }
+    },
+    {
+      "kind": "live",
+      "locale": "en",
+      "width": 1280,
+      "height": 720,
+      "dpr": 1,
+      "adapterId": 16,
+      "adapterName": "M5.11 Wave B live final 2 en 1280",
+      "versionId": 27,
+      "executionId": 27,
+      "aiRequested": false,
+      "pausedObserved": true,
+      "newLineCountObserved": true,
+      "resumeAvailable": true,
+      "browserWindowNotice": true,
+      "maximizedWithAi": false,
+      "maximizeEscape": true,
+      "screenshot": "live-final-en-1280.png",
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1280,
+        "viewportWidth": 1280
+      }
+    },
+    {
+      "kind": "live",
+      "locale": "en",
+      "width": 1440,
+      "height": 820,
+      "dpr": 1.25,
+      "adapterId": 17,
+      "adapterName": "M5.11 Wave B live final 2 en 1440",
+      "versionId": 28,
+      "executionId": 28,
+      "aiRequested": false,
+      "pausedObserved": true,
+      "newLineCountObserved": true,
+      "resumeAvailable": true,
+      "browserWindowNotice": true,
+      "maximizedWithAi": false,
+      "maximizeEscape": true,
+      "screenshot": "live-final-en-1440.png",
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1440,
+        "viewportWidth": 1440
+      }
+    },
+    {
+      "kind": "live",
+      "locale": "en",
+      "width": 1680,
+      "height": 900,
+      "dpr": 1,
+      "adapterId": 18,
+      "adapterName": "M5.11 Wave B live final 2 en 1680",
+      "versionId": 29,
+      "executionId": 29,
+      "aiRequested": false,
+      "pausedObserved": true,
+      "newLineCountObserved": true,
+      "resumeAvailable": true,
+      "browserWindowNotice": true,
+      "maximizedWithAi": false,
+      "maximizeEscape": true,
+      "screenshot": "live-final-en-1680.png",
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1680,
+        "viewportWidth": 1680
+      }
+    },
+    {
+      "kind": "live",
+      "locale": "en",
+      "width": 1920,
+      "height": 1080,
+      "dpr": 1.25,
+      "adapterId": 19,
+      "adapterName": "M5.11 Wave B live final 2 en 1920",
+      "versionId": 32,
+      "executionId": 32,
+      "pausedObserved": true,
+      "newLineCountObserved": true,
+      "resumeAvailable": true,
+      "browserWindowNotice": true,
+      "maximizeEscape": true,
+      "screenshot": "live-final-en-1920.png",
+      "failedRequests": [],
+      "consoleMessages": [
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙",
+        "info:🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+      ],
+      "pageErrors": [],
+      "unknownPathnames": [],
+      "overflow": {
+        "document": false,
+        "body": false,
+        "documentWidth": 1920,
+        "viewportWidth": 1920
+      }
+    }
+  ],
+  "recheckedCountCases": [
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "executionId": 31
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "executionId": 32
+    }
+  ]
+}

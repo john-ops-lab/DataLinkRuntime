@@ -36,7 +36,7 @@ import re
 import secrets as stdlib_secrets
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -406,20 +406,9 @@ def receive_webhook(
         input=payload,
         locale=get_system_locale(session),
     )
-    # Keep at most 100 accepted calls total. With one active Execution per
-    # Adapter, retaining the newest 99 terminal Webhook rows before inserting
-    # the pending row gives 100 rows without ever deleting active work.
-    stale_terminal_ids = (
-        select(Execution.id)
-        .where(
-            Execution.adapter_id == adapter.id,
-            Execution.trigger == "webhook",
-            Execution.status.not_in(("pending", "running")),
-        )
-        .order_by(Execution.created_at.desc(), Execution.id.desc())
-        .offset(99)
-    )
-    session.execute(delete(Execution).where(Execution.id.in_(stale_terminal_ids)))
+    # Retention is a unified periodic service, not an inline side effect of
+    # accepting a request.  This keeps receipt latency bounded and lets a
+    # failed cleanup retry in small batches without touching active work.
     session.add(execution)
     try:
         session.flush()

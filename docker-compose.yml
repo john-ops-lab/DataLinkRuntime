@@ -1,12 +1,32 @@
 services:
   postgres:
     image: postgres:16-alpine
+    labels:
+      - "ao.session=${AO_SESSION_ID:-compose}"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       POSTGRES_USER: dlr
       POSTGRES_PASSWORD: dlr
       POSTGRES_DB: dlr
+    command:
+      - postgres
+      - -c
+      - logging_collector=on
+      - -c
+      - log_directory=/var/lib/dlr/platform-logs/postgres
+      - -c
+      - log_filename=postgresql-%Y-%m-%d_%H%M%S.log
+      - -c
+      - log_rotation_age=1d
+      - -c
+      - log_rotation_size=50MB
     volumes:
       - dlr_pg_data:/var/lib/postgresql/data
+      - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/postgres:/var/lib/dlr/platform-logs/postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dlr -d dlr"]
       interval: 5s
@@ -17,6 +37,13 @@ services:
     build:
       context: .
       dockerfile: docker/control.Dockerfile
+    labels:
+      - "ao.session=${AO_SESSION_ID:-compose}"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     # M5.5.8: DNS fallback for containers that need external services. The
     # Docker embedded resolver (127.0.0.11) stays first so internal service
     # names keep resolving; 1.1.1.1 / 8.8.8.8 are only fallbacks when the
@@ -44,6 +71,17 @@ services:
       DLR_AI_PROVIDER_TIMEOUT_SECONDS: ${DLR_AI_PROVIDER_TIMEOUT_SECONDS:-180}
       # M5.2 Schedule Trigger: Control scheduler polling interval (0.5..300s).
       DLR_SCHEDULE_POLL_SECONDS: ${DLR_SCHEDULE_POLL_SECONDS:-5}
+      # M5.11 Wave B: the host-side bind root is expanded by Compose; the
+      # application always writes under this fixed in-container path.
+      DLR_PLATFORM_LOG_ROOT: /var/lib/dlr/platform-logs
+      DLR_EXECUTION_RETENTION_WEBHOOK_DAYS: ${DLR_EXECUTION_RETENTION_WEBHOOK_DAYS:-30}
+      DLR_EXECUTION_RETENTION_WEBHOOK_MAX_PER_ADAPTER: ${DLR_EXECUTION_RETENTION_WEBHOOK_MAX_PER_ADAPTER:-100}
+      DLR_EXECUTION_RETENTION_TASK_DAYS: ${DLR_EXECUTION_RETENTION_TASK_DAYS:-30}
+      DLR_EXECUTION_RETENTION_TASK_MAX_PER_ADAPTER: ${DLR_EXECUTION_RETENTION_TASK_MAX_PER_ADAPTER:-1000}
+      DLR_EXECUTION_RETENTION_SCHEDULE_DAYS: ${DLR_EXECUTION_RETENTION_SCHEDULE_DAYS:-90}
+      DLR_EXECUTION_RETENTION_SCHEDULE_MAX_PER_ADAPTER: ${DLR_EXECUTION_RETENTION_SCHEDULE_MAX_PER_ADAPTER:-1000}
+      DLR_EXECUTION_RETENTION_BATCH_SIZE: ${DLR_EXECUTION_RETENTION_BATCH_SIZE:-100}
+      DLR_EXECUTION_RETENTION_INTERVAL_SECONDS: ${DLR_EXECUTION_RETENTION_INTERVAL_SECONDS:-3600}
       # M5.7 Wave C2: read-only KnowledgeSource (first target: Tencent ima).
       # The endpoint must be HTTPS on the official host allowlist in
       # production; DLR_IMA_ALLOW_HTTP is the explicit test/smoke escape
@@ -56,6 +94,8 @@ services:
       DLR_IMA_ALLOWED_HOSTS: ${DLR_IMA_ALLOWED_HOSTS:-ima.qq.com}
       DLR_IMA_ALLOW_HTTP: ${DLR_IMA_ALLOW_HTTP:-false}
       DLR_IMA_TIMEOUT_SECONDS: ${DLR_IMA_TIMEOUT_SECONDS:-8}
+    volumes:
+      - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/control:/var/lib/dlr/platform-logs/control
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,6 +116,13 @@ services:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
+    labels:
+      - "ao.session=${AO_SESSION_ID:-compose}"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     # The Worker long-polls claim for up to 20s; Docker's default 10s grace
     # would kill it before _graceful_offline() can run. 30s covers the worst
     # case claim wait plus a buffer for the offline notification.
@@ -92,6 +139,7 @@ services:
       DLR_WORKER_NAME: ${DLR_WORKER_NAME:-worker-1}
       DLR_WORKER_HEARTBEAT_SECONDS: ${DLR_WORKER_HEARTBEAT_SECONDS:-10}
       DLR_RUNTIME_ROOT: /var/lib/dlr/runtime
+      DLR_PLATFORM_LOG_ROOT: /var/lib/dlr/platform-logs
       # Optional compatibility fallbacks. Platform-managed default dependency
       # sources take precedence and are selected by Adapter language.
       DLR_PYPI_INDEX_URL: ${DLR_PYPI_INDEX_URL:-}
@@ -102,6 +150,7 @@ services:
       DLR_SECRET_SMOKE: ${DLR_SECRET_SMOKE:-local-dev-secret}
     volumes:
       - dlr_worker_runtime:/var/lib/dlr/runtime
+      - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/worker:/var/lib/dlr/platform-logs/worker
     depends_on:
       control:
         condition: service_healthy
@@ -116,6 +165,15 @@ services:
     build:
       context: .
       dockerfile: docker/web.Dockerfile
+    labels:
+      - "ao.session=${AO_SESSION_ID:-compose}"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/web:/var/lib/dlr/platform-logs/web
     ports:
       - "${DLR_WEB_HOST_PORT:-8080}:80"
     depends_on:
@@ -133,6 +191,15 @@ services:
     build:
       context: .
       dockerfile: docker/web.Dockerfile
+    labels:
+      - "ao.session=${AO_SESSION_ID:-compose}"
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/account-web:/var/lib/dlr/platform-logs/account-web
     command: ["nginx", "-c", "/etc/nginx/nginx-account.conf", "-g", "daemon off;"]
     ports:
       - "${DLR_ACCOUNT_WEB_HOST_PORT:-8081}:80"

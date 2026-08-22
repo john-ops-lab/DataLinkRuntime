@@ -15,6 +15,7 @@ dist/
 .env
 .env.*
 !.env.example
+/.tmp-platform-logs/
 
 # IDE / local tooling
 .idea/

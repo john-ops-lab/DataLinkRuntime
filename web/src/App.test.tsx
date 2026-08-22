@@ -2529,10 +2529,10 @@ it("lists unfiltered Task execution history with cursor pagination and opens det
   expect(within(drawer).queryByTestId("detail-log-pause")).toBeNull();
   expect(within(drawer).getByTestId("detail-log-maximize")).toBeTruthy();
   const historyLogLines = (within(drawer).getByTestId("detail-log").textContent ?? "").split("\n");
-  expect(historyLogLines).not.toContain("line-0");
+  expect(historyLogLines).toContain("line-0");
   expect(historyLogLines).toContain("line-1");
   expect(historyLogLines).toContain("line-500");
-  expect(historyLogLines).toHaveLength(500);
+  expect(historyLogLines).toHaveLength(501);
 
   fireEvent.click(drawer.querySelector(".ant-drawer-close") as HTMLButtonElement);
   secondRow.focus();

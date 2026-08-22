@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from dlr.common.platform_logging import configure_platform_logging
 from dlr.control import db
 from dlr.control.api import (
     adapters,
@@ -31,6 +32,7 @@ from dlr.control.api import (
 )
 from dlr.control.security import require_csrf
 from dlr.control.services import accounts as account_service
+from dlr.control.services.retention import retention_loop
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
 
@@ -71,19 +73,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     bootstrap_task = asyncio.create_task(_demo_bootstrap_loop())
     task = asyncio.create_task(scheduler_loop())
+    retention_task = asyncio.create_task(retention_loop())
     try:
         yield
     finally:
         task.cancel()
         bootstrap_task.cancel()
+        retention_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         with contextlib.suppress(asyncio.CancelledError):
             await bootstrap_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await retention_task
 
 
 def create_app() -> FastAPI:
     """Create the Control Node FastAPI application."""
+    configure_platform_logging("control")
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
 
     @app.middleware("http")

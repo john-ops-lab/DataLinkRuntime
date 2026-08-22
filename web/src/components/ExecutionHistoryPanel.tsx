@@ -10,7 +10,7 @@ import { api } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
 import type { ExecutionSummary } from "../types";
-import { HISTORY_LOG_MAX_LINES, unifiedLogContent } from "../unified-log";
+import { unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import { LogView, OutputView } from "./OutputView";
 
@@ -373,11 +373,11 @@ export default function ExecutionHistoryPanel(props: {
                   children: (
                     <LogView
                       testId="detail-log"
-                      content={unifiedLogContent(watcher.liveStdout, watcher.liveStderr, visibleDetail.error)}
+                      content={unifiedLogContent(visibleDetail.stdout, visibleDetail.stderr, visibleDetail.error)}
                       truncated={visibleDetail.stdout_truncated || visibleDetail.stderr_truncated}
-                      maxLines={HISTORY_LOG_MAX_LINES}
                       mode="history"
                       followControls={false}
+                      downloadFileName={`execution-${visibleDetail.id}`}
                     />
                   ),
                 },

@@ -13,13 +13,15 @@ import { openExecutionEvents } from "../sse";
 import type { ExecutionEventsHandle } from "../sse";
 import { isTerminal } from "../status";
 import type { Execution } from "../types";
-import { LIVE_LOG_MAX_LINES, tailLogLines } from "../unified-log";
+import { LIVE_LOG_MAX_LINES, logLineCount, tailLogLines, unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 
 export interface ExecutionWatcher {
   execution: Execution | null;
   liveStdout: string;
   liveStderr: string;
+  /** Logical line count of the server-saved streams, not the 2000-line view. */
+  serverLogLineCount: number;
   /** True when the bounded fallback polling ended without a terminal status. */
   fallbackExhausted: boolean;
   /** Start (or restart) watching one Execution; resets the live buffers. */
@@ -40,6 +42,9 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
   const [execution, setExecution] = useState<Execution | null>(null);
   const [liveStdout, setLiveStdout] = useState("");
   const [liveStderr, setLiveStderr] = useState("");
+  const [serverLogLineCount, setServerLogLineCount] = useState(0);
+  const serverStdoutRef = useRef("");
+  const serverStderrRef = useRef("");
   const [fallbackExhausted, setFallbackExhausted] = useState(false);
   const streamRef = useRef<ExecutionEventsHandle | null>(null);
   const fallbackTimerRef = useRef<number | null>(null);
@@ -79,6 +84,33 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     setExecution(detail);
     setLiveStdout(retainLiveLines(detail.stdout));
     setLiveStderr(retainLiveLines(detail.stderr));
+    serverStdoutRef.current = detail.stdout;
+    serverStderrRef.current = detail.stderr;
+    setServerLogLineCount(
+      logLineCount(unifiedLogContent(detail.stdout, detail.stderr, detail.error)),
+    );
+  }
+
+  function replaceSavedStream(stream: "stdout" | "stderr", content: string): void {
+    if (stream === "stdout") {
+      serverStdoutRef.current = content;
+    } else {
+      serverStderrRef.current = content;
+    }
+    setServerLogLineCount(
+      logLineCount(unifiedLogContent(serverStdoutRef.current, serverStderrRef.current)),
+    );
+  }
+
+  function appendSavedStream(stream: "stdout" | "stderr", chunk: string): void {
+    if (stream === "stdout") {
+      serverStdoutRef.current += chunk;
+    } else {
+      serverStderrRef.current += chunk;
+    }
+    setServerLogLineCount(
+      logLineCount(unifiedLogContent(serverStdoutRef.current, serverStderrRef.current)),
+    );
   }
 
   // SSE is only the experience channel: after any abnormal end the final
@@ -129,6 +161,11 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     setExecution(initial);
     setLiveStdout(retainLiveLines(initial.stdout));
     setLiveStderr(retainLiveLines(initial.stderr));
+    serverStdoutRef.current = initial.stdout;
+    serverStderrRef.current = initial.stderr;
+    setServerLogLineCount(
+      logLineCount(unifiedLogContent(initial.stdout, initial.stderr, initial.error)),
+    );
     streamRef.current?.close();
     stopFallbackPolling();
     if (isTerminal(initial.status)) {
@@ -143,6 +180,21 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
         // log events between polls are deltas on top of it, so replacing the
         // buffers here keeps the live view consistent without duplicates.
         setExecution(next);
+        // Status events carry the authoritative stored streams. Ignore an
+        // older, shorter snapshot that could arrive after a newer log delta;
+        // log_snapshot events below replace the refs when server truncation
+        // changes the stored prefix.
+        if (isTerminal(next.status) || next.stdout.length >= serverStdoutRef.current.length) {
+          replaceSavedStream("stdout", next.stdout);
+        }
+        if (isTerminal(next.status) || next.stderr.length >= serverStderrRef.current.length) {
+          replaceSavedStream("stderr", next.stderr);
+        }
+        if (isTerminal(next.status)) {
+          setServerLogLineCount(
+            logLineCount(unifiedLogContent(next.stdout, next.stderr, next.error)),
+          );
+        }
         setLiveStdout(retainLiveLines(next.stdout));
         setLiveStderr(retainLiveLines(next.stderr));
         if (isTerminal(next.status)) {
@@ -164,8 +216,10 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
           return;
         }
         if (event.stream === "stdout") {
+          appendSavedStream("stdout", event.chunk);
           setLiveStdout((current) => retainLiveLines(current + event.chunk));
         } else {
+          appendSavedStream("stderr", event.chunk);
           setLiveStderr((current) => retainLiveLines(current + event.chunk));
         }
       },
@@ -174,8 +228,10 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
           return;
         }
         if (event.stream === "stdout") {
+          replaceSavedStream("stdout", event.content);
           setLiveStdout(retainLiveLines(event.content));
         } else {
+          replaceSavedStream("stderr", event.content);
           setLiveStderr(retainLiveLines(event.content));
         }
         // Truncation just happened server-side: reflect it immediately
@@ -204,5 +260,13 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
     });
   }
 
-  return { execution, liveStdout, liveStderr, fallbackExhausted, watch, stop };
+  return {
+    execution,
+    liveStdout,
+    liveStderr,
+    serverLogLineCount,
+    fallbackExhausted,
+    watch,
+    stop,
+  };
 }

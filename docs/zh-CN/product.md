@@ -64,7 +64,9 @@ Authorization: Bearer <token>
 调用记录
 ```
 
-每个 Webhook Adapter 只保留最近 100 条终态调用记录；活跃调用永不由 retention 删除，Task 与 Schedule 历史不受影响。
+Webhook、Task 与 Schedule 的终态 Execution 统一按部署配置的保存天数和每个
+Adapter 数量上限分批清理；`pending` / `running` 永不由 retention 删除。具体默认值、
+批量大小和平台服务日志轮转规则见 `docs/deployment/platform-logs.md`。
 
 ## 4. 保存与运行节点
 

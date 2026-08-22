@@ -72,8 +72,10 @@ Run Settings
 Call History
 ```
 
-Each Webhook Adapter keeps only the most recent 100 terminal call records; active
-calls are never removed by retention, and Task / Schedule history is unaffected.
+Webhook, Task, and Schedule terminal Executions are cleaned in retryable batches
+using deployment-configured age and per-Adapter count limits. `pending` and
+`running` rows are never removed by retention. See
+`docs/deployment/platform-logs.md` for defaults and platform-log rotation.
 
 ## 4. Saving and the Run Node
 
