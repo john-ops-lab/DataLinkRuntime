@@ -593,6 +593,7 @@ def _assist_messages(
     session: Session,
     adapter_id: int,
     language: str,
+    system_locale: str,
     payload: AiAssistRequest,
     *,
     parsed_attachments: list[attachments_service.ParsedText] | None = None,
@@ -685,7 +686,7 @@ def _assist_messages(
         f"{no_tool_phrase}or reasoning. "
         "The object must strictly match this JSON Schema:\n"
         f"{json.dumps(output_schema, ensure_ascii=False, sort_keys=True)}\n"
-        f"Use natural language matching the server system locale {language}; keep code "
+        f"Use natural language matching the server system locale {system_locale}; keep code "
         "identifiers, configuration keys and protocol names exact.\n"
         "A non-null candidate is a complete code snapshot. Never include or change language, "
         "adapter_type, runtime_worker_id, or any lifecycle action. The Candidate is code-only: "
@@ -900,6 +901,7 @@ def assist(session: Session, adapter_id: int, payload: AiAssistRequest) -> AiAss
     messages = _assist_messages(
         session,
         adapter.id,
+        adapter.language,
         system_locale,
         payload,
         parsed_attachments=parsed_attachments,

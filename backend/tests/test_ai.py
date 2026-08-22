@@ -1026,6 +1026,8 @@ def test_assist_prompt_uses_language_contract_and_secret_names_only(
     system_prompt = messages[0]["content"]
     assert isinstance(system_prompt, str)
     assert contract_fragment in system_prompt
+    assert "server system locale zh-CN" in system_prompt
+    assert f'"language": "{language}"' in system_prompt
     encoded_code = json.dumps(working_code, ensure_ascii=False)[1:-1]
     assert encoded_code in system_prompt
     assert "CMDB_PASSWORD" in system_prompt
