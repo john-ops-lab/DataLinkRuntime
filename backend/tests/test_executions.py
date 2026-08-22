@@ -150,8 +150,7 @@ def test_delete_adapter_without_executions_still_allowed(api_client: TestClient)
     save_version(api_client, adapter["id"])
     assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
     deleted = api_client.get(f"/api/adapters/{adapter['id']}")
-    assert deleted.status_code == 200
-    assert deleted.json()["archived_at"] is not None
+    assert deleted.status_code == 404
 
 
 # --- M3 execution history (cursor pagination) --------------------------------

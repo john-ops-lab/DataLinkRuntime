@@ -196,32 +196,22 @@ def test_database_allows_only_one_active_execution_across_all_triggers(
             session.commit()
 
 
-def test_soft_delete_preserves_revision_execution_and_blocks_future_writes(
+def test_permanent_delete_removes_adapter_facts_without_deleting_credentials(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    adapter = create_adapter(api_client, name="soft-delete")
+    adapter = create_adapter(api_client, name="permanent-delete")
     version = save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={}).json()
     finish_pending(api_client, execution["id"])
 
     assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
-    deleted = api_client.get(f"/api/adapters/{adapter['id']}").json()
-    assert deleted["archived_at"] is not None
-    assert deleted["latest_version_id"] == version["id"]
-    assert (
-        api_client.post(
-            f"/api/adapters/{adapter['id']}/versions",
-            json={"code": "def handle(context, input):\n    return 2\n"},
-        ).json()["detail"]["code"]
-        == "adapter_deleted"
-    )
+    assert api_client.get(f"/api/adapters/{adapter['id']}").status_code == 404
     with session_factory() as session:
         assert (
-            session.scalar(select(AdapterVersion).where(AdapterVersion.id == version["id"]))
-            is not None
+            session.scalar(select(AdapterVersion).where(AdapterVersion.id == version["id"])) is None
         )
-        assert session.scalar(select(Execution).where(Execution.id == execution["id"])) is not None
+        assert session.scalar(select(Execution).where(Execution.id == execution["id"])) is None
 
 
 def test_clone_gets_own_revision_one_type_worker_and_bindings_without_executions(

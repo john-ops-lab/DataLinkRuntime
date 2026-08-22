@@ -260,7 +260,8 @@
   },
   "confirm": {
     "discardChanges": "There are unsaved changes. Discard them?",
-    "deleteAdapter": "Delete Adapter “{{name}}”? It will be removed from the active list.{{warning}}",
+    "deleteAdapter": "Permanently delete Adapter “{{name}}”? This cannot be undone. It removes execution history, sharing permissions and code Credential bindings, but never the global Credential object.{{warning}}",
+    "stopDeleteAdapter": "Adapter “{{name}}” is still receiving or executing. Stop it, ask the Worker to cancel, then permanently delete it? An offline or timed-out Worker safely blocks deletion; no force cleanup is attempted.{{warning}}",
     "deleteCredential": "Delete Credential “{{name}}”? Bindings and package sources that reference it will stop working.",
     "deletePackageSource": "Delete package source “{{name}}”?",
     "createCredential": "After saving, passwords, Tokens and keys cannot be viewed again in the browser. Save or copy them first.\n\nCreate this Credential?"
@@ -279,6 +280,8 @@
     "versionListRefreshFailed": "Revision list refresh failed: {{error}}",
     "adapterRefreshFailed": "Adapter refresh failed: {{error}}",
     "adapterSavedRefreshSummary": "Adapter saved, but {{details}}",
+    "deleteWaitingForWorker": "The Worker was asked to cancel the active Execution; permanent deletion waits for cancelled.",
+    "deleteWaitingTimeout": "The Worker did not confirm cancelled in time. Waiting stopped safely; no force deletion was attempted. Check the Worker and try again.",
     "discardWarning": "This Adapter has unsaved editor changes.",
     "deletedAdapterWarning": "It will be removed from the active list.{{warning}}"
   },

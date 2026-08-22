@@ -232,11 +232,12 @@ with SessionLocal() as session:
     assert row is not None and row.status == "online"
 
 # M5.5.7: the demo Credentials are bootstrapped on fresh deployments with
-# random values, metadata-only APIs, and brand-new Task/Webhook Adapters
-# default-bind PASSWORD/TOKEN to them while the Webhook receiving Token
-# Credential stays explicitly chosen (M5.4 lifecycle unchanged). The Control
-# background bootstrap retries until the migrated schema exists, so poll for
-# the rows instead of assuming they are present on the first request.
+# random values, metadata-only APIs, and brand-new Task Adapters default-bind
+# PASSWORD to the demo Credential. Webhook entry authentication is a separate
+# Bearer Token configuration and is never injected into code Credential
+# bindings. The Control background bootstrap retries until the migrated schema
+# exists, so poll for the rows instead of assuming they are present on the
+# first request.
 deadline = time.monotonic() + 60
 credential_names: dict[str, dict[str, Any]] = {}
 while time.monotonic() < deadline:
@@ -264,15 +265,7 @@ assert demo_task_bindings == [
 ], demo_task_bindings
 demo_webhook = create_adapter("smoke-m557-demo-webhook", "python", "webhook")
 demo_webhook_bindings = request("GET", f"/adapters/{demo_webhook['id']}/credential-bindings")
-assert demo_webhook_bindings == [
-    {
-        "env_key": "TOKEN",
-        "credential_id": credential_names["demo-token"]["id"],
-        "field": "token",
-        "credential_name": "demo-token",
-        "credential_type": "token",
-    }
-], demo_webhook_bindings
+assert demo_webhook_bindings == [], demo_webhook_bindings
 demo_webhook_row = request("GET", f"/adapters/{demo_webhook['id']}/webhook")
 assert demo_webhook_row["credential_id"] is None, demo_webhook_row
 # The default demo binding really resolves at claim time: the Starter Code
@@ -297,7 +290,7 @@ assert demo_finished["output"]["leaked"] == "[REDACTED]", demo_finished
 assert "demo password: [REDACTED]" in demo_finished["stdout"], demo_finished
 
 # Task foundation: immutable Revisions, fixed runtime Worker, latest execution,
-# unified active lock, metadata exception, clone and soft delete.
+# unified active lock, metadata exception, clone and permanent delete.
 task = create_adapter("smoke-m541-task", "python", "task")
 task_id = task["id"]
 assert (
@@ -517,22 +510,18 @@ assert request("POST", f"/adapters/{task_id}/production/start", expected=404)
 assert request("POST", f"/adapters/{task_id}/production/stop", {}, expected=404)
 
 request("DELETE", f"/adapters/{task_id}", expected=204)
-deleted = request("GET", f"/adapters/{task_id}")
-assert deleted["archived_at"] is not None and deleted["latest_version_id"] == v2["id"]
-assert len(request("GET", f"/adapters/{task_id}/versions")) == 2
-deleted_history = request("GET", f"/adapters/{task_id}/executions")["items"]
-assert len(deleted_history) == 4
-assert [item["trigger"] for item in deleted_history].count("manual") == 3
-assert [item["trigger"] for item in deleted_history].count("schedule") == 1
-deleted_save = save(task_id, v2_code, expected=409)
-assert deleted_save["detail"]["code"] == "adapter_deleted", deleted_save
+assert request("GET", f"/adapters/{task_id}", expected=404)["detail"]["code"] == "adapter_not_found"
+deleted_save = save(task_id, v2_code, expected=404)
+assert deleted_save["detail"]["code"] == "adapter_not_found", deleted_save
 with SessionLocal() as session:
-    assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v1["id"])) is not None
-    assert session.scalar(select(Execution).where(Execution.id == run1["id"])) is not None
+    assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v1["id"])) is None
+    assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v2["id"])) is None
+    assert session.scalar(select(Execution).where(Execution.id == run1["id"])) is None
 
-# Final Webhook model: random stopped path, first-save Worker/Token gates,
-# readable path, immediate Stop without cancelling active work, and Clone
-# upgrade takeover while the public URL remains unchanged.
+# Final Webhook model: random stopped path, saved Revision decoupled from the
+# Worker/Token start gate, readable path, immediate Stop without cancelling
+# active work, and Clone upgrade takeover while the public URL remains
+# unchanged.
 webhook_adapter = create_adapter("smoke-m543-webhook", "python", "webhook")
 webhook_id = webhook_adapter["id"]
 initial_webhook = request("GET", f"/adapters/{webhook_id}/webhook")

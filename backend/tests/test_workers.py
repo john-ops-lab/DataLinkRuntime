@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
 from dlr.common.config import settings
-from dlr.control.models import Execution, Worker
+from dlr.control.models import Execution, Worker, WorkerCleanupRequest
 from dlr.control.services import worker as worker_service
 from dlr.worker import venv as venv_manager
 from dlr.worker.agent import Agent, WorkerConfig
@@ -153,6 +153,67 @@ def test_claim_payload_uses_custom_adapter_timeout(api_client: TestClient) -> No
 def test_claim_without_pending_task_returns_204(api_client: TestClient) -> None:
     worker = register_worker(api_client)
     assert claim(api_client, worker["id"]).status_code == 204
+
+
+def test_claim_delivers_adapter_cleanup_and_accepts_secret_free_result(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    worker = register_worker(api_client, name="worker-cleanup-task-node")
+    adapter = create_adapter(api_client, name="worker-cleanup-task")
+    save_version(api_client, adapter["id"])
+    deleted = api_client.delete(f"/api/adapters/{adapter['id']}")
+    assert deleted.status_code == 204, deleted.text
+
+    cleanup = claim(api_client, worker["id"])
+    assert cleanup.status_code == 200, cleanup.text
+    payload = cleanup.json()
+    assert payload["kind"] == "adapter_cleanup"
+    assert payload["adapter_id"] == adapter["id"]
+    assert "secret" not in cleanup.text.lower()
+
+    completed = api_client.post(
+        f"/api/workers/{worker['id']}/cleanups/{payload['cleanup_id']}/result",
+        json={"success": True},
+        headers=WORKER_HEADERS,
+    )
+    assert completed.status_code == 204, completed.text
+    with session_factory() as session:
+        row = session.get(WorkerCleanupRequest, payload["cleanup_id"])
+        assert row is not None and row.status == "completed"
+
+
+def test_worker_restart_requeues_claimed_adapter_cleanup(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    worker = register_worker(api_client, name="worker-cleanup-restart-node")
+    adapter = create_adapter(api_client, name="worker-cleanup-restart")
+    save_version(api_client, adapter["id"])
+    assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
+
+    claimed = claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+    cleanup_id = claimed.json()["cleanup_id"]
+    with session_factory() as session:
+        row = session.get(WorkerCleanupRequest, cleanup_id)
+        assert row is not None and row.status == "running"
+
+    restarted = register_worker(api_client, name="worker-cleanup-restart-node")
+    assert restarted["id"] == worker["id"]
+    with session_factory() as session:
+        row = session.get(WorkerCleanupRequest, cleanup_id)
+        assert row is not None and row.status == "pending"
+
+    retried = claim(api_client, worker["id"])
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["cleanup_id"] == cleanup_id
+    completed = api_client.post(
+        f"/api/workers/{worker['id']}/cleanups/{cleanup_id}/result",
+        json={"success": True},
+        headers=WORKER_HEADERS,
+    )
+    assert completed.status_code == 204, completed.text
 
 
 def test_claim_serves_sequential_executions(api_client: TestClient) -> None:
@@ -685,3 +746,20 @@ def test_cleanup_preserves_versions_in_keep_set(
 
     assert (venv_manager.version_dir(runtime_root, 1, 1) / ".ready").exists()
     assert not (venv_manager.version_dir(runtime_root, 1, 3) / ".ready").exists()
+
+
+def test_cleanup_adapter_environment_removes_only_private_adapter_tree(
+    tmp_path: object,
+) -> None:
+    runtime_root = Path(tmp_path)
+    private = runtime_root / "adapters" / "42" / "versions" / "7"
+    private.mkdir(parents=True)
+    (private / ".ready").write_text("ready", encoding="utf-8")
+    shared = runtime_root / "uv-cache"
+    shared.mkdir()
+    (shared / "keep.txt").write_text("shared", encoding="utf-8")
+
+    venv_manager.cleanup_adapter_environment(runtime_root, 42)
+
+    assert not (runtime_root / "adapters" / "42").exists()
+    assert (shared / "keep.txt").exists()

@@ -1,6 +1,6 @@
-/** Webhook Adapter final runtime settings (M5.5.12).
+/** Webhook Adapter final runtime settings (M5.5.12 / M5.11 Wave C).
  *
- * 运行设置只保留五类字段：Webhook 路径、完整地址、访问凭据、运行节点、
+ * 运行设置只保留五类字段：Webhook 路径、完整地址、入口 Bearer Token、运行节点、
  * 单次执行超时（复用 #57 的 Adapter 级 timeout_seconds，不另造实现）。
  * 开启/停止接收只保留在 Header 右上角，本页不重复出现；接收中（或仍有
  * 活跃调用）配置锁定但保持可读，用锁图标表达，不把文本灰到难以阅读。
@@ -327,17 +327,19 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   }
 
   async function saveConfiguration() {
-    if (!canConfigure || !pathAcceptable || workerId === null) return;
+    if (!canConfigure || !pathAcceptable) return;
     const timeoutSeconds = resolveTimeoutSeconds();
     if (timeoutSeconds === null) return;
     setSaving(true);
     setNotice(null);
     props.onError(null);
     try {
-      const adapter = await api.updateAdapter(adapterId, {
-        runtime_worker_id: workerId,
-        timeout_seconds: timeoutSeconds,
-      });
+      const adapter = await api.updateAdapter(
+        adapterId,
+        workerId === null
+          ? { timeout_seconds: timeoutSeconds }
+          : { runtime_worker_id: workerId, timeout_seconds: timeoutSeconds },
+      );
       const webhook = await api.putWebhook(adapterId, {
         enabled: false,
         public_id: publicId,
@@ -527,6 +529,9 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           ) : (
             <LockedValue testId="webhook-credential-locked">{credentialName}</LockedValue>
           )}
+          <Typography.Text type="secondary" className="settings-field-hint">
+            {t("webhook.settings.credentialHint")}
+          </Typography.Text>
         </label>
         <label className="settings-field">
            <span className="settings-field-label">{t("webhook.settings.worker")}</span>
@@ -579,15 +584,19 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                  <Radio value="custom">{t("webhook.settings.custom")}</Radio>
               </Radio.Group>
               {effectiveCustom && (
-                <InputNumber
-                  data-testid="webhook-timeout-custom"
-                  min={1}
-                  max={MAX_TIMEOUT_SECONDS}
-                  precision={0}
-                  value={effectiveTimeoutSeconds}
-                   addonAfter={t("webhook.settings.seconds")}
-                  onChange={(value) => setTimeoutOverride(value ?? null)}
-                />
+                <Space.Compact block>
+                  <InputNumber
+                    data-testid="webhook-timeout-custom"
+                    min={1}
+                    max={MAX_TIMEOUT_SECONDS}
+                    precision={0}
+                    value={effectiveTimeoutSeconds}
+                    onChange={(value) => setTimeoutOverride(value ?? null)}
+                  />
+                  <Typography.Text className="webhook-timeout-unit">
+                    {t("webhook.settings.seconds")}
+                  </Typography.Text>
+                </Space.Compact>
               )}
               <Typography.Text type="secondary" className="settings-field-hint">
                  {t("webhook.settings.timeoutHint")}
@@ -604,7 +613,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           <Button
             data-testid="webhook-save"
             loading={saving}
-            disabled={!pathAcceptable || workerId === null || !dirty}
+            disabled={!pathAcceptable || !dirty}
             onClick={() => void saveConfiguration()}
            >{t("webhook.settings.save")}</Button>
         )}

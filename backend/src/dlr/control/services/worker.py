@@ -7,12 +7,17 @@ parallel. Long polling simply retries the atomic claim until the deadline.
 
 import time
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
-from dlr.control.schemas.worker import TaskPayload, WorkerRegister
+from dlr.control.models import Adapter, AdapterVersion, Execution, Worker, WorkerCleanupRequest
+from dlr.control.schemas.worker import (
+    CleanupResult,
+    CleanupTaskPayload,
+    TaskPayload,
+    WorkerRegister,
+)
 from dlr.control.services import package_source as package_source_service
 from dlr.control.services import secrets as secrets_service
 from dlr.control.services.adapter import domain_error
@@ -34,7 +39,13 @@ def list_workers(session: Session) -> list[Worker]:
 
 
 def register_worker(session: Session, data: WorkerRegister) -> Worker:
-    """Upsert by name: restarts reuse the existing row."""
+    """Upsert by name: restarts reuse the existing row.
+
+    A process can die after claiming an adapter cleanup but before reporting
+    the result. Re-registration is the safe ownership boundary at which to
+    return that request to the queue; no Control-side filesystem fallback is
+    attempted while the Worker is offline.
+    """
     worker = session.scalar(select(Worker).where(Worker.name == data.name).with_for_update())
     if worker is None:
         worker = Worker(
@@ -48,6 +59,14 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
         worker.status = "online"
         worker.last_heartbeat = func.now()
         worker.capabilities = data.capabilities
+        session.execute(
+            update(WorkerCleanupRequest)
+            .where(
+                WorkerCleanupRequest.worker_id == worker.id,
+                WorkerCleanupRequest.status == "running",
+            )
+            .values(status="pending", error_code=None)
+        )
     session.commit()
     session.refresh(worker)
     return worker
@@ -107,8 +126,8 @@ def build_task_payload(session: Session, execution: Execution) -> TaskPayload:
     )
 
 
-def try_claim(session: Session, worker_id: int) -> TaskPayload | None:
-    """One atomic claim attempt; None when no pending Execution is free.
+def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayload | None:
+    """One atomic claim attempt; None when no task is free.
 
     M3.2 scheduling rules: Executions flagged for cancellation are never
     claimed, and an Execution with a scheduling target may only be claimed
@@ -116,6 +135,24 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | None:
     historical rows working).
     """
     worker = get_worker(session, worker_id)
+    cleanup = session.scalar(
+        select(WorkerCleanupRequest)
+        .where(
+            WorkerCleanupRequest.worker_id == worker_id,
+            WorkerCleanupRequest.status == "pending",
+        )
+        .order_by(WorkerCleanupRequest.created_at.asc(), WorkerCleanupRequest.id.asc())
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    if cleanup is not None:
+        cleanup.status = "running"
+        cleanup.attempts += 1
+        cleanup.error_code = None
+        session.commit()
+        session.refresh(cleanup)
+        return CleanupTaskPayload(cleanup_id=cleanup.id, adapter_id=cleanup.adapter_id)
+
     execution = session.scalar(
         select(Execution)
         .join(Adapter, Adapter.id == Execution.adapter_id)
@@ -144,7 +181,9 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | None:
     return build_task_payload(session, execution)
 
 
-def claim_task(session: Session, worker_id: int, wait_seconds: int) -> TaskPayload | None:
+def claim_task(
+    session: Session, worker_id: int, wait_seconds: int
+) -> TaskPayload | CleanupTaskPayload | None:
     """Long-poll: retry the atomic claim until a task or the deadline."""
     get_worker(session, worker_id)
     wait_seconds = max(0, min(wait_seconds, MAX_CLAIM_WAIT_SECONDS))
@@ -157,3 +196,40 @@ def claim_task(session: Session, worker_id: int, wait_seconds: int) -> TaskPaylo
         if remaining <= 0:
             return None
         time.sleep(min(CLAIM_POLL_INTERVAL_SECONDS, remaining))
+
+
+def apply_cleanup_result(
+    session: Session, worker_id: int, cleanup_id: int, report: CleanupResult
+) -> WorkerCleanupRequest:
+    """Record one secret-free Worker cleanup result.
+
+    Failed filesystem cleanup is retried a bounded number of times. The
+    Control Node never performs a fallback deletion because doing so would
+    violate the Worker ownership and offline safety boundary.
+    """
+    cleanup = session.scalar(
+        select(WorkerCleanupRequest).where(WorkerCleanupRequest.id == cleanup_id).with_for_update()
+    )
+    if cleanup is None:
+        raise domain_error(404, "cleanup_not_found", "Worker cleanup request not found")
+    if cleanup.worker_id != worker_id:
+        raise domain_error(
+            409,
+            "cleanup_not_owned",
+            "Worker cleanup request is assigned to another Worker",
+        )
+    if cleanup.status == "completed":
+        return cleanup
+    if cleanup.status != "running":
+        raise domain_error(409, "cleanup_not_running", "Worker cleanup request is not running")
+
+    if report.success:
+        cleanup.status = "completed"
+        cleanup.error_code = None
+        cleanup.completed_at = func.now()
+    else:
+        cleanup.error_code = "cleanup_failed"
+        cleanup.status = "pending" if cleanup.attempts < 3 else "failed"
+    session.commit()
+    session.refresh(cleanup)
+    return cleanup

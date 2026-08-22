@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from dlr.control import db
@@ -91,10 +92,26 @@ def update_adapter(
     )
 
 
-@router.delete("/api/adapters/{adapter_id}", status_code=204)
-def delete_adapter(adapter_id: int, principal: CurrentPrincipal, session: DbSession) -> Response:
+@router.delete("/api/adapters/{adapter_id}", response_model=None)
+def delete_adapter(
+    adapter_id: int,
+    principal: CurrentPrincipal,
+    session: DbSession,
+    stop: bool = False,
+) -> Response | JSONResponse:
     adapter_access.require_adapter_access(session, adapter_id, principal, "delete")
-    adapter_service.delete_adapter(session, adapter_id)
+    result = adapter_service.delete_adapter(session, adapter_id, stop=stop)
+    if result.waiting_for_worker:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "detail": {
+                    "code": "adapter_delete_waiting_for_worker",
+                    "message": "Cancellation requested; wait for the Worker to report cancelled",
+                    "params": {"active_execution_id": result.active_execution_id},
+                }
+            },
+        )
     return Response(status_code=204)
 
 

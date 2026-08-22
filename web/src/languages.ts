@@ -61,37 +61,20 @@ export const WEBHOOK_STARTER_CODE: Record<AdapterLanguage, string> = {
   python:
     "def handle(context, input):\n" +
     "    context.logger.info(\"收到 Webhook 请求\")\n" +
-    "    # 读取“凭据绑定”中配置的令牌，不要把真实 Token 直接写进代码\n" +
-    "    token = context.secrets.get(\"TOKEN\")\n" +
-    "    try:\n" +
-    "        # 在这里使用 token 校验或调用目标系统，但不要打印 token\n" +
-    "        return {\"received\": True, \"data\": input}\n" +
-    "    finally:\n" +
-    "        context.logger.info(\"处理完 Webhook 请求\")\n",
+    "    # 入口 Authorization: Bearer Token 已由平台校验，不会注入 context.secrets\n" +
+    "    return {\"received\": True, \"data\": input}\n",
   javascript:
     "export async function handle(context, input) {\n" +
     "  context.logger.info(\"收到 Webhook 请求\");\n" +
-    "  // 读取“凭据绑定”中配置的令牌，不要把真实 Token 直接写进代码\n" +
-    "  const token = context.secrets.get(\"TOKEN\");\n" +
-    "  try {\n" +
-    "    // 在这里使用 token 校验或调用目标系统，但不要打印 token\n" +
-    "    return { received: true, data: input };\n" +
-    "  } finally {\n" +
-    "    context.logger.info(\"处理完 Webhook 请求\");\n" +
-    "  }\n" +
+    "  // The platform authenticates Authorization: Bearer before execution; it is not in context.secrets\n" +
+    "  return { received: true, data: input };\n" +
     "}\n",
   java:
     "public class Adapter {\n" +
     "    public Object handle(Context context, Object input) throws Exception {\n" +
     "        context.logger.info(\"收到 Webhook 请求\");\n" +
-    "        // 读取“凭据绑定”中配置的令牌，不要把真实 Token 直接写进代码\n" +
-    "        String token = context.secrets.get(\"TOKEN\");\n" +
-    "        try {\n" +
-    "            // 在这里使用 token 校验或调用目标系统，但不要打印 token\n" +
-    "            return input;\n" +
-    "        } finally {\n" +
-    "            context.logger.info(\"处理完 Webhook 请求\");\n" +
-    "        }\n" +
+    "        // The platform authenticates Authorization: Bearer before execution; it is not in context.secrets\n" +
+    "        return input;\n" +
     "    }\n" +
     "}\n",
 };
@@ -163,37 +146,20 @@ const EN_WEBHOOK_STARTER_CODE: Record<AdapterLanguage, string> = {
   python:
     "def handle(context, input):\n" +
     "    context.logger.info(\"Webhook request received\")\n" +
-    "    # Read the token configured in Credential bindings; never put the real Token in code\n" +
-    "    token = context.secrets.get(\"TOKEN\")\n" +
-    "    try:\n" +
-    "        # Use token to validate or call the target system here, but never print it\n" +
-    "        return {\"received\": True, \"data\": input}\n" +
-    "    finally:\n" +
-    "        context.logger.info(\"Webhook request processed\")\n",
+    "    # The platform authenticates Authorization: Bearer before execution; it is not in context.secrets\n" +
+    "    return {\"received\": True, \"data\": input}\n",
   javascript:
     "export async function handle(context, input) {\n" +
     "  context.logger.info(\"Webhook request received\");\n" +
-    "  // Read the token configured in Credential bindings; never put the real Token in code\n" +
-    "  const token = context.secrets.get(\"TOKEN\");\n" +
-    "  try {\n" +
-    "    // Use token to validate or call the target system here, but never print it\n" +
-    "    return { received: true, data: input };\n" +
-    "  } finally {\n" +
-    "    context.logger.info(\"Webhook request processed\");\n" +
-    "  }\n" +
+    "  // The platform authenticates Authorization: Bearer before execution; it is not in context.secrets\n" +
+    "  return { received: true, data: input };\n" +
     "}\n",
   java:
     "public class Adapter {\n" +
     "    public Object handle(Context context, Object input) throws Exception {\n" +
     "        context.logger.info(\"Webhook request received\");\n" +
-    "        // Read the token configured in Credential bindings; never put the real Token in code\n" +
-    "        String token = context.secrets.get(\"TOKEN\");\n" +
-    "        try {\n" +
-    "            // Use token to validate or call the target system here, but never print it\n" +
-    "            return input;\n" +
-    "        } finally {\n" +
-    "            context.logger.info(\"Webhook request processed\");\n" +
-    "        }\n" +
+    "        // The platform authenticates Authorization: Bearer before execution; it is not in context.secrets\n" +
+    "        return input;\n" +
     "    }\n" +
     "}\n",
 };

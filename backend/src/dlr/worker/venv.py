@@ -471,3 +471,18 @@ def cleanup_stale_venvs(runtime_root: Path, adapter_id: int, keep_version_ids: s
             continue
         shutil.rmtree(child, ignore_errors=True)
         logger.info("cleaned stale venv for adapter %s version %s", adapter_id, version_id)
+
+
+def cleanup_adapter_environment(runtime_root: Path, adapter_id: int) -> None:
+    """Remove only one Adapter's private runtime tree.
+
+    The shared ``uv``/npm/Maven caches live outside this path and are never
+    removed by permanent Adapter deletion.
+    """
+    base = runtime_root / "adapters" / str(adapter_id)
+    if base.is_symlink() or base.is_file():
+        base.unlink(missing_ok=True)
+        return
+    if base.is_dir():
+        shutil.rmtree(base)
+        logger.info("cleaned runtime environment for deleted adapter %s", adapter_id)

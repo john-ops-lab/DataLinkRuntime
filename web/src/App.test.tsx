@@ -157,13 +157,8 @@ const TASK_STARTER_CODE =
 const WEBHOOK_STARTER_CODE =
   "def handle(context, input):\n" +
   "    context.logger.info(\"收到 Webhook 请求\")\n" +
-  "    # 读取“凭据绑定”中配置的令牌，不要把真实 Token 直接写进代码\n" +
-  "    token = context.secrets.get(\"TOKEN\")\n" +
-  "    try:\n" +
-  "        # 在这里使用 token 校验或调用目标系统，但不要打印 token\n" +
-  "        return {\"received\": True, \"data\": input}\n" +
-  "    finally:\n" +
-  "        context.logger.info(\"处理完 Webhook 请求\")\n";
+  "    # 入口 Authorization: Bearer Token 已由平台校验，不会注入 context.secrets\n" +
+  "    return {\"received\": True, \"data\": input}\n";
 
 interface RouteResponse {
   status?: number;
@@ -333,7 +328,7 @@ it("uses the Task starter only for Task Adapters without a saved Revision", asyn
   await screen.findByRole("heading", { name: "webhook-a" });
   expect(valueOf("code-editor")).toBe(WEBHOOK_STARTER_CODE);
   expect(valueOf("code-editor")).toContain("收到 Webhook 请求");
-  expect(valueOf("code-editor")).toContain("处理完 Webhook 请求");
+  expect(valueOf("code-editor")).not.toContain("context.secrets.get(\"TOKEN\")");
   expect(valueOf("code-editor")).not.toContain("任务开始");
   expect(valueOf("code-editor")).not.toContain("任务结束");
 });
@@ -4188,7 +4183,7 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
   // 运行设置只保留五类字段，无“接收状态”输入、无页面内启停按钮、无手工刷新。
   expect(screen.getByText("Webhook 路径")).toBeDefined();
   expect(screen.getByText("完整地址")).toBeDefined();
-  expect(screen.getByText("访问凭据")).toBeDefined();
+  expect(screen.getByText("入口调用鉴权（Bearer Token）")).toBeDefined();
   expect(screen.getByText("运行节点")).toBeDefined();
   expect(screen.getByText("单次执行超时（一次运行的最长时间）")).toBeDefined();
   expect(document.body.textContent).toContain("一次调用超过该时间后，系统将自动结束并标记为“超时”。");

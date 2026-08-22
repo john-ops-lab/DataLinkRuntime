@@ -1,7 +1,7 @@
 """Pydantic schemas for the worker-internal API."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -84,3 +84,17 @@ class TaskPayload(BaseModel):
     index_url: str | None = None
     # Captured at Execution creation; never read again from deployment state.
     locale: str = "zh-CN"
+
+
+class CleanupTaskPayload(BaseModel):
+    """A Worker task that removes one deleted Adapter's private runtime tree."""
+
+    kind: Literal["adapter_cleanup"] = "adapter_cleanup"
+    cleanup_id: int
+    adapter_id: int
+
+
+class CleanupResult(BaseModel):
+    """Secret-free completion report for an adapter cleanup task."""
+
+    success: bool

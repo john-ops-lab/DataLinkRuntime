@@ -43,7 +43,7 @@ describe("Wave 2 C error and starter contracts", () => {
     for (const code of [zhTask, enTask, zhWebhook, enWebhook]) {
       expect(code).toContain("handle");
       expect(code).toContain("input");
-      expect(code).toContain("context.secrets.get");
+      expect(code).not.toContain('context.secrets.get("TOKEN")');
       expect(code).not.toMatch(/password\s*=\s*["']/i);
       expect(code).not.toMatch(/token\s*=\s*["']/i);
     }
@@ -53,6 +53,8 @@ describe("Wave 2 C error and starter contracts", () => {
     expect(enWebhook).toContain("Webhook request received");
     expect(enTask).not.toContain("任务开始");
     expect(enWebhook).not.toContain("收到 Webhook 请求");
+    expect(zhWebhook).toContain("Bearer");
+    expect(enWebhook).toContain("Bearer");
   });
 
   it("does not mutate a captured starter snapshot when the system locale changes", async () => {

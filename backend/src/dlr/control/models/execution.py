@@ -4,7 +4,7 @@ M2 contracts kept by these models:
 
 - Every Execution is pinned to one immutable ``version_id`` at creation
   time; later Save operations never change it.
-- Execution history survives the Adapter's soft deletion.
+- Execution history is removed by the Adapter's permanent-delete transaction.
 - Workers carry no credentials; the platform-wide Worker token lives only
   in the Control configuration.
 
