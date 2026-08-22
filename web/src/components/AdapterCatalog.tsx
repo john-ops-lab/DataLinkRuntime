@@ -1,11 +1,10 @@
 /** 左侧 Adapter Catalog：高密度行式导航 + 新建表单（M3.1 §7，业务合同仍沿用 M1）。 */
 
 import { useEffect, useState } from "react";
-import { Button, Dropdown, Empty, Form, Input, Radio, Select } from "antd";
+import { Button, Dropdown, Empty, Input, Radio, Select } from "antd";
 import {
   DrawerForm,
   ProForm,
-  QueryFilter,
 } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
@@ -302,53 +301,35 @@ export default function AdapterCatalog({
       </div>
 
       <div className="catalog-search">
-        <div className="catalog-search-control">
-          <QueryFilter<CatalogFilterValues>
-            className="catalog-query-filter"
-            layout="vertical"
-            defaultCollapsed={false}
-            defaultColsNumber={1}
-            defaultFormItemsNumber={3}
-            span={24}
-            labelWidth={0}
-            submitter={false}
-            initialValues={filters}
-            onValuesChange={(_, values) =>
-              setFilters({
-                search: values.search ?? "",
-                type: values.type ?? "all",
-                status: values.status ?? "all",
-              })
-            }
-          >
-            <Form.Item name="type" noStyle>
-              <Select<AdapterTypeFilter | "all">
-                size="small"
-                className="catalog-filter-type"
-                data-testid="adapter-type-filter"
-                aria-label={t("catalog.filterTypeAria")}
-                options={typeFilterOptions}
-              />
-            </Form.Item>
-            <Form.Item name="status" noStyle>
-              <Select<AdapterStatusFilter>
-                size="small"
-                className="catalog-filter-status"
-                data-testid="adapter-status-filter"
-                aria-label={t("catalog.filterStatusAria")}
-                options={statusFilterOptions}
-              />
-            </Form.Item>
-            <Form.Item name="search" noStyle>
-              <Input
-                data-testid="adapter-search"
-                aria-label={t("catalog.search")}
-                placeholder={t("catalog.search")}
-                allowClear
-                size="small"
-              />
-            </Form.Item>
-          </QueryFilter>
+        <div className="catalog-search-control" aria-label={t("catalog.filterGroupAria")}>
+          <Select<AdapterTypeFilter | "all">
+            size="small"
+            className="catalog-filter-type"
+            data-testid="adapter-type-filter"
+            aria-label={t("catalog.filterTypeAria")}
+            value={filters.type}
+            options={typeFilterOptions}
+            onChange={(value) => setFilters((current) => ({ ...current, type: value }))}
+          />
+          <Select<AdapterStatusFilter>
+            size="small"
+            className="catalog-filter-status"
+            data-testid="adapter-status-filter"
+            aria-label={t("catalog.filterStatusAria")}
+            value={filters.status}
+            options={statusFilterOptions}
+            onChange={(value) => setFilters((current) => ({ ...current, status: value }))}
+          />
+          <Input
+            className="catalog-search-input"
+            data-testid="adapter-search"
+            aria-label={t("catalog.search")}
+            placeholder={t("catalog.search")}
+            allowClear
+            size="small"
+            value={filters.search}
+            onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
+          />
         </div>
       </div>
 

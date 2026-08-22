@@ -21,6 +21,7 @@
     "search": "搜索适配器",
     "filterTypeAll": "全部类型",
     "filterTypeAria": "适配器类型筛选",
+    "filterGroupAria": "适配器筛选条件",
     "filterStatusAll": "全部状态",
     "filterStatusAria": "适配器状态筛选",
     "taskManual": "任务型（手动）",

@@ -41,4 +41,10 @@ if (typeof window.ResizeObserver !== "function") {
 // Vitest globals are disabled, so register Testing Library cleanup explicitly.
 afterEach(() => {
   cleanup();
+  // App tests share jsdom's history within a worker. Reset the Wave A
+  // settings route so a test that opened the center cannot hide the next
+  // test's Adapter console.
+  if (window.location.pathname.startsWith("/settings")) {
+    window.history.replaceState(null, "", "/");
+  }
 });

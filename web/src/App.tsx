@@ -27,11 +27,13 @@ import WebhookTriggerPanel from "./components/WebhookTriggerPanel";
 import type { WebhookRuntimeState, WebhookTriggerHandle } from "./components/WebhookTriggerPanel";
 import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import UserManagementDrawer from "./components/UserManagementDrawer";
-import ApplicationShell, { type ShellSection } from "./components/ApplicationShell";
+import ApplicationShell from "./components/ApplicationShell";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
-import { applySystemLocale, currentSystemLocale, i18n, isSystemLocale } from "./i18n";
+import { cacheSystemLocale, currentSystemLocale, i18n, isSystemLocale } from "./i18n";
 import { currentEntryMode } from "./entry-mode";
 import DlrDesignSystemProvider from "./design-system";
+import { applyLoginLocalePreference } from "./login-locale";
+import { settingsCategoryFromPath, settingsPath, type SettingsCategory } from "./settings-route";
 export { ANT_DESIGN_LOCALES } from "./design-system";
 import {
   dependencyNoteFor,
@@ -218,6 +220,28 @@ interface AdapterConsoleProps {
   onOpenAccountProfile?: () => void;
 }
 
+function subscribeToBrowserLocation(callback: () => void): () => void {
+  window.addEventListener("popstate", callback);
+  return () => window.removeEventListener("popstate", callback);
+}
+
+function browserLocationSnapshot(): string {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function useBrowserLocation(): string {
+  return useSyncExternalStore(subscribeToBrowserLocation, browserLocationSnapshot, () => "/");
+}
+
+function notifyBrowserLocation(): void {
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function pushBrowserLocation(path: string, state?: unknown): void {
+  window.history.pushState(state ?? null, "", path);
+  notifyBrowserLocation();
+}
+
 export function AdapterConsole({
   accountPrincipal,
   onAccountLogout,
@@ -258,11 +282,11 @@ export function AdapterConsole({
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Controlled Workbench tab.
   const [activeTabKey, setActiveTabKey] = useState<WorkbenchTabKey>("edit");
-  // M3.2：编辑页次级配置 Tabs 与系统设置抽屉（凭据管理 + Python 包源）。
+  // M3.2：编辑页次级配置 Tabs 与系统设置中心（凭据管理 + Python 包源）。
   const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
-  const [systemSettingsOpen, setSystemSettingsOpen] = useState(false);
   const [userManagementOpen, setUserManagementOpen] = useState(false);
-  const [shellSection, setShellSection] = useState<ShellSection>("adapters");
+  const browserLocation = useBrowserLocation();
+  const requestedSettingsCategory = settingsCategoryFromPath(browserLocation.split("?", 1)[0].split("#", 1)[0]);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [aiCandidateDiff, setAiCandidateDiff] = useState<AiCandidateDiffModalState | null>(null);
   const handleAiCandidateDiffChange = useCallback((next: AiCandidateDiffModalState | null) => {
@@ -333,6 +357,13 @@ export function AdapterConsole({
   const selectedCanEdit = canEditAdapter(selectedAccessLevel);
   const selectedCanManage = canManageAdapter(selectedAccessLevel);
   const selectedCanUseAi = selectedCanEdit;
+  const settingsCategory = canManageUsers ? requestedSettingsCategory : null;
+
+  useEffect(() => {
+    if (requestedSettingsCategory !== null && !canManageUsers) {
+      pushBrowserLocation("/adapters");
+    }
+  }, [canManageUsers, requestedSettingsCategory]);
 
   useEffect(() => {
     if (!selectedCanUseAi) {
@@ -613,6 +644,44 @@ export function AdapterConsole({
     return window.confirm(t("confirm.discardChanges"));
   }
 
+  function openSystemSettings(): void {
+    if (settingsCategory !== null) {
+      return;
+    }
+    pushBrowserLocation(settingsPath("general"), {
+      dlrSettings: true,
+      from: browserLocation,
+    });
+  }
+
+  function changeSystemSettingsCategory(category: SettingsCategory): void {
+    if (settingsCategory === category) {
+      return;
+    }
+    const historyState = window.history.state;
+    if (historyState?.dlrSettings === true && typeof historyState.from === "string" && historyState.from !== "") {
+      window.history.replaceState(
+        { dlrSettings: true, from: historyState.from },
+        "",
+        settingsPath(category),
+      );
+    } else {
+      window.history.replaceState(null, "", settingsPath(category));
+    }
+    notifyBrowserLocation();
+  }
+
+  function closeSystemSettings(): void {
+    const from = window.history.state?.dlrSettings === true
+      ? window.history.state.from
+      : null;
+    if (typeof from === "string" && from !== "") {
+      window.history.back();
+      return;
+    }
+    pushBrowserLocation("/adapters");
+  }
+
   async function loadAdapterContent(
     adapter: Adapter,
     starterLocaleOverride?: ReturnType<typeof currentSystemLocale>,
@@ -620,7 +689,6 @@ export function AdapterConsole({
     const generation = ++requestGeneration.current;
     // Reset content state synchronously so the previous adapter's snapshot can never
     // appear (or be saved) under the newly selected adapter.
-    setShellSection("workbench");
     setSelected(adapter);
     setName(adapter.name);
     setDescription(adapter.description);
@@ -1060,7 +1128,6 @@ export function AdapterConsole({
       setVersions([]);
       setContentReady(false);
       setSettingsOpen(false);
-      setSystemSettingsOpen(false);
       liveWatcher.stop();
       setWaitingForWebhook(false);
       applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
@@ -1108,39 +1175,45 @@ export function AdapterConsole({
       canManageUsers={canManageUsers}
       accountPrincipal={accountPrincipal}
       onOpenUserManagement={() => setUserManagementOpen(true)}
-      onOpenSystemSettings={() => setSystemSettingsOpen(true)}
+      onOpenSystemSettings={openSystemSettings}
       onOpenAccountProfile={onOpenAccountProfile}
       onAccountLogout={onAccountLogout}
-      selectedAdapterName={selected?.name ?? null}
-      section={shellSection}
-      onSectionChange={setShellSection}
     >
-      {messageContextHolder}
-      <div className="app-global-feedback">
-        {error && (
-          <Alert
-            type="error"
-            showIcon
-            role="alert"
-            data-testid="error-banner"
-            message={error}
-          />
-        )}
-      </div>
-
-      <div className="console-body">
-        <AdapterCatalog
-          adapters={adapters}
-          selectedId={selected?.id ?? null}
-          busy={busy}
-          onSelect={handleSelectAdapter}
-          onCreate={handleCreateAdapter}
-          versionSeqById={versionSeqById}
-          workers={workers}
-          onOpenSettings={handleCatalogOpenSettings}
-          onClone={(adapter) => void handleClone(adapter)}
-          accountPrincipal={accountPrincipal}
+      {settingsCategory !== null ? (
+        <SystemSettingsDrawer
+          open
+          category={settingsCategory}
+          onCategoryChange={changeSystemSettingsCategory}
+          onClose={closeSystemSettings}
         />
+      ) : (
+        <>
+          {messageContextHolder}
+          <div className="app-global-feedback">
+            {error && (
+              <Alert
+                type="error"
+                showIcon
+                role="alert"
+                data-testid="error-banner"
+                message={error}
+              />
+            )}
+          </div>
+
+          <div className="console-body">
+            <AdapterCatalog
+              adapters={adapters}
+              selectedId={selected?.id ?? null}
+              busy={busy}
+              onSelect={handleSelectAdapter}
+              onCreate={handleCreateAdapter}
+              versionSeqById={versionSeqById}
+              workers={workers}
+              onOpenSettings={handleCatalogOpenSettings}
+              onClone={(adapter) => void handleClone(adapter)}
+              accountPrincipal={accountPrincipal}
+            />
 
         {/*
           M5.5.4：AI 助手放在 Workbench 之前的 DOM 位置，视觉上仍通过 flex
@@ -1334,7 +1407,7 @@ export function AdapterConsole({
                                     accessLevel={selectedAccessLevel}
                                     useScopedCredentialOptions={accountPrincipal !== undefined}
                                     onError={setError}
-                                    onOpenSettings={() => setSystemSettingsOpen(true)}
+                                    onOpenSettings={openSystemSettings}
                                   />
                                 ),
                               },
@@ -1429,7 +1502,9 @@ export function AdapterConsole({
             </section>
           )}
         </main>
-      </div>
+          </div>
+        </>
+      )}
 
       <AdapterSettingsDrawer
         open={settingsOpen}
@@ -1446,11 +1521,6 @@ export function AdapterConsole({
         onClone={() => void handleClone()}
         accessLevel={selectedAccessLevel}
         onPermissionsChanged={() => void refreshAdapters()}
-      />
-
-      <SystemSettingsDrawer
-        open={systemSettingsOpen}
-        onClose={() => setSystemSettingsOpen(false)}
       />
 
       {canManageUsers && (
@@ -1581,13 +1651,14 @@ function TokenApp() {
     }
     return false;
   });
-  const [noticeKey, setNoticeKey] = useState<"auth.sessionRejected" | null>(null);
+  const [noticeKey, setNoticeKey] = useState<"auth.sessionRejected" | "auth.logoutNotice" | null>(null);
 
   const refreshSystemLocale = useCallback(async () => {
     try {
       const response = await api.getSystemLocale();
       if (isSystemLocale(response.locale)) {
-        await applySystemLocale(response.locale);
+        cacheSystemLocale(response.locale);
+        await applyLoginLocalePreference(response.locale);
       }
     } catch {
       // The cached locale is only a first-paint fallback; keep it when the
@@ -1622,8 +1693,15 @@ function TokenApp() {
     setAuthed(true);
   }
 
+  async function handleLogout(): Promise<void> {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    setAuthToken(null);
+    setNoticeKey("auth.logoutNotice");
+    setAuthed(false);
+  }
+
   return authed ? (
-    <AdapterConsole />
+    <AdapterConsole onAccountLogout={handleLogout} />
   ) : (
     <LoginPage
       notice={noticeKey === null ? null : t(noticeKey)}

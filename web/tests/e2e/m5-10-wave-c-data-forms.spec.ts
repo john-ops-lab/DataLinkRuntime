@@ -392,7 +392,9 @@ async function inspectCatalog(page: Page, locale: Locale) {
 }
 
 async function inspectAdminForms(page: Page, locale: Locale) {
+  await page.getByTestId("user-menu").click();
   await page.getByTestId("system-settings").click();
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "凭据" : "Credentials" }).click();
   await expect(page.getByTestId("credentials-panel")).toBeVisible();
   await expect(page.getByTestId("credential-row")).toHaveCount(0);
   await page.getByTestId("new-credential").click();
@@ -400,7 +402,8 @@ async function inspectAdminForms(page: Page, locale: Locale) {
   await page.getByTestId("credential-name").fill("fixture-credential-with-a-long-name");
   await page.locator(".ant-modal-root").last().locator(".ant-modal-close").click();
 
-  await page.getByRole("tab", { name: locale === "zh-CN" ? "依赖源" : "Package sources" }).click();
+  page.once("dialog", async (dialog) => await dialog.accept());
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "依赖源" : "Package sources" }).click();
   await expect(page.getByTestId("package-sources-panel")).toBeVisible();
   await expect(page.getByTestId("package-source-row")).toBeVisible();
   await page.getByTestId("new-package-source").click();
@@ -409,13 +412,15 @@ async function inspectAdminForms(page: Page, locale: Locale) {
   await page.getByTestId("package-source-url").fill("https://packages.example.com/a/very/long/repository/path/simple/");
   await page.locator(".ant-modal-root").last().locator(".ant-modal-close").click();
 
-  await page.getByRole("tab", { name: locale === "zh-CN" ? "知识库" : "Knowledge bases" }).click();
+  page.once("dialog", async (dialog) => await dialog.accept());
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "知识库" : "Knowledge base" }).click();
   await expect(page.getByTestId("knowledge-source-summary")).toBeVisible();
   await expect(page.getByTestId("knowledge-source-endpoint")).toHaveText("https://ima.qq.com");
-  await page.getByRole("tab", { name: locale === "zh-CN" ? "凭据管理" : "Credentials" }).click();
-  await page.locator(".ant-drawer-open").last().locator(".ant-drawer-close").click();
-  await expect(page.getByTestId("credentials-panel")).toBeHidden();
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "凭据" : "Credentials" }).click();
+  await page.getByTestId("settings-back").click();
+  await expect(page.getByTestId("system-settings-center")).toBeHidden();
 
+  await page.getByTestId("user-menu").click();
   await page.getByTestId("user-management").click();
   await expect(page.getByTestId("user-management-drawer")).toBeVisible();
   await expect(page.locator(".ant-pagination")).toBeVisible();
@@ -515,7 +520,9 @@ for (const locale of LOCALES) {
         const userUnknown = await installRoutes(userPage, userScenario, locale);
         await userPage.goto("/");
         await login(userPage, userScenario, locale);
+        await userPage.getByTestId("user-menu").click();
         await expect(userPage.getByTestId("account-profile")).toBeVisible();
+        await userPage.keyboard.press("Escape");
         await inspectAccountAccess(userPage, userScenario, locale);
         await finishRecord(userPage, locale, width, userScenario, userDiagnostics, userUnknown, {
           account_profile: true,

@@ -21,6 +21,7 @@ import { userErrorMessage } from "../user-message";
 
 interface AiModelSettingsPanelProps {
   onError: (message: string) => void;
+  onSaved?: () => void;
 }
 
 const DEFAULT_SETTING: AiModelSettingDraft = {
@@ -93,7 +94,7 @@ function normalizeSetting(setting: AiModelSetting | null): AiModelSettingDraft {
 
 export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const { t } = useTranslation(["ai", "common"]);
-  const { onError } = props;
+  const { onError, onSaved } = props;
   const [form, setForm] = useState<AiModelSettingDraft>({ ...DEFAULT_SETTING });
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
@@ -258,6 +259,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       const normalized = normalizeSetting(saved);
       setForm(normalized);
        setNotice(t("model.saveNotice"));
+      onSaved?.();
     } catch (error) {
       fail(errorMessage(error, t("model.requestFailed")));
     } finally {

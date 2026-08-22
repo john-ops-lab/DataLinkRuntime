@@ -1,6 +1,4 @@
-/* M3.1 Console 视觉收敛：浅灰应用 Shell + 白色核心工作区（对齐 docs/ui/m3/ 视觉基线）。
-   布局骨架：固定 App Header + 左侧 Adapter Catalog + 中间 Developer Workbench；
-   中间区域为 flex 结构，未来 M4 可在右侧自然挂载 360–420px AI/Context Panel。 */
+/* M5.11 Wave A：固定应用视口 + 紧凑顶栏 + Adapter 目录 / 主工作区。 */
 
 :root {
   --dlr-shell-bg: #f5f6f8;
@@ -18,6 +16,8 @@ html,
 body {
   margin: 0;
   height: 100%;
+  min-height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -29,55 +29,52 @@ body {
 #root {
   height: 100%;
   min-height: 100%;
+  overflow: hidden;
 }
 
 /* --- App Shell --------------------------------------------------------- */
 
 .dlr-app-layout {
-  height: 100%;
-  min-height: 100%;
-}
-
-.dlr-app-layout > .ant-layout {
-  min-height: 100%;
-}
-
-.dlr-app-layout .ant-pro-layout-container {
+  height: 100dvh;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  overflow: hidden;
 }
 
-.app-menu-brand {
+.app-shell-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-header-context {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 9px;
   min-width: 0;
-  padding: 0 8px;
-  color: var(--dlr-text);
+  flex: 0 1 auto;
 }
 
-.app-menu-logo {
-  flex: 0 0 auto;
+.app-header-logo {
   color: #1677ff;
-  font-size: 1rem;
+  font-size: 0.92rem;
   font-weight: 700;
   letter-spacing: 0.08em;
 }
 
-.app-menu-name {
+.app-header-product {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-weight: 600;
-}
-
-.app-menu-footer {
-  padding: 10px 16px 14px;
-  color: var(--dlr-text-weak);
-  font-size: 0.72rem;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
+  color: var(--dlr-text);
 }
 
 .app-header {
@@ -100,8 +97,6 @@ body {
 }
 
 .app-header-product {
-  font-size: 0.8rem;
-  color: var(--dlr-text-weak);
   overflow-wrap: anywhere;
 }
 
@@ -133,6 +128,13 @@ body {
   gap: 6px;
   color: var(--dlr-text-secondary);
   white-space: nowrap;
+  opacity: 0.75;
+}
+
+.health-status-alert {
+  color: #a8071a;
+  font-weight: 600;
+  opacity: 1;
 }
 
 .health-dot {
@@ -154,37 +156,19 @@ body {
   background: #ff4d4f;
 }
 
-.dlr-page-container {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
+.app-user-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(220px, 30vw);
+  padding-inline: 6px;
 }
 
-.dlr-page-container .ant-pro-page-container-children-container {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
-  padding: 0;
-}
-
-.dlr-page-container .ant-page-header-heading-title,
-.dlr-page-container .ant-page-header-heading-sub-title {
+.app-user-menu-name {
   min-width: 0;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-}
-
-.app-page-title {
-  overflow-wrap: anywhere;
-}
-
-.app-page-content {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-global-feedback {
@@ -254,6 +238,36 @@ body {
 .catalog-search {
   flex: 0 0 auto;
   padding: 0 12px 8px;
+}
+
+.catalog-search-input {
+  flex: 1.3 1 0;
+  min-width: 0;
+}
+
+.catalog-search-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.catalog-search-control .ant-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.catalog-search-control .ant-select-selector {
+  min-width: 0;
+}
+
+.catalog-search-control .catalog-filter-type {
+  flex-grow: 1.1;
+}
+
+.catalog-search-control .catalog-filter-status {
+  flex-grow: 1;
 }
 
 /* M5.10 Wave C：QueryFilter 在 Catalog 窄栏内按字段堆叠，避免长中文/英文把
@@ -2123,7 +2137,93 @@ body {
   display: flex;
 }
 
-/* --- M3.2 系统设置面板（凭据管理 / Python 包源） -------------------- */
+/* --- M5.11 Wave A 独立设置中心 ----------------------------------------- */
+
+.settings-center {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--dlr-shell-bg);
+}
+
+.settings-center-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding: 8px 24px;
+  background: var(--dlr-workspace-bg);
+  border-bottom: 1px solid var(--dlr-border);
+}
+
+.settings-center-header .ant-btn {
+  flex: 0 0 auto;
+  padding-inline: 0;
+}
+
+.settings-center-title {
+  margin: 0 !important;
+  min-width: 0;
+}
+
+.settings-center-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.settings-center-nav {
+  flex: 0 0 204px;
+  min-height: 0;
+  padding: 16px 8px;
+  overflow-y: auto;
+  background: var(--dlr-workspace-bg);
+  border-right: 1px solid var(--dlr-border);
+}
+
+.settings-center-nav .ant-menu {
+  border-inline-end: 0;
+  background: transparent;
+}
+
+.settings-center-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 24px;
+}
+
+.settings-center-content-inner {
+  width: min(100%, 1080px);
+  margin: 0 auto;
+}
+
+.settings-category-header {
+  margin-bottom: 20px;
+}
+
+.settings-category-header .ant-typography {
+  overflow-wrap: anywhere;
+}
+
+.settings-category-header h3 {
+  margin: 0 0 6px;
+}
+
+.settings-category-header p {
+  margin: 0;
+  max-width: 760px;
+}
+
+/* M3.2 系统设置面板（凭据管理 / Python 包源） -------------------- */
 
 /* M5.5.7：四类凭据说明区。 */
 .credential-type-guide {
@@ -2405,7 +2505,110 @@ body {
   font-size: 0.75rem;
 }
 
-/* --- 登录页：品牌区 + Token 登录卡片 -------------------------------------- */
+/* --- M5.11 Wave A：Token / 账号共用登录壳层 ------------------------------ */
+
+.auth-page {
+  box-sizing: border-box;
+  min-height: 100dvh;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: auto;
+  background: linear-gradient(160deg, #eaf2ff 0%, #f5f6f8 56%);
+}
+
+.auth-shell {
+  width: min(100%, 960px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 380px);
+  align-items: center;
+  gap: clamp(32px, 5vw, 64px);
+}
+
+.auth-brand {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px 0;
+}
+
+.auth-brand-logo {
+  margin: 0;
+  color: #1677ff;
+  font-size: 3rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.auth-brand-name {
+  color: var(--dlr-text-secondary);
+  font-size: 1rem;
+}
+
+.auth-brand-tagline {
+  margin: 4px 0 0;
+  color: #0958d9;
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.auth-brand-sub {
+  max-width: 460px;
+  margin: 0;
+  color: var(--dlr-text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.7;
+}
+
+.auth-brand-intro {
+  white-space: pre-line;
+}
+
+.auth-brand-flow {
+  margin: 0;
+  color: var(--dlr-text-weak);
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+
+.auth-copyright {
+  margin: 12px 0 0;
+  color: var(--dlr-text-weak);
+  font-size: 0.75rem;
+}
+
+.auth-form-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auth-language-picker {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--dlr-text-secondary);
+  font-size: 0.8rem;
+}
+
+.auth-language-picker .ant-select {
+  min-width: 132px;
+}
+
+.auth-card {
+  width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(16, 24, 40, 0.08);
+}
+
+/* --- Legacy login class aliases retained for focused component tests ------ */
 
 .login-page {
   box-sizing: border-box;
@@ -2642,6 +2845,10 @@ body {
   .login-side {
     flex: 1;
   }
+
+  .auth-shell {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  }
 }
 
 @media (max-width: 1180px) {
@@ -2658,6 +2865,37 @@ body {
 }
 
 @media (max-width: 700px) {
+  .auth-page {
+    align-items: flex-start;
+    padding: 16px;
+  }
+
+  .auth-shell {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .auth-brand {
+    gap: 8px;
+    padding: 8px 0 0;
+  }
+
+  .auth-brand-logo {
+    font-size: 2.4rem;
+  }
+
+  .auth-brand-sub:nth-of-type(n + 2),
+  .auth-brand-flow,
+  .auth-copyright {
+    display: none;
+  }
+
+  .auth-language-picker {
+    justify-content: space-between;
+  }
+
   .workbench-header,
   .editor-pane {
     padding-left: 10px;
