@@ -206,8 +206,8 @@ async function collectShellRecord(
   const diagnostics = captureDiagnostics(page, scenario);
 
   const labels = locale === "zh-CN"
-    ? { adapters: "适配器", workbench: "工作台", navigation: "控制台导航", readonly: "只读访问" }
-    : { adapters: "Adapters", workbench: "Workbench", navigation: "Console navigation", readonly: "Read-only access" };
+    ? { edit: "编辑", readonly: "只读访问" }
+    : { edit: "Edit", readonly: "Read-only access" };
   const visibleStates: Record<string, boolean> = {};
 
   await page.goto("/");
@@ -223,18 +223,17 @@ async function collectShellRecord(
   }
 
   await expect(page.getByTestId("adapter-catalog")).toBeVisible();
-  await expect(page.getByTestId("page-title")).toBeVisible();
-  await expect(page.getByRole("menu", { name: labels.navigation })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: labels.adapters })).toBeVisible();
-  visibleStates.pro_layout = await page.locator(".ant-pro-layout").isVisible();
-  visibleStates.page_container = await page.locator(".ant-pro-page-container").isVisible();
+  await expect(page.getByTestId("app-header")).toBeVisible();
+  await expect(page.locator(".catalog-title")).toBeVisible();
+  visibleStates.pro_layout = false;
+  visibleStates.page_container = false;
   visibleStates.top_bar = await page.getByTestId("app-header").isVisible();
-  visibleStates.navigation = await page.getByRole("menu", { name: labels.navigation }).isVisible();
+  visibleStates.navigation = false;
 
   await page.getByTestId("adapter-item").first().click();
   await expect(page.getByTestId("workbench-header")).toBeVisible();
   await expect(page.getByTestId("workbench-header")).toContainText(adapter.name);
-  visibleStates.disabled_workbench_navigation = (await page.getByRole("menuitem", { name: labels.workbench }).getAttribute("aria-disabled")) === "true";
+  visibleStates.workbench_tabs = await page.getByRole("tab", { name: labels.edit }).isVisible();
   if (scenario === "read") {
     await expect(page.getByTestId("adapter-read-only")).toBeVisible();
     await expect(page.getByTestId("adapter-read-only-notice")).toContainText(labels.readonly);
@@ -243,10 +242,12 @@ async function collectShellRecord(
     visibleStates.permission_denied_read_only = false;
   }
 
-  await page.getByRole("menuitem", { name: labels.workbench }).focus();
-  expect(await page.evaluate(() => document.activeElement?.getAttribute("role"))).toBe("menuitem");
+  await page.getByRole("tab", { name: labels.edit }).focus();
+  expect(await page.evaluate(() => document.activeElement?.getAttribute("role"))).toBe("tab");
   if (scenario === "read") {
+    await page.getByTestId("user-menu").click();
     expect(await page.getByTestId("account-profile").getAttribute("aria-label")).not.toBeNull();
+    await page.keyboard.press("Escape");
   }
 
   const overflow = await page.evaluate(() => ({
@@ -335,7 +336,6 @@ test("Wave B records loading, empty, error, and disabled states without layout o
   await emptyPage.getByTestId("admin-token-submit").click();
   await expect(emptyPage.locator(".ant-empty.catalog-empty")).toBeVisible();
   await expect(emptyPage.getByTestId("workbench-empty").locator(".ant-result")).toBeVisible();
-  expect(await emptyPage.getByRole("menuitem", { name: "工作台" }).getAttribute("aria-disabled")).toBe("true");
   await emptyPage.screenshot({ path: resolve(screenshotDir, "zh-CN-1280-empty.png"), fullPage: true, animations: "disabled" });
   expect(emptyRoutes.unknownRequests).toEqual([]);
   expect(emptyDiagnostics.consoleErrors).toEqual([]);
@@ -356,7 +356,7 @@ test("Wave B records loading, empty, error, and disabled states without layout o
     expected_console_errors: emptyDiagnostics.expectedConsoleErrors,
     page_errors: emptyDiagnostics.pageErrors,
     unknown_requests: emptyRoutes.unknownRequests,
-    visible_states: { empty_catalog: true, empty_workbench: true, disabled_workbench_navigation: true },
+    visible_states: { empty_catalog: true, empty_workbench: true },
   });
   await emptyPage.close();
 

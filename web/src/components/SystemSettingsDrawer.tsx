@@ -1,6 +1,6 @@
 /** 系统设置抽屉：凭据管理 + 三语言依赖源（M3.3，全局平台配置）。 */
 
-import { useCallback, useEffect, useState, type ChangeEvent, type MouseEvent } from "react";
+import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import {
   Button,
   Checkbox,
@@ -92,9 +92,13 @@ function emptyForm(): CredentialFormState {
   return { editingId: null, name: "", type: "password", fields: {} };
 }
 
-function CredentialsPanel(props: { onError: (message: string) => void; expandGuide?: boolean }) {
+function CredentialsPanel(props: {
+  onError: (message: string) => void;
+  onSaved?: () => void;
+  expandGuide?: boolean;
+}) {
   const { t } = useTranslation(["settings", "common"]);
-  const { onError, expandGuide = false } = props;
+  const { onError, onSaved, expandGuide = false } = props;
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
@@ -192,6 +196,7 @@ function CredentialsPanel(props: { onError: (message: string) => void; expandGui
       } else {
         await api.updateCredential(form.editingId, { name, fields });
       }
+      onSaved?.();
       setFormOpen(false);
       const operation = form.editingId === null ? t("credentials.created") : t("credentials.updated");
       if (await load()) {
@@ -495,9 +500,12 @@ const EMPTY_SOURCE_FORM: PackageSourceFormState = {
   credential_id: null,
 };
 
-function PackageSourcesPanel(props: { onError: (message: string) => void }) {
+function PackageSourcesPanel(props: {
+  onError: (message: string) => void;
+  onSaved?: () => void;
+}) {
   const { t } = useTranslation(["settings", "common"]);
-  const { onError } = props;
+  const { onError, onSaved } = props;
   const [sources, setSources] = useState<PackageSource[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [defaults, setDefaults] = useState<PackageSourceDefaults | null>(null);
@@ -585,6 +593,7 @@ function PackageSourcesPanel(props: { onError: (message: string) => void }) {
         is_default: form.is_default,
         credential_id: form.credential_id,
       });
+      onSaved?.();
       setFormOpen(false);
       setForm(EMPTY_SOURCE_FORM);
       if (await load()) {
@@ -1080,9 +1089,13 @@ type KnowledgeSourceDisplayStatus =
   | "connected"
   | "error";
 
-function KnowledgeSourcesPanel(props: { active: boolean; onError: (message: string) => void }) {
+function KnowledgeSourcesPanel(props: {
+  active: boolean;
+  onError: (message: string) => void;
+  onSaved?: () => void;
+}) {
   const { t } = useTranslation(["settings", "common"]);
-  const { active, onError } = props;
+  const { active, onError, onSaved } = props;
   const [source, setSource] = useState<KnowledgeSource | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [form, setForm] = useState<KnowledgeSourceFormState>(EMPTY_KNOWLEDGE_SOURCE_FORM);
@@ -1166,6 +1179,7 @@ function KnowledgeSourcesPanel(props: { active: boolean; onError: (message: stri
       setTestErrorCode(null);
       setKnowledgeBases([]);
       setNotice(t("knowledgeSources.saved"));
+      onSaved?.();
       return true;
     } catch (error) {
       fail(errorMessage(error));
@@ -1461,13 +1475,6 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
     setDirty(true);
   }
 
-  function markSaved(event: MouseEvent<HTMLElement>): void {
-    const target = event.target as HTMLElement;
-    if (target.closest("[data-testid=save-knowledge-source], [data-testid=submit-credential], [data-testid=submit-package-source], [data-testid=ai-save-settings]")) {
-      setDirty(false);
-    }
-  }
-
   return (
     <section className="settings-center" data-testid="system-settings-center" aria-labelledby="system-settings-title">
       <div className="settings-center-header">
@@ -1500,7 +1507,6 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
         <section
           className="settings-center-content"
           onChangeCapture={markDirty}
-          onClickCapture={markSaved}
           tabIndex={-1}
           aria-labelledby="settings-category-title"
         >
@@ -1511,11 +1517,21 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
             </header>
             {standalone && activeCategory !== "general" && <SystemLocaleControl />}
             {activeCategory === "general" && <SystemLocaleControl />}
-            {activeCategory === "credentials" && <CredentialsPanel onError={keepErrorInline} expandGuide={standalone} />}
-            {activeCategory === "package-sources" && <PackageSourcesPanel onError={keepErrorInline} />}
-            {activeCategory === "ai-model" && <AiModelSettingsPanel onError={keepErrorInline} />}
+            {activeCategory === "credentials" && (
+              <CredentialsPanel
+                onError={keepErrorInline}
+                onSaved={() => setDirty(false)}
+                expandGuide={standalone}
+              />
+            )}
+            {activeCategory === "package-sources" && (
+              <PackageSourcesPanel onError={keepErrorInline} onSaved={() => setDirty(false)} />
+            )}
+            {activeCategory === "ai-model" && (
+              <AiModelSettingsPanel onError={keepErrorInline} onSaved={() => setDirty(false)} />
+            )}
             {activeCategory === "knowledge-sources" && (
-              <KnowledgeSourcesPanel active onError={keepErrorInline} />
+              <KnowledgeSourcesPanel active onError={keepErrorInline} onSaved={() => setDirty(false)} />
             )}
           </div>
         </section>

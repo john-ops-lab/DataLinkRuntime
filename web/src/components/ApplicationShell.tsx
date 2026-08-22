@@ -48,20 +48,23 @@ function TopBar({
   onAccountLogout,
 }: Omit<ApplicationShellProps, "selectedAdapterName" | "section" | "onSectionChange" | "children">) {
   const { t } = useTranslation("common");
+  const menuLabel = (testId: string, label: string) => (
+    <span data-testid={testId} aria-label={label}>{label}</span>
+  );
   const menuItems: MenuProps["items"] = [
     ...(onOpenAccountProfile
-      ? [{ key: "profile", icon: <UserOutlined aria-hidden="true" />, label: t("auth.profile") }]
+      ? [{ key: "profile", icon: <UserOutlined aria-hidden="true" />, label: menuLabel("account-profile", t("auth.profile")) }]
       : []),
     ...(canManageUsers && onOpenUserManagement
-      ? [{ key: "users", icon: <TeamOutlined aria-hidden="true" />, label: t("actions.userManagement") }]
+      ? [{ key: "users", icon: <TeamOutlined aria-hidden="true" />, label: menuLabel("user-management", t("actions.userManagement")) }]
       : []),
     ...(canManageUsers && onOpenSystemSettings
-      ? [{ key: "settings", icon: <SettingOutlined aria-hidden="true" />, label: t("actions.systemSettings") }]
+      ? [{ key: "settings", icon: <SettingOutlined aria-hidden="true" />, label: menuLabel("system-settings", t("actions.systemSettings")) }]
       : []),
     ...(onAccountLogout
       ? [
           { type: "divider" as const },
-          { key: "logout", icon: <LogoutOutlined aria-hidden="true" />, label: t("auth.logout") },
+          { key: "logout", icon: <LogoutOutlined aria-hidden="true" />, label: menuLabel("account-logout", t("auth.logout")) },
         ]
       : []),
   ];

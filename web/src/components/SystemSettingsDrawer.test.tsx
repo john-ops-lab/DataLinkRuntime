@@ -362,6 +362,30 @@ it("凭据管理页展示四类凭据说明（访问密钥为 access_key_id + ac
   ).toBeTruthy();
 });
 
+it("保存失败时仍保留未保存更改确认", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "updateAiSetting").mockRejectedValue(new Error("fixture save failed"));
+  const onClose = vi.fn();
+  render(<SystemSettingsDrawer open onClose={onClose} />);
+
+  fireEvent.click(screen.getByRole("menuitem", { name: "AI 模型" }));
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.change(screen.getByTestId("ai-base-url"), {
+    target: { value: "https://api.example.com" },
+  });
+  fireEvent.change(screen.getByTestId("ai-model-input"), {
+    target: { value: "fixture-model" },
+  });
+  fireEvent.click(screen.getByTestId("ai-save-settings"));
+  await screen.findByTestId("ai-settings-error");
+
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByTestId("settings-back"));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(onClose).not.toHaveBeenCalled();
+});
+
 it("新建凭据提交前有一次性明文提醒，取消则不创建", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
   vi.spyOn(api, "listPackageSources").mockResolvedValue([]);

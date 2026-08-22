@@ -558,10 +558,8 @@ async function openAdapter(page: Page, adapterId: number) {
 }
 
 async function auditShellCatalogAndKeyboard(page: Page, locale: Locale, expectedSearchMatches = 2) {
-  const navigationName = locale === "zh-CN" ? "控制台导航" : "Console navigation";
-  await expect(page.getByRole("menu", { name: navigationName })).toBeVisible();
-  await expect(page.getByTestId("page-title")).toBeVisible();
   await expect(page.getByTestId("app-header")).toBeVisible();
+  await expect(page.locator(".catalog-title")).toBeVisible();
   await expect(page.getByTestId("adapter-search")).toHaveAccessibleName(locale === "zh-CN" ? "搜索适配器" : "Search Adapters");
   await page.getByTestId("adapter-search").fill("Long Label");
   await expect(page.getByTestId("adapter-item")).toHaveCount(expectedSearchMatches);
@@ -579,12 +577,14 @@ async function auditShellCatalogAndKeyboard(page: Page, locale: Locale, expected
   await page.keyboard.press("Enter");
   await expect(page.locator(".ant-select-dropdown:not(.ant-select-dropdown-hidden)")).toBeVisible();
   await page.keyboard.press("Escape");
-  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "适配器" : "Adapters" }).focus();
-  expect(await page.evaluate(() => document.activeElement?.getAttribute("role"))).toBe("menuitem");
+  await page.getByTestId("adapter-search").focus();
+  expect(await page.evaluate(() => document.activeElement?.getAttribute("data-testid"))).toBe("adapter-search");
 }
 
 async function auditAdminSettings(page: Page, locale: Locale, width: number, persona: Persona, unknownRequests: string[], diagnostics: ReturnType<typeof captureDiagnostics>) {
+  await page.getByTestId("user-menu").click();
   await page.getByTestId("system-settings").click();
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "凭据" : "Credentials" }).click();
   await expect(page.getByTestId("credentials-panel")).toBeVisible();
   await expect(page.getByTestId("credential-row")).toBeVisible();
   await page.getByTestId("new-credential").click();
@@ -592,7 +592,8 @@ async function auditAdminSettings(page: Page, locale: Locale, width: number, per
   await page.getByTestId("credential-name").fill("fixture-credential-name");
   await page.locator(".ant-modal-root").last().locator(".ant-modal-close").click();
 
-  await page.getByRole("tab", { name: locale === "zh-CN" ? "依赖源" : "Package sources" }).click();
+  page.once("dialog", async (dialog) => await dialog.accept());
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "依赖源" : "Package sources" }).click();
   await expect(page.getByTestId("package-sources-panel")).toBeVisible();
   await expect(page.getByTestId("package-source-row")).toBeVisible();
   await page.getByTestId("new-package-source").click();
@@ -600,10 +601,11 @@ async function auditAdminSettings(page: Page, locale: Locale, width: number, per
   await page.getByTestId("package-source-url").fill("https://packages.example.com/a/very/long/repository/path/simple/");
   await page.locator(".ant-modal-root").last().locator(".ant-modal-close").click();
 
-  await page.getByRole("tab", { name: locale === "zh-CN" ? "知识库" : "Knowledge bases" }).click();
+  page.once("dialog", async (dialog) => await dialog.accept());
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "知识库" : "Knowledge base" }).click();
   await expect(page.getByTestId("knowledge-source-summary")).toBeVisible();
   await expect(page.getByTestId("knowledge-source-endpoint")).toHaveText("https://ima.qq.com");
-  await page.getByRole("tab", { name: locale === "zh-CN" ? "AI 模型" : "AI model" }).click();
+  await page.getByRole("menuitem", { name: locale === "zh-CN" ? "AI 模型" : "AI model" }).click();
   await expect(page.getByTestId("ai-model-settings-panel")).toBeVisible();
   await finishRecord(page, locale, width, persona, "system-settings-ai", diagnostics, unknownRequests, {
     system_settings_drawer: true,
@@ -613,8 +615,9 @@ async function auditAdminSettings(page: Page, locale: Locale, width: number, per
     ai_model_form: true,
     drawer_overflow: true,
   });
-  await page.locator(".ant-drawer-open").last().locator(".ant-drawer-close").click();
+  await page.getByTestId("settings-back").click();
 
+  await page.getByTestId("user-menu").click();
   await page.getByTestId("user-management").click();
   await expect(page.getByTestId("user-management-drawer")).toBeVisible();
   await expect(page.locator(".ant-pagination")).toBeVisible();
@@ -802,6 +805,7 @@ async function auditAccountProfile(page: Page, locale: Locale, width: number, pe
   if (await page.getByTestId("close-ai-assistant").isVisible().catch(() => false)) {
     await page.getByTestId("close-ai-assistant").click();
   }
+  await page.getByTestId("user-menu").click();
   await page.getByTestId("account-profile").click();
   await expect(page.getByTestId("account-profile-username")).toBeVisible();
   await expect(page.getByTestId("account-user-password-submit")).toBeVisible();
