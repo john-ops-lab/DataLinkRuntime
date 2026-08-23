@@ -75,6 +75,8 @@
     }
   },
   "credentials": {
+    "toolbar": "Credential toolbar",
+    "help": "View credential type guide",
     "new": "New Credential",
     "refreshList": "Credential list refreshed",
     "metadataNotice": "Only Credential metadata is shown here; secret values are never echoed to the browser.",
@@ -95,6 +97,8 @@
     "tableName": "Name",
     "tableType": "Type",
     "tableActions": "Actions",
+    "editAria": "Edit credential {{name}}",
+    "deleteAria": "Delete credential {{name}}",
     "bindingInvalid": "",
     "cancel": "Cancel",
     "filterAll": "All",

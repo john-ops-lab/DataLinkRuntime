@@ -2413,6 +2413,10 @@ body {
   margin: 0 auto;
 }
 
+.settings-content-general {
+  width: min(100%, 560px);
+}
+
 .settings-category-header {
   margin-bottom: 20px;
 }
@@ -2434,14 +2438,15 @@ body {
 
 /* M5.5.7：四类凭据说明区。 */
 .credential-type-guide {
-  width: 100%;
+  width: min(520px, calc(100vw - 48px));
+  max-width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--dlr-border);
   border-radius: 6px;
   background: var(--dlr-workspace-bg);
 }
 
-.credential-type-guide h5 {
+.credential-type-guide .ant-typography {
   margin-top: 0;
 }
 
@@ -2488,6 +2493,48 @@ body {
 
 .settings-panel-toolbar {
   display: flex;
+}
+
+.settings-page-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--dlr-border);
+  border-bottom: 1px solid var(--dlr-border);
+}
+
+.settings-toolbar-filters,
+.settings-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-toolbar-filters {
+  flex: 1 1 auto;
+}
+
+.settings-toolbar-filters .ant-input-affix-wrapper {
+  flex: 1 1 280px;
+  min-width: 180px;
+}
+
+.settings-toolbar-filters .ant-select {
+  flex: 0 1 190px;
+  min-width: 160px;
+}
+
+.settings-toolbar-actions {
+  flex: 0 0 auto;
+}
+
+.settings-panel-notice {
+  width: 100%;
 }
 
 .settings-panel-error {
@@ -2540,6 +2587,29 @@ body {
 .settings-panel .ant-pagination {
   flex-wrap: wrap;
   row-gap: 6px;
+}
+
+.credentials-settings-panel {
+  width: 100%;
+}
+
+.credentials-table.ant-table-wrapper {
+  overflow-x: hidden;
+}
+
+.credentials-table .ant-table-container,
+.credentials-table .ant-table-content {
+  overflow-x: hidden !important;
+}
+
+.credential-name-cell {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.credential-row-actions {
+  justify-content: flex-end;
 }
 
 .ai-model-form .ant-form-item,
@@ -2664,6 +2734,41 @@ body {
   gap: 5px;
   color: var(--dlr-text-secondary);
   font-size: 0.8rem;
+}
+
+@media (max-width: 900px) {
+  .settings-page-toolbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .settings-toolbar-filters {
+    flex: 1 1 100%;
+  }
+
+  .settings-toolbar-actions {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .settings-center-content {
+    padding: 16px;
+  }
+
+  .settings-toolbar-filters,
+  .settings-toolbar-actions {
+    width: 100%;
+  }
+
+  .settings-toolbar-actions {
+    justify-content: flex-end;
+  }
+
+  .settings-toolbar-filters .ant-input-affix-wrapper,
+  .settings-toolbar-filters .ant-select {
+    min-width: 0;
+  }
 }
 
 /* --- M3.2 版本差异弹窗 --------------------------------------------------- */

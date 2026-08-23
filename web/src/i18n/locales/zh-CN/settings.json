@@ -75,6 +75,8 @@
     }
   },
   "credentials": {
+    "toolbar": "凭据工具栏",
+    "help": "查看凭据类型说明",
     "new": "新建凭据",
     "refreshList": "凭据列表已刷新",
     "metadataNotice": "这里只展示凭据元数据；密钥真值不会回显到浏览器。",
@@ -95,6 +97,8 @@
     "tableName": "名称",
     "tableType": "类型",
     "tableActions": "操作",
+    "editAria": "编辑凭据 {{name}}",
+    "deleteAria": "删除凭据 {{name}}",
     "bindingInvalid": "",
     "cancel": "取消",
     "filterAll": "全部",

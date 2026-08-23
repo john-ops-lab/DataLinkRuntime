@@ -202,6 +202,174 @@
       "unknownRequests": []
     },
     {
+      "scenario": "v1-credentials-pilot",
+      "locale": "zh-CN",
+      "width": 1280,
+      "height": 720,
+      "zoom": "100%",
+      "screenshots": [
+        "docs/ui/m5-11-wave-a/browser/v1-credentials-zh-CN-1280.png"
+      ],
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280,
+        "settingsScrollBoundary": true,
+        "catalogScrollBoundary": true
+      },
+      "consoleErrors": [],
+      "expectedConsoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": []
+    },
+    {
+      "scenario": "v1-credentials-pilot",
+      "locale": "zh-CN",
+      "width": 1440,
+      "height": 800,
+      "zoom": "100%",
+      "screenshots": [
+        "docs/ui/m5-11-wave-a/browser/v1-credentials-zh-CN-1440.png"
+      ],
+      "overflow": {
+        "innerWidth": 1440,
+        "documentScrollWidth": 1440,
+        "bodyScrollWidth": 1440,
+        "settingsScrollBoundary": true,
+        "catalogScrollBoundary": true
+      },
+      "consoleErrors": [],
+      "expectedConsoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": []
+    },
+    {
+      "scenario": "v1-credentials-pilot",
+      "locale": "zh-CN",
+      "width": 1680,
+      "height": 900,
+      "zoom": "100%",
+      "screenshots": [
+        "docs/ui/m5-11-wave-a/browser/v1-credentials-zh-CN-1680.png"
+      ],
+      "overflow": {
+        "innerWidth": 1680,
+        "documentScrollWidth": 1680,
+        "bodyScrollWidth": 1680,
+        "settingsScrollBoundary": true,
+        "catalogScrollBoundary": true
+      },
+      "consoleErrors": [],
+      "expectedConsoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": []
+    },
+    {
+      "scenario": "v1-credentials-pilot",
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "zoom": "100%",
+      "screenshots": [
+        "docs/ui/m5-11-wave-a/browser/v1-credentials-zh-CN-1920.png"
+      ],
+      "overflow": {
+        "innerWidth": 1920,
+        "documentScrollWidth": 1920,
+        "bodyScrollWidth": 1920,
+        "settingsScrollBoundary": true,
+        "catalogScrollBoundary": true
+      },
+      "consoleErrors": [],
+      "expectedConsoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": []
+    },
+    {
+      "scenario": "v1-credentials-pilot",
+      "locale": "en",
+      "width": 1280,
+      "height": 720,
+      "zoom": "100%",
+      "screenshots": [
+        "docs/ui/m5-11-wave-a/browser/v1-credentials-en-1280.png"
+      ],
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280,
+        "settingsScrollBoundary": true,
+        "catalogScrollBoundary": true
+      },
+      "consoleErrors": [],
+      "expectedConsoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": []
+    },
+    {
+      "scenario": "v1-credentials-pilot",
+      "locale": "en",
+      "width": 1440,
+      "height": 800,
+      "zoom": "100%",
+      "screenshots": [
+        "docs/ui/m5-11-wave-a/browser/v1-credentials-en-1440.png"
+      ],
+      "overflow": {
+        "innerWidth": 1440,
+        "documentScrollWidth": 1440,
+        "bodyScrollWidth": 1440,
+        "settingsScrollBoundary": true,
+        "catalogScrollBoundary": true
+      },
+      "consoleErrors": [],
+      "expectedConsoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": []
+    },
+    {
+      "scenario": "v1-credentials-pilot",
+      "locale": "en",
+      "width": 1680,
+      "height": 900,
+      "zoom": "100%",
+      "screenshots": [
+        "docs/ui/m5-11-wave-a/browser/v1-credentials-en-1680.png"
+      ],
+      "overflow": {
+        "innerWidth": 1680,
+        "documentScrollWidth": 1680,
+        "bodyScrollWidth": 1680,
+        "settingsScrollBoundary": true,
+        "catalogScrollBoundary": true
+      },
+      "consoleErrors": [],
+      "expectedConsoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": []
+    },
+    {
+      "scenario": "v1-credentials-pilot",
+      "locale": "en",
+      "width": 1920,
+      "height": 1080,
+      "zoom": "100%",
+      "screenshots": [
+        "docs/ui/m5-11-wave-a/browser/v1-credentials-en-1920.png"
+      ],
+      "overflow": {
+        "innerWidth": 1920,
+        "documentScrollWidth": 1920,
+        "bodyScrollWidth": 1920,
+        "settingsScrollBoundary": true,
+        "catalogScrollBoundary": true
+      },
+      "consoleErrors": [],
+      "expectedConsoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": []
+    },
+    {
       "scenario": "account-force-password",
       "locale": "en",
       "width": 1280,

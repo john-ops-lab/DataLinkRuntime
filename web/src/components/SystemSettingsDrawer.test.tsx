@@ -340,6 +340,7 @@ it("凭据管理页展示四类凭据说明（访问密钥为 access_key_id + ac
   vi.spyOn(api, "listCredentials").mockResolvedValue([]);
 
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByTestId("credential-help"));
   await screen.findByTestId("credential-type-guide");
   expect(screen.getByTestId("credential-type-guide-password").textContent).toContain(
     "username + password",
@@ -360,6 +361,43 @@ it("凭据管理页展示四类凭据说明（访问密钥为 access_key_id + ac
       "不同凭据类型是常见敏感信息结构的模板，帮助你快速选择正确字段。无法确定时，优先选择最接近的类型；仍不匹配时可使用「通用密钥」。",
     ),
   ).toBeTruthy();
+});
+
+it("凭据试点将筛选与主操作收敛到工具栏，行操作保留可访问名称", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([
+    credentialMetadata(1, "runtime-token", "token"),
+    credentialMetadata(2, "database-password", "password"),
+  ]);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const onClose = vi.fn();
+
+  render(<SystemSettingsDrawer open onClose={onClose} />);
+  await screen.findByText("runtime-token");
+
+  expect(screen.getByRole("toolbar", { name: "凭据工具栏" })).toBeTruthy();
+  expect(screen.getByTestId("credentials-filters")).toBeTruthy();
+  expect(screen.getByTestId("new-credential")).toBeTruthy();
+  expect(screen.getByTestId("refresh-credentials")).toBeTruthy();
+  expect(screen.getByTestId("credential-help").getAttribute("aria-label")).toBe("查看凭据类型说明");
+  expect(screen.getAllByTestId("update-credential")[0]?.getAttribute("aria-label")).toBe(
+    "编辑凭据 runtime-token",
+  );
+  expect(screen.getAllByTestId("delete-credential")[0]?.getAttribute("aria-label")).toBe(
+    "删除凭据 runtime-token",
+  );
+
+  fireEvent.change(screen.getByRole("textbox", { name: "筛选凭据" }), {
+    target: { value: "database" },
+  });
+  expect(screen.queryByText("runtime-token")).toBeNull();
+  expect(screen.getByText("database-password")).toBeTruthy();
+
+  fireEvent.click(screen.getByTestId("settings-back"));
+  expect(confirm).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledTimes(1);
 });
 
 it("保存失败时仍保留未保存更改确认", async () => {

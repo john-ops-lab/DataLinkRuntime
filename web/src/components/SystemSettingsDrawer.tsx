@@ -4,11 +4,11 @@ import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import {
   Button,
   Checkbox,
-  Collapse,
   Empty,
   Form,
   Input,
   Menu,
+  Popover,
   Select,
   Space,
   Spin,
@@ -16,7 +16,15 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { ArrowLeftOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  PlusOutlined,
+  QuestionCircleOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+} from "@ant-design/icons";
 import {
   ModalForm,
   ProForm,
@@ -95,10 +103,9 @@ function emptyForm(): CredentialFormState {
 function CredentialsPanel(props: {
   onError: (message: string) => void;
   onSaved?: () => void;
-  expandGuide?: boolean;
 }) {
   const { t } = useTranslation(["settings", "common"]);
-  const { onError, onSaved, expandGuide = false } = props;
+  const { onError, onSaved } = props;
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
@@ -244,79 +251,27 @@ function CredentialsPanel(props: {
   });
 
   return (
-    <div className="settings-panel" data-testid="credentials-panel">
-      <Collapse
-        className="credential-type-guide"
-        data-testid="credential-type-guide"
-        ghost
-        defaultActiveKey={expandGuide ? ["guide"] : undefined}
-        items={[{
-          key: "guide",
-          label: t("credentialGuide.title"),
-          children: (
-            <>
-              <Typography.Paragraph type="secondary">
-                {t("credentialGuide.description")}
-              </Typography.Paragraph>
-              <ul className="credential-type-guide-list">
-                {CREDENTIAL_TYPE_GUIDE.map((type) => (
-                  <li key={type} data-testid={`credential-type-guide-${type}`}>
-                    <strong>{credentialTypeLabel(type)}</strong>
-                    {t("credentialGuide.lineSuffix", {
-                      fieldsLabel: t("credentialGuide.fields"),
-                      fields: t(`credentialGuide.items.${type}.fields`),
-                      scenariosLabel: t("credentialGuide.scenarios"),
-                      scenarios: t(`credentialGuide.items.${type}.scenarios`),
-                      hint: t(`credentialGuide.${type === "password" ? "createHint" : type === "token" ? "tokenHint" : type === "access_key" ? "accessKeyHint" : "secretHint"}`),
-                    })}
-                  </li>
-                ))}
-              </ul>
-            </>
-          ),
-        }]}
-      />
-      <Space className="settings-panel-toolbar">
-        <Button type="primary" data-testid="new-credential" onClick={openCreate}>
-           {t("credentials.new")}
-        </Button>
-        <Button
-          data-testid="refresh-credentials"
-          loading={loading}
-          onClick={() => {
-            setNotice(null);
-             void load().then((ok) => ok && setNotice(t("credentials.refreshList")));
-          }}
-        >
-          {t("actions.refresh", { ns: "common" })}
-        </Button>
-      </Space>
-      <Typography.Text type="secondary">{t("credentials.metadataNotice")}</Typography.Text>
-      {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
-      {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
-
-      <QueryFilter<CredentialFilters>
-        className="wave-c-query-filter"
-        layout="vertical"
-        defaultCollapsed={false}
-        defaultColsNumber={2}
-        defaultFormItemsNumber={2}
-        labelWidth="auto"
-        submitter={false}
-        initialValues={filters}
-        onValuesChange={(_, values) =>
-          setFilters({
-            keyword: values.keyword ?? "",
-            type: values.type ?? "all",
-          })
-        }
+    <div className="settings-panel credentials-settings-panel" data-testid="credentials-panel">
+      <div
+        className="settings-page-toolbar credentials-toolbar"
+        data-testid="credentials-toolbar"
+        role="toolbar"
+        aria-label={t("credentials.toolbar")}
       >
-        <Form.Item name="keyword" label={t("credentials.filterKeyword")}>
-          <Input allowClear aria-label={t("credentials.filterKeyword")} />
-        </Form.Item>
-        <Form.Item name="type" label={t("credentials.filterType")}>
+        <div className="settings-toolbar-filters" data-testid="credentials-filters">
+          <Input
+            allowClear
+            prefix={<SearchOutlined aria-hidden="true" />}
+            placeholder={t("credentials.filterKeyword")}
+            aria-label={t("credentials.filterKeyword")}
+            value={filters.keyword}
+            onChange={(event) => setFilters((current) => ({ ...current, keyword: event.target.value }))}
+            data-settings-filter="true"
+          />
           <Select<CredentialType | "all">
             aria-label={t("credentials.filterType")}
+            value={filters.type}
+            onChange={(type) => setFilters((current) => ({ ...current, type }))}
             options={[
               { value: "all", label: t("credentials.filterAll") },
               ...Object.keys(CREDENTIAL_TYPE_FIELDS).map((type) => ({
@@ -324,9 +279,73 @@ function CredentialsPanel(props: {
                 label: credentialTypeLabel(type),
               })),
             ]}
+            data-settings-filter="true"
           />
-        </Form.Item>
-      </QueryFilter>
+        </div>
+        <div className="settings-toolbar-actions">
+          <Button
+            type="primary"
+            icon={<PlusOutlined aria-hidden="true" />}
+            data-testid="new-credential"
+            onClick={openCreate}
+          >
+            {t("credentials.new")}
+          </Button>
+          <Button
+            icon={<ReloadOutlined aria-hidden="true" />}
+            data-testid="refresh-credentials"
+            loading={loading}
+            onClick={() => {
+              setNotice(null);
+              void load().then((ok) => ok && setNotice(t("credentials.refreshList")));
+            }}
+          >
+            {t("actions.refresh", { ns: "common" })}
+          </Button>
+          <Popover
+            title={t("credentialGuide.title")}
+            content={(
+              <div className="credential-type-guide" data-testid="credential-type-guide">
+                <Typography.Paragraph type="secondary">
+                  {t("credentialGuide.description")}
+                </Typography.Paragraph>
+                <ul className="credential-type-guide-list">
+                  {CREDENTIAL_TYPE_GUIDE.map((type) => (
+                    <li key={type} data-testid={`credential-type-guide-${type}`}>
+                      <strong>{credentialTypeLabel(type)}</strong>
+                      {t("credentialGuide.lineSuffix", {
+                        fieldsLabel: t("credentialGuide.fields"),
+                        fields: t(`credentialGuide.items.${type}.fields`),
+                        scenariosLabel: t("credentialGuide.scenarios"),
+                        scenarios: t(`credentialGuide.items.${type}.scenarios`),
+                        hint: t(`credentialGuide.${type === "password" ? "createHint" : type === "token" ? "tokenHint" : type === "access_key" ? "accessKeyHint" : "secretHint"}`),
+                      })}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            trigger="click"
+            placement="bottomRight"
+            destroyOnHidden={false}
+          >
+            <Tooltip title={t("credentials.help")}>
+              <Button
+                type="text"
+                icon={<QuestionCircleOutlined aria-hidden="true" />}
+                data-testid="credential-help"
+                aria-label={t("credentials.help")}
+                aria-haspopup="dialog"
+              />
+            </Tooltip>
+          </Popover>
+        </div>
+      </div>
+      <div className="settings-panel-notice" role="note">
+        <Typography.Text type="secondary">{t("credentials.metadataNotice")}</Typography.Text>
+      </div>
+      {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
+      {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
 
       <ModalForm<CredentialFormValues>
         key={`credential-form-${formOpen}-${form.editingId ?? "new"}-${form.type}`}
@@ -423,36 +442,49 @@ function CredentialsPanel(props: {
           options={false}
           pagination={{ pageSize: 8, showSizeChanger: true }}
           dataSource={visibleCredentials}
-          scroll={{ x: 520 }}
+          className="credentials-table"
+          tableLayout="fixed"
           locale={{ emptyText: t("empty.noCredentials", { ns: "common" }) }}
           columns={[
-            { title: t("credentials.tableName"), dataIndex: "name", render: (name) => <span data-testid="credential-row">{name}</span> },
+            {
+              title: t("credentials.tableName"),
+              dataIndex: "name",
+              ellipsis: true,
+              render: (name) => <span className="credential-name-cell" data-testid="credential-row">{name}</span>,
+            },
             {
               title: t("credentials.tableType"),
               dataIndex: "type",
-              width: 120,
+              width: 160,
               render: (type) => credentialTypeLabel(String(type)),
             },
             {
               title: t("credentials.tableActions"),
-              width: 160,
+              width: 112,
+              align: "right",
               render: (_, credential) => (
-                <Space wrap>
-                  <Button
-                    size="small"
-                    data-testid="update-credential"
-                    onClick={() => openUpdate(credential)}
-                  >
-                    {t("credentials.submitUpdate")}
-                  </Button>
-                  <Button
-                    size="small"
-                    danger
-                    data-testid="delete-credential"
-                    onClick={() => void handleDelete(credential)}
-                  >
-                    {t("actions.delete", { ns: "common" })}
-                  </Button>
+                <Space size={0} className="credential-row-actions">
+                  <Tooltip title={t("credentials.editAria", { name: credential.name })}>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<EditOutlined aria-hidden="true" />}
+                      data-testid="update-credential"
+                      aria-label={t("credentials.editAria", { name: credential.name })}
+                      onClick={() => openUpdate(credential)}
+                    />
+                  </Tooltip>
+                  <Tooltip title={t("credentials.deleteAria", { name: credential.name })}>
+                    <Button
+                      type="text"
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined aria-hidden="true" />}
+                      data-testid="delete-credential"
+                      aria-label={t("credentials.deleteAria", { name: credential.name })}
+                      onClick={() => void handleDelete(credential)}
+                    />
+                  </Tooltip>
                 </Space>
               ),
             },
@@ -1469,7 +1501,10 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
 
   function markDirty(event: ChangeEvent<HTMLElement>): void {
     const target = event.target as HTMLElement;
-    if (target.closest("[data-testid=system-locale-select]")) {
+    if (
+      target.closest("[data-testid=system-locale-select]") ||
+      target.closest("[data-settings-filter=true]")
+    ) {
       return;
     }
     setDirty(true);
@@ -1510,7 +1545,10 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
           tabIndex={-1}
           aria-labelledby="settings-category-title"
         >
-          <div className="settings-center-content-inner">
+          <div
+            className={`settings-center-content-inner settings-content-${activeCategory}`}
+            data-testid="settings-category-main"
+          >
             <header className="settings-category-header">
               <Typography.Title id="settings-category-title" level={3}>{copy.title}</Typography.Title>
               <Typography.Paragraph type="secondary">{copy.description}</Typography.Paragraph>
@@ -1518,11 +1556,7 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
             {standalone && activeCategory !== "general" && <SystemLocaleControl />}
             {activeCategory === "general" && <SystemLocaleControl />}
             {activeCategory === "credentials" && (
-              <CredentialsPanel
-                onError={keepErrorInline}
-                onSaved={() => setDirty(false)}
-                expandGuide={standalone}
-              />
+              <CredentialsPanel onError={keepErrorInline} onSaved={() => setDirty(false)} />
             )}
             {activeCategory === "package-sources" && (
               <PackageSourcesPanel onError={keepErrorInline} onSaved={() => setDirty(false)} />

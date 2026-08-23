@@ -244,6 +244,14 @@ async function installRoutes(
       await fulfillJson(route, null);
       return;
     }
+    if (path === "/api/ai/providers" && method === "GET") {
+      await fulfillJson(route, { providers: [] });
+      return;
+    }
+    if (path === "/api/ai/custom-providers" && method === "GET") {
+      await fulfillJson(route, { providers: [] });
+      return;
+    }
     if (path === "/api/knowledge-sources/ima" && method === "GET") {
       await fulfillJson(route, knowledgeSource);
       return;
@@ -393,6 +401,100 @@ for (const locale of LOCALES) {
         zoom: "100%",
         screenshots,
         overflow: settingsMetrics,
+        consoleErrors,
+        expectedConsoleErrors: [],
+        pageErrors,
+        unknownRequests,
+      });
+    });
+  }
+}
+
+for (const locale of LOCALES) {
+  for (const width of VIEWPORTS) {
+    test(`Wave V1 credentials pilot ${locale} ${width}px`, async ({ page }) => {
+      const height = width === 1280 ? 720 : width === 1440 ? 800 : width === 1680 ? 900 : 1080;
+      await page.setViewportSize({ width, height });
+      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      const { unknownRequests } = await installRoutes(page, "token", locale);
+
+      await page.goto("/");
+      await loginToken(page, locale);
+      await page.getByTestId("user-menu").click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "系统设置" : "System Settings" }).click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "凭据" : "Credentials" }).click();
+
+      await expect(page.getByTestId("credentials-panel")).toBeVisible();
+      await expect(page.getByRole("heading", { level: 3, name: locale === "zh-CN" ? "凭据" : "Credentials" })).toBeVisible();
+      await expect(page.getByTestId("credentials-toolbar")).toHaveRole("toolbar");
+      await expect(page.getByRole("textbox", { name: locale === "zh-CN" ? "筛选凭据" : "Filter credentials" })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: locale === "zh-CN" ? "筛选凭据类型" : "Filter credential type" })).toBeVisible();
+      await expect(page.getByTestId("new-credential")).toBeVisible();
+      await expect(page.getByTestId("refresh-credentials")).toBeVisible();
+      await expect(page.getByTestId("credential-row")).toContainText("fixture-token-credential-with-a-long-name");
+      await expect(page.getByTestId("update-credential")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "编辑凭据 fixture-token-credential-with-a-long-name"
+          : "Edit credential fixture-token-credential-with-a-long-name",
+      );
+      await expect(page.getByTestId("delete-credential")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "删除凭据 fixture-token-credential-with-a-long-name"
+          : "Delete credential fixture-token-credential-with-a-long-name",
+      );
+
+      await page.getByTestId("credential-help").click();
+      await expect(page.getByTestId("credential-type-guide")).toBeVisible();
+      await expect(page.getByTestId("credential-type-guide")).toContainText(
+        locale === "zh-CN" ? "不同凭据类型" : "Credential types are templates",
+      );
+
+      const layout = await page.evaluate(() => {
+        const toolbar = document.querySelector<HTMLElement>("[data-testid=credentials-toolbar]");
+        const filters = document.querySelector<HTMLElement>("[data-testid=credentials-filters]");
+        const actions = toolbar?.querySelector<HTMLElement>(".settings-toolbar-actions");
+        const table = document.querySelector<HTMLElement>(".credentials-table .ant-table-container");
+        return {
+          innerWidth: window.innerWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          toolbarSingleRow: toolbar !== null && filters !== null && actions !== null
+            ? Math.abs(filters.getBoundingClientRect().top - actions.getBoundingClientRect().top) < 4
+            : false,
+          tableFits: table === null || table.scrollWidth <= table.clientWidth,
+          documentLanguage: document.documentElement.lang,
+        };
+      });
+      expect(layout.documentScrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.bodyScrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.toolbarSingleRow).toBe(true);
+      expect(layout.tableFits).toBe(true);
+      expect(layout.documentLanguage).toBe(locale);
+      expect(page.locator("body")).not.toContainText("FAKE_ADMIN_TOKEN");
+
+      const screenshots = [await recordScreenshot(page, `v1-credentials-${locale}-${width}`)];
+      await assertDiagnostics(page, unknownRequests, consoleErrors, pageErrors);
+      records.push({
+        scenario: "v1-credentials-pilot",
+        locale,
+        width,
+        height,
+        zoom: "100%",
+        screenshots,
+        overflow: {
+          innerWidth: layout.innerWidth,
+          documentScrollWidth: layout.documentScrollWidth,
+          bodyScrollWidth: layout.bodyScrollWidth,
+          settingsScrollBoundary: true,
+          catalogScrollBoundary: true,
+        },
         consoleErrors,
         expectedConsoleErrors: [],
         pageErrors,
