@@ -373,6 +373,12 @@ async function recordScreenshot(page: Page, name: string): Promise<string> {
   return `docs/ui/m5-11-wave-a/browser/${filename}`;
 }
 
+async function closeTransientSelectOverlays(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  await page.locator("body").click({ position: { x: 2, y: 2 } });
+  await expect(page.locator(".ant-select-dropdown:visible")).toHaveCount(0);
+}
+
 for (const locale of LOCALES) {
   for (const width of VIEWPORTS) {
     test(`Wave V1 package sources pilot ${locale} ${width}px`, async ({ page }) => {
@@ -552,7 +558,22 @@ for (const locale of LOCALES) {
       await expect(providerDropdown).not.toContainText(
         locale === "zh-CN" ? "自定义 OpenAI 兼容服务" : "Custom OpenAI-compatible service",
       );
-      await page.keyboard.press("Escape");
+      await closeTransientSelectOverlays(page);
+      await expect(page.getByTestId("ai-model-input")).toBeVisible();
+      await expect(page.getByTestId("ai-model-input")).toBeEditable();
+      await expect(page.getByTestId("ai-model-input")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN" ? "模型 ID" : "Model ID",
+      );
+      await expect(page.getByTestId("ai-model-search")).toHaveCount(0);
+      await expect(page.locator("#ai-model-suggestions")).toHaveCount(0);
+      const modelInputBox = await page.getByTestId("ai-model-input").boundingBox();
+      if (modelInputBox === null) {
+        throw new Error("AI model input is not measurable for evidence");
+      }
+      expect(modelInputBox.x).toBeGreaterThanOrEqual(0);
+      expect(modelInputBox.y).toBeGreaterThanOrEqual(0);
+      expect(modelInputBox.x + modelInputBox.width).toBeLessThanOrEqual(width);
       await expect(page.getByTestId("ai-summary-base-url")).toHaveText("https://models.example.invalid/v1");
       await expect(page.getByTestId("ai-summary-model")).toHaveText("fixture-model");
 
@@ -595,7 +616,7 @@ for (const locale of LOCALES) {
       expect(actionLayout.documentLanguage).toBe(locale);
       expect(page.locator("body")).not.toContainText("FAKE_ADMIN_TOKEN");
 
-      const screenshots = [await recordScreenshot(page, `v1-ai-model-${locale}-${width}`)];
+      const screenshots = [await recordScreenshot(page, `v1-ai-model-clean-${locale}-${width}`)];
       await assertDiagnostics(page, unknownRequests, consoleErrors, pageErrors);
       records.push({
         scenario: "v1-ai-model-pilot",
