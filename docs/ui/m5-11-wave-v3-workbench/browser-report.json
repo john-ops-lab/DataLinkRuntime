@@ -62,6 +62,7 @@
         "ai_tool_success": true,
         "ai_candidate": true,
         "candidate_diff": true,
+        "candidate_diff_modal_stable": true,
         "candidate_apply": true,
         "adapter_switch_isolated": true
       },
@@ -159,6 +160,7 @@
         "ai_tool_success": true,
         "ai_candidate": true,
         "candidate_diff": true,
+        "candidate_diff_modal_stable": true,
         "candidate_apply": true,
         "adapter_switch_isolated": true
       },
@@ -201,6 +203,7 @@
         "ai_tool_success": true,
         "ai_candidate": true,
         "candidate_diff": true,
+        "candidate_diff_modal_stable": true,
         "candidate_apply": true,
         "adapter_switch_isolated": true
       },
@@ -243,6 +246,7 @@
         "ai_tool_success": true,
         "ai_candidate": true,
         "candidate_diff": true,
+        "candidate_diff_modal_stable": true,
         "candidate_apply": true,
         "adapter_switch_isolated": true
       },
@@ -285,6 +289,7 @@
         "ai_tool_success": true,
         "ai_candidate": true,
         "candidate_diff": true,
+        "candidate_diff_modal_stable": true,
         "candidate_apply": true,
         "adapter_switch_isolated": true
       },
@@ -382,6 +387,7 @@
         "ai_tool_success": true,
         "ai_candidate": true,
         "candidate_diff": true,
+        "candidate_diff_modal_stable": true,
         "candidate_apply": true,
         "adapter_switch_isolated": true
       },
@@ -424,6 +430,7 @@
         "ai_tool_success": true,
         "ai_candidate": true,
         "candidate_diff": true,
+        "candidate_diff_modal_stable": true,
         "candidate_apply": true,
         "adapter_switch_isolated": true
       },
@@ -466,6 +473,7 @@
         "ai_tool_success": true,
         "ai_candidate": true,
         "candidate_diff": true,
+        "candidate_diff_modal_stable": true,
         "candidate_apply": true,
         "adapter_switch_isolated": true
       },

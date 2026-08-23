@@ -412,6 +412,67 @@ async function screenshot(page: Page, name: string): Promise<string> {
   return `docs/ui/m5-11-wave-v3-workbench/browser/${name}`;
 }
 
+async function waitForCandidateDiff(page: Page, locale: Locale) {
+  const title = locale === "zh-CN" ? "AI 候选修改：与当前编辑内容对比" : "AI candidate changes: compare with current code";
+  const originalTitle = locale === "zh-CN" ? "当前编辑内容" : "Current code";
+  const modifiedTitle = locale === "zh-CN" ? "AI 候选修改" : "AI candidate changes";
+  const diffRegion = page.getByTestId("version-diff");
+  const modalContent = page.locator(".ant-modal-wrap:visible .ant-modal-content");
+  const diffTitles = diffRegion.locator(".diff-modal-titles > span");
+  const diffEditor = diffRegion.locator(".monaco-diff-editor");
+
+  await expect(modalContent).toBeVisible();
+  await expect(diffRegion).toBeVisible();
+  await expect(diffRegion).toHaveAccessibleName(title);
+  await expect(diffTitles).toHaveCount(2);
+  await expect(diffTitles.nth(0)).toHaveText(originalTitle);
+  await expect(diffTitles.nth(1)).toHaveText(modifiedTitle);
+  await expect(diffEditor).toBeVisible();
+  await expect(page.getByTestId("diff-apply-candidate")).toBeVisible();
+  await expect(page.getByTestId("diff-apply-candidate")).toBeEnabled();
+  await expect(page.getByTestId("diff-close")).toBeVisible();
+
+  // Require two identical visible geometry/style snapshots instead of a blind
+  // delay: Ant Design's modal transition and Monaco's first layout must both
+  // settle before the evidence screenshot is captured.
+  let previousSnapshot = "";
+  await expect.poll(
+    async () => {
+      const snapshot = await page.evaluate(() => {
+        const rectFor = (element: Element | null) => {
+          if (element === null) return null;
+          const rect = element.getBoundingClientRect();
+          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        };
+        const diff = document.querySelector('[data-testid="version-diff"]');
+        const modal = diff?.closest(".ant-modal-content") ?? null;
+        const editor = diff?.querySelector(".monaco-diff-editor") ?? null;
+        const modalStyle = modal === null ? null : getComputedStyle(modal);
+        const diffStyle = diff === null ? null : getComputedStyle(diff);
+        return {
+          modal: rectFor(modal),
+          diff: rectFor(diff),
+          editor: rectFor(editor),
+          modalOpacity: modalStyle?.opacity ?? "",
+          modalVisibility: modalStyle?.visibility ?? "",
+          diffOpacity: diffStyle?.opacity ?? "",
+          diffVisibility: diffStyle?.visibility ?? "",
+        };
+      });
+      const serialized = JSON.stringify(snapshot);
+      const stable = serialized === previousSnapshot &&
+        snapshot.modal !== null && snapshot.modal.width > 0 && snapshot.modal.height > 0 &&
+        snapshot.diff !== null && snapshot.diff.width > 0 && snapshot.diff.height > 0 &&
+        snapshot.editor !== null && snapshot.editor.width > 0 && snapshot.editor.height > 0 &&
+        snapshot.modalOpacity === "1" && snapshot.modalVisibility === "visible" &&
+        snapshot.diffOpacity === "1" && snapshot.diffVisibility === "visible";
+      previousSnapshot = serialized;
+      return stable;
+    },
+    { timeout: 10_000, intervals: [100, 250, 500] },
+  ).toBe(true);
+}
+
 async function measureOverflow(page: Page) {
   return page.evaluate(() => ({
     inner_width: window.innerWidth,
@@ -538,8 +599,9 @@ async function runAdminScenario(page: Page, locale: Locale, width: number, diagn
   await screenshot(page, `${locale}-${width}-ai-candidate.png`);
 
   await page.getByTestId("ai-view-diff").click();
-  await expect(page.getByTestId("version-diff")).toBeVisible();
+  await waitForCandidateDiff(page, locale);
   visibleStates.candidate_diff = await page.getByTestId("version-diff").isVisible();
+  visibleStates.candidate_diff_modal_stable = true;
   await screenshot(page, `${locale}-${width}-candidate-diff.png`);
   await page.getByTestId("diff-apply-candidate").click();
   await expect(page.getByTestId("ai-candidate-applied")).toBeVisible();
