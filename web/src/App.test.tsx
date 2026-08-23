@@ -5363,10 +5363,10 @@ it("drags the floating entry within the viewport without clicking, and click sti
     ({
       left: renderedLeft,
       top: renderedTop,
-      width: 46,
-      height: 46,
-      right: renderedLeft + 46,
-      bottom: renderedTop + 46,
+      width: 40,
+      height: 40,
+      right: renderedLeft + 40,
+      bottom: renderedTop + 40,
       x: renderedLeft,
       y: renderedTop,
       toJSON: () => ({}),
@@ -5391,8 +5391,8 @@ it("drags the floating entry within the viewport without clicking, and click sti
   firePointer(entry, "pointerup", { pointerId: 2 });
   const clampedX = Number.parseInt(entryHost.style.left, 10);
   const clampedY = Number.parseInt(entryHost.style.top, 10);
-  expect(clampedX).toBeLessThanOrEqual(window.innerWidth - 54);
-  expect(clampedY).toBeLessThanOrEqual(window.innerHeight - 54);
+  expect(clampedX).toBeLessThanOrEqual(window.innerWidth - 48);
+  expect(clampedY).toBeLessThanOrEqual(window.innerHeight - 48);
   expect(clampedX).toBeGreaterThanOrEqual(8);
 
   // 位置不持久化：重新挂载后恢复产品默认位置（无内联坐标）。

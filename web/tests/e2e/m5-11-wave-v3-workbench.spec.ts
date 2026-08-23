@@ -564,7 +564,7 @@ async function runAdminScenario(page: Page, locale: Locale, width: number, diagn
   await expect(page.getByTestId("ai-conversation-empty")).toBeVisible();
   await expect(page.getByTestId("ai-composer-actions")).toHaveAttribute(
     "aria-label",
-    locale === "zh-CN" ? "AI 消息操作" : "AI message controls",
+    locale === "zh-CN" ? "编辑器工具" : "Composer tools",
   );
   const input = page.getByTestId("ai-message-input");
   await input.fill("Please keep this unsent draft while the AI pane changes layout.");

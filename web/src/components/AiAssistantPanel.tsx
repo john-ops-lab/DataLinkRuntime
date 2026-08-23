@@ -1496,7 +1496,7 @@ async function resolveComposerAttachment(
   // M5.5.13: drag the floating entry within the visible work area without
   // triggering a click. Pointer events are used so the drag works for mouse
   // and touch; a small movement threshold separates "drag" from "click".
-  const ENTRY_SIZE = 46;
+  const ENTRY_SIZE = 40;
   const ENTRY_MARGIN = 8;
   const DRAG_THRESHOLD_PX = 4;
 
