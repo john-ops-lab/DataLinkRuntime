@@ -212,7 +212,7 @@ body {
 /* --- Adapter Catalog（左侧固定导航区） ---------------------------------- */
 
 .catalog {
-  flex: 0 0 260px;
+  flex: 0 0 clamp(272px, 20vw, 320px);
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -224,9 +224,31 @@ body {
 .catalog-header {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px 8px;
+}
+
+.catalog-heading {
+  min-width: 0;
+}
+
+.catalog-description {
+  margin: 3px 0 0;
+  color: var(--dlr-text-weak);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-header-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
 }
 
 .catalog-title {
@@ -235,18 +257,21 @@ body {
   font-weight: 600;
 }
 
-.catalog-search {
+.catalog-toolbar {
   flex: 0 0 auto;
+  display: block;
+  min-width: 0;
   padding: 0 12px 8px;
 }
 
 .catalog-search-input {
-  flex: 1.3 1 0;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
 .catalog-search-control {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -254,7 +279,8 @@ body {
 }
 
 .catalog-search-control .ant-select {
-  flex: 1 1 0;
+  flex: 1 1 calc(50% - 3px);
+  width: 0;
   min-width: 0;
 }
 
@@ -263,16 +289,25 @@ body {
 }
 
 .catalog-search-control .catalog-filter-type {
-  flex-grow: 1.1;
+  flex-basis: calc(50% - 3px);
 }
 
 .catalog-search-control .catalog-filter-status {
-  flex-grow: 1;
+  flex-basis: calc(50% - 3px);
+}
+
+.catalog-summary {
+  display: block;
+  margin-top: 4px;
+  color: var(--dlr-text-weak);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  text-align: right;
+  white-space: nowrap;
 }
 
 /* M5.10 Wave C：QueryFilter 在 Catalog 窄栏内按字段堆叠，避免长中文/英文把
    搜索框或筛选下拉挤到不可用宽度。保留稳定的 test hook 供浏览器审计使用。 */
-.catalog-search-control,
 .catalog-query-filter,
 .catalog-query-filter .ant-form,
 .catalog-query-filter .ant-row,
@@ -339,6 +374,8 @@ body {
 
 .catalog-list {
   flex: 1;
+  width: 100%;
+  box-sizing: border-box;
   min-height: 0;
   overflow-y: auto;
   padding: 0 8px 8px;
@@ -2187,6 +2224,87 @@ body {
   min-width: 0;
 }
 
+.adapter-settings-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  background: var(--dlr-surface-muted, rgba(128, 128, 128, 0.06));
+  box-sizing: border-box;
+}
+
+.adapter-settings-summary-main,
+.adapter-settings-summary-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.adapter-settings-summary-main > .ant-typography {
+  overflow-wrap: anywhere;
+}
+
+.adapter-settings-summary-tags .ant-tag {
+  margin-inline-end: 0;
+}
+
+.adapter-settings-section {
+  width: 100%;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--dlr-border);
+}
+
+.adapter-settings-section-title {
+  margin: 0 0 8px;
+  color: var(--dlr-text, #1f1f1f);
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.adapter-settings-section-summary {
+  display: block;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.adapter-readonly-field {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 32px;
+}
+
+.adapter-readonly-field .ant-tag {
+  margin-inline-end: 0;
+}
+
+.adapter-danger-zone {
+  padding: 10px;
+  border: 1px solid rgba(255, 77, 79, 0.28);
+  border-radius: 6px;
+  background: rgba(255, 77, 79, 0.035);
+}
+
+.adapter-danger-zone-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.adapter-danger-zone-copy .ant-typography {
+  margin-bottom: 0;
+}
+
 .adapter-settings-form .ant-alert-description {
   min-width: 0;
 }
@@ -2814,7 +2932,7 @@ body {
 
 @media (max-width: 1400px) {
   .catalog {
-    flex-basis: 230px;
+    flex-basis: 272px;
   }
 
   .ai-assistant-expanded {

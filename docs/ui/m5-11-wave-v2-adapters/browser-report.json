@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "wave": "M5.11 Wave V2 Adapter directory and settings",
+  "contract": "Issue #112 Scheme A",
+  "antd": "5.29.3",
+  "pro_components": "2.8.10",
+  "playwright": "1.62.1",
+  "browser": "chromium",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "records": [
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "screenshots": [
+        "docs/ui/m5-11-wave-v2-adapters/browser/catalog-zh-CN-1280.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-zh-CN-1280.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-danger-zh-CN-1280.png"
+      ],
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280,
+        "catalogWidth": 273,
+        "catalogListWidth": 272,
+        "settingsWidth": 520,
+        "settingsBodyWidth": 520
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": [],
+      "language": "zh-CN"
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "screenshots": [
+        "docs/ui/m5-11-wave-v2-adapters/browser/catalog-zh-CN-1440.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-zh-CN-1440.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-danger-zh-CN-1440.png"
+      ],
+      "overflow": {
+        "innerWidth": 1440,
+        "documentScrollWidth": 1440,
+        "bodyScrollWidth": 1440,
+        "catalogWidth": 289,
+        "catalogListWidth": 288,
+        "settingsWidth": 520,
+        "settingsBodyWidth": 520
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": [],
+      "language": "zh-CN"
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "screenshots": [
+        "docs/ui/m5-11-wave-v2-adapters/browser/catalog-zh-CN-1680.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-zh-CN-1680.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-danger-zh-CN-1680.png"
+      ],
+      "overflow": {
+        "innerWidth": 1680,
+        "documentScrollWidth": 1680,
+        "bodyScrollWidth": 1680,
+        "catalogWidth": 321,
+        "catalogListWidth": 320,
+        "settingsWidth": 520,
+        "settingsBodyWidth": 520
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": [],
+      "language": "zh-CN"
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "screenshots": [
+        "docs/ui/m5-11-wave-v2-adapters/browser/catalog-zh-CN-1920.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-zh-CN-1920.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-danger-zh-CN-1920.png"
+      ],
+      "overflow": {
+        "innerWidth": 1920,
+        "documentScrollWidth": 1920,
+        "bodyScrollWidth": 1920,
+        "catalogWidth": 321,
+        "catalogListWidth": 320,
+        "settingsWidth": 520,
+        "settingsBodyWidth": 520
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": [],
+      "language": "zh-CN"
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "screenshots": [
+        "docs/ui/m5-11-wave-v2-adapters/browser/catalog-en-1280.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-en-1280.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-danger-en-1280.png"
+      ],
+      "overflow": {
+        "innerWidth": 1280,
+        "documentScrollWidth": 1280,
+        "bodyScrollWidth": 1280,
+        "catalogWidth": 273,
+        "catalogListWidth": 272,
+        "settingsWidth": 520,
+        "settingsBodyWidth": 520
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": [],
+      "language": "en"
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "screenshots": [
+        "docs/ui/m5-11-wave-v2-adapters/browser/catalog-en-1440.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-en-1440.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-danger-en-1440.png"
+      ],
+      "overflow": {
+        "innerWidth": 1440,
+        "documentScrollWidth": 1440,
+        "bodyScrollWidth": 1440,
+        "catalogWidth": 289,
+        "catalogListWidth": 288,
+        "settingsWidth": 520,
+        "settingsBodyWidth": 520
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": [],
+      "language": "en"
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "screenshots": [
+        "docs/ui/m5-11-wave-v2-adapters/browser/catalog-en-1680.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-en-1680.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-danger-en-1680.png"
+      ],
+      "overflow": {
+        "innerWidth": 1680,
+        "documentScrollWidth": 1680,
+        "bodyScrollWidth": 1680,
+        "catalogWidth": 321,
+        "catalogListWidth": 320,
+        "settingsWidth": 520,
+        "settingsBodyWidth": 520
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": [],
+      "language": "en"
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "screenshots": [
+        "docs/ui/m5-11-wave-v2-adapters/browser/catalog-en-1920.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-en-1920.png",
+        "docs/ui/m5-11-wave-v2-adapters/browser/settings-danger-en-1920.png"
+      ],
+      "overflow": {
+        "innerWidth": 1920,
+        "documentScrollWidth": 1920,
+        "bodyScrollWidth": 1920,
+        "catalogWidth": 321,
+        "catalogListWidth": 320,
+        "settingsWidth": 520,
+        "settingsBodyWidth": 520
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "unknownRequests": [],
+      "language": "en"
+    }
+  ]
+}

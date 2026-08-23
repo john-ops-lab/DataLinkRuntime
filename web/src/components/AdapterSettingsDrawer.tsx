@@ -4,8 +4,6 @@ import { useState } from "react";
 import {
   Alert,
   Button,
-  Descriptions,
-  Divider,
   Drawer,
   Form,
   Input,
@@ -85,12 +83,7 @@ function AdapterSettingsDrawerContent(props: Props) {
     }
   }
 
-  const title =
-    view === "permissions"
-      ? t("sharing.title")
-      : adapter?.adapter_type === "webhook"
-        ? t("settings.webhookTitle")
-        : t("settings.taskTitle");
+  const title = view === "permissions" ? t("sharing.title") : t("settings.title");
 
   const footer =
     view === "settings" && adapter !== null ? (
@@ -112,7 +105,7 @@ function AdapterSettingsDrawerContent(props: Props) {
             !formValid
           }
         >
-          {t("settings.save")}
+          {t("settings.saveChanges")}
         </Button>
       </div>
     ) : null;
@@ -120,7 +113,7 @@ function AdapterSettingsDrawerContent(props: Props) {
   return (
     <Drawer
       title={
-        <div className="adapter-settings-title">
+        <div className="adapter-settings-title" data-testid="adapter-settings-title">
           {view === "permissions" && (
             <Tooltip title={t("sharing.back")}>
               <Button
@@ -153,6 +146,7 @@ function AdapterSettingsDrawerContent(props: Props) {
       {adapter !== null && (
         <Form
           id="adapter-settings-form"
+          data-testid="adapter-settings-form"
           form={form}
           initialValues={{ name: props.name, description: props.description }}
           className="settings-form adapter-settings-form"
@@ -167,46 +161,48 @@ function AdapterSettingsDrawerContent(props: Props) {
           onFinish={(values) => void submit(values)}
           onFinishFailed={() => setFormValid(false)}
         >
-          <Alert
-            type="info"
-            showIcon
-            message={t("settings.summary")}
-            description={
-              <Descriptions
-                size="small"
-                column={1}
-                items={[
-                  { key: "type", label: t("settings.type"), children: t(`types.${adapter.adapter_type}`) },
-                  { key: "language", label: t("settings.language"), children: LANGUAGE_LABELS[adapter.language] },
-                  {
-                    key: "revision",
-                    label: t("settings.revision"),
-                    children: adapter.latest_version_id == null ? t("settings.notSaved") : `#${adapter.latest_version_id}`,
-                  },
-                ]}
-              />
-            }
-          />
+          <div className="adapter-settings-summary" data-testid="adapter-settings-summary">
+            <div className="adapter-settings-summary-main">
+              <Typography.Text strong>{props.name || adapter.name}</Typography.Text>
+              <div className="adapter-settings-summary-tags">
+                <Tag>{t(`types.${adapter.adapter_type}`)}</Tag>
+                <Tag>{LANGUAGE_LABELS[adapter.language]}</Tag>
+                {adapter.runtime_locked === true && <Tag color="processing">{t("settings.active")}</Tag>}
+              </div>
+            </div>
+            <Typography.Text type="secondary">{t("settings.summary")}</Typography.Text>
+          </div>
 
-          <Divider orientation="left" plain>{t("settings.basicInfo")}</Divider>
-          <Form.Item
-            name="name"
-            label={t("settings.name")}
-            rules={[{ required: true, whitespace: true, message: t("settings.nameRequired") }]}
-          >
-            <Input data-testid="adapter-name" disabled={props.busy || archived || !canEdit} />
-          </Form.Item>
-          <Form.Item label={t("settings.language")}>
-            <Input data-testid="adapter-language" value={LANGUAGE_LABELS[adapter.language]} readOnly disabled />
-          </Form.Item>
-          <Form.Item name="description" label={t("settings.description")}>
-            <Input.TextArea
-              data-testid="adapter-description"
-              rows={4}
-              autoSize={{ minRows: 3, maxRows: 4 }}
-              disabled={props.busy || archived || !canEdit}
-            />
-          </Form.Item>
+          <section className="adapter-settings-section" data-testid="adapter-settings-section-basic">
+            <h3 className="adapter-settings-section-title">{t("settings.basicInfo")}</h3>
+            <Form.Item
+              name="name"
+              label={t("settings.name")}
+              rules={[{ required: true, whitespace: true, message: t("settings.nameRequired") }]}
+            >
+              <Input data-testid="adapter-name" disabled={props.busy || archived || !canEdit} />
+            </Form.Item>
+            <Form.Item label={t("settings.language")}>
+              <div
+                className="adapter-readonly-field"
+                data-testid="adapter-language"
+                aria-label={`${t("settings.language")}: ${LANGUAGE_LABELS[adapter.language]}`}
+                aria-readonly="true"
+                role="status"
+              >
+                <Tag>{LANGUAGE_LABELS[adapter.language]}</Tag>
+                <Typography.Text type="secondary">{t("settings.readOnly")}</Typography.Text>
+              </div>
+            </Form.Item>
+            <Form.Item name="description" label={t("settings.description")}>
+              <Input.TextArea
+                data-testid="adapter-description"
+                rows={4}
+                autoSize={{ minRows: 3, maxRows: 4 }}
+                disabled={props.busy || archived || !canEdit}
+              />
+            </Form.Item>
+          </section>
 
           {!canEdit && (
             <Alert
@@ -226,8 +222,21 @@ function AdapterSettingsDrawerContent(props: Props) {
           )}
 
           {canManage && !archived && (
-            <>
-              <Divider orientation="left" plain>{t("settings.permissionsSection")}</Divider>
+            <section className="adapter-settings-section" data-testid="adapter-settings-section-permissions">
+              <h3 className="adapter-settings-section-title">{t("settings.permissionsSection")}</h3>
+              <Typography.Text type="secondary" className="adapter-settings-section-summary">
+                {t("settings.accessSummary", {
+                  level: t(
+                    accessLevel === "owner"
+                      ? "access.mine"
+                      : accessLevel === "edit"
+                        ? "access.sharedEdit"
+                        : accessLevel === "read"
+                          ? "access.sharedRead"
+                          : "access.adminAll",
+                  ),
+                })}
+              </Typography.Text>
               <Button
                 icon={<TeamOutlined />}
                 data-testid="open-adapter-permissions"
@@ -236,39 +245,39 @@ function AdapterSettingsDrawerContent(props: Props) {
               >
                 {t("sharing.open")}
               </Button>
-            </>
+            </section>
           )}
 
           {!archived && (
             <>
-              <Divider orientation="left" plain>{t("settings.moreActions")}</Divider>
-              <Space wrap className="settings-lifecycle-actions">
-                {canEdit && (
-                  <Button
-                    icon={<CopyOutlined />}
-                    data-testid="clone-adapter"
-                    aria-label={t("settings.clone")}
-                    disabled={props.busy}
-                    onClick={props.onClone}
-                  >
-                    {t("settings.clone")}
-                  </Button>
-                )}
-              </Space>
+              <section className="adapter-settings-section" data-testid="adapter-settings-section-more">
+                <h3 className="adapter-settings-section-title">{t("settings.moreActions")}</h3>
+                <Space wrap className="settings-lifecycle-actions">
+                  {canEdit && (
+                    <Button
+                      icon={<CopyOutlined />}
+                      data-testid="clone-adapter"
+                      aria-label={t("settings.clone")}
+                      disabled={props.busy}
+                      onClick={props.onClone}
+                    >
+                      {t("settings.clone")}
+                    </Button>
+                  )}
+                </Space>
+              </section>
 
               {canManage && (
-                <>
-                  <Divider orientation="left" plain>{t("settings.dangerZone")}</Divider>
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message={t("settings.deleteDescription")}
-                    description={
-                      adapter.runtime_locked === true
+                <section className="adapter-settings-section adapter-danger-zone" data-testid="adapter-danger-zone">
+                  <h3 className="adapter-settings-section-title">{t("settings.dangerZone")}</h3>
+                  <div className="adapter-danger-zone-copy">
+                    <Typography.Text>{t("settings.deleteDescription")}</Typography.Text>
+                    <Typography.Paragraph type="secondary">
+                      {adapter.runtime_locked === true
                         ? t("settings.deleteWarningActive")
-                        : t("settings.deleteWarningIdle")
-                    }
-                  />
+                        : t("settings.deleteWarningIdle")}
+                    </Typography.Paragraph>
+                  </div>
                   <ActionWithReason
                     label={
                       adapter.runtime_locked === true
@@ -297,7 +306,7 @@ function AdapterSettingsDrawerContent(props: Props) {
                   <Typography.Paragraph className="settings-danger-hint">
                     <Tag color="error">{t("settings.irreversible")}</Tag> {t("settings.dangerHint")}
                   </Typography.Paragraph>
-                </>
+                </section>
               )}
             </>
           )}
