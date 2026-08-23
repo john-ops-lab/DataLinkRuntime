@@ -56,6 +56,8 @@
       "type": "Task",
       "worker": "Runtime Worker: {{name}}"
     },
+    "contextAria": "Task runtime context",
+    "actionsAria": "Task actions",
     "settings": {
       "title": "Task runtime settings",
       "worker": "Runtime Worker",
@@ -111,6 +113,8 @@
       "type": "Webhook",
       "worker": "Runtime Worker: {{name}}"
     },
+    "contextAria": "Webhook runtime context",
+    "actionsAria": "Webhook actions",
     "settings": {
       "title": "Webhook runtime settings",
       "path": "Webhook path",
@@ -155,6 +159,7 @@
     "detailTitle": "Execution details",
     "runId": "Run ID: {{id}}",
     "refresh": "Refresh",
+    "toolbarAria": "Execution history toolbar",
     "loadMore": "Load more",
     "connectionLost": "Log connection lost; status may be stale",
     "connectionLostDescription": "The authoritative polling limit was reached without a terminal state. Refresh or open this execution again later."
@@ -194,6 +199,7 @@
     "truncated": "Logs exceeded the platform retention limit; some content was truncated",
     "newLines": "{{count}} new lines",
     "historyTools": "History log tools",
+    "toolbarAria": "Execution log toolbar",
     "search": "Search history logs",
     "searchPlaceholder": "Search log text",
     "matchCount": "{{count}} matching lines",

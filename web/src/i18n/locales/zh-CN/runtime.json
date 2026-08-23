@@ -56,6 +56,8 @@
       "type": "任务",
       "worker": "运行节点：{{name}}"
     },
+    "contextAria": "任务运行上下文",
+    "actionsAria": "任务操作",
     "settings": {
       "title": "任务运行设置",
       "worker": "运行节点",
@@ -111,6 +113,8 @@
       "type": "Webhook",
       "worker": "运行节点：{{name}}"
     },
+    "contextAria": "Webhook 运行上下文",
+    "actionsAria": "Webhook 操作",
     "settings": {
       "title": "Webhook 运行设置",
       "path": "Webhook 路径",
@@ -155,6 +159,7 @@
     "detailTitle": "执行详情",
     "runId": "运行 ID：{{id}}",
     "refresh": "刷新",
+    "toolbarAria": "执行记录工具栏",
     "loadMore": "加载更多",
     "connectionLost": "日志连接已断开，状态可能已过期",
     "connectionLostDescription": "已按权威结果轮询至上限仍未等到终态，请刷新或稍后重新查看该执行。"
@@ -194,6 +199,7 @@
     "truncated": "日志超过平台保存上限，部分内容已被截断",
     "newLines": "新增 {{count}} 行",
     "historyTools": "历史日志工具",
+    "toolbarAria": "执行日志工具栏",
     "search": "搜索历史日志",
     "searchPlaceholder": "搜索日志文本",
     "matchCount": "匹配 {{count}} 行",

@@ -5515,7 +5515,7 @@ it("adds masked live-log selections to the AI context alongside code and sends b
   getSelectionSpy.mockRestore();
 });
 
-it("shows the M5.5.13 credential guidance copy and the primary-blue assistant header", async () => {
+it("shows the M5.5.13 credential guidance copy and the quiet assistant header", async () => {
   const adapter = makeAdapter({ latest_version_id: 10 });
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
@@ -5535,7 +5535,9 @@ it("shows the M5.5.13 credential guidance copy and the primary-blue assistant he
   expect(screen.queryByTestId("ai-credential-guidance")).toBeNull();
   // 面板上下文行不使用内部术语“工作副本”。
   expect(screen.getByTestId("ai-current-context").textContent).not.toContain("工作副本");
-  // 顶部使用主操作蓝色（CSS 断言）。
+  // V3 头部保持工作区中性底色，仅用细蓝线标识 AI 面板边界。
   const appStyles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
-  expect(appStyles).toMatch(/\.ai-assistant-header\s*\{[^}]*background\s*:\s*#0958d9/s);
+  expect(appStyles).toMatch(
+    /\.ai-assistant-header\s*\{[^}]*background\s*:\s*var\(--dlr-workspace-bg\)[^}]*border-top\s*:\s*2px solid #1677ff/s,
+  );
 });

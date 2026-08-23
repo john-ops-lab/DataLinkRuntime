@@ -355,114 +355,124 @@ export function LogView(props: {
       role="region"
       aria-label={t("logs.title")}
     >
-      <div className="log-toolbar">
-        {mode === "history" && (
-          <div className="log-history-tools" role="group" aria-label={t("logs.historyTools")}>
-            <Input
+      <div
+        className="log-toolbar"
+        data-testid={props.testId ? `${props.testId}-toolbar` : "log-toolbar"}
+        role="toolbar"
+        aria-label={mode === "history" ? t("logs.historyTools") : t("logs.toolbarAria")}
+      >
+        <div className="log-toolbar-main">
+          {mode === "history" && (
+            <div className="log-history-tools" role="group" aria-label={t("logs.historyTools")}>
+              <Input
+                size="small"
+                data-testid={props.testId ? `${props.testId}-search` : "log-search"}
+                prefix={<SearchOutlined aria-hidden="true" />}
+                aria-label={t("logs.search")}
+                placeholder={t("logs.searchPlaceholder")}
+                allowClear
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+              {searchResult !== null && searchQuery.trim() !== "" && (
+                <span className="log-search-count" aria-live="polite">
+                  {t("logs.matchCount", { count: searchResult.matches })}
+                </span>
+              )}
+              <Tooltip title={t("logs.copy")} trigger={["hover", "focus"]}>
+                <Button
+                  size="small"
+                  type="text"
+                  data-testid={props.testId ? `${props.testId}-copy` : "log-copy"}
+                  icon={<CopyOutlined aria-hidden="true" />}
+                  aria-label={t("logs.copy")}
+                  onClick={() => void copySavedContent()}
+                />
+              </Tooltip>
+              <Tooltip title={t("logs.download")} trigger={["hover", "focus"]}>
+                <Button
+                  size="small"
+                  type="text"
+                  data-testid={props.testId ? `${props.testId}-download` : "log-download"}
+                  icon={<DownloadOutlined aria-hidden="true" />}
+                  aria-label={t("logs.download")}
+                  onClick={downloadSavedContent}
+                />
+              </Tooltip>
+            </div>
+          )}
+          {followControls &&
+            (paused ? (
+              <Button
+                size="small"
+                data-testid={props.testId ? `${props.testId}-resume` : "log-resume"}
+                icon={<PlayCircleOutlined aria-hidden="true" />}
+                aria-label={t("logs.resume")}
+                onClick={resumeFollowing}
+              >
+                {t("logs.resume")}
+              </Button>
+            ) : (
+              <Button
+                size="small"
+                data-testid={props.testId ? `${props.testId}-pause` : "log-pause"}
+                icon={<PauseOutlined aria-hidden="true" />}
+                aria-label={t("logs.pause")}
+                onClick={() => {
+                  const element = preRef.current;
+                  if (element !== null) {
+                    scrollTopRef.current = element.scrollTop;
+                  }
+                  followTail.current = false;
+                  pausedLineBaselineRef.current = logicalLineCount(props.content);
+                  setPaused(true);
+                }}
+              >
+                {t("logs.pause")}
+              </Button>
+            ))}
+          {props.onAddContext !== undefined && (
+            <Button
               size="small"
-              data-testid={props.testId ? `${props.testId}-search` : "log-search"}
-              prefix={<SearchOutlined aria-hidden="true" />}
-              aria-label={t("logs.search")}
-              placeholder={t("logs.searchPlaceholder")}
-              allowClear
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
+              data-testid={props.testId ? `${props.testId}-add-context` : "log-add-context"}
+              disabled={!hasSelection}
+              icon={<PlusOutlined aria-hidden="true" />}
+              aria-label={props.addContextLabel ?? t("actions.addContext", { ns: "common" })}
+              title={t("logs.addContextTitle")}
+              onClick={handleAddContext}
+            >
+              {props.addContextLabel ?? t("actions.addContext", { ns: "common" })}
+            </Button>
+          )}
+        </div>
+        <div className="log-toolbar-status">
+          {newLineCount > 0 && (
+            <span
+              className="log-new-count"
+              data-testid={props.testId ? `${props.testId}-new-count` : "log-new-count"}
+              role="status"
+              aria-live="polite"
+            >
+              {t("logs.newLines", { count: newLineCount })}
+            </span>
+          )}
+          <Tooltip title={maximized ? t("logs.restore") : t("logs.maximize")} trigger={["hover", "focus"]}>
+            <Button
+              ref={maximizeButtonRef}
+              size="small"
+              type="text"
+              data-testid={
+                props.testId
+                  ? `${props.testId}-${maximized ? "restore" : "maximize"}`
+                  : `log-${maximized ? "restore" : "maximize"}`
+              }
+              aria-label={maximized ? t("logs.restore") : t("logs.maximize")}
+              aria-pressed={maximized}
+              icon={maximized ? <FullscreenExitOutlined aria-hidden="true" /> : <FullscreenOutlined aria-hidden="true" />}
+              onClick={() => setMaximized((current) => !current)}
             />
-            {searchResult !== null && searchQuery.trim() !== "" && (
-              <span className="log-search-count" aria-live="polite">
-                {t("logs.matchCount", { count: searchResult.matches })}
-              </span>
-            )}
-            <Tooltip title={t("logs.copy")} trigger={["hover", "focus"]}>
-              <Button
-                size="small"
-                type="text"
-                data-testid={props.testId ? `${props.testId}-copy` : "log-copy"}
-                icon={<CopyOutlined aria-hidden="true" />}
-                aria-label={t("logs.copy")}
-                onClick={() => void copySavedContent()}
-              />
-            </Tooltip>
-            <Tooltip title={t("logs.download")} trigger={["hover", "focus"]}>
-              <Button
-                size="small"
-                type="text"
-                data-testid={props.testId ? `${props.testId}-download` : "log-download"}
-                icon={<DownloadOutlined aria-hidden="true" />}
-                aria-label={t("logs.download")}
-                onClick={downloadSavedContent}
-              />
-            </Tooltip>
-          </div>
-        )}
-        {followControls &&
-          (paused ? (
-            <Button
-              size="small"
-              data-testid={props.testId ? `${props.testId}-resume` : "log-resume"}
-              icon={<PlayCircleOutlined aria-hidden="true" />}
-              aria-label={t("logs.resume")}
-              onClick={resumeFollowing}
-            >
-              {t("logs.resume")}
-            </Button>
-          ) : (
-            <Button
-              size="small"
-              data-testid={props.testId ? `${props.testId}-pause` : "log-pause"}
-              icon={<PauseOutlined aria-hidden="true" />}
-              aria-label={t("logs.pause")}
-              onClick={() => {
-                const element = preRef.current;
-                if (element !== null) {
-                  scrollTopRef.current = element.scrollTop;
-                }
-                followTail.current = false;
-                pausedLineBaselineRef.current = logicalLineCount(props.content);
-                setPaused(true);
-              }}
-            >
-              {t("logs.pause")}
-            </Button>
-          ))}
-        {props.onAddContext !== undefined && (
-          <Button
-            size="small"
-            data-testid={props.testId ? `${props.testId}-add-context` : "log-add-context"}
-            disabled={!hasSelection}
-            icon={<PlusOutlined aria-hidden="true" />}
-            aria-label={props.addContextLabel ?? t("actions.addContext", { ns: "common" })}
-            title={t("logs.addContextTitle")}
-            onClick={handleAddContext}
-          >
-            {props.addContextLabel ?? t("actions.addContext", { ns: "common" })}
-          </Button>
-        )}
-        {newLineCount > 0 && (
-          <span
-            className="log-new-count"
-            data-testid={props.testId ? `${props.testId}-new-count` : "log-new-count"}
-            role="status"
-          >
-            {t("logs.newLines", { count: newLineCount })}
-          </span>
-        )}
-        <Tooltip title={maximized ? t("logs.restore") : t("logs.maximize")} trigger={["hover", "focus"]}>
-          <Button
-            ref={maximizeButtonRef}
-            size="small"
-            type="text"
-            data-testid={
-              props.testId
-                ? `${props.testId}-${maximized ? "restore" : "maximize"}`
-                : `log-${maximized ? "restore" : "maximize"}`
-            }
-            aria-label={maximized ? t("logs.restore") : t("logs.maximize")}
-            aria-pressed={maximized}
-            icon={maximized ? <FullscreenExitOutlined aria-hidden="true" /> : <FullscreenOutlined aria-hidden="true" />}
-            onClick={() => setMaximized((current) => !current)}
-          />
-        </Tooltip>
+          </Tooltip>
+        </div>
       </div>
       {(props.browserWindowTruncated || props.truncated || copyState !== "idle") && (
         <div className="log-notices">
@@ -512,6 +522,7 @@ export function LogView(props: {
         className="terminal-view"
         data-testid={props.testId ?? "log-view"}
         aria-label={t("logs.contentLabel")}
+        tabIndex={0}
         onScroll={handleScroll}
       >
         {displayContent === ""

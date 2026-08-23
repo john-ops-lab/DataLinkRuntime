@@ -242,7 +242,12 @@ export default function ExecutionHistoryPanel(props: {
 
   return (
     <div className="history-panel">
-      <Space className="history-toolbar">
+      <Space
+        className="history-toolbar"
+        data-testid="history-toolbar"
+        role="toolbar"
+        aria-label={t("history.toolbarAria")}
+      >
         <Button
           data-testid="history-refresh"
           icon={<ReloadOutlined aria-hidden="true" />}
@@ -297,6 +302,7 @@ export default function ExecutionHistoryPanel(props: {
       )}
 
       <Drawer
+        className="execution-history-drawer"
         title={t("history.detailTitle")}
         width="min(640px, 100vw)"
         keyboard
@@ -357,6 +363,7 @@ export default function ExecutionHistoryPanel(props: {
               {t("history.runId", { id: visibleDetail.id })}
             </div>
             <Tabs
+              className="execution-detail-tabs"
               size="small"
               items={[
                 {

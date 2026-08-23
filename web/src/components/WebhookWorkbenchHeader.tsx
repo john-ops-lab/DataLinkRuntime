@@ -55,6 +55,8 @@ export default function WebhookWorkbenchHeader(props: Props) {
       <div className="workbench-context" data-testid="webhook-workbench-header">
         <div className="workbench-title-row">
           <h2 className="workbench-title" title={props.adapter.name}>{props.adapter.name}</h2>
+        </div>
+        <div className="workbench-meta-row" data-testid="workbench-meta" role="group" aria-label={t("webhook.contextAria")}>
           <Tag color="cyan">{t("webhook.header.type")}</Tag>
           <span className="workbench-context-fact">{LANGUAGE_LABELS[props.adapter.language]}</span>
           <Tag color={props.runtimeState.enabled ? "processing" : "default"}>
@@ -80,7 +82,12 @@ export default function WebhookWorkbenchHeader(props: Props) {
           </p>
         )}
       </div>
-      <div className="workbench-controls">
+      <div
+        className="workbench-controls"
+        data-testid="workbench-toolbar"
+        role="toolbar"
+        aria-label={t("webhook.actionsAria")}
+      >
         <Tooltip title={t("actions.settings", { ns: "common" })} trigger={["hover", "focus"]}>
           <Button
             data-testid="adapter-settings"

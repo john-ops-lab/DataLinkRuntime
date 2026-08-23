@@ -1,0 +1,475 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "wave": "M5.11 V3",
+  "scope": "Workbench, runtime logs and AI spatial relationship visual/interaction convergence",
+  "antd": "5.29.3",
+  "pro_components": "2.8.10",
+  "playwright": "1.62.1",
+  "browser": "chromium",
+  "browser_version": "151.0.7922.34",
+  "node_version": "v23.11.0",
+  "platform": "darwin",
+  "color_scheme": "light",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "viewport_height": 900,
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "fake_provider": "fixture",
+  "real_provider_credentials": false,
+  "records": [
+    {
+      "locale": "en",
+      "width": 1280,
+      "scenario": "admin",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/en-1280-adapter-switch.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "workbench": true,
+        "workbench_context": true,
+        "workbench_toolbar": true,
+        "editor_region": true,
+        "editor_toolbar": true,
+        "header_icon_action": true,
+        "live_log": true,
+        "live_log_paused": true,
+        "live_log_follow_resumed": true,
+        "log_context": true,
+        "live_log_keyboard_restore": true,
+        "history_toolbar": true,
+        "history_detail": true,
+        "history_log_restore": true,
+        "ai_icon_action": true,
+        "ai_draft_preserved": true,
+        "ai_markdown_code": true,
+        "ai_tool_success": true,
+        "ai_candidate": true,
+        "candidate_diff": true,
+        "candidate_apply": true,
+        "adapter_switch_isolated": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "scenario": "error",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/en-1280-ai-error.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "ai_loading": true,
+        "ai_error": true,
+        "request_completed": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "scenario": "read",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/en-1280-read-only.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "read_only": true,
+        "ai_hidden": true
+      },
+      "assist_request_count": 0
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "scenario": "admin",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/en-1440-adapter-switch.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "workbench": true,
+        "workbench_context": true,
+        "workbench_toolbar": true,
+        "editor_region": true,
+        "editor_toolbar": true,
+        "header_icon_action": true,
+        "live_log": true,
+        "live_log_paused": true,
+        "live_log_follow_resumed": true,
+        "log_context": true,
+        "live_log_keyboard_restore": true,
+        "history_toolbar": true,
+        "history_detail": true,
+        "history_log_restore": true,
+        "ai_icon_action": true,
+        "ai_draft_preserved": true,
+        "ai_markdown_code": true,
+        "ai_tool_success": true,
+        "ai_candidate": true,
+        "candidate_diff": true,
+        "candidate_apply": true,
+        "adapter_switch_isolated": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "scenario": "admin",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/en-1680-adapter-switch.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "workbench": true,
+        "workbench_context": true,
+        "workbench_toolbar": true,
+        "editor_region": true,
+        "editor_toolbar": true,
+        "header_icon_action": true,
+        "live_log": true,
+        "live_log_paused": true,
+        "live_log_follow_resumed": true,
+        "log_context": true,
+        "live_log_keyboard_restore": true,
+        "history_toolbar": true,
+        "history_detail": true,
+        "history_log_restore": true,
+        "ai_icon_action": true,
+        "ai_draft_preserved": true,
+        "ai_markdown_code": true,
+        "ai_tool_success": true,
+        "ai_candidate": true,
+        "candidate_diff": true,
+        "candidate_apply": true,
+        "adapter_switch_isolated": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "scenario": "admin",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/en-1920-adapter-switch.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "workbench": true,
+        "workbench_context": true,
+        "workbench_toolbar": true,
+        "editor_region": true,
+        "editor_toolbar": true,
+        "header_icon_action": true,
+        "live_log": true,
+        "live_log_paused": true,
+        "live_log_follow_resumed": true,
+        "log_context": true,
+        "live_log_keyboard_restore": true,
+        "history_toolbar": true,
+        "history_detail": true,
+        "history_log_restore": true,
+        "ai_icon_action": true,
+        "ai_draft_preserved": true,
+        "ai_markdown_code": true,
+        "ai_tool_success": true,
+        "ai_candidate": true,
+        "candidate_diff": true,
+        "candidate_apply": true,
+        "adapter_switch_isolated": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "scenario": "admin",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/zh-CN-1280-adapter-switch.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "workbench": true,
+        "workbench_context": true,
+        "workbench_toolbar": true,
+        "editor_region": true,
+        "editor_toolbar": true,
+        "header_icon_action": true,
+        "live_log": true,
+        "live_log_paused": true,
+        "live_log_follow_resumed": true,
+        "log_context": true,
+        "live_log_keyboard_restore": true,
+        "history_toolbar": true,
+        "history_detail": true,
+        "history_log_restore": true,
+        "ai_icon_action": true,
+        "ai_draft_preserved": true,
+        "ai_markdown_code": true,
+        "ai_tool_success": true,
+        "ai_candidate": true,
+        "candidate_diff": true,
+        "candidate_apply": true,
+        "adapter_switch_isolated": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "scenario": "error",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/zh-CN-1280-ai-error.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+      ],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "ai_loading": true,
+        "ai_error": true,
+        "request_completed": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "scenario": "read",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/zh-CN-1280-read-only.png",
+      "console_errors": [],
+      "expected_console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "http_errors": [
+        {
+          "path": "/api/auth/account/me",
+          "status": 401
+        }
+      ],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "visible_states": {
+        "read_only": true,
+        "ai_hidden": true
+      },
+      "assist_request_count": 0
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "scenario": "admin",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/zh-CN-1440-adapter-switch.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "visible_states": {
+        "workbench": true,
+        "workbench_context": true,
+        "workbench_toolbar": true,
+        "editor_region": true,
+        "editor_toolbar": true,
+        "header_icon_action": true,
+        "live_log": true,
+        "live_log_paused": true,
+        "live_log_follow_resumed": true,
+        "log_context": true,
+        "live_log_keyboard_restore": true,
+        "history_toolbar": true,
+        "history_detail": true,
+        "history_log_restore": true,
+        "ai_icon_action": true,
+        "ai_draft_preserved": true,
+        "ai_markdown_code": true,
+        "ai_tool_success": true,
+        "ai_candidate": true,
+        "candidate_diff": true,
+        "candidate_apply": true,
+        "adapter_switch_isolated": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "scenario": "admin",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/zh-CN-1680-adapter-switch.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "visible_states": {
+        "workbench": true,
+        "workbench_context": true,
+        "workbench_toolbar": true,
+        "editor_region": true,
+        "editor_toolbar": true,
+        "header_icon_action": true,
+        "live_log": true,
+        "live_log_paused": true,
+        "live_log_follow_resumed": true,
+        "log_context": true,
+        "live_log_keyboard_restore": true,
+        "history_toolbar": true,
+        "history_detail": true,
+        "history_log_restore": true,
+        "ai_icon_action": true,
+        "ai_draft_preserved": true,
+        "ai_markdown_code": true,
+        "ai_tool_success": true,
+        "ai_candidate": true,
+        "candidate_diff": true,
+        "candidate_apply": true,
+        "adapter_switch_isolated": true
+      },
+      "assist_request_count": 1
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "scenario": "admin",
+      "screenshot": "docs/ui/m5-11-wave-v3-workbench/browser/zh-CN-1920-adapter-switch.png",
+      "console_errors": [],
+      "expected_console_errors": [],
+      "page_errors": [],
+      "http_errors": [],
+      "unexpected_http_errors": [],
+      "unknown_requests": [],
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "visible_states": {
+        "workbench": true,
+        "workbench_context": true,
+        "workbench_toolbar": true,
+        "editor_region": true,
+        "editor_toolbar": true,
+        "header_icon_action": true,
+        "live_log": true,
+        "live_log_paused": true,
+        "live_log_follow_resumed": true,
+        "log_context": true,
+        "live_log_keyboard_restore": true,
+        "history_toolbar": true,
+        "history_detail": true,
+        "history_log_restore": true,
+        "ai_icon_action": true,
+        "ai_draft_preserved": true,
+        "ai_markdown_code": true,
+        "ai_tool_success": true,
+        "ai_candidate": true,
+        "candidate_diff": true,
+        "candidate_apply": true,
+        "adapter_switch_isolated": true
+      },
+      "assist_request_count": 1
+    }
+  ]
+}

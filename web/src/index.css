@@ -696,10 +696,31 @@ body {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
+  padding: 5px 6px;
   min-height: 30px;
   min-width: 0;
+  border-bottom: 1px solid var(--dlr-border);
+  background: var(--dlr-workspace-bg);
+}
+
+.log-toolbar-main {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.log-toolbar-status {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .log-history-tools {
@@ -790,6 +811,41 @@ body {
   cursor: not-allowed;
 }
 
+.log-pane-maximized {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.log-pane-maximized .log-toolbar {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom-color: #30363d;
+  background: #161b22;
+  color: #c9d1d9;
+}
+
+.log-pane-maximized .log-toolbar .ant-btn {
+  color: #c9d1d9;
+  border-color: #484f58;
+  background: #21262d;
+}
+
+.log-pane-maximized .log-toolbar .ant-btn:hover:not(:disabled),
+.log-pane-maximized .log-toolbar .ant-btn:focus-visible {
+  color: #fff;
+  border-color: #58a6ff;
+  background: #30363d;
+}
+
+.log-pane-maximized .log-toolbar .ant-btn:disabled {
+  color: #6e7681;
+  border-color: #30363d;
+  background: #161b22;
+}
+
 .task-live-log-handoff {
   margin-top: 14px;
 }
@@ -811,10 +867,10 @@ body {
   flex: 0 0 auto;
   min-width: 0;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 10px 16px;
-  padding: 10px 16px;
+  padding: 8px 16px;
   background: var(--dlr-workspace-bg);
   border-bottom: 1px solid var(--dlr-border);
 }
@@ -822,8 +878,20 @@ body {
 .workbench-title-row {
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+}
+
+.workbench-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.workbench-meta-row .ant-tag {
+  margin-inline-end: 0;
 }
 
 .workbench-context-fact,
@@ -844,6 +912,7 @@ body {
 
 .workbench-controls {
   flex: 0 1 auto;
+  max-width: min(100%, 720px);
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -855,6 +924,9 @@ body {
 .workbench-context {
   flex: 1 1 360px;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .workbench-production-summary {
@@ -865,6 +937,11 @@ body {
   margin-top: 5px;
   color: var(--dlr-text-weak);
   font-size: 0.74rem;
+}
+
+.workbench-controls > .ant-btn,
+.workbench-controls .ant-btn {
+  min-height: 30px;
 }
 
 .workbench-lifecycle-actions {
@@ -1080,15 +1157,14 @@ body {
 }
 
 .ai-assistant-open.ant-btn {
-  width: 46px;
-  height: 46px;
+  width: 40px;
+  height: 40px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  border-radius: 50%;
-  font-weight: 700;
-  box-shadow: 0 4px 12px rgba(9, 88, 217, 0.35);
+  border-radius: 6px;
+  box-shadow: none;
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
@@ -1100,11 +1176,12 @@ body {
 
 .ai-assistant-expanded {
   flex: 0 0 auto;
-  width: clamp(340px, 29vw, 440px);
+  width: clamp(360px, 30vw, 448px);
   min-width: 0;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--dlr-border);
+  background: var(--dlr-workspace-bg);
 }
 
 /* M5.8-001：在同一个面板实例上切换布局，覆盖主工作区但不卸载
@@ -1120,7 +1197,7 @@ body {
   box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.28), 0 12px 40px rgba(0, 0, 0, 0.2);
 }
 
-/* M5.5.13：AI 面板抬头使用主操作蓝色；关闭按钮与次级文字改白色保证对比度。 */
+/* V3：AI 面板抬头保持工作区中性底色，以细蓝线上下文标识边界。 */
 .ai-assistant-header {
   flex: 0 0 auto;
   display: flex;
@@ -1128,20 +1205,21 @@ body {
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
-  padding: 12px 14px 10px;
-  background: #0958d9;
-  color: #fff;
+  padding: 10px 14px 9px;
+  background: var(--dlr-workspace-bg);
+  color: var(--dlr-text);
+  border-top: 2px solid #1677ff;
   border-bottom: 1px solid var(--dlr-border);
 }
 
 .ai-assistant-header strong {
-  color: #fff;
+  color: var(--dlr-text);
   overflow-wrap: anywhere;
 }
 
 .ai-assistant-header p {
   margin: 3px 0 0;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--dlr-text-secondary);
   font-size: 0.72rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -1155,7 +1233,7 @@ body {
 }
 
 .ai-assistant-header-actions .ant-btn {
-  color: #fff;
+  color: var(--dlr-text-secondary);
 }
 
 .ai-assistant-context {
@@ -1258,7 +1336,7 @@ body {
 .ai-message-copy {
   display: flex;
   justify-content: flex-end;
-  margin-top: 2px;
+  margin-top: 0;
 }
 
 .ai-message-copy .ant-btn {
@@ -1568,6 +1646,8 @@ body {
 /* M5.7 Wave B1：assistant 消息的重新生成入口行。 */
 .ai-message-actions {
   display: flex;
+  align-items: center;
+  gap: 4px;
   justify-content: flex-end;
   margin-top: 6px;
 }
@@ -1720,9 +1800,20 @@ body {
 .ai-composer-actions {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 6px 10px;
   min-width: 0;
+}
+
+.ai-composer-guidance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 4px;
+  min-width: 0;
+  color: var(--dlr-text-weak);
+  font-size: 0.68rem;
+  line-height: 1.45;
 }
 
 .ai-attachment-hint,
@@ -2046,6 +2137,10 @@ body {
   height: clamp(180px, 42vh, 360px);
   min-height: 0;
   max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--dlr-border);
+  border-radius: 4px;
+  background: var(--dlr-workspace-bg);
 }
 
 /* 最大化在原组件上切换布局，保留日志内容、选区、跟随状态和 SSE 订阅。 */
@@ -2066,6 +2161,8 @@ body {
 
 .log-pane-maximized .terminal-view {
   min-height: 0;
+  border-radius: 0;
+  padding: 12px;
 }
 
 /* M5.5.10：统一日志视图——所有输出源按实际顺序在一处展示。 */
@@ -2086,6 +2183,11 @@ body {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.terminal-view:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: -2px;
 }
 
 .error-text {
@@ -2133,9 +2235,41 @@ body {
 }
 
 .execution-detail {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.execution-history-drawer .ant-drawer-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.execution-detail-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.execution-detail-tabs > .ant-tabs-content-holder,
+.execution-detail-tabs .ant-tabs-content,
+.execution-detail-tabs .ant-tabs-tabpane {
+  min-height: 0;
+}
+
+.execution-detail-tabs > .ant-tabs-content-holder {
+  display: flex;
+  flex: 1;
+}
+
+.execution-detail-tabs .ant-tabs-content,
+.execution-detail-tabs .ant-tabs-tabpane-active {
+  height: 100%;
 }
 
 /* --- 触发器（M5.2 Schedule / M5.3 Webhook） ---------------------------------------------- */
