@@ -46,6 +46,7 @@ import {
   DiffOutlined,
   FullscreenExitOutlined,
   FullscreenOutlined,
+  MessageOutlined,
   PaperClipOutlined,
   ReloadOutlined,
   SendOutlined,
@@ -577,7 +578,7 @@ function ComposerAttachmentArea(props: {
           {props.error}
         </p>
       )}
-      <div className="ai-composer-actions">
+      <div className="ai-composer-guidance" data-testid="ai-composer-guidance">
         <span className="ai-attachment-hint" data-testid="ai-attachment-hint">
           {t("assistant.attachments.hint", {
             count: props.limits.max_attachments,
@@ -589,6 +590,13 @@ function ComposerAttachmentArea(props: {
           {t("assistant.attachments.privacyNoticeLead")}{" "}
           <strong>{t("assistant.attachments.privacyNoticeSensitive")}</strong>
         </span>
+      </div>
+      <div
+        className="ai-composer-actions"
+        data-testid="ai-composer-actions"
+        role="toolbar"
+        aria-label={t("assistant.composerActions")}
+      >
         <Tooltip
           title={
             props.knowledgeCapabilityLoading
@@ -1488,7 +1496,7 @@ async function resolveComposerAttachment(
   // M5.5.13: drag the floating entry within the visible work area without
   // triggering a click. Pointer events are used so the drag works for mouse
   // and touch; a small movement threshold separates "drag" from "click".
-  const ENTRY_SIZE = 46;
+  const ENTRY_SIZE = 40;
   const ENTRY_MARGIN = 8;
   const DRAG_THRESHOLD_PX = 4;
 
@@ -1581,8 +1589,9 @@ async function resolveComposerAttachment(
         type="primary"
         className="ai-assistant-open"
         data-testid="open-ai-assistant"
-            aria-label={t("assistant.open")}
+        aria-label={t("assistant.open")}
         aria-expanded={false}
+        icon={<MessageOutlined aria-hidden="true" />}
         onPointerDown={handleEntryPointerDown}
         onPointerMove={handleEntryPointerMove}
         onPointerUp={handleEntryPointerUp}
@@ -1593,9 +1602,7 @@ async function resolveComposerAttachment(
           }
           props.onOpen();
         }}
-      >
-        AI
-      </Button>
+      />
     </aside>
   );
 
@@ -1790,51 +1797,56 @@ async function resolveComposerAttachment(
                             ))}
                           </div>
                         )}
-                      <div className="ai-message-copy">
-                        <Tooltip
-                          title={
-                            copiedMessageId === message.id
-                              ? t("assistant.copied")
-                              : t("assistant.copy")
-                          }
-                          trigger={["hover", "focus"]}
-                        >
-                          <Button
-                            type="text"
-                            size="small"
-                            data-testid={`ai-copy-message-${message.id}`}
-                            aria-label={
+                      <div
+                        className="ai-message-actions"
+                        data-testid="ai-message-actions"
+                        role="toolbar"
+                        aria-label={t("assistant.messageActions")}
+                      >
+                        <div className="ai-message-copy">
+                          <Tooltip
+                            title={
                               copiedMessageId === message.id
                                 ? t("assistant.copied")
                                 : t("assistant.copy")
                             }
-                            icon={
-                              copiedMessageId === message.id ? (
-                                <CheckOutlined aria-hidden="true" />
-                              ) : (
-                                <CopyOutlined aria-hidden="true" />
-                              )
-                            }
-                            onClick={() => void copyVisibleMessage(message)}
-                          />
-                        </Tooltip>
-                      </div>
-                      {/* M5.7 Wave B1: Regenerate entry — one per assistant
-                          round; the previous message is always the round's
-                          user message (DLR appends strictly alternating
-                          pairs). Disabled while a request is in flight or the
-                          panel is otherwise gated; the runtime/onReload
-                          guards still re-check every gate.
-                          M5.7 Wave B3: a round whose send failed has no
-                          assistant reply; the entry renders on the failed
-                          user round as "Retry" and reuses the frozen snapshot
-                          (message, context and attachments). */}
-                      {(message.role === "assistant" && index > 0) ||
-                        (message.role === "user" &&
-                          message.snapshot !== null &&
-                          index === messages.length - 1 &&
-                          !sending) ? (
-                        <div className="ai-message-actions">
+                            trigger={["hover", "focus"]}
+                          >
+                            <Button
+                              type="text"
+                              size="small"
+                              data-testid={`ai-copy-message-${message.id}`}
+                              aria-label={
+                                copiedMessageId === message.id
+                                  ? t("assistant.copied")
+                                  : t("assistant.copy")
+                              }
+                              icon={
+                                copiedMessageId === message.id ? (
+                                  <CheckOutlined aria-hidden="true" />
+                                ) : (
+                                  <CopyOutlined aria-hidden="true" />
+                                )
+                              }
+                              onClick={() => void copyVisibleMessage(message)}
+                            />
+                          </Tooltip>
+                        </div>
+                        {/* M5.7 Wave B1: Regenerate entry — one per assistant
+                            round; the previous message is always the round's
+                            user message (DLR appends strictly alternating
+                            pairs). Disabled while a request is in flight or the
+                            panel is otherwise gated; the runtime/onReload
+                            guards still re-check every gate.
+                            M5.7 Wave B3: a round whose send failed has no
+                            assistant reply; the entry renders on the failed
+                            user round as "Retry" and reuses the frozen snapshot
+                            (message, context and attachments). */}
+                        {(message.role === "assistant" && index > 0) ||
+                          (message.role === "user" &&
+                            message.snapshot !== null &&
+                            index === messages.length - 1 &&
+                            !sending) ? (
                           <RegenerateButton
                             userMessageId={
                               message.role === "assistant"
@@ -1850,8 +1862,8 @@ async function resolveComposerAttachment(
                               props.adapter === null
                             }
                           />
-                        </div>
-                      ) : null}
+                        ) : null}
+                      </div>
                       {candidateState !== null && (
                         <div
                           className="ai-candidate"

@@ -7,6 +7,8 @@
     "restore": "恢复 AI 助手",
     "title": "AI 助手",
     "headerActions": "AI 助手操作",
+    "composerActions": "编辑器工具",
+    "messageActions": "消息操作",
     "notice": "候选修改仅写入浏览器，不会自动保存、测试或运行。",
     "noAdapter": "请先选择一个适配器。",
     "contextSnippets": "已加入的上下文片段",

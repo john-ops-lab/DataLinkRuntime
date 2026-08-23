@@ -80,6 +80,8 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
       <div className="workbench-context" data-testid="task-workbench-header">
         <div className="workbench-title-row">
           <h2 className="workbench-title" title={props.adapter.name}>{props.adapter.name}</h2>
+        </div>
+        <div className="workbench-meta-row" data-testid="workbench-meta" role="group" aria-label={t("task.contextAria")}>
           <Tag color="blue">{t("task.header.type")}</Tag>
           <span className="workbench-context-fact">{LANGUAGE_LABELS[props.adapter.language]}</span>
           <Tag color={activeExecution || props.runtimeState.scheduleEnabled ? "processing" : "default"}>{runtimeStatus}</Tag>
@@ -96,7 +98,12 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
           </p>
         )}
       </div>
-      <div className="workbench-controls">
+      <div
+        className="workbench-controls"
+        data-testid="workbench-toolbar"
+        role="toolbar"
+        aria-label={t("task.actionsAria")}
+      >
         <Tooltip title={t("actions.settings", { ns: "common" })} trigger={["hover", "focus"]}>
           <Button
             data-testid="adapter-settings"
