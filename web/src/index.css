@@ -2664,6 +2664,15 @@ body {
   justify-content: flex-end;
 }
 
+.package-source-default-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--ant-color-warning, #d48806);
+}
+
 .package-source-cell {
   display: block;
   min-width: 0;
@@ -2740,15 +2749,35 @@ body {
   align-items: stretch;
 }
 
+.ai-model-settings > .ant-alert {
+  margin-bottom: 2px;
+}
+
+.ai-model-form .ant-form-item {
+  margin-bottom: 10px;
+}
+
+.ai-model-form .ant-form-item-label {
+  padding-bottom: 4px;
+}
+
+.ai-model-autocomplete {
+  width: 100%;
+}
+
 .ai-primary-config {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
 .ai-current-config-summary {
   width: 100%;
+}
+
+.ai-current-config-summary .ant-card-body {
+  padding: 10px 12px;
 }
 
 .ai-current-config-summary-list {
@@ -2774,12 +2803,13 @@ body {
 
 .ai-secondary-settings {
   width: 100%;
+  margin: 2px 0;
 }
 
 .settings-advanced {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 @media (max-width: 1400px) {

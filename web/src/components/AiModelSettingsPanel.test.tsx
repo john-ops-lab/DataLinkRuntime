@@ -2,7 +2,12 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ApiError, api } from "../api";
-import type { AiModelSetting, AiModelSettingDraft } from "../types";
+import type {
+  AiCustomProvider,
+  AiModelSetting,
+  AiModelSettingDraft,
+  AiProviderCapability,
+} from "../types";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
 
 function modelSetting(overrides: Partial<AiModelSetting> = {}): AiModelSetting {
@@ -21,9 +26,21 @@ function modelSetting(overrides: Partial<AiModelSetting> = {}): AiModelSetting {
   };
 }
 
-function mockLoad(setting: AiModelSetting | null): void {
+function mockLoad(
+  setting: AiModelSetting | null,
+  options: {
+    customProviders?: AiCustomProvider[];
+    providerCatalog?: AiProviderCapability[];
+  } = {},
+): void {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(setting);
   vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "getAiProviders").mockResolvedValue({
+    providers: options.providerCatalog ?? [],
+  });
+  vi.spyOn(api, "listAiCustomProviders").mockResolvedValue({
+    providers: options.customProviders ?? [],
+  });
 }
 
 async function openSelect(testId: string): Promise<HTMLElement> {
@@ -47,6 +64,25 @@ async function openSelect(testId: string): Promise<HTMLElement> {
 async function chooseOption(testId: string, label: string): Promise<void> {
   const dropdown = await openSelect(testId);
   clickOption(dropdown, label);
+}
+
+async function openModelOptions(): Promise<HTMLElement> {
+  const input = screen.getByTestId("ai-model-input");
+  fireEvent.focus(input);
+  fireEvent.mouseDown(input);
+
+  let dropdown: HTMLElement | undefined;
+  await waitFor(() => {
+    dropdown = Array.from(
+      document.querySelectorAll<HTMLElement>(".ant-select-dropdown"),
+    ).find(
+      (candidate) =>
+        !candidate.classList.contains("ant-select-dropdown-hidden") &&
+        candidate.querySelector(".ant-select-item-option-content") !== null,
+    );
+    expect(dropdown).not.toBeUndefined();
+  });
+  return dropdown as HTMLElement;
 }
 
 function optionLabels(dropdown: HTMLElement): string[] {
@@ -107,7 +143,7 @@ it("locks the AI model form while a request is in flight so stale responses cann
   expect(screen.getByTestId("ai-reasoning-mode").classList.contains("ant-select-disabled")).toBe(
     true,
   );
-  expect(screen.getByText(/高级：推理策略/).closest(".ant-collapse-item")?.className).toContain(
+  expect(screen.getByText(/推理设置：/).closest(".ant-collapse-item")?.className).toContain(
     "ant-collapse-item-disabled",
   );
 
@@ -141,7 +177,7 @@ it("shows Provider-specific effort options and clears stale values on Provider o
   fireEvent.click(screen.getByTestId("ai-save-settings"));
   expect(updateSetting).not.toHaveBeenCalled();
   expect(onError).toHaveBeenLastCalledWith(
-    "OpenAI 开启推理时必须显式选择受支持的推理强度",
+    "OpenAI 开启推理时必须选择受支持的推理强度",
   );
   const openAiOptions = await openSelect("ai-reasoning-effort");
   expect(optionLabels(openAiOptions)).toEqual(["low", "medium", "high", "xhigh"]);
@@ -179,7 +215,7 @@ it("shows Provider-specific effort options and clears stale values on Provider o
   );
   await chooseOption("ai-reasoning-effort", "high");
 
-  for (const provider of ["Kimi", "MiniMax", "自定义 OpenAI 兼容服务"]) {
+  for (const provider of ["Kimi", "MiniMax"]) {
     await chooseOption("ai-provider", provider);
     expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
   }
@@ -187,6 +223,82 @@ it("shows Provider-specific effort options and clears stale values on Provider o
   expect(screen.getByTestId("ai-reasoning-effort").textContent).toContain(
     "请选择推理强度",
   );
+});
+
+it("uses one model control for discovered choices and arbitrary manual IDs", async () => {
+  mockLoad(modelSetting({ model: "saved-model" }));
+  const refresh = vi
+    .spyOn(api, "refreshAiModels")
+    .mockResolvedValue({ models: ["discovered-model-1", "discovered-model-2"] });
+
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  const input = screen.getByTestId("ai-model-input") as HTMLInputElement;
+
+  fireEvent.change(input, { target: { value: "manual-model-id" } });
+  expect(input.value).toBe("manual-model-id");
+
+  fireEvent.click(screen.getByTestId("ai-refresh-models"));
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+
+  fireEvent.change(input, { target: { value: "" } });
+  const dropdown = await openModelOptions();
+  expect(optionLabels(dropdown)).toEqual(["discovered-model-1", "discovered-model-2"]);
+  clickOption(dropdown, "discovered-model-2");
+  expect(input.value).toBe("discovered-model-2");
+
+  fireEvent.change(input, { target: { value: "another-manual-model-id" } });
+  expect(input.value).toBe("another-manual-model-id");
+});
+
+it("hides the built-in legacy provider option without breaking saved legacy values or real custom providers", async () => {
+  const customProvider: AiCustomProvider = {
+    id: 42,
+    name: "Team model gateway",
+    protocol: "openai_compatible",
+    base_url: "https://gateway.example.com/v1",
+    credential_id: null,
+    credential_name: null,
+    images_native: false,
+    files_native: false,
+    tools_supported: true,
+    referenced: true,
+    created_at: "2026-08-12T00:00:00Z",
+    updated_at: "2026-08-12T00:00:00Z",
+  };
+  mockLoad(
+    modelSetting({
+      provider: "custom_openai_compatible",
+      custom_provider_id: null,
+      base_url: "https://legacy.example.com/v1",
+      model: "legacy-model",
+    }),
+    { customProviders: [customProvider] },
+  );
+  const updateSetting = vi
+    .spyOn(api, "updateAiSetting")
+    .mockImplementation(async (draft: AiModelSettingDraft) => modelSetting(draft));
+
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+  expect(screen.getByTestId("ai-legacy-provider-notice").textContent).toContain(
+    "已隐藏的旧兼容项",
+  );
+
+  const providerOptions = await openSelect("ai-provider");
+  expect(optionLabels(providerOptions)).not.toContain("自定义 OpenAI 兼容服务");
+  expect(optionLabels(providerOptions)).toContain("自定义：Team model gateway");
+
+  fireEvent.click(screen.getByTestId("ai-save-settings"));
+  await waitFor(() => expect(updateSetting).toHaveBeenCalledTimes(1));
+  expect(updateSetting).toHaveBeenLastCalledWith({
+    provider: "custom_openai_compatible",
+    base_url: "https://legacy.example.com/v1",
+    model: "legacy-model",
+    credential_id: null,
+    reasoning_mode: "default",
+    reasoning_effort: null,
+  });
 });
 
 it("requires an explicit OpenAI effort and sends only the selected or default payload", async () => {
@@ -207,7 +319,7 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
   fireEvent.change(screen.getByTestId("ai-model-input"), {
     target: { value: "reasoning-model" },
   });
-  fireEvent.click(screen.getByText("高级：推理策略（跟随模型默认）"));
+  fireEvent.click(screen.getByText("推理设置：跟随模型默认"));
   await chooseOption("ai-reasoning-mode", "开启推理");
 
   fireEvent.click(screen.getByTestId("ai-save-settings"));
@@ -215,7 +327,7 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
   expect(updateSetting).not.toHaveBeenCalled();
   expect(testSetting).not.toHaveBeenCalled();
   expect(onError).toHaveBeenLastCalledWith(
-    "OpenAI 开启推理时必须显式选择受支持的推理强度",
+    "OpenAI 开启推理时必须选择受支持的推理强度",
   );
 
   await chooseOption("ai-reasoning-effort", "xhigh");
@@ -224,7 +336,7 @@ it("requires an explicit OpenAI effort and sends only the selected or default pa
   // M5.6 Wave 4 E: the success sentence is DLR-owned and localized in the
   // bundle; the server compatibility message is never interpolated verbatim.
   expect((await screen.findByTestId("ai-settings-notice")).textContent).toBe(
-    "连接测试通过：模型返回可解析的最小响应。",
+    "连接测试通过，模型返回可解析响应。",
   );
   expect(testSetting).toHaveBeenLastCalledWith({
     provider: "openai",
@@ -304,7 +416,7 @@ it("刷新失败后仍可手工输入模型 ID，错误主信息中文且可行�
 
   const error = screen.getByTestId("ai-settings-error");
   expect(error.textContent).toContain("无法连接模型服务");
-  expect(error.textContent).toContain("仍可手工输入模型 ID");
+  expect(error.textContent).toContain("仍可手动输入模型 ID");
   expect(error.textContent).toContain("错误码：ai_provider_unreachable");
 
   // 刷新失败不锁定输入：Model ID 仍可手工填写。
@@ -324,7 +436,7 @@ it("刷新成功但列表为空时给出可行动提示", async () => {
   await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
 
   expect(screen.getByTestId("ai-settings-notice").textContent).toBe(
-    "刷新成功，但未发现可用模型；可手工填写模型 ID。",
+    "未发现模型；仍可手动输入模型 ID。",
   );
 });
 

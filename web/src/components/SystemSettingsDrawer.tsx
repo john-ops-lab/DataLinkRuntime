@@ -26,6 +26,7 @@ import {
   QuestionCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
+  StarFilled,
   StarOutlined,
 } from "@ant-design/icons";
 import {
@@ -557,6 +558,7 @@ function PackageSourcesPanel(props: {
   const [sourceForm] = ProForm.useForm<PackageSourceFormState>();
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
+  const [settingDefaultId, setSettingDefaultId] = useState<number | null>(null);
   const [restoring, setRestoring] = useState<"pypi" | "npm" | "maven" | null>(null);
   const [testResults, setTestResults] = useState<Map<number, PackageSourceTestResult>>(new Map());
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -653,6 +655,10 @@ function PackageSourcesPanel(props: {
   }
 
   async function handleSetDefault(source: PackageSource) {
+    if (settingDefaultId !== null || source.is_default) {
+      return;
+    }
+    setSettingDefaultId(source.id);
     try {
       setPanelError(null);
       setNotice(null);
@@ -664,6 +670,8 @@ function PackageSourcesPanel(props: {
       }
     } catch (error) {
       fail(errorMessage(error));
+    } finally {
+      setSettingDefaultId(null);
     }
   }
 
@@ -866,17 +874,43 @@ function PackageSourcesPanel(props: {
       width: 104,
       render: (_, source) => (
         <Space size={0} className="package-source-row-actions">
-          <Tooltip title={t("packageSources.setDefaultAria", { name: source.name })}>
-            <Button
-              type="text"
-              size="small"
-              icon={<StarOutlined aria-hidden="true" />}
-              data-testid="set-default-source"
-              aria-label={t("packageSources.setDefaultAria", { name: source.name })}
-              disabled={source.is_default}
-              onClick={() => void handleSetDefault(source)}
-            />
-          </Tooltip>
+          {source.is_default ? (
+            <Tooltip title={t("packageSources.currentDefaultAria", { name: source.name })}>
+              <span
+                className="package-source-default-indicator"
+                data-testid="default-source-indicator"
+                role="img"
+                aria-label={t("packageSources.currentDefaultAria", { name: source.name })}
+              >
+                <StarFilled aria-hidden="true" />
+              </span>
+            </Tooltip>
+          ) : (
+            <Tooltip
+              title={t(
+                settingDefaultId === source.id
+                  ? "packageSources.settingDefaultAria"
+                  : "packageSources.setDefaultAria",
+                { name: source.name },
+              )}
+            >
+              <Button
+                type="text"
+                size="small"
+                loading={settingDefaultId === source.id}
+                icon={<StarOutlined aria-hidden="true" />}
+                data-testid="set-default-source"
+                aria-label={t(
+                  settingDefaultId === source.id
+                    ? "packageSources.settingDefaultAria"
+                    : "packageSources.setDefaultAria",
+                  { name: source.name },
+                )}
+                disabled={settingDefaultId !== null}
+                onClick={() => void handleSetDefault(source)}
+              />
+            </Tooltip>
+          )}
           <Tooltip title={t("packageSources.deleteAria", { name: source.name })}>
             <Button
               type="text"

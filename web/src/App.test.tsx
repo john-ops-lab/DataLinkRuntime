@@ -3273,14 +3273,14 @@ it("manages credentials and package sources from the system settings drawer", as
   expect(screen.getByTestId("default-source-badge")).toBeTruthy();
   // PyPI 已有默认源时不显示清空回退提示；npm / Maven 无默认源时显示明确回退。
   expect(screen.queryByTestId("no-default-source-pypi")).toBeNull();
-  expect(screen.getByTestId("no-default-source-npm").textContent).toContain("不会静默使用未配置的地址");
+  expect(screen.getByTestId("no-default-source-npm").textContent).toContain("不会使用未配置地址");
   fireEvent.click(screen.getByTestId("restore-default-menu"));
   expect(screen.getByTestId("restore-default-pypi")).toBeTruthy();
   fireEvent.keyDown(document, { key: "Escape" });
   fireEvent.click(screen.getByTestId("new-package-source"));
   expect(screen.getByRole("textbox", { name: "依赖源名称" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "依赖源类型" })).toBeTruthy();
-  expect(screen.getByRole("textbox", { name: "依赖源仓库 URL" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "索引 URL" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "依赖源凭据" })).toBeTruthy();
 
   fireEvent.click(screen.getByTestId("test-package-source"));
@@ -4007,11 +4007,11 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
   fireEvent.click(await screen.findByRole("menuitem", { name: "AI 模型" }));
   await screen.findByTestId("ai-model-settings-panel");
 
-  expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("AI 使用说明");
+  expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain("数据范围");
   expect(screen.getByTestId("ai-data-boundary-warning").textContent).toContain(
-    "敏感凭据不会发送给模型",
+    "Secret 不会发送",
   );
-  fireEvent.click(screen.getByText("高级：推理策略（跟随模型默认）"));
+  fireEvent.click(screen.getByText("推理设置：跟随模型默认"));
   expect(screen.getByTestId("ai-reasoning-mode").textContent).toContain("跟随模型默认");
   expect(screen.queryByTestId("ai-reasoning-effort")).toBeNull();
 
@@ -4024,11 +4024,23 @@ it("configures one AI model with manual Model ID, refresh, test, and default rea
   fireEvent.click(screen.getByTestId("ai-refresh-models"));
   await waitFor(() => expect(refreshBody).not.toBe(""));
   expect(valueOf("ai-model-input")).toBe("manual-model");
-  expect(
-    Array.from(screen.getByTestId("ai-model-suggestions").querySelectorAll("option")).map(
-      (option) => option.value,
-    ),
-  ).toEqual(["model-from-server"]);
+  const modelInput = screen.getByTestId("ai-model-input");
+  fireEvent.change(modelInput, { target: { value: "" } });
+  fireEvent.focus(modelInput);
+  fireEvent.mouseDown(modelInput);
+  let modelOption: HTMLElement | undefined;
+  await waitFor(() => {
+    modelOption = screen
+      .getAllByText("model-from-server")
+      .find((element) => element.classList.contains("ant-select-item-option-content"));
+    expect(modelOption).toBeDefined();
+  });
+  if (modelOption === undefined) {
+    throw new Error("AutoComplete model option was not rendered");
+  }
+  fireEvent.click(modelOption.closest(".ant-select-item-option") ?? modelOption);
+  expect(valueOf("ai-model-input")).toBe("model-from-server");
+  fireEvent.change(modelInput, { target: { value: "manual-model" } });
 
   fireEvent.click(screen.getByTestId("ai-test-connection"));
   await waitFor(() => expect(testBody).not.toBe(""));

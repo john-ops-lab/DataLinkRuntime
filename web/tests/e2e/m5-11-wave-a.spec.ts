@@ -83,6 +83,18 @@ const packageSource = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
+const alternatePackageSource = {
+  id: 12,
+  name: "Fixture alternate package source",
+  kind: "pypi",
+  index_url: "https://packages.example.invalid/python/alternate/",
+  is_default: false,
+  credential_id: null,
+  credential_name: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
 interface BrowserRecord {
   scenario: string;
   locale: Locale;
@@ -129,6 +141,7 @@ async function installRoutes(
 ): Promise<{ unknownRequests: string[]; accountLoggedIn: { value: boolean } }> {
   const unknownRequests: string[] = [];
   const accountLoggedIn = { value: false };
+  let defaultPackageSourceId = packageSource.id;
 
   await page.route("**/entry-mode.js", async (route) => {
     await route.fulfill({
@@ -241,7 +254,21 @@ async function installRoutes(
       return;
     }
     if (path === "/api/package-sources" && method === "GET") {
-      await fulfillJson(route, [packageSource]);
+      await fulfillJson(route, [
+        { ...packageSource, is_default: defaultPackageSourceId === packageSource.id },
+        { ...alternatePackageSource, is_default: defaultPackageSourceId === alternatePackageSource.id },
+      ]);
+      return;
+    }
+    if (path === "/api/package-sources/12" && method === "PATCH") {
+      const payload = request.postDataJSON() as { is_default?: boolean };
+      if (payload.is_default === true) {
+        defaultPackageSourceId = alternatePackageSource.id;
+      }
+      await fulfillJson(route, {
+        ...alternatePackageSource,
+        is_default: defaultPackageSourceId === alternatePackageSource.id,
+      });
       return;
     }
     if (path === "/api/package-sources/defaults" && method === "GET") {
@@ -262,6 +289,10 @@ async function installRoutes(
     }
     if (path === "/api/ai/custom-providers" && method === "GET") {
       await fulfillJson(route, { providers: [] });
+      return;
+    }
+    if (path === "/api/ai/models/refresh" && method === "POST") {
+      await fulfillJson(route, { models: ["fixture-discovered-model"] });
       return;
     }
     if (path === "/api/knowledge-sources/ima" && method === "GET") {
@@ -369,13 +400,38 @@ for (const locale of LOCALES) {
       await expect(page.getByTestId("new-package-source")).toBeVisible();
       await expect(page.getByTestId("refresh-package-sources")).toBeVisible();
       await expect(page.getByTestId("restore-default-menu")).toBeVisible();
-      await expect(page.getByTestId("package-source-row")).toContainText("Fixture package source");
+      await expect(page.getByTestId("package-source-row").first()).toContainText("Fixture package source");
       await expect(page.locator(".package-source-table .package-source-cell").nth(1)).toHaveAttribute(
         "title",
         "https://packages.example.invalid/python/simple/",
       );
-      await expect(page.getByTestId("set-default-source")).toBeDisabled();
-      await expect(page.getByTestId("delete-package-source")).toHaveAttribute(
+      await expect(page.getByTestId("default-source-indicator")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "当前默认依赖源：Fixture package source"
+          : "Current default package source: Fixture package source",
+      );
+      await expect(page.getByTestId("set-default-source")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "设为默认依赖源：Fixture alternate package source"
+          : "Set as default: Fixture alternate package source",
+      );
+      await page.getByTestId("set-default-source").focus();
+      await page.keyboard.press("Enter");
+      await expect(page.getByTestId("default-source-indicator")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "当前默认依赖源：Fixture alternate package source"
+          : "Current default package source: Fixture alternate package source",
+      );
+      await expect(page.getByTestId("set-default-source")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "设为默认依赖源：Fixture package source"
+          : "Set as default: Fixture package source",
+      );
+      await expect(page.getByTestId("delete-package-source").first()).toHaveAttribute(
         "aria-label",
         locale === "zh-CN"
           ? "删除依赖源 Fixture package source"
@@ -478,12 +534,41 @@ for (const locale of LOCALES) {
 
       await page.getByTestId("ai-base-url").fill("https://models.example.invalid/v1");
       await page.getByTestId("ai-model-input").fill("fixture-model");
+      await page.getByTestId("ai-refresh-models").click();
+      await expect(page.getByTestId("ai-settings-notice")).toContainText(
+        locale === "zh-CN" ? "已发现 1 个模型" : "1 models found",
+      );
+      await page.getByTestId("ai-model-input").fill("");
+      await page.getByTestId("ai-model-input").click();
+      const modelDropdown = page.locator(".ant-select-dropdown:visible");
+      await expect(modelDropdown).toContainText("fixture-discovered-model");
+      await modelDropdown.locator(".ant-select-item-option").filter({
+        hasText: "fixture-discovered-model",
+      }).click();
+      await expect(page.getByTestId("ai-model-input")).toHaveValue("fixture-discovered-model");
+      await page.getByTestId("ai-model-input").fill("fixture-model");
+      await page.getByTestId("ai-provider").click();
+      const providerDropdown = page.locator(".ant-select-dropdown:visible").last();
+      await expect(providerDropdown).not.toContainText(
+        locale === "zh-CN" ? "自定义 OpenAI 兼容服务" : "Custom OpenAI-compatible service",
+      );
+      await page.keyboard.press("Escape");
       await expect(page.getByTestId("ai-summary-base-url")).toHaveText("https://models.example.invalid/v1");
       await expect(page.getByTestId("ai-summary-model")).toHaveText("fixture-model");
 
       const actionLayout = await page.evaluate(() => {
+        const boundary = document.querySelector<HTMLElement>('[data-testid="ai-data-boundary-warning"]');
+        const primary = document.querySelector<HTMLElement>('[data-testid="ai-primary-config"]');
+        const secondary = document.querySelector<HTMLElement>(".ai-secondary-settings");
+        const formItems = Array.from(document.querySelectorAll<HTMLElement>(
+          '[data-testid="ai-primary-config"] > .ant-form-item',
+        ));
         const testButton = document.querySelector<HTMLElement>("[data-testid=ai-test-connection]");
         const saveButton = document.querySelector<HTMLElement>("[data-testid=ai-save-settings]");
+        const gaps = formItems.slice(1).map((item, index) => {
+          const previous = formItems[index]?.getBoundingClientRect();
+          return previous === undefined ? 0 : item.getBoundingClientRect().top - previous.bottom;
+        });
         return {
           innerWidth: window.innerWidth,
           documentScrollWidth: document.documentElement.scrollWidth,
@@ -491,12 +576,22 @@ for (const locale of LOCALES) {
           actionsOrdered: testButton !== null && saveButton !== null
             ? testButton.getBoundingClientRect().left < saveButton.getBoundingClientRect().left
             : false,
+          boundaryToPrimary: boundary !== null && primary !== null
+            ? primary.getBoundingClientRect().top - boundary.getBoundingClientRect().bottom
+            : Number.POSITIVE_INFINITY,
+          primaryToSecondary: primary !== null && secondary !== null
+            ? secondary.getBoundingClientRect().top - primary.getBoundingClientRect().bottom
+            : Number.POSITIVE_INFINITY,
+          maxFormItemGap: Math.max(0, ...gaps),
           documentLanguage: document.documentElement.lang,
         };
       });
       expect(actionLayout.documentScrollWidth).toBeLessThanOrEqual(actionLayout.innerWidth);
       expect(actionLayout.bodyScrollWidth).toBeLessThanOrEqual(actionLayout.innerWidth);
       expect(actionLayout.actionsOrdered).toBe(true);
+      expect(actionLayout.boundaryToPrimary).toBeLessThanOrEqual(12);
+      expect(actionLayout.primaryToSecondary).toBeLessThanOrEqual(12);
+      expect(actionLayout.maxFormItemGap).toBeLessThanOrEqual(20);
       expect(actionLayout.documentLanguage).toBe(locale);
       expect(page.locator("body")).not.toContainText("FAKE_ADMIN_TOKEN");
 
@@ -818,7 +913,9 @@ for (const locale of LOCALES) {
       await page.getByTestId("credential-help").click();
       await expect(page.getByTestId("credential-type-guide")).toBeVisible();
       await expect(page.getByTestId("credential-type-guide")).toContainText(
-        locale === "zh-CN" ? "不同凭据类型" : "Credential types are templates",
+        locale === "zh-CN"
+          ? "按目标系统需要的字段选择类型"
+          : "Choose the type that matches the target system's fields",
       );
 
       const layout = await page.evaluate(() => {

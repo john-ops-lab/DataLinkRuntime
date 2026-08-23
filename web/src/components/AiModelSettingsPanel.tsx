@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Collapse,
@@ -64,7 +65,6 @@ const PROVIDER_OPTIONS: { label: string; value: AiProvider }[] = [
   { label: "OpenRouter", value: "openrouter" },
   { label: "SiliconFlow", value: "siliconflow" },
   { label: "Ollama", value: "ollama" },
-  { label: "custom_openai_compatible", value: "custom_openai_compatible" },
 ];
 
 const PROVIDER_DEFAULT_BASE_URLS: Partial<Record<AiProvider, string>> = {
@@ -177,11 +177,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const reasoningEfforts = supportedReasoningEfforts(form.provider, form.reasoning_mode);
   const actionBusy = saving || refreshingModels || testing || customBusy;
   const catalogById = new Map(providerCatalog.map((provider) => [provider.id, provider]));
-  const providerOptions = PROVIDER_OPTIONS.map((option) =>
-    option.value === "custom_openai_compatible"
-      ? { ...option, label: t("model.provider.custom") }
-      : { ...option, label: catalogById.get(option.value)?.name ?? option.label },
-  );
+  const providerOptions = PROVIDER_OPTIONS.map((option) => ({
+    ...option,
+    label: catalogById.get(option.value)?.name ?? option.label,
+  }));
   const providerSelectOptions = [
     ...providerOptions,
     ...customProviders.map((provider) => ({
@@ -189,15 +188,19 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       value: `custom:${provider.id}`,
     })),
   ];
-  const selectedProviderValue =
+  const selectedProviderCandidate =
     form.custom_provider_id === null || form.custom_provider_id === undefined
       ? form.provider
       : `custom:${form.custom_provider_id}`;
+  const selectedProviderValue = providerSelectOptions.some(
+    (option) => option.value === selectedProviderCandidate,
+  )
+    ? selectedProviderCandidate
+    : undefined;
   const selectedProviderLabel =
-    providerSelectOptions.find((option) => option.value === selectedProviderValue)?.label ??
-    (form.provider === "custom_openai_compatible"
-      ? t("model.provider.custom")
-      : form.provider);
+    providerSelectOptions.find((option) => option.value === selectedProviderCandidate)?.label ??
+    t("model.provider.legacyCustom");
+  const hasLegacyProviderValue = selectedProviderValue === undefined;
   const selectedCredentialName = credentials.find(
     (credential) => credential.id === form.credential_id,
   )?.name;
@@ -272,6 +275,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     setPanelError(null);
     setNotice(null);
     setForm(updater);
+  }
+
+  function editModel(model: string): void {
+    editForm((current) => ({ ...current, model }));
   }
 
   function currentPayload(): AiModelSettingDraft | null {
@@ -579,6 +586,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
             virtual={false}
             optionFilterProp="label"
             value={selectedProviderValue}
+            placeholder={hasLegacyProviderValue ? t("model.provider.legacyCustom") : undefined}
             options={providerSelectOptions}
             onChange={(selection) => {
               setModelOptions([]);
@@ -616,6 +624,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
               }));
             }}
           />
+          {hasLegacyProviderValue && (
+            <Typography.Text type="warning" data-testid="ai-legacy-provider-notice">
+              {t("model.provider.legacyCustomNotice")}
+            </Typography.Text>
+          )}
         </ProForm.Item>
 
         <ProForm.Item label={t("model.baseUrl")}>
@@ -650,33 +663,20 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         </ProForm.Item>
 
         <ProForm.Item label={t("model.modelId")}>
-          <Input
-            data-testid="ai-model-input"
+          <AutoComplete<string>
+            className="ai-model-autocomplete"
             disabled={actionBusy}
-            list="ai-model-suggestions"
-            placeholder={t("model.modelPlaceholder")}
             value={form.model}
-            onChange={(event) => editForm((current) => ({ ...current, model: event.target.value }))}
-          />
-          <datalist id="ai-model-suggestions" data-testid="ai-model-suggestions">
-            {modelOptions.map((model) => (
-              <option key={model} value={model} />
-            ))}
-          </datalist>
-          <Select<string>
-            data-testid="ai-model-search"
-            disabled={actionBusy || modelOptions.length === 0}
-            showSearch
-            allowClear
-            optionFilterProp="label"
-            placeholder={t("model.modelSearch")}
             options={modelOptions.map((model) => ({ label: model, value: model }))}
-            onChange={(model) => {
-              if (model !== undefined) {
-                editForm((current) => ({ ...current, model }));
-              }
-            }}
-          />
+            onChange={editModel}
+            onSelect={editModel}
+          >
+            <Input
+              data-testid="ai-model-input"
+              aria-label={t("model.modelId")}
+              placeholder={t("model.modelPlaceholder")}
+            />
+          </AutoComplete>
         </ProForm.Item>
 
         <Space wrap>

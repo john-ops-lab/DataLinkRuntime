@@ -507,7 +507,7 @@ it("uses locale punctuation in composed labels (guide line, options, Run ID, sep
   await applySystemLocale("zh-CN");
   await waitFor(() =>
     expect(screen.getByTestId("credential-type-guide-password").textContent).toContain(
-      "密码（字段：username + password）：常见场景为",
+      "密码（字段：username + password）：常见场景 ",
     ),
   );
 });
