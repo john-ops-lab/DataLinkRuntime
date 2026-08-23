@@ -16,6 +16,7 @@ import {
   DEFAULT_SYSTEM_LOCALE,
   readCachedSystemLocale,
   resolveSystemLocale,
+  syncDocumentLanguage,
 } from "./locale";
 import type { SystemLocale } from "../types";
 
@@ -36,6 +37,8 @@ export const resources = {
   },
 } as const;
 
+syncDocumentLanguage(readCachedSystemLocale());
+
 void i18n.use(initReactI18next).init({
   lng: readCachedSystemLocale(),
   fallbackLng: DEFAULT_SYSTEM_LOCALE,
@@ -55,6 +58,10 @@ void i18n.use(initReactI18next).init({
     );
     return resources[locale].common.translation.unavailable;
   },
+});
+
+i18n.on("languageChanged", (language) => {
+  syncDocumentLanguage(resolveSystemLocale(language));
 });
 
 export async function applySystemLocale(locale: SystemLocale): Promise<void> {

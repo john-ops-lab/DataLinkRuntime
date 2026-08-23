@@ -205,7 +205,7 @@
     "readOnly": "read-only",
     "accessCredential": "Access Credential",
     "packageSource": "Package source",
-    "repositoryUrl": "Repository URL",
+    "repositoryUrl": "Index URL",
     "operation": "Actions",
     "default": "Default",
     "reachability": "Reachability",
@@ -262,9 +262,9 @@
     "discardChanges": "There are unsaved changes. Discard them?",
     "deleteAdapter": "Permanently delete Adapter “{{name}}”? This cannot be undone. It removes execution history, sharing permissions and code Credential bindings, but never the global Credential object.{{warning}}",
     "stopDeleteAdapter": "Adapter “{{name}}” is still receiving or executing. Stop it, ask the Worker to cancel, then permanently delete it? An offline or timed-out Worker safely blocks deletion; no force cleanup is attempted.{{warning}}",
-    "deleteCredential": "Delete Credential “{{name}}”? Bindings and package sources that reference it will stop working.",
+    "deleteCredential": "Delete Credential “{{name}}”? Referencing bindings and package sources will stop working.",
     "deletePackageSource": "Delete package source “{{name}}”?",
-    "createCredential": "After saving, passwords, Tokens and keys cannot be viewed again in the browser. Save or copy them first.\n\nCreate this Credential?"
+    "createCredential": "After saving, passwords, Tokens and keys cannot be viewed again. Copy them first.\n\nCreate this Credential?"
   },
   "validation": {
     "runtimeConfigJson": "Runtime parameters must be a valid JSON object",

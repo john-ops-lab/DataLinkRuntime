@@ -205,7 +205,7 @@
     "readOnly": "只读",
     "accessCredential": "访问凭据",
     "packageSource": "依赖源",
-    "repositoryUrl": "仓库 URL",
+    "repositoryUrl": "索引 URL",
     "operation": "操作",
     "default": "默认",
     "reachability": "可达性",
@@ -256,15 +256,15 @@
     "noCallHistory": "暂无调用记录",
     "noCredentials": "暂无凭据",
     "noBindings": "暂无凭据绑定",
-    "noPackageSources": "暂无包源"
+    "noPackageSources": "暂无依赖源"
   },
   "confirm": {
     "discardChanges": "存在未保存的修改，确定放弃吗？",
     "deleteAdapter": "确定永久删除适配器“{{name}}”吗？此操作不可恢复，将删除执行历史、权限共享和代码凭据绑定，但不会删除 Credential 本体。{{warning}}",
     "stopDeleteAdapter": "适配器“{{name}}”仍在接收或执行。确定先停止并请求 Worker 取消，再永久删除吗？Worker 离线或超时会安全阻断，不会强制清理。{{warning}}",
-    "deleteCredential": "确定删除凭据 “{{name}}” 吗？引用它的绑定与包源将失效。",
+    "deleteCredential": "删除凭据“{{name}}”？引用它的绑定和依赖源将失效。",
     "deletePackageSource": "确定删除包源 “{{name}}” 吗？",
-    "createCredential": "保存后密码、Token、密钥等敏感内容无法再次通过浏览器查看，请先妥善保存或复制。\n\n确定创建该凭据吗？"
+    "createCredential": "保存后无法再次查看密码、Token 或密钥，请先复制。\n\n确认创建凭据？"
   },
   "validation": {
     "runtimeConfigJson": "运行参数必须是合法的 JSON 对象",

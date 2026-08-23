@@ -71,6 +71,30 @@ const knowledgeSource = {
   updated_at: null,
 };
 
+const packageSource = {
+  id: 11,
+  name: "Fixture package source",
+  kind: "pypi",
+  index_url: "https://packages.example.invalid/python/simple/",
+  is_default: true,
+  credential_id: null,
+  credential_name: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
+const alternatePackageSource = {
+  id: 12,
+  name: "Fixture alternate package source",
+  kind: "pypi",
+  index_url: "https://packages.example.invalid/python/alternate/",
+  is_default: false,
+  credential_id: null,
+  credential_name: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z",
+};
+
 interface BrowserRecord {
   scenario: string;
   locale: Locale;
@@ -117,6 +141,7 @@ async function installRoutes(
 ): Promise<{ unknownRequests: string[]; accountLoggedIn: { value: boolean } }> {
   const unknownRequests: string[] = [];
   const accountLoggedIn = { value: false };
+  let defaultPackageSourceId = packageSource.id;
 
   await page.route("**/entry-mode.js", async (route) => {
     await route.fulfill({
@@ -229,7 +254,21 @@ async function installRoutes(
       return;
     }
     if (path === "/api/package-sources" && method === "GET") {
-      await fulfillJson(route, []);
+      await fulfillJson(route, [
+        { ...packageSource, is_default: defaultPackageSourceId === packageSource.id },
+        { ...alternatePackageSource, is_default: defaultPackageSourceId === alternatePackageSource.id },
+      ]);
+      return;
+    }
+    if (path === "/api/package-sources/12" && method === "PATCH") {
+      const payload = request.postDataJSON() as { is_default?: boolean };
+      if (payload.is_default === true) {
+        defaultPackageSourceId = alternatePackageSource.id;
+      }
+      await fulfillJson(route, {
+        ...alternatePackageSource,
+        is_default: defaultPackageSourceId === alternatePackageSource.id,
+      });
       return;
     }
     if (path === "/api/package-sources/defaults" && method === "GET") {
@@ -242,6 +281,18 @@ async function installRoutes(
     }
     if (path === "/api/ai/settings" && method === "GET") {
       await fulfillJson(route, null);
+      return;
+    }
+    if (path === "/api/ai/providers" && method === "GET") {
+      await fulfillJson(route, { providers: [] });
+      return;
+    }
+    if (path === "/api/ai/custom-providers" && method === "GET") {
+      await fulfillJson(route, { providers: [] });
+      return;
+    }
+    if (path === "/api/ai/models/refresh" && method === "POST") {
+      await fulfillJson(route, { models: ["fixture-discovered-model"] });
       return;
     }
     if (path === "/api/knowledge-sources/ima" && method === "GET") {
@@ -322,6 +373,440 @@ async function recordScreenshot(page: Page, name: string): Promise<string> {
   return `docs/ui/m5-11-wave-a/browser/${filename}`;
 }
 
+async function closeTransientSelectOverlays(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  await page.locator("body").click({ position: { x: 2, y: 2 } });
+  await expect(page.locator(".ant-select-dropdown:visible")).toHaveCount(0);
+}
+
+for (const locale of LOCALES) {
+  for (const width of VIEWPORTS) {
+    test(`Wave V1 package sources pilot ${locale} ${width}px`, async ({ page }) => {
+      const height = width === 1280 ? 720 : width === 1440 ? 800 : width === 1680 ? 900 : 1080;
+      await page.setViewportSize({ width, height });
+      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      const { unknownRequests } = await installRoutes(page, "token", locale);
+
+      await page.goto("/");
+      await loginToken(page, locale);
+      await page.getByTestId("user-menu").click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "系统设置" : "System Settings" }).click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "依赖源" : "Package sources" }).click();
+
+      await expect(page.getByTestId("package-sources-panel")).toBeVisible();
+      await expect(page.getByTestId("package-sources-toolbar")).toHaveRole("toolbar");
+      await expect(page.getByRole("textbox", { name: locale === "zh-CN" ? "筛选依赖源" : "Filter package sources" })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: locale === "zh-CN" ? "筛选依赖源类型" : "Filter package source type" })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: locale === "zh-CN" ? "默认状态" : "Default status" })).toBeVisible();
+      await expect(page.getByTestId("new-package-source")).toBeVisible();
+      await expect(page.getByTestId("refresh-package-sources")).toBeVisible();
+      await expect(page.getByTestId("restore-default-menu")).toBeVisible();
+      await expect(page.getByTestId("package-source-row").first()).toContainText("Fixture package source");
+      await expect(page.locator(".package-source-table .package-source-cell").nth(1)).toHaveAttribute(
+        "title",
+        "https://packages.example.invalid/python/simple/",
+      );
+      await expect(page.getByTestId("default-source-indicator")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "当前默认依赖源：Fixture package source"
+          : "Current default package source: Fixture package source",
+      );
+      await expect(page.getByTestId("set-default-source")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "设为默认依赖源：Fixture alternate package source"
+          : "Set as default: Fixture alternate package source",
+      );
+      await page.getByTestId("set-default-source").focus();
+      await page.keyboard.press("Enter");
+      await expect(page.getByTestId("default-source-indicator")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "当前默认依赖源：Fixture alternate package source"
+          : "Current default package source: Fixture alternate package source",
+      );
+      await expect(page.getByTestId("set-default-source")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "设为默认依赖源：Fixture package source"
+          : "Set as default: Fixture package source",
+      );
+      await expect(page.getByTestId("delete-package-source").first()).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "删除依赖源 Fixture package source"
+          : "Delete package source Fixture package source",
+      );
+
+      await page.getByTestId("restore-default-menu").click();
+      const restoreMenu = page.locator(".ant-dropdown:visible").filter({
+        hasText: locale === "zh-CN" ? "恢复默认 PyPI" : "Restore default PyPI",
+      });
+      await expect(restoreMenu).toBeVisible();
+      for (const kind of ["PyPI", "npm", "Maven"]) {
+        await expect(restoreMenu).toContainText(
+          locale === "zh-CN" ? `恢复默认 ${kind}` : `Restore default ${kind}`,
+        );
+      }
+      await page.keyboard.press("Escape");
+
+      const layout = await page.evaluate(() => {
+        const toolbar = document.querySelector<HTMLElement>("[data-testid=package-sources-toolbar]");
+        const filters = document.querySelector<HTMLElement>("[data-testid=package-sources-filters]");
+        const actions = toolbar?.querySelector<HTMLElement>(".settings-toolbar-actions");
+        const table = document.querySelector<HTMLElement>(".package-source-table .ant-table-container");
+        return {
+          innerWidth: window.innerWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          toolbarSingleRow: toolbar !== null && filters !== null && actions !== null
+            ? Math.abs(filters.getBoundingClientRect().top - actions.getBoundingClientRect().top) < 4
+            : false,
+          tableFits: table === null || table.scrollWidth <= table.clientWidth,
+          documentLanguage: document.documentElement.lang,
+        };
+      });
+      expect(layout.documentScrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.bodyScrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.toolbarSingleRow).toBe(true);
+      expect(layout.tableFits).toBe(true);
+      expect(layout.documentLanguage).toBe(locale);
+      expect(page.locator("body")).not.toContainText("FAKE_ADMIN_TOKEN");
+
+      const screenshots = [await recordScreenshot(page, `v1-package-sources-${locale}-${width}`)];
+      await assertDiagnostics(page, unknownRequests, consoleErrors, pageErrors);
+      records.push({
+        scenario: "v1-package-sources-pilot",
+        locale,
+        width,
+        height,
+        zoom: "100%",
+        screenshots,
+        overflow: {
+          innerWidth: layout.innerWidth,
+          documentScrollWidth: layout.documentScrollWidth,
+          bodyScrollWidth: layout.bodyScrollWidth,
+          settingsScrollBoundary: true,
+          catalogScrollBoundary: true,
+        },
+        consoleErrors,
+        expectedConsoleErrors: [],
+        pageErrors,
+        unknownRequests,
+      });
+    });
+  }
+}
+
+for (const locale of LOCALES) {
+  for (const width of VIEWPORTS) {
+    test(`Wave V1 AI model pilot ${locale} ${width}px`, async ({ page }) => {
+      const height = width === 1280 ? 720 : width === 1440 ? 800 : width === 1680 ? 900 : 1080;
+      await page.setViewportSize({ width, height });
+      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      const { unknownRequests } = await installRoutes(page, "token", locale);
+
+      await page.goto("/");
+      await loginToken(page, locale);
+      await page.getByTestId("user-menu").click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "系统设置" : "System Settings" }).click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "AI 模型" : "AI model" }).click();
+
+      await expect(page.getByTestId("ai-model-settings-panel")).toBeVisible();
+      await expect(page.getByTestId("ai-data-boundary-warning")).toBeVisible();
+      await expect(page.getByTestId("ai-primary-config")).toBeVisible();
+      await expect(page.getByTestId("ai-current-config-summary")).toBeVisible();
+      await expect(page.getByTestId("ai-provider")).toBeVisible();
+      await expect(page.getByTestId("ai-base-url")).toBeVisible();
+      await expect(page.getByTestId("ai-model-input")).toBeVisible();
+      await expect(page.getByTestId("ai-refresh-models")).toBeVisible();
+      await expect(page.getByTestId("ai-test-connection")).toBeVisible();
+      await expect(page.getByTestId("ai-save-settings")).toBeVisible();
+
+      const customSection = page.locator(".ai-secondary-settings .ant-collapse-item");
+      await expect(customSection).not.toHaveClass(/ant-collapse-item-active/);
+      await expect(page.getByText(locale === "zh-CN" ? "自定义模型服务" : "Custom model services")).toBeVisible();
+
+      await page.getByTestId("ai-base-url").fill("https://models.example.invalid/v1");
+      await page.getByTestId("ai-model-input").fill("fixture-model");
+      await page.getByTestId("ai-refresh-models").click();
+      await expect(page.getByTestId("ai-settings-notice")).toContainText(
+        locale === "zh-CN" ? "已发现 1 个模型" : "1 models found",
+      );
+      await page.getByTestId("ai-model-input").fill("");
+      await page.getByTestId("ai-model-input").click();
+      const modelDropdown = page.locator(".ant-select-dropdown:visible");
+      await expect(modelDropdown).toContainText("fixture-discovered-model");
+      await modelDropdown.locator(".ant-select-item-option").filter({
+        hasText: "fixture-discovered-model",
+      }).click();
+      await expect(page.getByTestId("ai-model-input")).toHaveValue("fixture-discovered-model");
+      await page.getByTestId("ai-model-input").fill("fixture-model");
+      await page.getByTestId("ai-provider").click();
+      const providerDropdown = page.locator(".ant-select-dropdown:visible").last();
+      await expect(providerDropdown).not.toContainText(
+        locale === "zh-CN" ? "自定义 OpenAI 兼容服务" : "Custom OpenAI-compatible service",
+      );
+      await closeTransientSelectOverlays(page);
+      await expect(page.getByTestId("ai-model-input")).toBeVisible();
+      await expect(page.getByTestId("ai-model-input")).toBeEditable();
+      await expect(page.getByTestId("ai-model-input")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN" ? "模型 ID" : "Model ID",
+      );
+      await expect(page.getByTestId("ai-model-search")).toHaveCount(0);
+      await expect(page.locator("#ai-model-suggestions")).toHaveCount(0);
+      const modelInputBox = await page.getByTestId("ai-model-input").boundingBox();
+      if (modelInputBox === null) {
+        throw new Error("AI model input is not measurable for evidence");
+      }
+      expect(modelInputBox.x).toBeGreaterThanOrEqual(0);
+      expect(modelInputBox.y).toBeGreaterThanOrEqual(0);
+      expect(modelInputBox.x + modelInputBox.width).toBeLessThanOrEqual(width);
+      await expect(page.getByTestId("ai-summary-base-url")).toHaveText("https://models.example.invalid/v1");
+      await expect(page.getByTestId("ai-summary-model")).toHaveText("fixture-model");
+
+      const actionLayout = await page.evaluate(() => {
+        const boundary = document.querySelector<HTMLElement>('[data-testid="ai-data-boundary-warning"]');
+        const primary = document.querySelector<HTMLElement>('[data-testid="ai-primary-config"]');
+        const secondary = document.querySelector<HTMLElement>(".ai-secondary-settings");
+        const formItems = Array.from(document.querySelectorAll<HTMLElement>(
+          '[data-testid="ai-primary-config"] > .ant-form-item',
+        ));
+        const testButton = document.querySelector<HTMLElement>("[data-testid=ai-test-connection]");
+        const saveButton = document.querySelector<HTMLElement>("[data-testid=ai-save-settings]");
+        const gaps = formItems.slice(1).map((item, index) => {
+          const previous = formItems[index]?.getBoundingClientRect();
+          return previous === undefined ? 0 : item.getBoundingClientRect().top - previous.bottom;
+        });
+        return {
+          innerWidth: window.innerWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          actionsOrdered: testButton !== null && saveButton !== null
+            ? testButton.getBoundingClientRect().left < saveButton.getBoundingClientRect().left
+            : false,
+          boundaryToPrimary: boundary !== null && primary !== null
+            ? primary.getBoundingClientRect().top - boundary.getBoundingClientRect().bottom
+            : Number.POSITIVE_INFINITY,
+          primaryToSecondary: primary !== null && secondary !== null
+            ? secondary.getBoundingClientRect().top - primary.getBoundingClientRect().bottom
+            : Number.POSITIVE_INFINITY,
+          maxFormItemGap: Math.max(0, ...gaps),
+          documentLanguage: document.documentElement.lang,
+        };
+      });
+      expect(actionLayout.documentScrollWidth).toBeLessThanOrEqual(actionLayout.innerWidth);
+      expect(actionLayout.bodyScrollWidth).toBeLessThanOrEqual(actionLayout.innerWidth);
+      expect(actionLayout.actionsOrdered).toBe(true);
+      expect(actionLayout.boundaryToPrimary).toBeLessThanOrEqual(12);
+      expect(actionLayout.primaryToSecondary).toBeLessThanOrEqual(12);
+      expect(actionLayout.maxFormItemGap).toBeLessThanOrEqual(20);
+      expect(actionLayout.documentLanguage).toBe(locale);
+      expect(page.locator("body")).not.toContainText("FAKE_ADMIN_TOKEN");
+
+      const screenshots = [await recordScreenshot(page, `v1-ai-model-clean-${locale}-${width}`)];
+      await assertDiagnostics(page, unknownRequests, consoleErrors, pageErrors);
+      records.push({
+        scenario: "v1-ai-model-pilot",
+        locale,
+        width,
+        height,
+        zoom: "100%",
+        screenshots,
+        overflow: {
+          innerWidth: actionLayout.innerWidth,
+          documentScrollWidth: actionLayout.documentScrollWidth,
+          bodyScrollWidth: actionLayout.bodyScrollWidth,
+          settingsScrollBoundary: true,
+          catalogScrollBoundary: true,
+        },
+        consoleErrors,
+        expectedConsoleErrors: [],
+        pageErrors,
+        unknownRequests,
+      });
+    });
+  }
+}
+
+for (const locale of LOCALES) {
+  for (const width of VIEWPORTS) {
+    test(`Wave V1 knowledge source pilot ${locale} ${width}px`, async ({ page }) => {
+      const height = width === 1280 ? 720 : width === 1440 ? 800 : width === 1680 ? 900 : 1080;
+      await page.setViewportSize({ width, height });
+      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      const { unknownRequests } = await installRoutes(page, "token", locale);
+
+      await page.goto("/");
+      await loginToken(page, locale);
+      await page.getByTestId("user-menu").click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "系统设置" : "System Settings" }).click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "知识库" : "Knowledge base" }).click();
+
+      await expect(page.getByTestId("knowledge-sources-panel")).toBeVisible();
+      await expect(page.getByTestId("knowledge-source-summary")).toBeVisible();
+      await expect(page.getByTestId("knowledge-source-form")).toBeVisible();
+      await expect(page.getByTestId("knowledge-source-enabled")).toBeChecked();
+      await expect(page.getByTestId("knowledge-source-credential")).toBeVisible();
+      await expect(page.getByTestId("knowledge-source-endpoint")).toContainText(
+        "https://knowledge.example.invalid",
+      );
+      await expect(page.getByTestId("knowledge-source-actions")).toHaveRole("toolbar");
+      await expect(page.getByTestId("test-knowledge-source")).toBeVisible();
+      await expect(page.getByTestId("save-knowledge-source")).toBeVisible();
+
+      const layout = await page.evaluate(() => {
+        const actions = document.querySelector<HTMLElement>("[data-testid=knowledge-source-actions]");
+        const buttons = actions === null
+          ? []
+          : Array.from(actions.querySelectorAll<HTMLElement>("button"));
+        return {
+          innerWidth: window.innerWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          actionsOrdered: buttons[0]?.dataset.testid === "test-knowledge-source" &&
+            buttons[1]?.dataset.testid === "save-knowledge-source",
+          saveIsPrimary: buttons[1]?.classList.contains("ant-btn-primary") ?? false,
+          documentLanguage: document.documentElement.lang,
+        };
+      });
+      expect(layout.documentScrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.bodyScrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.actionsOrdered).toBe(true);
+      expect(layout.saveIsPrimary).toBe(true);
+      expect(layout.documentLanguage).toBe(locale);
+      expect(page.locator("body")).not.toContainText("FAKE_ADMIN_TOKEN");
+
+      const screenshots = [await recordScreenshot(page, `v1-knowledge-source-${locale}-${width}`)];
+      await assertDiagnostics(page, unknownRequests, consoleErrors, pageErrors);
+      records.push({
+        scenario: "v1-knowledge-source-pilot",
+        locale,
+        width,
+        height,
+        zoom: "100%",
+        screenshots,
+        overflow: {
+          innerWidth: layout.innerWidth,
+          documentScrollWidth: layout.documentScrollWidth,
+          bodyScrollWidth: layout.bodyScrollWidth,
+          settingsScrollBoundary: true,
+          catalogScrollBoundary: true,
+        },
+        consoleErrors,
+        expectedConsoleErrors: [],
+        pageErrors,
+        unknownRequests,
+      });
+    });
+  }
+}
+
+for (const locale of LOCALES) {
+  for (const width of VIEWPORTS) {
+    test(`Wave V1 settings shell ${locale} ${width}px`, async ({ page }) => {
+      const height = width === 1280 ? 720 : width === 1440 ? 800 : width === 1680 ? 900 : 1080;
+      await page.setViewportSize({ width, height });
+      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      const { unknownRequests } = await installRoutes(page, "token", locale);
+
+      await page.goto("/");
+      await loginToken(page, locale);
+      await page.getByTestId("user-menu").click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "系统设置" : "System Settings" }).click();
+
+      const categories = [
+        { key: "general", label: locale === "zh-CN" ? "常规" : "General" },
+        { key: "credentials", label: locale === "zh-CN" ? "凭据" : "Credentials" },
+        { key: "package-sources", label: locale === "zh-CN" ? "依赖源" : "Package sources" },
+        { key: "ai-model", label: locale === "zh-CN" ? "AI 模型" : "AI model" },
+        { key: "knowledge-sources", label: locale === "zh-CN" ? "知识库" : "Knowledge base" },
+      ];
+      const categoryWidths: Record<string, number> = {};
+      let lastMetrics = { innerWidth: width, documentScrollWidth: width, bodyScrollWidth: width };
+      for (const category of categories) {
+        await page.getByRole("menuitem", { name: category.label }).click();
+        await expect(page.getByTestId("settings-category-main")).toBeVisible();
+        await expect(page.getByRole("heading", { level: 3, name: category.label })).toBeVisible();
+        const metrics = await page.evaluate(() => {
+          const main = document.querySelector<HTMLElement>("[data-testid=settings-category-main]");
+          const header = document.querySelector<HTMLElement>(".settings-category-header");
+          return {
+            innerWidth: window.innerWidth,
+            documentScrollWidth: document.documentElement.scrollWidth,
+            bodyScrollWidth: document.body.scrollWidth,
+            categoryWidth: main?.getBoundingClientRect().width ?? 0,
+            headerDescriptions: header === null
+              ? 0
+              : Array.from(header.children).filter((child) => !/^H[1-6]$/.test(child.tagName)).length,
+            documentLanguage: document.documentElement.lang,
+          };
+        });
+        categoryWidths[category.key] = metrics.categoryWidth;
+        lastMetrics = metrics;
+        expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.innerWidth);
+        expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.innerWidth);
+        expect(metrics.headerDescriptions).toBe(1);
+        expect(metrics.documentLanguage).toBe(locale);
+      }
+
+      expect(categoryWidths.general).toBeLessThanOrEqual(560);
+      expect(categoryWidths["ai-model"]).toBeLessThanOrEqual(720);
+      expect(categoryWidths["knowledge-sources"]).toBeLessThanOrEqual(720);
+      expect(categoryWidths.credentials).toBeGreaterThan(categoryWidths["ai-model"]);
+      expect(categoryWidths["package-sources"]).toBeGreaterThan(categoryWidths["ai-model"]);
+
+      await page.getByRole("menuitem", { name: categories[0].label }).click();
+      await expect(page.getByTestId("system-locale-control")).toBeVisible();
+      expect(page.locator("body")).not.toContainText("FAKE_ADMIN_TOKEN");
+
+      const screenshots = [await recordScreenshot(page, `v1-settings-shell-${locale}-${width}`)];
+      await assertDiagnostics(page, unknownRequests, consoleErrors, pageErrors);
+      records.push({
+        scenario: "v1-settings-shell",
+        locale,
+        width,
+        height,
+        zoom: "100%",
+        screenshots,
+        overflow: {
+          innerWidth: lastMetrics.innerWidth,
+          documentScrollWidth: lastMetrics.documentScrollWidth,
+          bodyScrollWidth: lastMetrics.bodyScrollWidth,
+          settingsScrollBoundary: true,
+          catalogScrollBoundary: true,
+        },
+        consoleErrors,
+        expectedConsoleErrors: [],
+        pageErrors,
+        unknownRequests,
+      });
+    });
+  }
+}
+
 for (const locale of LOCALES) {
   for (const width of VIEWPORTS) {
     test(`Wave A admin shell/settings ${locale} ${width}px`, async ({ page }) => {
@@ -393,6 +878,106 @@ for (const locale of LOCALES) {
         zoom: "100%",
         screenshots,
         overflow: settingsMetrics,
+        consoleErrors,
+        expectedConsoleErrors: [],
+        pageErrors,
+        unknownRequests,
+      });
+    });
+  }
+}
+
+for (const locale of LOCALES) {
+  for (const width of VIEWPORTS) {
+    test(`Wave V1 credentials pilot ${locale} ${width}px`, async ({ page }) => {
+      const height = width === 1280 ? 720 : width === 1440 ? 800 : width === 1680 ? 900 : 1080;
+      await page.setViewportSize({ width, height });
+      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") consoleErrors.push(message.text());
+      });
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      const { unknownRequests } = await installRoutes(page, "token", locale);
+
+      await page.goto("/");
+      await loginToken(page, locale);
+      await page.getByTestId("user-menu").click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "系统设置" : "System Settings" }).click();
+      await page.getByRole("menuitem", { name: locale === "zh-CN" ? "凭据" : "Credentials" }).click();
+
+      await expect(page.getByTestId("credentials-panel")).toBeVisible();
+      await expect(page.getByRole("heading", { level: 3, name: locale === "zh-CN" ? "凭据" : "Credentials" })).toBeVisible();
+      await expect(page.getByTestId("credentials-toolbar")).toHaveRole("toolbar");
+      await expect(page.getByRole("textbox", { name: locale === "zh-CN" ? "筛选凭据" : "Filter credentials" })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: locale === "zh-CN" ? "筛选凭据类型" : "Filter credential type" })).toBeVisible();
+      await expect(page.getByTestId("new-credential")).toBeVisible();
+      await expect(page.getByTestId("refresh-credentials")).toBeVisible();
+      await expect(page.getByTestId("credential-row")).toContainText("fixture-token-credential-with-a-long-name");
+      await expect(page.getByTestId("credential-row")).toHaveAttribute(
+        "title",
+        "fixture-token-credential-with-a-long-name",
+      );
+      await expect(page.getByTestId("update-credential")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "编辑凭据 fixture-token-credential-with-a-long-name"
+          : "Edit credential fixture-token-credential-with-a-long-name",
+      );
+      await expect(page.getByTestId("delete-credential")).toHaveAttribute(
+        "aria-label",
+        locale === "zh-CN"
+          ? "删除凭据 fixture-token-credential-with-a-long-name"
+          : "Delete credential fixture-token-credential-with-a-long-name",
+      );
+
+      await page.getByTestId("credential-help").click();
+      await expect(page.getByTestId("credential-type-guide")).toBeVisible();
+      await expect(page.getByTestId("credential-type-guide")).toContainText(
+        locale === "zh-CN"
+          ? "按目标系统需要的字段选择类型"
+          : "Choose the type that matches the target system's fields",
+      );
+
+      const layout = await page.evaluate(() => {
+        const toolbar = document.querySelector<HTMLElement>("[data-testid=credentials-toolbar]");
+        const filters = document.querySelector<HTMLElement>("[data-testid=credentials-filters]");
+        const actions = toolbar?.querySelector<HTMLElement>(".settings-toolbar-actions");
+        const table = document.querySelector<HTMLElement>(".credentials-table .ant-table-container");
+        return {
+          innerWidth: window.innerWidth,
+          documentScrollWidth: document.documentElement.scrollWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          toolbarSingleRow: toolbar !== null && filters !== null && actions !== null
+            ? Math.abs(filters.getBoundingClientRect().top - actions.getBoundingClientRect().top) < 4
+            : false,
+          tableFits: table === null || table.scrollWidth <= table.clientWidth,
+          documentLanguage: document.documentElement.lang,
+        };
+      });
+      expect(layout.documentScrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.bodyScrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.toolbarSingleRow).toBe(true);
+      expect(layout.tableFits).toBe(true);
+      expect(layout.documentLanguage).toBe(locale);
+      expect(page.locator("body")).not.toContainText("FAKE_ADMIN_TOKEN");
+
+      const screenshots = [await recordScreenshot(page, `v1-credentials-${locale}-${width}`)];
+      await assertDiagnostics(page, unknownRequests, consoleErrors, pageErrors);
+      records.push({
+        scenario: "v1-credentials-pilot",
+        locale,
+        width,
+        height,
+        zoom: "100%",
+        screenshots,
+        overflow: {
+          innerWidth: layout.innerWidth,
+          documentScrollWidth: layout.documentScrollWidth,
+          bodyScrollWidth: layout.bodyScrollWidth,
+          settingsScrollBoundary: true,
+          catalogScrollBoundary: true,
+        },
         consoleErrors,
         expectedConsoleErrors: [],
         pageErrors,

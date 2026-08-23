@@ -497,6 +497,7 @@ it("uses locale punctuation in composed labels (guide line, options, Run ID, sep
   });
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByTestId("credential-help"));
   const guide = await screen.findByTestId("credential-type-guide-password");
   const guideText = guide.textContent ?? "";
   expect(guideText).toContain("Password (Fields: username + password)");
@@ -506,7 +507,7 @@ it("uses locale punctuation in composed labels (guide line, options, Run ID, sep
   await applySystemLocale("zh-CN");
   await waitFor(() =>
     expect(screen.getByTestId("credential-type-guide-password").textContent).toContain(
-      "密码（字段：username + password）：常见场景为",
+      "密码（字段：username + password）：常见场景 ",
     ),
   );
 });

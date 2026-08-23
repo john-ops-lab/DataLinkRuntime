@@ -33,6 +33,21 @@ function credentialMetadata(id: number, name: string, type: CredentialType): Cre
   };
 }
 
+function packageSource(overrides: Partial<PackageSource> = {}): PackageSource {
+  return {
+    id: 1,
+    name: "fixture-pypi-source",
+    kind: "pypi",
+    index_url: "https://packages.example.invalid/simple/",
+    is_default: false,
+    credential_id: null,
+    credential_name: null,
+    created_at: "2026-08-17T00:00:00Z",
+    updated_at: "2026-08-17T00:00:00Z",
+    ...overrides,
+  };
+}
+
 async function openSelect(testId: string): Promise<HTMLElement> {
   const select = screen.getByTestId(testId);
   // 先关闭任何残留打开的 dropdown，避免 mouseDown 变成 toggle 关闭。
@@ -340,6 +355,7 @@ it("凭据管理页展示四类凭据说明（访问密钥为 access_key_id + ac
   vi.spyOn(api, "listCredentials").mockResolvedValue([]);
 
   render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByTestId("credential-help"));
   await screen.findByTestId("credential-type-guide");
   expect(screen.getByTestId("credential-type-guide-password").textContent).toContain(
     "username + password",
@@ -356,10 +372,45 @@ it("凭据管理页展示四类凭据说明（访问密钥为 access_key_id + ac
     "api_key、client_secret、signing_secret、private_key",
   );
   expect(
-    screen.getByText(
-      "不同凭据类型是常见敏感信息结构的模板，帮助你快速选择正确字段。无法确定时，优先选择最接近的类型；仍不匹配时可使用「通用密钥」。",
-    ),
+    screen.getByText("按目标系统需要的字段选择类型；不匹配时使用「通用密钥」。"),
   ).toBeTruthy();
+});
+
+it("凭据试点将筛选与主操作收敛到工具栏，行操作保留可访问名称", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([
+    credentialMetadata(1, "runtime-token", "token"),
+    credentialMetadata(2, "database-password", "password"),
+  ]);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const onClose = vi.fn();
+
+  render(<SystemSettingsDrawer open onClose={onClose} />);
+  await screen.findByText("runtime-token");
+
+  expect(screen.getByRole("toolbar", { name: "凭据工具栏" })).toBeTruthy();
+  expect(screen.getByTestId("credentials-filters")).toBeTruthy();
+  expect(screen.getByTestId("new-credential")).toBeTruthy();
+  expect(screen.getByTestId("refresh-credentials")).toBeTruthy();
+  expect(screen.getByTestId("credential-help").getAttribute("aria-label")).toBe("查看凭据类型");
+  expect(screen.getAllByTestId("update-credential")[0]?.getAttribute("aria-label")).toBe(
+    "编辑凭据 runtime-token",
+  );
+  expect(screen.getAllByTestId("delete-credential")[0]?.getAttribute("aria-label")).toBe(
+    "删除凭据 runtime-token",
+  );
+
+  fireEvent.change(screen.getByRole("textbox", { name: "筛选凭据" }), {
+    target: { value: "database" },
+  });
+  expect(screen.queryByText("runtime-token")).toBeNull();
+  expect(screen.getByText("database-password")).toBeTruthy();
+
+  fireEvent.click(screen.getByTestId("settings-back"));
+  expect(confirm).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledTimes(1);
 });
 
 it("保存失败时仍保留未保存更改确认", async () => {
@@ -409,7 +460,7 @@ it("新建凭据提交前有一次性明文提醒，取消则不创建", async (
   // 提醒必须出现在创建之前，且包含不可回读的明确文案。
   expect(confirm).toHaveBeenCalledWith(
     expect.stringContaining(
-      "保存后密码、Token、密钥等敏感内容无法再次通过浏览器查看，请先妥善保存或复制。",
+      "保存后无法再次查看密码、Token 或密钥，请先复制。",
     ),
   );
   expect(createCredentialApi).not.toHaveBeenCalled();
@@ -446,18 +497,19 @@ it("M5.5.8：无默认源时展示明确回退提示，恢复默认调用对应�
   fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
   await screen.findByTestId("package-sources-panel");
 
-  // 三种语言都展示恢复默认入口与明确的清空回退提示。
+  // 恢复默认动作收敛在一个菜单中，同时保留三种语言的独立入口。
+  fireEvent.click(screen.getByTestId("restore-default-menu"));
   for (const kind of ["pypi", "npm", "maven"] as const) {
     expect(screen.getByTestId(`restore-default-${kind}`)).toBeTruthy();
     expect(screen.getByTestId(`no-default-source-${kind}`).textContent).toContain(
-      "不会静默使用未配置的地址",
+      "不会使用未配置地址",
     );
   }
   expect(screen.getByTestId("no-default-source-pypi").textContent).toContain("本地缓存");
 
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   fireEvent.click(screen.getByTestId("restore-default-pypi"));
-  await screen.findByText("PyPI 已恢复默认依赖源");
+  await screen.findByText("已恢复 PyPI 默认源");
   expect(confirm).toHaveBeenCalledTimes(1);
   expect(restorePypi).toHaveBeenCalledWith("pypi");
   confirm.mockRestore();
@@ -487,6 +539,78 @@ it("M5.5.8：已有默认源时不显示该类型的回退提示", async () => {
 
   expect(screen.queryByTestId("no-default-source-pypi")).toBeNull();
   expect(screen.getByTestId("no-default-source-npm")).toBeTruthy();
+});
+
+it("依赖源默认星标只允许非默认项操作，成功后按类型保持唯一默认", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  const initialSources = [
+    packageSource({ id: 1, name: "PyPI mirror", is_default: false }),
+    packageSource({ id: 2, name: "Current PyPI default", is_default: true }),
+  ];
+  const updatedSources = [
+    packageSource({ id: 1, name: "PyPI mirror", is_default: true }),
+    packageSource({ id: 2, name: "Current PyPI default", is_default: false }),
+  ];
+  const listSources = vi
+    .spyOn(api, "listPackageSources")
+    .mockResolvedValueOnce(initialSources)
+    .mockResolvedValueOnce(updatedSources);
+  let resolveUpdate: ((source: PackageSource) => void) | undefined;
+  const update = vi.spyOn(api, "updatePackageSource").mockReturnValue(
+    new Promise<PackageSource>((resolve) => {
+      resolveUpdate = resolve;
+    }),
+  );
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
+  await screen.findByTestId("package-sources-panel");
+
+  expect(screen.getAllByTestId("default-source-indicator")).toHaveLength(1);
+  expect(screen.getByTestId("default-source-indicator").getAttribute("aria-label")).toBe(
+    "当前默认依赖源：Current PyPI default",
+  );
+  const setDefault = screen.getByTestId("set-default-source") as HTMLButtonElement;
+  expect(setDefault.disabled).toBe(false);
+  expect(setDefault.getAttribute("aria-label")).toBe("设为默认依赖源：PyPI mirror");
+
+  fireEvent.click(setDefault);
+  await waitFor(() => expect(setDefault.disabled).toBe(true));
+  expect(setDefault.getAttribute("aria-label")).toBe("正在设为默认：PyPI mirror");
+  expect(update).toHaveBeenCalledWith(1, { is_default: true });
+
+  await act(async () => {
+    resolveUpdate?.(updatedSources[0]);
+  });
+  await waitFor(() => expect(listSources).toHaveBeenCalledTimes(2));
+  expect(screen.getAllByTestId("default-source-indicator")).toHaveLength(1);
+  expect(screen.getByTestId("default-source-indicator").getAttribute("aria-label")).toBe(
+    "当前默认依赖源：PyPI mirror",
+  );
+  expect(screen.getAllByTestId("set-default-source")).toHaveLength(1);
+});
+
+it("依赖源设置默认失败后恢复可操作状态，不伪装为默认", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([
+    packageSource({ id: 3, name: "Failed PyPI source", is_default: false }),
+  ]);
+  vi.spyOn(api, "updatePackageSource").mockRejectedValue(new Error("set default failed"));
+
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
+  await screen.findByTestId("package-sources-panel");
+  const setDefault = screen.getByTestId("set-default-source") as HTMLButtonElement;
+
+  fireEvent.click(setDefault);
+  await screen.findByRole("alert");
+  await waitFor(() => expect(setDefault.disabled).toBe(false));
+  expect(screen.queryByTestId("default-source-indicator")).toBeNull();
+  expect(setDefault.getAttribute("aria-label")).toBe("设为默认依赖源：Failed PyPI source");
 });
 
 it("依赖源 HTTP 应答保持可达语义，测试请求失败会清除旧状态", async () => {
@@ -563,6 +687,11 @@ it("M5.8-006：知识库配置只保存 access_key 引用，官方地址不可�
   fireEvent.click(screen.getByRole("menuitem", { name: "知识库" }));
   await screen.findByTestId("knowledge-source-summary");
 
+  expect(screen.getByTestId("knowledge-source-actions").getAttribute("role")).toBe("toolbar");
+  expect(
+    Array.from(screen.getByTestId("knowledge-source-actions").querySelectorAll("button"))
+      .map((button) => button.dataset.testid),
+  ).toEqual(["test-knowledge-source", "save-knowledge-source"]);
   expect(screen.getByTestId("knowledge-source-endpoint").textContent).toBe(
     "https://ima.qq.com",
   );

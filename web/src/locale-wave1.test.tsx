@@ -42,6 +42,7 @@ it("switches the System Settings language control immediately", async () => {
   await waitFor(() => expect(update).toHaveBeenCalledWith("en"));
   expect(await screen.findByText("System settings")).toBeTruthy();
   expect(screen.getByText("Language")).toBeTruthy();
+  expect(document.documentElement.lang).toBe("en");
 });
 
 it("renders the login page in English and never exposes a missing key", async () => {

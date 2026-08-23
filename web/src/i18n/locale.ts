@@ -23,3 +23,10 @@ export function cacheSystemLocale(locale: SystemLocale): void {
 export function resolveSystemLocale(value: string | undefined): SystemLocale {
   return isSystemLocale(value) ? value : DEFAULT_SYSTEM_LOCALE;
 }
+
+/** Keep the document language aligned with the existing system/UI locale source. */
+export function syncDocumentLanguage(locale: SystemLocale): void {
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = locale;
+  }
+}

@@ -1,10 +1,15 @@
 # DLR web image: build the SPA, then serve it with Nginx behind /api proxy.
 FROM node:22-alpine AS build
 
+ARG TARGETPLATFORM=unknown
+ARG TARGETARCH=unknown
+
 WORKDIR /app
 
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN printf 'Installing locked web dependencies for %s (%s)\n' "$TARGETPLATFORM" "$TARGETARCH" \
+    && npm ci --include=optional \
+    && node --input-type=module -e 'import("rollup").then(() => console.log("Rollup native binding resolved"))'
 
 COPY web/ ./
 RUN npm run build
