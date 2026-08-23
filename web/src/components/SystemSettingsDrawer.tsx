@@ -450,7 +450,15 @@ function CredentialsPanel(props: {
               title: t("credentials.tableName"),
               dataIndex: "name",
               ellipsis: true,
-              render: (name) => <span className="credential-name-cell" data-testid="credential-row">{name}</span>,
+              render: (_, credential) => (
+                <span
+                  className="credential-name-cell"
+                  data-testid="credential-row"
+                  title={credential.name}
+                >
+                  {credential.name}
+                </span>
+              ),
             },
             {
               title: t("credentials.tableType"),

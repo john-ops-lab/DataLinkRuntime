@@ -2605,7 +2605,6 @@ body {
 .credential-name-cell {
   display: block;
   min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .credential-row-actions {

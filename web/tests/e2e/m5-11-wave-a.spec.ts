@@ -437,6 +437,10 @@ for (const locale of LOCALES) {
       await expect(page.getByTestId("new-credential")).toBeVisible();
       await expect(page.getByTestId("refresh-credentials")).toBeVisible();
       await expect(page.getByTestId("credential-row")).toContainText("fixture-token-credential-with-a-long-name");
+      await expect(page.getByTestId("credential-row")).toHaveAttribute(
+        "title",
+        "fixture-token-credential-with-a-long-name",
+      );
       await expect(page.getByTestId("update-credential")).toHaveAttribute(
         "aria-label",
         locale === "zh-CN"
