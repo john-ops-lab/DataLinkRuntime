@@ -25,6 +25,7 @@ function renderCatalog(
   onOpenSettings = vi.fn(),
   onClone = vi.fn(),
   selectedId: number | null = null,
+  onRefresh = vi.fn(async () => {}),
 ) {
   render(
     <AdapterCatalog
@@ -37,9 +38,10 @@ function renderCatalog(
       workers={[]}
       onOpenSettings={onOpenSettings}
       onClone={onClone}
+      onRefresh={onRefresh}
     />,
   );
-  return { onSelect, onOpenSettings, onClone };
+  return { onSelect, onOpenSettings, onClone, onRefresh };
 }
 
 async function openSelect(testId: string): Promise<HTMLElement> {
@@ -222,6 +224,7 @@ it("labels owned and shared relationships and hides cloning for read-only shares
       workers={[]}
       onOpenSettings={vi.fn()}
       onClone={vi.fn()}
+      onRefresh={vi.fn(async () => {})}
       accountPrincipal={{ id: 7, username: "me", role: "user", enabled: true, must_change_password: false }}
     />,
   );
@@ -236,7 +239,40 @@ it("labels owned and shared relationships and hides cloning for read-only shares
   expect(within(menu).queryByRole("menuitem", { name: "复制" })).toBeNull();
 });
 
-it("lays out [类型][状态][搜索] as one continuous row (M5.8-008)", () => {
+it("uses the Scheme A catalog structure with left filters and right actions", async () => {
+  const onRefresh = vi.fn(async () => {});
+  renderCatalog([makeAdapter(1, "alpha")], vi.fn(), vi.fn(), vi.fn(), null, onRefresh);
+
+  const catalogHeader = screen.getByTestId("adapter-catalog-header");
+  expect(within(catalogHeader).getByRole("heading", { name: "适配器" })).toBeTruthy();
+  expect(screen.getByTestId("adapter-catalog-description").textContent).toContain(
+    "管理可执行的任务和 Webhook 适配器。",
+  );
+
+  const toolbar = screen.getByRole("toolbar", { name: "适配器工具栏" });
+  const searchInput = screen.getByTestId("adapter-search");
+  const typeSelect = screen.getByTestId("adapter-type-filter");
+  const statusSelect = screen.getByTestId("adapter-status-filter");
+  const actions = screen.getByTestId("adapter-catalog-actions");
+  expect(toolbar.contains(searchInput)).toBe(true);
+  expect(toolbar.contains(typeSelect)).toBe(true);
+  expect(toolbar.contains(statusSelect)).toBe(true);
+  expect(searchInput.compareDocumentPosition(typeSelect) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(typeSelect.compareDocumentPosition(statusSelect) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(within(actions).getByTestId("show-create-form")).toBeTruthy();
+  expect(within(actions).getByTestId("refresh-adapters")).toBeTruthy();
+  expect(within(actions).getByTestId("adapter-catalog-help")).toBeTruthy();
+  expect(screen.getByTestId("adapter-catalog-summary").textContent).toContain("1");
+
+  const list = screen.getByTestId("adapter-catalog-list");
+  expect(list.parentElement).toBe(screen.getByTestId("adapter-catalog"));
+  expect(list.classList.contains("catalog-list")).toBe(true);
+
+  fireEvent.click(within(actions).getByTestId("refresh-adapters"));
+  await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+});
+
+it("lays out [搜索][类型][状态] as one continuous row (M5.8-008)", () => {
   renderCatalog([makeAdapter(1, "alpha")]);
 
   const control = document.querySelector(".catalog-search-control");
@@ -247,12 +283,12 @@ it("lays out [类型][状态][搜索] as one continuous row (M5.8-008)", () => {
   expect(control?.contains(typeSelect)).toBe(true);
   expect(control?.contains(statusSelect)).toBe(true);
   expect(control?.contains(searchInput)).toBe(true);
-  // DOM 顺序：类型在最左，状态居中，搜索在最右。
+  // DOM 顺序：搜索在最左，类型和状态作为紧凑筛选项跟随其后。
   expect(
-    typeSelect.compareDocumentPosition(statusSelect) & Node.DOCUMENT_POSITION_FOLLOWING,
+    searchInput.compareDocumentPosition(typeSelect) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(
-    statusSelect.compareDocumentPosition(searchInput) & Node.DOCUMENT_POSITION_FOLLOWING,
+    typeSelect.compareDocumentPosition(statusSelect) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   // 默认显示全部类型 / 全部状态。
   expect(typeSelect.textContent).toContain("全部类型");

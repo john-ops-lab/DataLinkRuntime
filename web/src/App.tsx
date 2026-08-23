@@ -1264,6 +1264,13 @@ export function AdapterConsole({
               workers={workers}
               onOpenSettings={handleCatalogOpenSettings}
               onClone={(adapter) => void handleClone(adapter)}
+              onRefresh={async () => {
+                try {
+                  await refreshAdapters();
+                } catch (err) {
+                  setError(errorMessage(err));
+                }
+              }}
               accountPrincipal={accountPrincipal}
             />
 

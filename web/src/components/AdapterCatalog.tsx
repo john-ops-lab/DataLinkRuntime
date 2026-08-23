@@ -1,7 +1,8 @@
 /** 左侧 Adapter Catalog：高密度行式导航 + 新建表单（M3.1 §7，业务合同仍沿用 M1）。 */
 
 import { useEffect, useState } from "react";
-import { Button, Dropdown, Empty, Input, Radio, Select } from "antd";
+import { Button, Dropdown, Empty, Input, Popover, Radio, Select, Tooltip } from "antd";
+import { QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   DrawerForm,
   ProForm,
@@ -73,6 +74,7 @@ interface AdapterCatalogProps {
   // M5.5.9：列表项三点菜单——“设置”直接进入该 Adapter 设置；“复制”进入 Clone 流程。
   onOpenSettings: (adapter: Adapter) => void;
   onClone: (adapter: Adapter) => void;
+  onRefresh: () => Promise<void>;
   accountPrincipal?: AccountPrincipal;
 }
 
@@ -211,6 +213,7 @@ export default function AdapterCatalog({
   workers,
   onOpenSettings,
   onClone,
+  onRefresh,
   accountPrincipal,
 }: AdapterCatalogProps) {
   const { t } = useTranslation(["adapter", "common"]);
@@ -222,6 +225,7 @@ export default function AdapterCatalog({
     status: "all",
   });
   const [submitting, setSubmitting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const workersById = new Map(workers.map((worker) => [worker.id, worker]));
 
   useEffect(() => {
@@ -250,6 +254,18 @@ export default function AdapterCatalog({
       return created;
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleRefresh(): Promise<void> {
+    if (busy || refreshing) {
+      return;
+    }
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -285,23 +301,70 @@ export default function AdapterCatalog({
 
   return (
     <aside className="catalog" data-testid="adapter-catalog">
-      <div className="catalog-header">
-        <h2 className="catalog-title">{t("catalog.title")}</h2>
-        <Button
-          size="small"
-          type="primary"
-          data-testid="show-create-form"
-          disabled={busy}
-          onClick={() => {
-            setCreating(true);
-          }}
-        >
-          {t("catalog.new")}
-        </Button>
+      <div className="catalog-header" data-testid="adapter-catalog-header">
+        <div className="catalog-heading">
+          <h2 className="catalog-title">{t("catalog.title")}</h2>
+          <p className="catalog-description" data-testid="adapter-catalog-description">
+            {t("catalog.overview")}
+          </p>
+        </div>
+        <div className="catalog-header-actions" data-testid="adapter-catalog-actions">
+          <Button
+            size="small"
+            type="primary"
+            data-testid="show-create-form"
+            disabled={busy}
+            onClick={() => {
+              setCreating(true);
+            }}
+          >
+            {t("catalog.new")}
+          </Button>
+          <Tooltip title={t("catalog.refreshAria")}>
+            <Button
+              size="small"
+              type="text"
+              icon={<ReloadOutlined />}
+              data-testid="refresh-adapters"
+              aria-label={t("catalog.refreshAria")}
+              loading={refreshing}
+              disabled={busy}
+              onClick={() => void handleRefresh()}
+            />
+          </Tooltip>
+          <Popover
+            title={t("catalog.helpTitle")}
+            content={<span className="catalog-help-content">{t("catalog.helpDescription")}</span>}
+            trigger="click"
+          >
+            <Button
+              size="small"
+              type="text"
+              icon={<QuestionCircleOutlined />}
+              data-testid="adapter-catalog-help"
+              aria-label={t("catalog.helpAria")}
+            />
+          </Popover>
+        </div>
       </div>
 
-      <div className="catalog-search">
+      <div
+        className="catalog-toolbar"
+        data-testid="adapter-catalog-toolbar"
+        role="toolbar"
+        aria-label={t("catalog.toolbarAria")}
+      >
         <div className="catalog-search-control" aria-label={t("catalog.filterGroupAria")}>
+          <Input
+            className="catalog-search-input"
+            data-testid="adapter-search"
+            aria-label={t("catalog.search")}
+            placeholder={t("catalog.search")}
+            allowClear
+            size="small"
+            value={filters.search}
+            onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
+          />
           <Select<AdapterTypeFilter | "all">
             size="small"
             className="catalog-filter-type"
@@ -320,20 +383,13 @@ export default function AdapterCatalog({
             options={statusFilterOptions}
             onChange={(value) => setFilters((current) => ({ ...current, status: value }))}
           />
-          <Input
-            className="catalog-search-input"
-            data-testid="adapter-search"
-            aria-label={t("catalog.search")}
-            placeholder={t("catalog.search")}
-            allowClear
-            size="small"
-            value={filters.search}
-            onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
-          />
         </div>
+        <span className="catalog-summary" data-testid="adapter-catalog-summary">
+          {t("catalog.summary", { count: visible.length })}
+        </span>
       </div>
 
-      <div className="catalog-list">
+      <div className="catalog-list" data-testid="adapter-catalog-list">
         {visible.length === 0 ? (
           <Empty
             className="catalog-empty"
