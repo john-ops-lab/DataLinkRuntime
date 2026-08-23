@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import {
   Button,
   Checkbox,
+  Dropdown,
   Empty,
   Form,
   Input,
@@ -19,17 +20,18 @@ import {
 import {
   ArrowLeftOutlined,
   DeleteOutlined,
+  DownOutlined,
   EditOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
+  StarOutlined,
 } from "@ant-design/icons";
 import {
   ModalForm,
   ProForm,
   ProTable,
-  QueryFilter,
 } from "@ant-design/pro-components";
 import type { ProColumns } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
@@ -802,17 +804,16 @@ function PackageSourcesPanel(props: {
     {
       title: t("labels.repositoryUrl", { ns: "common" }),
       dataIndex: "index_url",
-      width: 300,
       render: (_, source) => (
         <Tooltip title={source.index_url}>
-          <span className="package-source-cell">{source.index_url}</span>
+          <span className="package-source-cell" title={source.index_url}>{source.index_url}</span>
         </Tooltip>
       ),
     },
     {
       title: t("labels.accessCredential", { ns: "common" }),
       dataIndex: "credential_name",
-      width: 110,
+      width: 140,
       render: (_, source) => source.credential_name ?? "—",
     },
     {
@@ -862,82 +863,137 @@ function PackageSourcesPanel(props: {
     },
     {
       title: t("labels.operation", { ns: "common" }),
-      width: 170,
+      width: 104,
       render: (_, source) => (
-        <Space>
-          <Button
-            size="small"
-            data-testid="set-default-source"
-            disabled={source.is_default}
-            onClick={() => void handleSetDefault(source)}
-          >
-             {t("packageSources.setDefaultAction")}
-          </Button>
-          <Button
-            size="small"
-            danger
-            data-testid="delete-package-source"
-            onClick={() => void handleDelete(source)}
-          >
-             {t("actions.delete", { ns: "common" })}
-          </Button>
+        <Space size={0} className="package-source-row-actions">
+          <Tooltip title={t("packageSources.setDefaultAria", { name: source.name })}>
+            <Button
+              type="text"
+              size="small"
+              icon={<StarOutlined aria-hidden="true" />}
+              data-testid="set-default-source"
+              aria-label={t("packageSources.setDefaultAria", { name: source.name })}
+              disabled={source.is_default}
+              onClick={() => void handleSetDefault(source)}
+            />
+          </Tooltip>
+          <Tooltip title={t("packageSources.deleteAria", { name: source.name })}>
+            <Button
+              type="text"
+              size="small"
+              danger
+              icon={<DeleteOutlined aria-hidden="true" />}
+              data-testid="delete-package-source"
+              aria-label={t("packageSources.deleteAria", { name: source.name })}
+              onClick={() => void handleDelete(source)}
+            />
+          </Tooltip>
         </Space>
       ),
     },
   ];
 
+  const restoreMenuItems = kinds.map((kind) => {
+    const canonical = defaults?.[kind];
+    return {
+      key: kind,
+      disabled: restoring !== null || canonical === undefined,
+      label: (
+        <span
+          data-testid={`restore-default-${kind}`}
+          title={canonical === undefined ? t("packageSources.emptyDefaults") : undefined}
+        >
+          {t("packageSources.restoreButton", { kind: kindLabel(kind) })}
+        </span>
+      ),
+    };
+  });
+
   return (
     <div className="settings-panel" data-testid="package-sources-panel">
-      <Space className="settings-panel-toolbar">
-        <Button
-          type="primary"
-          data-testid="new-package-source"
-          onClick={() => {
-            setNotice(null);
-            setForm(EMPTY_SOURCE_FORM);
-            sourceForm.resetFields();
-            sourceForm.setFieldsValue(EMPTY_SOURCE_FORM);
-            setFormOpen(true);
-          }}
-        >
-          {t("packageSources.new")}
-        </Button>
-        <Button
-          data-testid="refresh-package-sources"
-          loading={loading}
-          onClick={() => {
-            setNotice(null);
-            void load().then((ok) => ok && setNotice(t("packageSources.refreshList")));
-          }}
-        >
-          {t("actions.refresh", { ns: "common" })}
-        </Button>
-      </Space>
-      <Typography.Text type="secondary">
-         {t("packageSources.description")}
-      </Typography.Text>
+      <div className="settings-page-toolbar" data-testid="package-sources-toolbar" role="toolbar">
+        <div className="settings-toolbar-filters" data-testid="package-sources-filters">
+          <Input
+            allowClear
+            prefix={<SearchOutlined aria-hidden="true" />}
+            placeholder={t("packageSources.filterKeyword")}
+            aria-label={t("packageSources.filterKeyword")}
+            value={filters.keyword}
+            onChange={(event) => setFilters((current) => ({ ...current, keyword: event.target.value }))}
+            data-settings-filter="true"
+          />
+          <Select<PackageSourceKind | "all">
+            aria-label={t("packageSources.filterKind")}
+            value={filters.kind}
+            onChange={(kind) => setFilters((current) => ({ ...current, kind }))}
+            options={[
+              { value: "all", label: t("packageSources.filterAll") },
+              ...kinds.map((kind) => ({ value: kind, label: kindLabel(kind) })),
+            ]}
+            data-settings-filter="true"
+          />
+          <Select<PackageSourceFilters["defaultOnly"]>
+            aria-label={t("packageSources.filterDefault")}
+            value={filters.defaultOnly}
+            onChange={(defaultOnly) => setFilters((current) => ({ ...current, defaultOnly }))}
+            options={[
+              { value: "all", label: t("packageSources.filterAll") },
+              { value: "default", label: t("labels.default", { ns: "common" }) },
+              { value: "custom", label: t("packageSources.filterCustom") },
+            ]}
+            data-settings-filter="true"
+          />
+        </div>
+        <div className="settings-toolbar-actions">
+          <Button
+            type="primary"
+            icon={<PlusOutlined aria-hidden="true" />}
+            data-testid="new-package-source"
+            onClick={() => {
+              setNotice(null);
+              setForm(EMPTY_SOURCE_FORM);
+              sourceForm.resetFields();
+              sourceForm.setFieldsValue(EMPTY_SOURCE_FORM);
+              setFormOpen(true);
+            }}
+          >
+            {t("packageSources.new")}
+          </Button>
+          <Button
+            icon={<ReloadOutlined aria-hidden="true" />}
+            data-testid="refresh-package-sources"
+            loading={loading}
+            onClick={() => {
+              setNotice(null);
+              void load().then((ok) => ok && setNotice(t("packageSources.refreshList")));
+            }}
+          >
+            {t("actions.refresh", { ns: "common" })}
+          </Button>
+          <Dropdown
+            menu={{
+              items: restoreMenuItems,
+              onClick: ({ key }) => {
+                if (kinds.includes(key as PackageSourceKind)) {
+                  void handleRestoreDefault(key as PackageSourceKind);
+                }
+              },
+            }}
+            placement="bottomRight"
+            trigger={["click"]}
+          >
+            <Button
+              icon={<DownOutlined aria-hidden="true" />}
+              data-testid="restore-default-menu"
+              aria-label={t("packageSources.restoreMenu")}
+            >
+              {t("packageSources.restoreMenu")}
+            </Button>
+          </Dropdown>
+        </div>
+      </div>
 
       <div className="settings-package-source-defaults" data-testid="package-source-defaults">
-        {defaults !== null && (
-          <Space wrap>
-            {kinds.map((kind) => {
-              const canonical = defaults[kind];
-              return (
-                <Button
-                  key={kind}
-                  size="small"
-                  data-testid={`restore-default-${kind}`}
-                  loading={restoring === kind}
-                  disabled={restoring !== null}
-                  onClick={() => void handleRestoreDefault(kind)}
-                   title={t("packageSources.restoreTitle", { url: canonical.index_url })}
-                >
-                   {t("packageSources.restoreButton", { kind: kindLabel(kind) })}
-                </Button>
-              );
-            })}
-          </Space>
-        )}
         {kinds.map((kind) => {
           const hasDefault = sources.some((source) => source.kind === kind && source.is_default);
           if (hasDefault) {
@@ -957,47 +1013,6 @@ function PackageSourcesPanel(props: {
       </div>
       {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}
       {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
-
-      <QueryFilter<PackageSourceFilters>
-        className="wave-c-query-filter"
-        layout="vertical"
-        defaultCollapsed={false}
-        defaultColsNumber={3}
-        defaultFormItemsNumber={3}
-        labelWidth="auto"
-        submitter={false}
-        initialValues={filters}
-        onValuesChange={(_, values) =>
-          setFilters({
-            keyword: values.keyword ?? "",
-            kind: values.kind ?? "all",
-            defaultOnly: values.defaultOnly ?? "all",
-          })
-        }
-      >
-        <Form.Item name="keyword" label={t("packageSources.filterKeyword")}>
-          <Input allowClear aria-label={t("packageSources.filterKeyword")} />
-        </Form.Item>
-        <Form.Item name="kind" label={t("packageSources.filterKind")}>
-          <Select<PackageSourceKind | "all">
-            aria-label={t("packageSources.filterKind")}
-            options={[
-              { value: "all", label: t("packageSources.filterAll") },
-              ...kinds.map((kind) => ({ value: kind, label: kindLabel(kind) })),
-            ]}
-          />
-        </Form.Item>
-        <Form.Item name="defaultOnly" label={t("packageSources.filterDefault")}>
-          <Select<PackageSourceFilters["defaultOnly"]>
-            aria-label={t("packageSources.filterDefault")}
-            options={[
-              { value: "all", label: t("packageSources.filterAll") },
-              { value: "default", label: t("labels.default", { ns: "common" }) },
-              { value: "custom", label: t("packageSources.filterCustom") },
-            ]}
-          />
-        </Form.Item>
-      </QueryFilter>
 
       <ModalForm<PackageSourceFormState>
         key={`package-source-form-${formOpen}`}
@@ -1104,7 +1119,6 @@ function PackageSourcesPanel(props: {
           dataSource={visibleSources}
           className="package-source-table"
           tableLayout="fixed"
-          scroll={{ x: 1060 }}
           columns={columns}
         />
       )}
@@ -1271,7 +1285,6 @@ function KnowledgeSourcesPanel(props: {
 
   return (
     <div className="settings-panel knowledge-sources-panel" data-testid="knowledge-sources-panel">
-      <Typography.Text type="secondary">{t("knowledgeSources.description")}</Typography.Text>
       {loading ? (
         <Spin />
       ) : source === null ? null : (
@@ -1293,28 +1306,7 @@ function KnowledgeSourcesPanel(props: {
             className="settings-inline-form knowledge-source-form wave-c-form"
             data-testid="knowledge-source-form"
             layout="vertical"
-            submitter={{
-              render: () => [
-                <Button
-                  key="save"
-                  type="primary"
-                  data-testid="save-knowledge-source"
-                  loading={saving}
-                  onClick={() => void handleSave()}
-                >
-                  {t("knowledgeSources.save")}
-                </Button>,
-                <Button
-                  key="test"
-                  data-testid="test-knowledge-source"
-                  loading={testing}
-                  disabled={!form.enabled || testing}
-                  onClick={() => void handleTest()}
-                >
-                  {t("knowledgeSources.test")}
-                </Button>,
-              ],
-            }}
+            submitter={false}
             onFinish={handleSave}
           >
             <ProForm.Item label={t("knowledgeSources.enabled")}>
@@ -1349,6 +1341,30 @@ function KnowledgeSourcesPanel(props: {
               />
             </ProForm.Item>
           </ProForm>
+
+          <div
+            className="knowledge-source-actions"
+            data-testid="knowledge-source-actions"
+            role="toolbar"
+            aria-label={t("knowledgeSources.actions")}
+          >
+            <Button
+              data-testid="test-knowledge-source"
+              loading={testing}
+              disabled={!form.enabled || testing}
+              onClick={() => void handleTest()}
+            >
+              {t("knowledgeSources.test")}
+            </Button>
+            <Button
+              type="primary"
+              data-testid="save-knowledge-source"
+              loading={saving}
+              onClick={() => void handleSave()}
+            >
+              {t("knowledgeSources.save")}
+            </Button>
+          </div>
 
           <Typography.Text type="secondary">{t("knowledgeSources.credentialNotice")}</Typography.Text>
           {panelError !== null && <p className="settings-panel-error" role="alert">{panelError}</p>}

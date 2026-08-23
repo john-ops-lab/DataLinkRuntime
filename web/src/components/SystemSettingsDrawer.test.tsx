@@ -484,7 +484,8 @@ it("M5.5.8：无默认源时展示明确回退提示，恢复默认调用对应�
   fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
   await screen.findByTestId("package-sources-panel");
 
-  // 三种语言都展示恢复默认入口与明确的清空回退提示。
+  // 恢复默认动作收敛在一个菜单中，同时保留三种语言的独立入口。
+  fireEvent.click(screen.getByTestId("restore-default-menu"));
   for (const kind of ["pypi", "npm", "maven"] as const) {
     expect(screen.getByTestId(`restore-default-${kind}`)).toBeTruthy();
     expect(screen.getByTestId(`no-default-source-${kind}`).textContent).toContain(
@@ -601,6 +602,11 @@ it("M5.8-006：知识库配置只保存 access_key 引用，官方地址不可�
   fireEvent.click(screen.getByRole("menuitem", { name: "知识库" }));
   await screen.findByTestId("knowledge-source-summary");
 
+  expect(screen.getByTestId("knowledge-source-actions").getAttribute("role")).toBe("toolbar");
+  expect(
+    Array.from(screen.getByTestId("knowledge-source-actions").querySelectorAll("button"))
+      .map((button) => button.dataset.testid),
+  ).toEqual(["test-knowledge-source", "save-knowledge-source"]);
   expect(screen.getByTestId("knowledge-source-endpoint").textContent).toBe(
     "https://ima.qq.com",
   );

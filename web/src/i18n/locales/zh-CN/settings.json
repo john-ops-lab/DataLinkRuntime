@@ -169,6 +169,9 @@
     "deleted": "依赖源已删除",
     "setDefault": "{{name}} 已设为默认依赖源",
     "setDefaultAction": "设为默认",
+    "setDefaultAria": "将 {{name}} 设为默认依赖源",
+    "deleteAria": "删除依赖源 {{name}}",
+    "restoreMenu": "恢复默认",
     "restoreDefault": "{{kind}} 已恢复默认依赖源",
     "createRefreshFailed": "依赖源已创建，但刷新列表失败；请手动刷新确认，避免重复提交。",
     "deleteRefreshFailed": "依赖源已删除，但刷新列表失败；请手动刷新确认。",
@@ -190,6 +193,7 @@
   },
   "knowledgeSources": {
     "description": "配置只读知识源并验证当前可访问的知识库。首版支持腾讯 ima。",
+    "actions": "知识库配置操作",
     "enabled": "启用知识库",
     "credential": "访问凭据（access_key）",
     "credentialPlaceholder": "选择 access_key 凭据",

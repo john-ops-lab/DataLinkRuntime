@@ -169,6 +169,9 @@
     "deleted": "Package source deleted",
     "setDefault": "{{name}} is now the default package source",
     "setDefaultAction": "Set as default",
+    "setDefaultAria": "Set {{name}} as the default package source",
+    "deleteAria": "Delete package source {{name}}",
+    "restoreMenu": "Restore defaults",
     "restoreDefault": "{{kind}} default package sources restored",
     "createRefreshFailed": "Package source created, but the list refresh failed. Refresh manually to confirm and avoid submitting again.",
     "deleteRefreshFailed": "Package source deleted, but the list refresh failed. Refresh manually to confirm.",
@@ -190,6 +193,7 @@
   },
   "knowledgeSources": {
     "description": "Configure a read-only knowledge source and verify the knowledge bases it can access. Tencent ima is supported first.",
+    "actions": "Knowledge source configuration actions",
     "enabled": "Enable knowledge source",
     "credential": "Access Credential (access_key)",
     "credentialPlaceholder": "Select an access_key Credential",

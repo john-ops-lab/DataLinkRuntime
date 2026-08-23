@@ -69,6 +69,26 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("keeps the current configuration summary in the primary flow and collapses custom services", async () => {
+  mockLoad(modelSetting({
+    provider: "openai",
+    base_url: "https://models.example.com/v1",
+    model: "reasoning-model",
+  }));
+
+  render(<AiModelSettingsPanel onError={vi.fn()} />);
+  await screen.findByTestId("ai-model-settings-panel");
+
+  expect(screen.getByTestId("ai-current-config-summary")).toBeTruthy();
+  expect(screen.getByTestId("ai-summary-provider").textContent).toBe("OpenAI");
+  expect(screen.getByTestId("ai-summary-base-url").textContent).toBe("https://models.example.com/v1");
+  expect(screen.getByTestId("ai-summary-model").textContent).toBe("reasoning-model");
+  expect(screen.getByTestId("ai-summary-credential").textContent).toBe("未绑定凭据");
+
+  const customSection = screen.getByText("自定义模型服务").closest(".ant-collapse-item");
+  expect(customSection?.className).not.toContain("ant-collapse-item-active");
+});
+
 it("locks the AI model form while a request is in flight so stale responses cannot overwrite edits", async () => {
   mockLoad(modelSetting({ reasoning_mode: "enabled", reasoning_effort: "high" }));
   let resolveSave: ((setting: AiModelSetting) => void) | undefined;

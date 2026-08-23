@@ -134,6 +134,13 @@
   "model": {
     "notice": "AI usage",
     "boundary": "When AI is used, the current Adapter code and ordinary configuration are sent to your configured model service to generate suggestions. Passwords, Tokens and other sensitive Credentials are never sent to the model. Do not put passwords or keys directly in Adapter code.",
+    "currentConfig": "Current configuration",
+    "summaryProvider": "Model provider",
+    "summaryBaseUrl": "Base URL",
+    "summaryModel": "Model ID",
+    "summaryCredential": "API Key Credential",
+    "summaryNotConfigured": "Not configured",
+    "summaryNoCredential": "No Credential bound",
     "provider": {
       "label": "Model provider",
       "custom": "Custom OpenAI-compatible service"

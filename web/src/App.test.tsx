@@ -3274,7 +3274,9 @@ it("manages credentials and package sources from the system settings drawer", as
   // PyPI 已有默认源时不显示清空回退提示；npm / Maven 无默认源时显示明确回退。
   expect(screen.queryByTestId("no-default-source-pypi")).toBeNull();
   expect(screen.getByTestId("no-default-source-npm").textContent).toContain("不会静默使用未配置的地址");
+  fireEvent.click(screen.getByTestId("restore-default-menu"));
   expect(screen.getByTestId("restore-default-pypi")).toBeTruthy();
+  fireEvent.keyDown(document, { key: "Escape" });
   fireEvent.click(screen.getByTestId("new-package-source"));
   expect(screen.getByRole("textbox", { name: "依赖源名称" })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "依赖源类型" })).toBeTruthy();

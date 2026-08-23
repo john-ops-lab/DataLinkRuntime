@@ -189,6 +189,18 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       value: `custom:${provider.id}`,
     })),
   ];
+  const selectedProviderValue =
+    form.custom_provider_id === null || form.custom_provider_id === undefined
+      ? form.provider
+      : `custom:${form.custom_provider_id}`;
+  const selectedProviderLabel =
+    providerSelectOptions.find((option) => option.value === selectedProviderValue)?.label ??
+    (form.provider === "custom_openai_compatible"
+      ? t("model.provider.custom")
+      : form.provider);
+  const selectedCredentialName = credentials.find(
+    (credential) => credential.id === form.credential_id,
+  )?.name;
 
   const fail = useCallback(
     (message: string) => {
@@ -526,6 +538,39 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
         layout="vertical"
         submitter={false}
       >
+        <div className="ai-primary-config" data-testid="ai-primary-config">
+          <Card
+            size="small"
+            title={t("model.currentConfig")}
+            className="ai-current-config-summary"
+            data-testid="ai-current-config-summary"
+          >
+            <dl className="ai-current-config-summary-list">
+              <div>
+                <dt>{t("model.summaryProvider")}</dt>
+                <dd data-testid="ai-summary-provider">{selectedProviderLabel}</dd>
+              </div>
+              <div>
+                <dt>{t("model.summaryBaseUrl")}</dt>
+                <dd data-testid="ai-summary-base-url">
+                  {form.base_url.trim() || t("model.summaryNotConfigured")}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("model.summaryModel")}</dt>
+                <dd data-testid="ai-summary-model">
+                  {form.model.trim() || t("model.summaryNotConfigured")}
+                </dd>
+              </div>
+              <div>
+                <dt>{t("model.summaryCredential")}</dt>
+                <dd data-testid="ai-summary-credential">
+                  {selectedCredentialName ?? t("model.summaryNoCredential")}
+                </dd>
+              </div>
+            </dl>
+          </Card>
+
         <ProForm.Item label={t("model.provider.label")}>
           <Select<string>
             data-testid="ai-provider"
@@ -533,11 +578,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
             showSearch
             virtual={false}
             optionFilterProp="label"
-            value={
-              form.custom_provider_id === null || form.custom_provider_id === undefined
-                ? form.provider
-                : `custom:${form.custom_provider_id}`
-            }
+            value={selectedProviderValue}
             options={providerSelectOptions}
             onChange={(selection) => {
               setModelOptions([]);
@@ -576,133 +617,6 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
             }}
           />
         </ProForm.Item>
-
-        <Card
-          size="small"
-          title={t("model.customProviders")}
-          className="ai-custom-providers"
-          data-testid="ai-custom-providers"
-        >
-          <Typography.Text type="secondary">{t("model.customProvidersHint")}</Typography.Text>
-          <Space direction="vertical" size="small" className="ai-custom-provider-list">
-            {customProviders.map((provider) => (
-              <Space key={provider.id} wrap className="ai-custom-provider-row">
-                <Typography.Text strong>{provider.name}</Typography.Text>
-                <Typography.Text type="secondary">{provider.protocol}</Typography.Text>
-                {provider.referenced && (
-                  <Typography.Text type="secondary">{t("model.customReferenced")}</Typography.Text>
-                )}
-                <Button size="small" onClick={() => startCustomEdit(provider)} disabled={actionBusy}>
-                  {t("model.customEdit")}
-                </Button>
-                <Button
-                  size="small"
-                  onClick={() => void handleCustomTest(provider)}
-                  disabled={actionBusy}
-                >
-                  {t("model.customTest")}
-                </Button>
-                <Popconfirm
-                  title={t("model.customDeleteConfirm")}
-                  description={provider.referenced ? t("model.customDeleteReferenced") : undefined}
-                  okText={t("model.customDelete")}
-                  cancelText={t("model.customCancel")}
-                  onConfirm={() => void handleCustomDelete(provider)}
-                >
-                  <Button size="small" danger disabled={actionBusy}>
-                    {t("model.customDelete")}
-                  </Button>
-                </Popconfirm>
-              </Space>
-            ))}
-          </Space>
-          <Space direction="vertical" size="small" className="ai-custom-provider-editor">
-            <Input
-              data-testid="ai-custom-name"
-              disabled={actionBusy}
-              placeholder={t("model.customName")}
-              value={customDraft.name}
-              onChange={(event) =>
-                editCustomDraft((current) => ({ ...current, name: event.target.value }))
-              }
-            />
-            <Select<AiProviderProtocol>
-              data-testid="ai-custom-protocol"
-              disabled={actionBusy}
-              value={customDraft.protocol}
-              options={[
-                { label: "OpenAI-compatible", value: "openai_compatible" },
-                { label: "Anthropic Messages", value: "anthropic" },
-                { label: "Google Gemini", value: "gemini" },
-              ]}
-              onChange={(protocol) => editCustomDraft((current) => ({ ...current, protocol }))}
-            />
-            <Input
-              data-testid="ai-custom-base-url"
-              disabled={actionBusy}
-              placeholder={t("model.baseUrl")}
-              value={customDraft.base_url}
-              onChange={(event) =>
-                editCustomDraft((current) => ({ ...current, base_url: event.target.value }))
-              }
-            />
-            <Select<number>
-              data-testid="ai-custom-credential"
-              disabled={actionBusy}
-              allowClear
-              placeholder={t("model.credentialPlaceholder")}
-              value={customDraft.credential_id ?? undefined}
-              options={credentials.map((credential) => ({
-                label: credential.name,
-                value: credential.id,
-              }))}
-              onChange={(credentialId) =>
-                editCustomDraft((current) => ({ ...current, credential_id: credentialId ?? null }))
-              }
-            />
-            <Space wrap>
-              <Typography.Text>{t("model.customImages")}</Typography.Text>
-              <Switch
-                checked={customDraft.images_native}
-                disabled={actionBusy}
-                onChange={(images_native) =>
-                  editCustomDraft((current) => ({ ...current, images_native }))
-                }
-              />
-              <Typography.Text>{t("model.customTools")}</Typography.Text>
-              <Switch
-                checked={customDraft.tools_supported}
-                disabled={actionBusy}
-                onChange={(tools_supported) =>
-                  editCustomDraft((current) => ({ ...current, tools_supported }))
-                }
-              />
-              <Typography.Text>{t("model.customFiles")}</Typography.Text>
-              <Switch
-                checked={customDraft.files_native}
-                disabled={actionBusy}
-                onChange={(files_native) =>
-                  editCustomDraft((current) => ({ ...current, files_native }))
-                }
-              />
-            </Space>
-            <Space>
-              <Button
-                type="primary"
-                data-testid="ai-custom-save"
-                disabled={actionBusy}
-                onClick={() => void handleCustomSave()}
-              >
-                {editingCustomId === null ? t("model.customCreate") : t("model.customUpdate")}
-              </Button>
-              {editingCustomId !== null && (
-                <Button disabled={actionBusy} onClick={resetCustomEditor}>
-                  {t("model.customCancel")}
-                </Button>
-              )}
-            </Space>
-          </Space>
-        </Card>
 
         <ProForm.Item label={t("model.baseUrl")}>
           <Input
@@ -776,6 +690,144 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           </Button>
           <Typography.Text type="secondary">{t("model.refreshHint")}</Typography.Text>
         </Space>
+        </div>
+
+        <Collapse
+          ghost
+          size="small"
+          className="ai-secondary-settings"
+          collapsible={actionBusy ? "disabled" : "header"}
+          defaultActiveKey={[]}
+          items={[
+            {
+              key: "custom-providers",
+              label: t("model.customProviders"),
+              children: (
+                <div className="ai-custom-providers" data-testid="ai-custom-providers">
+                  <Typography.Text type="secondary">{t("model.customProvidersHint")}</Typography.Text>
+                  <Space direction="vertical" size="small" className="ai-custom-provider-list">
+                    {customProviders.map((provider) => (
+                      <Space key={provider.id} wrap className="ai-custom-provider-row">
+                        <Typography.Text strong>{provider.name}</Typography.Text>
+                        <Typography.Text type="secondary">{provider.protocol}</Typography.Text>
+                        {provider.referenced && (
+                          <Typography.Text type="secondary">{t("model.customReferenced")}</Typography.Text>
+                        )}
+                        <Button size="small" onClick={() => startCustomEdit(provider)} disabled={actionBusy}>
+                          {t("model.customEdit")}
+                        </Button>
+                        <Button
+                          size="small"
+                          onClick={() => void handleCustomTest(provider)}
+                          disabled={actionBusy}
+                        >
+                          {t("model.customTest")}
+                        </Button>
+                        <Popconfirm
+                          title={t("model.customDeleteConfirm")}
+                          description={provider.referenced ? t("model.customDeleteReferenced") : undefined}
+                          okText={t("model.customDelete")}
+                          cancelText={t("model.customCancel")}
+                          onConfirm={() => void handleCustomDelete(provider)}
+                        >
+                          <Button size="small" danger disabled={actionBusy}>
+                            {t("model.customDelete")}
+                          </Button>
+                        </Popconfirm>
+                      </Space>
+                    ))}
+                  </Space>
+                  <Space direction="vertical" size="small" className="ai-custom-provider-editor">
+                    <Input
+                      data-testid="ai-custom-name"
+                      disabled={actionBusy}
+                      placeholder={t("model.customName")}
+                      value={customDraft.name}
+                      onChange={(event) =>
+                        editCustomDraft((current) => ({ ...current, name: event.target.value }))
+                      }
+                    />
+                    <Select<AiProviderProtocol>
+                      data-testid="ai-custom-protocol"
+                      disabled={actionBusy}
+                      value={customDraft.protocol}
+                      options={[
+                        { label: "OpenAI-compatible", value: "openai_compatible" },
+                        { label: "Anthropic Messages", value: "anthropic" },
+                        { label: "Google Gemini", value: "gemini" },
+                      ]}
+                      onChange={(protocol) => editCustomDraft((current) => ({ ...current, protocol }))}
+                    />
+                    <Input
+                      data-testid="ai-custom-base-url"
+                      disabled={actionBusy}
+                      placeholder={t("model.baseUrl")}
+                      value={customDraft.base_url}
+                      onChange={(event) =>
+                        editCustomDraft((current) => ({ ...current, base_url: event.target.value }))
+                      }
+                    />
+                    <Select<number>
+                      data-testid="ai-custom-credential"
+                      disabled={actionBusy}
+                      allowClear
+                      placeholder={t("model.credentialPlaceholder")}
+                      value={customDraft.credential_id ?? undefined}
+                      options={credentials.map((credential) => ({
+                        label: credential.name,
+                        value: credential.id,
+                      }))}
+                      onChange={(credentialId) =>
+                        editCustomDraft((current) => ({ ...current, credential_id: credentialId ?? null }))
+                      }
+                    />
+                    <Space wrap>
+                      <Typography.Text>{t("model.customImages")}</Typography.Text>
+                      <Switch
+                        checked={customDraft.images_native}
+                        disabled={actionBusy}
+                        onChange={(images_native) =>
+                          editCustomDraft((current) => ({ ...current, images_native }))
+                        }
+                      />
+                      <Typography.Text>{t("model.customTools")}</Typography.Text>
+                      <Switch
+                        checked={customDraft.tools_supported}
+                        disabled={actionBusy}
+                        onChange={(tools_supported) =>
+                          editCustomDraft((current) => ({ ...current, tools_supported }))
+                        }
+                      />
+                      <Typography.Text>{t("model.customFiles")}</Typography.Text>
+                      <Switch
+                        checked={customDraft.files_native}
+                        disabled={actionBusy}
+                        onChange={(files_native) =>
+                          editCustomDraft((current) => ({ ...current, files_native }))
+                        }
+                      />
+                    </Space>
+                    <Space>
+                      <Button
+                        type="primary"
+                        data-testid="ai-custom-save"
+                        disabled={actionBusy}
+                        onClick={() => void handleCustomSave()}
+                      >
+                        {editingCustomId === null ? t("model.customCreate") : t("model.customUpdate")}
+                      </Button>
+                      {editingCustomId !== null && (
+                        <Button disabled={actionBusy} onClick={resetCustomEditor}>
+                          {t("model.customCancel")}
+                        </Button>
+                      )}
+                    </Space>
+                  </Space>
+                </div>
+              ),
+            },
+          ]}
+        />
 
         <Collapse
           ghost
