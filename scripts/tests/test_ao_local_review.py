@@ -385,6 +385,11 @@ class RoboRevDatabaseTests(unittest.TestCase):
             self.assertEqual(
                 result["output_sha256"], sidecar.sha256_bytes(b"review output")
             )
+            found = sidecar.find_roborev_job(
+                database, "abc", pathlib.Path("/tmp/reviewer")
+            )
+            self.assertIsNotNone(found)
+            self.assertEqual(found["verdict_bool"], 1)
 
     def test_event_wait_recovers_completed_job_from_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -505,7 +510,7 @@ class DeliveryRecoveryTests(unittest.TestCase):
                 round_dir / "delivery.json",
                 {
                     "status": "pending",
-                    "attempts": 3,
+                    "attempts": sidecar.MAX_DELIVERY_ATTEMPTS,
                     "payload_sha256": sidecar.sha256_bytes(
                         sidecar.delivery_message(gate).encode()
                     ),

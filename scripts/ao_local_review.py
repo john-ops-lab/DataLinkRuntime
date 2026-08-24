@@ -38,6 +38,7 @@ ROBOREV_VERSION = "0.66.0"
 REVIEWER = "claude-code"
 DEFAULT_MODEL = "k3"
 DEFAULT_TIMEOUT_SECONDS = 1800
+MAX_DELIVERY_ATTEMPTS = 3
 MACHINE_FIELDS = {"approved", "changes_requested", "unknown"}
 BLOCKING_SEVERITIES = {"critical", "important"}
 
@@ -734,10 +735,12 @@ def find_roborev_job(
             )
         rows = connection.execute(
             """
-            SELECT id, uuid, git_ref, status, agent, worktree_path
-            FROM review_jobs
-            WHERE id >= ? AND git_ref = ? AND agent = ? AND worktree_path = ?
-            ORDER BY id DESC
+            SELECT j.id, j.uuid, j.git_ref, j.status, j.agent, j.worktree_path,
+                   r.verdict_bool
+            FROM review_jobs j
+            LEFT JOIN reviews r ON r.job_id = j.id
+            WHERE j.id >= ? AND j.git_ref = ? AND j.agent = ? AND j.worktree_path = ?
+            ORDER BY j.id DESC
             """,
             (minimum_id, candidate_sha, REVIEWER, str(worktree)),
         ).fetchall()
@@ -1277,6 +1280,9 @@ def command_run(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
                             "job_uuid": existing_job["uuid"],
                             "sha": existing_job["git_ref"],
                             "agent": existing_job["agent"],
+                            "verdict": "P"
+                            if existing_job["verdict_bool"] == 1
+                            else "F",
                             "worktree_path": existing_job["worktree_path"],
                             "recovered_from_database": True,
                         }
@@ -1420,7 +1426,7 @@ def command_reconcile(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
             previous = load_json(delivery_path)
             if (
                 previous.get("status") == "pending"
-                and int(previous.get("attempts", 0)) >= 3
+                and int(previous.get("attempts", 0)) >= MAX_DELIVERY_ATTEMPTS
             ):
                 raise SidecarError(
                     "DELIVERY_RETRY_EXHAUSTED",
@@ -1430,7 +1436,7 @@ def command_reconcile(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
         delivery = deliver(round_dir, gate, args.ao_session, args.ao_bin)
         if (
             delivery.get("status") == "pending"
-            and int(delivery.get("attempts", 0)) >= 3
+            and int(delivery.get("attempts", 0)) >= MAX_DELIVERY_ATTEMPTS
         ):
             raise SidecarError(
                 "DELIVERY_RETRY_EXHAUSTED",
