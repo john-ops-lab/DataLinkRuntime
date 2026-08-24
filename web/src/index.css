@@ -1862,7 +1862,7 @@ body {
   gap: 0 4px;
   min-width: 0;
   color: var(--dlr-text-weak);
-  font-size: 0.54rem;
+  font-size: 0.68rem;
   line-height: 1.45;
 }
 
@@ -3539,10 +3539,6 @@ body {
     width: 360px;
   }
 
-  .ai-composer-guidance {
-    font-size: 0.44rem;
-  }
-
   .test-run-panel {
     flex-direction: column;
   }
@@ -3579,6 +3575,20 @@ body {
     z-index: 35;
     border-left: 1px solid var(--dlr-border);
     box-shadow: -12px 0 32px rgba(16, 24, 40, 0.16);
+  }
+
+  .ai-composer-guidance {
+    flex-wrap: wrap;
+    gap: 2px 4px;
+    font-size: 0.68rem;
+  }
+
+  .ai-attachment-hint,
+  .ai-attachment-privacy {
+    flex: 1 1 100%;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
 

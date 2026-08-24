@@ -8,7 +8,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 type Locale = "zh-CN" | "en";
 
 const LOCALES: readonly Locale[] = ["zh-CN", "en"];
-const VIEWPORTS = [1280, 1440, 1680, 1920] as const;
+const VIEWPORTS = [1100, 1180, 1280, 1440, 1680, 1920] as const;
 const specDir = dirname(fileURLToPath(import.meta.url));
 const evidenceRoot = resolve(
   specDir,
@@ -82,7 +82,9 @@ interface GuidanceMetrics {
   scroll_width: number;
   client_width: number;
   hint_scroll_width: number;
+  hint_client_width: number;
   privacy_scroll_width: number;
+  privacy_client_width: number;
   text: string;
   hint_text: string;
   privacy_text: string;
@@ -256,7 +258,9 @@ async function readGuidance(page: Page): Promise<GuidanceMetrics> {
       scroll_width: guidance.scrollWidth,
       client_width: guidance.clientWidth,
       hint_scroll_width: hint?.scrollWidth ?? 0,
+      hint_client_width: hint?.clientWidth ?? 0,
       privacy_scroll_width: privacy?.scrollWidth ?? 0,
+      privacy_client_width: privacy?.clientWidth ?? 0,
       text: guidance.textContent ?? "",
       hint_text: hint?.textContent ?? "",
       privacy_text: privacy?.textContent ?? "",
@@ -316,19 +320,33 @@ async function runCase(page: Page, locale: Locale, width: number) {
   await expect(page.getByTestId("ai-composer-guidance")).toBeVisible();
 
   const guidance = await readGuidance(page);
-  expect(guidance.line_count).toBe(1);
-  expect(guidance.flex_wrap).toBe("nowrap");
-  expect(guidance.hint_white_space).toBe("nowrap");
-  expect(guidance.privacy_white_space).toBe("nowrap");
+  if (width <= 1180) {
+    expect(guidance.line_count).toBeGreaterThan(1);
+    expect(guidance.flex_wrap).toBe("wrap");
+    expect(guidance.hint_white_space).toBe("normal");
+    expect(guidance.privacy_white_space).toBe("normal");
+  } else {
+    expect(guidance.line_count).toBe(1);
+    expect(guidance.flex_wrap).toBe("nowrap");
+    expect(guidance.hint_white_space).toBe("nowrap");
+    expect(guidance.privacy_white_space).toBe("nowrap");
+  }
+  expect(guidance.hint_client_width).toBeGreaterThan(0);
+  expect(guidance.privacy_client_width).toBeGreaterThan(0);
   expect(guidance.hint_scroll_width).toBeLessThanOrEqual(guidance.client_width);
+  expect(guidance.hint_scroll_width).toBeLessThanOrEqual(guidance.hint_client_width);
   expect(guidance.privacy_scroll_width).toBeLessThanOrEqual(guidance.client_width);
+  expect(guidance.privacy_scroll_width).toBeLessThanOrEqual(guidance.privacy_client_width);
   expect(guidance.scroll_width).toBeLessThanOrEqual(guidance.client_width);
   await expect(page.getByTestId("ai-composer-guidance").locator("br")).toHaveCount(0);
   await expect(page.getByTestId("ai-composer-guidance").locator(":scope > div, :scope > p")).toHaveCount(0);
-  expect(guidance.text).toContain(locale === "zh-CN" ? "最多 8 个" : "up to 8");
+  expect(guidance.text).toContain(locale === "zh-CN" ? "最多 8 个" : "max 8");
   expect(guidance.text).toContain(locale === "zh-CN" ? "敏感凭据" : "sensitive credentials");
   expect(guidance.hint_text).toContain("6 MiB");
   expect(guidance.hint_text).toContain("12 MiB");
+  expect(guidance.privacy_text).toContain(
+    locale === "zh-CN" ? "请勿上传密码/密钥/敏感凭据。" : "No passwords/keys or sensitive credentials.",
+  );
   expect(guidance.hint_aria_label).toContain(
     locale === "zh-CN" ? "支持图片 / PDF / DOCX / 文本与代码文件" : "Images / PDF / DOCX / text and code files",
   );

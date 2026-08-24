@@ -18,9 +18,6 @@
  * keep the Wave A/B1 contracts unchanged.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
@@ -291,7 +288,7 @@ describe("Issue #117 Batch 6: one-line attachment guidance", () => {
       const privacy = screen.getByTestId("ai-attachment-privacy");
       const expectedHint = locale === "zh-CN"
         ? ["最多 8 个", "6 MiB", "12 MiB"]
-        : ["Attachments", "6 MiB", "12 MiB"];
+        : ["max 8", "6 MiB", "12 MiB"];
       const expectedAccessibleHint = locale === "zh-CN"
         ? "支持图片 / PDF / DOCX / 文本与代码文件"
         : "Images / PDF / DOCX / text and code files";
@@ -318,10 +315,6 @@ describe("Issue #117 Batch 6: one-line attachment guidance", () => {
       );
       expect(guidance.querySelector("br")).toBeNull();
       expect(guidance.querySelectorAll(":scope > div, :scope > p")).toHaveLength(0);
-
-      const appStyles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
-      const guidanceRule = appStyles.match(/\.ai-composer-guidance\s*\{([^}]*)\}/s)?.[1] ?? "";
-      expect(guidanceRule).toMatch(/flex-wrap\s*:\s*nowrap/);
 
       // Valid picker upload still adds one row.
       fireEvent.change(screen.getByTestId("ai-attachment-input"), {
@@ -937,7 +930,7 @@ describe("i18n parity and width gates", () => {
       expect(screen.getByTestId("ai-attachment-add").textContent).toBe("Attach files");
     });
     expect(screen.getByTestId("ai-attachment-ready").textContent).toBe("Ready");
-    expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("up to 8");
+    expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("max 8");
     expect(screen.getByTestId("ai-attachment-privacy").textContent).toContain(
       "sensitive credentials",
     );

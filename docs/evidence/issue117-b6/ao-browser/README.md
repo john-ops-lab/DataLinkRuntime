@@ -33,13 +33,19 @@ the run. No raw request/response body is archived.
 ## Auxiliary Chromium matrix
 
 `../auxiliary-matrix/browser-report.json` is a separate Playwright/Chromium
-fixture record for `zh-CN`/`en` × `1280`/`1440`/`1680`/`1920`. It performs:
+fixture record for `zh-CN`/`en` × `1100`/`1180`/`1280`/`1440`/`1680`/`1920`. It performs:
 
 - picker upload, valid drag/drop, unsupported-type rejection, and remove;
-- one-line/`nowrap`/`scrollWidth <= clientWidth` assertions;
+- narrow readable wrap and desktop one-line/`nowrap`/`scrollWidth <= clientWidth` assertions;
 - complete accessible limit/privacy text assertions;
 - page horizontal/vertical overflow checks;
 - one fixture assist request, no unknown paths, and zero console/page errors.
 
-The eight screenshots under `../auxiliary-matrix/browser/` are auxiliary
+The twelve screenshots under `../auxiliary-matrix/browser/` are auxiliary
 Chromium evidence, not screenshots from the AO Browser panel.
+
+The final English compact copy keeps the administrator-configured model privacy
+meaning visible (`To admin-configured model · No passwords/keys or sensitive
+credentials.`); the full original privacy sentence remains in the accessible
+labels and titles. The narrow `1100/1180` cases allow wrapping rather than
+clipping that sentence.

@@ -1,6 +1,9 @@
 {
   "schema_version": 1,
   "dispatch_id": "issue117-b6-ai-20260825-r1",
+  "mode": "REPAIR",
+  "reviewed_candidate": "3d3bbe140ab23f8c6aca88749fee4b46a8abbbe6",
+  "review_run_id": "4b0f0cd4-02cf-4230-bf85-abe2c5b58b7b",
   "source": "session-owned AO Browser",
   "origin": "http://127.0.0.1:4173/",
   "fixture_provider": "fixture",
@@ -21,6 +24,7 @@
       "native_attachment_picker": "activated_then_cancelled_without_file",
       "prompt_submitted": true,
       "requests": [
+        {"method": "GET", "path": "/api/workers", "status": 200},
         {"method": "POST", "path": "/api/adapters/1/ai/assist", "status": 200},
         {"method": "GET", "path": "/api/adapters/1/credential-bindings", "status": 200}
       ],
@@ -32,13 +36,14 @@
       "ai_region_accessible_name": "AI assistant",
       "guidance_role": "note",
       "guidance_accessible_text": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
-      "visible_limit_text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB total",
+      "visible_limit_text": "max 8 · ≤6 MiB/file · ≤12 MiB total",
       "visible_privacy_text": "To admin-configured model · No passwords/keys or sensitive credentials.",
       "attachment_button_accessible_name": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX and text / code files",
       "message_input_accessible_name": "AI instruction",
       "native_attachment_picker": "activated_then_cancelled_without_file",
       "prompt_submitted": true,
       "requests": [
+        {"method": "GET", "path": "/api/workers", "status": 200},
         {"method": "POST", "path": "/api/adapters/1/ai/assist", "status": 200},
         {"method": "GET", "path": "/api/adapters/1/credential-bindings", "status": 200}
       ],
@@ -47,8 +52,11 @@
     }
   ],
   "console_levels_observed": ["debug", "info"],
+  "narrow_screen_behavior": "At 1100/1180 the guidance wraps with normal whitespace and remains fully visible; at 1280/1440/1680/1920 it remains one line with nowrap children.",
   "screenshot": {
     "ao_browser_panel_artifact": false,
-    "auxiliary_matrix_artifacts": "../auxiliary-matrix/browser/"
+    "auxiliary_matrix_artifacts": "../auxiliary-matrix/browser/",
+    "auxiliary_matrix_case_count": 12,
+    "auxiliary_matrix_viewports": [1100, 1180, 1280, 1440, 1680, 1920]
   }
 }
