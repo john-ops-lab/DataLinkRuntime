@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+from ao_local_review_claude_wrapper import main
+
+raise SystemExit(main())

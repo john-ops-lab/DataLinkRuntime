@@ -6,6 +6,20 @@ on:
   pull_request:
 
 jobs:
+  local-review-sidecar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile Sidecar modules
+        run: python -m py_compile scripts/ao_local_review.py scripts/ao_local_review_claude_wrapper.py
+      - name: Run Sidecar contract tests
+        run: python -m unittest discover -s scripts/tests -v
+      - name: Validate installer shell syntax
+        run: bash -n scripts/install-ao-local-review.sh
+
   backend:
     runs-on: ubuntu-latest
     defaults:
