@@ -306,11 +306,12 @@ async function selectOption(page: Page, testId: string, option: string): Promise
   await expect(page.getByTestId(testId)).toContainText(option);
 }
 
-async function closeSelectDropdowns(page: Page): Promise<void> {
+async function closeSelectDropdowns(page: Page) {
   const openDropdowns = page.locator(".ant-select-dropdown:not(.ant-select-dropdown-hidden)");
   await page.keyboard.press("Escape");
   await page.getByTestId("adapter-catalog-header").locator(".catalog-title").click();
   await expect(openDropdowns).toHaveCount(0);
+  return openDropdowns;
 }
 
 async function runCase(page: Page, locale: Locale, width: number): Promise<void> {
@@ -368,12 +369,13 @@ async function runCase(page: Page, locale: Locale, width: number): Promise<void>
   await page.keyboard.press("Enter");
   await expect.poll(() => adapterListCalls.value).toBeGreaterThan(1);
 
-  await closeSelectDropdowns(page);
-  const visibleSelectDropdowns = page.locator(".ant-select-dropdown:not(.ant-select-dropdown-hidden)");
+  const openDropdowns = await closeSelectDropdowns(page);
   const visibleItems = page.getByTestId("adapter-item");
-  await expect(visibleSelectDropdowns).toHaveCount(0);
   await expect(visibleItems).toHaveCount(1);
-  await expect(visibleItems.first()).toBeVisible();
+  const listVisible = await visibleItems.first().isVisible();
+  const selectDropdownCount = await openDropdowns.count();
+  expect(listVisible).toBe(true);
+  expect(selectDropdownCount).toBe(0);
 
   const geometry = await page.evaluate(() => {
     const header = document.querySelector<HTMLElement>("[data-testid=adapter-catalog-header]");
@@ -449,8 +451,8 @@ async function runCase(page: Page, locale: Locale, width: number): Promise<void>
       type_count: typeCount,
       running_count: runningCount,
       filtered_count: filteredCount,
-      list_visible: true,
-      select_dropdown_count: await visibleSelectDropdowns.count(),
+      list_visible: listVisible,
+      select_dropdown_count: selectDropdownCount,
       help_visible: true,
       help_closed: true,
       created: true,
@@ -498,6 +500,11 @@ test.afterAll(() => {
       fixture_provider: "scoped Playwright route fixture",
       real_provider_credentials: false,
       raw_provider_response_archived: false,
+      screenshot_capture: {
+        dropdowns_closed_before_capture: true,
+        list_visibility_sampled_before_capture: true,
+        record_reuses_pre_screenshot_samples: true,
+      },
       records,
     }, null, 2)}\n`,
     "utf8",

@@ -21,6 +21,11 @@
   "fixture_provider": "scoped Playwright route fixture",
   "real_provider_credentials": false,
   "raw_provider_response_archived": false,
+  "screenshot_capture": {
+    "dropdowns_closed_before_capture": true,
+    "list_visibility_sampled_before_capture": true,
+    "record_reuses_pre_screenshot_samples": true
+  },
   "records": [
     {
       "locale": "en",

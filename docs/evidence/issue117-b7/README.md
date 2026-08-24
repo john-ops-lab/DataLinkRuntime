@@ -37,8 +37,8 @@ Commands were run from `web/` unless noted:
 - Locales: `zh-CN`, `en`
 - Viewports: `1280`, `1440`, `1680`, `1920`
 - Browser: Chromium `151.0.7922.34`
-- Each record: overview count `0`; `list_visible=true`; `select_dropdown_count=0`; header-to-toolbar gap `0`; toolbar-to-list gap `0`; document/body `scrollWidth == innerWidth`; console/page errors empty; unknown requests empty; one existing `POST /api/adapters` create request; refresh caused repeated adapter-list GETs.
-- Before every screenshot the test presses `Escape`, clicks the Catalog title, and waits for every non-hidden AntD Select dropdown to be detached/hidden. It then asserts the filtered list is visible, before capturing the Catalog title, controls, filtered list and compact spacing.
+- Each record: overview count `0`; `list_visible=true`; `select_dropdown_count=0`; header-to-toolbar gap `0`; toolbar-to-list gap `0`; document/body `scrollWidth == innerWidth`; console/page errors empty; unknown requests empty; one existing `POST /api/adapters` create request; refresh caused repeated adapter-list GETs. The report also records that these two screenshot values are sampled before capture and reused in `records`.
+- Before every screenshot the test presses `Escape`, clicks the Catalog title, and waits for every non-hidden AntD Select dropdown to be detached/hidden. It immediately samples the filtered list `isVisible()` result and open-dropdown count into local record values, asserts those samples, and captures the Catalog title, controls, filtered list and compact spacing. The record reuses those pre-screenshot samples after the create flow.
 - Fixture data and route handlers are scoped to this spec. No provider response bodies or real credentials are archived.
 
 ## AO Browser session evidence
