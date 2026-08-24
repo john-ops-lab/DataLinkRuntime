@@ -6,9 +6,9 @@
 
 ## 2. Batch 2：Issue #117.9 Tencent ima 字段归一化（依赖 Batch 1 验收通过）
 
-- [ ] 2.1 为 `kb_id/kb_name`、旧 `id/name`、双字段同时存在及两套候选字段缺失的响应增加 fixture 和回归测试，并验证 malformed 响应稳定返回 `ks_response_invalid` 且不回显原始 payload。
-- [ ] 2.2 在 ima adapter 边界实现 `kb_id` 优先 fallback `id`、`kb_name` 优先 fallback `name` 的规范化，保持真实 ID 进入 search 链路；验证 `uv run --frozen --project backend pytest backend/tests/test_ai_knowledge.py -q` 及变更文件的 Ruff/类型检查通过。
-- [ ] 2.3 完成 Batch 2 验收门：用 fake/fixture provider 验证新旧列表均可用、鉴权失败映射不变、Secret/原始响应不进入日志；通过系统设置知识库“测试连接”浏览器路径刷新列表，记录页面、console、request 和无溢出证据后才允许 Batch 3 开始。
+- [x] 2.1 为 `kb_id/kb_name`、旧 `id/name`、双字段同时存在及两套候选字段缺失的响应增加 fixture 和回归测试，并验证 malformed 响应稳定返回 `ks_response_invalid` 且不回显原始 payload。
+- [x] 2.2 在 ima adapter 边界实现 `kb_id` 优先 fallback `id`、`kb_name` 优先 fallback `name` 的规范化，保持真实 ID 进入 search 链路；验证 `uv run --frozen --project backend pytest backend/tests/test_ai_knowledge.py -q` 及变更文件的 Ruff/类型检查通过。
+- [x] 2.3 完成 Batch 2 验收门：用 fake/fixture provider 验证新旧列表均可用、鉴权失败映射不变、Secret/原始响应不进入日志；通过系统设置知识库“测试连接”浏览器路径刷新列表，记录页面、console、request 和无溢出证据后才允许 Batch 3 开始。
 
 ## 3. Batch 3：Issue #117.5 实时日志冻结与恢复（依赖 Batch 2 验收通过）
 

@@ -1,0 +1,163 @@
+{
+  "requestId": "9d1836fc-47ab-4e1a-b0de-08130f952a9e",
+  "sessionId": "datalinkruntime-85",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "d138d445f397e12ef48d0da45e50c87e",
+      "origin": "http://127.0.0.1:4173/settings/knowledge-sources"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "generic"
+      },
+      "e10": {
+        "name": "退出登录",
+        "role": "menuitem"
+      },
+      "e11": {
+        "name": "设置分类",
+        "role": "navigation"
+      },
+      "e12": {
+        "name": "知识库",
+        "role": "region"
+      },
+      "e13": {
+        "name": "",
+        "role": "menu"
+      },
+      "e14": {
+        "name": "可访问知识库",
+        "role": "heading"
+      },
+      "e15": {
+        "name": "常规",
+        "role": "menuitem"
+      },
+      "e16": {
+        "name": "凭据",
+        "role": "menuitem"
+      },
+      "e17": {
+        "name": "依赖源",
+        "role": "menuitem"
+      },
+      "e18": {
+        "name": "AI 模型",
+        "role": "menuitem"
+      },
+      "e19": {
+        "name": "知识库",
+        "role": "menuitem"
+      },
+      "e2": {
+        "name": "系统设置",
+        "role": "region"
+      },
+      "e20": {
+        "name": "知识库",
+        "role": "heading"
+      },
+      "e21": {
+        "name": "loading 测试连接",
+        "role": "button"
+      },
+      "e22": {
+        "name": "保存配置",
+        "role": "button"
+      },
+      "e23": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e24": {
+        "name": "访问凭据（access_key）",
+        "role": "generic"
+      },
+      "e25": {
+        "name": "启用知识库  ",
+        "role": "checkbox"
+      },
+      "e26": {
+        "name": "",
+        "role": "generic"
+      },
+      "e27": {
+        "name": "上一页",
+        "role": "listitem"
+      },
+      "e28": {
+        "name": "1",
+        "role": "listitem"
+      },
+      "e29": {
+        "name": "下一页",
+        "role": "listitem"
+      },
+      "e3": {
+        "name": "",
+        "role": "menu"
+      },
+      "e30": {
+        "name": "访问凭据（access_key）",
+        "role": "combobox"
+      },
+      "e31": {
+        "name": "",
+        "role": "row"
+      },
+      "e32": {
+        "name": "left",
+        "role": "button"
+      },
+      "e33": {
+        "name": "right",
+        "role": "button"
+      },
+      "e34": {
+        "name": "浏览器 Fixture 知识库",
+        "role": "cell"
+      },
+      "e35": {
+        "name": "可访问",
+        "role": "cell"
+      },
+      "e36": {
+        "name": "名称",
+        "role": "columnheader"
+      },
+      "e37": {
+        "name": "状态",
+        "role": "columnheader"
+      },
+      "e4": {
+        "name": "运行节点 · 0/0 在线",
+        "role": "button"
+      },
+      "e5": {
+        "name": "账号菜单",
+        "role": "button"
+      },
+      "e6": {
+        "name": "返回适配器",
+        "role": "button"
+      },
+      "e7": {
+        "name": "系统设置",
+        "role": "heading"
+      },
+      "e8": {
+        "name": "用户管理",
+        "role": "menuitem"
+      },
+      "e9": {
+        "name": "系统设置",
+        "role": "menuitem"
+      }
+    },
+    "text": "- generic\n  - generic\n    - banner\n      - StaticText \"DataLinkRuntime\"\n      - StaticText \"控制服务正常\"\n      - button \"运行节点 · 0/0 在线\" [ref=e4]\n        - StaticText \"运行节点 · 0/0 在线\"\n      - button \"账号菜单\" [ref=e5]\n        - StaticText \"管理员 Token\"\n    - region \"系统设置\" [ref=e2]\n      - button \"返回适配器\" [ref=e6]\n        - StaticText \"返回适配器\"\n      - heading \"系统设置\" [level=2, ref=e7]\n      - generic\n        - navigation \"设置分类\" [ref=e11]\n          - menu [ref=e13] focusable [tabindex]\n            - menuitem \"常规\" [ref=e15]\n              - StaticText \"常规\"\n            - menuitem \"凭据\" [ref=e16]\n              - StaticText \"凭据\"\n            - menuitem \"依赖源\" [ref=e17]\n              - StaticText \"依赖源\"\n            - menuitem \"AI 模型\" [ref=e18]\n              - StaticText \"AI 模型\"\n            - menuitem \"知识库\" [ref=e19]\n              - StaticText \"知识库\"\n        - region \"知识库\" [ref=e12]\n          - sectionheader\n            - heading \"知识库\" [level=3, ref=e20]\n            - StaticText \"配置只读知识源并验证可访问知识库。\"\n          - strong\n            - StaticText \"Tencent ima\"\n          - StaticText \"连接正常\"\n          - StaticText \"服务 URL\"\n          - StaticText \": \"\n          - code\n            - StaticText \"http://localhost:9000\"\n          - StaticText \"默认使用腾讯 ima 官方地址；自定义地址仅可通过 DLR_IMA_ENDPOINT 设置。\"\n          - generic\n            - LabelText\n              - StaticText \"启用知识库\"\n            - LabelText [ref=e23] clickable [cursor:pointer, onclick]\n              - checkbox \"启用知识库 \" [checked=true, ref=e25]\n              - StaticText \"启用知识库\"\n            - LabelText\n              - StaticText \"访问凭据（access_key）\"\n            - generic \"访问凭据（access_key）\" [ref=e24] clickable [cursor:pointer]\n              - generic [ref=e26] clickable [cursor:pointer, onclick]\n                - combobox \"访问凭据（access_key）\" [expanded=false, ref=e30]\n                - StaticText \"browser-ima-credential\"\n          - toolbar \"知识库操作\"\n            - button \"loading 测试连接\" [ref=e21]\n              - image \"loading\"\n              - StaticText \"测试连接\"\n            - button \"保存配置\" [ref=e22]\n              - StaticText \"保存配置\"\n          - StaticText \"这里只保存凭据引用；Client ID、API Key 等 Secret 不会展示或回显。\"\n          - status\n            - StaticText \"连接成功，知识库列表已刷新\"\n          - heading \"可访问知识库\" [level=5, ref=e14]\n          - generic\n            - table\n              - rowgroup\n                - row\n                  - columnheader \"名称\" [ref=e36]\n                  - columnheader \"状态\" [ref=e37]\n              - row [ref=e31] clickable [onclick]\n                - cell \"浏览器 Fixture 知识库\" [ref=e34]\n                - cell \"可访问\" [ref=e35]\n            - list\n              - listitem [level=1]\n              - listitem \"上一页\" [level=1, disabled, ref=e27] clickable [onclick]\n                - button \"left\" [disabled, ref=e32]\n              - listitem \"1\" [level=1, ref=e28] clickable [cursor:pointer, onclick, tabindex]\n              - listitem \"下一页\" [level=1, disabled, ref=e29] clickable [onclick]\n                - button \"right\" [disabled, ref=e33]\n  - generic [ref=e1] clickable [onclick]\n    - menu [ref=e3] focusable [tabindex]\n      - menuitem \"用户管理\" [ref=e8]\n      - menuitem \"系统设置\" [ref=e9]\n      - menuitem \"退出登录\" [ref=e10]",
+    "untrustedExternalContent": true
+  }
+}

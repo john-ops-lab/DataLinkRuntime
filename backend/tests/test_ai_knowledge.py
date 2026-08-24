@@ -84,6 +84,31 @@ BASES = [
     },
 ]
 
+REAL_FIELD_BASES = [
+    {
+        "kb_id": "ima-real-kb-id",
+        "kb_name": "ima真实知识库",
+        "description": "Tencent ima response fixture",
+        "content_count": 3,
+        "member_count": 1,
+        "creator": "fixture",
+        "role_type": 1,
+        "base_type": 0,
+        "cover_url": "",
+    }
+]
+
+BOTH_FIELD_BASES = [
+    {
+        "kb_id": "preferred-kb-id",
+        "kb_name": "Preferred knowledge base",
+        "id": "legacy-kb-id",
+        "name": "Legacy knowledge base",
+        "cover_url": "",
+        "description": "Both field contracts fixture",
+    }
+]
+
 ITEMS: dict[str, dict[str, str]] = {
     "kb-item-1": {
         "media_id": "kb-item-1",
@@ -145,6 +170,7 @@ class FakeImaHandler(BaseHTTPRequestHandler):
     items: dict[str, dict[str, str]] = ITEMS
     media_url_override: str | None = None
     requested: list[str] = []
+    requested_search_knowledge_base_ids: list[str] = []
 
     server_version = "FakeImaService/1.0"
 
@@ -219,13 +245,14 @@ class FakeImaHandler(BaseHTTPRequestHandler):
             body = self._body()
             limit = min(max(int(body.get("limit", 20)), 1), 20)
             query = str(body.get("query", "")).casefold()
-            matches = [b for b in self.bases if query == "" or query in b["name"].casefold()]
+            matches = [
+                b
+                for b in self.bases
+                if query == "" or query in str(b.get("kb_name") or b.get("name") or "").casefold()
+            ]
             self._ok(
                 {
-                    "info_list": [
-                        {"id": b["id"], "name": b["name"], "cover_url": b["cover_url"]}
-                        for b in matches[:limit]
-                    ],
+                    "info_list": [dict(b) for b in matches[:limit]],
                     "is_end": True,
                     "next_cursor": "",
                 },
@@ -235,14 +262,20 @@ class FakeImaHandler(BaseHTTPRequestHandler):
         if self.path == "/openapi/wiki/v1/get_knowledge_base":
             body = self._body()
             ids = body.get("ids") or []
-            infos = {b["id"]: b for b in self.bases if b["id"] in ids}
+            infos = {
+                str(b.get("kb_id") or b.get("id")): b
+                for b in self.bases
+                if str(b.get("kb_id") or b.get("id")) in ids
+            }
             self._ok({"infos": infos}, "get_knowledge_base")
             return
         if self.path == "/openapi/wiki/v1/search_knowledge":
             body = self._body()
             query = str(body.get("query", "")).casefold()
             kb_id = str(body.get("knowledge_base_id", ""))
-            if kb_id != "dlr-interface-lib":
+            self.requested_search_knowledge_base_ids.append(kb_id)
+            valid_ids = {str(b.get("kb_id") or b.get("id")) for b in self.bases}
+            if kb_id not in valid_ids:
                 self._biz_error(110001)
                 return
             hits = [
@@ -344,6 +377,7 @@ def ima_server() -> Iterator[ThreadingHTTPServer]:
     FakeImaHandler.items = ITEMS
     FakeImaHandler.media_url_override = None
     FakeImaHandler.requested = []
+    FakeImaHandler.requested_search_knowledge_base_ids = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeImaHandler)
     server.base_url = f"http://localhost:{server.server_port}"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -563,6 +597,74 @@ def test_ima_list_search_read_success(ima_session: Session) -> None:
     )
     assert read_url.status == "success", read_url.error_code
     assert "runtime contract" in read_url.model_content
+
+
+def test_ima_real_kb_fields_normalize_and_preserve_search_id(ima_session: Session) -> None:
+    FakeImaHandler.bases = REAL_FIELD_BASES
+
+    listing = execute("list_knowledge_bases", {"source": "ima"}, session=ima_session)
+    assert listing.status == "success", listing.error_code
+    listed = json.loads(listing.model_content)
+    assert listed["items"] == [
+        {
+            "id": "ima-real-kb-id",
+            "name": "ima真实知识库",
+            "description": "Tencent ima response fixture",
+            "item_count": 0,
+            "source": "ima:v1:ima-real-kb-id",
+        }
+    ]
+
+    search = execute(
+        "search_knowledge",
+        {
+            "source": "ima",
+            "knowledge_base_id": "ima-real-kb-id",
+            "query": "contract",
+            "limit": 1,
+        },
+        session=ima_session,
+    )
+    assert search.status == "success", search.error_code
+    assert FakeImaHandler.requested_search_knowledge_base_ids == ["ima-real-kb-id"]
+
+
+def test_ima_new_kb_fields_take_priority_when_legacy_fields_are_present(
+    ima_session: Session,
+) -> None:
+    FakeImaHandler.bases = BOTH_FIELD_BASES
+
+    listing = execute("list_knowledge_bases", {"source": "ima"}, session=ima_session)
+    assert listing.status == "success", listing.error_code
+    listed = json.loads(listing.model_content)
+    assert listed["items"][0]["id"] == "preferred-kb-id"
+    assert listed["items"][0]["name"] == "Preferred knowledge base"
+    assert listed["items"][0]["source"] == "ima:v1:preferred-kb-id"
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        {"kb_name": "Missing ID", "raw_marker": "ima-malformed-id-payload"},
+        {"kb_id": "missing-name-id", "raw_marker": "ima-malformed-name-payload"},
+    ],
+)
+def test_ima_missing_kb_candidates_is_stable_and_does_not_echo_payload(
+    ima_session: Session,
+    base: dict[str, str],
+) -> None:
+    marker = base["raw_marker"]
+    FakeImaHandler.raw_body = json.dumps(
+        {"code": 0, "msg": "success", "data": {"info_list": [base]}},
+        ensure_ascii=False,
+    ).encode()
+
+    execution = execute("list_knowledge_bases", {"source": "ima"}, session=ima_session)
+    assert execution.status == "error"
+    assert execution.error_code == knowledge.KS_RESPONSE_INVALID
+    assert marker not in execution.args_summary
+    assert marker not in execution.result_summary
+    assert marker not in execution.model_content
 
 
 def test_ima_empty_search_and_limit(ima_session: Session) -> None:

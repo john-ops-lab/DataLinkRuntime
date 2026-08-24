@@ -1,0 +1,122 @@
+{
+  "browser": "Playwright Chromium headless supplemental measurement",
+  "url": "http://127.0.0.1:4173/settings/knowledge-sources",
+  "viewports": [
+    {
+      "dimensions": {
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1280,
+          "clientWidth": 1280,
+          "scrollHeight": 900,
+          "clientHeight": 900
+        },
+        "body": {
+          "scrollWidth": 1280,
+          "clientWidth": 1280,
+          "scrollHeight": 900,
+          "clientHeight": 900
+        },
+        "panel": {
+          "left": 390.5,
+          "right": 1110.5,
+          "width": 720
+        },
+        "horizontalOverflow": false,
+        "verticalOverflow": false
+      },
+      "visibleKnowledgeBase": true,
+      "pageErrors": []
+    },
+    {
+      "dimensions": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "scrollHeight": 900,
+          "clientHeight": 900
+        },
+        "body": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "scrollHeight": 900,
+          "clientHeight": 900
+        },
+        "panel": {
+          "left": 470.5,
+          "right": 1190.5,
+          "width": 720
+        },
+        "horizontalOverflow": false,
+        "verticalOverflow": false
+      },
+      "visibleKnowledgeBase": true,
+      "pageErrors": []
+    },
+    {
+      "dimensions": {
+        "viewport": {
+          "width": 1680,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1680,
+          "clientWidth": 1680,
+          "scrollHeight": 900,
+          "clientHeight": 900
+        },
+        "body": {
+          "scrollWidth": 1680,
+          "clientWidth": 1680,
+          "scrollHeight": 900,
+          "clientHeight": 900
+        },
+        "panel": {
+          "left": 590.5,
+          "right": 1310.5,
+          "width": 720
+        },
+        "horizontalOverflow": false,
+        "verticalOverflow": false
+      },
+      "visibleKnowledgeBase": true,
+      "pageErrors": []
+    },
+    {
+      "dimensions": {
+        "viewport": {
+          "width": 1920,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1920,
+          "clientWidth": 1920,
+          "scrollHeight": 900,
+          "clientHeight": 900
+        },
+        "body": {
+          "scrollWidth": 1920,
+          "clientWidth": 1920,
+          "scrollHeight": 900,
+          "clientHeight": 900
+        },
+        "panel": {
+          "left": 710.5,
+          "right": 1430.5,
+          "width": 720
+        },
+        "horizontalOverflow": false,
+        "verticalOverflow": false
+      },
+      "visibleKnowledgeBase": true,
+      "pageErrors": []
+    }
+  ]
+}

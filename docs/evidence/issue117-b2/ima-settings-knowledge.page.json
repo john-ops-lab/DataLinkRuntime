@@ -1,0 +1,28 @@
+{
+  "requestId": "11af1ab3-69c9-4233-8839-c8d344908f32",
+  "sessionId": "datalinkruntime-85",
+  "action": "get",
+  "result": {
+    "_boundary": {
+      "nonce": "2c23371ea8a6c1495032a5f42ed8b00d",
+      "origin": "http://127.0.0.1:4173/settings/knowledge-sources"
+    },
+    "lifecycle": {
+      "effectiveLaunch": {
+        "browserLaunched": true,
+        "engine": "chrome",
+        "launchHash": 12324417797938643000
+      },
+      "launched": false,
+      "relaunchedBrowser": false,
+      "restartedBackground": false,
+      "restoreStatus": "not_configured",
+      "reused": true,
+      "saveStatus": "not_attempted"
+    },
+    "origin": "http://127.0.0.1:4173/settings/knowledge-sources",
+    "text": "DLR\nDataLinkRuntime\n控制服务正常\n运行节点 · 0/0 在线\n管理员 Token\n返回适配器\n系统设置\n常规\n凭据\n依赖源\nAI 模型\n知识库\n知识库\n配置只读知识源并验证可访问知识库。\nTencent ima\n连接正常\n服务 URL: http://localhost:9000\n默认使用腾讯 ima 官方地址；自定义地址仅可通过 DLR_IMA_ENDPOINT 设置。\n启用知识库\n启用知识库\n访问凭据（access_key）\nbrowser-ima-credential\n测试连接\n保存配置\n这里只保存凭据引用；Client ID、API Key 等 Secret 不会展示或回显。\n\n连接成功，知识库列表已刷新\n\n可访问知识库\n名称\t状态\n浏览器 Fixture 知识库\t可访问\n第 1-1 条/总共 1 条\n1\n用户管理\n系统设置\n退出登录",
+    "untrustedExternalContent": true,
+    "value": "DLR\nDataLinkRuntime\n控制服务正常\n运行节点 · 0/0 在线\n管理员 Token\n返回适配器\n系统设置\n常规\n凭据\n依赖源\nAI 模型\n知识库\n知识库\n配置只读知识源并验证可访问知识库。\nTencent ima\n连接正常\n服务 URL: http://localhost:9000\n默认使用腾讯 ima 官方地址；自定义地址仅可通过 DLR_IMA_ENDPOINT 设置。\n启用知识库\n启用知识库\n访问凭据（access_key）\nbrowser-ima-credential\n测试连接\n保存配置\n这里只保存凭据引用；Client ID、API Key 等 Secret 不会展示或回显。\n\n连接成功，知识库列表已刷新\n\n可访问知识库\n名称\t状态\n浏览器 Fixture 知识库\t可访问\n第 1-1 条/总共 1 条\n1\n用户管理\n系统设置\n退出登录"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "requestId": "c8434d7e-1cf9-4b7f-b992-a363b7565a25",
+  "sessionId": "datalinkruntime-85",
+  "action": "network-list",
+  "result": {
+    "active": false,
+    "expiresAt": "2026-08-24T11:04:22.816Z",
+    "maxEntries": 200,
+    "metadataOnly": true,
+    "requestCount": 1,
+    "requests": [
+      {
+        "durationMs": 15,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n1",
+        "method": "POST",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4173/settings/knowledge-sources"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "access-control-allow-origin": "http://127.0.0.1:4173",
+          "content-length": "202",
+          "content-type": "application/json",
+          "vary": "Origin"
+        },
+        "startedAt": "2026-08-24T11:03:29.105Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4173/api/knowledge-sources/ima/test"
+      }
+    ],
+    "startedAt": "2026-08-24T11:03:22.816Z",
+    "stopReason": "stopped",
+    "stoppedAt": "2026-08-24T11:03:36.260Z",
+    "tabId": "t1",
+    "untrustedExternalContent": true
+  }
+}

@@ -19,7 +19,7 @@ interface is implemented or registered:
 - ``list_knowledge_bases``:
     POST /openapi/wiki/v1/search_knowledge_base
       body {"query": "", "cursor": "", "limit": N}
-      -> data.info_list: [{id, name, cover_url}]
+      -> data.info_list: [{kb_id, kb_name, cover_url}] (legacy id/name accepted)
     optional enrichment: POST /openapi/wiki/v1/get_knowledge_base
       body {"ids": [...]} -> data.infos: {id: {description, ...}}
 - ``search_knowledge``:
@@ -377,6 +377,25 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             raise KnowledgeSourceError(KS_TOO_LARGE, "knowledge source response too large")
         return value
 
+    def _preferred_field(
+        self,
+        item: dict[str, Any],
+        preferred: str,
+        fallback: str,
+    ) -> str:
+        """Normalize one upstream field while preserving strict validation.
+
+        Tencent ima currently returns ``kb_id`` / ``kb_name`` while older
+        responses use ``id`` / ``name``. A present, non-empty preferred field
+        wins; only a missing or empty preferred field falls back to the legacy
+        field. The selected value still goes through ``_field`` so malformed
+        or oversized values never enter the normalized boundary.
+        """
+        value = item.get(preferred)
+        if value is None or value == "":
+            value = item.get(fallback)
+        return self._field(value, MAX_KNOWLEDGE_FIELD_CHARS)
+
     @staticmethod
     def _opt_field(value: object, max_chars: int) -> str:
         """Optional string field: empty strings allowed, oversized rejected."""
@@ -407,7 +426,7 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             {"query": "", "cursor": "", "limit": MAX_KNOWLEDGE_ITEMS},
         )
         bases = self._info_list(data, "info_list")
-        ids = [self._field(item.get("id"), MAX_KNOWLEDGE_FIELD_CHARS) for item in bases]
+        ids = [self._preferred_field(item, "kb_id", "id") for item in bases]
         descriptions: dict[str, str] = {}
         if ids:
             # Enrichment is optional: a failed get_knowledge_base must not
@@ -428,11 +447,11 @@ class TencentImaKnowledgeSource(KnowledgeSource):
                 )
         summaries: list[KnowledgeBaseSummary] = []
         for item in bases:
-            item_id = self._field(item.get("id"), MAX_KNOWLEDGE_FIELD_CHARS)
+            item_id = self._preferred_field(item, "kb_id", "id")
             summaries.append(
                 KnowledgeBaseSummary(
                     id=item_id,
-                    name=self._field(item.get("name"), MAX_KNOWLEDGE_FIELD_CHARS),
+                    name=self._preferred_field(item, "kb_name", "name"),
                     description=descriptions.get(item_id, ""),
                     item_count=0,
                     source=self._src(item_id),
