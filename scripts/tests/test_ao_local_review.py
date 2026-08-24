@@ -150,6 +150,9 @@ class SidecarStateTests(unittest.TestCase):
         first = sidecar.command_start(args_for(self.repo, self.data), self.paths)
         old_sha = first["request"]["candidate_sha"]
         reviewer, _marker = sidecar.reviewer_worktree(self.paths, first["request"])
+        roborev_dir = sidecar.roborev_round_dir(self.paths, first["request"])
+        roborev_dir.mkdir(parents=True)
+        (roborev_dir / "reviews.db").write_bytes(b"old")
         self.assertTrue(reviewer.exists())
         new_sha = self.fixture.commit("feature.txt", "updated\n", "repair")
         result = sidecar.command_supersede(args_for(self.repo, self.data), self.paths)
@@ -158,6 +161,7 @@ class SidecarStateTests(unittest.TestCase):
         self.assertEqual(state["history"][0]["candidate_sha"], old_sha)
         self.assertEqual(state["history"][0]["status"], "superseded")
         self.assertFalse(reviewer.exists())
+        self.assertFalse(roborev_dir.exists())
 
 
 class GateContractTests(unittest.TestCase):

@@ -523,6 +523,20 @@ def reviewer_owner_dir(paths: Paths, request: dict[str, Any]) -> pathlib.Path:
     )
 
 
+def roborev_round_dir(paths: Paths, request: dict[str, Any]) -> pathlib.Path:
+    dispatch = safe_segment(str(request["dispatch_id"]), "dispatch_id")
+    candidate = safe_segment(str(request["candidate_sha"]), "candidate_sha")
+    round_number = int(request["round"])
+    return (
+        paths.data_root
+        / "local-review"
+        / "roborev"
+        / dispatch
+        / candidate
+        / f"round-{round_number:02d}"
+    )
+
+
 def reviewer_owner_receipt(
     request: dict[str, Any], worktree: pathlib.Path
 ) -> dict[str, Any]:
@@ -1124,6 +1138,9 @@ def cleanup_previous_reviewer(paths: Paths, state: dict[str, Any]) -> None:
                 f"refusing to clean invalid reviewer owner directory: {owner_dir}",
             )
         shutil.rmtree(owner_dir)
+    roborev_dir = roborev_round_dir(paths, request)
+    if roborev_dir.exists():
+        shutil.rmtree(roborev_dir)
 
 
 def command_run(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
@@ -1164,7 +1181,7 @@ def command_run(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
 
         worktree, marker = reviewer_worktree(paths, request)
         before = verify_reviewer_worktree(worktree, request)
-        roborev_dir = ensure_directory(paths.data_root / "local-review" / "roborev")
+        roborev_dir = ensure_directory(roborev_round_dir(paths, request))
         ensure_directory(roborev_dir / "runtime")
         socket = (
             pathlib.Path(tempfile.gettempdir())
