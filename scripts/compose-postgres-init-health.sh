@@ -19,10 +19,12 @@ COMPOSE_FILE="$WORK_ROOT/compose.yml"
 PROJECTS=()
 
 cleanup() {
-  for project in "${PROJECTS[@]}"; do
-    docker compose --env-file /dev/null -f "$COMPOSE_FILE" -p "$project" down \
-      --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
-  done
+  if [ "${#PROJECTS[@]}" -gt 0 ]; then
+    for project in "${PROJECTS[@]}"; do
+      docker compose --env-file /dev/null -f "$COMPOSE_FILE" -p "$project" down \
+        --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
+    done
+  fi
   rm -f "$COMPOSE_FILE"
   rm -rf "$WORK_ROOT"
 }
@@ -63,6 +65,7 @@ run_scenario() {
   local control_state
   local data_init_state
   local relevant_log
+  local relevant_log_line
   local logs_file="$scenario_root/postgres.log"
   local up_file="$scenario_root/up.log"
   local marker="$scenario_root/control-started"
@@ -172,6 +175,11 @@ run_scenario() {
   fi
   relevant_log=$(grep -Ei 'startup blocked|permission denied|could not open log file|database .* does not exist' \
     "$logs_file" | tail -1 | tr -d '\r' || true)
+  if [ -n "$relevant_log" ]; then
+    relevant_log_line="- Relevant log: $relevant_log"
+  else
+    relevant_log_line="- Relevant log:"
+  fi
   data_init_state=not-checked
   if [ "$name" = "missing-log-directory" ] || [ "$name" = "unwritable-log-directory" ]; then
     if docker run --rm --label "ao.session=${AO_SESSION_ID:-compose-smoke}" \
@@ -238,7 +246,7 @@ run_scenario() {
     "- PostgreSQL health: $health" \
     "- Control marker: $control_state" \
     "- Data volume init: $data_init_state" \
-    "- Relevant log: $relevant_log" \
+    "$relevant_log_line" \
     ""
   printf 'scenario=%s compose_up=%s postgres_state=%s health=%s control=%s\n' \
     "$name" "$up_status" "$postgres_state" "$health" "$control_state"
@@ -251,5 +259,14 @@ run_scenario missing-log-directory postgres missing
 run_scenario unwritable-log-directory dlr unwritable
 run_scenario missing-target-database postgres writable
 run_scenario healthy dlr writable
+
+write_evidence \
+  '## Verification commands' '' \
+  '- `docker compose -f docker-compose.yml config --quiet`' \
+  '- `docker compose -f docker-compose.yml -f docker-compose.dns.example.yml config --quiet`' \
+  "- \`docker run --rm --label ao.session=... postgres:16-alpine sh -c 'command -v su-exec'\`" \
+  "- \`COMPOSE_POSTGRES_REGRESSION_ID=${RUN_ID} ./scripts/compose-postgres-init-health.sh\` (normalized RUN_ID: \`${RUN_ID}\`)" \
+  '- `./scripts/compose-smoke.sh`' '' \
+  'The recorded scenarios contain no credentials or raw service payloads. The healthy scenario records the target `dlr` database query gate and Control start; the three failure scenarios record the expected PostgreSQL/Control states. The two init-time failure scenarios also assert that the PostgreSQL data volume remains uninitialized.'
 
 echo "PostgreSQL init/health Compose regression passed"
