@@ -1,0 +1,43 @@
+schema: spec-driven
+
+context: |
+  Language: zh-CN
+  All artifacts must be written in zh-CN.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Project: DataLinkRuntime (DLR), a brownfield, self-hosted, code-first data adapter runtime.
+  Current released baseline: v0.1.0.
+  Backend: Python 3.13, FastAPI, SQLAlchemy/Alembic, PostgreSQL.
+  Web: React 19, Vite, Ant Design 5.29.3, ProComponents 2.8.10.
+  Runtime workers execute Python, JavaScript, and Java adapters.
+
+  Read README.md, docs/zh-CN/product.md, and docs/zh-CN/architecture.md before
+  proposing a change. Treat docs/specs/ as historical milestone contracts; do
+  not silently rewrite or duplicate them into openspec/specs/. New OpenSpec
+  changes live under openspec/changes/ and become current OpenSpec specs only
+  through the archive/sync workflow.
+
+  Preserve backward compatibility by default. Credentials, tokens, provider
+  reasoning, prompts, and raw responses must not be exposed or persisted.
+  Keep changes narrowly scoped and preserve unrelated dirty-worktree changes.
+
+rules:
+  proposal:
+    - 明确列出目标、非目标、影响范围与兼容性边界。
+    - 涉及接口、数据库、安全、凭据或部署时，说明迁移与回滚影响。
+  specs:
+    - 使用可验证的 SHALL/MUST 要求和具体场景，不用模糊的审美或完成描述。
+  design:
+    - 优先复用现有架构与依赖；新增依赖或抽象必须说明必要性。
+  tasks:
+    - 每个实施批次都包含对应测试、静态检查或真实运行验证。
+
+operations:
+  apply:
+    guidance:
+      - 修改前检查当前工作区，禁止覆盖与本变更无关的已有修改。
+      - 只实现已批准的 OpenSpec 任务，不顺带重构无关模块。
+      - UI 或布局变更必须包含浏览器视觉与交互验证，构建成功不能替代验收。
+  archive:
+    guidance:
+      - 归档前确认任务、测试和变更规格一致，并记录尚未验证的风险。

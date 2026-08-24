@@ -1,8 +1,10 @@
 # M4 AI Editor Spec
 
-> **当前现行性：Partially current。**  
-> Working Copy、Candidate、Secret、Context Snippets、Provider 安全边界、stale/Diff/Apply 与 hidden reasoning 隔离等核心合同仍是当前 AI Assistant 的基础；但本文中的旧 `Publish / Production / Start` 生命周期文字已被 M5.4+ 替代，M4 的“禁止 Tool Call / RAG”范围也将由 M5.7 的受控只读 Tool Call、Attachments 与 MCP 合同扩展。  
-> **M5.7 开发不得把本文当作完整现行权威。** 当前目标以 [Issue #80](https://github.com/john-ops-lab/DataLinkRuntime/issues/80) 与 `docs/specs/m5-7-ai-assistant.md` 为准；文档优先级见 `docs/specs/README.md`。
+> **当前现行性：Historical / 部分仍有效。**
+>
+> Working Copy、Candidate、Secret、Context Snippets、Provider 安全边界、stale/Diff/Apply 与 hidden reasoning 隔离等核心合同仍是当前 AI Assistant 的基础；但本文中的旧 `Publish / Production / Start` 生命周期文字已被 M5.4+ 替代，M4 的“禁止 Tool Call / RAG”范围也已由 M5.7 及后续里程碑扩展。
+>
+> 本文不得作为完整现行权威；当前行为以最新 `main`、自动化测试和现行 product/architecture 为准。文档优先级见 `docs/specs/README.md`。
 
 > M4 原始上位契约：[GitHub Issue #14](https://github.com/john-ops-lab/DataLinkRuntime/issues/14)。
 > 本文记录 M4 当时的实际接口、状态边界与验证口径；未被后续里程碑替代的部分继续有效。

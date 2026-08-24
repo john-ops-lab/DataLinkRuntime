@@ -1,7 +1,7 @@
 # DLR（DataLinkRuntime）Overall Architecture
 
-> Current baseline: M5.6 is complete and passed user acceptance; M5.7 / #80 is the current development stage.
-> This document describes the currently implemented architecture. M5.7 targets are defined by Issue #80 and `docs/specs/m5-7-ai-assistant.md`; historical stage contracts live in `docs/specs/README.md`, historical Specs and the Alembic migrations.
+> Current baseline: `v0.1.0` (M5.11 is complete and has passed final user acceptance).
+> This document describes the currently implemented architecture. Historical stage contracts live in `docs/specs/README.md`, historical Specs and the Alembic migrations. New work is governed by the currently authorized GitHub Issue.
 
 ## 1. Component Overview
 

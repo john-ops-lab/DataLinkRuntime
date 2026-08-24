@@ -1,7 +1,7 @@
 # DLR（DataLinkRuntime）总体架构
 
-> 当前基线：M5.6 已完成并通过人工验收；M5.7 / #80 为当前开发阶段。
-> 本文档描述当前已经实现的架构；M5.7 目标以 Issue #80 与 `docs/specs/m5-7-ai-assistant.md` 为准，历史阶段合同见 `docs/specs/README.md`、历史 Specs 与 Alembic migration。
+> 当前基线：`v0.1.0`（M5.11 已完成并通过最终人工验收）。
+> 本文档描述当前已经实现的架构；历史阶段合同见 `docs/specs/README.md`、历史 Specs 与 Alembic migration。新任务的目标以当前明确授权的 GitHub Issue 为准。
 
 ## 1. 组件总览
 

@@ -1,12 +1,16 @@
-# M5.7 AI Assistant UI 组件化与知识接入扩展——当前规格
+# M5.7 AI Assistant UI 组件化与知识接入扩展——历史规格
 
-> 状态：Current target / 待实现  
-> 父 Issue：[#20 M5](https://github.com/john-ops-lab/DataLinkRuntime/issues/20)  
-> 当前阶段合同：[#80 M5.7](https://github.com/john-ops-lab/DataLinkRuntime/issues/80)  
-> 前置：M5.6 / #70 已完成并通过用户中英文人工验收。  
-> 冲突处理：Issue #80 > 最新 `main` 现状 > 当前 product/architecture > 本文 > 历史 specs。
+> 状态：Implemented / 后续已由 M5.8～M5.11 演进
+>
+> 父 Issue：[#20 M5](https://github.com/john-ops-lab/DataLinkRuntime/issues/20)
+>
+> 原阶段合同：[#80 M5.7](https://github.com/john-ops-lab/DataLinkRuntime/issues/80)
+>
+> 前置：M5.6 / #70 已完成并通过用户中英文人工验收。
+>
+> 现行性：本文保留 M5.7 当时的设计与验收口径；当前行为以最新 `main`、自动化测试和现行 product/architecture 为准。
 
-本文用于把 M5.7 的稳定技术边界集中记录在仓库中，避免继续从 M1～M4 的历史产品语义推导当前实现。Issue #80 仍是本阶段完整产品范围和验收口径的最高权威。
+本文记录 M5.7 的稳定技术边界，用于解释当时的实现背景，不再作为待执行任务或当前阶段最高权威。
 
 ## 1. 目标
 
@@ -438,4 +442,4 @@ Wave 5
 20. Backend / Web / Compose / GitHub Actions 全绿；
 21. 独立 Review 无 Critical / Important。
 
-M5.7 自动开发完成后不得自动关闭 #80，也不得开始 M6；等待用户最终人工验收。
+以上为 M5.7 当时的自动开发收口要求；该阶段现已完成，不得据此重新启动任务或改变当前 Issue 状态。
