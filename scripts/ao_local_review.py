@@ -728,19 +728,25 @@ def find_roborev_job(
     connection = sqlite3.connect(database, timeout=10)
     connection.row_factory = sqlite3.Row
     try:
-        columns = sqlite_columns(connection, "review_jobs")
-        if "worktree_path" not in columns:
+        job_columns = sqlite_columns(connection, "review_jobs")
+        review_columns = sqlite_columns(connection, "reviews")
+        if "worktree_path" not in job_columns:
             raise SidecarError(
                 "ROBOREV_SCHEMA_MISMATCH", "review_jobs.worktree_path is required"
             )
+        verdict_selection = (
+            "r.verdict_bool AS verdict_bool"
+            if "verdict_bool" in review_columns
+            else "NULL AS verdict_bool"
+        )
         rows = connection.execute(
-            """
+            f"""
             SELECT j.id, j.uuid, j.git_ref, j.status, j.agent, j.worktree_path,
-                   r.verdict_bool
+                   {verdict_selection}
             FROM review_jobs j
             LEFT JOIN reviews r ON r.job_id = j.id
             WHERE j.id >= ? AND j.git_ref = ? AND j.agent = ? AND j.worktree_path = ?
-            ORDER BY j.id DESC
+            ORDER BY j.id DESC, r.id DESC
             """,
             (minimum_id, candidate_sha, REVIEWER, str(worktree)),
         ).fetchall()
@@ -1430,7 +1436,7 @@ def command_reconcile(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
             ):
                 raise SidecarError(
                     "DELIVERY_RETRY_EXHAUSTED",
-                    "AO delivery failed three times",
+                    f"AO delivery failed {MAX_DELIVERY_ATTEMPTS} times",
                     delivery=previous,
                 )
         delivery = deliver(round_dir, gate, args.ao_session, args.ao_bin)
@@ -1440,7 +1446,7 @@ def command_reconcile(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
         ):
             raise SidecarError(
                 "DELIVERY_RETRY_EXHAUSTED",
-                "AO delivery failed three times",
+                f"AO delivery failed {MAX_DELIVERY_ATTEMPTS} times",
                 delivery=delivery,
             )
         return {"status": delivery["status"], "delivery": delivery}

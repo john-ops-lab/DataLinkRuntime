@@ -391,6 +391,26 @@ class RoboRevDatabaseTests(unittest.TestCase):
             self.assertIsNotNone(found)
             self.assertEqual(found["verdict_bool"], 1)
 
+    def test_find_job_tolerates_review_schema_without_verdict_bool(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = pathlib.Path(temporary) / "reviews.db"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE review_jobs(id INTEGER PRIMARY KEY, git_ref TEXT, status TEXT, agent TEXT, uuid TEXT, worktree_path TEXT);
+                CREATE TABLE reviews(id INTEGER PRIMARY KEY, job_id INTEGER, output TEXT);
+                INSERT INTO review_jobs VALUES(7, 'abc', 'done', 'claude-code', 'job-uuid', '/tmp/reviewer');
+                INSERT INTO reviews VALUES(9, 7, 'review output');
+                """
+            )
+            connection.commit()
+            connection.close()
+            found = sidecar.find_roborev_job(
+                database, "abc", pathlib.Path("/tmp/reviewer")
+            )
+            self.assertIsNotNone(found)
+            self.assertIsNone(found["verdict_bool"])
+
     def test_event_wait_recovers_completed_job_from_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -440,6 +460,9 @@ class RoboRevDatabaseTests(unittest.TestCase):
 
 
 class DeliveryRecoveryTests(unittest.TestCase):
+    def test_delivery_attempt_policy_is_three(self) -> None:
+        self.assertEqual(sidecar.MAX_DELIVERY_ATTEMPTS, 3)
+
     def test_pending_delivery_is_persisted_and_retried_without_review(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
