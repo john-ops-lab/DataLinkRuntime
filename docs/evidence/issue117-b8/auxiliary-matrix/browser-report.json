@@ -22,6 +22,8 @@
   "real_provider_credentials": false,
   "raw_provider_response_archived": false,
   "password_values_redacted_in_report": true,
+  "report_fields_derived_from_captured_state": true,
+  "viewer_structure_fields_not_exercised_are_null": true,
   "records": [
     {
       "locale": "en",
@@ -53,6 +55,7 @@
         },
         "create_post": {
           "username": "created-user",
+          "password": "<redacted>",
           "role": "user"
         },
         "role_patch": {
@@ -132,6 +135,7 @@
         },
         "create_post": {
           "username": "created-user",
+          "password": "<redacted>",
           "role": "user"
         },
         "role_patch": {
@@ -211,6 +215,7 @@
         },
         "create_post": {
           "username": "created-user",
+          "password": "<redacted>",
           "role": "user"
         },
         "role_patch": {
@@ -290,6 +295,7 @@
         },
         "create_post": {
           "username": "created-user",
+          "password": "<redacted>",
           "role": "user"
         },
         "role_patch": {
@@ -369,6 +375,7 @@
         },
         "create_post": {
           "username": "created-user",
+          "password": "<redacted>",
           "role": "user"
         },
         "role_patch": {
@@ -448,6 +455,7 @@
         },
         "create_post": {
           "username": "created-user",
+          "password": "<redacted>",
           "role": "user"
         },
         "role_patch": {
@@ -527,6 +535,7 @@
         },
         "create_post": {
           "username": "created-user",
+          "password": "<redacted>",
           "role": "user"
         },
         "role_patch": {
@@ -606,6 +615,7 @@
         },
         "create_post": {
           "username": "created-user",
+          "password": "<redacted>",
           "role": "user"
         },
         "role_patch": {
@@ -665,8 +675,8 @@
         "profile_heading_duplicate": 0,
         "profile_subtitle": true,
         "password_section_labelled": true,
-        "user_management_toolbar_unified": false,
-        "reset_modal_named": false
+        "user_management_toolbar_unified": null,
+        "reset_modal_named": null
       },
       "operations": {
         "profile_rename": true,
@@ -719,8 +729,8 @@
         "profile_heading_duplicate": 0,
         "profile_subtitle": true,
         "password_section_labelled": true,
-        "user_management_toolbar_unified": false,
-        "reset_modal_named": false
+        "user_management_toolbar_unified": null,
+        "reset_modal_named": null
       },
       "operations": {
         "profile_rename": true,

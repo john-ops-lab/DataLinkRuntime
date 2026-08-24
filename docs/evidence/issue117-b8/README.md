@@ -37,7 +37,7 @@
 - 每个 admin 用例真实执行：键盘/按钮登录、Catalog 基线对照、账号资料改名（断言 `PATCH /api/users/1` body 恰为 `{"username": ...}`）、密码确认不一致（零请求）、当前密码错误 400 反馈、用户管理创建（断言 POST body）、角色调整（`{"role": ...}`）、禁用（`{"enabled": false}`）、重置密码模态框（可访问名称 + `{"new_password": ...}`）、全选批量禁用（3 笔逐用户 PATCH）、关键字筛选空状态（零新增列表请求）、刷新、修改密码成功终态（返回登录页 + 既有提示）。
 - 两个 viewer 用例（zh-CN/en 1280）：非管理员菜单不暴露「用户管理/系统设置」，账号资料仍可用且改名只产生 `PATCH /api/users/2`。
 - 全部用例：`document`/`body` `scrollWidth <= innerWidth`，`.account-user-panel`/`.user-management-panel` 无 `scrollWidth > clientWidth`；`console_errors` 与 `page_errors` 为空；网络层 4xx/401 与 antd CSS-in-JS unmount 告警计入 `console_filtered_notices`；`unknown_paths` 为空；页面文本不含任何提交过的密码。
-- 报告中的密码字段一律记录为 `<redacted>` 占位，原始值只存在于测试进程内存。
+- 报告中的 `payloads`/`structure`/`operations`/`feedback` 字段全部从 fixture 实际捕获的请求体与 DOM/状态采样派生（repair round 1），仅口令类字段值脱敏为 `<redacted>`；viewer 用例受权限门禁未打开用户管理抽屉，对应 structure 字段记录为 `null`（未执行）。
 
 ## AO Browser session evidence
 

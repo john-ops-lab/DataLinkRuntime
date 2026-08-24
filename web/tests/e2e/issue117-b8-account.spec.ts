@@ -56,8 +56,9 @@ interface AccountRecord {
     profile_heading_duplicate: number;
     profile_subtitle: boolean;
     password_section_labelled: boolean;
-    user_management_toolbar_unified: boolean;
-    reset_modal_named: boolean;
+    // viewer 用例受权限门禁不打开用户管理抽屉，这两项目测为 null（未执行）。
+    user_management_toolbar_unified: boolean | null;
+    reset_modal_named: boolean | null;
   };
   operations: Record<string, boolean>;
   payloads: {
@@ -98,6 +99,24 @@ let browserVersion = "unknown";
 
 async function fulfillJson(route: Route, body: unknown, status = 200): Promise<void> {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+}
+
+// 报告字段一律从真实捕获的请求体派生，仅口令类字段值脱敏为 <redacted>。
+function redactSecrets(body: string | undefined): unknown {
+  if (body === undefined) {
+    return null;
+  }
+  const parsed = JSON.parse(body) as Record<string, unknown>;
+  for (const key of ["password", "new_password", "current_password"]) {
+    if (key in parsed) {
+      parsed[key] = "<redacted>";
+    }
+  }
+  return parsed;
+}
+
+function capturedBody(state: FixtureState, key: string, index = 0): unknown {
+  return redactSecrets(state.payloads.filter((entry) => entry.key === key)[index]?.body);
 }
 
 interface FixtureState {
@@ -356,14 +375,16 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   const profileDrawer = page.locator(".ant-drawer", { has: page.getByTestId("account-profile-username") });
   await expect(profileDrawer).toBeVisible();
   await expect(profileDrawer.locator(".ant-drawer-title")).toHaveText(text.profileTitle);
-  await expect(profileDrawer.getByText(text.profileSubtitle)).toBeVisible();
+  const profileSubtitleVisible = await profileDrawer.getByText(text.profileSubtitle).isVisible();
+  expect(profileSubtitleVisible).toBe(true);
   const duplicateHeadings = await profileDrawer.getByRole("heading", { name: text.profileTitle }).count();
   const passwordHeading = profileDrawer.getByRole("heading", { name: text.passwordTitle });
   await expect(passwordHeading).toBeVisible();
-  const passwordLabelled = await profileDrawer
-    .locator("section.account-user-password")
-    .getAttribute("aria-labelledby");
-  expect(passwordLabelled).toBe("account-user-password-title");
+  const passwordSectionLabelled =
+    (await profileDrawer
+      .locator("section.account-user-password")
+      .getAttribute("aria-labelledby")) === "account-user-password-title";
+  expect(passwordSectionLabelled).toBe(true);
   await expect(page.getByTestId("account-profile-save")).toBeVisible();
   await expect(page.getByTestId("account-user-logout")).toBeVisible();
   const profilePanelOverflow = await panelOverflow(page, ".account-user-panel");
@@ -372,6 +393,7 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   await page.getByTestId("account-profile-username").fill("renamed-admin");
   await page.getByTestId("account-profile-save").click();
   await expect(page.getByTestId("account-profile-notice")).toContainText(text.profileSaved);
+  const successNoticeVisible = await page.getByTestId("account-profile-notice").isVisible();
   const profilePatch = state.nonGetPaths.includes("PATCH /api/users/1");
 
   // 修改密码：先本地确认不一致，再服务端拒绝，均留在本页反馈区。
@@ -380,12 +402,14 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   await page.getByTestId("account-user-confirm-password").fill("mismatch-3");
   await page.getByTestId("account-user-password-submit").click();
   await expect(page.getByTestId("account-profile-error")).toContainText(text.passwordMismatch);
+  const mismatchErrorVisible = await page.getByTestId("account-profile-error").isVisible();
   expect(state.changePasswordBodies).toHaveLength(0);
 
   await page.getByTestId("account-user-confirm-password").fill(NEW_PASSWORD);
   await page.getByTestId("account-user-password-submit").click();
   await expect(page.getByTestId("account-profile-error")).toContainText(text.passwordChangeFailed);
   await expect(page.getByTestId("account-profile-error")).toContainText("account_current_password_invalid");
+  const wrongCurrentErrorVisible = await page.getByTestId("account-profile-error").isVisible();
   await expect(profileDrawer).toBeVisible();
   expect(state.changePasswordBodies).toHaveLength(1);
 
@@ -396,13 +420,21 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   await openUserMenu(page, text.userManagementMenu);
   const userDrawer = page.locator(".ant-drawer", { has: page.getByTestId("user-create-submit") });
   await expect(userDrawer).toBeVisible();
+  const userDrawerVisible = await userDrawer.isVisible();
   await expect(userDrawer.locator(".ant-drawer-title")).toHaveText(text.userManagementTitle);
   await expect(userDrawer.getByText(text.userSubtitle)).toBeVisible();
   await expect(userDrawer.getByRole("heading", { name: text.createTitle })).toBeVisible();
   const toolbar = page.getByTestId("user-management-toolbar");
-  await expect(toolbar.getByTestId("users-bulk-enable")).toBeVisible();
-  await expect(toolbar.getByTestId("users-bulk-disable")).toBeVisible();
-  await expect(toolbar.getByText(text.selectedZero)).toBeVisible();
+  // 工具栏统一性从真实 DOM 采样：刷新与批量控件必须同属该 toolbar。
+  const refreshInToolbar = await toolbar
+    .getByRole("button", { name: locale === "zh-CN" ? /刷\s*新/ : "Refresh" })
+    .isVisible();
+  const toolbarUnified =
+    refreshInToolbar &&
+    (await toolbar.getByTestId("users-bulk-enable").isVisible()) &&
+    (await toolbar.getByTestId("users-bulk-disable").isVisible()) &&
+    (await toolbar.getByText(text.selectedZero).isVisible());
+  expect(toolbarUnified).toBe(true);
   await expect(page.getByText("ordinary")).toBeVisible();
   const userPanelOverflow = await panelOverflow(page, ".user-management-panel");
 
@@ -427,11 +459,11 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   // 重置密码：模态框可访问名称 + 既有 POST payload。
   await page.getByTestId("user-reset-2").click();
   const resetDialog = page.getByRole("dialog", { name: text.resetTitle });
-  await expect(resetDialog).toBeVisible();
+  const resetModalNamed = await resetDialog.isVisible();
+  expect(resetModalNamed).toBe(true);
   await page.getByTestId("user-reset-password").fill("reset-secret-9");
   await page.getByTestId("user-reset-submit").click();
   await expect(userDrawer.getByRole("status")).toContainText(text.resetNotice);
-  const resetModalNamed = true;
 
   // 批量操作：全选（此时 admin/viewer/created-user 可变化 3 行中 ordinary 已禁用，
   // 批量禁用只 PATCH 仍启用的行）。
@@ -443,7 +475,8 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   // 筛选 + 空状态：关键字过滤到无结果时出现空状态，且不发新列表请求。
   const listBeforeFilter = state.usersListCount.value;
   await page.getByLabel(locale === "zh-CN" ? "搜索账号" : "Search users").fill("no-such-user");
-  await expect(page.getByText(text.empty)).toBeVisible();
+  const emptyStateVisible = await page.getByText(text.empty).isVisible();
+  expect(emptyStateVisible).toBe(true);
   expect(state.usersListCount.value).toBe(listBeforeFilter);
   await page.getByLabel(locale === "zh-CN" ? "搜索账号" : "Search users").fill("");
   await expect(page.getByText("created-user")).toBeVisible();
@@ -451,8 +484,9 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   // 刷新：触发新的列表 GET。
   await toolbar.getByRole("button", { name: locale === "zh-CN" ? /刷\s*新/ : "Refresh" }).click();
   await expect.poll(() => state.usersListCount.value).toBeGreaterThan(listBeforeFilter);
+  const refreshTriggered = state.usersListCount.value > listBeforeFilter;
 
-  // API payload 合同断言（原始值只活在测试进程内，报告只记录脱敏占位）。
+  // API payload 合同断言（原始值只活在测试进程内，报告只记录脱敏后的真实捕获值）。
   const payloadOf = (key: string): unknown[] =>
     state.payloads.filter((entry) => entry.key === key).map((entry) => JSON.parse(entry.body));
   expect(payloadOf("PATCH /api/users/1")[0]).toEqual({ username: "renamed-admin" });
@@ -492,8 +526,12 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   await page.getByTestId("account-user-new-password").fill(NEW_PASSWORD);
   await page.getByTestId("account-user-confirm-password").fill(NEW_PASSWORD);
   await page.getByTestId("account-user-password-submit").click();
-  await expect(page.getByRole("heading", { name: text.loginHeading })).toBeVisible();
+  const backToLogin = await page.getByRole("heading", { name: text.loginHeading }).isVisible();
+  const changeNoticeVisible = await page.getByTestId("account-auth-notice").isVisible();
+  expect(backToLogin).toBe(true);
+  expect(changeNoticeVisible).toBe(true);
   await expect(page.getByTestId("account-auth-notice")).toContainText(text.passwordChanged);
+  const changeSuccess = backToLogin && changeNoticeVisible && state.changePasswordBodies.length === 2;
   expect(JSON.parse(state.changePasswordBodies[1])).toEqual({
     current_password: FIXTURE_PASSWORD,
     new_password: NEW_PASSWORD,
@@ -516,37 +554,37 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
     structure: {
       catalog_baseline_visible: catalogBaseline,
       profile_heading_duplicate: duplicateHeadings,
-      profile_subtitle: true,
-      password_section_labelled: true,
-      user_management_toolbar_unified: true,
+      profile_subtitle: profileSubtitleVisible,
+      password_section_labelled: passwordSectionLabelled,
+      user_management_toolbar_unified: toolbarUnified,
       reset_modal_named: resetModalNamed,
     },
     operations: {
       profile_rename: profilePatch,
       create_user: state.nonGetPaths.includes("POST /api/users"),
-      role_change: true,
-      enable_disable: true,
+      role_change: payloadOf("PATCH /api/users/2").length > 0,
+      enable_disable: payloadOf("PATCH /api/users/2").length > 1,
       reset_password: state.nonGetPaths.some((entry) => entry.endsWith("/reset-password")),
-      bulk: true,
-      refresh: true,
-      filter_empty_state: true,
-      change_password_success: true,
+      bulk: bulkPatches.length === 3,
+      refresh: refreshTriggered,
+      filter_empty_state: emptyStateVisible,
+      change_password_success: changeSuccess,
     },
     payloads: {
-      profile_patch: { username: "renamed-admin" },
-      create_post: { username: "created-user", role: "user" },
-      role_patch: { role: "admin" },
-      toggle_patch: { enabled: false },
-      bulk_patch_count: state.nonGetPaths.filter((entry) => entry.startsWith("PATCH /api/users/")).length - 3,
-      reset_post: { new_password: "<redacted>" },
-      change_password_post: { current_password: "<redacted>", new_password: "<redacted>" },
+      profile_patch: capturedBody(state, "PATCH /api/users/1"),
+      create_post: capturedBody(state, "POST /api/users"),
+      role_patch: capturedBody(state, "PATCH /api/users/2", 0),
+      toggle_patch: capturedBody(state, "PATCH /api/users/2", 1),
+      bulk_patch_count: bulkPatches.length,
+      reset_post: capturedBody(state, "POST /api/users/2/reset-password"),
+      change_password_post: redactSecrets(state.changePasswordBodies[1]),
     },
     feedback: {
-      mismatch_error: true,
-      wrong_current_error: true,
-      success_notice: true,
-      empty_state: true,
-      permission_denied: false,
+      mismatch_error: mismatchErrorVisible,
+      wrong_current_error: wrongCurrentErrorVisible,
+      success_notice: successNoticeVisible,
+      empty_state: emptyStateVisible,
+      permission_denied: !userDrawerVisible,
     },
     overflow: {
       inner_width: overflow.inner_width,
@@ -591,11 +629,14 @@ async function runViewerCase(page: Page, locale: Locale): Promise<void> {
 
   await page.goto("/");
   await login(page, locale, "ordinary");
+  const viewerCatalogBaseline = await page.getByTestId("adapter-catalog-header").isVisible();
 
   // 非管理员：用户菜单不暴露用户管理/系统设置入口（既有权限拒绝保持）。
   await page.getByTestId("user-menu").click();
   await expect(page.getByRole("menuitem", { name: text.profileMenu })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: text.userManagementMenu })).toHaveCount(0);
+  const userMenuHidden =
+    (await page.getByRole("menuitem", { name: text.userManagementMenu }).count()) === 0;
   await page.keyboard.press("Escape");
 
   // 账号资料仍可用；用户名修改走既有 PATCH 合同。
@@ -604,9 +645,22 @@ async function runViewerCase(page: Page, locale: Locale): Promise<void> {
   const viewerDrawer = page.locator(".ant-drawer", { has: page.getByTestId("account-profile-username") });
   const viewerDuplicateHeadings = await viewerDrawer.getByRole("heading", { name: text.profileTitle }).count();
   expect(viewerDuplicateHeadings).toBe(0);
+  const viewerSubtitleVisible = await viewerDrawer.getByText(text.profileSubtitle).isVisible();
+  const viewerPasswordLabelled =
+    (await viewerDrawer
+      .locator("section.account-user-password")
+      .getAttribute("aria-labelledby")) === "account-user-password-title";
   await page.getByTestId("account-profile-username").fill("ordinary-renamed");
   await page.getByTestId("account-profile-save").click();
   await expect(page.getByTestId("account-profile-notice")).toContainText(text.profileSaved);
+  const viewerNoticeVisible = await page.getByTestId("account-profile-notice").isVisible();
+  const viewerRenamePayload = capturedBody(state, "PATCH /api/users/2");
+  expect(viewerCatalogBaseline).toBe(true);
+  expect(viewerSubtitleVisible).toBe(true);
+  expect(viewerPasswordLabelled).toBe(true);
+  expect(userMenuHidden).toBe(true);
+  expect(viewerNoticeVisible).toBe(true);
+  expect(viewerRenamePayload).toEqual({ username: "ordinary-renamed" });
   // 非 GET 中排除登录/登出等会话请求后，业务写操作应只有改名这一笔。
   expect(state.nonGetPaths.filter((entry) => !entry.startsWith("POST /api/auth/"))).toEqual([
     "PATCH /api/users/2",
@@ -635,19 +689,19 @@ async function runViewerCase(page: Page, locale: Locale): Promise<void> {
     role: "user",
     screenshot: `docs/evidence/issue117-b8/auxiliary-matrix/browser/${screenshotName}`,
     structure: {
-      catalog_baseline_visible: true,
+      catalog_baseline_visible: viewerCatalogBaseline,
       profile_heading_duplicate: viewerDuplicateHeadings,
-      profile_subtitle: true,
-      password_section_labelled: true,
-      user_management_toolbar_unified: false,
-      reset_modal_named: false,
+      profile_subtitle: viewerSubtitleVisible,
+      password_section_labelled: viewerPasswordLabelled,
+      user_management_toolbar_unified: null,
+      reset_modal_named: null,
     },
     operations: {
-      profile_rename: true,
-      permission_menu_hidden: true,
+      profile_rename: viewerRenamePayload !== null,
+      permission_menu_hidden: userMenuHidden,
     },
     payloads: {
-      profile_patch: { username: "ordinary-renamed" },
+      profile_patch: viewerRenamePayload,
       create_post: null,
       role_patch: null,
       toggle_patch: null,
@@ -658,9 +712,9 @@ async function runViewerCase(page: Page, locale: Locale): Promise<void> {
     feedback: {
       mismatch_error: false,
       wrong_current_error: false,
-      success_notice: true,
+      success_notice: viewerNoticeVisible,
       empty_state: false,
-      permission_denied: true,
+      permission_denied: userMenuHidden,
     },
     overflow: {
       inner_width: viewerOverflow.inner_width,
@@ -705,6 +759,8 @@ test.afterAll(() => {
         real_provider_credentials: false,
         raw_provider_response_archived: false,
         password_values_redacted_in_report: true,
+        report_fields_derived_from_captured_state: true,
+        viewer_structure_fields_not_exercised_are_null: true,
         records,
       },
       null,
