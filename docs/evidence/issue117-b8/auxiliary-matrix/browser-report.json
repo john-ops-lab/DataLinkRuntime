@@ -705,7 +705,7 @@
         "document_scroll_width": 1280,
         "body_scroll_width": 1280,
         "profile_panel_overflow": false,
-        "user_panel_overflow": false
+        "user_panel_overflow": null
       },
       "requests": {
         "non_get_paths": [
@@ -759,7 +759,7 @@
         "document_scroll_width": 1280,
         "body_scroll_width": 1280,
         "profile_panel_overflow": false,
-        "user_panel_overflow": false
+        "user_panel_overflow": null
       },
       "requests": {
         "non_get_paths": [

@@ -82,7 +82,8 @@ interface AccountRecord {
     document_scroll_width: number;
     body_scroll_width: number;
     profile_panel_overflow: boolean;
-    user_panel_overflow: boolean;
+    // viewer 用例受权限门禁不打开用户管理抽屉，该项目测为 null（未执行）。
+    user_panel_overflow: boolean | null;
   };
   requests: {
     non_get_paths: string[];
@@ -103,16 +104,20 @@ async function fulfillJson(route: Route, body: unknown, status = 200): Promise<v
 
 // 报告字段一律从真实捕获的请求体派生，仅口令类字段值脱敏为 <redacted>。
 function redactSecrets(body: string | undefined): unknown {
-  if (body === undefined) {
+  if (body === undefined || body === "") {
     return null;
   }
-  const parsed = JSON.parse(body) as Record<string, unknown>;
-  for (const key of ["password", "new_password", "current_password"]) {
-    if (key in parsed) {
-      parsed[key] = "<redacted>";
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    for (const key of ["password", "new_password", "current_password"]) {
+      if (key in parsed) {
+        parsed[key] = "<redacted>";
+      }
     }
+    return parsed;
+  } catch {
+    return null;
   }
-  return parsed;
 }
 
 function capturedBody(state: FixtureState, key: string, index = 0): unknown {
@@ -368,6 +373,7 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   await login(page, locale, "admin");
 
   // 对照基线：同视口下 Catalog/Workbench 头部仍然渲染。
+  await expect(page.getByTestId("adapter-catalog-header")).toBeVisible();
   const catalogBaseline = await page.getByTestId("adapter-catalog-header").isVisible();
 
   // --- 账号资料抽屉 -------------------------------------------------------
@@ -375,11 +381,17 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   const profileDrawer = page.locator(".ant-drawer", { has: page.getByTestId("account-profile-username") });
   await expect(profileDrawer).toBeVisible();
   await expect(profileDrawer.locator(".ant-drawer-title")).toHaveText(text.profileTitle);
+  // 报告采样一律先用 Playwright 自动重试断言等待目标状态，再读取 isVisible/DOM 值。
+  await expect(profileDrawer.getByText(text.profileSubtitle)).toBeVisible();
   const profileSubtitleVisible = await profileDrawer.getByText(text.profileSubtitle).isVisible();
   expect(profileSubtitleVisible).toBe(true);
   const duplicateHeadings = await profileDrawer.getByRole("heading", { name: text.profileTitle }).count();
   const passwordHeading = profileDrawer.getByRole("heading", { name: text.passwordTitle });
   await expect(passwordHeading).toBeVisible();
+  await expect(profileDrawer.locator("section.account-user-password")).toHaveAttribute(
+    "aria-labelledby",
+    "account-user-password-title",
+  );
   const passwordSectionLabelled =
     (await profileDrawer
       .locator("section.account-user-password")
@@ -426,11 +438,15 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   await expect(userDrawer.getByRole("heading", { name: text.createTitle })).toBeVisible();
   const toolbar = page.getByTestId("user-management-toolbar");
   // 工具栏统一性从真实 DOM 采样：刷新与批量控件必须同属该 toolbar。
-  const refreshInToolbar = await toolbar
-    .getByRole("button", { name: locale === "zh-CN" ? /刷\s*新/ : "Refresh" })
-    .isVisible();
+  const toolbarRefresh = toolbar.getByRole("button", {
+    name: locale === "zh-CN" ? /刷\s*新/ : "Refresh",
+  });
+  await expect(toolbarRefresh).toBeVisible();
+  await expect(toolbar.getByTestId("users-bulk-enable")).toBeVisible();
+  await expect(toolbar.getByTestId("users-bulk-disable")).toBeVisible();
+  await expect(toolbar.getByText(text.selectedZero)).toBeVisible();
   const toolbarUnified =
-    refreshInToolbar &&
+    (await toolbarRefresh.isVisible()) &&
     (await toolbar.getByTestId("users-bulk-enable").isVisible()) &&
     (await toolbar.getByTestId("users-bulk-disable").isVisible()) &&
     (await toolbar.getByText(text.selectedZero).isVisible());
@@ -459,6 +475,7 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   // 重置密码：模态框可访问名称 + 既有 POST payload。
   await page.getByTestId("user-reset-2").click();
   const resetDialog = page.getByRole("dialog", { name: text.resetTitle });
+  await expect(resetDialog).toBeVisible();
   const resetModalNamed = await resetDialog.isVisible();
   expect(resetModalNamed).toBe(true);
   await page.getByTestId("user-reset-password").fill("reset-secret-9");
@@ -475,6 +492,7 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   // 筛选 + 空状态：关键字过滤到无结果时出现空状态，且不发新列表请求。
   const listBeforeFilter = state.usersListCount.value;
   await page.getByLabel(locale === "zh-CN" ? "搜索账号" : "Search users").fill("no-such-user");
+  await expect(page.getByText(text.empty)).toBeVisible();
   const emptyStateVisible = await page.getByText(text.empty).isVisible();
   expect(emptyStateVisible).toBe(true);
   expect(state.usersListCount.value).toBe(listBeforeFilter);
@@ -526,11 +544,12 @@ async function runAdminCase(page: Page, locale: Locale, width: number): Promise<
   await page.getByTestId("account-user-new-password").fill(NEW_PASSWORD);
   await page.getByTestId("account-user-confirm-password").fill(NEW_PASSWORD);
   await page.getByTestId("account-user-password-submit").click();
-  const backToLogin = await page.getByRole("heading", { name: text.loginHeading }).isVisible();
-  const changeNoticeVisible = await page.getByTestId("account-auth-notice").isVisible();
-  expect(backToLogin).toBe(true);
-  expect(changeNoticeVisible).toBe(true);
-  await expect(page.getByTestId("account-auth-notice")).toContainText(text.passwordChanged);
+  const loginHeading = page.getByRole("heading", { name: text.loginHeading });
+  const changeNotice = page.getByTestId("account-auth-notice");
+  await expect(loginHeading).toBeVisible();
+  await expect(changeNotice).toContainText(text.passwordChanged);
+  const backToLogin = await loginHeading.isVisible();
+  const changeNoticeVisible = await changeNotice.isVisible();
   const changeSuccess = backToLogin && changeNoticeVisible && state.changePasswordBodies.length === 2;
   expect(JSON.parse(state.changePasswordBodies[1])).toEqual({
     current_password: FIXTURE_PASSWORD,
@@ -629,6 +648,7 @@ async function runViewerCase(page: Page, locale: Locale): Promise<void> {
 
   await page.goto("/");
   await login(page, locale, "ordinary");
+  await expect(page.getByTestId("adapter-catalog-header")).toBeVisible();
   const viewerCatalogBaseline = await page.getByTestId("adapter-catalog-header").isVisible();
 
   // 非管理员：用户菜单不暴露用户管理/系统设置入口（既有权限拒绝保持）。
@@ -645,7 +665,12 @@ async function runViewerCase(page: Page, locale: Locale): Promise<void> {
   const viewerDrawer = page.locator(".ant-drawer", { has: page.getByTestId("account-profile-username") });
   const viewerDuplicateHeadings = await viewerDrawer.getByRole("heading", { name: text.profileTitle }).count();
   expect(viewerDuplicateHeadings).toBe(0);
+  await expect(viewerDrawer.getByText(text.profileSubtitle)).toBeVisible();
   const viewerSubtitleVisible = await viewerDrawer.getByText(text.profileSubtitle).isVisible();
+  await expect(viewerDrawer.locator("section.account-user-password")).toHaveAttribute(
+    "aria-labelledby",
+    "account-user-password-title",
+  );
   const viewerPasswordLabelled =
     (await viewerDrawer
       .locator("section.account-user-password")
@@ -721,7 +746,7 @@ async function runViewerCase(page: Page, locale: Locale): Promise<void> {
       document_scroll_width: viewerOverflow.document_scroll_width,
       body_scroll_width: viewerOverflow.body_scroll_width,
       profile_panel_overflow: viewerPanelOverflow,
-      user_panel_overflow: false,
+      user_panel_overflow: null,
     },
     requests: {
       non_get_paths: state.nonGetPaths,
