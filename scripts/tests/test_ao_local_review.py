@@ -163,6 +163,22 @@ class SidecarStateTests(unittest.TestCase):
         self.assertFalse(reviewer.exists())
         self.assertFalse(roborev_dir.exists())
 
+    def test_run_recovers_missing_delivery_after_gate_persisted(self) -> None:
+        started = sidecar.command_start(args_for(self.repo, self.data), self.paths)
+        round_dir = pathlib.Path(started["round_dir"])
+        gate = {
+            "dispatch_id": "dispatch-1",
+            "candidate_sha": git(self.repo, "rev-parse", "HEAD"),
+            "round": 1,
+            "verdict": "approved",
+            "findings": [],
+        }
+        sidecar.atomic_json(round_dir / "gate.json", gate)
+        args = argparse.Namespace(ao_session=None, ao_bin="ao")
+        result = sidecar.command_run(args, self.paths)
+        self.assertEqual(result["status"], "existing")
+        self.assertEqual(result["delivery"]["status"], "not_requested")
+
 
 class GateContractTests(unittest.TestCase):
     def test_structured_review_normalizes_findings_and_fingerprint(self) -> None:
@@ -306,6 +322,9 @@ print(json.dumps({'type':'result','result':'ok'}))
             self.assertNotIn(
                 "--dangerously-skip-permissions", receipt["effective_argv"]
             )
+            self.assertEqual(
+                receipt["forbidden_incoming"], ["--dangerously-skip-permissions"]
+            )
             self.assertIn("Read,Glob,Grep", receipt["effective_argv"])
             summary = sidecar.validate_audit(receipt)
             self.assertEqual(summary["permission_mode"], "dontAsk")
@@ -336,6 +355,13 @@ print(json.dumps({'type':'result','result':'ok'}))
 
 
 class RoboRevDatabaseTests(unittest.TestCase):
+    def test_terminal_failure_requires_a_new_job_for_same_candidate(self) -> None:
+        self.assertTrue(sidecar.review_job_needs_enqueue(None))
+        self.assertTrue(sidecar.review_job_needs_enqueue({"status": "failed"}))
+        self.assertTrue(sidecar.review_job_needs_enqueue({"status": "canceled"}))
+        self.assertFalse(sidecar.review_job_needs_enqueue({"status": "queued"}))
+        self.assertFalse(sidecar.review_job_needs_enqueue({"status": "done"}))
+
     def test_query_uses_read_only_persisted_job_and_review(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database = pathlib.Path(temporary) / "reviews.db"
@@ -456,6 +482,46 @@ class DeliveryRecoveryTests(unittest.TestCase):
             with self.assertRaises(sidecar.SidecarError) as raised:
                 sidecar.deliver(round_dir, changed_gate, None, "ao")
             self.assertEqual(raised.exception.code, "DELIVERY_CONFLICT")
+
+    def test_reconcile_does_not_send_after_three_failed_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = pathlib.Path(temporary)
+            repo = base / "repo"
+            repo.mkdir()
+            RepositoryFixture(repo)
+            data = base / "ao-data"
+            paths = sidecar.Paths.resolve(args_for(repo, data))
+            started = sidecar.command_start(args_for(repo, data), paths)
+            round_dir = pathlib.Path(started["round_dir"])
+            gate = {
+                "dispatch_id": "dispatch-1",
+                "candidate_sha": git(repo, "rev-parse", "HEAD"),
+                "round": 1,
+                "verdict": "approved",
+                "findings": [],
+            }
+            sidecar.atomic_json(round_dir / "gate.json", gate)
+            sidecar.atomic_json(
+                round_dir / "delivery.json",
+                {
+                    "status": "pending",
+                    "attempts": 3,
+                    "payload_sha256": sidecar.sha256_bytes(
+                        sidecar.delivery_message(gate).encode()
+                    ),
+                },
+            )
+            marker = base / "sent"
+            fake_ao = base / "ao"
+            fake_ao.write_text(
+                f"#!/usr/bin/env sh\ntouch '{marker}'\n", encoding="utf-8"
+            )
+            fake_ao.chmod(0o755)
+            args = argparse.Namespace(ao_session="orchestrator", ao_bin=str(fake_ao))
+            with self.assertRaises(sidecar.SidecarError) as raised:
+                sidecar.command_reconcile(args, paths)
+            self.assertEqual(raised.exception.code, "DELIVERY_RETRY_EXHAUSTED")
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

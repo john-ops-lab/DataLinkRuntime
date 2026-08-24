@@ -748,6 +748,10 @@ def find_roborev_job(
         connection.close()
 
 
+def review_job_needs_enqueue(job: dict[str, Any] | None) -> bool:
+    return job is None or job.get("status") in {"failed", "canceled"}
+
+
 def query_roborev_database(database: pathlib.Path, job_id: int) -> dict[str, Any]:
     if not database.is_file():
         raise SidecarError(
@@ -1155,10 +1159,17 @@ def command_run(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
                 "CANDIDATE_MISMATCH", "candidate tree changed since start"
             )
         if (round_dir / "gate.json").exists():
+            gate = load_json(round_dir / "gate.json")
+            delivery_path = round_dir / "delivery.json"
+            delivery = (
+                load_json(delivery_path)
+                if delivery_path.exists()
+                else deliver(round_dir, gate, args.ao_session, args.ao_bin)
+            )
             return {
                 "status": "existing",
-                "gate": load_json(round_dir / "gate.json"),
-                "delivery": load_json(round_dir / "delivery.json"),
+                "gate": gate,
+                "delivery": delivery,
             }
         binary = pathlib.Path(args.roborev_bin).expanduser().resolve()
         wrapper = pathlib.Path(args.claude_wrapper).expanduser().resolve()
@@ -1244,7 +1255,7 @@ def command_run(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
                 existing_job = find_roborev_job(
                     database_path, str(request["candidate_sha"]), worktree
                 )
-                if existing_job is None:
+                if review_job_needs_enqueue(existing_job):
                     job_id = enqueue_review(
                         binary, server, env, worktree, request, database_path
                     )
@@ -1341,6 +1352,7 @@ def command_run(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
         atomic_json(paths.state(), state)
         delivery = deliver(round_dir, gate, args.ao_session, args.ao_bin)
         clean_reviewer_worktree(paths, worktree, marker)
+        shutil.rmtree(roborev_dir)
         return {"status": "completed", "gate": gate, "delivery": delivery}
 
 
@@ -1403,6 +1415,18 @@ def command_reconcile(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
     with directory_lock(paths.state_root):
         _state, round_dir = current_round(paths)
         gate = load_json(round_dir / "gate.json")
+        delivery_path = round_dir / "delivery.json"
+        if delivery_path.exists():
+            previous = load_json(delivery_path)
+            if (
+                previous.get("status") == "pending"
+                and int(previous.get("attempts", 0)) >= 3
+            ):
+                raise SidecarError(
+                    "DELIVERY_RETRY_EXHAUSTED",
+                    "AO delivery failed three times",
+                    delivery=previous,
+                )
         delivery = deliver(round_dir, gate, args.ao_session, args.ao_bin)
         if (
             delivery.get("status") == "pending"

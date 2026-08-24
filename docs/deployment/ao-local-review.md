@@ -80,7 +80,8 @@ Gate 和 `delivery=pending` 先原子落盘，再执行 `ao send`。通知失败
 `reconcile` 只重投已持久化结果，不重新调用 Claude；连续三次失败后返回稳定错误。
 RoboRev 的数据库、配置和运行目录按 Candidate/round 隔离；daemon 重启不会捞起已
 supersede 的旧 job，也不会让旧任务回退到其他 checkout。创建新 round 时，Sidecar
-仅清理由自身 owner receipt 标记的旧 Reviewer worktree 和旧 RoboRev round。
+仅清理由自身 owner receipt 标记的旧 Reviewer worktree 和旧 RoboRev round；成功
+生成权威 JSON 回执后也会删除该 round 的临时 SQLite 与日志，避免长期累积。
 
 Candidate 变化后必须创建新 round：
 

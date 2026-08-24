@@ -55,7 +55,7 @@ case "$(uname -s)-$(uname -m)" in
     ;;
 esac
 
-mkdir -p "${INSTALL_ROOT}/bin" "${INSTALL_ROOT}/roborev/logs" "${INSTALL_ROOT}/roborev/runtime" "${USER_BIN}"
+mkdir -p "${INSTALL_ROOT}/bin" "${INSTALL_ROOT}/roborev" "${USER_BIN}"
 chmod 700 "${INSTALL_ROOT}" "${INSTALL_ROOT}/bin" "${INSTALL_ROOT}/roborev"
 
 install -m 0755 "${SOURCE_ROOT}/ao-local-review" "${INSTALL_ROOT}/bin/ao-local-review"

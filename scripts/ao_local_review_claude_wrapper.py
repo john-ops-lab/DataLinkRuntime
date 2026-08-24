@@ -126,11 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if not real_claude.is_file():
         raise RuntimeError(f"real Claude executable not found: {real_claude}")
-    if any(token in FORBIDDEN_TOKENS for token in incoming):
-        # Forbidden input is recorded but never forwarded. RoboRev v0.66.0
-        # currently passes only --allowedTools; this check catches future
-        # attempts to widen permissions without weakening the enforced argv.
-        pass
+    forbidden_incoming = sorted(set(incoming).intersection(FORBIDDEN_TOKENS))
     effective = effective_argv(incoming)
     prompt = sys.stdin.buffer.read()
     stdout_bytes = 0
@@ -175,6 +171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         "real_claude": str(real_claude),
         "requested_argv": incoming,
+        "forbidden_incoming": forbidden_incoming,
         "effective_argv": effective,
         "init_event": init_event,
         "stdin_bytes": len(prompt),
