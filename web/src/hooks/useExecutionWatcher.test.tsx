@@ -40,13 +40,19 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
-function WatcherHarness(props: { initial: Execution }) {
+function WatcherHarness(props: { initial: Execution; next?: Execution }) {
   const watcher = useExecutionWatcher(() => undefined);
+  const nextExecution = props.next;
   return (
     <>
       <button type="button" data-testid="watch" onClick={() => watcher.watch(props.initial)}>
         Watch
       </button>
+      {nextExecution !== undefined && (
+        <button type="button" data-testid="watch-next" onClick={() => watcher.watch(nextExecution)}>
+          Watch next
+        </button>
+      )}
       <output data-testid="execution-status">{watcher.execution?.status ?? ""}</output>
       <output data-testid="server-line-count">{watcher.serverLogLineCount}</output>
       <LiveLogWorkspace
@@ -182,18 +188,39 @@ describe("useExecutionWatcher live-log boundaries", () => {
     expect(screen.getByTestId("live-log").textContent).toBe("start\nfirst\nsecond\n");
   });
 
-  it("keeps the browser window bounded while the watcher retains the server line count", () => {
-    const lines = Array.from({ length: 2005 }, (_, index) => `line-${index}`).join("\n");
-    render(<WatcherHarness initial={makeExecution()} />);
+  it("resets the frozen view when the watcher switches to another execution", async () => {
+    const first = makeExecution({ id: 42, stdout: "execution-a\n" });
+    const second = makeExecution({ id: 43, stdout: "execution-b\n" });
+    render(<WatcherHarness initial={first} next={second} />);
     fireEvent.click(screen.getByTestId("watch"));
+    await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("execution-a"));
+
+    fireEvent.click(screen.getByTestId("live-log-pause"));
+    expect(screen.getByTestId("live-log-resume")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("watch-next"));
+    await waitFor(() => expect(screen.getByTestId("live-log").textContent).toBe("execution-b\n"));
+    expect(screen.getByTestId("live-log").textContent).not.toContain("execution-a");
+    expect(screen.getByTestId("live-log-pause")).toBeTruthy();
+    expect(screen.queryByTestId("live-log-resume")).toBeNull();
+  });
+
+  it("keeps the browser window bounded while the watcher retains the server line count", async () => {
+    const initial = makeExecution({ stdout: "line-0\nline-1\n" });
+    const lines = Array.from({ length: 2003 }, (_, index) => `line-${index + 2}`).join("\n");
+    render(<WatcherHarness initial={initial} />);
+    fireEvent.click(screen.getByTestId("watch"));
+    await waitFor(() => expect(screen.getByTestId("live-log").textContent).toBe("line-0\nline-1\n"));
     const handlers = latestHandlers();
 
     fireEvent.click(screen.getByTestId("live-log-pause"));
+    const pausedText = screen.getByTestId("live-log").textContent;
     act(() => {
       handlers.onLog?.({ stream: "stdout", chunk: lines });
     });
 
-    expect(screen.getByTestId("live-log").textContent).not.toContain("line-0");
+    expect(screen.getByTestId("live-log").textContent).toBe(pausedText);
+    expect(screen.getByTestId("live-log").textContent).toContain("line-0");
     expect(screen.getByTestId("live-log").textContent).not.toContain("line-2004");
     fireEvent.click(screen.getByTestId("live-log-resume"));
     const displayedLines = (screen.getByTestId("live-log").textContent ?? "").split("\n");

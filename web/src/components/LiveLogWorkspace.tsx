@@ -95,6 +95,7 @@ export default function LiveLogWorkspace(props: Props) {
                 label: t("live.unifiedLog"),
                 children: (
                   <LogView
+                    key={execution.id}
                     testId="live-log"
                     content={content}
                     truncated={execution.stdout_truncated || execution.stderr_truncated}
