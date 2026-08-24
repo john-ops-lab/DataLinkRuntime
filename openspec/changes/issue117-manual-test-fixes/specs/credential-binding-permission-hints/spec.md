@@ -18,11 +18,11 @@
 
 ### Requirement: 凭据提示必须使用完整双语资源
 
-凭据新增提示及其角色分支 MUST 使用现有 i18n 资源，而不得在组件中硬编码用户可见文案；`zh-CN` 与 `en` MUST 具有对应的资源 key。非平台管理员的 `zh-CN` 值 SHALL 精确为 `如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。`，`en` SHALL 表达同一含义：`To add a credential, ask an administrator to go to “System Settings → Credential Management” and create one.`。两种语言都 MUST 保留正确的管理员/非管理员入口显隐语义。
+凭据新增提示及其角色分支 MUST 使用现有 i18n 资源，而不得在组件中硬编码用户可见文案；`zh-CN` 与 `en` MUST 具有对应的资源 key。非平台管理员的 `zh-CN` 值 SHALL 精确为 `如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。`，`en` SHALL 表达同一含义：`To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.`。两种语言都 MUST 保留正确的管理员/非管理员入口显隐语义。
 
 #### Scenario: zh-CN 与 en 资源完整且不硬编码
 - **WHEN** 用户分别以 `zh-CN` 和 `en` 打开凭据绑定区域
-- **THEN** 两种语言均从对应 i18n key 渲染角色提示，`zh-CN` 显示指定中文文案、`en` 显示对应英文文案，且资源 key 集一致
+- **THEN** 两种语言均从对应 i18n key 渲染角色提示；`zh-CN` 显示指定中文文案，`en` 显示 `To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.`，且资源 key 集一致
 
 #### Scenario: 双语角色入口保持一致
 - **WHEN** 平台管理员或非平台管理员切换 `zh-CN`/`en` 后查看凭据绑定区域
