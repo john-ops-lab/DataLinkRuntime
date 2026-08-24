@@ -16,8 +16,10 @@ it does not use a real Secret, Provider credential, or Provider response.
   was safely cancelled with `Escape`, so no local file was selected or read by
   this primary run.
 - An anonymous fixture prompt was submitted in each locale. The resulting
-  metadata-only capture recorded `POST /api/adapters/1/ai/assist` and the
-  adjacent credential-bindings `GET`, both with status `200`.
+  metadata-only capture recorded `GET /api/workers`, `POST /api/adapters/1/ai/assist`,
+  and `GET /api/adapters/1/credential-bindings`, each with status `200`.
+  The complete per-locale sanitized request lists are retained in
+  `ao-browser-report.json`.
 - AO Browser `errors` returned zero messages. Console output contained only
   development `debug`/`info` entries; no console error was observed.
 
@@ -37,6 +39,8 @@ fixture record for `zh-CN`/`en` × `1100`/`1180`/`1280`/`1440`/`1680`/`1920`. It
 
 - picker upload, valid drag/drop, unsupported-type rejection, and remove;
 - narrow readable wrap and desktop one-line/`nowrap`/`scrollWidth <= clientWidth` assertions;
+- desktop also records rendered content width and a positive `clientWidth - content_scroll_width`
+  margin; the minimum is `2.062px` for English at 1280/1440/1680.
 - complete accessible limit/privacy text assertions;
 - page horizontal/vertical overflow checks;
 - one fixture assist request, no unknown paths, and zero console/page errors.

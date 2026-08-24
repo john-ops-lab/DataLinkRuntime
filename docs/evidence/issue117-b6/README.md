@@ -23,7 +23,9 @@
   `zh-CN`/`en` × `1100`/`1180`/`1280`/`1440`/`1680`/`1920`；`1100/1180` 断言可读换行、
   完整隐私文案与无裁切，桌面四档断言单行、`flex-wrap`、子元素 `white-space`、
   `scrollWidth <= clientWidth`、整页水平/垂直溢出、上传/拖拽/错误/移除、lifecycle 和
-  fixture assist request。
+  fixture assist request。桌面还记录渲染子项的 `content_scroll_width` 与
+  `client_width - content_scroll_width`：英文 1280/1440/1680 为 `2.062px`，1920 为
+  `16.062px`；zh-CN 档位余量至少 `96px`。
 - full Web gates：`npm run lint`、`npm run typecheck`、`npm run test`（30 files / 343 tests）、
   `npm run build` 通过。
 - strict OpenSpec：`openspec validate issue117-manual-test-fixes --type change --strict` 与

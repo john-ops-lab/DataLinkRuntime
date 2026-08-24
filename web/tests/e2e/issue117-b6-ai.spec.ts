@@ -81,6 +81,8 @@ interface GuidanceMetrics {
   flex_wrap: string;
   scroll_width: number;
   client_width: number;
+  content_scroll_width: number;
+  content_margin: number;
   hint_scroll_width: number;
   hint_client_width: number;
   privacy_scroll_width: number;
@@ -247,6 +249,14 @@ async function readGuidance(page: Page): Promise<GuidanceMetrics> {
     const hintStyle = hint === null ? null : getComputedStyle(hint);
     const privacyStyle = privacy === null ? null : getComputedStyle(privacy);
     const lineHeight = Number.parseFloat(style.lineHeight);
+    const childWidths = [hint, privacy]
+      .filter((child): child is HTMLElement => child !== null)
+      .map((child) => child.getBoundingClientRect().width);
+    const columnGap = Number.parseFloat(style.columnGap) || 0;
+    const contentScrollWidth = style.flexWrap === "nowrap"
+      ? childWidths.reduce((total, width) => total + width, 0) +
+        Math.max(childWidths.length - 1, 0) * columnGap
+      : Math.max(...childWidths, 0);
     return {
       line_count: Math.round(guidance.getBoundingClientRect().height / lineHeight),
       line_height: lineHeight,
@@ -257,6 +267,8 @@ async function readGuidance(page: Page): Promise<GuidanceMetrics> {
       flex_wrap: style.flexWrap,
       scroll_width: guidance.scrollWidth,
       client_width: guidance.clientWidth,
+      content_scroll_width: contentScrollWidth,
+      content_margin: guidance.clientWidth - contentScrollWidth,
       hint_scroll_width: hint?.scrollWidth ?? 0,
       hint_client_width: hint?.clientWidth ?? 0,
       privacy_scroll_width: privacy?.scrollWidth ?? 0,
@@ -338,6 +350,10 @@ async function runCase(page: Page, locale: Locale, width: number) {
   expect(guidance.privacy_scroll_width).toBeLessThanOrEqual(guidance.client_width);
   expect(guidance.privacy_scroll_width).toBeLessThanOrEqual(guidance.privacy_client_width);
   expect(guidance.scroll_width).toBeLessThanOrEqual(guidance.client_width);
+  if (width > 1180) {
+    expect(guidance.content_scroll_width).toBeLessThan(guidance.client_width);
+    expect(guidance.content_margin).toBeGreaterThanOrEqual(1.5);
+  }
   await expect(page.getByTestId("ai-composer-guidance").locator("br")).toHaveCount(0);
   await expect(page.getByTestId("ai-composer-guidance").locator(":scope > div, :scope > p")).toHaveCount(0);
   expect(guidance.text).toContain(locale === "zh-CN" ? "最多 8 个" : "max 8");
@@ -456,7 +472,7 @@ test.afterAll(() => {
 
 for (const locale of LOCALES) {
   for (const width of VIEWPORTS) {
-    test(locale + " " + width + "px AI attachment one-line contract", async ({ browser }) => {
+    test(locale + " " + width + "px AI attachment layout contract", async ({ browser }) => {
       browserVersion = browser.version();
       const context = await browser.newContext({ locale, viewport: { width, height: 900 } });
       const page = await context.newPage();

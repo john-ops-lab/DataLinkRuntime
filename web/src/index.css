@@ -1859,7 +1859,7 @@ body {
 .ai-composer-guidance {
   display: flex;
   flex-wrap: nowrap;
-  gap: 0 4px;
+  gap: 0 2px;
   min-width: 0;
   color: var(--dlr-text-weak);
   font-size: 0.68rem;
