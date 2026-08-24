@@ -133,17 +133,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         pass
     effective = effective_argv(incoming)
     prompt = sys.stdin.buffer.read()
-    completed = subprocess.run(
-        [str(real_claude), *effective],
-        input=prompt,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    sys.stdout.buffer.write(completed.stdout)
-    sys.stdout.buffer.flush()
-    sys.stderr.buffer.write(completed.stderr)
-    sys.stderr.buffer.flush()
+    stdout_bytes = 0
+    init_event: dict[str, Any] | None = None
+    with (
+        tempfile.TemporaryFile() as prompt_file,
+        tempfile.TemporaryFile() as stderr_file,
+    ):
+        prompt_file.write(prompt)
+        prompt_file.seek(0)
+        process = subprocess.Popen(
+            [str(real_claude), *effective],
+            stdin=prompt_file,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+        if process.stdout is None:
+            raise RuntimeError("Claude process has no stdout")
+        try:
+            for line in iter(process.stdout.readline, b""):
+                stdout_bytes += len(line)
+                if init_event is None:
+                    init_event = find_init_event(line)
+                sys.stdout.buffer.write(line)
+                sys.stdout.buffer.flush()
+        except BrokenPipeError:
+            process.terminate()
+        finally:
+            process.stdout.close()
+        return_code = process.wait()
+        stderr_file.seek(0)
+        stderr = stderr_file.read()
+    try:
+        sys.stderr.buffer.write(stderr)
+        sys.stderr.buffer.flush()
+    except BrokenPipeError:
+        pass
     audit = {
         "schema_version": 1,
         "review_profile_version": int(
@@ -152,16 +176,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "real_claude": str(real_claude),
         "requested_argv": incoming,
         "effective_argv": effective,
-        "init_event": find_init_event(completed.stdout),
+        "init_event": init_event,
         "stdin_bytes": len(prompt),
-        "stdout_bytes": len(completed.stdout),
-        "stderr_bytes": len(completed.stderr),
-        "exit_code": completed.returncode,
+        "stdout_bytes": stdout_bytes,
+        "stderr_bytes": len(stderr),
+        "exit_code": return_code,
         "started_at": started_at,
         "completed_at": utc_now(),
     }
     atomic_json(audit_file, audit)
-    return completed.returncode
+    return return_code
 
 
 if __name__ == "__main__":
