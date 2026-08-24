@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "dispatch_id": "issue117-b5-editor-20260824-r1",
+  "scope": "changed source and issue117-b5 evidence files",
+  "absolute_path_markers": ["machine-home", "private-temp", "mounted-volume"],
+  "credential_markers": ["bearer-token", "provider-token", "aws-access-key", "private-key"],
+  "absolute_path_findings": [],
+  "credential_findings": [],
+  "anonymous_placeholders_present": ["FIXTURE_TOKEN", "fixture-*"],
+  "real_provider_credentials": false,
+  "request_bodies_archived": false,
+  "headers_archived": false
+}

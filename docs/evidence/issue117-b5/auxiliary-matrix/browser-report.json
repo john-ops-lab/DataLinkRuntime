@@ -1,0 +1,578 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "dispatch_id": "issue117-b5-editor-20260824-r1",
+  "scope": "Issue 117 Batch 5 editor configuration collapse and Monaco maximize/restore",
+  "antd": "5.29.3",
+  "pro_components": "2.8.10",
+  "browser": "chromium",
+  "browser_version": "151.0.7922.34",
+  "node_version": "v23.11.0",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "viewport_height": 900,
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "fake_provider": "fixture",
+  "real_provider_credentials": false,
+  "records": [
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "screenshots": [
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1280-collapsed.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1280-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1280-restored.png"
+      ],
+      "initial": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "maximized": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "before_restore": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "restored": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "before_escape": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "escaped": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "lifecycle_requests": [],
+      "unknown_requests": [],
+      "console_errors": [],
+      "page_errors": [],
+      "overflow": {
+        "normal": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "maximized": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "restored": {
+          "horizontal": false,
+          "vertical": false
+        }
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "screenshots": [
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1440-collapsed.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1440-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1440-restored.png"
+      ],
+      "initial": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "maximized": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "before_restore": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "restored": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "before_escape": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "escaped": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "lifecycle_requests": [],
+      "unknown_requests": [],
+      "console_errors": [],
+      "page_errors": [],
+      "overflow": {
+        "normal": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "maximized": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "restored": {
+          "horizontal": false,
+          "vertical": false
+        }
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "screenshots": [
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1680-collapsed.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1680-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1680-restored.png"
+      ],
+      "initial": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "maximized": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "before_restore": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "restored": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "before_escape": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "escaped": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "lifecycle_requests": [],
+      "unknown_requests": [],
+      "console_errors": [],
+      "page_errors": [],
+      "overflow": {
+        "normal": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "maximized": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "restored": {
+          "horizontal": false,
+          "vertical": false
+        }
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "screenshots": [
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1920-collapsed.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1920-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1920-restored.png"
+      ],
+      "initial": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "maximized": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "before_restore": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "restored": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "before_escape": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "escaped": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "lifecycle_requests": [],
+      "unknown_requests": [],
+      "console_errors": [],
+      "page_errors": [],
+      "overflow": {
+        "normal": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "maximized": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "restored": {
+          "horizontal": false,
+          "vertical": false
+        }
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "screenshots": [
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1280-collapsed.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1280-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1280-restored.png"
+      ],
+      "initial": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "maximized": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "before_restore": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "restored": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "before_escape": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "escaped": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "lifecycle_requests": [],
+      "unknown_requests": [],
+      "console_errors": [],
+      "page_errors": [],
+      "overflow": {
+        "normal": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "maximized": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "restored": {
+          "horizontal": false,
+          "vertical": false
+        }
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "screenshots": [
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1440-collapsed.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1440-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1440-restored.png"
+      ],
+      "initial": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "maximized": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "before_restore": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "restored": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "before_escape": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "escaped": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "lifecycle_requests": [],
+      "unknown_requests": [],
+      "console_errors": [],
+      "page_errors": [],
+      "overflow": {
+        "normal": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "maximized": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "restored": {
+          "horizontal": false,
+          "vertical": false
+        }
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "screenshots": [
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1680-collapsed.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1680-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1680-restored.png"
+      ],
+      "initial": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "maximized": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "before_restore": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "restored": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "before_escape": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "escaped": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "lifecycle_requests": [],
+      "unknown_requests": [],
+      "console_errors": [],
+      "page_errors": [],
+      "overflow": {
+        "normal": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "maximized": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "restored": {
+          "horizontal": false,
+          "vertical": false
+        }
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "screenshots": [
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1920-collapsed.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1920-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1920-restored.png"
+      ],
+      "initial": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "maximized": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 1
+      },
+      "before_restore": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "restored": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "before_escape": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "escaped": {
+        "selection_start_line": 2,
+        "selection_start_column": 1,
+        "selection_end_line": 2,
+        "selection_end_column": 1,
+        "top_visible_line": 1
+      },
+      "lifecycle_requests": [],
+      "unknown_requests": [],
+      "console_errors": [],
+      "page_errors": [],
+      "overflow": {
+        "normal": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "maximized": {
+          "horizontal": false,
+          "vertical": false
+        },
+        "restored": {
+          "horizontal": false,
+          "vertical": false
+        }
+      }
+    }
+  ]
+}

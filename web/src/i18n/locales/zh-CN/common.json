@@ -226,7 +226,9 @@
     "light": "浅色",
     "system": "跟随系统",
     "toolbarAria": "代码编辑器工具栏",
-    "ariaLabel": "适配器代码编辑器"
+    "ariaLabel": "适配器代码编辑器",
+    "maximize": "最大化代码编辑器",
+    "restore": "恢复代码编辑器布局"
   },
   "health": {
     "loading": "控制服务检查中…",

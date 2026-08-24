@@ -44,6 +44,12 @@ const { monacoHarness } = vi.hoisted(() => {
     selection: null,
     text: "",
   };
+  const layoutState = {
+    topVisibleLine: 1,
+    scrollTop: 0,
+    layoutCalls: 0,
+    restoredSelections: [] as FakeSelection[],
+  };
   const listeners = new Set<() => void>();
   return {
     monacoHarness: {
@@ -56,6 +62,22 @@ const { monacoHarness } = vi.hoisted(() => {
         state.text = text;
       },
       getText: (): string => state.text,
+      setTopVisibleLine(line: number) {
+        layoutState.topVisibleLine = line;
+      },
+      getTopVisibleLine: (): number => layoutState.topVisibleLine,
+      setScrollTop(scrollTop: number) {
+        layoutState.scrollTop = scrollTop;
+      },
+      getScrollTop: (): number => layoutState.scrollTop,
+      getLayoutCalls: (): number => layoutState.layoutCalls,
+      getRestoredSelections: (): FakeSelection[] => [...layoutState.restoredSelections],
+      recordLayout() {
+        layoutState.layoutCalls += 1;
+      },
+      recordSelection(selection: FakeSelection) {
+        layoutState.restoredSelections.push({ ...selection });
+      },
       subscribe(listener: () => void): () => void {
         listeners.add(listener);
         return () => {
@@ -65,6 +87,10 @@ const { monacoHarness } = vi.hoisted(() => {
       reset() {
         state.selection = null;
         state.text = "";
+        layoutState.topVisibleLine = 1;
+        layoutState.scrollTop = 0;
+        layoutState.layoutCalls = 0;
+        layoutState.restoredSelections = [];
         listeners.clear();
       },
     },
@@ -98,7 +124,24 @@ vi.mock("@monaco-editor/react", () => ({
         getModel: () => ({
           getValueInRange: () => monacoHarness.getText(),
         }),
+        getVisibleRanges: () => [{ startLineNumber: monacoHarness.getTopVisibleLine() }],
+        getPosition: () => ({ lineNumber: monacoHarness.getTopVisibleLine(), column: 1 }),
+        getScrollTop: () => monacoHarness.getScrollTop(),
+        getTopForLineNumber: (lineNumber: number) => lineNumber * 20,
+        setScrollTop: (scrollTop: number) => monacoHarness.setScrollTop(scrollTop),
+        setSelection: (selection: {
+          startLineNumber: number;
+          startColumn: number;
+          endLineNumber: number;
+          endColumn: number;
+        }) => {
+          monacoHarness.setSelection(selection);
+          monacoHarness.recordSelection(selection);
+        },
+        layout: () => monacoHarness.recordLayout(),
         onDidChangeCursorSelection: (listener: () => void) =>
+          monacoHarness.subscribe(listener),
+        onDidScrollChange: (listener: () => void) =>
           monacoHarness.subscribe(listener),
       };
       props.onMount?.(fakeEditor, {});
@@ -1378,6 +1421,8 @@ it("saves a new version with the edited content", async () => {
   fireEvent.change(screen.getByTestId("code-editor"), {
     target: { value: "def handle(context, input):\n    return {'done': True}\n" },
   });
+  fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+  await screen.findByTestId("requirements-input");
   fireEvent.change(screen.getByTestId("requirements-input"), {
     target: { value: "requests==2.32.0" },
   });
@@ -1950,6 +1995,8 @@ it("locks editing while Save is in flight so the saved snapshot stays consistent
   await waitFor(() => {
     expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true);
   });
+  fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+  await screen.findByTestId("requirements-input");
   expect((screen.getByTestId("requirements-input") as HTMLTextAreaElement).disabled).toBe(true);
   expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getAllByTestId("adapter-item")[0] as HTMLButtonElement).disabled).toBe(true);
@@ -2905,6 +2952,176 @@ it("edits metadata and deletes the adapter from the settings drawer", async () =
   expect(screen.getByText("请选择一个适配器进行管理。")).toBeTruthy();
 });
 
+it("starts with independent editor configuration panels collapsed and preserves their values", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const version = makeVersion({ requirements: "requests==2.32.0" });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, version),
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({
+        body: [{ id: 7, name: "fixture-credential", type: "token", created_at: "", updated_at: "" }],
+      }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: () => ({
+        body: [{ env_key: "API_TOKEN", credential_id: 7, field: "token", credential_name: "fixture-credential", credential_type: "token" }],
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+
+  const requirementsHeader = screen.getByTestId("requirements-collapse-header");
+  const bindingsHeader = screen.getByTestId("bindings-collapse-header");
+  expect(requirementsHeader.closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+  expect(bindingsHeader.closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+
+  fireEvent.click(requirementsHeader);
+  await screen.findByTestId("requirements-input");
+  expect(requirementsHeader.closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(true);
+  expect(bindingsHeader.closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+
+  fireEvent.change(screen.getByTestId("requirements-input"), { target: { value: "httpx==0.28.0" } });
+  fireEvent.click(bindingsHeader);
+  await screen.findByTestId("credential-bindings");
+  fireEvent.change(screen.getByTestId("binding-env-key"), { target: { value: "RENAMED_TOKEN" } });
+  expect(requirementsHeader.closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(true);
+  expect(bindingsHeader.closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(true);
+
+  fireEvent.click(requirementsHeader);
+  fireEvent.click(bindingsHeader);
+  expect(requirementsHeader.closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+  expect(bindingsHeader.closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+
+  fireEvent.click(requirementsHeader);
+  fireEvent.click(bindingsHeader);
+  expect(valueOf("requirements-input")).toBe("httpx==0.28.0");
+  expect(valueOf("binding-env-key")).toBe("RENAMED_TOKEN");
+
+  const lifecycleRequests = fetchMock.mock.calls.filter(([url, init]) => {
+    const method = (init?.method ?? "GET").toUpperCase();
+    const path = String(url);
+    return method !== "GET" && (
+      path.includes("/versions") ||
+      path.includes("/credential-bindings") ||
+      path.includes("/executions") ||
+      path.includes("/schedule") ||
+      path.includes("/webhook")
+    );
+  });
+  expect(lifecycleRequests).toHaveLength(0);
+});
+
+function expectEditorPosition(
+  expectedSelection: {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  },
+  expectedTopVisibleLine: number,
+) {
+  const selection = monacoHarness.getSelection();
+  expect(selection?.startLineNumber).toBe(expectedSelection.startLineNumber);
+  expect(selection?.startColumn).toBe(expectedSelection.startColumn);
+  expect(selection?.endLineNumber).toBe(expectedSelection.endLineNumber);
+  expect(selection?.endColumn).toBe(expectedSelection.endColumn);
+  expect(monacoHarness.getTopVisibleLine()).toBe(expectedTopVisibleLine);
+}
+
+it("maximizes and restores the editor without losing position, dirty edits, or lifecycle semantics", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  const version = makeVersion({ code: `${"line\n".repeat(20)}end\n` });
+  const savedVersions: VersionDetail[] = [];
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, version),
+    {
+      method: "POST",
+      match: "/api/adapters/1/versions",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}") as { code: string; requirements: string; runtime_config: Record<string, unknown> };
+        const saved = makeVersion({ id: 11, seq: 2, ...payload });
+        savedVersions.push(saved);
+        return { status: 201, body: saved };
+      },
+    },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: { ...adapter, latest_version_id: 11 } }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  const expectedSelection = {
+    startLineNumber: 4,
+    startColumn: 3,
+    endLineNumber: 8,
+    endColumn: 9,
+  };
+  act(() => {
+    monacoHarness.setSelection(expectedSelection);
+    monacoHarness.setTopVisibleLine(7);
+    monacoHarness.setScrollTop(144);
+  });
+  const callsBeforeLayoutActions = fetchMock.mock.calls.length;
+
+  fireEvent.click(screen.getByTestId("editor-maximize"));
+  await waitFor(() => expect(screen.getByTestId("editor-restore")).toBeTruthy());
+  await waitFor(() => expect(monacoHarness.getLayoutCalls()).toBeGreaterThan(0));
+  expect(screen.getByTestId("editor-main").getAttribute("data-layout")).toBe("maximized");
+  expectEditorPosition(expectedSelection, 7);
+  expect(monacoHarness.getRestoredSelections().at(-1)).toEqual(expectedSelection);
+  expect(monacoHarness.getLayoutCalls()).toBeGreaterThan(0);
+  expect(document.activeElement).toBe(screen.getByTestId("editor-restore"));
+
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "edited while maximized\n" } });
+  expect(valueOf("code-editor")).toBe("edited while maximized\n");
+  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false);
+
+  fireEvent.click(screen.getByTestId("editor-restore"));
+  await waitFor(() => expect(screen.getByTestId("editor-maximize")).toBeTruthy());
+  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(2));
+  expect(screen.getByTestId("editor-main").getAttribute("data-layout")).toBe("normal");
+  expectEditorPosition(expectedSelection, 7);
+  expect(monacoHarness.getRestoredSelections().at(-1)).toEqual(expectedSelection);
+  expect(valueOf("code-editor")).toBe("edited while maximized\n");
+  expect(document.activeElement).toBe(screen.getByTestId("editor-maximize"));
+
+  fireEvent.click(screen.getByTestId("editor-maximize"));
+  await screen.findByTestId("editor-restore");
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.getByTestId("editor-maximize")).toBeTruthy());
+  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(3));
+  expectEditorPosition(expectedSelection, 7);
+  expect(monacoHarness.getRestoredSelections().at(-1)).toEqual(expectedSelection);
+  expect(valueOf("code-editor")).toBe("edited while maximized\n");
+
+  const lifecycleRequestsBeforeSave = fetchMock.mock.calls.slice(callsBeforeLayoutActions).filter(([url, init]) => {
+    const method = (init?.method ?? "GET").toUpperCase();
+    const path = String(url);
+    return method !== "GET" && (
+      path.includes("/versions") ||
+      path.includes("/credential-bindings") ||
+      path.includes("/executions") ||
+      path.includes("/schedule") ||
+      path.includes("/webhook")
+    );
+  });
+  expect(lifecycleRequestsBeforeSave).toHaveLength(0);
+
+  fireEvent.click(screen.getByTestId("save-version"));
+  await screen.findByText("适配器已保存");
+  expect(savedVersions).toHaveLength(1);
+  expect(JSON.parse(String(fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/adapters/1/versions" && init?.method === "POST")?.[1]?.body))).toEqual({
+    code: "edited while maximized\n",
+    requirements: version.requirements,
+    runtime_config: {},
+  });
+});
+
 // --- M3.1 Review round 1：Monaco 主题 / Catalog 稳定性 / vN 一致性 ----------
 
 function monacoTheme(): string {
@@ -3487,6 +3704,8 @@ it.each(["python", "javascript", "java"] as const)(
     await waitFor(() => expect(screen.queryByTestId("version-diff")).toBeNull());
     expect(valueOf("code-editor")).toBe("candidate-code\n");
     expect(screen.getByTestId("ai-candidate-applied")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+    await screen.findByTestId("requirements-input");
     expect(valueOf("requirements-input")).toBe(`base-dependency-${language}\n`);
     // M5.8-003：运行参数（JSON）仍由人工 Working Copy 管理，Candidate 不会覆盖它。
     expect(screen.queryByText("运行参数（JSON）")).toBeNull();

@@ -226,7 +226,9 @@
     "light": "Light",
     "system": "Follow system",
     "toolbarAria": "Code editor toolbar",
-    "ariaLabel": "Adapter code editor"
+    "ariaLabel": "Adapter code editor",
+    "maximize": "Maximize code editor",
+    "restore": "Restore code editor layout"
   },
   "health": {
     "loading": "Checking control service…",

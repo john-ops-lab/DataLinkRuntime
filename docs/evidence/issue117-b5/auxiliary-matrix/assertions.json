@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "dispatch_id": "issue117-b5-editor-20260824-r1",
+  "records": 8,
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "selection_and_top_visible_line": {
+    "fields": [
+      "selection_start_line",
+      "selection_start_column",
+      "selection_end_line",
+      "selection_end_column",
+      "top_visible_line"
+    ],
+    "maximize_exact_match": true,
+    "button_restore_exact_match": true,
+    "escape_restore_exact_match": true
+  },
+  "lifecycle_requests_zero": true,
+  "console_errors_zero": true,
+  "page_errors_zero": true,
+  "unknown_requests_zero": true,
+  "overflow": {
+    "horizontal": false,
+    "vertical": false
+  }
+}

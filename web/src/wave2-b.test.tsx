@@ -309,6 +309,7 @@ it("keeps user-created content untouched and never mutates Adapter/Revision on l
   expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).value).toContain(
     "用户代码",
   );
+  fireEvent.click(screen.getByTestId("requirements-collapse-header"));
   expect((screen.getByTestId("requirements-input") as HTMLTextAreaElement).value).toBe(
     "requests==2.32.3",
   );

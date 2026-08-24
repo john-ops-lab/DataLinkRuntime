@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "source": "AO Browser network capture (sanitized metadata only)",
+  "dispatch_id": "issue117-b5-editor-20260824-r1",
+  "request_count": 19,
+  "all_methods_get": true,
+  "lifecycle_requests": [],
+  "non_success_requests": [],
+  "api_paths": [
+    "/api/auth/admin/verify",
+    "/api/locale",
+    "/api/health",
+    "/api/workers",
+    "/api/adapters",
+    "/api/health",
+    "/api/workers",
+    "/api/adapters",
+    "/api/adapters/1/versions",
+    "/api/adapters/1/versions/10",
+    "/api/workers",
+    "/api/credentials",
+    "/api/adapters/1/credential-bindings",
+    "/api/credentials",
+    "/api/adapters/1/credential-bindings",
+    "/api/workers"
+  ],
+  "real_provider_credentials": false,
+  "headers_and_bodies_archived": false
+}

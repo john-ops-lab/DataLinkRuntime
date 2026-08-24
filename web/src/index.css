@@ -1087,10 +1087,42 @@ body {
   flex: 1;
   min-height: 300px;
   min-width: 0;
+  position: relative;
   border: 1px solid var(--dlr-border);
   border-radius: 6px;
   overflow: hidden;
   background: var(--dlr-workspace-bg);
+}
+
+.editor-main-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+}
+
+.editor-main-actions .ant-btn {
+  color: var(--dlr-text-secondary);
+  background: color-mix(in srgb, var(--dlr-workspace-bg) 88%, transparent);
+}
+
+.editor-main.editor-main-maximized {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.28), 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
+.editor-main-maximized .editor-main-actions {
+  top: 10px;
+  right: 10px;
 }
 
 /* Monaco 主题选择工具条：轻量一行，不挤压编辑器主视觉区域。 */
@@ -1108,9 +1140,31 @@ body {
   color: var(--dlr-text-weak);
 }
 
-/* M3.2：Python 依赖 / 运行参数 / 凭据绑定降为次级配置 Tabs。 */
+/* Batch 5：Python 依赖 / 凭据绑定是彼此独立、默认收起的次级配置区。 */
 .version-fields {
   flex: 0 0 auto;
+  min-width: 0;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  background: var(--dlr-workspace-bg);
+}
+
+.version-fields .ant-collapse-item {
+  border-bottom-color: var(--dlr-border);
+}
+
+.version-fields .ant-collapse-item:last-child {
+  border-bottom: none;
+}
+
+.version-fields .ant-collapse-header {
+  padding: 8px 10px !important;
+  color: var(--dlr-text-secondary);
+  font-size: 0.8rem;
+}
+
+.version-fields .ant-collapse-content-box {
+  padding: 10px !important;
 }
 
 .config-tabs > .ant-tabs-nav {

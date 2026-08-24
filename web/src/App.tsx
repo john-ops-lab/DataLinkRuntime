@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import Editor, { loader } from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
-import { Alert, Button, Input, message, Modal, Result, Segmented, Select, Tabs, Typography } from "antd";
-import { DiffOutlined, MessageOutlined } from "@ant-design/icons";
+import { Alert, Button, Collapse, Input, message, Modal, Result, Segmented, Select, Tabs, Tooltip, Typography } from "antd";
+import { DiffOutlined, FullscreenExitOutlined, FullscreenOutlined, MessageOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
@@ -109,6 +109,16 @@ interface EditorSnapshot {
   runtimeConfigText: string;
 }
 
+interface EditorLayoutSnapshot {
+  selection: {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  } | null;
+  topVisibleLine: number;
+  scrollTop: number;
+}
 
 function versionSnapshot(detail: VersionDetail): EditorSnapshot {
   return {
@@ -173,8 +183,8 @@ function errorMessage(error: unknown): string {
 type WorkbenchTabKey = "edit" | "runtime" | "history" | "live";
 
 // 编辑页次级配置区（语言依赖 | 凭据绑定）。M5.5.9：运行参数（JSON）已退出
-// 用户主流程；普通、非敏感配置由代码本身表达。
-type ConfigTabKey = "requirements" | "bindings";
+// 用户主流程；普通、非敏感配置由代码本身表达。Batch 5 使用独立折叠面板，
+// 让两块配置保持各自的展开状态。
 
 /** Working Copy / AI Candidate diff modal state (display strings are derived
  * at render time so an open modal switches language immediately). */
@@ -285,8 +295,6 @@ export function AdapterConsole({
   // Set only when the live-log browser window explicitly hands off to the
   // server-saved history detail; ordinary history navigation stays manual.
   const [historyExecutionId, setHistoryExecutionId] = useState<number | null>(null);
-  // M3.2：编辑页次级配置 Tabs 与系统设置中心（凭据管理 + Python 包源）。
-  const [configTabKey, setConfigTabKey] = useState<ConfigTabKey>("requirements");
   const [userManagementOpen, setUserManagementOpen] = useState(false);
   const browserLocation = useBrowserLocation();
   const requestedSettingsCategory = settingsCategoryFromPath(browserLocation.split("?", 1)[0].split("#", 1)[0]);
@@ -301,6 +309,113 @@ export function AdapterConsole({
   // 只驱动按钮可用性（空选区不提供无意义操作）。
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [editorHasSelection, setEditorHasSelection] = useState(false);
+  const [editorSelection, setEditorSelection] = useState<EditorLayoutSnapshot["selection"]>(null);
+  const [editorTopVisibleLine, setEditorTopVisibleLine] = useState<number | null>(null);
+  const [editorMaximized, setEditorMaximized] = useState(false);
+  const editorLayoutSnapshotRef = useRef<EditorLayoutSnapshot | null>(null);
+  const editorMaximizeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const syncEditorLayoutState = useCallback((editor: monaco.editor.IStandaloneCodeEditor) => {
+    const selection = editor.getSelection();
+    const visibleRange = editor.getVisibleRanges()[0];
+    const position = editor.getPosition();
+    setEditorSelection(selection === null
+      ? null
+      : {
+          startLineNumber: selection.startLineNumber,
+          startColumn: selection.startColumn,
+          endLineNumber: selection.endLineNumber,
+          endColumn: selection.endColumn,
+        });
+    setEditorTopVisibleLine(visibleRange?.startLineNumber ?? position?.lineNumber ?? null);
+  }, []);
+  const captureEditorLayout = useCallback((): EditorLayoutSnapshot | null => {
+    const editor = editorRef.current;
+    if (editor === null) {
+      return null;
+    }
+    const selection = editor.getSelection();
+    const visibleRange = editor.getVisibleRanges()[0];
+    const position = editor.getPosition();
+    return {
+      selection: selection === null
+        ? null
+        : {
+            startLineNumber: selection.startLineNumber,
+            startColumn: selection.startColumn,
+            endLineNumber: selection.endLineNumber,
+            endColumn: selection.endColumn,
+          },
+      topVisibleLine: visibleRange?.startLineNumber ?? position?.lineNumber ?? 1,
+      scrollTop: editor.getScrollTop(),
+    };
+  }, []);
+  const restoreEditorLayout = useCallback(() => {
+    const editor = editorRef.current;
+    const layout = editorLayoutSnapshotRef.current;
+    if (editor === null || layout === null) {
+      return;
+    }
+    editor.layout();
+    if (layout.selection !== null) {
+      editor.setSelection(layout.selection);
+    }
+    const topForLine = editor.getTopForLineNumber(layout.topVisibleLine);
+    editor.setScrollTop(Number.isFinite(topForLine) ? topForLine : layout.scrollTop);
+    syncEditorLayoutState(editor);
+    editorLayoutSnapshotRef.current = null;
+  }, [syncEditorLayoutState]);
+  useLayoutEffect(() => {
+    if (editorLayoutSnapshotRef.current === null || editorRef.current === null) {
+      return;
+    }
+    let frameId: number | null = null;
+    let timeoutId: number | null = null;
+    const restore = () => restoreEditorLayout();
+    if (typeof window.requestAnimationFrame === "function") {
+      frameId = window.requestAnimationFrame(restore);
+    } else {
+      timeoutId = window.setTimeout(restore, 0);
+    }
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [editorMaximized, restoreEditorLayout]);
+  useEffect(() => {
+    if (!editorMaximized) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const layout = captureEditorLayout();
+      if (layout !== null) {
+        editorLayoutSnapshotRef.current = layout;
+      }
+      setEditorMaximized(false);
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [captureEditorLayout, editorMaximized]);
+  useEffect(() => {
+    editorMaximizeButtonRef.current?.focus();
+  }, [editorMaximized]);
+
+  function toggleEditorMaximized() {
+    const layout = captureEditorLayout();
+    if (layout !== null) {
+      editorLayoutSnapshotRef.current = layout;
+    }
+    setEditorMaximized((current) => !current);
+  }
+
   const nextSnippetId = useRef(1);
   const [aiContextSnippets, setAiContextSnippets] = useState<AiContextSnippetEntry[]>([]);
   const [diffView, setDiffView] = useState<DiffViewState | null>(null);
@@ -703,7 +818,10 @@ export function AdapterConsole({
     setSettingsOpen(false);
     setActiveTabKey("edit");
     setHistoryExecutionId(null);
-    setConfigTabKey("requirements");
+    setEditorMaximized(false);
+    editorLayoutSnapshotRef.current = null;
+    setEditorSelection(null);
+    setEditorTopVisibleLine(null);
     liveWatcher.stop();
     setWaitingForWebhook(false);
     setTaskRuntimeState(INITIAL_TASK_RUNTIME_STATE);
@@ -1180,6 +1298,10 @@ export function AdapterConsole({
       setVersions([]);
       setContentReady(false);
       setSettingsOpen(false);
+      setEditorMaximized(false);
+      editorLayoutSnapshotRef.current = null;
+      setEditorSelection(null);
+      setEditorTopVisibleLine(null);
       liveWatcher.stop();
       setWaitingForWebhook(false);
       applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
@@ -1394,12 +1516,32 @@ export function AdapterConsole({
                           </Button>
                         </div>
                         <div
-                          className="editor-main"
+                          className={`editor-main${editorMaximized ? " editor-main-maximized" : ""}`}
                           data-testid="editor-main"
+                          data-layout={editorMaximized ? "maximized" : "normal"}
+                          data-selection-start-line={editorSelection?.startLineNumber}
+                          data-selection-start-column={editorSelection?.startColumn}
+                          data-selection-end-line={editorSelection?.endLineNumber}
+                          data-selection-end-column={editorSelection?.endColumn}
+                          data-top-visible-line={editorTopVisibleLine ?? undefined}
                           data-monaco-theme={editorTheme}
                           role="region"
                           aria-label={t("editor.ariaLabel", { ns: "common" })}
                         >
+                          <div className="editor-main-actions">
+                            <Tooltip title={editorMaximized ? t("editor.restore", { ns: "common" }) : t("editor.maximize", { ns: "common" })}>
+                              <Button
+                                ref={editorMaximizeButtonRef}
+                                size="small"
+                                type="text"
+                                data-testid={editorMaximized ? "editor-restore" : "editor-maximize"}
+                                aria-label={editorMaximized ? t("editor.restore", { ns: "common" }) : t("editor.maximize", { ns: "common" })}
+                                aria-pressed={editorMaximized}
+                                icon={editorMaximized ? <FullscreenExitOutlined aria-hidden="true" /> : <FullscreenOutlined aria-hidden="true" />}
+                                onClick={toggleEditorMaximized}
+                              />
+                            </Tooltip>
+                          </div>
                           <Editor
                             height="100%"
                             theme={editorTheme}
@@ -1412,9 +1554,11 @@ export function AdapterConsole({
                                 setEditorHasSelection(
                                   selection !== null && !selection.isEmpty(),
                                 );
+                                syncEditorLayoutState(editor);
                               };
                               updateSelectionState();
                               editor.onDidChangeCursorSelection(updateSelectionState);
+                              editor.onDidScrollChange?.(() => syncEditorLayoutState(editor));
                             }}
                             onChange={(value) => setSnapshot((current) => ({ ...current, code: value ?? "" }))}
                             options={{
@@ -1425,41 +1569,42 @@ export function AdapterConsole({
                           />
                         </div>
 
-                        <div className="version-fields">
-                          <Tabs
-                            className="config-tabs"
-                            size="small"
-                            activeKey={configTabKey}
-                            onChange={(key) => setConfigTabKey(key as ConfigTabKey)}
-                            items={[
-                              {
-                                key: "requirements",
-                                label: dependencyUiFor(selected.language).label,
-                                children: (
-                                  <>
-                                    <textarea
-                                      data-testid="requirements-input"
-                                      rows={4}
-                                      value={snapshot.requirements}
-                                      disabled={busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
-                                      placeholder={dependencyUiFor(selected.language).placeholder}
-                                      onChange={(event) =>
-                                        setSnapshot((current) => ({
-                                          ...current,
-                                          requirements: event.target.value,
-                                        }))
-                                      }
-                                    />
-                                    <Typography.Text type="secondary" data-testid="dependency-note">
-                                      {dependencyNoteFor()}
-                                    </Typography.Text>
-                                  </>
-                                ),
-                              },
-                              {
-                                key: "bindings",
-                                label: t("labels.credentialBindings"),
-                                children: (
+                        <Collapse
+                          className="version-fields"
+                          bordered={false}
+                          size="small"
+                          defaultActiveKey={[]}
+                          destroyOnHidden={false}
+                          items={[
+                            {
+                              key: "requirements",
+                              label: <span data-testid="requirements-collapse-header">{dependencyUiFor(selected.language).label}</span>,
+                              children: (
+                                <div data-testid="requirements-panel-content">
+                                  <textarea
+                                    data-testid="requirements-input"
+                                    rows={4}
+                                    value={snapshot.requirements}
+                                    disabled={busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
+                                    placeholder={dependencyUiFor(selected.language).placeholder}
+                                    onChange={(event) =>
+                                      setSnapshot((current) => ({
+                                        ...current,
+                                        requirements: event.target.value,
+                                      }))
+                                    }
+                                  />
+                                  <Typography.Text type="secondary" data-testid="dependency-note">
+                                    {dependencyNoteFor()}
+                                  </Typography.Text>
+                                </div>
+                              ),
+                            },
+                            {
+                              key: "bindings",
+                              label: <span data-testid="bindings-collapse-header">{t("labels.credentialBindings")}</span>,
+                              children: (
+                                <div data-testid="bindings-panel-content">
                                   <CredentialBindingsEditor
                                     adapterId={selected.id}
                                     disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true || !selectedCanManage}
@@ -1469,11 +1614,11 @@ export function AdapterConsole({
                                     onError={setError}
                                     onOpenSettings={openSystemSettings}
                                   />
-                                ),
-                              },
-                            ]}
-                          />
-                        </div>
+                                </div>
+                              ),
+                            },
+                          ]}
+                        />
                       </div>
                     ),
                   },
