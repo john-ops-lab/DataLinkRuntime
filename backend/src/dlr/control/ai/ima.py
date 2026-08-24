@@ -21,7 +21,7 @@ interface is implemented or registered:
       body {"query": "", "cursor": "", "limit": N}
       -> data.info_list: [{kb_id, kb_name, cover_url}] (legacy id/name accepted)
     optional enrichment: POST /openapi/wiki/v1/get_knowledge_base
-      body {"ids": [...]} -> data.infos: {id: {description, ...}}
+      body {"ids": [...]} -> data.infos keyed by the normalized kb_id/id values from those ids
 - ``search_knowledge``:
     POST /openapi/wiki/v1/search_knowledge
       body {"query": ..., "cursor": "", "knowledge_base_id": ...}
