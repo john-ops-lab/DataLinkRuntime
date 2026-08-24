@@ -1,0 +1,119 @@
+{
+  "requestId": "75a59b37-bd2a-4d0d-9e71-1a4ed3c3fece",
+  "sessionId": "datalinkruntime-90",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "4a508141aa44834642a3ae68b6de0215",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "listbox"
+      },
+      "e10": {
+        "name": "",
+        "role": "generic"
+      },
+      "e11": {
+        "name": "适配器",
+        "role": "heading"
+      },
+      "e12": {
+        "name": "新 建",
+        "role": "button"
+      },
+      "e13": {
+        "name": "刷新适配器列表",
+        "role": "button"
+      },
+      "e14": {
+        "name": "适配器目录帮助",
+        "role": "button"
+      },
+      "e15": {
+        "name": "展开 AI 助手",
+        "role": "button"
+      },
+      "e16": {
+        "name": "",
+        "role": "generic"
+      },
+      "e17": {
+        "name": "适配器类型筛选",
+        "role": "generic"
+      },
+      "e18": {
+        "name": "适配器状态筛选",
+        "role": "generic"
+      },
+      "e19": {
+        "name": "manual-running，管理员全局访问，所有者未知，[任务] Python · 手动运行 · 任务 状态：定时运行中 · 运行节点 batch-7-fixture-worker · searchable fixture",
+        "role": "button"
+      },
+      "e2": {
+        "name": "运行节点 · 1/1 在线",
+        "role": "button"
+      },
+      "e20": {
+        "name": "manual-running 更多操作",
+        "role": "button"
+      },
+      "e21": {
+        "name": "搜索适配器",
+        "role": "textbox"
+      },
+      "e22": {
+        "name": "close-circle",
+        "role": "button"
+      },
+      "e23": {
+        "name": "",
+        "role": "generic"
+      },
+      "e24": {
+        "name": "",
+        "role": "generic"
+      },
+      "e25": {
+        "name": "适配器类型筛选",
+        "role": "combobox"
+      },
+      "e26": {
+        "name": "适配器状态筛选",
+        "role": "combobox"
+      },
+      "e3": {
+        "name": "账号菜单",
+        "role": "button"
+      },
+      "e4": {
+        "name": "全部类型",
+        "role": "option"
+      },
+      "e5": {
+        "name": "任务型（手动）",
+        "role": "option"
+      },
+      "e6": {
+        "name": "任务型（定时）",
+        "role": "option"
+      },
+      "e7": {
+        "name": "",
+        "role": "generic"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "",
+        "role": "generic"
+      }
+    },
+    "text": "- button \"运行节点 · 1/1 在线\" [ref=e2]\n- button \"账号菜单\" [ref=e3]\n- heading \"适配器\" [level=2, ref=e11]\n- button \"新 建\" [ref=e12]\n- button \"刷新适配器列表\" [ref=e13]\n- button \"适配器目录帮助\" [ref=e14]\n- generic [ref=e16] clickable [onclick]\n  - textbox \"搜索适配器\" [ref=e21]: searchabl\n  - button \"close-circle\" [ref=e22]\n- generic \"适配器类型筛选\" [ref=e17] clickable [cursor:pointer]\n  - generic \"任务型（手动）\" [ref=e23] clickable [cursor:pointer, onclick]\n    - combobox \"适配器类型筛选\" [expanded=false, ref=e25]\n- generic \"适配器状态筛选\" [ref=e18] clickable [cursor:pointer]\n  - generic \"全部状态\" [ref=e24] clickable [cursor:pointer, onclick]\n    - combobox \"适配器状态筛选\" [expanded=false, ref=e26]\n- button \"manual-running，管理员全局访问，所有者未知，[任务] Python · 手动运行 · 任务 状态：定时运行中 · 运行节点 batch-7-fixture-worker · searchable fixture\" [ref=e19]\n- button \"manual-running 更多操作\" [ref=e20]\n- button \"展开 AI 助手\" [expanded=false, ref=e15]\n- listbox [ref=e1]\n  - option \"全部类型\" [ref=e4]\n  - option \"任务型（手动）\" [selected, ref=e5]\n  - option \"任务型（定时）\" [ref=e6]\n- generic \"全部类型\" [ref=e7] clickable [cursor:pointer, onclick]\n- generic \"任务型（手动）\" [ref=e8] clickable [cursor:pointer, onclick]\n- generic \"任务型（定时）\" [ref=e9] clickable [cursor:pointer, onclick]\n- generic \"Webhook\" [ref=e10] clickable [cursor:pointer, onclick]",
+    "untrustedExternalContent": true
+  }
+}

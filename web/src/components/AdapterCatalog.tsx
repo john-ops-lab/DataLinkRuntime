@@ -304,9 +304,6 @@ export default function AdapterCatalog({
       <div className="catalog-header" data-testid="adapter-catalog-header">
         <div className="catalog-heading">
           <h2 className="catalog-title">{t("catalog.title")}</h2>
-          <p className="catalog-description" data-testid="adapter-catalog-description">
-            {t("catalog.overview")}
-          </p>
         </div>
         <div className="catalog-header-actions" data-testid="adapter-catalog-actions">
           <Button

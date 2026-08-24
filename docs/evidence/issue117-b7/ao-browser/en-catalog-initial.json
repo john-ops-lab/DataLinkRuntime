@@ -1,0 +1,115 @@
+{
+  "requestId": "49b40aec-5d54-403a-bc94-4ba631e4af28",
+  "sessionId": "datalinkruntime-90",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "89597986977d154b1f2a2e5d4a056de2",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "Runtime Worker · 1/1 online",
+        "role": "button"
+      },
+      "e10": {
+        "name": "Adapter status filter",
+        "role": "generic"
+      },
+      "e11": {
+        "name": "manual-running，Administrator · full access，Owner unavailable，[Task] Python · Manual · Task status: Schedule running · Runtime Worker batch-7-fixture-worker · searchable fixture",
+        "role": "button"
+      },
+      "e12": {
+        "name": "More actions for manual-running",
+        "role": "button"
+      },
+      "e13": {
+        "name": "scheduled-stopped，Administrator · full access，Owner unavailable，[Task] Python · Scheduled · Task status: Idle · Runtime Worker batch-7-fixture-worker · scheduled fixture",
+        "role": "button"
+      },
+      "e14": {
+        "name": "More actions for scheduled-stopped",
+        "role": "button"
+      },
+      "e15": {
+        "name": "webhook-stopped，Administrator · full access，Owner unavailable，[Webhook] Python · Webhook status: Stopped · Not saved · Runtime Worker batch-7-fixture-worker · webhook fixture",
+        "role": "button"
+      },
+      "e16": {
+        "name": "More actions for webhook-stopped",
+        "role": "button"
+      },
+      "e17": {
+        "name": "manual-stopped，Administrator · full access，Owner unavailable，[Task] Python · Manual · Task status: Idle · Runtime Worker batch-7-fixture-worker · manual fixture",
+        "role": "button"
+      },
+      "e18": {
+        "name": "More actions for manual-stopped",
+        "role": "button"
+      },
+      "e19": {
+        "name": "ao-b7-created，Administrator · full access，Owner unavailable，[Task] Python · Manual · Task status: Idle · Runtime Worker batch-7-fixture-worker · created via AO Browser fixture",
+        "role": "button"
+      },
+      "e2": {
+        "name": "Account menu",
+        "role": "button"
+      },
+      "e20": {
+        "name": "More actions for ao-b7-created",
+        "role": "button"
+      },
+      "e21": {
+        "name": "Search Adapters",
+        "role": "textbox"
+      },
+      "e22": {
+        "name": "",
+        "role": "generic"
+      },
+      "e23": {
+        "name": "",
+        "role": "generic"
+      },
+      "e24": {
+        "name": "Adapter type filter",
+        "role": "combobox"
+      },
+      "e25": {
+        "name": "Adapter status filter",
+        "role": "combobox"
+      },
+      "e3": {
+        "name": "Adapters",
+        "role": "heading"
+      },
+      "e4": {
+        "name": "New",
+        "role": "button"
+      },
+      "e5": {
+        "name": "Refresh Adapter list",
+        "role": "button"
+      },
+      "e6": {
+        "name": "Adapter catalog help",
+        "role": "button"
+      },
+      "e7": {
+        "name": "Open AI assistant",
+        "role": "button"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "Adapter type filter",
+        "role": "generic"
+      }
+    },
+    "text": "- button \"Runtime Worker · 1/1 online\" [ref=e1]\n- button \"Account menu\" [ref=e2]\n- heading \"Adapters\" [level=2, ref=e3]\n- button \"New\" [ref=e4]\n- button \"Refresh Adapter list\" [ref=e5]\n- button \"Adapter catalog help\" [ref=e6]\n- generic [ref=e8] clickable [onclick]\n  - textbox \"Search Adapters\" [ref=e21]\n- generic \"Adapter type filter\" [ref=e9] clickable [cursor:pointer]\n  - generic \"All types\" [ref=e22] clickable [cursor:pointer, onclick]\n    - combobox \"Adapter type filter\" [expanded=false, ref=e24]\n- generic \"Adapter status filter\" [ref=e10] clickable [cursor:pointer]\n  - generic \"All statuses\" [ref=e23] clickable [cursor:pointer, onclick]\n    - combobox \"Adapter status filter\" [expanded=false, ref=e25]\n- button \"manual-running，Administrator · full access，Owner unavailable，[Task] Python · Manual · Task status: Schedule running · Runtime Worker batch-7-fixture-worker · searchable fixture\" [ref=e11]\n- button \"More actions for manual-running\" [ref=e12]\n- button \"scheduled-stopped，Administrator · full access，Owner unavailable，[Task] Python · Scheduled · Task status: Idle · Runtime Worker batch-7-fixture-worker · scheduled fixture\" [ref=e13]\n- button \"More actions for scheduled-stopped\" [ref=e14]\n- button \"webhook-stopped，Administrator · full access，Owner unavailable，[Webhook] Python · Webhook status: Stopped · Not saved · Runtime Worker batch-7-fixture-worker · webhook fixture\" [ref=e15]\n- button \"More actions for webhook-stopped\" [ref=e16]\n- button \"manual-stopped，Administrator · full access，Owner unavailable，[Task] Python · Manual · Task status: Idle · Runtime Worker batch-7-fixture-worker · manual fixture\" [ref=e17]\n- button \"More actions for manual-stopped\" [ref=e18]\n- button \"ao-b7-created，Administrator · full access，Owner unavailable，[Task] Python · Manual · Task status: Idle · Runtime Worker batch-7-fixture-worker · created via AO Browser fixture\" [ref=e19]\n- button \"More actions for ao-b7-created\" [ref=e20]\n- button \"Open AI assistant\" [expanded=false, ref=e7]",
+    "untrustedExternalContent": true
+  }
+}

@@ -244,7 +244,6 @@ for (const locale of LOCALES) {
       const labels = locale === "zh-CN"
         ? {
             catalog: "适配器",
-            overview: "管理可执行的任务和 Webhook 适配器。",
             toolbar: "适配器工具栏",
             search: "搜索适配器",
             type: "适配器类型筛选",
@@ -258,7 +257,6 @@ for (const locale of LOCALES) {
           }
         : {
             catalog: "Adapters",
-            overview: "Manage executable Task and Webhook adapters.",
             toolbar: "Adapter toolbar",
             search: "Search Adapters",
             type: "Adapter type filter",
@@ -273,7 +271,7 @@ for (const locale of LOCALES) {
 
       const catalogHeader = page.getByTestId("adapter-catalog-header");
       await expect(catalogHeader.getByRole("heading", { name: labels.catalog })).toBeVisible();
-      await expect(page.getByTestId("adapter-catalog-description")).toHaveText(labels.overview);
+      await expect(page.getByTestId("adapter-catalog-description")).toHaveCount(0);
       const toolbar = page.getByRole("toolbar", { name: labels.toolbar });
       await expect(toolbar.getByRole("textbox", { name: labels.search })).toBeVisible();
       await expect(toolbar.getByRole("combobox", { name: labels.type })).toBeVisible();

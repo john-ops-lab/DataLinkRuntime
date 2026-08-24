@@ -1,0 +1,259 @@
+{
+  "requestId": "9588406a-1685-48ed-b460-abd52c20add0",
+  "sessionId": "datalinkruntime-90",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "85927afa11366e634572ab253e861050",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "listbox"
+      },
+      "e10": {
+        "name": "",
+        "role": "generic"
+      },
+      "e11": {
+        "name": "",
+        "role": "generic"
+      },
+      "e12": {
+        "name": "全部状态",
+        "role": "option"
+      },
+      "e13": {
+        "name": "运行中",
+        "role": "option"
+      },
+      "e14": {
+        "name": "已停止",
+        "role": "option"
+      },
+      "e15": {
+        "name": "",
+        "role": "generic"
+      },
+      "e16": {
+        "name": "",
+        "role": "generic"
+      },
+      "e17": {
+        "name": "",
+        "role": "generic"
+      },
+      "e18": {
+        "name": "适配器",
+        "role": "heading"
+      },
+      "e19": {
+        "name": "新 建",
+        "role": "button"
+      },
+      "e2": {
+        "name": "",
+        "role": "listbox"
+      },
+      "e20": {
+        "name": "刷新适配器列表",
+        "role": "button"
+      },
+      "e21": {
+        "name": "适配器目录帮助",
+        "role": "button"
+      },
+      "e22": {
+        "name": "展开 AI 助手",
+        "role": "button"
+      },
+      "e23": {
+        "name": "",
+        "role": "generic"
+      },
+      "e24": {
+        "name": "适配器类型筛选",
+        "role": "generic"
+      },
+      "e25": {
+        "name": "适配器状态筛选",
+        "role": "generic"
+      },
+      "e26": {
+        "name": "manual-running，管理员全局访问，所有者未知，[任务] Python · 手动运行 · 任务 状态：定时运行中 · 运行节点 batch-7-fixture-worker · searchable fixture",
+        "role": "button"
+      },
+      "e27": {
+        "name": "manual-running 更多操作",
+        "role": "button"
+      },
+      "e28": {
+        "name": "ao-b7-created",
+        "role": "heading"
+      },
+      "e29": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e3": {
+        "name": "运行节点 · 1/1 在线",
+        "role": "button"
+      },
+      "e30": {
+        "name": "搜索适配器",
+        "role": "textbox"
+      },
+      "e31": {
+        "name": "close-circle",
+        "role": "button"
+      },
+      "e32": {
+        "name": "",
+        "role": "generic"
+      },
+      "e33": {
+        "name": "",
+        "role": "generic"
+      },
+      "e34": {
+        "name": "设置",
+        "role": "button"
+      },
+      "e35": {
+        "name": "保存",
+        "role": "button"
+      },
+      "e36": {
+        "name": "运行一次不可用：请先保存适配器",
+        "role": "generic"
+      },
+      "e37": {
+        "name": "适配器代码编辑器",
+        "role": "region"
+      },
+      "e38": {
+        "name": "collapsed Python 依赖",
+        "role": "button"
+      },
+      "e39": {
+        "name": "collapsed 凭据绑定",
+        "role": "button"
+      },
+      "e4": {
+        "name": "账号菜单",
+        "role": "button"
+      },
+      "e40": {
+        "name": "适配器类型筛选",
+        "role": "combobox"
+      },
+      "e41": {
+        "name": "适配器状态筛选",
+        "role": "combobox"
+      },
+      "e42": {
+        "name": "运行一次",
+        "role": "button"
+      },
+      "e43": {
+        "name": "",
+        "role": "generic"
+      },
+      "e44": {
+        "name": "",
+        "role": "generic"
+      },
+      "e45": {
+        "name": "",
+        "role": "generic"
+      },
+      "e46": {
+        "name": "",
+        "role": "generic"
+      },
+      "e47": {
+        "name": "segmented control",
+        "role": "radiogroup"
+      },
+      "e48": {
+        "name": "查看差异",
+        "role": "button"
+      },
+      "e49": {
+        "name": "加入对话上下文",
+        "role": "button"
+      },
+      "e5": {
+        "name": "全部类型",
+        "role": "option"
+      },
+      "e50": {
+        "name": "编辑",
+        "role": "tab"
+      },
+      "e51": {
+        "name": "运行设置",
+        "role": "tab"
+      },
+      "e52": {
+        "name": "执行记录",
+        "role": "tab"
+      },
+      "e53": {
+        "name": "实时日志",
+        "role": "tab"
+      },
+      "e54": {
+        "name": "最大化代码编辑器",
+        "role": "button"
+      },
+      "e55": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e56": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e57": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e58": {
+        "name": "深色",
+        "role": "radio"
+      },
+      "e59": {
+        "name": "浅色",
+        "role": "radio"
+      },
+      "e6": {
+        "name": "任务型（手动）",
+        "role": "option"
+      },
+      "e60": {
+        "name": "跟随系统",
+        "role": "radio"
+      },
+      "e61": {
+        "name": "适配器代码编辑器",
+        "role": "textbox"
+      },
+      "e7": {
+        "name": "任务型（定时）",
+        "role": "option"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "",
+        "role": "generic"
+      }
+    },
+    "text": "- button \"运行节点 · 1/1 在线\" [ref=e3]\n- button \"账号菜单\" [ref=e4]\n- heading \"适配器\" [level=2, ref=e18]\n- button \"新 建\" [ref=e19]\n- button \"刷新适配器列表\" [ref=e20]\n- button \"适配器目录帮助\" [ref=e21]\n- generic [ref=e23] clickable [onclick]\n  - textbox \"搜索适配器\" [ref=e30]: manual\n  - button \"close-circle\" [ref=e31]\n- generic \"适配器类型筛选\" [ref=e24] clickable [cursor:pointer]\n  - generic \"任务型（手动）\" [ref=e32] clickable [cursor:pointer, onclick]\n    - combobox \"适配器类型筛选\" [expanded=false, ref=e40]\n- generic \"适配器状态筛选\" [ref=e25] clickable [cursor:pointer]\n  - generic \"运行中\" [ref=e33] clickable [cursor:pointer, onclick]\n    - combobox \"适配器状态筛选\" [expanded=false, ref=e41]\n- button \"manual-running，管理员全局访问，所有者未知，[任务] Python · 手动运行 · 任务 状态：定时运行中 · 运行节点 batch-7-fixture-worker · searchable fixture\" [ref=e26]\n- button \"manual-running 更多操作\" [ref=e27]\n- button \"展开 AI 助手\" [expanded=false, ref=e22]\n- heading \"ao-b7-created\" [level=2, ref=e28]\n- button \"设置\" [ref=e34]\n- button \"保存\" [ref=e35]\n- generic \"运行一次不可用：请先保存适配器\" [ref=e36] focusable [tabindex]\n  - button \"运行一次\" [disabled, ref=e42]\n- generic \"编辑\" [ref=e43] clickable [cursor:pointer, onclick]\n  - tab \"编辑\" [selected, ref=e50]\n- generic \"运行设置\" [ref=e44] clickable [cursor:pointer, onclick]\n  - tab \"运行设置\" [ref=e51]\n- generic \"执行记录\" [ref=e45] clickable [cursor:pointer, onclick]\n  - tab \"执行记录\" [ref=e52]\n- generic \"实时日志\" [ref=e46] clickable [cursor:pointer, onclick]\n  - tab \"实时日志\" [ref=e53]\n- button \"ellipsis\" [expanded=false, ref=e29]\n- radiogroup \"segmented control\" [ref=e47] focusable [tabindex]\n  - LabelText \"深色\" [ref=e55] clickable [cursor:pointer]\n    - radio \"深色\" [checked=true, ref=e58]\n  - LabelText \"浅色\" [ref=e56] clickable [cursor:pointer]\n    - radio \"浅色\" [checked=false, ref=e59]\n  - LabelText \"跟随系统\" [ref=e57] clickable [cursor:pointer]\n    - radio \"跟随系统\" [checked=false, ref=e60]\n- button \"查看差异\" [ref=e48]\n- button \"加入对话上下文\" [disabled, ref=e49]\n- region \"适配器代码编辑器\" [ref=e37]\n  - button \"最大化代码编辑器\" [ref=e54]\n  - textbox \"适配器代码编辑器\" [ref=e61]\n- button \"collapsed Python 依赖\" [expanded=false, ref=e38]\n- button \"collapsed 凭据绑定\" [expanded=false, ref=e39]\n- listbox [ref=e1]\n  - option \"全部类型\" [ref=e5]\n  - option \"任务型（手动）\" [selected, ref=e6]\n  - option \"任务型（定时）\" [ref=e7]\n- generic \"全部类型\" [ref=e8] clickable [cursor:pointer, onclick]\n- generic \"任务型（手动）\" [ref=e9] clickable [cursor:pointer, onclick]\n- generic \"任务型（定时）\" [ref=e10] clickable [cursor:pointer, onclick]\n- generic \"Webhook\" [ref=e11] clickable [cursor:pointer, onclick]\n- listbox [ref=e2]\n  - option \"全部状态\" [ref=e12]\n  - option \"运行中\" [selected, ref=e13]\n  - option \"已停止\" [ref=e14]\n- generic \"全部状态\" [ref=e15] clickable [cursor:pointer, onclick]\n- generic \"运行中\" [ref=e16] clickable [cursor:pointer, onclick]\n- generic \"已停止\" [ref=e17] clickable [cursor:pointer, onclick]",
+    "untrustedExternalContent": true
+  }
+}

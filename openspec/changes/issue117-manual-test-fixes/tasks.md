@@ -36,9 +36,9 @@
 
 ## 7. Batch 7：Issue #117.4 Adapter Catalog 布局（依赖 Batch 6 验收通过）
 
-- [ ] 7.1 增加 Catalog 渲染回归，断言标题、新建、刷新、帮助、搜索和筛选仍存在且 `catalog.overview` 不渲染，验证删除说明后无异常空白。
-- [ ] 7.2 移除 Catalog 常驻 overview 展示并收紧相邻布局间距；验证搜索、筛选、刷新、新建和帮助操作的既有请求/状态行为不变。
-- [ ] 7.3 完成 Batch 7 验收门：运行 Web lint、typecheck、unit tests、build；真实浏览器在 zh-CN/en、1280/1440/1680/1920 检查标题与操作、列表布局、console、request 和 overflow，证据通过后才允许 Batch 8 开始。
+- [x] 7.1 增加 Catalog 渲染回归，断言标题、新建、刷新、帮助、搜索和筛选仍存在且 `catalog.overview` 不渲染，验证删除说明后无异常空白。
+- [x] 7.2 移除 Catalog 常驻 overview 展示并收紧相邻布局间距；验证搜索、筛选、刷新、新建和帮助操作的既有请求/状态行为不变。
+- [x] 7.3 完成 Batch 7 验收门：运行 Web lint、typecheck、unit tests、build；真实浏览器在 zh-CN/en、1280/1440/1680/1920 检查标题与操作、列表布局、console、request 和 overflow，证据通过后才允许 Batch 8 开始。
 
 ## 8. Batch 8：Issue #117.6 账号资料与用户管理 UI（依赖 Batch 7 验收通过）
 

@@ -1,0 +1,107 @@
+{
+  "requestId": "f21de46e-bcc3-4ce3-bfec-c1fdbd9ebba8",
+  "sessionId": "datalinkruntime-90",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "34bb823de7399f31ebf67b5ef5424446",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "运行节点 · 1/1 在线",
+        "role": "button"
+      },
+      "e10": {
+        "name": "适配器状态筛选",
+        "role": "generic"
+      },
+      "e11": {
+        "name": "manual-running，管理员全局访问，所有者未知，[任务] Python · 手动运行 · 任务 状态：定时运行中 · 运行节点 batch-7-fixture-worker · searchable fixture",
+        "role": "button"
+      },
+      "e12": {
+        "name": "manual-running 更多操作",
+        "role": "button"
+      },
+      "e13": {
+        "name": "scheduled-stopped，管理员全局访问，所有者未知，[任务] Python · 定时运行 · 任务 状态：空闲 · 运行节点 batch-7-fixture-worker · scheduled fixture",
+        "role": "button"
+      },
+      "e14": {
+        "name": "scheduled-stopped 更多操作",
+        "role": "button"
+      },
+      "e15": {
+        "name": "webhook-stopped，管理员全局访问，所有者未知，[Webhook] Python · Webhook 状态：已停止 · 未保存 · 运行节点 batch-7-fixture-worker · webhook fixture",
+        "role": "button"
+      },
+      "e16": {
+        "name": "webhook-stopped 更多操作",
+        "role": "button"
+      },
+      "e17": {
+        "name": "manual-stopped，管理员全局访问，所有者未知，[任务] Python · 手动运行 · 任务 状态：空闲 · 运行节点 batch-7-fixture-worker · manual fixture",
+        "role": "button"
+      },
+      "e18": {
+        "name": "manual-stopped 更多操作",
+        "role": "button"
+      },
+      "e19": {
+        "name": "搜索适配器",
+        "role": "textbox"
+      },
+      "e2": {
+        "name": "账号菜单",
+        "role": "button"
+      },
+      "e20": {
+        "name": "",
+        "role": "generic"
+      },
+      "e21": {
+        "name": "",
+        "role": "generic"
+      },
+      "e22": {
+        "name": "适配器类型筛选",
+        "role": "combobox"
+      },
+      "e23": {
+        "name": "适配器状态筛选",
+        "role": "combobox"
+      },
+      "e3": {
+        "name": "适配器",
+        "role": "heading"
+      },
+      "e4": {
+        "name": "新 建",
+        "role": "button"
+      },
+      "e5": {
+        "name": "刷新适配器列表",
+        "role": "button"
+      },
+      "e6": {
+        "name": "适配器目录帮助",
+        "role": "button"
+      },
+      "e7": {
+        "name": "展开 AI 助手",
+        "role": "button"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "适配器类型筛选",
+        "role": "generic"
+      }
+    },
+    "text": "- button \"运行节点 · 1/1 在线\" [ref=e1]\n- button \"账号菜单\" [ref=e2]\n- heading \"适配器\" [level=2, ref=e3]\n- button \"新 建\" [ref=e4]\n- button \"刷新适配器列表\" [ref=e5]\n- button \"适配器目录帮助\" [ref=e6]\n- generic [ref=e8] clickable [onclick]\n  - textbox \"搜索适配器\" [ref=e19]\n- generic \"适配器类型筛选\" [ref=e9] clickable [cursor:pointer]\n  - generic \"全部类型\" [ref=e20] clickable [cursor:pointer, onclick]\n    - combobox \"适配器类型筛选\" [expanded=false, ref=e22]\n- generic \"适配器状态筛选\" [ref=e10] clickable [cursor:pointer]\n  - generic \"全部状态\" [ref=e21] clickable [cursor:pointer, onclick]\n    - combobox \"适配器状态筛选\" [expanded=false, ref=e23]\n- button \"manual-running，管理员全局访问，所有者未知，[任务] Python · 手动运行 · 任务 状态：定时运行中 · 运行节点 batch-7-fixture-worker · searchable fixture\" [ref=e11]\n- button \"manual-running 更多操作\" [ref=e12]\n- button \"scheduled-stopped，管理员全局访问，所有者未知，[任务] Python · 定时运行 · 任务 状态：空闲 · 运行节点 batch-7-fixture-worker · scheduled fixture\" [ref=e13]\n- button \"scheduled-stopped 更多操作\" [ref=e14]\n- button \"webhook-stopped，管理员全局访问，所有者未知，[Webhook] Python · Webhook 状态：已停止 · 未保存 · 运行节点 batch-7-fixture-worker · webhook fixture\" [ref=e15]\n- button \"webhook-stopped 更多操作\" [ref=e16]\n- button \"manual-stopped，管理员全局访问，所有者未知，[任务] Python · 手动运行 · 任务 状态：空闲 · 运行节点 batch-7-fixture-worker · manual fixture\" [ref=e17]\n- button \"manual-stopped 更多操作\" [ref=e18]\n- button \"展开 AI 助手\" [expanded=false, ref=e7]",
+    "untrustedExternalContent": true
+  }
+}

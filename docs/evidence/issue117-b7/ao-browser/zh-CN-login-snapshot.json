@@ -1,0 +1,51 @@
+{
+  "requestId": "e6c1c505-d452-4b1d-b14f-7cdd3dada42c",
+  "sessionId": "datalinkruntime-90",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "4fe61189aa7053e5afa1920aa23d618c",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "DataLinkRuntime",
+        "role": "region"
+      },
+      "e2": {
+        "name": "语言",
+        "role": "generic"
+      },
+      "e3": {
+        "name": "",
+        "role": "generic"
+      },
+      "e4": {
+        "name": "欢迎登录 DLR 控制台",
+        "role": "heading"
+      },
+      "e5": {
+        "name": "语言",
+        "role": "combobox"
+      },
+      "e6": {
+        "name": "登 录",
+        "role": "button"
+      },
+      "e7": {
+        "name": "",
+        "role": "generic"
+      },
+      "e8": {
+        "name": "管理员 Token",
+        "role": "textbox"
+      },
+      "e9": {
+        "name": "eye-invisible",
+        "role": "image"
+      }
+    },
+    "text": "- region \"DataLinkRuntime\" [ref=e1]\n- generic \"语言\" [ref=e2] clickable [cursor:pointer]\n  - generic \"简体中文\" [ref=e3] clickable [cursor:pointer, onclick]\n    - combobox \"语言\" [expanded=false, ref=e5]\n- heading \"欢迎登录 DLR 控制台\" [level=1, ref=e4]\n- generic [ref=e7] clickable [onclick]\n  - textbox \"管理员 Token\" [required, ref=e8]\n  - image \"eye-invisible\" [ref=e9] clickable [cursor:pointer, onclick]\n- button \"登 录\" [ref=e6]",
+    "untrustedExternalContent": true
+  }
+}

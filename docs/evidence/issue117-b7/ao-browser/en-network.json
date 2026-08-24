@@ -1,0 +1,39 @@
+{
+  "requestId": "29f35c44-f84a-418d-8d7e-e5a2f6dcd782",
+  "sessionId": "datalinkruntime-90",
+  "action": "network-list",
+  "result": {
+    "active": true,
+    "expiresAt": "2026-08-24T20:01:09.362Z",
+    "maxEntries": 200,
+    "metadataOnly": true,
+    "requestCount": 1,
+    "requests": [
+      {
+        "durationMs": 7,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n1",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4173/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+          "vary": "Origin"
+        },
+        "startedAt": "2026-08-24T19:58:31.941Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4173/api/workers"
+      }
+    ],
+    "startedAt": "2026-08-24T19:58:09.362Z",
+    "tabId": "t1",
+    "untrustedExternalContent": true
+  }
+}

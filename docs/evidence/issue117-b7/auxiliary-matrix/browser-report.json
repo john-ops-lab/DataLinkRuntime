@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "dispatch_id": "issue117-b7-catalog-20260825-r1",
+  "batch": "7",
+  "scope": "Adapter Catalog overview removal and compact layout",
+  "antd": "5.29.3",
+  "playwright": "1.62.1",
+  "browser": "chromium",
+  "browser_version": "151.0.7922.34",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "fixture_provider": "scoped Playwright route fixture",
+  "real_provider_credentials": false,
+  "raw_provider_response_archived": false,
+  "records": [
+    {
+      "locale": "en",
+      "width": 1280,
+      "screenshot": "docs/evidence/issue117-b7/auxiliary-matrix/browser/catalog-en-1280.png",
+      "overview_count": 0,
+      "controls": {
+        "title": true,
+        "create": true,
+        "refresh": true,
+        "help": true,
+        "search": true,
+        "type_filter": true,
+        "status_filter": true
+      },
+      "states": {
+        "search_count": 1,
+        "type_count": 2,
+        "running_count": 1,
+        "filtered_count": 1,
+        "help_visible": true,
+        "help_closed": true,
+        "created": true
+      },
+      "geometry": {
+        "header_to_toolbar_gap": 0,
+        "toolbar_to_list_gap": 0,
+        "header_height": 38,
+        "toolbar_height": 82,
+        "list_top": 168
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "requests": {
+        "adapter_list_count": 4,
+        "create_count": 1,
+        "non_get_paths": [
+          "POST /api/adapters"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "screenshot": "docs/evidence/issue117-b7/auxiliary-matrix/browser/catalog-en-1440.png",
+      "overview_count": 0,
+      "controls": {
+        "title": true,
+        "create": true,
+        "refresh": true,
+        "help": true,
+        "search": true,
+        "type_filter": true,
+        "status_filter": true
+      },
+      "states": {
+        "search_count": 1,
+        "type_count": 2,
+        "running_count": 1,
+        "filtered_count": 1,
+        "help_visible": true,
+        "help_closed": true,
+        "created": true
+      },
+      "geometry": {
+        "header_to_toolbar_gap": 0,
+        "toolbar_to_list_gap": 0,
+        "header_height": 38,
+        "toolbar_height": 82,
+        "list_top": 168
+      },
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "requests": {
+        "adapter_list_count": 4,
+        "create_count": 1,
+        "non_get_paths": [
+          "POST /api/adapters"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "screenshot": "docs/evidence/issue117-b7/auxiliary-matrix/browser/catalog-en-1680.png",
+      "overview_count": 0,
+      "controls": {
+        "title": true,
+        "create": true,
+        "refresh": true,
+        "help": true,
+        "search": true,
+        "type_filter": true,
+        "status_filter": true
+      },
+      "states": {
+        "search_count": 1,
+        "type_count": 2,
+        "running_count": 1,
+        "filtered_count": 1,
+        "help_visible": true,
+        "help_closed": true,
+        "created": true
+      },
+      "geometry": {
+        "header_to_toolbar_gap": 0,
+        "toolbar_to_list_gap": 0,
+        "header_height": 38,
+        "toolbar_height": 82,
+        "list_top": 168
+      },
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "requests": {
+        "adapter_list_count": 4,
+        "create_count": 1,
+        "non_get_paths": [
+          "POST /api/adapters"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "screenshot": "docs/evidence/issue117-b7/auxiliary-matrix/browser/catalog-en-1920.png",
+      "overview_count": 0,
+      "controls": {
+        "title": true,
+        "create": true,
+        "refresh": true,
+        "help": true,
+        "search": true,
+        "type_filter": true,
+        "status_filter": true
+      },
+      "states": {
+        "search_count": 1,
+        "type_count": 2,
+        "running_count": 1,
+        "filtered_count": 1,
+        "help_visible": true,
+        "help_closed": true,
+        "created": true
+      },
+      "geometry": {
+        "header_to_toolbar_gap": 0,
+        "toolbar_to_list_gap": 0,
+        "header_height": 38,
+        "toolbar_height": 82,
+        "list_top": 168
+      },
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "requests": {
+        "adapter_list_count": 4,
+        "create_count": 1,
+        "non_get_paths": [
+          "POST /api/adapters"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "screenshot": "docs/evidence/issue117-b7/auxiliary-matrix/browser/catalog-zh-CN-1280.png",
+      "overview_count": 0,
+      "controls": {
+        "title": true,
+        "create": true,
+        "refresh": true,
+        "help": true,
+        "search": true,
+        "type_filter": true,
+        "status_filter": true
+      },
+      "states": {
+        "search_count": 1,
+        "type_count": 2,
+        "running_count": 1,
+        "filtered_count": 1,
+        "help_visible": true,
+        "help_closed": true,
+        "created": true
+      },
+      "geometry": {
+        "header_to_toolbar_gap": 0,
+        "toolbar_to_list_gap": 0,
+        "header_height": 38,
+        "toolbar_height": 82,
+        "list_top": 168
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "requests": {
+        "adapter_list_count": 4,
+        "create_count": 1,
+        "non_get_paths": [
+          "POST /api/adapters"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "screenshot": "docs/evidence/issue117-b7/auxiliary-matrix/browser/catalog-zh-CN-1440.png",
+      "overview_count": 0,
+      "controls": {
+        "title": true,
+        "create": true,
+        "refresh": true,
+        "help": true,
+        "search": true,
+        "type_filter": true,
+        "status_filter": true
+      },
+      "states": {
+        "search_count": 1,
+        "type_count": 2,
+        "running_count": 1,
+        "filtered_count": 1,
+        "help_visible": true,
+        "help_closed": true,
+        "created": true
+      },
+      "geometry": {
+        "header_to_toolbar_gap": 0,
+        "toolbar_to_list_gap": 0,
+        "header_height": 38,
+        "toolbar_height": 82,
+        "list_top": 168
+      },
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440
+      },
+      "requests": {
+        "adapter_list_count": 4,
+        "create_count": 1,
+        "non_get_paths": [
+          "POST /api/adapters"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "screenshot": "docs/evidence/issue117-b7/auxiliary-matrix/browser/catalog-zh-CN-1680.png",
+      "overview_count": 0,
+      "controls": {
+        "title": true,
+        "create": true,
+        "refresh": true,
+        "help": true,
+        "search": true,
+        "type_filter": true,
+        "status_filter": true
+      },
+      "states": {
+        "search_count": 1,
+        "type_count": 2,
+        "running_count": 1,
+        "filtered_count": 1,
+        "help_visible": true,
+        "help_closed": true,
+        "created": true
+      },
+      "geometry": {
+        "header_to_toolbar_gap": 0,
+        "toolbar_to_list_gap": 0,
+        "header_height": 38,
+        "toolbar_height": 82,
+        "list_top": 168
+      },
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680
+      },
+      "requests": {
+        "adapter_list_count": 4,
+        "create_count": 1,
+        "non_get_paths": [
+          "POST /api/adapters"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "screenshot": "docs/evidence/issue117-b7/auxiliary-matrix/browser/catalog-zh-CN-1920.png",
+      "overview_count": 0,
+      "controls": {
+        "title": true,
+        "create": true,
+        "refresh": true,
+        "help": true,
+        "search": true,
+        "type_filter": true,
+        "status_filter": true
+      },
+      "states": {
+        "search_count": 1,
+        "type_count": 2,
+        "running_count": 1,
+        "filtered_count": 1,
+        "help_visible": true,
+        "help_closed": true,
+        "created": true
+      },
+      "geometry": {
+        "header_to_toolbar_gap": 0,
+        "toolbar_to_list_gap": 0,
+        "header_height": 38,
+        "toolbar_height": 82,
+        "list_top": 168
+      },
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "requests": {
+        "adapter_list_count": 4,
+        "create_count": 1,
+        "non_get_paths": [
+          "POST /api/adapters"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    }
+  ]
+}

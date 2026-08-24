@@ -239,15 +239,14 @@ it("labels owned and shared relationships and hides cloning for read-only shares
   expect(within(menu).queryByRole("menuitem", { name: "复制" })).toBeNull();
 });
 
-it("uses the Scheme A catalog structure with left filters and right actions", async () => {
+it("keeps the Scheme A catalog structure without the permanent overview", async () => {
   const onRefresh = vi.fn(async () => {});
   renderCatalog([makeAdapter(1, "alpha")], vi.fn(), vi.fn(), vi.fn(), null, onRefresh);
 
   const catalogHeader = screen.getByTestId("adapter-catalog-header");
   expect(within(catalogHeader).getByRole("heading", { name: "适配器" })).toBeTruthy();
-  expect(screen.getByTestId("adapter-catalog-description").textContent).toContain(
-    "管理可执行的任务和 Webhook 适配器。",
-  );
+  expect(screen.queryByTestId("adapter-catalog-description")).toBeNull();
+  expect(screen.queryByText("管理可执行的任务和 Webhook 适配器。")).toBeNull();
 
   const toolbar = screen.getByRole("toolbar", { name: "适配器工具栏" });
   const searchInput = screen.getByTestId("adapter-search");
@@ -264,12 +263,52 @@ it("uses the Scheme A catalog structure with left filters and right actions", as
   expect(within(actions).getByTestId("adapter-catalog-help")).toBeTruthy();
   expect(screen.getByTestId("adapter-catalog-summary").textContent).toContain("1");
 
+  fireEvent.click(within(actions).getByTestId("adapter-catalog-help"));
+  expect(screen.getByText("搜索名称或描述；类型和状态筛选可以叠加使用。")).toBeTruthy();
+
   const list = screen.getByTestId("adapter-catalog-list");
   expect(list.parentElement).toBe(screen.getByTestId("adapter-catalog"));
   expect(list.classList.contains("catalog-list")).toBe(true);
 
   fireEvent.click(within(actions).getByTestId("refresh-adapters"));
   await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+});
+
+it("keeps the existing create request and drawer state", async () => {
+  const onCreate = vi.fn(async () => true);
+  render(
+    <AdapterCatalog
+      adapters={[makeAdapter(1, "alpha")]}
+      selectedId={null}
+      busy={false}
+      onSelect={vi.fn()}
+      onCreate={onCreate}
+      versionSeqById={new Map()}
+      workers={[]}
+      onOpenSettings={vi.fn()}
+      onClone={vi.fn()}
+      onRefresh={vi.fn(async () => {})}
+    />,
+  );
+
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  fireEvent.change(await screen.findByTestId("new-adapter-name"), {
+    target: { value: "created-adapter" },
+  });
+  fireEvent.change(screen.getByTestId("new-adapter-description"), {
+    target: { value: "created from catalog" },
+  });
+  fireEvent.click(screen.getByTestId("create-adapter"));
+
+  await waitFor(() => {
+    expect(onCreate).toHaveBeenCalledWith(
+      "created-adapter",
+      "created from catalog",
+      "python",
+      "task",
+    );
+  });
+  await waitFor(() => expect(screen.queryByTestId("new-adapter-name")).toBeNull());
 });
 
 it("lays out [搜索][类型][状态] as one continuous row (M5.8-008)", () => {

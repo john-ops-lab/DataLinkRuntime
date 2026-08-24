@@ -1,0 +1,87 @@
+{
+  "requestId": "bbae38e7-b5c7-4c21-af7d-dad9657794be",
+  "sessionId": "datalinkruntime-90",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "57d030cee3144b658ca055a15528190b",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "Runtime Worker · 1/1 online",
+        "role": "button"
+      },
+      "e10": {
+        "name": "Adapter status filter",
+        "role": "generic"
+      },
+      "e11": {
+        "name": "manual-running，Administrator · full access，Owner unavailable，[Task] Python · Manual · Task status: Schedule running · Runtime Worker batch-7-fixture-worker · searchable fixture",
+        "role": "button"
+      },
+      "e12": {
+        "name": "More actions for manual-running",
+        "role": "button"
+      },
+      "e13": {
+        "name": "Search Adapters",
+        "role": "textbox"
+      },
+      "e14": {
+        "name": "close-circle",
+        "role": "button"
+      },
+      "e15": {
+        "name": "",
+        "role": "generic"
+      },
+      "e16": {
+        "name": "",
+        "role": "generic"
+      },
+      "e17": {
+        "name": "Adapter type filter",
+        "role": "combobox"
+      },
+      "e18": {
+        "name": "Adapter status filter",
+        "role": "combobox"
+      },
+      "e2": {
+        "name": "Account menu",
+        "role": "button"
+      },
+      "e3": {
+        "name": "Adapters",
+        "role": "heading"
+      },
+      "e4": {
+        "name": "New",
+        "role": "button"
+      },
+      "e5": {
+        "name": "Refresh Adapter list",
+        "role": "button"
+      },
+      "e6": {
+        "name": "Adapter catalog help",
+        "role": "button"
+      },
+      "e7": {
+        "name": "Open AI assistant",
+        "role": "button"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "Adapter type filter",
+        "role": "generic"
+      }
+    },
+    "text": "- button \"Runtime Worker · 1/1 online\" [ref=e1]\n- button \"Account menu\" [ref=e2]\n- heading \"Adapters\" [level=2, ref=e3]\n- button \"New\" [ref=e4]\n- button \"Refresh Adapter list\" [ref=e5]\n- button \"Adapter catalog help\" [ref=e6]\n- generic [ref=e8] clickable [onclick]\n  - textbox \"Search Adapters\" [ref=e13]: searchable\n  - button \"close-circle\" [ref=e14]\n- generic \"Adapter type filter\" [ref=e9] clickable [cursor:pointer]\n  - generic \"All types\" [ref=e15] clickable [cursor:pointer, onclick]\n    - combobox \"Adapter type filter\" [expanded=false, ref=e17]\n- generic \"Adapter status filter\" [ref=e10] clickable [cursor:pointer]\n  - generic \"All statuses\" [ref=e16] clickable [cursor:pointer, onclick]\n    - combobox \"Adapter status filter\" [expanded=false, ref=e18]\n- button \"manual-running，Administrator · full access，Owner unavailable，[Task] Python · Manual · Task status: Schedule running · Runtime Worker batch-7-fixture-worker · searchable fixture\" [ref=e11]\n- button \"More actions for manual-running\" [ref=e12]\n- button \"Open AI assistant\" [expanded=false, ref=e7]",
+    "untrustedExternalContent": true
+  }
+}

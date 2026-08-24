@@ -17,7 +17,6 @@
   },
   "catalog": {
     "title": "适配器",
-    "overview": "管理可执行的任务和 Webhook 适配器。",
     "new": "新建",
     "refreshAria": "刷新适配器列表",
     "helpAria": "适配器目录帮助",

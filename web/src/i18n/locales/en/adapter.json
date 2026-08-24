@@ -17,7 +17,6 @@
   },
   "catalog": {
     "title": "Adapters",
-    "overview": "Manage executable Task and Webhook adapters.",
     "new": "New",
     "refreshAria": "Refresh Adapter list",
     "helpAria": "Adapter catalog help",

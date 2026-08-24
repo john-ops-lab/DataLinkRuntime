@@ -227,21 +227,11 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 12px 8px;
+  padding: 8px 12px 6px;
 }
 
 .catalog-heading {
   min-width: 0;
-}
-
-.catalog-description {
-  margin: 3px 0 0;
-  color: var(--dlr-text-weak);
-  font-size: 0.72rem;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .catalog-header-actions {
