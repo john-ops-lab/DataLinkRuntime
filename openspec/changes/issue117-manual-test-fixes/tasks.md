@@ -12,9 +12,9 @@
 
 ## 3. Batch 3：Issue #117.5 实时日志冻结与恢复（依赖 Batch 2 验收通过）
 
-- [ ] 3.1 为暂停时后台继续收日志、恢复补齐顺序、重复事件/重连去重、窗口上限/截断及暂停期间终态补齐增加 Web 单元/集成回归，并验证既有 SSE 连接没有被暂停动作关闭。
-- [ ] 3.2 复用现有 watcher/SSE 数据和权威快照边界实现客户端冻结、暂停期间有界保留、恢复去重合并与自动跟随；验证不新增公共 offset API、不停止服务端采集，且最终 Execution 日志/状态/脱敏结果不改变。
-- [ ] 3.3 完成 Batch 3 验收门：运行 `cd web && npm run lint && npm run typecheck && npm run test && npm run build`；用真实浏览器在 zh-CN/en、1280/1440/1680/1920 验证暂停后内容和位置冻结、继续后不丢不重且恢复跟随，并归档 console、page、request、overflow 和截图证据后才允许 Batch 4 开始。
+- [x] 3.1 为暂停时后台继续收日志、恢复补齐顺序、重复事件/重连去重、窗口上限/截断及暂停期间终态补齐增加 Web 单元/集成回归，并验证既有 SSE 连接没有被暂停动作关闭。
+- [x] 3.2 复用现有 watcher/SSE 数据和权威快照边界实现客户端冻结、暂停期间有界保留、恢复去重合并与自动跟随；验证不新增公共 offset API、不停止服务端采集，且最终 Execution 日志/状态/脱敏结果不改变。
+- [x] 3.3 完成 Batch 3 验收门：运行 `cd web && npm run lint && npm run typecheck && npm run test && npm run build`；用真实浏览器在 zh-CN/en、1280/1440/1680/1920 验证暂停后内容和位置冻结、继续后不丢不重且恢复跟随，并归档 console、page、request、overflow 和截图证据后才允许 Batch 4 开始。
 
 ## 4. Batch 4：Issue #117.3 凭据绑定角色提示（依赖 Batch 3 验收通过）
 

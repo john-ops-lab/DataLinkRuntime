@@ -195,8 +195,12 @@ export function useExecutionWatcher(onError: (message: string) => void): Executi
             logLineCount(unifiedLogContent(next.stdout, next.stderr, next.error)),
           );
         }
-        setLiveStdout(retainLiveLines(next.stdout));
-        setLiveStderr(retainLiveLines(next.stderr));
+        // Render the accepted stream boundaries, not the raw event payload.
+        // A reconnect or an out-of-order status snapshot may be older than a
+        // log delta already received from the same watcher; showing that raw
+        // payload would visibly drop the delta until the next event arrives.
+        setLiveStdout(retainLiveLines(serverStdoutRef.current));
+        setLiveStderr(retainLiveLines(serverStderrRef.current));
         if (isTerminal(next.status)) {
           streamRef.current?.close();
           // The final result is authoritative: reload the full detail.

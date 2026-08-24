@@ -1,0 +1,75 @@
+{
+  "capture": "AO Browser network metadata only; request/response bodies, credentials and query values omitted.",
+  "locale": "zh-CN",
+  "active": false,
+  "requestCount": 40,
+  "metadataOnly": true,
+  "api_request_count": 39,
+  "api_requests": [
+    {
+      "method": "GET",
+      "path": "/api/adapters",
+      "status": 200,
+      "count": 2
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1",
+      "status": 200,
+      "count": 23
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions",
+      "status": 200,
+      "count": 1
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions/10",
+      "status": 200,
+      "count": 1
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/admin/verify",
+      "status": 200,
+      "count": 1
+    },
+    {
+      "method": "GET",
+      "path": "/api/executions/5",
+      "status": 200,
+      "count": 2
+    },
+    {
+      "method": "GET",
+      "path": "/api/executions/5/events",
+      "status": 200,
+      "count": 1
+    },
+    {
+      "method": "GET",
+      "path": "/api/health",
+      "status": 200,
+      "count": 2
+    },
+    {
+      "method": "GET",
+      "path": "/api/locale",
+      "status": 200,
+      "count": 1
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers",
+      "status": 200,
+      "count": 5
+    }
+  ],
+  "required_checks": {
+    "execution_events_sse": true,
+    "execution_snapshot_get": true,
+    "unexpected_api_errors": []
+  }
+}

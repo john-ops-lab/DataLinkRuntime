@@ -1,0 +1,27 @@
+{
+  "requestId": "336afa34-7c44-47dd-bbf2-87079d26cd92",
+  "sessionId": "datalinkruntime-86",
+  "action": "get",
+  "result": {
+    "_boundary": {
+      "nonce": "5ba9e716372abb30f4ba7a86300b86b3",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "lifecycle": {
+      "effectiveLaunch": {
+        "browserLaunched": true,
+        "engine": "chrome",
+        "launchHash": 7461855897916727000
+      },
+      "launched": false,
+      "relaunchedBrowser": false,
+      "restartedBackground": false,
+      "restoreStatus": "not_configured",
+      "reused": true,
+      "saveStatus": "not_attempted"
+    },
+    "untrustedExternalContent": true,
+    "url": "http://127.0.0.1:4173/",
+    "value": "http://127.0.0.1:4173/"
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "requestId": "23412571-9e5c-4198-ab15-e128df032e52",
+  "sessionId": "datalinkruntime-86",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "22afcc21d5e69c68d0df641e372053f0",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "generic"
+      },
+      "e10": {
+        "name": "More actions for Issue 117 Live Log Fixture",
+        "role": "button"
+      },
+      "e11": {
+        "name": "",
+        "role": "generic"
+      },
+      "e12": {
+        "name": "Adapter type filter",
+        "role": "generic"
+      },
+      "e13": {
+        "name": "Adapter status filter",
+        "role": "generic"
+      },
+      "e14": {
+        "name": "Search Adapters",
+        "role": "textbox"
+      },
+      "e15": {
+        "name": "",
+        "role": "generic"
+      },
+      "e16": {
+        "name": "",
+        "role": "generic"
+      },
+      "e17": {
+        "name": "Adapter type filter",
+        "role": "combobox"
+      },
+      "e18": {
+        "name": "Adapter status filter",
+        "role": "combobox"
+      },
+      "e2": {
+        "name": "Runtime Worker · 1/1 online",
+        "role": "button"
+      },
+      "e3": {
+        "name": "Account menu",
+        "role": "button"
+      },
+      "e4": {
+        "name": "Adapters",
+        "role": "heading"
+      },
+      "e5": {
+        "name": "New",
+        "role": "button"
+      },
+      "e6": {
+        "name": "Refresh Adapter list",
+        "role": "button"
+      },
+      "e7": {
+        "name": "Adapter catalog help",
+        "role": "button"
+      },
+      "e8": {
+        "name": "Open AI assistant",
+        "role": "button"
+      },
+      "e9": {
+        "name": "Issue 117 Live Log Fixture，Administrator · full access，fixture-owner，[Task] Python · Manual · Task status: Running · Runtime Worker issue117-browser-worker · Deterministic local browser fixture with long log lines.",
+        "role": "button"
+      }
+    },
+    "text": "- generic \"DLRDataLinkRuntimeControl service healthyRuntime Worker · 1/1 onlineAdministrator TokenAdaptersManag\" [ref=e1] clickable [onclick]\n  - button \"Runtime Worker · 1/1 online\" [ref=e2]\n  - button \"Account menu\" [ref=e3]\n  - heading \"Adapters\" [level=2, ref=e4]\n  - button \"New\" [ref=e5]\n  - button \"Refresh Adapter list\" [ref=e6]\n  - button \"Adapter catalog help\" [ref=e7]\n  - generic [ref=e11] clickable [onclick]\n    - textbox \"Search Adapters\" [ref=e14]\n  - generic \"Adapter type filter\" [ref=e12] clickable [cursor:pointer]\n    - generic \"All types\" [ref=e15] clickable [cursor:pointer, onclick]\n      - combobox \"Adapter type filter\" [expanded=false, ref=e17]\n  - generic \"Adapter status filter\" [ref=e13] clickable [cursor:pointer]\n    - generic \"All statuses\" [ref=e16] clickable [cursor:pointer, onclick]\n      - combobox \"Adapter status filter\" [expanded=false, ref=e18]\n  - button \"Issue 117 Live Log Fixture，Administrator · full access，fixture-owner，[Task] Python · Manual · Task status: Running · Runtime Worker issue117-browser-worker · Deterministic local browser fixture with long log lines.\" [ref=e9]\n  - button \"More actions for Issue 117 Live Log Fixture\" [ref=e10]\n  - button \"Open AI assistant\" [expanded=false, ref=e8]",
+    "untrustedExternalContent": true
+  }
+}

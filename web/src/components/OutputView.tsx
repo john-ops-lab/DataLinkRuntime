@@ -143,6 +143,13 @@ export function LogView(props: {
   // history view never follows because it is a completed audit snapshot.
   const followTail = useRef(followControls);
   const pausedLineBaselineRef = useRef<number | null>(null);
+  // Pausing is a display-layer operation. Keep the last rendered live
+  // snapshot locally while the watcher/SSE continues updating props in the
+  // background; resume then drops this snapshot and renders the watcher's
+  // current bounded tail.
+  const [frozenContent, setFrozenContent] = useState<string | null>(null);
+  const frozenContentRef = useRef<string | null>(null);
+  const observedLiveContentRef = useRef(props.content);
   const [paused, setPaused] = useState(false);
   const [newLineCount, setNewLineCount] = useState(0);
   const [hasSelection, setHasSelection] = useState(false);
@@ -150,12 +157,20 @@ export function LogView(props: {
   const maximizeButtonRef = useRef<HTMLButtonElement>(null);
   const wasMaximizedRef = useRef(false);
   const searchResult = mode === "history" ? filterLogLines(props.content, searchQuery) : null;
-  const filteredContent = searchResult?.content ?? props.content;
+  const liveContent = frozenContent ?? props.content;
+  const filteredContent = searchResult?.content ?? liveContent;
   const displayContent =
     props.maxLines === undefined ? filteredContent : tailLogLines(filteredContent, props.maxLines);
 
   useEffect(() => {
-    if (followControls && !followTail.current && pausedLineBaselineRef.current !== null) {
+    const contentChanged = observedLiveContentRef.current !== props.content;
+    observedLiveContentRef.current = props.content;
+    if (
+      contentChanged &&
+      followControls &&
+      !followTail.current &&
+      pausedLineBaselineRef.current !== null
+    ) {
       const currentLines = logicalLineCount(props.content);
       const delta = currentLines - pausedLineBaselineRef.current;
       // A capped live window can stay at 2000 lines while new lines replace
@@ -283,6 +298,12 @@ export function LogView(props: {
     if (!followControls) {
       return;
     }
+    // An explicit pause owns both the rendered snapshot and the follow
+    // control. Manual scrolling must not accidentally turn it back into a
+    // live view before the user clicks Continue following.
+    if (frozenContentRef.current !== null) {
+      return;
+    }
     const nearBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 24;
     followTail.current = nearBottom;
     setPaused(!nearBottom);
@@ -295,6 +316,8 @@ export function LogView(props: {
   }
 
   function resumeFollowing() {
+    frozenContentRef.current = null;
+    setFrozenContent(null);
     followTail.current = true;
     setPaused(false);
     setNewLineCount(0);
@@ -423,6 +446,8 @@ export function LogView(props: {
                   if (element !== null) {
                     scrollTopRef.current = element.scrollTop;
                   }
+                  frozenContentRef.current = props.content;
+                  setFrozenContent(props.content);
                   followTail.current = false;
                   pausedLineBaselineRef.current = logicalLineCount(props.content);
                   setPaused(true);

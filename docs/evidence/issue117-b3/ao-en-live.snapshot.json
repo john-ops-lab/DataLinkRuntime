@@ -1,0 +1,191 @@
+{
+  "requestId": "3230849a-86c0-4958-b615-12414b8cd775",
+  "sessionId": "datalinkruntime-86",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "65d37c9e51a68f6ca55b023de6451dd8",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "generic"
+      },
+      "e10": {
+        "name": "More actions for Issue 117 Live Log Fixture",
+        "role": "button"
+      },
+      "e11": {
+        "name": "",
+        "role": "generic"
+      },
+      "e12": {
+        "name": "Adapter type filter",
+        "role": "generic"
+      },
+      "e13": {
+        "name": "Adapter status filter",
+        "role": "generic"
+      },
+      "e14": {
+        "name": "Issue 117 Live Log Fixture",
+        "role": "heading"
+      },
+      "e15": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e16": {
+        "name": "Live logs",
+        "role": "tabpanel"
+      },
+      "e17": {
+        "name": "Search Adapters",
+        "role": "textbox"
+      },
+      "e18": {
+        "name": "",
+        "role": "generic"
+      },
+      "e19": {
+        "name": "",
+        "role": "generic"
+      },
+      "e2": {
+        "name": "Runtime Worker · 1/1 online",
+        "role": "button"
+      },
+      "e20": {
+        "name": "Settings",
+        "role": "button"
+      },
+      "e21": {
+        "name": "Save",
+        "role": "button"
+      },
+      "e22": {
+        "name": "Stop",
+        "role": "button"
+      },
+      "e23": {
+        "name": "Live logs",
+        "role": "region"
+      },
+      "e24": {
+        "name": "Adapter type filter",
+        "role": "combobox"
+      },
+      "e25": {
+        "name": "Adapter status filter",
+        "role": "combobox"
+      },
+      "e26": {
+        "name": "",
+        "role": "generic"
+      },
+      "e27": {
+        "name": "",
+        "role": "generic"
+      },
+      "e28": {
+        "name": "",
+        "role": "generic"
+      },
+      "e29": {
+        "name": "",
+        "role": "generic"
+      },
+      "e3": {
+        "name": "Account menu",
+        "role": "button"
+      },
+      "e30": {
+        "name": "Edit",
+        "role": "tab"
+      },
+      "e31": {
+        "name": "Runtime settings",
+        "role": "tab"
+      },
+      "e32": {
+        "name": "Executions",
+        "role": "tab"
+      },
+      "e33": {
+        "name": "Live logs",
+        "role": "tab"
+      },
+      "e34": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e35": {
+        "name": "Unified log",
+        "role": "tabpanel"
+      },
+      "e36": {
+        "name": "Execution logs",
+        "role": "region"
+      },
+      "e37": {
+        "name": "",
+        "role": "generic"
+      },
+      "e38": {
+        "name": "",
+        "role": "generic"
+      },
+      "e39": {
+        "name": "Execution log content",
+        "role": "generic"
+      },
+      "e4": {
+        "name": "Adapters",
+        "role": "heading"
+      },
+      "e40": {
+        "name": "Unified log",
+        "role": "tab"
+      },
+      "e41": {
+        "name": "Output",
+        "role": "tab"
+      },
+      "e42": {
+        "name": "Pause following",
+        "role": "button"
+      },
+      "e43": {
+        "name": "Add to conversation context",
+        "role": "button"
+      },
+      "e44": {
+        "name": "Maximize logs",
+        "role": "button"
+      },
+      "e5": {
+        "name": "New",
+        "role": "button"
+      },
+      "e6": {
+        "name": "Refresh Adapter list",
+        "role": "button"
+      },
+      "e7": {
+        "name": "Adapter catalog help",
+        "role": "button"
+      },
+      "e8": {
+        "name": "Open AI assistant",
+        "role": "button"
+      },
+      "e9": {
+        "name": "Issue 117 Live Log Fixture，Administrator · full access，fixture-owner，[Task] Python · Manual · Task status: Running · Runtime Worker issue117-browser-worker · Deterministic local browser fixture with long log lines.",
+        "role": "button"
+      }
+    },
+    "text": "- generic \"DLRDataLinkRuntimeControl service healthyRuntime Worker · 1/1 onlineAdministrator TokenAdaptersManag\" [ref=e1] clickable [onclick]\n  - button \"Runtime Worker · 1/1 online\" [ref=e2]\n  - button \"Account menu\" [ref=e3]\n  - heading \"Adapters\" [level=2, ref=e4]\n  - button \"New\" [ref=e5]\n  - button \"Refresh Adapter list\" [ref=e6]\n  - button \"Adapter catalog help\" [ref=e7]\n  - generic [ref=e11] clickable [onclick]\n    - textbox \"Search Adapters\" [ref=e17]\n  - generic \"Adapter type filter\" [ref=e12] clickable [cursor:pointer]\n    - generic \"All types\" [ref=e18] clickable [cursor:pointer, onclick]\n      - combobox \"Adapter type filter\" [expanded=false, ref=e24]\n  - generic \"Adapter status filter\" [ref=e13] clickable [cursor:pointer]\n    - generic \"All statuses\" [ref=e19] clickable [cursor:pointer, onclick]\n      - combobox \"Adapter status filter\" [expanded=false, ref=e25]\n  - button \"Issue 117 Live Log Fixture，Administrator · full access，fixture-owner，[Task] Python · Manual · Task status: Running · Runtime Worker issue117-browser-worker · Deterministic local browser fixture with long log lines.\" [ref=e9]\n  - button \"More actions for Issue 117 Live Log Fixture\" [ref=e10]\n  - button \"Open AI assistant\" [expanded=false, ref=e8]\n  - heading \"Issue 117 Live Log Fixture\" [level=2, ref=e14]\n  - button \"Settings\" [ref=e20]\n  - button \"Save\" [ref=e21]\n  - button \"Stop\" [ref=e22]\n  - generic \"Edit\" [ref=e26] clickable [cursor:pointer, onclick]\n    - tab \"Edit\" [ref=e30]\n  - generic \"Runtime settings\" [ref=e27] clickable [cursor:pointer, onclick]\n    - tab \"Runtime settings\" [ref=e31]\n  - generic \"Executions\" [ref=e28] clickable [cursor:pointer, onclick]\n    - tab \"Executions\" [ref=e32]\n  - generic \"Live logs\" [ref=e29] clickable [cursor:pointer, onclick]\n    - tab \"Live logs\" [selected, ref=e33]\n  - button \"ellipsis\" [expanded=false, ref=e15]\n  - tabpanel \"Live logs\" [ref=e16] focusable [tabindex]\n    - region \"Live logs\" [ref=e23]\n      - generic \"Unified log\" [ref=e37] clickable [cursor:pointer, onclick]\n        - tab \"Unified log\" [selected, ref=e40]\n      - generic \"Output\" [ref=e38] clickable [cursor:pointer, onclick]\n        - tab \"Output\" [ref=e41]\n      - button \"ellipsis\" [expanded=false, ref=e34]\n      - tabpanel \"Unified log\" [ref=e35] focusable [tabindex]\n        - region \"Execution logs\" [ref=e36]\n          - button \"Pause following\" [ref=e42]\n          - button \"Add to conversation context\" [disabled, ref=e43]\n          - button \"Maximize logs\" [ref=e44]\n          - generic \"Execution log content\" [ref=e39] focusable [tabindex]",
+    "untrustedExternalContent": true
+  }
+}

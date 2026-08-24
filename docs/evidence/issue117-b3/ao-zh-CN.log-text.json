@@ -1,0 +1,28 @@
+{
+  "requestId": "51872292-4411-4ba0-ae14-bf6651d91794",
+  "sessionId": "datalinkruntime-86",
+  "action": "get",
+  "result": {
+    "_boundary": {
+      "nonce": "24d260d1bcc21e9bcc4fb6504dea6d9a",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "lifecycle": {
+      "effectiveLaunch": {
+        "browserLaunched": true,
+        "engine": "chrome",
+        "launchHash": 7461855897916727000
+      },
+      "launched": false,
+      "relaunchedBrowser": false,
+      "restartedBackground": false,
+      "restoreStatus": "not_configured",
+      "reused": true,
+      "saveStatus": "not_attempted"
+    },
+    "origin": "http://127.0.0.1:4173/",
+    "text": "line-1\nline-2\npause-window-1: collected while the visible pane is frozen\npause-window-2: ordered after the first\nterminal-final: authoritative snapshot with [REDACTED]\n",
+    "untrustedExternalContent": true,
+    "value": "line-1\nline-2\npause-window-1: collected while the visible pane is frozen\npause-window-2: ordered after the first\nterminal-final: authoritative snapshot with [REDACTED]\n"
+  }
+}

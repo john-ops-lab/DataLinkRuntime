@@ -119,7 +119,7 @@ it("keeps receiving appended logs at the paused scroll position", () => {
   const { rerender } = render(
     <LogView
       testId="paused-log"
-      content="line-1\nline-2\n"
+      content={"line-1\nline-2\n"}
       truncated={false}
       mode="live"
     />,
@@ -133,15 +133,17 @@ it("keeps receiving appended logs at the paused scroll position", () => {
   rerender(
     <LogView
       testId="paused-log"
-      content="line-1\nline-2\nline-3\n"
+      content={"line-1\nline-2\nline-3\n"}
       truncated={false}
       mode="live"
     />,
   );
+  expect(pre.textContent).toBe("line-1\nline-2\n");
   expect(pre.scrollTop).toBe(70);
   expect(screen.getByTestId("paused-log-resume")).toBeTruthy();
 
   fireEvent.click(screen.getByTestId("paused-log-resume"));
+  expect(pre.textContent).toBe("line-1\nline-2\nline-3\n");
   expect(pre.scrollTop).toBe(700);
   expect(screen.getByTestId("paused-log-pause")).toBeTruthy();
 });

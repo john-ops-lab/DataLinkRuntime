@@ -1,0 +1,45 @@
+{
+  "capture": "AO Browser network metadata only; request/response bodies, credentials and query values omitted.",
+  "locale": "en-live",
+  "active": false,
+  "requestCount": 11,
+  "metadataOnly": true,
+  "api_request_count": 8,
+  "api_requests": [
+    {
+      "method": "GET",
+      "path": "/api/adapters/1",
+      "status": 200,
+      "count": 4
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions",
+      "status": 200,
+      "count": 1
+    },
+    {
+      "method": "GET",
+      "path": "/api/adapters/1/versions/10",
+      "status": 200,
+      "count": 1
+    },
+    {
+      "method": "GET",
+      "path": "/api/executions/5",
+      "status": 200,
+      "count": 1
+    },
+    {
+      "method": "GET",
+      "path": "/api/workers",
+      "status": 200,
+      "count": 1
+    }
+  ],
+  "required_checks": {
+    "execution_events_sse": false,
+    "execution_snapshot_get": true,
+    "unexpected_api_errors": []
+  }
+}

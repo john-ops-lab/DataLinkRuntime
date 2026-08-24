@@ -1,0 +1,191 @@
+{
+  "requestId": "ce161839-36bf-432a-9a31-a627ed4aaf35",
+  "sessionId": "datalinkruntime-86",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "82b627ceae2319e42e6861d03fd87dc1",
+      "origin": "http://127.0.0.1:4173/"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "generic"
+      },
+      "e10": {
+        "name": "Issue 117 Live Log Fixture 更多操作",
+        "role": "button"
+      },
+      "e11": {
+        "name": "",
+        "role": "generic"
+      },
+      "e12": {
+        "name": "适配器类型筛选",
+        "role": "generic"
+      },
+      "e13": {
+        "name": "适配器状态筛选",
+        "role": "generic"
+      },
+      "e14": {
+        "name": "Issue 117 Live Log Fixture",
+        "role": "heading"
+      },
+      "e15": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e16": {
+        "name": "实时日志",
+        "role": "tabpanel"
+      },
+      "e17": {
+        "name": "搜索适配器",
+        "role": "textbox"
+      },
+      "e18": {
+        "name": "",
+        "role": "generic"
+      },
+      "e19": {
+        "name": "",
+        "role": "generic"
+      },
+      "e2": {
+        "name": "运行节点 · 1/1 在线",
+        "role": "button"
+      },
+      "e20": {
+        "name": "设置",
+        "role": "button"
+      },
+      "e21": {
+        "name": "保存",
+        "role": "button"
+      },
+      "e22": {
+        "name": "停止运行",
+        "role": "button"
+      },
+      "e23": {
+        "name": "实时日志",
+        "role": "region"
+      },
+      "e24": {
+        "name": "适配器类型筛选",
+        "role": "combobox"
+      },
+      "e25": {
+        "name": "适配器状态筛选",
+        "role": "combobox"
+      },
+      "e26": {
+        "name": "",
+        "role": "generic"
+      },
+      "e27": {
+        "name": "",
+        "role": "generic"
+      },
+      "e28": {
+        "name": "",
+        "role": "generic"
+      },
+      "e29": {
+        "name": "",
+        "role": "generic"
+      },
+      "e3": {
+        "name": "账号菜单",
+        "role": "button"
+      },
+      "e30": {
+        "name": "编辑",
+        "role": "tab"
+      },
+      "e31": {
+        "name": "运行设置",
+        "role": "tab"
+      },
+      "e32": {
+        "name": "执行记录",
+        "role": "tab"
+      },
+      "e33": {
+        "name": "实时日志",
+        "role": "tab"
+      },
+      "e34": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e35": {
+        "name": "统一日志",
+        "role": "tabpanel"
+      },
+      "e36": {
+        "name": "执行日志",
+        "role": "region"
+      },
+      "e37": {
+        "name": "",
+        "role": "generic"
+      },
+      "e38": {
+        "name": "",
+        "role": "generic"
+      },
+      "e39": {
+        "name": "执行日志内容",
+        "role": "generic"
+      },
+      "e4": {
+        "name": "适配器",
+        "role": "heading"
+      },
+      "e40": {
+        "name": "统一日志",
+        "role": "tab"
+      },
+      "e41": {
+        "name": "输出",
+        "role": "tab"
+      },
+      "e42": {
+        "name": "暂停跟随",
+        "role": "button"
+      },
+      "e43": {
+        "name": "加入对话上下文",
+        "role": "button"
+      },
+      "e44": {
+        "name": "最大化日志",
+        "role": "button"
+      },
+      "e5": {
+        "name": "新 建",
+        "role": "button"
+      },
+      "e6": {
+        "name": "刷新适配器列表",
+        "role": "button"
+      },
+      "e7": {
+        "name": "适配器目录帮助",
+        "role": "button"
+      },
+      "e8": {
+        "name": "展开 AI 助手",
+        "role": "button"
+      },
+      "e9": {
+        "name": "Issue 117 Live Log Fixture，管理员全局访问，fixture-owner，[任务] Python · 手动运行 · 任务 状态：运行中 · 运行节点 issue117-browser-worker · Deterministic local browser fixture with long log lines.",
+        "role": "button"
+      }
+    },
+    "text": "- generic \"DLRDataLinkRuntime控制服务正常运行节点 · 1/1 在线管理员 Token适配器管理可执行的任务和 Webhook 适配器。新 建全部类型全部状态1 个适配器Issue 117 Li\" [ref=e1] clickable [onclick]\n  - button \"运行节点 · 1/1 在线\" [ref=e2]\n  - button \"账号菜单\" [ref=e3]\n  - heading \"适配器\" [level=2, ref=e4]\n  - button \"新 建\" [ref=e5]\n  - button \"刷新适配器列表\" [ref=e6]\n  - button \"适配器目录帮助\" [ref=e7]\n  - generic [ref=e11] clickable [onclick]\n    - textbox \"搜索适配器\" [ref=e17]\n  - generic \"适配器类型筛选\" [ref=e12] clickable [cursor:pointer]\n    - generic \"全部类型\" [ref=e18] clickable [cursor:pointer, onclick]\n      - combobox \"适配器类型筛选\" [expanded=false, ref=e24]\n  - generic \"适配器状态筛选\" [ref=e13] clickable [cursor:pointer]\n    - generic \"全部状态\" [ref=e19] clickable [cursor:pointer, onclick]\n      - combobox \"适配器状态筛选\" [expanded=false, ref=e25]\n  - button \"Issue 117 Live Log Fixture，管理员全局访问，fixture-owner，[任务] Python · 手动运行 · 任务 状态：运行中 · 运行节点 issue117-browser-worker · Deterministic local browser fixture with long log lines.\" [ref=e9]\n  - button \"Issue 117 Live Log Fixture 更多操作\" [ref=e10]\n  - button \"展开 AI 助手\" [expanded=false, ref=e8]\n  - heading \"Issue 117 Live Log Fixture\" [level=2, ref=e14]\n  - button \"设置\" [ref=e20]\n  - button \"保存\" [ref=e21]\n  - button \"停止运行\" [ref=e22]\n  - generic \"编辑\" [ref=e26] clickable [cursor:pointer, onclick]\n    - tab \"编辑\" [ref=e30]\n  - generic \"运行设置\" [ref=e27] clickable [cursor:pointer, onclick]\n    - tab \"运行设置\" [ref=e31]\n  - generic \"执行记录\" [ref=e28] clickable [cursor:pointer, onclick]\n    - tab \"执行记录\" [ref=e32]\n  - generic \"实时日志\" [ref=e29] clickable [cursor:pointer, onclick]\n    - tab \"实时日志\" [selected, ref=e33]\n  - button \"ellipsis\" [expanded=false, ref=e15]\n  - tabpanel \"实时日志\" [ref=e16] focusable [tabindex]\n    - region \"实时日志\" [ref=e23]\n      - generic \"统一日志\" [ref=e37] clickable [cursor:pointer, onclick]\n        - tab \"统一日志\" [selected, ref=e40]\n      - generic \"输出\" [ref=e38] clickable [cursor:pointer, onclick]\n        - tab \"输出\" [ref=e41]\n      - button \"ellipsis\" [expanded=false, ref=e34]\n      - tabpanel \"统一日志\" [ref=e35] focusable [tabindex]\n        - region \"执行日志\" [ref=e36]\n          - button \"暂停跟随\" [ref=e42]\n          - button \"加入对话上下文\" [disabled, ref=e43]\n          - button \"最大化日志\" [ref=e44]\n          - generic \"执行日志内容\" [ref=e39] focusable [tabindex]",
+    "untrustedExternalContent": true
+  }
+}
