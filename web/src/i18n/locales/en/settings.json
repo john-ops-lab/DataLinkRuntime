@@ -112,6 +112,7 @@
     "helpSuffix": "; the field is injected into the Adapter execution environment as",
     "injectedSuffix": "; all bindings are replaced on save.",
     "openSettingsHint": "To add a Credential, open System Settings → Credentials.",
+    "nonAdminOpenSettingsHint": "To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.",
     "ownerRisk": "Bindings show only Credential names and fields; Secret values are never shown. Owners can change bindings, so bind only trusted Credentials.",
     "editRisk": "This Adapter has bound Credentials. Editors can use them through code and execution, but can never read Secret values; grant Edit only to trusted users.",
     "renameHint": "After changing a code Credential name, update the references in the code too.",

@@ -1,0 +1,239 @@
+{
+  "requestId": "1e07a360-12fa-4e02-9d4b-70eb78805cd3",
+  "sessionId": "datalinkruntime-87",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "57ef0c94cb8f4d0c1960b2d90e8f7c73",
+      "origin": "http://127.0.0.1:4174/"
+    },
+    "refs": {
+      "e1": {
+        "name": "Runtime Worker · 0/1 online",
+        "role": "button"
+      },
+      "e10": {
+        "name": "Adapter status filter",
+        "role": "generic"
+      },
+      "e11": {
+        "name": "Issue117 B4 Credential Role Fixture，Mine，fixture-b4-owner，[Task] Python · Manual · Task status: Idle · Runtime Worker offline · Runtime Worker issue117-b4-browser-worker",
+        "role": "button"
+      },
+      "e12": {
+        "name": "More actions for Issue117 B4 Credential Role Fixture",
+        "role": "button"
+      },
+      "e13": {
+        "name": "Issue117 B4 Credential Role Fixture",
+        "role": "heading"
+      },
+      "e14": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e15": {
+        "name": "Search Adapters",
+        "role": "textbox"
+      },
+      "e16": {
+        "name": "",
+        "role": "generic"
+      },
+      "e17": {
+        "name": "",
+        "role": "generic"
+      },
+      "e18": {
+        "name": "Settings",
+        "role": "button"
+      },
+      "e19": {
+        "name": "Save",
+        "role": "button"
+      },
+      "e2": {
+        "name": "Account menu",
+        "role": "button"
+      },
+      "e20": {
+        "name": "Run once",
+        "role": "button"
+      },
+      "e21": {
+        "name": "Adapter code editor",
+        "role": "region"
+      },
+      "e22": {
+        "name": "Adapter type filter",
+        "role": "combobox"
+      },
+      "e23": {
+        "name": "Adapter status filter",
+        "role": "combobox"
+      },
+      "e24": {
+        "name": "",
+        "role": "generic"
+      },
+      "e25": {
+        "name": "",
+        "role": "generic"
+      },
+      "e26": {
+        "name": "",
+        "role": "generic"
+      },
+      "e27": {
+        "name": "",
+        "role": "generic"
+      },
+      "e28": {
+        "name": "segmented control",
+        "role": "radiogroup"
+      },
+      "e29": {
+        "name": "View diff",
+        "role": "button"
+      },
+      "e3": {
+        "name": "Adapters",
+        "role": "heading"
+      },
+      "e30": {
+        "name": "Add to conversation context",
+        "role": "button"
+      },
+      "e31": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e32": {
+        "name": "Edit",
+        "role": "tab"
+      },
+      "e33": {
+        "name": "Runtime settings",
+        "role": "tab"
+      },
+      "e34": {
+        "name": "Executions",
+        "role": "tab"
+      },
+      "e35": {
+        "name": "Live logs",
+        "role": "tab"
+      },
+      "e36": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e37": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e38": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e39": {
+        "name": "",
+        "role": "generic"
+      },
+      "e4": {
+        "name": "New",
+        "role": "button"
+      },
+      "e40": {
+        "name": "",
+        "role": "generic"
+      },
+      "e41": {
+        "name": "Add binding",
+        "role": "button"
+      },
+      "e42": {
+        "name": "Save bindings",
+        "role": "button"
+      },
+      "e43": {
+        "name": "Dark",
+        "role": "radio"
+      },
+      "e44": {
+        "name": "Light",
+        "role": "radio"
+      },
+      "e45": {
+        "name": "Follow system",
+        "role": "radio"
+      },
+      "e46": {
+        "name": "Adapter code editor",
+        "role": "textbox"
+      },
+      "e47": {
+        "name": "Python dependencies",
+        "role": "tab"
+      },
+      "e48": {
+        "name": "Tab 2 of 2 Credential bindings",
+        "role": "tab"
+      },
+      "e49": {
+        "name": "Binding 1 code Credential name",
+        "role": "textbox"
+      },
+      "e5": {
+        "name": "Refresh Adapter list",
+        "role": "button"
+      },
+      "e50": {
+        "name": "Binding 1 Credential",
+        "role": "generic"
+      },
+      "e51": {
+        "name": "Binding 1 field",
+        "role": "generic"
+      },
+      "e52": {
+        "name": "Delete binding 1",
+        "role": "button"
+      },
+      "e53": {
+        "name": "",
+        "role": "generic"
+      },
+      "e54": {
+        "name": "",
+        "role": "generic"
+      },
+      "e55": {
+        "name": "Binding 1 Credential",
+        "role": "combobox"
+      },
+      "e56": {
+        "name": "Binding 1 field",
+        "role": "combobox"
+      },
+      "e6": {
+        "name": "Adapter catalog help",
+        "role": "button"
+      },
+      "e7": {
+        "name": "Open AI assistant",
+        "role": "button"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "Adapter type filter",
+        "role": "generic"
+      }
+    },
+    "text": "- generic\n  - generic\n    - banner\n      - StaticText \"DataLinkRuntime\"\n      - StaticText \"Control service healthy\"\n      - button \"Runtime Worker · 0/1 online\" [ref=e1]\n        - StaticText \"Runtime Worker · 0/1 online\"\n      - button \"Account menu\" [ref=e2]\n        - StaticText \"fixture-b4-owner · User\"\n    - generic\n      - complementary\n        - heading \"Adapters\" [level=2, ref=e3]\n        - paragraph\n          - StaticText \"Manage executable Task and Webhook adapters.\"\n        - button \"New\" [ref=e4]\n          - StaticText \"New\"\n        - button \"Refresh Adapter list\" [ref=e5]\n          - image \"reload\"\n        - button \"Adapter catalog help\" [ref=e6]\n          - image \"question-circle\"\n        - toolbar \"Adapter toolbar\"\n          - generic \"Adapter filters\"\n            - generic [ref=e8] clickable [onclick]\n              - textbox \"Search Adapters\" [ref=e15]\n            - generic \"Adapter type filter\" [ref=e9] clickable [cursor:pointer]\n              - generic [ref=e16] clickable [cursor:pointer, onclick]\n                - combobox \"Adapter type filter\" [expanded=false, ref=e22]\n                - StaticText \"All types\"\n            - generic \"Adapter status filter\" [ref=e10] clickable [cursor:pointer]\n              - generic [ref=e17] clickable [cursor:pointer, onclick]\n                - combobox \"Adapter status filter\" [expanded=false, ref=e23]\n                - StaticText \"All statuses\"\n          - StaticText \"1 Adapters\"\n        - generic\n          - button \"Issue117 B4 Credential Role Fixture，Mine，fixture-b4-owner，[Task] Python · Manual · Task status: Idle · Runtime Worker offline · Runtime Worker issue117-b4-browser-worker\" [ref=e11]\n            - StaticText \"Issue117 B4 Credential Role Fixture\"\n            - StaticText \"Mine\"\n            - generic\n              - StaticText \"[Task] Python · Manual · Idle · Runtime Worker offline\"\n          - button \"More actions for Issue117 B4 Credential Role Fixture\" [ref=e12]\n            - StaticText \"···\"\n      - complementary\n        - button \"Open AI assistant\" [expanded=false, ref=e7]\n      - main\n        - generic\n          - sectionheader\n            - heading \"Issue117 B4 Credential Role Fixture\" [level=2, ref=e13]\n            - group \"Task runtime context\"\n              - StaticText \"Task\"\n              - StaticText \"Python\"\n              - StaticText \"Stopped\"\n              - StaticText \"Runtime Worker: issue117-b4-browser-worker\"\n            - toolbar \"Task actions\"\n              - button \"Settings\" [ref=e18]\n                - StaticText \"Settings\"\n              - button \"Save\" [ref=e19]\n                - StaticText \"Save\"\n              - button \"Run once\" [ref=e20]\n                - StaticText \"Run once\"\n          - tablist\n            - generic\n              - generic [ref=e24] clickable [cursor:pointer, onclick]\n                - tab \"Edit\" [selected, ref=e32]\n              - generic [ref=e25] clickable [cursor:pointer, onclick]\n                - tab \"Runtime settings\" [ref=e33]\n              - generic [ref=e26] clickable [cursor:pointer, onclick]\n                - tab \"Executions\" [ref=e34]\n              - generic [ref=e27] clickable [cursor:pointer, onclick]\n                - tab \"Live logs\" [ref=e35]\n            - button \"ellipsis\" [expanded=false, ref=e14]\n              - image \"ellipsis\"\n          - generic\n            - tabpanel \"Edit\"\n              - toolbar \"Code editor toolbar\"\n                - StaticText \"Editor theme\"\n                - radiogroup \"segmented control\" [ref=e28] focusable [tabindex]\n                  - generic\n                    - LabelText [ref=e36] clickable [cursor:pointer]\n                      - radio \"Dark\" [checked=true, ref=e43]\n                      - StaticText \"Dark\"\n                    - LabelText [ref=e37] clickable [cursor:pointer]\n                      - radio \"Light\" [checked=false, ref=e44]\n                      - StaticText \"Light\"\n                    - LabelText [ref=e38] clickable [cursor:pointer]\n                      - radio \"Follow system\" [checked=false, ref=e45]\n                      - StaticText \"Follow system\"\n                - button \"View diff\" [ref=e29]\n                  - StaticText \"View diff\"\n                - button \"Add to conversation context\" [disabled, ref=e30]\n                  - StaticText \"Add to conversation context\"\n              - region \"Adapter code editor\" [ref=e21]\n                - code\n                  - generic\n                    - textbox \"Adapter code editor\" [ref=e46]\n              - tablist\n                - generic\n                  - generic [ref=e39] clickable [cursor:pointer, onclick]\n                    - tab \"Python dependencies\" [ref=e47]\n                  - generic [ref=e40] clickable [cursor:pointer, onclick]\n                    - tab \"Tab 2 of 2 Credential bindings\" [selected, ref=e48]\n                      - StaticText \"Tab 2 of 2\"\n                      - StaticText \"Credential bindings\"\n                - button \"ellipsis\" [expanded=false, ref=e31]\n                  - image \"ellipsis\"\n              - generic\n                - tabpanel \"Tab 2 of 2 Credential bindings\"\n                  - generic\n                    - StaticText \"The code Credential name lets the script read the bound sensitive value, for example\"\n                    - code\n                      - StaticText \"context.secrets.get(\\\"PASSWORD\\\")\"\n                    - StaticText \"; the field is injected into the Adapter execution environment as\"\n                    - code\n                      - StaticText \"DLR_SECRET_{env_key}\"\n                    - StaticText \" ; all bindings are replaced on save.\"\n                  - alert\n                    - image \"exclamation-circle\"\n                    - StaticText \"Bindings show only Credential names and fields; Secret values are never shown. Owners can change bindings, so bind only trusted Credentials.\"\n                  - StaticText \"To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.\"\n                  - group \"Binding 1\"\n                    - textbox \"Binding 1 code Credential name\" [ref=e49]: API_TOKEN\n                      - StaticText \"API_TOKEN\"\n                    - generic \"Binding 1 Credential\" [ref=e50] clickable [cursor:pointer]\n                      - generic [ref=e53] clickable [cursor:pointer, onclick]\n                        - combobox \"Binding 1 Credential\" [expanded=false, ref=e55]\n                    - generic \"Binding 1 field\" [ref=e51] clickable [cursor:pointer]\n                      - generic [ref=e54] clickable [cursor:pointer, onclick]\n                        - combobox \"Binding 1 field\" [expanded=false, ref=e56]\n                    - button \"Delete binding 1\" [ref=e52]\n                  - button \"Add binding\" [ref=e41]\n                  - button \"Save bindings\" [disabled, ref=e42]",
+    "untrustedExternalContent": true
+  }
+}

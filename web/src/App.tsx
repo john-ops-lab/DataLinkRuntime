@@ -1464,6 +1464,7 @@ export function AdapterConsole({
                                     adapterId={selected.id}
                                     disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true || !selectedCanManage}
                                     accessLevel={selectedAccessLevel}
+                                    platformRole={accountPrincipal?.role}
                                     useScopedCredentialOptions={accountPrincipal !== undefined}
                                     onError={setError}
                                     onOpenSettings={openSystemSettings}

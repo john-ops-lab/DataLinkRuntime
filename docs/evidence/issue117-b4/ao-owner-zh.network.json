@@ -1,0 +1,18 @@
+{
+  "source": "AO Browser metadata-only capture",
+  "role": "non-admin Adapter owner",
+  "locale": "zh-CN",
+  "requestCount": 200,
+  "captureLimit": 200,
+  "allObservedResponses": "2xx",
+  "apiPathsObserved": [
+    "/api/auth/account/csrf",
+    "/api/auth/account/me",
+    "/api/adapters",
+    "/api/health",
+    "/api/locale",
+    "/api/workers"
+  ],
+  "requestBodiesCaptured": false,
+  "secretValuesCaptured": false
+}

@@ -1,0 +1,191 @@
+{
+  "requestId": "afbbf23d-6959-4333-a9c4-971a38a9ba9e",
+  "sessionId": "datalinkruntime-87",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "da67755496f55e507513cac660c312f4",
+      "origin": "http://127.0.0.1:4174/"
+    },
+    "refs": {
+      "e1": {
+        "name": "运行节点 · 0/1 在线",
+        "role": "button"
+      },
+      "e10": {
+        "name": "Issue117 B4 Credential Role Fixture，共享 · 只读，fixture-b4-owner，[任务] Python · 手动运行 · 任务 状态：空闲 · 运行节点离线 · 运行节点 issue117-b4-browser-worker",
+        "role": "button"
+      },
+      "e11": {
+        "name": "Issue117 B4 Credential Role Fixture 更多操作",
+        "role": "button"
+      },
+      "e12": {
+        "name": "Issue117 B4 Credential Role Fixture",
+        "role": "heading"
+      },
+      "e13": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e14": {
+        "name": "搜索适配器",
+        "role": "textbox"
+      },
+      "e15": {
+        "name": "",
+        "role": "generic"
+      },
+      "e16": {
+        "name": "",
+        "role": "generic"
+      },
+      "e17": {
+        "name": "设置",
+        "role": "button"
+      },
+      "e18": {
+        "name": "适配器代码编辑器",
+        "role": "region"
+      },
+      "e19": {
+        "name": "适配器类型筛选",
+        "role": "combobox"
+      },
+      "e2": {
+        "name": "账号菜单",
+        "role": "button"
+      },
+      "e20": {
+        "name": "适配器状态筛选",
+        "role": "combobox"
+      },
+      "e21": {
+        "name": "",
+        "role": "generic"
+      },
+      "e22": {
+        "name": "",
+        "role": "generic"
+      },
+      "e23": {
+        "name": "",
+        "role": "generic"
+      },
+      "e24": {
+        "name": "",
+        "role": "generic"
+      },
+      "e25": {
+        "name": "segmented control",
+        "role": "radiogroup"
+      },
+      "e26": {
+        "name": "查看差异",
+        "role": "button"
+      },
+      "e27": {
+        "name": "加入对话上下文",
+        "role": "button"
+      },
+      "e28": {
+        "name": "ellipsis",
+        "role": "button"
+      },
+      "e29": {
+        "name": "编辑",
+        "role": "tab"
+      },
+      "e3": {
+        "name": "适配器",
+        "role": "heading"
+      },
+      "e30": {
+        "name": "运行设置",
+        "role": "tab"
+      },
+      "e31": {
+        "name": "执行记录",
+        "role": "tab"
+      },
+      "e32": {
+        "name": "实时日志",
+        "role": "tab"
+      },
+      "e33": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e34": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e35": {
+        "name": "",
+        "role": "LabelText"
+      },
+      "e36": {
+        "name": "",
+        "role": "generic"
+      },
+      "e37": {
+        "name": "",
+        "role": "generic"
+      },
+      "e38": {
+        "name": "深色",
+        "role": "radio"
+      },
+      "e39": {
+        "name": "浅色",
+        "role": "radio"
+      },
+      "e4": {
+        "name": "新 建",
+        "role": "button"
+      },
+      "e40": {
+        "name": "跟随系统",
+        "role": "radio"
+      },
+      "e41": {
+        "name": "适配器代码编辑器",
+        "role": "textbox"
+      },
+      "e42": {
+        "name": "Python 依赖",
+        "role": "tab"
+      },
+      "e43": {
+        "name": "Tab 2 of 2 凭据绑定",
+        "role": "tab"
+      },
+      "e44": {
+        "name": "绑定 1 代码中的凭据名",
+        "role": "textbox"
+      },
+      "e5": {
+        "name": "刷新适配器列表",
+        "role": "button"
+      },
+      "e6": {
+        "name": "适配器目录帮助",
+        "role": "button"
+      },
+      "e7": {
+        "name": "",
+        "role": "generic"
+      },
+      "e8": {
+        "name": "适配器类型筛选",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "适配器状态筛选",
+        "role": "generic"
+      }
+    },
+    "text": "- generic\n  - generic\n    - banner\n      - StaticText \"DataLinkRuntime\"\n      - StaticText \"控制服务正常\"\n      - button \"运行节点 · 0/1 在线\" [ref=e1]\n        - StaticText \"运行节点 · 0/1 在线\"\n      - button \"账号菜单\" [ref=e2]\n        - StaticText \"fixture-b4-reader · 用户\"\n    - generic\n      - complementary\n        - heading \"适配器\" [level=2, ref=e3]\n        - paragraph\n          - StaticText \"管理可执行的任务和 Webhook 适配器。\"\n        - button \"新 建\" [ref=e4]\n          - StaticText \"新 建\"\n        - button \"刷新适配器列表\" [ref=e5]\n          - image \"reload\"\n        - button \"适配器目录帮助\" [ref=e6]\n          - image \"question-circle\"\n        - toolbar \"适配器工具栏\"\n          - generic \"适配器筛选条件\"\n            - generic [ref=e7] clickable [onclick]\n              - textbox \"搜索适配器\" [ref=e14]\n            - generic \"适配器类型筛选\" [ref=e8] clickable [cursor:pointer]\n              - generic [ref=e15] clickable [cursor:pointer, onclick]\n                - combobox \"适配器类型筛选\" [expanded=false, ref=e19]\n                - StaticText \"全部类型\"\n            - generic \"适配器状态筛选\" [ref=e9] clickable [cursor:pointer]\n              - generic [ref=e16] clickable [cursor:pointer, onclick]\n                - combobox \"适配器状态筛选\" [expanded=false, ref=e20]\n                - StaticText \"全部状态\"\n          - StaticText \"1 个适配器\"\n        - generic\n          - button \"Issue117 B4 Credential Role Fixture，共享 · 只读，fixture-b4-owner，[任务] Python · 手动运行 · 任务 状态：空闲 · 运行节点离线 · 运行节点 issue117-b4-browser-worker\" [ref=e10]\n            - StaticText \"Issue117 B4 Credential Role Fixture\"\n            - StaticText \"共享 · 只读\"\n            - generic\n              - StaticText \"[任务] Python · 手动运行 · 空闲 · 运行节点离线\"\n          - button \"Issue117 B4 Credential Role Fixture 更多操作\" [ref=e11]\n            - StaticText \"···\"\n      - main\n        - generic\n          - alert\n            - image \"info-circle\"\n            - StaticText \"只读访问\"\n            - StaticText \"你可以查看此共享适配器，但编辑、保存、运行和 AI 应用修改均已禁用。\"\n          - sectionheader\n            - heading \"Issue117 B4 Credential Role Fixture\" [level=2, ref=e12]\n            - group \"任务运行上下文\"\n              - StaticText \"任务\"\n              - StaticText \"Python\"\n              - StaticText \"已停止\"\n              - StaticText \"运行节点：issue117-b4-browser-worker\"\n            - toolbar \"任务操作\"\n              - button \"设置\" [ref=e17]\n                - StaticText \"设置\"\n              - StaticText \"当前适配器为只读共享，不能修改、保存、运行或改变定时配置。\"\n          - tablist\n            - generic\n              - generic [ref=e21] clickable [cursor:pointer, onclick]\n                - tab \"编辑\" [selected, ref=e29]\n              - generic [ref=e22] clickable [cursor:pointer, onclick]\n                - tab \"运行设置\" [ref=e30]\n              - generic [ref=e23] clickable [cursor:pointer, onclick]\n                - tab \"执行记录\" [ref=e31]\n              - generic [ref=e24] clickable [cursor:pointer, onclick]\n                - tab \"实时日志\" [ref=e32]\n            - button \"ellipsis\" [expanded=false, ref=e13]\n              - image \"ellipsis\"\n          - generic\n            - tabpanel \"编辑\"\n              - toolbar \"代码编辑器工具栏\"\n                - StaticText \"编辑器主题\"\n                - radiogroup \"segmented control\" [ref=e25] focusable [tabindex]\n                  - generic\n                    - LabelText [ref=e33] clickable [cursor:pointer]\n                      - radio \"深色\" [checked=true, ref=e38]\n                    - LabelText [ref=e34] clickable [cursor:pointer]\n                      - radio \"浅色\" [checked=false, ref=e39]\n                    - LabelText [ref=e35] clickable [cursor:pointer]\n                      - radio \"跟随系统\" [checked=false, ref=e40]\n                - button \"查看差异\" [ref=e26]\n                  - StaticText \"查看差异\"\n                - button \"加入对话上下文\" [disabled, ref=e27]\n                  - StaticText \"加入对话上下文\"\n              - region \"适配器代码编辑器\" [ref=e18]\n                - code\n                  - generic\n                    - textbox \"适配器代码编辑器\" [ref=e41]\n              - tablist\n                - generic\n                  - generic [ref=e36] clickable [cursor:pointer, onclick]\n                    - tab \"Python 依赖\" [ref=e42]\n                  - generic [ref=e37] clickable [cursor:pointer, onclick]\n                    - tab \"Tab 2 of 2 凭据绑定\" [selected, ref=e43]\n                - button \"ellipsis\" [expanded=false, ref=e28]\n                  - image \"ellipsis\"\n              - generic\n                - tabpanel \"Tab 2 of 2 凭据绑定\"\n                  - generic\n                  - alert\n                  - StaticText \"如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。\"\n                  - group \"绑定 1\"\n                    - textbox \"绑定 1 代码中的凭据名\" [disabled, ref=e44]: API_TOKEN",
+    "untrustedExternalContent": true
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "requestId": "be31bca4-0572-4fb6-b6d0-257808850626",
+  "sessionId": "datalinkruntime-87",
+  "action": "console",
+  "result": {
+    "messages": [
+      {
+        "level": "debug",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n[vite] connecting...\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T13:44:41.614Z"
+      },
+      {
+        "level": "debug",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n[vite] connected.\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T13:44:41.614Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T13:44:41.614Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T13:44:41.614Z"
+      },
+      {
+        "level": "debug",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n[vite] connecting...\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T13:44:41.614Z"
+      },
+      {
+        "level": "debug",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n[vite] connected.\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T13:44:41.614Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T13:44:41.614Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T13:44:41.614Z"
+      }
+    ],
+    "untrustedExternalContent": true
+  }
+}

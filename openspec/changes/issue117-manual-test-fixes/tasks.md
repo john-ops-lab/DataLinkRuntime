@@ -18,9 +18,9 @@
 
 ## 4. Batch 4：Issue #117.3 凭据绑定角色提示（依赖 Batch 3 验收通过）
 
-- [ ] 4.1 增加平台管理员、非管理员 Adapter owner、非 owner/无权用户的前后端测试 fixture，验证准确的平台角色决定提示而非 Adapter ownership；补充 `zh-CN/en` 对应 i18n key、精确中文文案和英文文案 `To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.` 的资源 key parity 断言。
-- [ ] 4.2 实现管理员保持原提示和系统设置入口、非管理员按 `zh-CN/en` 资源显示对应提示（英文路径标签固定为 `System Settings → Credentials`）且不显示入口；验证组件不硬编码用户可见文案，已有 Credential 绑定/读取/编辑与全局 admin-only CRUD 的 API 权限测试全部通过。
-- [ ] 4.3 完成 Batch 4 验收门：运行变更相关 backend/web lint、typecheck、unit tests；真实浏览器分别用管理员和非管理员会话在 `zh-CN/en` 检查精确中文文案及 `To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.`、资源切换、链接、键盘可达性、console 与 1280/1440/1680/1920 无溢出证据，确认未出现 Secret 后才允许 Batch 5 开始。
+- [x] 4.1 增加平台管理员、非管理员 Adapter owner、非 owner/无权用户的前后端测试 fixture，验证准确的平台角色决定提示而非 Adapter ownership；补充 `zh-CN/en` 对应 i18n key、精确中文文案和英文文案 `To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.` 的资源 key parity 断言。
+- [x] 4.2 实现管理员保持原提示和系统设置入口、非管理员按 `zh-CN/en` 资源显示对应提示（英文路径标签固定为 `System Settings → Credentials`）且不显示入口；验证组件不硬编码用户可见文案，已有 Credential 绑定/读取/编辑与全局 admin-only CRUD 的 API 权限测试全部通过。
+- [x] 4.3 完成 Batch 4 验收门：运行变更相关 backend/web lint、typecheck、unit tests；真实浏览器分别用管理员和非管理员会话在 `zh-CN/en` 检查精确中文文案及 `To add a credential, ask an administrator to go to “System Settings → Credentials” and create one.`、资源切换、链接、键盘可达性、console 与 1280/1440/1680/1920 无溢出证据，确认未出现 Secret 后才允许 Batch 5 开始。
 
 ## 5. Batch 5：Issue #117.2 编辑器布局与最大化（依赖 Batch 4 验收通过）
 

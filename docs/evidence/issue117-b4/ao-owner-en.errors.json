@@ -1,0 +1,9 @@
+{
+  "requestId": "a20b824e-32d8-47db-9188-05fdf03fd2c3",
+  "sessionId": "datalinkruntime-87",
+  "action": "errors",
+  "result": {
+    "messages": [],
+    "untrustedExternalContent": true
+  }
+}

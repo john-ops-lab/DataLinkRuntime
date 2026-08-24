@@ -1,0 +1,26 @@
+{
+  "requestId": "b187224e-bb87-48bb-b900-4f918b908fc1",
+  "sessionId": "datalinkruntime-87",
+  "action": "focus",
+  "result": {
+    "_boundary": {
+      "nonce": "90c2dba3c98853dfb5a639de55de747d",
+      "origin": "unknown"
+    },
+    "focused": "@e41",
+    "lifecycle": {
+      "effectiveLaunch": {
+        "browserLaunched": true,
+        "engine": "chrome",
+        "launchHash": 11242753189936194000
+      },
+      "launched": false,
+      "relaunchedBrowser": false,
+      "restartedBackground": false,
+      "restoreStatus": "not_configured",
+      "reused": true,
+      "saveStatus": "not_attempted"
+    },
+    "untrustedExternalContent": true
+  }
+}

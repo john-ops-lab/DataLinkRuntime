@@ -112,6 +112,7 @@
     "helpSuffix": "；绑定将凭据字段以",
     "injectedSuffix": "注入该 Adapter 的执行环境，保存为全量替换。",
     "openSettingsHint": "如需新增凭据，请前往「系统设置 → 凭据管理」新建。",
+    "nonAdminOpenSettingsHint": "如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。",
     "ownerRisk": "凭据绑定只显示名称和字段，不显示 Secret 真值。拥有者可以修改绑定；请仅绑定可信凭据。",
     "editRisk": "该适配器已绑定凭据。可编辑用户可以通过代码和运行使用凭据，但永远不能读取 Secret 真值；只应授予可信用户。",
     "renameHint": "修改代码中的凭据名后，代码中的引用也需要保持一致。",

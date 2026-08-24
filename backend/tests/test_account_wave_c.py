@@ -606,3 +606,107 @@ def test_wave_d_business_metadata_and_credential_binding_permissions(
 
     workers = reader_client.get(account_path("/api/workers"))
     assert workers.status_code == 200, workers.text
+
+
+def test_wave_d_platform_role_does_not_expand_credential_management(
+    api_client: TestClient,
+    wave_c_accounts: dict[str, Any],
+) -> None:
+    """Credential management follows platform role, not Adapter ownership."""
+    owner_client = wave_c_accounts["owner_client"]
+    reader_client = wave_c_accounts["reader_client"]
+    admin_client = wave_c_accounts["account_admin_client"]
+    reader_id = int(wave_c_accounts["reader"]["id"])
+    adapter = create_account_adapter(owner_client, "wave-d-role-boundary")
+    adapter_id = int(adapter["id"])
+    credential = api_client.post(
+        "/api/credentials",
+        json={
+            "name": "wave-d-role-boundary-credential",
+            "type": "token",
+            "fields": {"token": "fixture-only-value"},
+        },
+    )
+    assert credential.status_code == 201, credential.text
+    credential_id = int(credential.json()["id"])
+    assert grant(owner_client, adapter_id, reader_id, "read").status_code == 200
+
+    admin_global = admin_client.get(account_path("/api/credentials"))
+    assert admin_global.status_code == 200, admin_global.text
+    assert "fixture-only-value" not in admin_global.text
+    assert "ciphertext" not in admin_global.text
+
+    for client in (owner_client, reader_client):
+        forbidden_global_reads = client.get(account_path(f"/api/credentials/{credential_id}"))
+        assert forbidden_global_reads.status_code == 403, forbidden_global_reads.text
+        assert forbidden_global_reads.json()["detail"]["code"] == "account_admin_required"
+
+        forbidden_create = account_write(
+            client,
+            "POST",
+            "/api/credentials",
+            json={
+                "name": "not-allowed",
+                "type": "token",
+                "fields": {"token": "fixture-only-value"},
+            },
+        )
+        assert forbidden_create.status_code == 403, forbidden_create.text
+        assert forbidden_create.json()["detail"]["code"] == "account_admin_required"
+
+        forbidden_update = account_write(
+            client,
+            "PATCH",
+            f"/api/credentials/{credential_id}",
+            json={"name": "not-allowed"},
+        )
+        assert forbidden_update.status_code == 403, forbidden_update.text
+        assert forbidden_update.json()["detail"]["code"] == "account_admin_required"
+
+        forbidden_delete = account_write(
+            client,
+            "DELETE",
+            f"/api/credentials/{credential_id}",
+        )
+        assert forbidden_delete.status_code == 403, forbidden_delete.text
+        assert forbidden_delete.json()["detail"]["code"] == "account_admin_required"
+
+    for client in (admin_client, owner_client):
+        options = client.get(account_path(f"/api/adapters/{adapter_id}/credential-options"))
+        assert options.status_code == 200, options.text
+        assert options.json()[0]["id"] == credential_id
+        assert "fixture-only-value" not in options.text
+        assert "ciphertext" not in options.text
+
+    forbidden_options = reader_client.get(
+        account_path(f"/api/adapters/{adapter_id}/credential-options")
+    )
+    assert forbidden_options.status_code == 403, forbidden_options.text
+    assert forbidden_options.json()["detail"]["code"] == "adapter_owner_required"
+
+    saved = account_write(
+        owner_client,
+        "PUT",
+        f"/api/adapters/{adapter_id}/credential-bindings",
+        json={"bindings": [{"env_key": "TOKEN", "credential_id": credential_id, "field": "token"}]},
+    )
+    assert saved.status_code == 200, saved.text
+    assert "fixture-only-value" not in saved.text
+    metadata = reader_client.get(account_path(f"/api/adapters/{adapter_id}/credential-bindings"))
+    assert metadata.status_code == 200, metadata.text
+    assert metadata.json()[0]["credential_name"] == "wave-d-role-boundary-credential"
+    forbidden_binding_write = account_write(
+        reader_client,
+        "PUT",
+        f"/api/adapters/{adapter_id}/credential-bindings",
+        json={"bindings": []},
+    )
+    assert forbidden_binding_write.status_code == 403, forbidden_binding_write.text
+    assert forbidden_binding_write.json()["detail"]["code"] == "adapter_owner_required"
+
+    unshared = create_account_adapter(owner_client, "wave-d-role-boundary-unshared")
+    hidden = reader_client.get(
+        account_path(f"/api/adapters/{unshared['id']}/credential-bindings")
+    )
+    assert hidden.status_code == 404, hidden.text
+    assert hidden.json()["detail"]["code"] == "adapter_not_found"

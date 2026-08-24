@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import { credentialFieldLabel, credentialFields } from "../credential-fields";
 import { subscribeCredentialCatalog } from "../credential-catalog";
-import type { AdapterAccessLevel, Credential, CredentialBinding } from "../types";
+import type { AccountRole, AdapterAccessLevel, Credential, CredentialBinding } from "../types";
 import { userErrorMessage } from "../user-message";
 
 interface BindingRow {
@@ -27,6 +27,8 @@ interface CredentialBindingsEditorProps {
   /** 打开「系统设置 → 凭据管理」的入口（M5.5.7：不在编辑页重复实现新建表单）。 */
   onOpenSettings?: () => void;
   accessLevel?: AdapterAccessLevel;
+  /** Authenticated platform role; an omitted role is the legacy superadmin Token entry. */
+  platformRole?: AccountRole;
   /** Account entry uses the Adapter-scoped metadata endpoint; Token entry
    * keeps the existing global admin endpoint. */
   useScopedCredentialOptions?: boolean;
@@ -50,6 +52,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   const { t } = useTranslation("settings");
   const { adapterId, onError } = props;
   const canManageBindings = props.accessLevel === undefined || props.accessLevel === "admin" || props.accessLevel === "owner";
+  const isPlatformAdmin = props.platformRole === undefined || props.platformRole === "admin";
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [rows, setRows] = useState<BindingRow[]>([]);
   const [baseline, setBaseline] = useState<BindingRow[]>([]);
@@ -187,7 +190,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
         data-testid="credential-binding-risk"
         message={t(canManageBindings ? "bindings.ownerRisk" : "bindings.editRisk")}
       />
-      {canManageBindings && props.onOpenSettings !== undefined && (
+      {isPlatformAdmin && props.onOpenSettings !== undefined ? (
         <Typography.Paragraph type="secondary" className="binding-editor-help">
           {t("bindings.openSettingsHint")}
           <Button
@@ -199,7 +202,15 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
             {t("actions.openSettings", { ns: "common" })}
           </Button>
         </Typography.Paragraph>
-      )}
+      ) : !isPlatformAdmin ? (
+        <Typography.Paragraph
+          type="secondary"
+          className="binding-editor-help"
+          data-testid="credential-binding-role-hint"
+        >
+          {t("bindings.nonAdminOpenSettingsHint")}
+        </Typography.Paragraph>
+      ) : null}
       {envKeyRenamed && (
         <Alert
           type="warning"
