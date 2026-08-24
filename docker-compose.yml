@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: docker/postgres.Dockerfile
     labels:
       - "ao.session=${AO_SESSION_ID:-compose}"
     logging:
@@ -12,6 +14,7 @@ services:
       POSTGRES_USER: dlr
       POSTGRES_PASSWORD: dlr
       POSTGRES_DB: dlr
+      DLR_PLATFORM_LOG_ROOT: /var/lib/dlr/platform-logs
     command:
       - postgres
       - -c
@@ -28,7 +31,7 @@ services:
       - dlr_pg_data:/var/lib/postgresql/data
       - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/postgres:/var/lib/dlr/platform-logs/postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dlr -d dlr"]
+      test: ["CMD-SHELL", "psql --no-psqlrc --quiet -w -v ON_ERROR_STOP=1 -U dlr -d dlr -c 'SELECT 1' >/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 12

@@ -93,6 +93,8 @@ if DLR_DNS_FALLBACK_1= DLR_DNS_FALLBACK_2= docker compose -f docker-compose.yml 
   echo "ERROR: disabled DNS fallback still in config" >&2
   exit 1
 fi
+echo "==> running isolated PostgreSQL init/health regression"
+./scripts/compose-postgres-init-health.sh
 # M5.5.8: the README-standard `cp .env.example .env` path must keep the public
 # DNS fallback. .env.example deliberately ships no active DLR_DNS_FALLBACK_*
 # assignments because an empty-but-set value overrides the compose default.

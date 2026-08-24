@@ -1,8 +1,8 @@
 ## 1. Batch 1：Issue #117.7 PostgreSQL 初始化与健康检查（无前置依赖）
 
-- [ ] 1.1 为平台日志目录不存在、目录对容器内 postgres 用户不可写、存在用户但缺少 `dlr` 数据库的半初始化路径补充隔离 Compose 回归，并验证每个路径在预期位置失败且不把 PostgreSQL 标记为 healthy。
-- [ ] 1.2 在首次 initdb 前加入目录存在/可写预检，并将 healthcheck 改为以 `dlr` 用户对 `dlr` 数据库执行等价于 `SELECT 1` 的真实查询；验证 `docker compose config --quiet`、定向 Compose 回归和 `./scripts/compose-smoke.sh` 均通过，且 Control 不因虚假 `service_healthy` 启动。
-- [ ] 1.3 完成 Batch 1 验收门：检查服务日志不含凭据、数据库无新增 migration/API 变更，并保存缺失目录、不可写目录、目标库可查询三种结果；本批无浏览器变更，自动化/Compose 证据必须完整后才允许 Batch 2 开始。
+- [x] 1.1 为平台日志目录不存在、目录对容器内 postgres 用户不可写、存在用户但缺少 `dlr` 数据库的半初始化路径补充隔离 Compose 回归，并验证每个路径在预期位置失败且不把 PostgreSQL 标记为 healthy。
+- [x] 1.2 在首次 initdb 前加入目录存在/可写预检，并将 healthcheck 改为以 `dlr` 用户对 `dlr` 数据库执行等价于 `SELECT 1` 的真实查询；验证 `docker compose config --quiet`、定向 Compose 回归和 `./scripts/compose-smoke.sh` 均通过，且 Control 不因虚假 `service_healthy` 启动。
+- [x] 1.3 完成 Batch 1 验收门：检查服务日志不含凭据、数据库无新增 migration/API 变更，并保存缺失目录、不可写目录、目标库可查询三种结果；本批无浏览器变更，自动化/Compose 证据必须完整后才允许 Batch 2 开始。
 
 ## 2. Batch 2：Issue #117.9 Tencent ima 字段归一化（依赖 Batch 1 验收通过）
 
