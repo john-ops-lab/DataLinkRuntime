@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "dispatch_id": "issue117-b5-editor-20260824-r1",
   "records": 8,
   "locales": [
@@ -12,6 +12,10 @@
     1680,
     1920
   ],
+  "real_monaco_scroll": {
+    "top_visible_line_greater_than": 1,
+    "all_records_pass": true
+  },
   "selection_and_top_visible_line": {
     "fields": [
       "selection_start_line",
@@ -22,7 +26,19 @@
     ],
     "maximize_exact_match": true,
     "button_restore_exact_match": true,
-    "escape_restore_exact_match": true
+    "escape_restore_exact_match": true,
+    "transition_boundaries": {
+      "maximized_equals_initial": true,
+      "find_after_escape_equals_find_before_escape": true,
+      "restored_equals_before_restore": true,
+      "escaped_equals_before_escape": true
+    }
+  },
+  "find_escape": {
+    "first_escape_closes_find": true,
+    "first_escape_preserves_maximize": true,
+    "second_escape_restores_layout": true,
+    "state_exact_match_after_find_close": true
   },
   "lifecycle_requests_zero": true,
   "console_errors_zero": true,

@@ -89,6 +89,8 @@ interface BrowserRecord {
   screenshots: string[];
   initial: LayoutState;
   maximized: LayoutState;
+  find_before_escape: LayoutState;
+  find_after_escape: LayoutState;
   before_restore: LayoutState;
   restored: LayoutState;
   before_escape: LayoutState;
@@ -363,6 +365,7 @@ async function runCase(page: Page, locale: Locale, width: number) {
     top_visible_line: 1,
   };
   await setKnownSelection(page, expectedInitial);
+  await page.getByTestId("editor-main").locator(".monaco-editor").hover();
   await page.mouse.wheel(0, 420);
   await expect.poll(() => readLayoutState(page)).toMatchObject({
     selection_start_line: expectedInitial.selection_start_line,
@@ -371,6 +374,7 @@ async function runCase(page: Page, locale: Locale, width: number) {
     selection_end_column: expectedInitial.selection_end_column,
   });
   const initial = await readLayoutState(page);
+  expect(initial.top_visible_line).toBeGreaterThan(1);
   await expect(page.getByTestId("editor-main")).toHaveAttribute("data-layout", "normal");
   const normalOverflow = await readOverflow(page);
   const normalRect = await page.getByTestId("editor-main").boundingBox();
@@ -389,6 +393,20 @@ async function runCase(page: Page, locale: Locale, width: number) {
   const maximizedOverflow = await readOverflow(page);
 
   const input = page.getByTestId("editor-main").getByRole("textbox");
+  await input.focus();
+  await page.keyboard.press("ControlOrMeta+F");
+  const findWidget = page.locator(".monaco-editor .find-widget");
+  await expect(findWidget).toHaveAttribute("aria-hidden", "false");
+  const findBeforeEscape = await readLayoutState(page);
+  await page.keyboard.press("Escape");
+  await expect(findWidget).toHaveAttribute("aria-hidden", "true");
+  await expect(page.getByTestId("editor-restore")).toBeVisible();
+  await expect(page.getByTestId("editor-main")).toHaveAttribute("data-layout", "maximized");
+  await waitForLayoutState(page, findBeforeEscape);
+  const findAfterEscape = await readLayoutState(page);
+  expect(findAfterEscape).toEqual(findBeforeEscape);
+  screenshots.push(await captureScreenshot(page, `${locale}-${width}-find-closed.png`));
+
   await input.focus();
   await page.keyboard.press("ControlOrMeta+A");
   await page.keyboard.type("edited while maximized\n");
@@ -428,6 +446,8 @@ async function runCase(page: Page, locale: Locale, width: number) {
     screenshots,
     initial,
     maximized,
+    find_before_escape: findBeforeEscape,
+    find_after_escape: findAfterEscape,
     before_restore: beforeRestore,
     restored,
     before_escape: beforeEscape,

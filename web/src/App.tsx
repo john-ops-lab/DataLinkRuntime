@@ -109,13 +109,15 @@ interface EditorSnapshot {
   runtimeConfigText: string;
 }
 
+interface EditorSelection {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+}
+
 interface EditorLayoutSnapshot {
-  selection: {
-    startLineNumber: number;
-    startColumn: number;
-    endLineNumber: number;
-    endColumn: number;
-  } | null;
+  selection: EditorSelection | null;
   topVisibleLine: number;
   scrollTop: number;
 }
@@ -311,6 +313,9 @@ export function AdapterConsole({
   const [editorHasSelection, setEditorHasSelection] = useState(false);
   const [editorSelection, setEditorSelection] = useState<EditorLayoutSnapshot["selection"]>(null);
   const [editorTopVisibleLine, setEditorTopVisibleLine] = useState<number | null>(null);
+  const editorHasSelectionStateRef = useRef(false);
+  const editorSelectionStateRef = useRef<EditorSelection | null>(null);
+  const editorTopVisibleLineStateRef = useRef<number | null>(null);
   const [editorMaximized, setEditorMaximized] = useState(false);
   const editorLayoutSnapshotRef = useRef<EditorLayoutSnapshot | null>(null);
   const editorMaximizeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -318,15 +323,30 @@ export function AdapterConsole({
     const selection = editor.getSelection();
     const visibleRange = editor.getVisibleRanges()[0];
     const position = editor.getPosition();
-    setEditorSelection(selection === null
+    const nextSelection: EditorSelection | null = selection === null
       ? null
       : {
           startLineNumber: selection.startLineNumber,
           startColumn: selection.startColumn,
           endLineNumber: selection.endLineNumber,
           endColumn: selection.endColumn,
-        });
-    setEditorTopVisibleLine(visibleRange?.startLineNumber ?? position?.lineNumber ?? null);
+        };
+    const nextTopVisibleLine = visibleRange?.startLineNumber ?? position?.lineNumber ?? null;
+    const currentSelection = editorSelectionStateRef.current;
+    const selectionChanged = currentSelection === null || nextSelection === null
+      ? currentSelection !== nextSelection
+      : currentSelection.startLineNumber !== nextSelection.startLineNumber ||
+        currentSelection.startColumn !== nextSelection.startColumn ||
+        currentSelection.endLineNumber !== nextSelection.endLineNumber ||
+        currentSelection.endColumn !== nextSelection.endColumn;
+    if (selectionChanged) {
+      editorSelectionStateRef.current = nextSelection;
+      setEditorSelection(nextSelection);
+    }
+    if (editorTopVisibleLineStateRef.current !== nextTopVisibleLine) {
+      editorTopVisibleLineStateRef.current = nextTopVisibleLine;
+      setEditorTopVisibleLine(nextTopVisibleLine);
+    }
   }, []);
   const captureEditorLayout = useCallback((): EditorLayoutSnapshot | null => {
     const editor = editorRef.current;
@@ -390,7 +410,7 @@ export function AdapterConsole({
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") {
+      if (event.key !== "Escape" || event.defaultPrevented) {
         return;
       }
       event.preventDefault();
@@ -401,8 +421,8 @@ export function AdapterConsole({
       }
       setEditorMaximized(false);
     };
-    window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [captureEditorLayout, editorMaximized]);
   useEffect(() => {
     editorMaximizeButtonRef.current?.focus();
@@ -820,6 +840,9 @@ export function AdapterConsole({
     setHistoryExecutionId(null);
     setEditorMaximized(false);
     editorLayoutSnapshotRef.current = null;
+    editorHasSelectionStateRef.current = false;
+    editorSelectionStateRef.current = null;
+    editorTopVisibleLineStateRef.current = null;
     setEditorSelection(null);
     setEditorTopVisibleLine(null);
     liveWatcher.stop();
@@ -1300,6 +1323,9 @@ export function AdapterConsole({
       setSettingsOpen(false);
       setEditorMaximized(false);
       editorLayoutSnapshotRef.current = null;
+      editorHasSelectionStateRef.current = false;
+      editorSelectionStateRef.current = null;
+      editorTopVisibleLineStateRef.current = null;
       setEditorSelection(null);
       setEditorTopVisibleLine(null);
       liveWatcher.stop();
@@ -1551,9 +1577,11 @@ export function AdapterConsole({
                               editorRef.current = editor;
                               const updateSelectionState = () => {
                                 const selection = editor.getSelection();
-                                setEditorHasSelection(
-                                  selection !== null && !selection.isEmpty(),
-                                );
+                                const nextHasSelection = selection !== null && !selection.isEmpty();
+                                if (editorHasSelectionStateRef.current !== nextHasSelection) {
+                                  editorHasSelectionStateRef.current = nextHasSelection;
+                                  setEditorHasSelection(nextHasSelection);
+                                }
                                 syncEditorLayoutState(editor);
                               };
                               updateSelectionState();
@@ -1570,6 +1598,7 @@ export function AdapterConsole({
                         </div>
 
                         <Collapse
+                          key={selected.id}
                           className="version-fields"
                           bordered={false}
                           size="small"

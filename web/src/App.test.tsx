@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { createRef, useEffect } from "react";
+import { createRef, Profiler, useEffect } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -3015,6 +3015,119 @@ it("starts with independent editor configuration panels collapsed and preserves 
     );
   });
   expect(lifecycleRequests).toHaveLength(0);
+});
+
+it("resets configuration collapse per Adapter without losing loaded values", async () => {
+  const adapterA = makeAdapter({ id: 1, name: "adapter-a", latest_version_id: 10 });
+  const adapterB = makeAdapter({ id: 2, name: "adapter-b", latest_version_id: 20 });
+  const versionA = makeVersion({ id: 10, adapter_id: 1, requirements: "requests==A" });
+  const versionB = makeVersion({ id: 20, adapter_id: 2, requirements: "requests==B" });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapterA, adapterB] }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [{ id: 10, adapter_id: 1, seq: 1, created_at: "" }] }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: versionA }) },
+    {
+      method: "GET",
+      match: "/api/adapters/2/versions",
+      respond: () => ({ body: [{ id: 20, adapter_id: 2, seq: 1, created_at: "" }] }),
+    },
+    { method: "GET", match: "/api/adapters/2/versions/20", respond: () => ({ body: versionB }) },
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({ body: [{ id: 7, name: "fixture-credential", type: "token", created_at: "", updated_at: "" }] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/credential-bindings",
+      respond: () => ({ body: [{ env_key: "API_TOKEN_A", credential_id: 7, field: "token", credential_name: "fixture-credential", credential_type: "token" }] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/2/credential-bindings",
+      respond: () => ({ body: [{ env_key: "API_TOKEN_B", credential_id: 7, field: "token", credential_name: "fixture-credential", credential_type: "token" }] }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+  await screen.findByTestId("requirements-input");
+  expect(valueOf("requirements-input")).toBe("requests==A");
+  fireEvent.click(screen.getByTestId("bindings-collapse-header"));
+  await screen.findByTestId("credential-bindings");
+  expect(valueOf("binding-env-key")).toBe("API_TOKEN_A");
+
+  fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
+  await screen.findByRole("heading", { name: "adapter-b" });
+  await screen.findByTestId("code-editor");
+  expect(screen.getByTestId("requirements-collapse-header").closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+  expect(screen.getByTestId("bindings-collapse-header").closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+
+  fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+  expect(valueOf("requirements-input")).toBe("requests==B");
+  fireEvent.click(screen.getByTestId("bindings-collapse-header"));
+  await screen.findByTestId("credential-bindings");
+  expect(valueOf("binding-env-key")).toBe("API_TOKEN_B");
+
+  fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
+  await screen.findByRole("heading", { name: "adapter-a" });
+  await screen.findByTestId("code-editor");
+  expect(screen.getByTestId("requirements-collapse-header").closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+  expect(screen.getByTestId("bindings-collapse-header").closest(".ant-collapse-item")?.classList.contains("ant-collapse-item-active")).toBe(false);
+  fireEvent.click(screen.getByTestId("requirements-collapse-header"));
+  expect(valueOf("requirements-input")).toBe("requests==A");
+  fireEvent.click(screen.getByTestId("bindings-collapse-header"));
+  await screen.findByTestId("credential-bindings");
+  expect(valueOf("binding-env-key")).toBe("API_TOKEN_A");
+});
+
+it("does not rerender the console for repeated identical editor layout snapshots", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch(consoleWithVersionRoutes(adapter, makeVersion()));
+  let renderCount = 0;
+
+  render(
+    <Profiler id="adapter-console" onRender={() => {
+      renderCount += 1;
+    }}>
+      <App />
+    </Profiler>,
+  );
+  await selectFirstAdapter();
+
+  const selection = {
+    startLineNumber: 4,
+    startColumn: 3,
+    endLineNumber: 8,
+    endColumn: 9,
+  };
+  act(() => {
+    monacoHarness.setTopVisibleLine(9);
+    monacoHarness.setScrollTop(180);
+    monacoHarness.setSelection(selection);
+  });
+  expectEditorPosition(selection, 9);
+  await act(async () => {
+    await Promise.resolve();
+  });
+  const renderCountAfterChange = renderCount;
+
+  act(() => {
+    monacoHarness.setTopVisibleLine(9);
+    monacoHarness.setScrollTop(180);
+    monacoHarness.setSelection({ ...selection });
+  });
+  expectEditorPosition(selection, 9);
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(renderCount).toBe(renderCountAfterChange);
 });
 
 function expectEditorPosition(

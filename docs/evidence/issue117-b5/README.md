@@ -44,9 +44,16 @@ The run covers `zh-CN` and `en` at `1280`, `1440`, `1680`, and `1920` pixels
 contains no absolute filesystem paths.
 
 `auxiliary-matrix/assertions.json` is the sanitized post-run verification of
-all eight records: all five layout fields match exactly across maximize,
-button restore, and `Escape`; lifecycle, console, page, unknown-request, and
-overflow assertions are all zero/false.
+all eight records: the test hovers the real `.monaco-editor`, scrolls it, and
+records a top visible line greater than `1`. It asserts all five fields at each
+transition boundary: maximize equals the pre-maximize state, the first Escape
+only closes Find without changing layout, button restore equals the state
+recorded immediately before restore, and the second Escape equals the state
+recorded immediately before that Escape. The latter two states intentionally
+follow the maximized dirty edit, so they prove the edit/dirty position is not
+lost rather than comparing against the earlier pre-edit snapshot. Lifecycle,
+console, page, unknown-request, and overflow assertions are all zero/false.
+Each matrix case now has four screenshots, including `*-find-closed.png`.
 
 For every case the test automatically reads the five layout fields from the
 live editor region:
@@ -59,15 +66,17 @@ live editor region:
 
 It records the state before maximize, after maximize, before button restore,
 after button restore, before `Escape`, and after `Escape`, then asserts exact
-object equality for each transition. The report also records:
+object equality for each corresponding transition. The report also records:
 
 - `lifecycle_requests: []` for all non-`GET` Save/Run/Revision/Credential,
   execution, schedule, and webhook paths;
 - empty `unknown_requests`, `console_errors`, and `page_errors`;
 - `horizontal: false` and `vertical: false` in normal, maximized, and restored
   layouts;
-- real Monaco keyboard cursor movement, edit while maximized, localized
-  accessible button names, focus after each layout transition, and `Escape`.
+- real Monaco keyboard cursor movement and scroll, Find widget open/close,
+  first-Escape Find dismissal without leaving maximize, second-Escape layout
+  restore, edit while maximized, localized accessible button names, and focus
+  after each layout transition.
 
 The matrix fixture uses deterministic code, dependency, and metadata-only
 credential values. It never submits Save, Run, Revision, or Credential binding
@@ -86,3 +95,16 @@ token, AWS key, and private-key markers; all scans returned zero findings.
 `FIXTURE_TOKEN` / `fixture-*` are anonymous test placeholders, not findings.
 No secret material, real credential fields, browser cookies, request bodies, or
 absolute local paths were archived.
+
+## Repair regression coverage
+
+- `App.test.tsx` verifies that a repeated identical Monaco selection/scroll
+  snapshot keeps the same selection object and does not add an AdapterConsole
+  render; it also verifies Adapter A expanded → Adapter B default collapsed →
+  Adapter B/A values remain intact after reopening.
+- `App.tsx` handles maximize Escape in the event bubble phase and skips an
+  already-consumed event, allowing Monaco's Find/suggest/parameter/snippet
+  handling to consume its first Escape.
+- The repair does not add a new UI framework or lifecycle request. The only
+  adjacent test adjustment in `wave2-b.test.tsx` explicitly opens the now
+  default-collapsed requirements panel before asserting its existing value.

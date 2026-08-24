@@ -28,6 +28,7 @@
       "screenshots": [
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1280-collapsed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1280-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1280-find-closed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1280-restored.png"
       ],
       "initial": {
@@ -35,14 +36,28 @@
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
       },
       "maximized": {
         "selection_start_line": 4,
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
+      },
+      "find_before_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
+      },
+      "find_after_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
       },
       "before_restore": {
         "selection_start_line": 2,
@@ -97,6 +112,7 @@
       "screenshots": [
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1440-collapsed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1440-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1440-find-closed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1440-restored.png"
       ],
       "initial": {
@@ -104,14 +120,28 @@
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
       },
       "maximized": {
         "selection_start_line": 4,
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
+      },
+      "find_before_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
+      },
+      "find_after_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
       },
       "before_restore": {
         "selection_start_line": 2,
@@ -166,6 +196,7 @@
       "screenshots": [
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1680-collapsed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1680-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1680-find-closed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1680-restored.png"
       ],
       "initial": {
@@ -173,14 +204,28 @@
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
       },
       "maximized": {
         "selection_start_line": 4,
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
+      },
+      "find_before_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
+      },
+      "find_after_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
       },
       "before_restore": {
         "selection_start_line": 2,
@@ -235,6 +280,7 @@
       "screenshots": [
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1920-collapsed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1920-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1920-find-closed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/zh-CN-1920-restored.png"
       ],
       "initial": {
@@ -242,14 +288,28 @@
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
       },
       "maximized": {
         "selection_start_line": 4,
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
+      },
+      "find_before_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
+      },
+      "find_after_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
       },
       "before_restore": {
         "selection_start_line": 2,
@@ -304,6 +364,7 @@
       "screenshots": [
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1280-collapsed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1280-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1280-find-closed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1280-restored.png"
       ],
       "initial": {
@@ -311,14 +372,28 @@
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
       },
       "maximized": {
         "selection_start_line": 4,
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
+      },
+      "find_before_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
+      },
+      "find_after_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
       },
       "before_restore": {
         "selection_start_line": 2,
@@ -373,6 +448,7 @@
       "screenshots": [
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1440-collapsed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1440-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1440-find-closed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1440-restored.png"
       ],
       "initial": {
@@ -380,14 +456,28 @@
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
       },
       "maximized": {
         "selection_start_line": 4,
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
+      },
+      "find_before_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
+      },
+      "find_after_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
       },
       "before_restore": {
         "selection_start_line": 2,
@@ -442,6 +532,7 @@
       "screenshots": [
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1680-collapsed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1680-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1680-find-closed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1680-restored.png"
       ],
       "initial": {
@@ -449,14 +540,28 @@
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
       },
       "maximized": {
         "selection_start_line": 4,
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
+      },
+      "find_before_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
+      },
+      "find_after_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
       },
       "before_restore": {
         "selection_start_line": 2,
@@ -511,6 +616,7 @@
       "screenshots": [
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1920-collapsed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1920-maximized.png",
+        "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1920-find-closed.png",
         "docs/evidence/issue117-b5/auxiliary-matrix/browser/en-1920-restored.png"
       ],
       "initial": {
@@ -518,14 +624,28 @@
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
       },
       "maximized": {
         "selection_start_line": 4,
         "selection_start_column": 3,
         "selection_end_line": 8,
         "selection_end_column": 9,
-        "top_visible_line": 1
+        "top_visible_line": 4
+      },
+      "find_before_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
+      },
+      "find_after_escape": {
+        "selection_start_line": 4,
+        "selection_start_column": 3,
+        "selection_end_line": 8,
+        "selection_end_column": 9,
+        "top_visible_line": 4
       },
       "before_restore": {
         "selection_start_line": 2,
