@@ -5,8 +5,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 REPO_ROOT=$PWD
-RUN_ID="${COMPOSE_POSTGRES_REGRESSION_ID:-${AO_SESSION_ID:-$$}}"
-RUN_ID=${RUN_ID//[^A-Za-z0-9_.-]/-}
+RUN_ID_SOURCE="${COMPOSE_POSTGRES_REGRESSION_ID:-${AO_SESSION_ID:-$$}}"
+RUN_ID=$(printf '%s' "$RUN_ID_SOURCE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')
+if [[ ! "$RUN_ID" =~ ^[a-z0-9_-]*$ ]]; then
+  echo "Invalid normalized PostgreSQL regression RUN_ID: $RUN_ID" >&2
+  exit 1
+fi
 WORK_PARENT="${COMPOSE_POSTGRES_WORK_ROOT:-$REPO_ROOT/.tmp-platform-logs}"
 mkdir -p "$WORK_PARENT"
 WORK_ROOT=$(mktemp -d "$WORK_PARENT/dlr-i117-postgres-${RUN_ID}.XXXXXX")

@@ -8,7 +8,7 @@ if [ ! -d "$log_dir" ]; then
     exit 1
 fi
 
-if ! gosu postgres test -w "$log_dir"; then
+if ! su-exec postgres test -w "$log_dir"; then
     echo "PostgreSQL startup blocked: platform log directory is not writable by postgres: $log_dir" >&2
     exit 1
 fi
