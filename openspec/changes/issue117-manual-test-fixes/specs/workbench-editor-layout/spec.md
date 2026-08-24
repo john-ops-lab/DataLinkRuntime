@@ -18,11 +18,11 @@
 
 ### Requirement: 代码编辑区支持最大化与恢复
 
-代码编辑区 MUST 提供带可访问名称的最大化/恢复图标控制。最大化 SHALL 扩展代码编辑区到当前工作台可用主区域，恢复 SHALL 返回原有编辑页布局；两者都 MUST 保持当前代码、dirty 状态、保存语义和当前 Adapter 不变，并尽量保留光标和滚动位置。
+代码编辑区 MUST 提供带可访问名称的最大化/恢复图标控制。最大化 SHALL 扩展代码编辑区到当前工作台可用主区域，恢复 SHALL 返回原有编辑页布局；两者都 MUST 保持当前代码、dirty 状态、保存语义和当前 Adapter 不变，并在布局完成后恢复切换前的编辑器 selection/cursor 起止位置（line/column）和可见顶部行。像素级 `scrollTop` 因容器尺寸变化而改变时，顶部可见行仍 MUST 保持不变；该位置恢复 MUST 由自动化断言覆盖。
 
-#### Scenario: 最大化和恢复不触发生命周期操作
-- **WHEN** 用户点击代码编辑区的最大化按钮，再点击恢复按钮
-- **THEN** 编辑区在两种布局间切换，且不创建 Revision、不保存、不运行、不修改运行状态或 Credential binding
+#### Scenario: 最大化和恢复保留编辑位置且不触发生命周期操作
+- **WHEN** 用户记录当前 selection/cursor 的起止 line/column 与顶部可见行后点击最大化按钮，再点击恢复按钮
+- **THEN** 布局完成后 selection/cursor 起止 line/column 和顶部可见行与记录值相同，且不创建 Revision、不保存、不运行、不修改运行状态或 Credential binding
 
 #### Scenario: 最大化期间继续编辑
 - **WHEN** 用户在最大化状态修改代码后恢复布局

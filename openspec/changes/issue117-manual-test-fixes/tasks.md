@@ -18,15 +18,15 @@
 
 ## 4. Batch 4：Issue #117.3 凭据绑定角色提示（依赖 Batch 3 验收通过）
 
-- [ ] 4.1 增加平台管理员、非管理员 Adapter owner、非 owner/无权用户的前后端测试 fixture，验证准确的平台角色决定提示而非 Adapter ownership，并锁定非管理员的精确中文文案。
-- [ ] 4.2 实现管理员保持原提示和系统设置入口、非管理员只显示“如需新增凭据，请联系管理员前往「系统设置 → 凭据管理」新建。”且不显示入口；验证已有 Credential 绑定/读取/编辑与全局 admin-only CRUD 的 API 权限测试全部通过。
-- [ ] 4.3 完成 Batch 4 验收门：运行变更相关 backend/web lint、typecheck、unit tests；真实浏览器分别用管理员和非管理员会话检查提示、链接、键盘可达性、console 与 1280/1440/1680/1920 无溢出证据，确认未出现 Secret 后才允许 Batch 5 开始。
+- [ ] 4.1 增加平台管理员、非管理员 Adapter owner、非 owner/无权用户的前后端测试 fixture，验证准确的平台角色决定提示而非 Adapter ownership；补充 `zh-CN/en` 对应 i18n key、精确中文文案和等义英文文案的资源 key parity 断言。
+- [ ] 4.2 实现管理员保持原提示和系统设置入口、非管理员按 `zh-CN/en` 资源显示对应提示且不显示入口；验证组件不硬编码用户可见文案，已有 Credential 绑定/读取/编辑与全局 admin-only CRUD 的 API 权限测试全部通过。
+- [ ] 4.3 完成 Batch 4 验收门：运行变更相关 backend/web lint、typecheck、unit tests；真实浏览器分别用管理员和非管理员会话在 `zh-CN/en` 检查精确文案、资源切换、链接、键盘可达性、console 与 1280/1440/1680/1920 无溢出证据，确认未出现 Secret 后才允许 Batch 5 开始。
 
 ## 5. Batch 5：Issue #117.2 编辑器布局与最大化（依赖 Batch 4 验收通过）
 
-- [ ] 5.1 为编辑页首次渲染、两个区域独立展开/折叠、最大化/恢复、最大化期间编辑和 dirty 状态增加 Web 回归测试，并验证切换动作不发 Save/Run/Revision/Credential 生命周期请求。
-- [ ] 5.2 使用现有 Ant Design/图标和 Monaco 集成实现 Python 依赖与凭据绑定默认折叠，以及带可访问名称的代码编辑区最大化/恢复；验证代码、Working Copy、光标/滚动位置尽量保持和保存语义不变。
-- [ ] 5.3 完成 Batch 5 验收门：运行 `cd web && npm run lint && npm run typecheck && npm run test && npm run build`；真实浏览器在 zh-CN/en、1280/1440/1680/1920 操作展开/折叠/最大化/恢复并检查 console、request、键盘访问和水平/垂直溢出，证据通过后才允许 Batch 6 开始。
+- [ ] 5.1 为编辑页首次渲染、两个区域独立展开/折叠、最大化/恢复、最大化期间编辑和 dirty 状态增加 Web 回归测试；记录切换前 selection/cursor 起止 line/column 与顶部可见行，并断言最大化和恢复后四项值均相同，同时验证切换动作不发 Save/Run/Revision/Credential 生命周期请求。
+- [ ] 5.2 使用现有 Ant Design/图标和 Monaco 集成实现 Python 依赖与凭据绑定默认折叠，以及带可访问名称的代码编辑区最大化/恢复；在布局完成回调后 MUST 恢复 selection/cursor 起止 line/column 和顶部可见行，验证代码、Working Copy 和保存语义不变。
+- [ ] 5.3 完成 Batch 5 验收门：运行 `cd web && npm run lint && npm run typecheck && npm run test && npm run build`；真实浏览器在 zh-CN/en、1280/1440/1680/1920 操作展开/折叠/最大化/恢复并断言 selection/cursor line/column 与顶部可见行保持不变，检查 console、request、键盘访问和水平/垂直溢出，证据通过后才允许 Batch 6 开始。
 
 ## 6. Batch 6：Issue #117.1 AI Assistant 单行说明（依赖 Batch 5 验收通过）
 
