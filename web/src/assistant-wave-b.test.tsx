@@ -260,11 +260,19 @@ it.each(["zh-CN", "en"] as const)("M5.8-009 keeps the %s attachment hint and saf
   expect(privacy.previousElementSibling).toBe(hint);
   expect(hint.textContent).toContain("6 MiB");
   expect(hint.textContent).toContain("12 MiB");
+  expect(hint.getAttribute("aria-label")).toContain(
+    locale === "zh-CN" ? "支持图片 / PDF / DOCX / 文本与代码文件" : "Images / PDF / DOCX / text and code files",
+  );
   expect(privacy.textContent).not.toContain(locale === "zh-CN" ? "DLR" : "detect");
   expect(privacy.querySelector("strong")?.textContent).toBe(
     locale === "zh-CN"
-      ? "请勿上传密码、密钥等敏感凭据。"
-      : "Do not upload passwords, keys or other sensitive credentials.",
+      ? "请勿上传密码/密钥/敏感凭据。"
+      : "No passwords/keys or sensitive credentials.",
+  );
+  expect(privacy.getAttribute("aria-label")).toBe(
+    locale === "zh-CN"
+      ? "附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
+      : "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
   );
 });
 

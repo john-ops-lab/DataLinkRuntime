@@ -30,9 +30,9 @@
 
 ## 6. Batch 6：Issue #117.1 AI Assistant 单行说明（依赖 Batch 5 验收通过）
 
-- [ ] 6.1 为 AI Assistant 底部说明增加 zh-CN/en 渲染回归，验证附件数量/大小限制和隐私提醒完整存在、未出现主动换行，并覆盖上传/拖拽/校验逻辑未改变。
-- [ ] 6.2 使用现有说明容器和 i18n 资源实现单行布局，不修改附件校验、上传、拖拽和隐私处理；验证变更文件的 Web lint、typecheck、unit tests 与 build 通过。
-- [ ] 6.3 完成 Batch 6 验收门：真实浏览器在 zh-CN/en、1280/1440/1680/1920 检查单行内容、附件交互、可访问文本、console、request 和 overflow；确认没有 Secret 或 Provider 原始响应后才允许 Batch 7 开始。
+- [x] 6.1 为 AI Assistant 底部说明增加 zh-CN/en 渲染回归，验证附件数量/大小限制和隐私提醒完整存在、未出现主动换行，并覆盖上传/拖拽/校验逻辑未改变。
+- [x] 6.2 使用现有说明容器和 i18n 资源实现单行布局，不修改附件校验、上传、拖拽和隐私处理；验证变更文件的 Web lint、typecheck、unit tests 与 build 通过。
+- [x] 6.3 完成 Batch 6 验收门：真实浏览器在 zh-CN/en、1280/1440/1680/1920 检查单行内容、附件交互、可访问文本、console、request 和 overflow；确认没有 Secret 或 Provider 原始响应后才允许 Batch 7 开始。
 
 ## 7. Batch 7：Issue #117.4 Adapter Catalog 布局（依赖 Batch 6 验收通过）
 

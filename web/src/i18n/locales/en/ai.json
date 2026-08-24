@@ -47,8 +47,11 @@
       "add": "Attach files",
       "addAria": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX and text / code files",
       "hint": "Images / PDF / DOCX / text and code files: up to {{count}}, {{size}} each, {{total}} total",
+      "oneLineHint": "Attachments: up to {{count}} · ≤{{size}}/file · ≤{{total}} total",
       "privacyNoticeLead": "Attachment content is sent to the model service configured by the administrator.",
       "privacyNoticeSensitive": "Do not upload passwords, keys or other sensitive credentials.",
+      "oneLinePrivacyNoticeLead": "To admin-configured model ·",
+      "oneLinePrivacyNoticeSensitive": "No passwords/keys or sensitive credentials.",
       "remove": "Remove attachment {{name}}",
       "ready": "Ready",
       "category": {

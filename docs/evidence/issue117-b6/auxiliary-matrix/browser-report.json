@@ -1,0 +1,435 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "dispatch_id": "issue117-b6-ai-20260825-r1",
+  "batch": "6",
+  "scope": "AI Assistant attachment guidance and adjacent attachment behavior",
+  "antd": "5.29.3",
+  "playwright": "1.62.1",
+  "browser": "chromium",
+  "browser_version": "151.0.7922.34",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "viewport_height": 900,
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "fixture_provider": "fixture",
+  "real_provider_credentials": false,
+  "raw_provider_response_archived": false,
+  "records": [
+    {
+      "locale": "en",
+      "width": 1280,
+      "screenshot": "docs/evidence/issue117-b6/auxiliary-matrix/browser/en-1280-ai-attachments.png",
+      "guidance": {
+        "line_count": 1,
+        "line_height": 12.528,
+        "height": 12.515625,
+        "white_space": "normal",
+        "hint_white_space": "nowrap",
+        "privacy_white_space": "nowrap",
+        "flex_wrap": "nowrap",
+        "scroll_width": 569,
+        "client_width": 569,
+        "hint_scroll_width": 206,
+        "privacy_scroll_width": 319,
+        "text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB totalTo admin-configured model · No passwords/keys or sensitive credentials.",
+        "hint_text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB total",
+        "privacy_text": "To admin-configured model · No passwords/keys or sensitive credentials.",
+        "guidance_aria_label": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
+        "hint_aria_label": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total",
+        "privacy_aria_label": "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials."
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "inner_height": 900,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280,
+        "document_scroll_height": 900,
+        "body_scroll_height": 900
+      },
+      "attachment_lifecycle": {
+        "picker_count": 1,
+        "drag_count": 2,
+        "invalid_count": 2,
+        "after_remove_count": 1,
+        "error_visible": true
+      },
+      "requests": {
+        "assist_count": 1,
+        "assist_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "non_get_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "screenshot": "docs/evidence/issue117-b6/auxiliary-matrix/browser/en-1440-ai-attachments.png",
+      "guidance": {
+        "line_count": 1,
+        "line_height": 12.528,
+        "height": 12.515625,
+        "white_space": "normal",
+        "hint_white_space": "nowrap",
+        "privacy_white_space": "nowrap",
+        "flex_wrap": "nowrap",
+        "scroll_width": 569,
+        "client_width": 569,
+        "hint_scroll_width": 206,
+        "privacy_scroll_width": 319,
+        "text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB totalTo admin-configured model · No passwords/keys or sensitive credentials.",
+        "hint_text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB total",
+        "privacy_text": "To admin-configured model · No passwords/keys or sensitive credentials.",
+        "guidance_aria_label": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
+        "hint_aria_label": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total",
+        "privacy_aria_label": "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials."
+      },
+      "overflow": {
+        "inner_width": 1440,
+        "inner_height": 900,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440,
+        "document_scroll_height": 900,
+        "body_scroll_height": 900
+      },
+      "attachment_lifecycle": {
+        "picker_count": 1,
+        "drag_count": 2,
+        "invalid_count": 2,
+        "after_remove_count": 1,
+        "error_visible": true
+      },
+      "requests": {
+        "assist_count": 1,
+        "assist_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "non_get_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "screenshot": "docs/evidence/issue117-b6/auxiliary-matrix/browser/en-1680-ai-attachments.png",
+      "guidance": {
+        "line_count": 1,
+        "line_height": 12.528,
+        "height": 12.515625,
+        "white_space": "normal",
+        "hint_white_space": "nowrap",
+        "privacy_white_space": "nowrap",
+        "flex_wrap": "nowrap",
+        "scroll_width": 569,
+        "client_width": 569,
+        "hint_scroll_width": 206,
+        "privacy_scroll_width": 319,
+        "text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB totalTo admin-configured model · No passwords/keys or sensitive credentials.",
+        "hint_text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB total",
+        "privacy_text": "To admin-configured model · No passwords/keys or sensitive credentials.",
+        "guidance_aria_label": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
+        "hint_aria_label": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total",
+        "privacy_aria_label": "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials."
+      },
+      "overflow": {
+        "inner_width": 1680,
+        "inner_height": 900,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680,
+        "document_scroll_height": 900,
+        "body_scroll_height": 900
+      },
+      "attachment_lifecycle": {
+        "picker_count": 1,
+        "drag_count": 2,
+        "invalid_count": 2,
+        "after_remove_count": 1,
+        "error_visible": true
+      },
+      "requests": {
+        "assist_count": 1,
+        "assist_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "non_get_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "screenshot": "docs/evidence/issue117-b6/auxiliary-matrix/browser/en-1920-ai-attachments.png",
+      "guidance": {
+        "line_count": 1,
+        "line_height": 12.528,
+        "height": 12.515625,
+        "white_space": "normal",
+        "hint_white_space": "nowrap",
+        "privacy_white_space": "nowrap",
+        "flex_wrap": "nowrap",
+        "scroll_width": 583,
+        "client_width": 583,
+        "hint_scroll_width": 206,
+        "privacy_scroll_width": 319,
+        "text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB totalTo admin-configured model · No passwords/keys or sensitive credentials.",
+        "hint_text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB total",
+        "privacy_text": "To admin-configured model · No passwords/keys or sensitive credentials.",
+        "guidance_aria_label": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
+        "hint_aria_label": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total",
+        "privacy_aria_label": "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials."
+      },
+      "overflow": {
+        "inner_width": 1920,
+        "inner_height": 900,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920,
+        "document_scroll_height": 900,
+        "body_scroll_height": 900
+      },
+      "attachment_lifecycle": {
+        "picker_count": 1,
+        "drag_count": 2,
+        "invalid_count": 2,
+        "after_remove_count": 1,
+        "error_visible": true
+      },
+      "requests": {
+        "assist_count": 1,
+        "assist_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "non_get_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "screenshot": "docs/evidence/issue117-b6/auxiliary-matrix/browser/zh-CN-1280-ai-attachments.png",
+      "guidance": {
+        "line_count": 1,
+        "line_height": 12.528,
+        "height": 12.515625,
+        "white_space": "normal",
+        "hint_white_space": "nowrap",
+        "privacy_white_space": "nowrap",
+        "flex_wrap": "nowrap",
+        "scroll_width": 569,
+        "client_width": 569,
+        "hint_scroll_width": 174,
+        "privacy_scroll_width": 204,
+        "text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+        "hint_text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计",
+        "privacy_text": "发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+        "guidance_aria_label": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB 附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。",
+        "hint_aria_label": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB",
+        "privacy_aria_label": "附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "inner_height": 900,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280,
+        "document_scroll_height": 900,
+        "body_scroll_height": 900
+      },
+      "attachment_lifecycle": {
+        "picker_count": 1,
+        "drag_count": 2,
+        "invalid_count": 2,
+        "after_remove_count": 1,
+        "error_visible": true
+      },
+      "requests": {
+        "assist_count": 1,
+        "assist_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "non_get_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "screenshot": "docs/evidence/issue117-b6/auxiliary-matrix/browser/zh-CN-1440-ai-attachments.png",
+      "guidance": {
+        "line_count": 1,
+        "line_height": 12.528,
+        "height": 12.515625,
+        "white_space": "normal",
+        "hint_white_space": "nowrap",
+        "privacy_white_space": "nowrap",
+        "flex_wrap": "nowrap",
+        "scroll_width": 569,
+        "client_width": 569,
+        "hint_scroll_width": 174,
+        "privacy_scroll_width": 204,
+        "text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+        "hint_text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计",
+        "privacy_text": "发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+        "guidance_aria_label": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB 附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。",
+        "hint_aria_label": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB",
+        "privacy_aria_label": "附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
+      },
+      "overflow": {
+        "inner_width": 1440,
+        "inner_height": 900,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440,
+        "document_scroll_height": 900,
+        "body_scroll_height": 900
+      },
+      "attachment_lifecycle": {
+        "picker_count": 1,
+        "drag_count": 2,
+        "invalid_count": 2,
+        "after_remove_count": 1,
+        "error_visible": true
+      },
+      "requests": {
+        "assist_count": 1,
+        "assist_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "non_get_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "screenshot": "docs/evidence/issue117-b6/auxiliary-matrix/browser/zh-CN-1680-ai-attachments.png",
+      "guidance": {
+        "line_count": 1,
+        "line_height": 12.528,
+        "height": 12.515625,
+        "white_space": "normal",
+        "hint_white_space": "nowrap",
+        "privacy_white_space": "nowrap",
+        "flex_wrap": "nowrap",
+        "scroll_width": 569,
+        "client_width": 569,
+        "hint_scroll_width": 174,
+        "privacy_scroll_width": 204,
+        "text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+        "hint_text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计",
+        "privacy_text": "发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+        "guidance_aria_label": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB 附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。",
+        "hint_aria_label": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB",
+        "privacy_aria_label": "附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
+      },
+      "overflow": {
+        "inner_width": 1680,
+        "inner_height": 900,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680,
+        "document_scroll_height": 900,
+        "body_scroll_height": 900
+      },
+      "attachment_lifecycle": {
+        "picker_count": 1,
+        "drag_count": 2,
+        "invalid_count": 2,
+        "after_remove_count": 1,
+        "error_visible": true
+      },
+      "requests": {
+        "assist_count": 1,
+        "assist_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "non_get_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "screenshot": "docs/evidence/issue117-b6/auxiliary-matrix/browser/zh-CN-1920-ai-attachments.png",
+      "guidance": {
+        "line_count": 1,
+        "line_height": 12.528,
+        "height": 12.515625,
+        "white_space": "normal",
+        "hint_white_space": "nowrap",
+        "privacy_white_space": "nowrap",
+        "flex_wrap": "nowrap",
+        "scroll_width": 583,
+        "client_width": 583,
+        "hint_scroll_width": 174,
+        "privacy_scroll_width": 204,
+        "text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+        "hint_text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计",
+        "privacy_text": "发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+        "guidance_aria_label": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB 附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。",
+        "hint_aria_label": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB",
+        "privacy_aria_label": "附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
+      },
+      "overflow": {
+        "inner_width": 1920,
+        "inner_height": 900,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920,
+        "document_scroll_height": 900,
+        "body_scroll_height": 900
+      },
+      "attachment_lifecycle": {
+        "picker_count": 1,
+        "drag_count": 2,
+        "invalid_count": 2,
+        "after_remove_count": 1,
+        "error_visible": true
+      },
+      "requests": {
+        "assist_count": 1,
+        "assist_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "non_get_paths": [
+          "POST /api/adapters/1/ai/assist"
+        ],
+        "unknown_paths": []
+      },
+      "console_errors": [],
+      "page_errors": []
+    }
+  ]
+}

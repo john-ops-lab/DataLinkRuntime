@@ -578,17 +578,44 @@ function ComposerAttachmentArea(props: {
           {props.error}
         </p>
       )}
-      <div className="ai-composer-guidance" data-testid="ai-composer-guidance">
-        <span className="ai-attachment-hint" data-testid="ai-attachment-hint">
-          {t("assistant.attachments.hint", {
+      <div
+        className="ai-composer-guidance"
+        data-testid="ai-composer-guidance"
+        role="note"
+        aria-label={`${t("assistant.attachments.hint", {
+          count: props.limits.max_attachments,
+          size: formatAttachmentSize(props.limits.max_file_bytes),
+          total: formatAttachmentSize(props.limits.max_total_bytes),
+        })} ${t("assistant.attachments.privacyNoticeLead")} ${t("assistant.attachments.privacyNoticeSensitive")}`}
+      >
+        <span
+          className="ai-attachment-hint"
+          data-testid="ai-attachment-hint"
+          aria-label={t("assistant.attachments.hint", {
+            count: props.limits.max_attachments,
+            size: formatAttachmentSize(props.limits.max_file_bytes),
+            total: formatAttachmentSize(props.limits.max_total_bytes),
+          })}
+          title={t("assistant.attachments.hint", {
+            count: props.limits.max_attachments,
+            size: formatAttachmentSize(props.limits.max_file_bytes),
+            total: formatAttachmentSize(props.limits.max_total_bytes),
+          })}
+        >
+          {t("assistant.attachments.oneLineHint", {
             count: props.limits.max_attachments,
             size: formatAttachmentSize(props.limits.max_file_bytes),
             total: formatAttachmentSize(props.limits.max_total_bytes),
           })}
         </span>
-        <span className="ai-attachment-privacy" data-testid="ai-attachment-privacy">
-          {t("assistant.attachments.privacyNoticeLead")}{" "}
-          <strong>{t("assistant.attachments.privacyNoticeSensitive")}</strong>
+        <span
+          className="ai-attachment-privacy"
+          data-testid="ai-attachment-privacy"
+          aria-label={`${t("assistant.attachments.privacyNoticeLead")} ${t("assistant.attachments.privacyNoticeSensitive")}`}
+          title={`${t("assistant.attachments.privacyNoticeLead")} ${t("assistant.attachments.privacyNoticeSensitive")}`}
+        >
+          {t("assistant.attachments.oneLinePrivacyNoticeLead")}{" "}
+          <strong>{t("assistant.attachments.oneLinePrivacyNoticeSensitive")}</strong>
         </span>
       </div>
       <div

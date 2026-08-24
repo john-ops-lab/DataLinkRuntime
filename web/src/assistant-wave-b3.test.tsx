@@ -18,6 +18,9 @@
  * keep the Wave A/B1 contracts unchanged.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
@@ -273,6 +276,78 @@ describe("selection / drop / delete / clear", () => {
     fireEvent.click(remove);
     await waitFor(() => expect(screen.queryByTestId("ai-attachment-item")).toBeNull());
   });
+});
+
+describe("Issue #117 Batch 6: one-line attachment guidance", () => {
+  it.each(["zh-CN", "en"] as const)(
+    "keeps the complete %s limits and privacy guidance in one visible row while attachment behavior stays stable",
+    async (locale) => {
+      vi.spyOn(api, "assistAdapter").mockResolvedValue(aiResponse("回复", null));
+      await applySystemLocale(locale);
+      renderPanel();
+
+      const guidance = await screen.findByTestId("ai-composer-guidance");
+      const hint = screen.getByTestId("ai-attachment-hint");
+      const privacy = screen.getByTestId("ai-attachment-privacy");
+      const expectedHint = locale === "zh-CN"
+        ? ["最多 8 个", "6 MiB", "12 MiB"]
+        : ["Attachments", "6 MiB", "12 MiB"];
+      const expectedAccessibleHint = locale === "zh-CN"
+        ? "支持图片 / PDF / DOCX / 文本与代码文件"
+        : "Images / PDF / DOCX / text and code files";
+      const expectedAccessiblePrivacy = locale === "zh-CN"
+        ? "附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
+        : "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.";
+
+      for (const text of expectedHint) {
+        expect(hint.textContent).toContain(text);
+      }
+      expect(privacy.textContent).toContain(
+        locale === "zh-CN" ? "敏感凭据" : "sensitive credentials",
+      );
+      expect(hint.getAttribute("aria-label")).toContain(expectedAccessibleHint);
+      expect(hint.getAttribute("title")).toContain(expectedAccessibleHint);
+      expect(privacy.getAttribute("aria-label")).toBe(expectedAccessiblePrivacy);
+      expect(privacy.getAttribute("title")).toBe(expectedAccessiblePrivacy);
+      expect(guidance.textContent).toContain(hint.textContent ?? "");
+      expect(guidance.textContent).toContain(privacy.textContent ?? "");
+      expect(guidance.getAttribute("aria-label")).toBe(
+        locale === "zh-CN"
+          ? "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB 附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
+          : "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
+      );
+      expect(guidance.querySelector("br")).toBeNull();
+      expect(guidance.querySelectorAll(":scope > div, :scope > p")).toHaveLength(0);
+
+      const appStyles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
+      const guidanceRule = appStyles.match(/\.ai-composer-guidance\s*\{([^}]*)\}/s)?.[1] ?? "";
+      expect(guidanceRule).toMatch(/flex-wrap\s*:\s*nowrap/);
+
+      // Valid picker upload still adds one row.
+      fireEvent.change(screen.getByTestId("ai-attachment-input"), {
+        target: { files: [makeFile("picker.txt", "text/plain")] },
+      });
+      await waitFor(() => expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(1));
+
+      // Valid drag and drop still adds another row.
+      fireEvent.drop(screen.getByTestId("ai-attachment-dropzone"), {
+        dataTransfer: { files: [makeFile("drop.txt", "text/plain")] },
+      });
+      await waitFor(() => expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(2));
+
+      // Existing validation still rejects an unsupported type without adding a row.
+      fireEvent.change(screen.getByTestId("ai-attachment-input"), {
+        target: { files: [makeFile("blocked.exe", "application/x-msdownload")] },
+      });
+      await screen.findByTestId("ai-attachment-error");
+      expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(2);
+
+      // Existing accessible remove behavior still removes only the selected row.
+      fireEvent.click(screen.getAllByTestId("ai-attachment-remove")[0]);
+      await waitFor(() => expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(1));
+      expect(screen.getByTestId("ai-attachment-name").textContent).toContain("drop.txt");
+    },
+  );
 });
 
 describe("client-side bounds mirror the B2 contract", () => {

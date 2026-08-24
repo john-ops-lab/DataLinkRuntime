@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "dispatch_id": "issue117-b6-ai-20260825-r1",
+  "source": "session-owned AO Browser",
+  "origin": "http://127.0.0.1:4173/",
+  "fixture_provider": "fixture",
+  "real_provider_credentials": false,
+  "raw_provider_response_archived": false,
+  "metadata_only_network_capture": true,
+  "local_file_selected": false,
+  "runs": [
+    {
+      "locale": "zh-CN",
+      "ai_region_accessible_name": "AI 助手",
+      "guidance_role": "note",
+      "guidance_accessible_text": "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB 附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。",
+      "visible_limit_text": "附件：最多 8 个 · ≤6 MiB/个 · ≤12 MiB 总计",
+      "visible_privacy_text": "发往管理员配置模型 · 请勿上传密码/密钥/敏感凭据。",
+      "attachment_button_accessible_name": "添加附件：支持图片（PNG / JPEG / WebP）、PDF、DOCX 与文本 / 代码文件",
+      "message_input_accessible_name": "AI 指令",
+      "native_attachment_picker": "activated_then_cancelled_without_file",
+      "prompt_submitted": true,
+      "requests": [
+        {"method": "POST", "path": "/api/adapters/1/ai/assist", "status": 200},
+        {"method": "GET", "path": "/api/adapters/1/credential-bindings", "status": 200}
+      ],
+      "console_error_count": 0,
+      "page_error_count": 0
+    },
+    {
+      "locale": "en",
+      "ai_region_accessible_name": "AI assistant",
+      "guidance_role": "note",
+      "guidance_accessible_text": "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
+      "visible_limit_text": "Attachments: up to 8 · ≤6 MiB/file · ≤12 MiB total",
+      "visible_privacy_text": "To admin-configured model · No passwords/keys or sensitive credentials.",
+      "attachment_button_accessible_name": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX and text / code files",
+      "message_input_accessible_name": "AI instruction",
+      "native_attachment_picker": "activated_then_cancelled_without_file",
+      "prompt_submitted": true,
+      "requests": [
+        {"method": "POST", "path": "/api/adapters/1/ai/assist", "status": 200},
+        {"method": "GET", "path": "/api/adapters/1/credential-bindings", "status": 200}
+      ],
+      "console_error_count": 0,
+      "page_error_count": 0
+    }
+  ],
+  "console_levels_observed": ["debug", "info"],
+  "screenshot": {
+    "ao_browser_panel_artifact": false,
+    "auxiliary_matrix_artifacts": "../auxiliary-matrix/browser/"
+  }
+}

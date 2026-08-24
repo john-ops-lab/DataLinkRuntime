@@ -47,8 +47,11 @@
       "add": "添加附件",
       "addAria": "添加附件：支持图片（PNG / JPEG / WebP）、PDF、DOCX 与文本 / 代码文件",
       "hint": "支持图片 / PDF / DOCX / 文本与代码文件：最多 {{count}} 个，单个不超过 {{size}}，总计不超过 {{total}}",
+      "oneLineHint": "附件：最多 {{count}} 个 · ≤{{size}}/个 · ≤{{total}} 总计",
       "privacyNoticeLead": "附件内容会发送给管理员配置的模型服务。",
       "privacyNoticeSensitive": "请勿上传密码、密钥等敏感凭据。",
+      "oneLinePrivacyNoticeLead": "发往管理员配置模型 ·",
+      "oneLinePrivacyNoticeSensitive": "请勿上传密码/密钥/敏感凭据。",
       "remove": "删除附件 {{name}}",
       "ready": "已就绪",
       "category": {
