@@ -149,12 +149,15 @@ class SidecarStateTests(unittest.TestCase):
     def test_supersede_creates_new_candidate_round_and_history(self) -> None:
         first = sidecar.command_start(args_for(self.repo, self.data), self.paths)
         old_sha = first["request"]["candidate_sha"]
+        reviewer, _marker = sidecar.reviewer_worktree(self.paths, first["request"])
+        self.assertTrue(reviewer.exists())
         new_sha = self.fixture.commit("feature.txt", "updated\n", "repair")
         result = sidecar.command_supersede(args_for(self.repo, self.data), self.paths)
         state = sidecar.load_json(self.paths.state())
         self.assertEqual(result["request"]["candidate_sha"], new_sha)
         self.assertEqual(state["history"][0]["candidate_sha"], old_sha)
         self.assertEqual(state["history"][0]["status"], "superseded")
+        self.assertFalse(reviewer.exists())
 
 
 class GateContractTests(unittest.TestCase):

@@ -382,6 +382,7 @@ def command_start(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
             else []
         )
         if previous.get("current_candidate_sha"):
+            cleanup_previous_reviewer(paths, previous)
             history.append(
                 {
                     "candidate_sha": previous["current_candidate_sha"],
@@ -481,27 +482,10 @@ JSON 后必须以 `## Verdict: PASS` 或 `## Verdict: FAIL` 结束；approved �
 def reviewer_worktree(
     paths: Paths, request: dict[str, Any]
 ) -> tuple[pathlib.Path, pathlib.Path]:
-    dispatch = safe_segment(str(request["dispatch_id"]), "dispatch_id")
-    candidate = str(request["candidate_sha"])
-    round_number = int(request["round"])
-    owner_dir = (
-        paths.data_root
-        / "local-review"
-        / "reviewer-worktrees"
-        / dispatch
-        / candidate
-        / f"round-{round_number:02d}"
-    )
+    owner_dir = reviewer_owner_dir(paths, request)
     worktree = owner_dir / "repo"
     marker = owner_dir / "owner.json"
-    expected = {
-        "schema_version": 1,
-        "dispatch_id": dispatch,
-        "candidate_sha": candidate,
-        "round": round_number,
-        "repository": request["repository"],
-        "worktree": str(worktree),
-    }
+    expected = reviewer_owner_receipt(request, worktree)
     if worktree.exists():
         if not marker.exists() or load_json(marker) != expected:
             raise SidecarError(
@@ -519,10 +503,37 @@ def reviewer_worktree(
                 "add",
                 "--detach",
                 str(worktree),
-                candidate,
+                str(request["candidate_sha"]),
             ]
         )
     return worktree.resolve(), marker
+
+
+def reviewer_owner_dir(paths: Paths, request: dict[str, Any]) -> pathlib.Path:
+    dispatch = safe_segment(str(request["dispatch_id"]), "dispatch_id")
+    candidate = str(request["candidate_sha"])
+    round_number = int(request["round"])
+    return (
+        paths.data_root
+        / "local-review"
+        / "reviewer-worktrees"
+        / dispatch
+        / candidate
+        / f"round-{round_number:02d}"
+    )
+
+
+def reviewer_owner_receipt(
+    request: dict[str, Any], worktree: pathlib.Path
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "dispatch_id": safe_segment(str(request["dispatch_id"]), "dispatch_id"),
+        "candidate_sha": str(request["candidate_sha"]),
+        "round": int(request["round"]),
+        "repository": request["repository"],
+        "worktree": str(worktree),
+    }
 
 
 def verify_reviewer_worktree(
@@ -1083,6 +1094,36 @@ def clean_reviewer_worktree(
             f"reviewer worktree is outside managed root: {worktree}",
         )
     run(["git", "-C", str(paths.repo), "worktree", "remove", str(worktree)])
+    shutil.rmtree(marker.parent)
+
+
+def cleanup_previous_reviewer(paths: Paths, state: dict[str, Any]) -> None:
+    candidate = state.get("current_candidate_sha")
+    round_number = state.get("current_round")
+    if not isinstance(candidate, str) or not isinstance(round_number, int):
+        return
+    request_path = paths.round_dir(candidate, round_number) / "request.json"
+    if not request_path.exists():
+        return
+    request = load_json(request_path)
+    owner_dir = reviewer_owner_dir(paths, request)
+    worktree = owner_dir / "repo"
+    marker = owner_dir / "owner.json"
+    if worktree.exists():
+        if not marker.exists():
+            raise SidecarError(
+                "WORKTREE_OWNERSHIP_MISMATCH",
+                f"refusing to clean unowned reviewer worktree: {worktree}",
+            )
+        clean_reviewer_worktree(paths, worktree.resolve(), marker)
+    elif marker.exists():
+        expected = reviewer_owner_receipt(request, worktree)
+        if load_json(marker) != expected:
+            raise SidecarError(
+                "WORKTREE_OWNERSHIP_MISMATCH",
+                f"refusing to clean invalid reviewer owner directory: {owner_dir}",
+            )
+        shutil.rmtree(owner_dir)
 
 
 def command_run(args: argparse.Namespace, paths: Paths) -> dict[str, Any]:
