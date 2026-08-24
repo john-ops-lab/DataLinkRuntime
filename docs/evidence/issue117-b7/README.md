@@ -37,8 +37,8 @@ Commands were run from `web/` unless noted:
 - Locales: `zh-CN`, `en`
 - Viewports: `1280`, `1440`, `1680`, `1920`
 - Browser: Chromium `151.0.7922.34`
-- Each record: overview count `0`; header-to-toolbar gap `0`; toolbar-to-list gap `0`; document/body `scrollWidth == innerWidth`; console/page errors empty; unknown requests empty; one existing `POST /api/adapters` create request; refresh caused repeated adapter-list GETs.
-- Screenshots are taken before the create drawer opens, so the Catalog title, controls, filtered list and compact spacing remain visible in each matrix image.
+- Each record: overview count `0`; `list_visible=true`; `select_dropdown_count=0`; header-to-toolbar gap `0`; toolbar-to-list gap `0`; document/body `scrollWidth == innerWidth`; console/page errors empty; unknown requests empty; one existing `POST /api/adapters` create request; refresh caused repeated adapter-list GETs.
+- Before every screenshot the test presses `Escape`, clicks the Catalog title, and waits for every non-hidden AntD Select dropdown to be detached/hidden. It then asserts the filtered list is visible, before capturing the Catalog title, controls, filtered list and compact spacing.
 - Fixture data and route handlers are scoped to this spec. No provider response bodies or real credentials are archived.
 
 ## AO Browser session evidence

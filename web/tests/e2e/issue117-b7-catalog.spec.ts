@@ -109,6 +109,8 @@ interface CatalogRecord {
     type_count: number;
     running_count: number;
     filtered_count: number;
+    list_visible: boolean;
+    select_dropdown_count: number;
     help_visible: boolean;
     help_closed: boolean;
     created: boolean;
@@ -304,6 +306,13 @@ async function selectOption(page: Page, testId: string, option: string): Promise
   await expect(page.getByTestId(testId)).toContainText(option);
 }
 
+async function closeSelectDropdowns(page: Page): Promise<void> {
+  const openDropdowns = page.locator(".ant-select-dropdown:not(.ant-select-dropdown-hidden)");
+  await page.keyboard.press("Escape");
+  await page.getByTestId("adapter-catalog-header").locator(".catalog-title").click();
+  await expect(openDropdowns).toHaveCount(0);
+}
+
 async function runCase(page: Page, locale: Locale, width: number): Promise<void> {
   const text = labels(locale);
   const { adapterListCalls, createBodies, nonGetPaths, unknownPaths, adapters } =
@@ -330,7 +339,10 @@ async function runCase(page: Page, locale: Locale, width: number): Promise<void>
   await expect(search).toBeVisible();
   await expect(typeFilter).toBeVisible();
   await expect(statusFilter).toBeVisible();
-  await expect(page.getByTestId("show-create-form")).toBeVisible();
+  await expect(page.getByTestId("adapter-type-filter")).toContainText(text.filterTypeAll);
+  await expect(page.getByTestId("adapter-status-filter")).toContainText(text.filterStatusAll);
+  const createEntry = page.getByTestId("show-create-form");
+  await expect(createEntry).toBeVisible();
   await expect(page.getByTestId("refresh-adapters")).toHaveAttribute("aria-label", text.refresh);
   await expect(page.getByTestId("adapter-catalog-help")).toHaveAttribute("aria-label", text.help);
 
@@ -355,6 +367,13 @@ async function runCase(page: Page, locale: Locale, width: number): Promise<void>
   await refresh.focus();
   await page.keyboard.press("Enter");
   await expect.poll(() => adapterListCalls.value).toBeGreaterThan(1);
+
+  await closeSelectDropdowns(page);
+  const visibleSelectDropdowns = page.locator(".ant-select-dropdown:not(.ant-select-dropdown-hidden)");
+  const visibleItems = page.getByTestId("adapter-item");
+  await expect(visibleSelectDropdowns).toHaveCount(0);
+  await expect(visibleItems).toHaveCount(1);
+  await expect(visibleItems.first()).toBeVisible();
 
   const geometry = await page.evaluate(() => {
     const header = document.querySelector<HTMLElement>("[data-testid=adapter-catalog-header]");
@@ -387,7 +406,11 @@ async function runCase(page: Page, locale: Locale, width: number): Promise<void>
   mkdirSync(screenshotDir, { recursive: true });
   await page.screenshot({ path: resolve(screenshotDir, screenshotName), fullPage: true });
 
-  await page.getByTestId("show-create-form").click();
+  await createEntry.click();
+  await expect(page.getByTestId("new-adapter-name")).toBeVisible();
+  await expect
+    .poll(async () => (await page.getByTestId("create-adapter").innerText()).replace(/\s+/g, ""))
+    .toBe(text.create);
   await page.getByTestId("new-adapter-name").fill("created-in-batch-7");
   await page.getByTestId("new-adapter-description").fill("created fixture");
   await page.getByTestId("create-adapter").click();
@@ -426,6 +449,8 @@ async function runCase(page: Page, locale: Locale, width: number): Promise<void>
       type_count: typeCount,
       running_count: runningCount,
       filtered_count: filteredCount,
+      list_visible: true,
+      select_dropdown_count: await visibleSelectDropdowns.count(),
       help_visible: true,
       help_closed: true,
       created: true,

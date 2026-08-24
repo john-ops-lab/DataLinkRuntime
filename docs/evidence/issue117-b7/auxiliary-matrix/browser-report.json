@@ -41,6 +41,8 @@
         "type_count": 2,
         "running_count": 1,
         "filtered_count": 1,
+        "list_visible": true,
+        "select_dropdown_count": 0,
         "help_visible": true,
         "help_closed": true,
         "created": true
@@ -87,6 +89,8 @@
         "type_count": 2,
         "running_count": 1,
         "filtered_count": 1,
+        "list_visible": true,
+        "select_dropdown_count": 0,
         "help_visible": true,
         "help_closed": true,
         "created": true
@@ -133,6 +137,8 @@
         "type_count": 2,
         "running_count": 1,
         "filtered_count": 1,
+        "list_visible": true,
+        "select_dropdown_count": 0,
         "help_visible": true,
         "help_closed": true,
         "created": true
@@ -179,6 +185,8 @@
         "type_count": 2,
         "running_count": 1,
         "filtered_count": 1,
+        "list_visible": true,
+        "select_dropdown_count": 0,
         "help_visible": true,
         "help_closed": true,
         "created": true
@@ -225,6 +233,8 @@
         "type_count": 2,
         "running_count": 1,
         "filtered_count": 1,
+        "list_visible": true,
+        "select_dropdown_count": 0,
         "help_visible": true,
         "help_closed": true,
         "created": true
@@ -271,6 +281,8 @@
         "type_count": 2,
         "running_count": 1,
         "filtered_count": 1,
+        "list_visible": true,
+        "select_dropdown_count": 0,
         "help_visible": true,
         "help_closed": true,
         "created": true
@@ -317,6 +329,8 @@
         "type_count": 2,
         "running_count": 1,
         "filtered_count": 1,
+        "list_visible": true,
+        "select_dropdown_count": 0,
         "help_visible": true,
         "help_closed": true,
         "created": true
@@ -363,6 +377,8 @@
         "type_count": 2,
         "running_count": 1,
         "filtered_count": 1,
+        "list_visible": true,
+        "select_dropdown_count": 0,
         "help_visible": true,
         "help_closed": true,
         "created": true
