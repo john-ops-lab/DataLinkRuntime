@@ -3470,6 +3470,15 @@ body {
   align-items: stretch;
 }
 
+/* Issue #117 Batch 8：刷新与批量操作收进同一操作区，与设置页工具栏一致。 */
+.user-management-toolbar {
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .user-create-section {
   display: flex;
   flex-direction: column;
@@ -3490,26 +3499,30 @@ body {
   background: #fafbfc;
 }
 
-.account-user-page {
-  box-sizing: border-box;
-  min-height: 100vh;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 48px 24px;
-  background: var(--dlr-shell-bg);
+/* Issue #117 Batch 8：账号资料在抽屉内复用 settings-panel 基线，不再使用
+   全屏居中单卡片布局（该布局会在 460px 抽屉内产生 min-height:100vh 溢出）。 */
+.account-user-panel {
+  align-items: stretch;
 }
 
-.account-user-card {
+.account-user-panel .settings-panel-error,
+.account-user-panel .settings-panel-success {
   width: 100%;
-  max-width: 640px;
 }
 
 .account-user-password {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--dlr-border);
+}
+
+.account-user-footer {
+  width: 100%;
+  display: flex;
+  justify-content: flex-start;
+  padding-top: 12px;
   border-top: 1px solid var(--dlr-border);
 }
 

@@ -42,9 +42,9 @@
 
 ## 8. Batch 8：Issue #117.6 账号资料与用户管理 UI（依赖 Batch 7 验收通过）
 
-- [ ] 8.1 先为账号资料和用户管理页面建立操作/状态回归基线，覆盖修改用户名、修改密码、创建用户、角色调整、启停、重置密码、批量操作、加载/空/成功/错误状态及既有权限拒绝。
-- [ ] 8.2 仅复用现有 DLR 工作台容器、Ant Design token、卡片/表单/表格/状态组件和 i18n 资源统一两页的标题、说明、层级、操作区、间距、字号、留白和反馈；验证 API payload、权限判断和敏感值处理不变。
-- [ ] 8.3 完成 Batch 8 验收门：运行 `cd web && npm run lint && npm run typecheck && npm run test && npm run build`；真实浏览器在 zh-CN/en、1280/1440/1680/1920 逐项完成账号与用户管理操作，检查键盘/可访问名称、console、request、page state 和 overflow，并保存视觉证据后才允许 Batch 9 开始。
+- [x] 8.1 先为账号资料和用户管理页面建立操作/状态回归基线，覆盖修改用户名、修改密码、创建用户、角色调整、启停、重置密码、批量操作、加载/空/成功/错误状态及既有权限拒绝。
+- [x] 8.2 仅复用现有 DLR 工作台容器、Ant Design token、卡片/表单/表格/状态组件和 i18n 资源统一两页的标题、说明、层级、操作区、间距、字号、留白和反馈；验证 API payload、权限判断和敏感值处理不变。
+- [x] 8.3 完成 Batch 8 验收门：运行 `cd web && npm run lint && npm run typecheck && npm run test && npm run build`；真实浏览器在 zh-CN/en、1280/1440/1680/1920 逐项完成账号与用户管理操作，检查键盘/可访问名称、console、request、page state 和 overflow，并保存视觉证据后才允许 Batch 9 开始。
 
 ## 9. Batch 9：Issue #117.8 本地日志配置与快速开始文档（依赖 Batch 1 和 Batch 8 验收通过）
 

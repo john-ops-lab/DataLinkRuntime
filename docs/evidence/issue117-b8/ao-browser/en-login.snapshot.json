@@ -1,0 +1,55 @@
+{
+  "requestId": "7c101b91-c6e0-48f7-93f2-a5cce3db6085",
+  "sessionId": "datalinkruntime-93",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "58b40612c7deb8a3f6dfda52f90b32f3",
+      "origin": "http://127.0.0.1:4180/"
+    },
+    "refs": {
+      "e1": {
+        "name": "DataLinkRuntime",
+        "role": "region"
+      },
+      "e10": {
+        "name": "eye-invisible",
+        "role": "image"
+      },
+      "e2": {
+        "name": "Language",
+        "role": "generic"
+      },
+      "e3": {
+        "name": "",
+        "role": "generic"
+      },
+      "e4": {
+        "name": "Account login",
+        "role": "heading"
+      },
+      "e5": {
+        "name": "Language",
+        "role": "combobox"
+      },
+      "e6": {
+        "name": "Log in",
+        "role": "button"
+      },
+      "e7": {
+        "name": "Username",
+        "role": "textbox"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "Password",
+        "role": "textbox"
+      }
+    },
+    "text": "- main\n  - region \"DataLinkRuntime\" [ref=e1]\n    - StaticText \"DLR\"\n    - StaticText \"DataLinkRuntime\"\n    - paragraph\n      - StaticText \"Code your data connections.\"\n  - generic\n    - StaticText \"Language\"\n    - generic \"Language\" [ref=e2] clickable [cursor:pointer]\n      - generic [ref=e3] clickable [cursor:pointer, onclick]\n        - combobox \"Language\" [expanded=false, ref=e5]\n    - heading \"Account login\" [level=1, ref=e4]\n    - paragraph\n      - StaticText \"Enter your username and password to continue\"\n    - paragraph\n      - StaticText \"The account Session has expired. Please log in again.\"\n    - generic\n      - LabelText\n      - textbox \"Username\" [required, ref=e7]\n      - LabelText\n      - generic [ref=e8] clickable [onclick]\n        - textbox \"Password\" [required, ref=e9]\n        - image \"eye-invisible\" [ref=e10] clickable [cursor:pointer, onclick]\n      - button \"Log in\" [ref=e6]",
+    "untrustedExternalContent": true
+  }
+}

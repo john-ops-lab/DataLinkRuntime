@@ -1,0 +1,75 @@
+{
+  "requestId": "f873da41-42f2-4a97-8b27-4f47a53b331e",
+  "sessionId": "datalinkruntime-93",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "805c1081ae1fa87f6eaca73a47ca566e",
+      "origin": "http://127.0.0.1:4180/"
+    },
+    "refs": {
+      "e1": {
+        "name": "运行节点 · 0/0 在线",
+        "role": "button"
+      },
+      "e10": {
+        "name": "适配器状态筛选",
+        "role": "generic"
+      },
+      "e11": {
+        "name": "搜索适配器",
+        "role": "textbox"
+      },
+      "e12": {
+        "name": "",
+        "role": "generic"
+      },
+      "e13": {
+        "name": "",
+        "role": "generic"
+      },
+      "e14": {
+        "name": "适配器类型筛选",
+        "role": "combobox"
+      },
+      "e15": {
+        "name": "适配器状态筛选",
+        "role": "combobox"
+      },
+      "e2": {
+        "name": "账号菜单",
+        "role": "button"
+      },
+      "e3": {
+        "name": "适配器",
+        "role": "heading"
+      },
+      "e4": {
+        "name": "新 建",
+        "role": "button"
+      },
+      "e5": {
+        "name": "刷新适配器列表",
+        "role": "button"
+      },
+      "e6": {
+        "name": "适配器目录帮助",
+        "role": "button"
+      },
+      "e7": {
+        "name": "展开 AI 助手",
+        "role": "button"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "适配器类型筛选",
+        "role": "generic"
+      }
+    },
+    "text": "- generic\n  - generic\n    - banner\n      - StaticText \"DataLinkRuntime\"\n      - StaticText \"控制服务正常\"\n      - button \"运行节点 · 0/0 在线\" [ref=e1]\n        - StaticText \"运行节点 · 0/0 在线\"\n      - button \"账号菜单\" [ref=e2]\n        - StaticText \"admin · 管理员\"\n    - generic\n      - complementary\n        - heading \"适配器\" [level=2, ref=e3]\n        - button \"新 建\" [ref=e4]\n          - StaticText \"新 建\"\n        - button \"刷新适配器列表\" [ref=e5]\n          - image \"reload\"\n        - button \"适配器目录帮助\" [ref=e6]\n          - image \"question-circle\"\n        - toolbar \"适配器工具栏\"\n          - generic \"适配器筛选条件\"\n            - generic [ref=e8] clickable [onclick]\n              - textbox \"搜索适配器\" [ref=e11]\n            - generic \"适配器类型筛选\" [ref=e9] clickable [cursor:pointer]\n              - generic [ref=e12] clickable [cursor:pointer, onclick]\n                - combobox \"适配器类型筛选\" [expanded=false, ref=e14]\n            - generic \"适配器状态筛选\" [ref=e10] clickable [cursor:pointer]\n              - generic [ref=e13] clickable [cursor:pointer, onclick]\n                - combobox \"适配器状态筛选\" [expanded=false, ref=e15]\n      - complementary\n        - button \"展开 AI 助手\" [expanded=false, ref=e7]",
+    "untrustedExternalContent": true
+  }
+}

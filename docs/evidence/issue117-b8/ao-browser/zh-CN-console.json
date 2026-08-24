@@ -1,0 +1,35 @@
+{
+  "requestId": "c7625e39-b7eb-4ae7-93cd-ff52de7dfbcc",
+  "sessionId": "datalinkruntime-93",
+  "action": "console",
+  "result": {
+    "messages": [
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:35:04.985Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:35:04.985Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:35:04.985Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:35:04.985Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:35:04.985Z"
+      }
+    ],
+    "untrustedExternalContent": true
+  }
+}

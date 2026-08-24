@@ -1,0 +1,75 @@
+{
+  "requestId": "d8d405d1-4921-4117-9b95-4fb1aa366524",
+  "sessionId": "datalinkruntime-93",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "b06f781f6b02396cb4b5d5e50ad3dc1a",
+      "origin": "http://127.0.0.1:4180/"
+    },
+    "refs": {
+      "e1": {
+        "name": "Runtime Worker · 0/0 online",
+        "role": "button"
+      },
+      "e10": {
+        "name": "Adapter status filter",
+        "role": "generic"
+      },
+      "e11": {
+        "name": "Search Adapters",
+        "role": "textbox"
+      },
+      "e12": {
+        "name": "",
+        "role": "generic"
+      },
+      "e13": {
+        "name": "",
+        "role": "generic"
+      },
+      "e14": {
+        "name": "Adapter type filter",
+        "role": "combobox"
+      },
+      "e15": {
+        "name": "Adapter status filter",
+        "role": "combobox"
+      },
+      "e2": {
+        "name": "Account menu",
+        "role": "button"
+      },
+      "e3": {
+        "name": "Adapters",
+        "role": "heading"
+      },
+      "e4": {
+        "name": "New",
+        "role": "button"
+      },
+      "e5": {
+        "name": "Refresh Adapter list",
+        "role": "button"
+      },
+      "e6": {
+        "name": "Adapter catalog help",
+        "role": "button"
+      },
+      "e7": {
+        "name": "Open AI assistant",
+        "role": "button"
+      },
+      "e8": {
+        "name": "",
+        "role": "generic"
+      },
+      "e9": {
+        "name": "Adapter type filter",
+        "role": "generic"
+      }
+    },
+    "text": "- generic\n  - generic\n    - banner\n      - StaticText \"DataLinkRuntime\"\n      - StaticText \"Control service healthy\"\n      - button \"Runtime Worker · 0/0 online\" [ref=e1]\n        - StaticText \"Runtime Worker · 0/0 online\"\n      - button \"Account menu\" [ref=e2]\n        - StaticText \"admin · Admin\"\n    - generic\n      - complementary\n        - heading \"Adapters\" [level=2, ref=e3]\n        - button \"New\" [ref=e4]\n          - StaticText \"New\"\n        - button \"Refresh Adapter list\" [ref=e5]\n          - image \"reload\"\n        - button \"Adapter catalog help\" [ref=e6]\n          - image \"question-circle\"\n        - toolbar \"Adapter toolbar\"\n          - generic \"Adapter filters\"\n            - generic [ref=e8] clickable [onclick]\n              - textbox \"Search Adapters\" [ref=e11]\n            - generic \"Adapter type filter\" [ref=e9] clickable [cursor:pointer]\n              - generic [ref=e12] clickable [cursor:pointer, onclick]\n                - combobox \"Adapter type filter\" [expanded=false, ref=e14]\n            - generic \"Adapter status filter\" [ref=e10] clickable [cursor:pointer]\n              - generic [ref=e13] clickable [cursor:pointer, onclick]\n                - combobox \"Adapter status filter\" [expanded=false, ref=e15]\n      - complementary\n        - button \"Open AI assistant\" [expanded=false, ref=e7]",
+    "untrustedExternalContent": true
+  }
+}

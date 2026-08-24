@@ -1,0 +1,99 @@
+{
+  "requestId": "1da06a80-7ef6-402c-adac-9d744bab902c",
+  "sessionId": "datalinkruntime-93",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "980025c832a3569cb3d4104d4bfe2737",
+      "origin": "http://127.0.0.1:4180/"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "generic"
+      },
+      "e10": {
+        "name": "New",
+        "role": "button"
+      },
+      "e11": {
+        "name": "Refresh Adapter list",
+        "role": "button"
+      },
+      "e12": {
+        "name": "Adapter catalog help",
+        "role": "button"
+      },
+      "e13": {
+        "name": "Open AI assistant",
+        "role": "button"
+      },
+      "e14": {
+        "name": "",
+        "role": "generic"
+      },
+      "e15": {
+        "name": "Adapter type filter",
+        "role": "generic"
+      },
+      "e16": {
+        "name": "Adapter status filter",
+        "role": "generic"
+      },
+      "e17": {
+        "name": "Search Adapters",
+        "role": "textbox"
+      },
+      "e18": {
+        "name": "",
+        "role": "generic"
+      },
+      "e19": {
+        "name": "",
+        "role": "generic"
+      },
+      "e2": {
+        "name": "",
+        "role": "menu"
+      },
+      "e20": {
+        "name": "Adapter type filter",
+        "role": "combobox"
+      },
+      "e21": {
+        "name": "Adapter status filter",
+        "role": "combobox"
+      },
+      "e3": {
+        "name": "Runtime Worker · 0/0 online",
+        "role": "button"
+      },
+      "e4": {
+        "name": "Account menu",
+        "role": "button"
+      },
+      "e5": {
+        "name": "Account profile",
+        "role": "menuitem"
+      },
+      "e6": {
+        "name": "User management",
+        "role": "menuitem"
+      },
+      "e7": {
+        "name": "System Settings",
+        "role": "menuitem"
+      },
+      "e8": {
+        "name": "Log out",
+        "role": "menuitem"
+      },
+      "e9": {
+        "name": "Adapters",
+        "role": "heading"
+      }
+    },
+    "text": "- generic\n  - generic\n    - banner\n      - StaticText \"DataLinkRuntime\"\n      - StaticText \"Control service healthy\"\n      - button \"Runtime Worker · 0/0 online\" [ref=e3]\n        - StaticText \"Runtime Worker · 0/0 online\"\n      - button \"Account menu\" [ref=e4]\n        - StaticText \"admin · Admin\"\n    - generic\n      - complementary\n        - heading \"Adapters\" [level=2, ref=e9]\n        - button \"New\" [ref=e10]\n          - StaticText \"New\"\n        - button \"Refresh Adapter list\" [ref=e11]\n          - image \"reload\"\n        - button \"Adapter catalog help\" [ref=e12]\n          - image \"question-circle\"\n        - toolbar \"Adapter toolbar\"\n          - generic \"Adapter filters\"\n            - generic [ref=e14] clickable [onclick]\n              - textbox \"Search Adapters\" [ref=e17]\n            - generic \"Adapter type filter\" [ref=e15] clickable [cursor:pointer]\n              - generic [ref=e18] clickable [cursor:pointer, onclick]\n                - combobox \"Adapter type filter\" [expanded=false, ref=e20]\n            - generic \"Adapter status filter\" [ref=e16] clickable [cursor:pointer]\n              - generic [ref=e19] clickable [cursor:pointer, onclick]\n                - combobox \"Adapter status filter\" [expanded=false, ref=e21]\n      - complementary\n        - button \"Open AI assistant\" [expanded=false, ref=e13]\n  - generic [ref=e1] clickable [onclick]\n    - menu [ref=e2] focusable [tabindex]\n      - menuitem \"Account profile\" [ref=e5]\n      - menuitem \"User management\" [ref=e6]\n      - menuitem \"System Settings\" [ref=e7]\n      - menuitem \"Log out\" [ref=e8]",
+    "untrustedExternalContent": true
+  }
+}

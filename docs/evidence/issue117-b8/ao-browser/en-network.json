@@ -1,0 +1,214 @@
+{
+  "requestId": "a4b46bba-2ac1-44d7-9c87-01884d56d1d1",
+  "sessionId": "datalinkruntime-93",
+  "action": "network-list",
+  "result": {
+    "active": false,
+    "expiresAt": "2026-08-24T22:39:32.322Z",
+    "maxEntries": 200,
+    "metadataOnly": true,
+    "requestCount": 10,
+    "requests": [
+      {
+        "durationMs": 3,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n1",
+        "method": "GET",
+        "mimeType": "text/html",
+        "resourceType": "document",
+        "responseHeaders": {
+          "content-type": "text/html; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.350Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/"
+      },
+      {
+        "durationMs": 49,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n2",
+        "method": "GET",
+        "mimeType": "application/javascript",
+        "requestHeaders": {
+          "origin": "http://127.0.0.1:4180",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "script",
+        "responseHeaders": {
+          "content-type": "application/javascript; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.355Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/assets/index-DeUlcwJ8.js"
+      },
+      {
+        "durationMs": 2,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n3",
+        "method": "GET",
+        "mimeType": "text/css",
+        "requestHeaders": {
+          "origin": "http://127.0.0.1:4180",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "stylesheet",
+        "responseHeaders": {
+          "content-type": "text/css; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.355Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/assets/index-BM9_DGb8.css"
+      },
+      {
+        "durationMs": 1,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n4",
+        "method": "GET",
+        "mimeType": "application/javascript",
+        "requestHeaders": {
+          "origin": "http://127.0.0.1:4180",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "script",
+        "responseHeaders": {
+          "content-type": "application/javascript; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.355Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/entry-mode.js"
+      },
+      {
+        "durationMs": 1,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n5",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.493Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/locale"
+      },
+      {
+        "durationMs": 1,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n6",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.493Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/auth/account/csrf"
+      },
+      {
+        "durationMs": 1,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n7",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.495Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/auth/account/me"
+      },
+      {
+        "durationMs": 1,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n8",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.529Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/health"
+      },
+      {
+        "durationMs": 3,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n9",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.529Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/workers"
+      },
+      {
+        "durationMs": 3,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n10",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:38:32.529Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/adapters"
+      }
+    ],
+    "startedAt": "2026-08-24T22:38:32.322Z",
+    "stopReason": "stopped",
+    "stoppedAt": "2026-08-24T22:38:32.564Z",
+    "tabId": "t1",
+    "untrustedExternalContent": true
+  }
+}

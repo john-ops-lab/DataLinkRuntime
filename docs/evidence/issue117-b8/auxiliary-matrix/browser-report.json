@@ -1,0 +1,767 @@
+{
+  "schema_version": 1,
+  "product": "DataLinkRuntime",
+  "dispatch_id": "issue117-b8-account-20260825-r3",
+  "batch": "8",
+  "scope": "Account profile and user management UI unification",
+  "antd": "5.29.3",
+  "playwright": "1.62.1",
+  "browser": "chromium",
+  "browser_version": "151.0.7922.34",
+  "viewport_widths": [
+    1280,
+    1440,
+    1680,
+    1920
+  ],
+  "locales": [
+    "zh-CN",
+    "en"
+  ],
+  "fixture_provider": "scoped Playwright route fixture",
+  "real_provider_credentials": false,
+  "raw_provider_response_archived": false,
+  "password_values_redacted_in_report": true,
+  "records": [
+    {
+      "locale": "en",
+      "width": 1280,
+      "role": "admin",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-en-1280.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": true,
+        "reset_modal_named": true
+      },
+      "operations": {
+        "profile_rename": true,
+        "create_user": true,
+        "role_change": true,
+        "enable_disable": true,
+        "reset_password": true,
+        "bulk": true,
+        "refresh": true,
+        "filter_empty_state": true,
+        "change_password_success": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "renamed-admin"
+        },
+        "create_post": {
+          "username": "created-user",
+          "role": "user"
+        },
+        "role_patch": {
+          "role": "admin"
+        },
+        "toggle_patch": {
+          "enabled": false
+        },
+        "bulk_patch_count": 3,
+        "reset_post": {
+          "new_password": "<redacted>"
+        },
+        "change_password_post": {
+          "current_password": "<redacted>",
+          "new_password": "<redacted>"
+        }
+      },
+      "feedback": {
+        "mismatch_error": true,
+        "wrong_current_error": true,
+        "success_notice": true,
+        "empty_state": true,
+        "permission_denied": false
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/1",
+          "POST /api/auth/account/change-password",
+          "POST /api/users",
+          "PATCH /api/users/2",
+          "POST /api/users/2/reset-password",
+          "PATCH /api/users/13",
+          "PATCH /api/users/3"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 2
+      },
+      "console_errors": [],
+      "console_filtered_notices": 8,
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "role": "admin",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-en-1440.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": true,
+        "reset_modal_named": true
+      },
+      "operations": {
+        "profile_rename": true,
+        "create_user": true,
+        "role_change": true,
+        "enable_disable": true,
+        "reset_password": true,
+        "bulk": true,
+        "refresh": true,
+        "filter_empty_state": true,
+        "change_password_success": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "renamed-admin"
+        },
+        "create_post": {
+          "username": "created-user",
+          "role": "user"
+        },
+        "role_patch": {
+          "role": "admin"
+        },
+        "toggle_patch": {
+          "enabled": false
+        },
+        "bulk_patch_count": 3,
+        "reset_post": {
+          "new_password": "<redacted>"
+        },
+        "change_password_post": {
+          "current_password": "<redacted>",
+          "new_password": "<redacted>"
+        }
+      },
+      "feedback": {
+        "mismatch_error": true,
+        "wrong_current_error": true,
+        "success_notice": true,
+        "empty_state": true,
+        "permission_denied": false
+      },
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/1",
+          "POST /api/auth/account/change-password",
+          "POST /api/users",
+          "PATCH /api/users/2",
+          "POST /api/users/2/reset-password",
+          "PATCH /api/users/13",
+          "PATCH /api/users/3"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 2
+      },
+      "console_errors": [],
+      "console_filtered_notices": 8,
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "role": "admin",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-en-1680.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": true,
+        "reset_modal_named": true
+      },
+      "operations": {
+        "profile_rename": true,
+        "create_user": true,
+        "role_change": true,
+        "enable_disable": true,
+        "reset_password": true,
+        "bulk": true,
+        "refresh": true,
+        "filter_empty_state": true,
+        "change_password_success": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "renamed-admin"
+        },
+        "create_post": {
+          "username": "created-user",
+          "role": "user"
+        },
+        "role_patch": {
+          "role": "admin"
+        },
+        "toggle_patch": {
+          "enabled": false
+        },
+        "bulk_patch_count": 3,
+        "reset_post": {
+          "new_password": "<redacted>"
+        },
+        "change_password_post": {
+          "current_password": "<redacted>",
+          "new_password": "<redacted>"
+        }
+      },
+      "feedback": {
+        "mismatch_error": true,
+        "wrong_current_error": true,
+        "success_notice": true,
+        "empty_state": true,
+        "permission_denied": false
+      },
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/1",
+          "POST /api/auth/account/change-password",
+          "POST /api/users",
+          "PATCH /api/users/2",
+          "POST /api/users/2/reset-password",
+          "PATCH /api/users/13",
+          "PATCH /api/users/3"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 2
+      },
+      "console_errors": [],
+      "console_filtered_notices": 8,
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "role": "admin",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-en-1920.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": true,
+        "reset_modal_named": true
+      },
+      "operations": {
+        "profile_rename": true,
+        "create_user": true,
+        "role_change": true,
+        "enable_disable": true,
+        "reset_password": true,
+        "bulk": true,
+        "refresh": true,
+        "filter_empty_state": true,
+        "change_password_success": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "renamed-admin"
+        },
+        "create_post": {
+          "username": "created-user",
+          "role": "user"
+        },
+        "role_patch": {
+          "role": "admin"
+        },
+        "toggle_patch": {
+          "enabled": false
+        },
+        "bulk_patch_count": 3,
+        "reset_post": {
+          "new_password": "<redacted>"
+        },
+        "change_password_post": {
+          "current_password": "<redacted>",
+          "new_password": "<redacted>"
+        }
+      },
+      "feedback": {
+        "mismatch_error": true,
+        "wrong_current_error": true,
+        "success_notice": true,
+        "empty_state": true,
+        "permission_denied": false
+      },
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/1",
+          "POST /api/auth/account/change-password",
+          "POST /api/users",
+          "PATCH /api/users/2",
+          "POST /api/users/2/reset-password",
+          "PATCH /api/users/13",
+          "PATCH /api/users/3"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 2
+      },
+      "console_errors": [],
+      "console_filtered_notices": 8,
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "role": "admin",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-zh-CN-1280.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": true,
+        "reset_modal_named": true
+      },
+      "operations": {
+        "profile_rename": true,
+        "create_user": true,
+        "role_change": true,
+        "enable_disable": true,
+        "reset_password": true,
+        "bulk": true,
+        "refresh": true,
+        "filter_empty_state": true,
+        "change_password_success": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "renamed-admin"
+        },
+        "create_post": {
+          "username": "created-user",
+          "role": "user"
+        },
+        "role_patch": {
+          "role": "admin"
+        },
+        "toggle_patch": {
+          "enabled": false
+        },
+        "bulk_patch_count": 3,
+        "reset_post": {
+          "new_password": "<redacted>"
+        },
+        "change_password_post": {
+          "current_password": "<redacted>",
+          "new_password": "<redacted>"
+        }
+      },
+      "feedback": {
+        "mismatch_error": true,
+        "wrong_current_error": true,
+        "success_notice": true,
+        "empty_state": true,
+        "permission_denied": false
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/1",
+          "POST /api/auth/account/change-password",
+          "POST /api/users",
+          "PATCH /api/users/2",
+          "POST /api/users/2/reset-password",
+          "PATCH /api/users/13",
+          "PATCH /api/users/3"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 2
+      },
+      "console_errors": [],
+      "console_filtered_notices": 8,
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "role": "admin",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-zh-CN-1440.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": true,
+        "reset_modal_named": true
+      },
+      "operations": {
+        "profile_rename": true,
+        "create_user": true,
+        "role_change": true,
+        "enable_disable": true,
+        "reset_password": true,
+        "bulk": true,
+        "refresh": true,
+        "filter_empty_state": true,
+        "change_password_success": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "renamed-admin"
+        },
+        "create_post": {
+          "username": "created-user",
+          "role": "user"
+        },
+        "role_patch": {
+          "role": "admin"
+        },
+        "toggle_patch": {
+          "enabled": false
+        },
+        "bulk_patch_count": 3,
+        "reset_post": {
+          "new_password": "<redacted>"
+        },
+        "change_password_post": {
+          "current_password": "<redacted>",
+          "new_password": "<redacted>"
+        }
+      },
+      "feedback": {
+        "mismatch_error": true,
+        "wrong_current_error": true,
+        "success_notice": true,
+        "empty_state": true,
+        "permission_denied": false
+      },
+      "overflow": {
+        "inner_width": 1440,
+        "document_scroll_width": 1440,
+        "body_scroll_width": 1440,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/1",
+          "POST /api/auth/account/change-password",
+          "POST /api/users",
+          "PATCH /api/users/2",
+          "POST /api/users/2/reset-password",
+          "PATCH /api/users/13",
+          "PATCH /api/users/3"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 2
+      },
+      "console_errors": [],
+      "console_filtered_notices": 8,
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "role": "admin",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-zh-CN-1680.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": true,
+        "reset_modal_named": true
+      },
+      "operations": {
+        "profile_rename": true,
+        "create_user": true,
+        "role_change": true,
+        "enable_disable": true,
+        "reset_password": true,
+        "bulk": true,
+        "refresh": true,
+        "filter_empty_state": true,
+        "change_password_success": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "renamed-admin"
+        },
+        "create_post": {
+          "username": "created-user",
+          "role": "user"
+        },
+        "role_patch": {
+          "role": "admin"
+        },
+        "toggle_patch": {
+          "enabled": false
+        },
+        "bulk_patch_count": 3,
+        "reset_post": {
+          "new_password": "<redacted>"
+        },
+        "change_password_post": {
+          "current_password": "<redacted>",
+          "new_password": "<redacted>"
+        }
+      },
+      "feedback": {
+        "mismatch_error": true,
+        "wrong_current_error": true,
+        "success_notice": true,
+        "empty_state": true,
+        "permission_denied": false
+      },
+      "overflow": {
+        "inner_width": 1680,
+        "document_scroll_width": 1680,
+        "body_scroll_width": 1680,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/1",
+          "POST /api/auth/account/change-password",
+          "POST /api/users",
+          "PATCH /api/users/2",
+          "POST /api/users/2/reset-password",
+          "PATCH /api/users/13",
+          "PATCH /api/users/3"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 2
+      },
+      "console_errors": [],
+      "console_filtered_notices": 8,
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "role": "admin",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-zh-CN-1920.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": true,
+        "reset_modal_named": true
+      },
+      "operations": {
+        "profile_rename": true,
+        "create_user": true,
+        "role_change": true,
+        "enable_disable": true,
+        "reset_password": true,
+        "bulk": true,
+        "refresh": true,
+        "filter_empty_state": true,
+        "change_password_success": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "renamed-admin"
+        },
+        "create_post": {
+          "username": "created-user",
+          "role": "user"
+        },
+        "role_patch": {
+          "role": "admin"
+        },
+        "toggle_patch": {
+          "enabled": false
+        },
+        "bulk_patch_count": 3,
+        "reset_post": {
+          "new_password": "<redacted>"
+        },
+        "change_password_post": {
+          "current_password": "<redacted>",
+          "new_password": "<redacted>"
+        }
+      },
+      "feedback": {
+        "mismatch_error": true,
+        "wrong_current_error": true,
+        "success_notice": true,
+        "empty_state": true,
+        "permission_denied": false
+      },
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/1",
+          "POST /api/auth/account/change-password",
+          "POST /api/users",
+          "PATCH /api/users/2",
+          "POST /api/users/2/reset-password",
+          "PATCH /api/users/13",
+          "PATCH /api/users/3"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 2
+      },
+      "console_errors": [],
+      "console_filtered_notices": 8,
+      "page_errors": []
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "role": "user",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-viewer-en-1280.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": false,
+        "reset_modal_named": false
+      },
+      "operations": {
+        "profile_rename": true,
+        "permission_menu_hidden": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "ordinary-renamed"
+        },
+        "create_post": null,
+        "role_patch": null,
+        "toggle_patch": null,
+        "bulk_patch_count": 0,
+        "reset_post": null,
+        "change_password_post": null
+      },
+      "feedback": {
+        "mismatch_error": false,
+        "wrong_current_error": false,
+        "success_notice": true,
+        "empty_state": false,
+        "permission_denied": true
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/2"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 0
+      },
+      "console_errors": [],
+      "console_filtered_notices": 2,
+      "page_errors": []
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "role": "user",
+      "screenshot": "docs/evidence/issue117-b8/auxiliary-matrix/browser/account-viewer-zh-CN-1280.png",
+      "structure": {
+        "catalog_baseline_visible": true,
+        "profile_heading_duplicate": 0,
+        "profile_subtitle": true,
+        "password_section_labelled": true,
+        "user_management_toolbar_unified": false,
+        "reset_modal_named": false
+      },
+      "operations": {
+        "profile_rename": true,
+        "permission_menu_hidden": true
+      },
+      "payloads": {
+        "profile_patch": {
+          "username": "ordinary-renamed"
+        },
+        "create_post": null,
+        "role_patch": null,
+        "toggle_patch": null,
+        "bulk_patch_count": 0,
+        "reset_post": null,
+        "change_password_post": null
+      },
+      "feedback": {
+        "mismatch_error": false,
+        "wrong_current_error": false,
+        "success_notice": true,
+        "empty_state": false,
+        "permission_denied": true
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280,
+        "profile_panel_overflow": false,
+        "user_panel_overflow": false
+      },
+      "requests": {
+        "non_get_paths": [
+          "POST /api/auth/account/login",
+          "PATCH /api/users/2"
+        ],
+        "unknown_paths": [],
+        "users_list_count": 0
+      },
+      "console_errors": [],
+      "console_filtered_notices": 2,
+      "page_errors": []
+    }
+  ]
+}

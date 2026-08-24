@@ -1,0 +1,99 @@
+{
+  "requestId": "109eafa2-9c78-4340-8f9b-e79d88fa5d81",
+  "sessionId": "datalinkruntime-93",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "249cf1c507f5e72a53c762fe07564a23",
+      "origin": "http://127.0.0.1:4180/"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "generic"
+      },
+      "e10": {
+        "name": "新 建",
+        "role": "button"
+      },
+      "e11": {
+        "name": "刷新适配器列表",
+        "role": "button"
+      },
+      "e12": {
+        "name": "适配器目录帮助",
+        "role": "button"
+      },
+      "e13": {
+        "name": "展开 AI 助手",
+        "role": "button"
+      },
+      "e14": {
+        "name": "",
+        "role": "generic"
+      },
+      "e15": {
+        "name": "适配器类型筛选",
+        "role": "generic"
+      },
+      "e16": {
+        "name": "适配器状态筛选",
+        "role": "generic"
+      },
+      "e17": {
+        "name": "搜索适配器",
+        "role": "textbox"
+      },
+      "e18": {
+        "name": "",
+        "role": "generic"
+      },
+      "e19": {
+        "name": "",
+        "role": "generic"
+      },
+      "e2": {
+        "name": "",
+        "role": "menu"
+      },
+      "e20": {
+        "name": "适配器类型筛选",
+        "role": "combobox"
+      },
+      "e21": {
+        "name": "适配器状态筛选",
+        "role": "combobox"
+      },
+      "e3": {
+        "name": "运行节点 · 0/0 在线",
+        "role": "button"
+      },
+      "e4": {
+        "name": "账号菜单",
+        "role": "button"
+      },
+      "e5": {
+        "name": "账号资料",
+        "role": "menuitem"
+      },
+      "e6": {
+        "name": "用户管理",
+        "role": "menuitem"
+      },
+      "e7": {
+        "name": "系统设置",
+        "role": "menuitem"
+      },
+      "e8": {
+        "name": "退出登录",
+        "role": "menuitem"
+      },
+      "e9": {
+        "name": "适配器",
+        "role": "heading"
+      }
+    },
+    "text": "- generic\n  - generic\n    - banner\n      - StaticText \"DataLinkRuntime\"\n      - StaticText \"控制服务正常\"\n      - button \"运行节点 · 0/0 在线\" [ref=e3]\n        - StaticText \"运行节点 · 0/0 在线\"\n      - button \"账号菜单\" [ref=e4]\n        - StaticText \"admin · 管理员\"\n    - generic\n      - complementary\n        - heading \"适配器\" [level=2, ref=e9]\n        - button \"新 建\" [ref=e10]\n          - StaticText \"新 建\"\n        - button \"刷新适配器列表\" [ref=e11]\n          - image \"reload\"\n        - button \"适配器目录帮助\" [ref=e12]\n          - image \"question-circle\"\n        - toolbar \"适配器工具栏\"\n          - generic \"适配器筛选条件\"\n            - generic [ref=e14] clickable [onclick]\n              - textbox \"搜索适配器\" [ref=e17]\n            - generic \"适配器类型筛选\" [ref=e15] clickable [cursor:pointer]\n              - generic [ref=e18] clickable [cursor:pointer, onclick]\n                - combobox \"适配器类型筛选\" [expanded=false, ref=e20]\n            - generic \"适配器状态筛选\" [ref=e16] clickable [cursor:pointer]\n              - generic [ref=e19] clickable [cursor:pointer, onclick]\n                - combobox \"适配器状态筛选\" [expanded=false, ref=e21]\n      - complementary\n        - button \"展开 AI 助手\" [expanded=false, ref=e13]\n  - generic [ref=e1] clickable [onclick]\n    - menu [ref=e2] focusable [tabindex]\n      - menuitem \"账号资料\" [ref=e5]\n      - menuitem \"用户管理\" [ref=e6]\n      - menuitem \"系统设置\" [ref=e7]\n      - menuitem \"退出登录\" [ref=e8]",
+    "untrustedExternalContent": true
+  }
+}

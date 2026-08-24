@@ -1,0 +1,99 @@
+{
+  "requestId": "9c2b143d-acfe-44be-92cf-7e3edcdd1c3a",
+  "sessionId": "datalinkruntime-93",
+  "action": "network-list",
+  "result": {
+    "active": false,
+    "expiresAt": "2026-08-24T22:31:25.316Z",
+    "maxEntries": 200,
+    "metadataOnly": true,
+    "requestCount": 4,
+    "requests": [
+      {
+        "durationMs": 4,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n1",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:29:48.010Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/workers"
+      },
+      {
+        "durationMs": 3,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n2",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:30:18.011Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/workers"
+      },
+      {
+        "durationMs": 4,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n3",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:30:48.012Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/workers"
+      },
+      {
+        "durationMs": 4,
+        "fromCache": false,
+        "fromServiceWorker": false,
+        "id": "n4",
+        "method": "GET",
+        "mimeType": "application/json",
+        "requestHeaders": {
+          "content-type": "application/json",
+          "referer": "http://127.0.0.1:4180/"
+        },
+        "resourceType": "fetch",
+        "responseHeaders": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "startedAt": "2026-08-24T22:31:18.012Z",
+        "status": 200,
+        "statusText": "OK",
+        "url": "http://127.0.0.1:4180/api/workers"
+      }
+    ],
+    "startedAt": "2026-08-24T22:29:25.316Z",
+    "stopReason": "expired",
+    "stoppedAt": "2026-08-24T22:31:25.327Z",
+    "tabId": "t1",
+    "untrustedExternalContent": true
+  }
+}

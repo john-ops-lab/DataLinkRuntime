@@ -428,33 +428,36 @@ export default function UserManagementDrawer({
             />
           </Form.Item>
         </QueryFilter>
-        <div className="settings-panel-toolbar">
+        <div
+          className="settings-panel-toolbar user-management-toolbar"
+          data-testid="user-management-toolbar"
+        >
           <Button size="small" loading={loading} onClick={() => void loadUsers()}>
             {t("users.refresh")}
           </Button>
+          <Space className="user-bulk-actions" wrap>
+            <Typography.Text type="secondary">
+              {t("users.bulkSelected", { count: selectedUserIds.length })}
+            </Typography.Text>
+            <Button
+              size="small"
+              data-testid="users-bulk-enable"
+              disabled={busy || selectedUserIds.length === 0}
+              onClick={() => void handleBulkEnabledChange(true)}
+            >
+              {t("users.bulkEnable")}
+            </Button>
+            <Button
+              size="small"
+              danger
+              data-testid="users-bulk-disable"
+              disabled={busy || selectedUserIds.length === 0}
+              onClick={() => void handleBulkEnabledChange(false)}
+            >
+              {t("users.bulkDisable")}
+            </Button>
+          </Space>
         </div>
-        <Space className="user-bulk-actions" wrap>
-          <Typography.Text type="secondary">
-            {t("users.bulkSelected", { count: selectedUserIds.length })}
-          </Typography.Text>
-          <Button
-            size="small"
-            data-testid="users-bulk-enable"
-            disabled={busy || selectedUserIds.length === 0}
-            onClick={() => void handleBulkEnabledChange(true)}
-          >
-            {t("users.bulkEnable")}
-          </Button>
-          <Button
-            size="small"
-            danger
-            data-testid="users-bulk-disable"
-            disabled={busy || selectedUserIds.length === 0}
-            onClick={() => void handleBulkEnabledChange(false)}
-          >
-            {t("users.bulkDisable")}
-          </Button>
-        </Space>
         <ProTable<AccountUser>
           rowKey="id"
           loading={loading}

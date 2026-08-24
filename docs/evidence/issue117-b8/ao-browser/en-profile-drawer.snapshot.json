@@ -1,0 +1,163 @@
+{
+  "requestId": "42251c05-5811-4311-9519-730b4e4f4166",
+  "sessionId": "datalinkruntime-93",
+  "action": "snapshot",
+  "result": {
+    "_boundary": {
+      "nonce": "fb27a7e67d774e5ac75eceb0d0777ea6",
+      "origin": "http://127.0.0.1:4180/"
+    },
+    "refs": {
+      "e1": {
+        "name": "",
+        "role": "generic"
+      },
+      "e10": {
+        "name": "New",
+        "role": "button"
+      },
+      "e11": {
+        "name": "Refresh Adapter list",
+        "role": "button"
+      },
+      "e12": {
+        "name": "Adapter catalog help",
+        "role": "button"
+      },
+      "e13": {
+        "name": "Open AI assistant",
+        "role": "button"
+      },
+      "e14": {
+        "name": "Close",
+        "role": "button"
+      },
+      "e15": {
+        "name": "Change password",
+        "role": "region"
+      },
+      "e16": {
+        "name": "Log out",
+        "role": "button"
+      },
+      "e17": {
+        "name": "",
+        "role": "generic"
+      },
+      "e18": {
+        "name": "Adapter type filter",
+        "role": "generic"
+      },
+      "e19": {
+        "name": "Adapter status filter",
+        "role": "generic"
+      },
+      "e2": {
+        "name": "",
+        "role": "menu"
+      },
+      "e20": {
+        "name": "Save profile",
+        "role": "button"
+      },
+      "e21": {
+        "name": "Change password",
+        "role": "heading"
+      },
+      "e22": {
+        "name": "Search Adapters",
+        "role": "textbox"
+      },
+      "e23": {
+        "name": "",
+        "role": "generic"
+      },
+      "e24": {
+        "name": "",
+        "role": "generic"
+      },
+      "e25": {
+        "name": "Change password",
+        "role": "button"
+      },
+      "e26": {
+        "name": "Adapter type filter",
+        "role": "combobox"
+      },
+      "e27": {
+        "name": "Adapter status filter",
+        "role": "combobox"
+      },
+      "e28": {
+        "name": "* Username",
+        "role": "textbox"
+      },
+      "e29": {
+        "name": "",
+        "role": "generic"
+      },
+      "e3": {
+        "name": "Runtime Worker · 0/0 online",
+        "role": "button"
+      },
+      "e30": {
+        "name": "",
+        "role": "generic"
+      },
+      "e31": {
+        "name": "",
+        "role": "generic"
+      },
+      "e32": {
+        "name": "* Current password",
+        "role": "textbox"
+      },
+      "e33": {
+        "name": "eye-invisible",
+        "role": "image"
+      },
+      "e34": {
+        "name": "* New password",
+        "role": "textbox"
+      },
+      "e35": {
+        "name": "eye-invisible",
+        "role": "image"
+      },
+      "e36": {
+        "name": "* Confirm password",
+        "role": "textbox"
+      },
+      "e37": {
+        "name": "eye-invisible",
+        "role": "image"
+      },
+      "e4": {
+        "name": "Account menu",
+        "role": "button"
+      },
+      "e5": {
+        "name": "Account profile",
+        "role": "menuitem"
+      },
+      "e6": {
+        "name": "User management",
+        "role": "menuitem"
+      },
+      "e7": {
+        "name": "System Settings",
+        "role": "menuitem"
+      },
+      "e8": {
+        "name": "Log out",
+        "role": "menuitem"
+      },
+      "e9": {
+        "name": "Adapters",
+        "role": "heading"
+      }
+    },
+    "text": "- generic\n  - generic\n    - banner\n      - StaticText \"DataLinkRuntime\"\n      - StaticText \"Control service healthy\"\n      - button \"Runtime Worker · 0/0 online\" [ref=e3]\n        - StaticText \"Runtime Worker · 0/0 online\"\n      - button \"Account menu\" [ref=e4]\n        - StaticText \"admin · Admin\"\n    - generic\n      - complementary\n        - heading \"Adapters\" [level=2, ref=e9]\n        - button \"New\" [ref=e10]\n          - StaticText \"New\"\n        - button \"Refresh Adapter list\" [ref=e11]\n          - image \"reload\"\n        - button \"Adapter catalog help\" [ref=e12]\n          - image \"question-circle\"\n        - toolbar \"Adapter toolbar\"\n          - generic \"Adapter filters\"\n            - generic [ref=e17] clickable [onclick]\n              - textbox \"Search Adapters\" [ref=e22]\n            - generic \"Adapter type filter\" [ref=e18] clickable [cursor:pointer]\n              - generic [ref=e23] clickable [cursor:pointer, onclick]\n                - combobox \"Adapter type filter\" [expanded=false, ref=e26]\n            - generic \"Adapter status filter\" [ref=e19] clickable [cursor:pointer]\n              - generic [ref=e24] clickable [cursor:pointer, onclick]\n                - combobox \"Adapter status filter\" [expanded=false, ref=e27]\n          - StaticText \"0 Adapters\"\n        - image \"No data\"\n        - StaticText \"No Adapters\"\n      - complementary\n        - button \"Open AI assistant\" [expanded=false, ref=e13]\n      - main\n        - image \"exclamation-circle\"\n        - StaticText \"No Adapter selected\"\n        - StaticText \"Select an Adapter to manage.\"\n  - generic [ref=e1] clickable [onclick]\n    - menu [ref=e2] focusable [tabindex]\n      - menuitem \"Account profile\" [ref=e5]\n      - menuitem \"User management\" [ref=e6]\n      - menuitem \"System Settings\" [ref=e7]\n      - separator\n      - menuitem \"Log out\" [ref=e8]\n  - generic \"My account\"\n    - dialog \"My account\"\n      - button \"Close\" [ref=e14]\n        - image \"close\"\n      - StaticText \"My account\"\n      - StaticText \"You can update your own username and password. Other account management is restricted to administrators.\"\n      - generic\n        - LabelText\n          - StaticText \"*\"\n          - StaticText \"Username\"\n        - textbox \"* Username\" [required, ref=e28]: admin\n          - StaticText \"admin\"\n        - button \"Save profile\" [ref=e20]\n          - StaticText \"Save profile\"\n      - region \"Change password\" [ref=e15]\n        - heading \"Change password\" [level=3, ref=e21]\n        - generic\n          - LabelText\n          - generic [ref=e29] clickable [onclick]\n            - textbox \"* Current password\" [required, ref=e32]\n            - image \"eye-invisible\" [ref=e33] clickable [cursor:pointer, onclick]\n          - LabelText\n          - generic [ref=e30] clickable [onclick]\n            - textbox \"* New password\" [required, ref=e34]\n            - image \"eye-invisible\" [ref=e35] clickable [cursor:pointer, onclick]\n          - LabelText\n          - generic [ref=e31] clickable [onclick]\n            - textbox \"* Confirm password\" [required, ref=e36]\n            - image \"eye-invisible\" [ref=e37] clickable [cursor:pointer, onclick]\n          - button \"Change password\" [ref=e25]\n      - button \"Log out\" [ref=e16]",
+    "untrustedExternalContent": true
+  }
+}

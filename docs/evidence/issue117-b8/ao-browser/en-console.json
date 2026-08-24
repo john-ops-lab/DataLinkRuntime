@@ -1,0 +1,40 @@
+{
+  "requestId": "59d7e539-8411-4824-bbf8-d20dd32a5b3f",
+  "sessionId": "datalinkruntime-93",
+  "action": "console",
+  "result": {
+    "messages": [
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:38:32.266Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:38:32.266Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:38:32.266Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:38:32.266Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:38:32.266Z"
+      },
+      {
+        "level": "info",
+        "message": "\u003c\u003c\u003cBEGIN UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e\n🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙\n\u003c\u003c\u003cEND UNTRUSTED EXTERNAL CONTENT\u003e\u003e\u003e",
+        "timestamp": "2026-08-24T22:38:32.266Z"
+      }
+    ],
+    "untrustedExternalContent": true
+  }
+}
