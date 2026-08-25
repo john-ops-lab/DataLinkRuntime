@@ -16,16 +16,7 @@
         "id": "n1",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4173/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "cache-control": "no-store",
-          "content-type": "application/json; charset=utf-8",
-          "vary": "Origin"
-        },
         "startedAt": "2026-08-24T19:51:15.922Z",
         "status": 200,
         "statusText": "OK",
@@ -38,16 +29,7 @@
         "id": "n2",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4173/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "cache-control": "no-store",
-          "content-type": "application/json; charset=utf-8",
-          "vary": "Origin"
-        },
         "startedAt": "2026-08-24T19:51:45.922Z",
         "status": 200,
         "statusText": "OK",
@@ -60,16 +42,7 @@
         "id": "n3",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4173/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "cache-control": "no-store",
-          "content-type": "application/json; charset=utf-8",
-          "vary": "Origin"
-        },
         "startedAt": "2026-08-24T19:52:15.923Z",
         "status": 200,
         "statusText": "OK",
@@ -82,16 +55,7 @@
         "id": "n4",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4173/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "cache-control": "no-store",
-          "content-type": "application/json; charset=utf-8",
-          "vary": "Origin"
-        },
         "startedAt": "2026-08-24T19:52:45.923Z",
         "status": 200,
         "statusText": "OK",
@@ -104,16 +68,7 @@
         "id": "n5",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4173/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "cache-control": "no-store",
-          "content-type": "application/json; charset=utf-8",
-          "vary": "Origin"
-        },
         "startedAt": "2026-08-24T19:53:23.471Z",
         "status": 200,
         "statusText": "OK",
@@ -126,16 +81,7 @@
         "id": "n6",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4173/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "cache-control": "no-store",
-          "content-type": "application/json; charset=utf-8",
-          "vary": "Origin"
-        },
         "startedAt": "2026-08-24T19:53:23.923Z",
         "status": 200,
         "statusText": "OK",

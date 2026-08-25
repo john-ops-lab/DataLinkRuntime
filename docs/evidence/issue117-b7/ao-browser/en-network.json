@@ -16,16 +16,7 @@
         "id": "n1",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4173/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "cache-control": "no-store",
-          "content-type": "application/json; charset=utf-8",
-          "vary": "Origin"
-        },
         "startedAt": "2026-08-24T19:58:31.941Z",
         "status": 200,
         "statusText": "OK",

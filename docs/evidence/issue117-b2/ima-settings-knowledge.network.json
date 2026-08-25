@@ -16,17 +16,7 @@
         "id": "n1",
         "method": "POST",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4173/settings/knowledge-sources"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "access-control-allow-origin": "http://127.0.0.1:4173",
-          "content-length": "202",
-          "content-type": "application/json",
-          "vary": "Origin"
-        },
         "startedAt": "2026-08-24T11:03:29.105Z",
         "status": 200,
         "statusText": "OK",

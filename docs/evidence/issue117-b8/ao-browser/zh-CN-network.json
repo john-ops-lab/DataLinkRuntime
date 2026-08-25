@@ -16,14 +16,7 @@
         "id": "n1",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4180/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "content-type": "application/json; charset=utf-8"
-        },
         "startedAt": "2026-08-24T22:29:48.010Z",
         "status": 200,
         "statusText": "OK",
@@ -36,14 +29,7 @@
         "id": "n2",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4180/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "content-type": "application/json; charset=utf-8"
-        },
         "startedAt": "2026-08-24T22:30:18.011Z",
         "status": 200,
         "statusText": "OK",
@@ -56,14 +42,7 @@
         "id": "n3",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4180/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "content-type": "application/json; charset=utf-8"
-        },
         "startedAt": "2026-08-24T22:30:48.012Z",
         "status": 200,
         "statusText": "OK",
@@ -76,14 +55,7 @@
         "id": "n4",
         "method": "GET",
         "mimeType": "application/json",
-        "requestHeaders": {
-          "content-type": "application/json",
-          "referer": "http://127.0.0.1:4180/"
-        },
         "resourceType": "fetch",
-        "responseHeaders": {
-          "content-type": "application/json; charset=utf-8"
-        },
         "startedAt": "2026-08-24T22:31:18.012Z",
         "status": 200,
         "statusText": "OK",

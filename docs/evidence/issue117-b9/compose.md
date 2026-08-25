@@ -21,9 +21,10 @@ placeholder environment values.
 
 ## Smoke
 
-The first scoped smoke attempt used `/private/tmp`; Colima did not expose that
-path to the Docker bind-mount layer, so PostgreSQL exited before health became
-ready. No containers remained after its scoped cleanup.
+The first scoped smoke attempt used an operating-system temporary directory
+outside the repository; Colima did not expose that path to the Docker
+bind-mount layer, so PostgreSQL exited before health became ready. No
+containers remained after its scoped cleanup.
 
 The smoke was rerun with the repository's ignored, repository-local temporary
 root (the existing script's Docker Desktop/Colima-compatible path):
