@@ -54,6 +54,6 @@
 
 ## 10. 串行最终门禁
 
-- [ ] 10.1 重新运行全部相关 backend/web 自动化、静态检查、`./scripts/compose-smoke.sh` 和 OpenSpec 严格校验，验证 9 个 capability 与 tasks/proposal/design 一一对应、没有未勾选实施项或无关业务文件。
-- [ ] 10.2 汇总每批自动化、Compose、浏览器视觉/交互、console、request、overflow 和安全边界证据，确认 zh-CN/en 与 1280/1440/1680/1920 覆盖完整，并明确记录任何无法验证的项而不是以 build 代替验收。
-- [ ] 10.3 仅在 Batch 1–9 全部通过后复核 API/数据库/权限/Secret 兼容性和 clean worktree，创建本 change 的 Candidate commit；验证 Candidate tree 只包含 OpenSpec artifacts（本 planning worker 不实现业务代码、不 push、不创建 PR）。
+- [x] 10.1 重新运行全部相关 backend/web 自动化、静态检查、`./scripts/compose-smoke.sh` 和 OpenSpec 严格校验，验证 9 个 capability 与 tasks/proposal/design 一一对应、没有未勾选实施项或无关业务文件。
+- [x] 10.2 汇总每批自动化、Compose、浏览器视觉/交互、console、request、overflow 和安全边界证据，确认 zh-CN/en 与 1280/1440/1680/1920 覆盖完整，并明确记录任何无法验证的项而不是以 build 代替验收。
+- [x] 10.3 仅在 Batch 1–9 全部通过后复核 API/数据库/权限/Secret 兼容性和 clean worktree，创建本 change 的 Candidate commit；验证 Candidate 相对集成 `main` 的 delta 只包含 OpenSpec artifacts（`tasks.md` 与最终 evidence），集成 `main` 已包含 Batch 1–9 实现；本 final-gate worker 不实现业务代码、不 push、不创建 PR。

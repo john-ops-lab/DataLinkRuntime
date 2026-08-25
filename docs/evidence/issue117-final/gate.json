@@ -1,0 +1,97 @@
+{
+  "dispatch_id": "issue117-final-gate-20260825-r5",
+  "delivery_mode": "LOCAL_FAST",
+  "base": "ca8810f6fc1e5d5532aba2557fc16b49d18c77f2",
+  "parent": "ca8810f6fc1e5d5532aba2557fc16b49d18c77f2",
+  "candidate_metadata": {
+    "sha": "reported-in-REVIEW_READY",
+    "tree": "reported-in-REVIEW_READY",
+    "reason": "Avoid a self-referential post-commit mutation; the final receipt records both values."
+  },
+  "scope": {
+    "change": "openspec/changes/issue117-manual-test-fixes",
+    "allowed_candidate_delta": [
+      "openspec/changes/issue117-manual-test-fixes/tasks.md",
+      "docs/evidence/issue117-final/README.md",
+      "docs/evidence/issue117-final/gate.json"
+    ],
+    "integrated_main_contains_batches": [1, 2, 3, 4, 5, 6, 7, 8, 9]
+  },
+  "tasks": {
+    "batch_1_to_9_checked_items": 27,
+    "batch_10_checked_items": ["10.1", "10.2", "10.3"],
+    "unchecked_implementation_items": 0
+  },
+  "strict_validations": {
+    "openspec_change_strict": "PASS",
+    "openspec_all_strict": "PASS",
+    "platform_log_docs": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "automated_gate": {
+    "web_lint": "PASS",
+    "web_typecheck": "PASS",
+    "web_tests": {"status": "PASS", "test_files": 31, "tests": 357},
+    "web_build": {"status": "PASS", "modules_transformed": 6119},
+    "backend_ruff": "PASS",
+    "backend_mypy": {"status": "PASS", "source_files": 84},
+    "backend_pytest": {"status": "PASS", "passed": 671, "warnings": 8},
+    "compose_config_default": "PASS",
+    "compose_config_dns_example": "PASS",
+    "compose_smoke": "PASS",
+    "compose_smoke_postgres_paths": [
+      "missing-log-directory: unhealthy, control not started",
+      "unwritable-log-directory: unhealthy, control not started",
+      "missing-target-database: unhealthy, control not started",
+      "healthy: healthy, control started"
+    ]
+  },
+  "capabilities": [
+    {"id": "ai-assistant-layout", "tasks": ["6.1", "6.2", "6.3"], "evidence": ["../issue117-b6/README.md", "../issue117-b6/auxiliary-matrix/browser-report.json"]},
+    {"id": "workbench-editor-layout", "tasks": ["5.1", "5.2", "5.3"], "evidence": ["../issue117-b5/README.md", "../issue117-b5/auxiliary-matrix/assertions.json"]},
+    {"id": "credential-binding-permission-hints", "tasks": ["4.1", "4.2", "4.3"], "evidence": ["../issue117-b4/README.md", "../issue117-b4/playwright-browser-matrix.json"]},
+    {"id": "adapter-catalog-layout", "tasks": ["7.1", "7.2", "7.3"], "evidence": ["../issue117-b7/README.md", "../issue117-b7/auxiliary-matrix/browser-report.json"]},
+    {"id": "live-log-follow-freeze", "tasks": ["3.1", "3.2", "3.3"], "evidence": ["../issue117-b3/README.md", "../issue117-b3/playwright-browser-matrix.json"]},
+    {"id": "account-management-ui", "tasks": ["8.1", "8.2", "8.3"], "evidence": ["../issue117-b8/README.md", "../issue117-b8/auxiliary-matrix/browser-report.json"]},
+    {"id": "postgres-init-health", "tasks": ["1.1", "1.2", "1.3"], "evidence": ["../issue117-b1/compose-postgres-init-health.md"]},
+    {"id": "platform-log-local-development", "tasks": ["9.1", "9.2", "9.3"], "evidence": ["../issue117-b9/compose.md", "../issue117-b9/doc-consistency.txt"]},
+    {"id": "ima-knowledge-base-normalization", "tasks": ["2.1", "2.2", "2.3"], "evidence": ["../issue117-b2/ima-browser-validation.md", "../issue117-b2/ima-api-fixture.json"]}
+  ],
+  "coverage": {
+    "primary_target_matrix": "zh-CN/en × 1280/1440/1680/1920 is present for the primary UI paths in B3, B4 admin/owner, B5, B6 and B7; B6 additionally covers 1100/1180.",
+    "recorded_gaps": [
+      "B4 reader evidence is zh-CN only and does not provide the full reader width matrix.",
+      "B8 viewer evidence is zh-CN/en at 1280 only; admin has the full target matrix.",
+      "Human visual acceptance remains pending; automation and no-overflow checks are not substituted for it."
+    ],
+    "b2_provider_boundary": "fake/fixture provider only; no real Tencent ima credentials or environment"
+  },
+  "privacy_scan": {
+    "issue117_evidence_files": 221,
+    "text_files": 106,
+    "machine_absolute_path_markers": 0,
+    "credential_value_pattern_hits": 0,
+    "actual_request_response_payload_fields": 0,
+    "audit_keyword_only_false_positive": "docs/evidence/issue117-b9/rg-cross-check.txt line 55"
+  },
+  "compatibility_review": {
+    "new_api_paths": false,
+    "new_database_migrations": false,
+    "rbac_expansion": false,
+    "secret_storage_or_logging_change": false,
+    "i18n_key_parity": "PASS",
+    "web_baseline": "React 19, antd 5.29.3, @ant-design/pro-components 2.8.10"
+  },
+  "resource_cleanup": {
+    "isolated_backend_postgres_removed": true,
+    "compose_project_resources_removed": true,
+    "worker_created_smoke_tags_removed": true,
+    "shared_or_preexisting_resources_touched": false,
+    "global_cleanup": false
+  },
+  "links": {
+    "tasks": "../../../openspec/changes/issue117-manual-test-fixes/tasks.md",
+    "proposal": "../../../openspec/changes/issue117-manual-test-fixes/proposal.md",
+    "design": "../../../openspec/changes/issue117-manual-test-fixes/design.md"
+  }
+}
