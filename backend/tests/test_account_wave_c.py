@@ -705,8 +705,6 @@ def test_wave_d_platform_role_does_not_expand_credential_management(
     assert forbidden_binding_write.json()["detail"]["code"] == "adapter_owner_required"
 
     unshared = create_account_adapter(owner_client, "wave-d-role-boundary-unshared")
-    hidden = reader_client.get(
-        account_path(f"/api/adapters/{unshared['id']}/credential-bindings")
-    )
+    hidden = reader_client.get(account_path(f"/api/adapters/{unshared['id']}/credential-bindings"))
     assert hidden.status_code == 404, hidden.text
     assert hidden.json()["detail"]["code"] == "adapter_not_found"
