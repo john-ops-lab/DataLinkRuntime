@@ -259,7 +259,8 @@ DLR_MASTER_KEY
 `.env.example` 默认使用当前用户可写的仓库内目录 `./platform-logs`，与
 Linux 生产部署使用的绝对路径 `/var/lib/dlr/platform-logs` 不同。启动 Compose
 前先准备五个宿主机子目录；Compose 会把它们 bind mount 到容器内固定的
-`/var/lib/dlr/platform-logs/<service>/` 路径：
+`/var/lib/dlr/platform-logs/<service>/` 路径。仓库根目录的 `/platform-logs/`
+已在 `.gitignore` 中精确忽略，其他路径不受此规则影响：
 
 ```bash
 LOG_ROOT=./platform-logs

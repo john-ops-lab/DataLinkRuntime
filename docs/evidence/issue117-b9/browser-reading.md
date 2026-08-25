@@ -4,6 +4,10 @@
 - Browser mode: AO Browser static Markdown preview only.
 - Business app/browser flow: not started.
 - Network capture: not enabled.
+- Repair rerun: README was reopened after the exact `/platform-logs/` ignore
+  rule and CI documentation-check step were added; the DOM/text snapshot
+  contained the new `.gitignore` statement, and `ao browser errors --json` and
+  `ao browser console --json` again returned empty message lists.
 
 ## README
 
@@ -14,6 +18,12 @@ stable DOM, and inspected the snapshot. The rendered page contained the new
 and `ao browser console --json` both returned empty message lists.
 
 Screenshot: [readme-static-v3.png](readme-static-v3.png)
+
+The repair changes are documentation text and CI wiring only; no layout or
+deployment-document rendering changed. The existing screenshot is retained as
+the static-layout evidence for the reviewed Candidate. Two attempts to capture
+a replacement screenshot during repair returned AO `Internal server error`, so
+no replacement screenshot is claimed.
 
 ## Platform log deployment document
 

@@ -1,0 +1,15 @@
+Issue #117 Batch 9 repair workflow/static evidence
+
+Reviewed candidate: 0deb171e2e328181840fa4f9f97505b42329d7ba
+
+- Existing `.github/workflows/ci.yml` `compose-smoke` job retains its runner,
+  checkout, and smoke step.
+- Added exactly one step: `./scripts/check-platform-log-docs.sh`.
+- No `permissions:` block was added or changed.
+- `git diff --check -- .github/workflows/ci.yml`: PASS
+- `bash -n scripts/check-platform-log-docs.sh`: PASS
+- Ruby YAML parse of `.github/workflows/ci.yml`: PASS
+- `actionlint`: unavailable locally; equivalent focused workflow structural
+  assertions: PASS
+- Focused script: `./scripts/check-platform-log-docs.sh`: PASS
+- No Hosted CI or GitHub Checks were triggered by this local verification.

@@ -47,10 +47,19 @@ if rg --quiet '^DLR_PLATFORM_LOG_ROOT=/var/lib/dlr/platform-logs' .env.example; 
 fi
 require_literal .env.example 'DLR_PLATFORM_LOG_ROOT=./platform-logs'
 
+if ! rg --quiet '^/platform-logs/$' .gitignore; then
+  echo "Missing exact root platform-log ignore rule in .gitignore" >&2
+  exit 1
+fi
+require_literal README.md '已在 `.gitignore` 中精确忽略'
+
 for log_dir in "${LOG_DIRS[@]}"; do
   service_dir="${log_dir%/}"
   require_literal docker-compose.yml "/${service_dir}:/var/lib/dlr/platform-logs/${service_dir}"
 done
+
+require_literal .github/workflows/ci.yml '- name: Check platform-log documentation'
+require_literal .github/workflows/ci.yml 'run: ./scripts/check-platform-log-docs.sh'
 
 # A chmod 777 command must never be presented as an executable recommendation.
 while IFS= read -r line; do

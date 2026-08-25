@@ -53,3 +53,10 @@ docs/deployment/platform-logs.md:90:14 compressed rotations/days, and creates mo
 docs/deployment/platform-logs.md:93:container user's own `0600` ownership. Adjust the root paths in the installed
 docs/deployment/platform-logs.md:94:copy when `DLR_PLATFORM_LOG_ROOT` is overridden. The postrotate helper must be
 docs/deployment/platform-logs.md:106:4. inspect ownership/mode and verify no credential or request body appears.
+
+Repair cross-check additions:
+.gitignore:18:/platform-logs/
+.github/workflows/ci.yml:80:        run: ./scripts/check-platform-log-docs.sh
+scripts/check-platform-log-docs.sh:50:if ! rg --quiet '^/platform-logs/$' .gitignore; then
+scripts/check-platform-log-docs.sh:62:require_literal .github/workflows/ci.yml 'run: ./scripts/check-platform-log-docs.sh'
+README.md:262:`/var/lib/dlr/platform-logs/<service>/` 路径。仓库根目录的 `/platform-logs/`

@@ -1,2 +1,6 @@
 Command: git diff --check
 Result: PASS (no whitespace errors)
+
+Repair rerun: `git diff --check -- .github/workflows/ci.yml
+scripts/check-platform-log-docs.sh .gitignore README.md
+docs/evidence/issue117-b9`: PASS.

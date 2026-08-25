@@ -76,5 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check platform-log documentation
+        run: ./scripts/check-platform-log-docs.sh
       - name: Run compose smoke test
         run: ./scripts/compose-smoke.sh

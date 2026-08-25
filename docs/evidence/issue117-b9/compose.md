@@ -39,3 +39,19 @@ scoped project/container/volume/network cleanup: PASS
 No global Docker cleanup was run. The temporary root and the unique Compose
 project were removed; a scoped `docker ps -a --filter name=dlr-i117-b9` check
 returned no rows.
+
+## Repair rerun
+
+The repair does not modify `docker-compose.yml`, `scripts/compose-smoke.sh`,
+service images, mounts, healthchecks, or runtime environment semantics. A new
+isolated root with the same five directories was prepared and
+`docker compose config --quiet` was rerun with anonymous `EXAMPLE_*`
+placeholders: PASS. The first invocation without required placeholder
+variables was rejected during Compose interpolation and did not start
+containers; the placeholder rerun passed.
+
+The full smoke is reused from the evidence above because the repair only adds
+the root `.gitignore` rule, README wording, a documentation consistency check,
+and one existing CI-job step. None of those paths can alter Compose runtime
+behavior, so rerunning the full container matrix would duplicate the already
+passing exact-risk coverage without testing a changed runtime surface.
