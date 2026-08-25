@@ -1,10 +1,13 @@
 Issue #117 Batch 9 repair workflow/static evidence
 
-Reviewed candidate: 0deb171e2e328181840fa4f9f97505b42329d7ba
+Reviewed baseline: `0deb171e2e328181840fa4f9f97505b42329d7ba`
+
+Repair candidate content/current review head (SHA intentionally omitted to
+avoid a self-referential evidence value):
 
 - Existing `.github/workflows/ci.yml` `compose-smoke` job retains its runner,
   checkout, and smoke step.
-- Added exactly one step: `./scripts/check-platform-log-docs.sh`.
+- The repair candidate adds exactly one step: `./scripts/check-platform-log-docs.sh`.
 - No `permissions:` block was added or changed.
 - `git diff --check -- .github/workflows/ci.yml`: PASS
 - `bash -n scripts/check-platform-log-docs.sh`: PASS
