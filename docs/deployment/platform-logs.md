@@ -4,10 +4,34 @@ DLR keeps platform-service logs separate from Adapter Execution logs. Execution
 input/output/error/stdout/stderr remain in PostgreSQL and are governed by the
 Execution retention policy; platform logs are operational diagnostics only.
 
+## Choose the host-side root
+
+For local development, use a repository-relative directory that the current
+user can write:
+
+```dotenv
+DLR_PLATFORM_LOG_ROOT=./platform-logs
+```
+
+Linux production uses a separate absolute path on a persistent disk:
+
+```dotenv
+DLR_PLATFORM_LOG_ROOT=/var/lib/dlr/platform-logs
+```
+
+These are host-side paths selected by `DLR_PLATFORM_LOG_ROOT`; the application
+path inside every container remains `/var/lib/dlr/platform-logs`. Before local
+Compose startup, prepare all five directories:
+
+```bash
+LOG_ROOT=./platform-logs
+mkdir -p "$LOG_ROOT"/{control,worker,web,account-web,postgres}
+```
+
 ## Compose layout
 
-Set `DLR_PLATFORM_LOG_ROOT` to a real persistent host directory. Compose binds
-the following subdirectories into the services:
+Set `DLR_PLATFORM_LOG_ROOT` to the host root prepared for the environment.
+Compose binds the following five subdirectories into the services:
 
 ```text
 $DLR_PLATFORM_LOG_ROOT/
@@ -18,13 +42,17 @@ $DLR_PLATFORM_LOG_ROOT/
 └── postgres/      PostgreSQL collector logs
 ```
 
-The default production root is `/var/lib/dlr/platform-logs`. Create it before
-deployment on Linux and grant only the service account(s) the minimum access
-needed. The PostgreSQL directory must be writable by the PostgreSQL container
-user; inspect `id postgres` in the pinned image before provisioning it. The
-bind mount is not a Docker named volume, so `docker compose down -v` does not
-remove these host files. The application path inside containers is fixed at
-`/var/lib/dlr/platform-logs`; only the host side is selected by the variable.
+For Linux production, create `/var/lib/dlr/platform-logs` and its five
+subdirectories before deployment. The `postgres/` directory must be writable
+by the PostgreSQL container's `postgres` user: inspect `id postgres` in the
+pinned image and grant only the minimum required ownership/permissions to that
+directory. The startup entrypoint checks this write access before `initdb` and
+refuses to continue when the directory is missing or unwritable. Do not use `chmod 777`.
+
+The bind mount is not a Docker named volume, so `docker compose down -v` does
+not remove these host files. Only the host side is selected by the variable;
+the application path inside containers is fixed at
+`/var/lib/dlr/platform-logs`.
 
 Every Compose service uses Docker's bounded `local` logging driver as a recent
 stdout/stderr fallback (`max-size: 10m`, `max-file: 3`). `docker compose logs`
@@ -33,8 +61,9 @@ the persistent platform-log source of truth.
 
 Nginx's persistent access format deliberately records the method and URI
 without query strings, request bodies, `Authorization`, `Cookie`, or referer
-headers. DLR application logs must likewise contain metadata and diagnostics,
-not credential values, full Adapter input/output, source code, or secrets.
+headers. DLR application logs must likewise contain metadata and diagnostics;
+application redaction excludes credential values, full Adapter input/output,
+source code, and secrets.
 
 ## External rotation
 

@@ -254,14 +254,36 @@ DLR_MASTER_KEY
 
 请使用真实随机 Secret 替换示例值。
 
-### 2. 启动 PostgreSQL 并执行迁移
+### 2. 准备平台日志 bind mount
+
+`.env.example` 默认使用当前用户可写的仓库内目录 `./platform-logs`，与
+Linux 生产部署使用的绝对路径 `/var/lib/dlr/platform-logs` 不同。启动 Compose
+前先准备五个宿主机子目录；Compose 会把它们 bind mount 到容器内固定的
+`/var/lib/dlr/platform-logs/<service>/` 路径：
+
+```bash
+LOG_ROOT=./platform-logs
+mkdir -p "$LOG_ROOT"/{control,worker,web,account-web,postgres}
+```
+
+五个目录分别是 `control/`、`worker/`、`web/`、`account-web/` 和 `postgres/`。
+PostgreSQL 启动前会以容器内 `postgres` 用户检查 `postgres/` 是否可写；Linux
+生产环境请先在固定的 pinned image 中运行 `id postgres`，只给该目录授予所需的
+最小访问权限。不要使用 `chmod 777`。如果修改了 `DLR_PLATFORM_LOG_ROOT`，请在
+对应的宿主机根目录下重复上述准备步骤。
+
+平台日志是独立的 bind mount：保留现有轮转和脱敏规则，不要把 Token、Secret、
+密码或其他真实凭据写入 `.env.example`、日志目录或命令输出。完整的生产路径、
+轮转和权限说明见 [平台日志部署文档](docs/deployment/platform-logs.md)。
+
+### 3. 启动 PostgreSQL 并执行迁移
 
 ```bash
 docker compose up -d postgres
 docker compose run --rm control alembic upgrade head
 ```
 
-### 3. 启动完整平台
+### 4. 启动完整平台
 
 ```bash
 docker compose up -d --build

@@ -48,9 +48,9 @@
 
 ## 9. Batch 9：Issue #117.8 本地日志配置与快速开始文档（依赖 Batch 1 和 Batch 8 验收通过）
 
-- [ ] 9.1 为 `.env.example`、README 快速开始和 `docs/deployment/platform-logs.md` 建立一致性检查，验证本地可写示例、Linux 生产区分、`control/`、`worker/`、`web/`、`account-web/`、`postgres/` 五个子目录、postgres 容器用户写权限和禁止 `chmod 777` 均有明确表述。
-- [ ] 9.2 更新本地日志根目录示例和快速开始准备步骤，保持生产绝对路径说明、bind mount 合同、日志轮转/脱敏语义和凭据示例安全；验证 `rg` 交叉核对、Markdown/相对链接检查和 `git diff --check` 通过。
-- [ ] 9.3 完成 Batch 9 验收门：按文档在隔离目录准备本地五个子目录并运行 `docker compose config --quiet` 与 `./scripts/compose-smoke.sh`；以浏览器打开 README/部署文档检查可读性和链接无误，不启动业务浏览器流程，文档/Compose 证据通过后才允许最终门禁。
+- [x] 9.1 为 `.env.example`、README 快速开始和 `docs/deployment/platform-logs.md` 建立一致性检查，验证本地可写示例、Linux 生产区分、`control/`、`worker/`、`web/`、`account-web/`、`postgres/` 五个子目录、postgres 容器用户写权限和禁止 `chmod 777` 均有明确表述。
+- [x] 9.2 更新本地日志根目录示例和快速开始准备步骤，保持生产绝对路径说明、bind mount 合同、日志轮转/脱敏语义和凭据示例安全；验证 `rg` 交叉核对、Markdown/相对链接检查和 `git diff --check` 通过。
+- [x] 9.3 完成 Batch 9 验收门：按文档在隔离目录准备本地五个子目录并运行 `docker compose config --quiet` 与 `./scripts/compose-smoke.sh`；以浏览器打开 README/部署文档检查可读性和链接无误，不启动业务浏览器流程，文档/Compose 证据通过后才允许最终门禁。
 
 ## 10. 串行最终门禁
 

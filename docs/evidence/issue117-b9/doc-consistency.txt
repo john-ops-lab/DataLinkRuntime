@@ -1,0 +1,5 @@
+platform-log documentation consistency: PASS
+checked: .env.example README.md docs/deployment/platform-logs.md
+host roots: ./platform-logs (local), /var/lib/dlr/platform-logs (Linux production)
+directories: control/ worker/ web/ account-web/ postgres/
+compose bind mounts, safe chmod guidance, and relative Markdown links: PASS

@@ -1,0 +1,55 @@
+Command: rg -n -i "DLR_PLATFORM_LOG_ROOT|control/|worker/|web/|account-web/|postgres/|container user|容器内|writable|可写|bind mount|rotation|轮转|redaction|脱敏|credential|凭据|chmod 777" .env.example README.md docs/deployment/platform-logs.md
+.env.example:2:# 复制为 .env 后修改；只放占位值，绝不提交真实凭据。
+.env.example:20:# M3.2 Secret Store 主密钥：Control 用它派生 Fernet 密钥加密凭据（HKDF-SHA256），
+.env.example:21:# 只存在于部署环境，从不落库/不落日志。未配置时凭据 API 返回 503。
+.env.example:36:#   - Client ID / API Key 存入 DLR access_key 类型 Credential（Secret Store，
+.env.example:38:#     DLR_IMA_CREDENTIAL_NAME 引用凭据名，绝不写入本文件/环境变量明文；
+.env.example:41:# 系统设置 → 知识库可持久化启用状态与 access_key Credential 引用；数据库中
+.env.example:43:# 未配置凭据时，AI 助手调用 list_knowledge_bases / search_knowledge / read_knowledge
+.env.example:44:# 会返回稳定的 ks_credential_invalid 错误，不影响其余功能。
+.env.example:46:# DLR_IMA_CREDENTIAL_NAME=
+.env.example:55:# root in the repository and writable by the current user:
+.env.example:56:#   DLR_PLATFORM_LOG_ROOT=./platform-logs
+.env.example:58:#   DLR_PLATFORM_LOG_ROOT=/var/lib/dlr/platform-logs
+.env.example:60:#   control/ worker/ web/ account-web/ postgres/
+.env.example:61:# The postgres/ directory must be writable by the postgres container user;
+.env.example:63:# Do not use chmod 777. The in-container path stays /var/lib/dlr/platform-logs;
+.env.example:64:# rotation and application log redaction remain enabled for the bind mount.
+.env.example:65:DLR_PLATFORM_LOG_ROOT=./platform-logs
+README.md:50:代码本身可能只有几十到几百行，但一旦需要长期运行，就会同时带来依赖、配置、凭据、调度、版本、日志、执行历史和故障排查等问题。
+README.md:122:| **Credential** | 加密保存凭据，并通过 Secret Binding 注入运行环境 |
+README.md:257:### 2. 准备平台日志 bind mount
+README.md:259:`.env.example` 默认使用当前用户可写的仓库内目录 `./platform-logs`，与
+README.md:261:前先准备五个宿主机子目录；Compose 会把它们 bind mount 到容器内固定的
+README.md:269:五个目录分别是 `control/`、`worker/`、`web/`、`account-web/` 和 `postgres/`。
+README.md:270:PostgreSQL 启动前会以容器内 `postgres` 用户检查 `postgres/` 是否可写；Linux
+README.md:272:最小访问权限。不要使用 `chmod 777`。如果修改了 `DLR_PLATFORM_LOG_ROOT`，请在
+README.md:275:平台日志是独立的 bind mount：保留现有轮转和脱敏规则，不要把 Token、Secret、
+README.md:276:密码或其他真实凭据写入 `.env.example`、日志目录或命令输出。完整的生产路径、
+README.md:277:轮转和权限说明见 [平台日志部署文档](docs/deployment/platform-logs.md)。
+README.md:332:│ Webhook / Credential        │
+README.md:346:- **Control**：负责 API、状态、事务门禁、调度、Webhook、Credential 和 AI Provider 集成；
+README.md:379:- Credential 真值不会返回浏览器；
+README.md:380:- Secret 只为目标 Execution 按需注入，并从平台日志中脱敏；
+README.md:382:- 不要在 Adapter 源码中硬编码密码、Token、私钥等凭据；
+README.md:383:- AI Assistant 不会把 Credential 真值作为正常上下文发送给模型；
+README.md:384:- AI 附件内容会发送给管理员配置的模型服务，请勿上传密码、密钥等敏感凭据。
+docs/deployment/platform-logs.md:13:DLR_PLATFORM_LOG_ROOT=./platform-logs
+docs/deployment/platform-logs.md:19:DLR_PLATFORM_LOG_ROOT=/var/lib/dlr/platform-logs
+docs/deployment/platform-logs.md:22:These are host-side paths selected by `DLR_PLATFORM_LOG_ROOT`; the application
+docs/deployment/platform-logs.md:33:Set `DLR_PLATFORM_LOG_ROOT` to the host root prepared for the environment.
+docs/deployment/platform-logs.md:37:$DLR_PLATFORM_LOG_ROOT/
+docs/deployment/platform-logs.md:38:├── control/       control application and Uvicorn logs
+docs/deployment/platform-logs.md:39:├── worker/        Worker agent logs
+docs/deployment/platform-logs.md:40:├── web/           token-entry Nginx access/error logs
+docs/deployment/platform-logs.md:41:├── account-web/   account-entry Nginx access/error logs
+docs/deployment/platform-logs.md:42:└── postgres/      PostgreSQL collector logs
+docs/deployment/platform-logs.md:46:subdirectories before deployment. The `postgres/` directory must be writable
+docs/deployment/platform-logs.md:50:refuses to continue when the directory is missing or unwritable. Do not use `chmod 777`.
+docs/deployment/platform-logs.md:52:The bind mount is not a Docker named volume, so `docker compose down -v` does
+docs/deployment/platform-logs.md:65:application redaction excludes credential values, full Adapter input/output,
+docs/deployment/platform-logs.md:68:## External rotation
+docs/deployment/platform-logs.md:90:14 compressed rotations/days, and creates mode `0640` files for application and
+docs/deployment/platform-logs.md:93:container user's own `0600` ownership. Adjust the root paths in the installed
+docs/deployment/platform-logs.md:94:copy when `DLR_PLATFORM_LOG_ROOT` is overridden. The postrotate helper must be
+docs/deployment/platform-logs.md:106:4. inspect ownership/mode and verify no credential or request body appears.

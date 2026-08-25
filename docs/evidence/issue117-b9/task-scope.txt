@@ -1,0 +1,7 @@
+Command: rg -n "^-[ ]\\[[x ]\\] (9\\.|10\\.)" openspec/changes/issue117-manual-test-fixes/tasks.md
+51:- [x] 9.1 为 `.env.example`、README 快速开始和 `docs/deployment/platform-logs.md` 建立一致性检查，验证本地可写示例、Linux 生产区分、`control/`、`worker/`、`web/`、`account-web/`、`postgres/` 五个子目录、postgres 容器用户写权限和禁止 `chmod 777` 均有明确表述。
+52:- [x] 9.2 更新本地日志根目录示例和快速开始准备步骤，保持生产绝对路径说明、bind mount 合同、日志轮转/脱敏语义和凭据示例安全；验证 `rg` 交叉核对、Markdown/相对链接检查和 `git diff --check` 通过。
+53:- [x] 9.3 完成 Batch 9 验收门：按文档在隔离目录准备本地五个子目录并运行 `docker compose config --quiet` 与 `./scripts/compose-smoke.sh`；以浏览器打开 README/部署文档检查可读性和链接无误，不启动业务浏览器流程，文档/Compose 证据通过后才允许最终门禁。
+57:- [ ] 10.1 重新运行全部相关 backend/web 自动化、静态检查、`./scripts/compose-smoke.sh` 和 OpenSpec 严格校验，验证 9 个 capability 与 tasks/proposal/design 一一对应、没有未勾选实施项或无关业务文件。
+58:- [ ] 10.2 汇总每批自动化、Compose、浏览器视觉/交互、console、request、overflow 和安全边界证据，确认 zh-CN/en 与 1280/1440/1680/1920 覆盖完整，并明确记录任何无法验证的项而不是以 build 代替验收。
+59:- [ ] 10.3 仅在 Batch 1–9 全部通过后复核 API/数据库/权限/Secret 兼容性和 clean worktree，创建本 change 的 Candidate commit；验证 Candidate tree 只包含 OpenSpec artifacts（本 planning worker 不实现业务代码、不 push、不创建 PR）。
