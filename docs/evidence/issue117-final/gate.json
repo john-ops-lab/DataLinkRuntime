@@ -19,9 +19,12 @@
   },
   "verification_basis": {
     "automated_gate_results": "inherited_from_reviewed_candidate",
-    "reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
-    "reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+    "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+    "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+    "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+    "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
     "web_backend_compose_rerun_on_repair_candidate": false,
+    "platform_log_docs_rerun_on_repair_candidate": false,
     "repair_validations": [
       "openspec change strict",
       "openspec all strict",
@@ -48,28 +51,187 @@
     "unchecked_implementation_items": 0
   },
   "strict_validations": {
-    "openspec_change_strict": "PASS",
-    "openspec_all_strict": "PASS",
-    "platform_log_docs": "PASS",
-    "git_diff_check": "PASS"
+    "openspec_change_strict": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "command": "openspec validate issue117-manual-test-fixes --type change --strict",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    },
+    "openspec_all_strict": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "command": "openspec validate --all --strict",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    },
+    "json_parse": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "verification": "repair_json_schema_links_task_counts=PASS",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    },
+    "json_schema": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "verification": "repair_json_schema_links_task_counts=PASS",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    },
+    "evidence_links": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "verification": "repair_json_schema_links_task_counts=PASS",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    },
+    "tasks_counts": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "verification": "30 checked, 0 unchecked; F1-F3 present without checkbox",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    },
+    "platform_log_docs": {
+      "result": "PASS",
+      "provenance": "inherited_from_reviewed_candidate",
+      "source_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "git_diff_check": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "command": "git diff --check",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    },
+    "sensitive_information_scan": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "verification": "issue117_evidence_files=223; credential_value_pattern_hits=0; actual_request_response_payload_fields=0",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    },
+    "machine_absolute_path_scan": {
+      "result": "PASS",
+      "provenance": "rerun_on_repair_candidate",
+      "verification": "issue117_evidence_files=223; machine_absolute_path_markers=0",
+      "source_candidate": "current_repair_candidate_reported_in_REVIEW_READY"
+    }
   },
   "automated_gate": {
-    "web_lint": "PASS",
-    "web_typecheck": "PASS",
-    "web_tests": {"status": "PASS", "test_files": 31, "tests": 357},
-    "web_build": {"status": "PASS", "modules_transformed": 6119},
-    "backend_ruff": "PASS",
-    "backend_mypy": {"status": "PASS", "source_files": 84},
-    "backend_pytest": {"status": "PASS", "passed": 671, "warnings": 8},
-    "compose_config_default": "PASS",
-    "compose_config_dns_example": "PASS",
-    "compose_smoke": "PASS",
-    "compose_smoke_postgres_paths": [
-      "missing-log-directory: unhealthy, control not started",
-      "unwritable-log-directory: unhealthy, control not started",
-      "missing-target-database: unhealthy, control not started",
-      "healthy: healthy, control started"
-    ]
+    "web_lint": {
+      "result": "PASS",
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "web_typecheck": {
+      "result": "PASS",
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "web_tests": {
+      "result": "PASS",
+      "status": "PASS",
+      "test_files": 31,
+      "tests": 357,
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "web_build": {
+      "result": "PASS",
+      "status": "PASS",
+      "modules_transformed": 6119,
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "backend_ruff": {
+      "result": "PASS",
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "backend_mypy": {
+      "result": "PASS",
+      "status": "PASS",
+      "source_files": 84,
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "backend_pytest": {
+      "result": "PASS",
+      "status": "PASS",
+      "passed": 671,
+      "warnings": 8,
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "compose_config_default": {
+      "result": "PASS",
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "compose_config_dns_example": {
+      "result": "PASS",
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "compose_smoke": {
+      "result": "PASS",
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false
+    },
+    "compose_smoke_postgres_paths": {
+      "result": "PASS",
+      "provenance": "inherited_from_reviewed_candidate",
+      "reviewed_candidate": "54a72e448cfe6a03a4bad127c19cd4675f669509",
+      "reviewed_tree": "eab1385b492c94c4bf629fb114dcbb28ffc82175",
+      "upstream_reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+      "upstream_reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+      "rerun_on_repair_candidate": false,
+      "paths": [
+        "missing-log-directory: unhealthy, control not started",
+        "unwritable-log-directory: unhealthy, control not started",
+        "missing-target-database: unhealthy, control not started",
+        "healthy: healthy, control started"
+      ]
+    }
   },
   "capabilities": [
     {"id": "ai-assistant-layout", "tasks": ["6.1", "6.2", "6.3"], "evidence": ["../issue117-b6/README.md", "../issue117-b6/auxiliary-matrix/browser-report.json"]},
@@ -123,7 +285,15 @@
     "machine_absolute_path_markers": 0,
     "credential_value_pattern_hits": 0,
     "actual_request_response_payload_fields": 0,
-    "audit_keyword_only_false_positive": "docs/evidence/issue117-b9/rg-cross-check.txt line 55"
+    "audit_keyword_only_false_positive": "docs/evidence/issue117-b9/rg-cross-check.txt line 55",
+    "repair_candidate_scan": {
+      "provenance": "rerun_on_repair_candidate",
+      "files": 223,
+      "text_files": 108,
+      "machine_absolute_path_markers": 0,
+      "credential_value_pattern_hits": 0,
+      "actual_request_response_payload_fields": 0
+    }
   },
   "compatibility_review": {
     "new_api_paths": false,
