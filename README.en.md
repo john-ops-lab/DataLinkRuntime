@@ -258,14 +258,42 @@ DLR_MASTER_KEY
 
 Replace all placeholder values with real random Secrets.
 
-### 2. Start PostgreSQL and apply migrations
+### 2. Prepare the platform log bind mounts
+
+`.env.example` defaults to the repository-local, user-writable directory
+`./platform-logs`, which differs from the absolute path
+`/var/lib/dlr/platform-logs` used for Linux production deployments. Before
+starting Compose, prepare five host subdirectories; Compose bind-mounts them to
+the fixed container paths `/var/lib/dlr/platform-logs/<service>/`. The
+repository-root `/platform-logs/` is exactly ignored by `.gitignore`; other
+paths are not affected by that rule:
+
+```bash
+LOG_ROOT=./platform-logs
+mkdir -p "$LOG_ROOT"/{control,worker,web,account-web,postgres}
+```
+
+The five directories are `control/`, `worker/`, `web/`, `account-web/` and
+`postgres/`. Before PostgreSQL starts, the container's `postgres` user checks
+that `postgres/` is writable. For Linux production, first run `id postgres` in
+the pinned image and grant only the minimum required access to that directory.
+Do not use `chmod 777`. If `DLR_PLATFORM_LOG_ROOT` changes, repeat the
+preparation under the corresponding host root.
+
+Platform logs use a separate bind mount: preserve the existing rotation and
+redaction rules, and do not write tokens, Secrets, passwords or other real
+credentials to `.env.example`, the log directories or command output. See the
+[platform log deployment documentation](docs/deployment/platform-logs.md) for
+the full production path, rotation and permission details.
+
+### 3. Start PostgreSQL and apply migrations
 
 ```bash
 docker compose up -d postgres
 docker compose run --rm control alembic upgrade head
 ```
 
-### 3. Start the full platform
+### 4. Start the full platform
 
 ```bash
 docker compose up -d --build
