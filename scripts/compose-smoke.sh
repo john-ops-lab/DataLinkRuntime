@@ -28,6 +28,11 @@ export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
 export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-env-secret-$$}
 export DLR_MASTER_KEY=${DLR_MASTER_KEY:-smoke-master-key-$$}
 export SMOKE_STORED_SECRET=${SMOKE_STORED_SECRET:-smoke-stored-secret-$$}
+# Force deterministic, bounded in-process rotation for the isolated smoke.
+# Dedicated COMPOSE_SMOKE_* overrides avoid inheriting production-sized host
+# values that would make rotation impractical to exercise in this short run.
+export DLR_AI_TOOL_AUDIT_MAX_BYTES=${COMPOSE_SMOKE_AI_TOOL_AUDIT_MAX_BYTES:-2048}
+export DLR_AI_TOOL_AUDIT_BACKUP_COUNT=${COMPOSE_SMOKE_AI_TOOL_AUDIT_BACKUP_COUNT:-3}
 # M5.5.5: the selected code sent to the fake Provider must never reach
 # service logs (requests are not logged; this assertion pins that contract).
 export SMOKE_SELECTED_TEXT=${SMOKE_SELECTED_TEXT:-smoke-selected-sentinel-$$}

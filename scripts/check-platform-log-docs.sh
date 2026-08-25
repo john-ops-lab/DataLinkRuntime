@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-DOCS=(.env.example README.md docs/deployment/platform-logs.md)
+DOCS=(.env.example README.md README.en.md docs/deployment/platform-logs.md)
 LOG_DIRS=(control/ worker/ web/ account-web/ postgres/)
 
 contains_literal() {
@@ -71,6 +71,25 @@ for doc in "${DOCS[@]}"; do
   require_pattern "$doc" '(Do not use.*chmod 777|不要使用.*chmod 777)'
 done
 
+for doc in "${DOCS[@]}"; do
+  require_literal "$doc" "DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS"
+  require_literal "$doc" "DLR_AI_TOOL_AUDIT_MAX_BYTES"
+  require_literal "$doc" "DLR_AI_TOOL_AUDIT_BACKUP_COUNT"
+  require_literal "$doc" "ai-tool-audit.jsonl"
+  require_literal "$doc" "*.log"
+  require_pattern "$doc" '110[[:space:]]*MiB'
+  require_pattern "$doc" '(回滚|rollback)'
+done
+
+require_literal .env.example 'DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS=150'
+require_literal .env.example 'DLR_AI_TOOL_AUDIT_MAX_BYTES=10485760'
+require_literal .env.example 'DLR_AI_TOOL_AUDIT_BACKUP_COUNT=10'
+
+if contains_pattern .env.example '(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})'; then
+  echo "The .env.example file must not contain credential-shaped values" >&2
+  exit 1
+fi
+
 if contains_pattern .env.example '^DLR_PLATFORM_LOG_ROOT=/var/lib/dlr/platform-logs'; then
   echo "The .env.example active value must remain the local writable path" >&2
   exit 1
@@ -105,7 +124,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 root = Path.cwd()
-for markdown in (root / "README.md", root / "docs/deployment/platform-logs.md"):
+for markdown in (
+    root / "README.md",
+    root / "README.en.md",
+    root / "docs/deployment/platform-logs.md",
+):
     text = markdown.read_text(encoding="utf-8")
     for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
         target = target.strip().split()[0].strip("<>")

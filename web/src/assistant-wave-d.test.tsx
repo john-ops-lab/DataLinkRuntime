@@ -390,6 +390,8 @@ it("clamps oversized tool summaries in the DOM as a second client-side bound", a
   expect(conversationText).not.toContain(huge);
   const resultText = screen.getByTestId("ai-tool-result").textContent ?? "";
   expect(resultText.length).toBeLessThanOrEqual(700);
-  // The truncation notice renders through the localized label.
-  expect(screen.getByTestId("ai-tool-truncated").textContent).toContain("截断");
+  expect(resultText.endsWith("…")).toBe(true);
+  expect(resultText.match(/…+$/u)?.[0]).toBe("…");
+  expect(resultText).not.toContain("[DLR 工具结果已截断]");
+  expect(screen.queryByTestId("ai-tool-truncated")).toBeNull();
 });

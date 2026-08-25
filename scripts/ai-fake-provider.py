@@ -180,8 +180,18 @@ TOOL_SCENARIOS = (
     "SMOKE_TOOL_UNKNOWN",
     "SMOKE_TOOL_WRITE",
     "SMOKE_TOOL_LOOP",
+    "SMOKE_TOOL_CALL_BUDGET",
     "SMOKE_KNOWLEDGE",
+    "BROWSER_KNOWLEDGE_SUCCESS",
+    "BROWSER_KNOWLEDGE_EMPTY",
+    "BROWSER_KNOWLEDGE_FAILURE",
 )
+
+BROWSER_KNOWLEDGE_SCENARIOS = {
+    "BROWSER_KNOWLEDGE_SUCCESS",
+    "BROWSER_KNOWLEDGE_EMPTY",
+    "BROWSER_KNOWLEDGE_FAILURE",
+}
 
 
 def detect_tool_scenario(payload: dict[str, Any]) -> str | None:
@@ -191,18 +201,133 @@ def detect_tool_scenario(payload: dict[str, Any]) -> str | None:
     tool scenario; the scenario marker lives in the browser-visible user
     message, so the smoke proves the marker-driven chain end to end.
     """
-    if "tools" not in payload:
-        return None
     text = last_user_text(payload)
+    if "tools" not in payload:
+        # Once the enforced knowledge sequence is complete, DLR performs its
+        # single final request with tools disabled. Keep recognizing only that
+        # already-evidenced path so the fake can verify the sanitized read
+        # result really returned to the Provider chain.
+        for scenario in ("SMOKE_KNOWLEDGE", *sorted(BROWSER_KNOWLEDGE_SCENARIOS)):
+            if scenario in text and has_tool_messages(payload):
+                return scenario
+        return None
     for scenario in TOOL_SCENARIOS:
         if scenario in text:
             return scenario
     return None
 
 
-def tool_calls_for(scenario: str) -> list[dict[str, Any]]:
+def requested_tool_names(payload: dict[str, Any]) -> list[str]:
+    """Return prior Provider-requested tool names in conversation order."""
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return []
+    names: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        calls = message.get("tool_calls")
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if isinstance(name, str):
+                names.append(name)
+    return names
+
+
+def browser_knowledge_tool_call(
+    scenario: str, payload: dict[str, Any]
+) -> list[dict[str, Any]] | None:
+    """One strict browser-fixture step per Provider round."""
+
+    names = requested_tool_names(payload)
+    call_suffix = scenario.removeprefix("BROWSER_KNOWLEDGE_").lower()
+    if "list_knowledge_bases" not in names:
+        return [
+            {
+                "id": f"call-browser-{call_suffix}-list",
+                "type": "function",
+                "function": {
+                    "name": "list_knowledge_bases",
+                    "arguments": '{"source": "ima"}',
+                },
+            }
+        ]
+    if "search_knowledge" not in names:
+        query = {
+            "BROWSER_KNOWLEDGE_SUCCESS": "browser-success",
+            "BROWSER_KNOWLEDGE_EMPTY": "browser-empty",
+            "BROWSER_KNOWLEDGE_FAILURE": "browser-failure",
+        }[scenario]
+        return [
+            {
+                "id": f"call-browser-{call_suffix}-search",
+                "type": "function",
+                "function": {
+                    "name": "search_knowledge",
+                    "arguments": json.dumps(
+                        {
+                            "source": "ima",
+                            "knowledge_base_id": "dlr-interface-lib",
+                            "query": query,
+                            "limit": 2,
+                        }
+                    ),
+                },
+            }
+        ]
+    if scenario == "BROWSER_KNOWLEDGE_SUCCESS" and "read_knowledge" not in names:
+        return [
+            {
+                "id": "call-browser-success-read",
+                "type": "function",
+                "function": {
+                    "name": "read_knowledge",
+                    "arguments": '{"source": "ima", "item_id": "browser-success-item"}',
+                },
+            }
+        ]
+    return None
+
+
+def browser_knowledge_output(scenario: str) -> dict[str, Any]:
+    """Safe final content for the three browser acceptance fixtures."""
+
+    if scenario == "BROWSER_KNOWLEDGE_SUCCESS":
+        message = (
+            "Knowledge retrieval result: Source ima:v1:browser-success-item confirms the "
+            "fixture's bounded runtime guidance.\n\n"
+            "Model supplement: General operational guidance remains subject to human review."
+        )
+    else:
+        message = "No repository-specific conclusion is available; verify before acting."
+    return {"message": message, "candidate": None}
+
+
+def tool_calls_for(scenario: str, round_index: int = 0) -> list[dict[str, Any]]:
     """The first-round tool calls of one smoke scenario (write-style tool
     names are intentionally NOT in the DLR whitelist)."""
+    if scenario in {"SMOKE_TOOL_LOOP", "SMOKE_TOOL_CALL_BUDGET"}:
+        calls_per_round = 1 if scenario == "SMOKE_TOOL_LOOP" else 4
+        return [
+            {
+                "id": f"call-smoke-budget-{round_index}-{call_index}",
+                "type": "function",
+                "function": {
+                    "name": "dlr_docs_search",
+                    "arguments": json.dumps(
+                        {
+                            "query": f"smoke-budget-{round_index}-{call_index}",
+                            "limit": 1,
+                        }
+                    ),
+                },
+            }
+            for call_index in range(calls_per_round)
+        ]
     if scenario == "SMOKE_KNOWLEDGE":
         # M5.7 Wave C2: the read-only KnowledgeSource chain against the fake
         # official ima service (official OpenAPI contract): list -> search
@@ -220,7 +345,7 @@ def tool_calls_for(scenario: str) -> list[dict[str, Any]]:
                     "name": "search_knowledge",
                     "arguments": (
                         '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
-                        '"query": "contract", "limit": 2}'
+                        '"query": "secrets", "limit": 2}'
                     ),
                 },
             },
@@ -454,15 +579,40 @@ class Handler(BaseHTTPRequestHandler):
         # result returns on the same chain -> final strict AiModelOutput.
         scenario = detect_tool_scenario(request_payload)
         if scenario is not None:
-            if scenario == "SMOKE_TOOL_LOOP":
-                # A looping model: always ask for tools again. DLR must stop
-                # deterministically with ai_tool_limit_exceeded (no hang).
+            if scenario in BROWSER_KNOWLEDGE_SCENARIOS:
+                next_call = browser_knowledge_tool_call(scenario, request_payload)
+                if next_call is not None and "tools" in request_payload:
+                    self._write_json(
+                        200,
+                        self._completion(
+                            request_payload,
+                            message=None,
+                            tool_calls=next_call,
+                        ),
+                    )
+                    return
+                self._write_json(
+                    200,
+                    self._completion(
+                        request_payload,
+                        message=json.dumps(browser_knowledge_output(scenario)),
+                    ),
+                )
+                return
+            if scenario in {"SMOKE_TOOL_LOOP", "SMOKE_TOOL_CALL_BUDGET"}:
+                # Keep each validated call unique so DLR reaches the real
+                # 8-round / 16-call boundary instead of the duplicate guard.
+                # The tools-disabled finalization request omits ``tools``, so
+                # it leaves this scenario and receives a strict final output.
                 self._write_json(
                     200,
                     self._completion(
                         request_payload,
                         message=None,
-                        tool_calls=tool_calls_for("SMOKE_TOOL_SINGLE"),
+                        tool_calls=tool_calls_for(
+                            scenario,
+                            tool_rounds(request_payload),
+                        ),
                     ),
                 )
                 return

@@ -6,6 +6,7 @@ are declared here rather than inferred from model names or user URLs.
 """
 
 import json
+import math
 import re
 import socket
 from dataclasses import dataclass
@@ -323,14 +324,20 @@ def _request_json(
     reasoning_explicit: bool = False,
     model_discovery: bool = False,
     image_input: bool = False,
+    timeout_seconds: float | None = None,
 ) -> object:
     """Bounded JSON HTTP request with fully sanitized failure mapping."""
+    if timeout_seconds is not None and (not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise AiProviderError("ai_timeout")
+    request_timeout = settings.ai_provider_timeout_seconds
+    if timeout_seconds is not None:
+        request_timeout = min(request_timeout, timeout_seconds)
     try:
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
         request = url_request.Request(url, data=data, headers=headers, method=method)
         with _NO_REDIRECT_OPENER.open(
             request,
-            timeout=settings.ai_provider_timeout_seconds,  # noqa: S310 - admin-configured URL
+            timeout=request_timeout,  # noqa: S310 - admin-configured URL
         ) as response:
             raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
     except url_error.HTTPError as error:
@@ -896,6 +903,7 @@ def chat_assist(
     tools: list[JsonObject] | None = None,
     image_input: bool = False,
     adapter: ProviderAdapter | None = None,
+    timeout_seconds: float | None = None,
 ) -> tuple[str | None, list[NormalizedToolCall] | None]:
     """One non-streaming assist round; returns (final_content, tool_calls).
 
@@ -931,6 +939,7 @@ def chat_assist(
         not_found_code="ai_model_not_found",
         reasoning_explicit=setting.reasoning_mode != "default",
         image_input=image_input,
+        timeout_seconds=timeout_seconds,
     )
     return extract_round(setting.provider, response, adapter)
 

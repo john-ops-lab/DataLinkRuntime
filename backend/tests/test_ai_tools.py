@@ -20,6 +20,8 @@ from fastapi.testclient import TestClient
 
 from dlr.control.ai import providers
 from dlr.control.ai import tools as tools_service
+from dlr.control.schemas.ai import AiAssistRequest, AiSettingDraft, AiToolCallSummary
+from dlr.control.services import ai as ai_service
 from test_ai import (
     assist_body,
     configure,
@@ -93,6 +95,263 @@ def _call(
         "type": "function",
         "function": {"name": name, "arguments": arguments},
     }
+
+
+# --- request-local orchestration --------------------------------------------
+
+
+def test_tool_budget_constants_and_monotonic_deadline_reserve() -> None:
+    assert tools_service.MAX_TOOL_ROUNDS == 8
+    assert tools_service.MAX_TOOL_CALLS_PER_ASSIST == 16
+    state = ai_service._AssistToolState.create(150.0, now=10.0)
+    assert state.started_at == 10.0
+    assert state.tool_deadline == 130.0
+    assert state.hard_deadline == 160.0
+    assert state.remaining_tool_seconds(now=25.0) == 105.0
+    assert state.remaining_total_seconds(now=25.0) == 135.0
+
+
+def test_tool_call_fingerprint_normalizes_equivalent_json_and_distinguishes_progress() -> None:
+    first = tools_service.tool_call_fingerprint("dlr_docs_search", '{"query":"secrets","limit":2}')
+    equivalent = tools_service.tool_call_fingerprint(
+        "dlr_docs_search", '{ "limit": 2, "query": "secrets" }'
+    )
+    progressed = tools_service.tool_call_fingerprint(
+        "dlr_docs_search", '{"limit":2,"query":"runtime"}'
+    )
+    assert first == equivalent
+    assert first != progressed
+    assert tools_service.tool_call_fingerprint("dlr_runtime_save", "{}") is None
+
+    state = ai_service._AssistToolState.create(150.0, now=0.0)
+    assert state.register_fingerprint(first) is True
+    assert state.register_fingerprint(equivalent) is False
+    assert state.stop_reason == ai_service._STOP_DUPLICATE
+
+    progressed_state = ai_service._AssistToolState.create(150.0, now=0.0)
+    assert progressed_state.register_fingerprint(first) is True
+    assert progressed_state.register_fingerprint(progressed) is True
+    assert progressed_state.stop_reason is None
+
+
+def test_three_consecutive_tool_failures_stop_and_success_resets_counter() -> None:
+    failed = tools_service.execute_tool_call("dlr_runtime_save", '{"code":"x"}', None)
+    succeeded = tools_service.execute_tool_call("dlr_docs_list", "{}", None)
+    assert failed.status == "error"
+    assert succeeded.status == "success"
+
+    reset_state = ai_service._AssistToolState.create(150.0, now=0.0)
+    reset_state.record_execution(failed)
+    reset_state.record_execution(failed)
+    assert reset_state.consecutive_failures == 2
+    reset_state.record_execution(succeeded)
+    assert reset_state.consecutive_failures == 0
+    reset_state.record_execution(failed)
+    assert reset_state.consecutive_failures == 1
+    assert reset_state.stop_reason is None
+
+    stopped_state = ai_service._AssistToolState.create(150.0, now=0.0)
+    for _ in range(3):
+        stopped_state.record_execution(failed)
+    assert stopped_state.consecutive_failures == 3
+    assert stopped_state.total_tool_calls == 3
+    assert stopped_state.stop_reason == ai_service._STOP_CONSECUTIVE_FAILURES
+
+
+def test_expanded_budget_keeps_read_only_whitelist_and_per_call_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert all("save" not in name and "write" not in name for name in tools_service.tool_names())
+    unknown = tools_service.execute_tool_call("not_registered", "{}", None)
+    write_style = tools_service.execute_tool_call("dlr_runtime_save", '{"code":"x"}', None)
+    assert unknown.error_code == tools_service.CODE_UNKNOWN_TOOL
+    assert write_style.error_code == tools_service.CODE_UNKNOWN_TOOL
+
+    def slow_handler(_args: dict[str, Any]) -> dict[str, Any]:
+        import time
+
+        time.sleep(0.01)
+        return {"ok": True}
+
+    monkeypatch.setattr(tools_service, "TOOL_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(tools_service._TOOLS["dlr_docs_list"], "handler", slow_handler)
+    timed_out = tools_service.execute_tool_call("dlr_docs_list", "{}", None)
+    assert timed_out.status == "error"
+    assert timed_out.error_code == tools_service.CODE_TIMEOUT
+
+
+def _finalization_inputs() -> tuple[
+    ai_service._AssistToolState,
+    AiSettingDraft,
+    AiAssistRequest,
+    list[AiToolCallSummary],
+]:
+    state = ai_service._AssistToolState.create(150.0, now=10.0)
+    state.stop_reason = ai_service._STOP_CALL_BUDGET
+    draft = AiSettingDraft(
+        **{
+            "provider": "custom_openai_compatible",
+            "base_url": "http://fake-provider.invalid",
+            "model": "manual-model-id",
+            "credential_id": None,
+            "reasoning_mode": "default",
+            "reasoning_effort": None,
+        }
+    )
+    payload = AiAssistRequest.model_validate(assist_body())
+    summaries = [AiToolCallSummary(tool_name="dlr_docs_list", status="success", result_size=12)]
+    return state, draft, payload, summaries
+
+
+def test_protection_finalization_disables_tools_and_uses_only_remaining_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, draft, payload, summaries = _finalization_inputs()
+    captured: list[dict[str, object]] = []
+
+    def fake_chat_assist(*_: object, **kwargs: object) -> tuple[str, None]:
+        captured.append(kwargs)
+        return json.dumps(valid_output()), None
+
+    monkeypatch.setattr(ai_service.time, "monotonic", lambda: 20.0)
+    monkeypatch.setattr(providers, "chat_assist", fake_chat_assist)
+    response = ai_service._finalize_after_tool_stop(
+        state=state,
+        system_locale="en",
+        draft=draft,
+        api_key=None,
+        messages=[],
+        image_input=False,
+        provider_adapter=providers.get_provider(draft.provider),
+        payload=payload,
+        executed_tools=summaries,
+    )
+    assert response.candidate is not None
+    assert response.tool_calls == summaries
+    assert len(captured) == 1
+    assert captured[0]["tools"] is None
+    assert captured[0]["timeout_seconds"] == 140.0
+
+
+@pytest.mark.parametrize("failure", ["tool_call", "timeout", "invalid_json"])
+def test_protection_finalization_failures_return_candidate_null_once(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    state, draft, payload, summaries = _finalization_inputs()
+    calls = 0
+
+    def fake_chat_assist(
+        *_: object, **__: object
+    ) -> tuple[str | None, list[providers.NormalizedToolCall] | None]:
+        nonlocal calls
+        calls += 1
+        if failure == "tool_call":
+            return None, [providers.NormalizedToolCall("again", "dlr_docs_list", "{}")]
+        if failure == "timeout":
+            raise providers.AiProviderError("ai_timeout")
+        return "not-json", None
+
+    monkeypatch.setattr(ai_service.time, "monotonic", lambda: 20.0)
+    monkeypatch.setattr(providers, "chat_assist", fake_chat_assist)
+    response = ai_service._finalize_after_tool_stop(
+        state=state,
+        system_locale="zh-CN",
+        draft=draft,
+        api_key=None,
+        messages=[],
+        image_input=False,
+        provider_adapter=providers.get_provider(draft.provider),
+        payload=payload,
+        executed_tools=summaries,
+    )
+    assert calls == 1
+    assert response.candidate is None
+    assert response.tool_calls == summaries
+    assert "工具调用已安全停止" in response.message
+    assert "1 个成功结果" in response.message
+
+
+def test_expired_hard_deadline_returns_english_fallback_without_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, draft, payload, summaries = _finalization_inputs()
+    called = False
+
+    def should_not_call(*_: object, **__: object) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("expired finalization must not call the Provider")
+
+    monkeypatch.setattr(ai_service.time, "monotonic", lambda: state.hard_deadline)
+    monkeypatch.setattr(providers, "chat_assist", should_not_call)
+    response = ai_service._finalize_after_tool_stop(
+        state=state,
+        system_locale="en",
+        draft=draft,
+        api_key=None,
+        messages=[],
+        image_input=False,
+        provider_adapter=providers.get_provider(draft.provider),
+        payload=payload,
+        executed_tools=summaries,
+    )
+    assert called is False
+    assert response.candidate is None
+    assert "Tool use stopped safely" in response.message
+    assert "unconfirmed parts" in response.message
+
+
+def test_protection_without_success_returns_candidate_null_without_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, draft, payload, _summaries = _finalization_inputs()
+    monkeypatch.setattr(
+        providers,
+        "chat_assist",
+        lambda *_args, **_kwargs: pytest.fail("no evidence must not produce a Candidate"),
+    )
+    response = ai_service._finalize_after_tool_stop(
+        state=state,
+        system_locale="zh-CN",
+        draft=draft,
+        api_key=None,
+        messages=[],
+        image_input=False,
+        provider_adapter=providers.get_provider(draft.provider),
+        payload=payload,
+        executed_tools=[],
+    )
+    assert response.candidate is None
+    assert "0 个成功结果" in response.message
+
+
+def test_protection_finalization_rejects_candidate_configuration_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, draft, payload, summaries = _finalization_inputs()
+    changed = valid_output()
+    assert isinstance(changed["candidate"], dict)
+    changed["candidate"]["requirements"] = "provider-must-not-change-this"
+
+    monkeypatch.setattr(ai_service.time, "monotonic", lambda: 20.0)
+    monkeypatch.setattr(
+        providers,
+        "chat_assist",
+        lambda *_args, **_kwargs: (json.dumps(changed), None),
+    )
+    response = ai_service._finalize_after_tool_stop(
+        state=state,
+        system_locale="en",
+        draft=draft,
+        api_key=None,
+        messages=[],
+        image_input=False,
+        provider_adapter=providers.get_provider(draft.provider),
+        payload=payload,
+        executed_tools=summaries,
+    )
+    assert response.candidate is None
+    assert response.tool_calls == summaries
 
 
 # --- Provider capability ----------------------------------------------------
@@ -169,11 +428,11 @@ def test_assist_knowledge_retrieval_is_default_off(
     assert "list_knowledge_bases" not in payload["messages"][0]["content"]
 
 
-def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_tools(
+def test_assist_with_knowledge_enabled_offers_whitelist_and_rejects_direct_answer(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Zero tool calls: the payload carries the whitelist, the model answers
-    directly, and the response stays shape-compatible (tool_calls empty)."""
+    """The payload carries the whitelist, but opted-in knowledge retrieval
+    cannot be bypassed by a Provider that repeatedly answers directly."""
     adapter = create_adapter(api_client, "tool-capable-zero")
     configure(api_client)
     ima_credential = create_credential(
@@ -187,7 +446,7 @@ def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_too
         json={"enabled": True, "credential_id": ima_credential["id"]},
     )
     assert configured.status_code == 200, configured.text
-    captured: dict[str, object] = {}
+    captured: list[dict[str, object]] = []
 
     def fake_request(
         _method: str,
@@ -196,7 +455,7 @@ def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_too
         payload: dict[str, object] | None = None,
         **_: object,
     ) -> object:
-        captured["payload"] = payload or {}
+        captured.append(payload or {})
         return _final_response()
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
@@ -204,8 +463,8 @@ def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_too
     body["knowledge_search_enabled"] = True
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
     assert response.status_code == 200, response.text
-    payload = captured["payload"]
-    assert isinstance(payload, dict)
+    assert len(captured) == 3
+    payload = captured[0]
     assert payload["tool_choice"] == "auto"
     tools = payload["tools"]
     assert isinstance(tools, list)
@@ -225,7 +484,7 @@ def test_assist_with_tool_capability_offers_whitelist_and_can_answer_without_too
     assert "tool call," not in system_prompt
     assert "dlr_docs_list" in system_prompt
     body = response.json()
-    assert body["candidate"] is not None
+    assert body["candidate"] is None
     assert body["tool_calls"] == []
 
 
@@ -554,6 +813,91 @@ def test_assist_tool_handler_failure_yields_stable_error_result(
         monkeypatch.setattr(tools_service._TOOLS["dlr_docs_list"], "handler", original)
 
 
+def test_assist_semantically_equivalent_call_is_blocked_without_second_execution(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = create_adapter(api_client, "duplicate-tool-call")
+    configure(api_client)
+    original = tools_service._TOOLS["dlr_docs_search"].handler
+    handler_calls = 0
+    provider_tool_rounds = 0
+
+    def tracked_handler(args: dict[str, Any]) -> dict[str, Any]:
+        nonlocal handler_calls
+        handler_calls += 1
+        return original(args)
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        nonlocal provider_tool_rounds
+        if payload is not None and "tools" not in payload:
+            return _final_response(message="Finalized after duplicate protection.")
+        provider_tool_rounds += 1
+        arguments = (
+            '{"query":"secrets","limit":2}'
+            if provider_tool_rounds == 1
+            else '{ "limit": 2, "query": "secrets" }'
+        )
+        return _tool_response(
+            [_call("dlr_docs_search", arguments, call_id=f"call-{provider_tool_rounds}")]
+        )
+
+    monkeypatch.setattr(tools_service._TOOLS["dlr_docs_search"], "handler", tracked_handler)
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+    assert response.status_code == 200, response.text
+    assert handler_calls == 1
+    assert [summary["status"] for summary in response.json()["tool_calls"]] == [
+        "success",
+        "error",
+    ]
+    assert response.json()["tool_calls"][1]["error_code"] == tools_service.CODE_DUPLICATE
+
+
+def test_assist_stops_after_three_consecutive_tool_failures(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = create_adapter(api_client, "consecutive-tool-failures")
+    configure(api_client)
+    provider_tool_rounds = 0
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        nonlocal provider_tool_rounds
+        if payload is not None and "tools" not in payload:
+            return _final_response(message="Finalized after three failures.")
+        provider_tool_rounds += 1
+        return _tool_response(
+            [
+                _call(
+                    f"unknown-write-tool-{provider_tool_rounds}",
+                    call_id=f"failure-{provider_tool_rounds}",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+    assert response.status_code == 200, response.text
+    assert provider_tool_rounds == 3
+    assert response.json()["candidate"] is None
+    assert len(response.json()["tool_calls"]) == 3
+    assert all(
+        summary["error_code"] == tools_service.CODE_UNKNOWN_TOOL
+        for summary in response.json()["tool_calls"]
+    )
+
+
 def test_assist_oversized_tool_result_is_truncated_not_echoed(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -583,6 +927,29 @@ def test_assist_oversized_tool_result_is_truncated_not_echoed(
         monkeypatch.setattr(tools_service._TOOLS["dlr_docs_list"], "handler", original)
 
 
+def test_truncated_knowledge_read_preserves_provenance() -> None:
+    result = {
+        "tool": "read_knowledge",
+        "item": {
+            "id": "browser-success-item",
+            "title": "Browser success fixture",
+            "content": "safe browser fixture body " * 500,
+            "source": "ima:v1:browser-success-item",
+        },
+    }
+
+    truncated = tools_service._truncate_result(result, ())
+    encoded = json.dumps(truncated, ensure_ascii=False, sort_keys=True)
+
+    assert len(encoded) <= tools_service.MAX_TOOL_RESULT_CHARS
+    assert truncated["tool"] == "read_knowledge"
+    assert truncated["item"]["id"] == "browser-success-item"
+    assert truncated["item"]["source"] == "ima:v1:browser-success-item"
+    assert truncated["item"]["content"].endswith("…")
+    assert truncated["item"]["content"].count("…") == 1
+    assert truncated["truncated"] is True
+
+
 def test_assist_accumulated_result_budget_is_bounded(
     api_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -602,8 +969,9 @@ def test_assist_accumulated_result_budget_is_bounded(
             _tool_then_final([_call("dlr_docs_list")]),
         )
         response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
-        assert response.status_code == 502
-        assert response.json()["detail"]["code"] == "ai_tool_result_too_large"
+        assert response.status_code == 200, response.text
+        assert response.json()["candidate"] is not None
+        assert len(response.json()["tool_calls"]) == 1
     finally:
         monkeypatch.setattr(tools_service._TOOLS["dlr_docs_list"], "handler", original)
 
@@ -613,7 +981,8 @@ def test_assist_total_call_budget_is_bounded(
 ) -> None:
     adapter = create_adapter(api_client, "call-budget")
     configure(api_client)
-    calls = 0
+    provider_calls = 0
+    tool_rounds = 0
 
     def fake_request(
         _method: str,
@@ -622,16 +991,31 @@ def test_assist_total_call_budget_is_bounded(
         payload: dict[str, object] | None = None,
         **_: object,
     ) -> object:
-        nonlocal calls
-        calls += 1
-        return _tool_response([_call("dlr_docs_list")])
+        nonlocal provider_calls, tool_rounds
+        provider_calls += 1
+        if "tools" not in payload:
+            return _final_response(message="Finalized from sixteen results.")
+        tool_rounds += 1
+        return _tool_response(
+            [
+                _call(
+                    "dlr_docs_search",
+                    json.dumps({"query": f"query-{tool_rounds}-{index}"}),
+                    call_id=f"round-{tool_rounds}-call-{index}",
+                )
+                for index in range(2)
+            ]
+        )
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
-    assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "ai_tool_limit_exceeded"
-    # One round per provider call; the loop stops deterministically.
-    assert calls == tools_service.MAX_TOOL_ROUNDS + 1
+    assert response.status_code == 200, response.text
+    assert response.json()["message"] == "Finalized from sixteen results."
+    assert len(response.json()["tool_calls"]) == tools_service.MAX_TOOL_CALLS_PER_ASSIST
+    assert tool_rounds == tools_service.MAX_TOOL_ROUNDS
+    # Eight tool rounds plus one tools-disabled finalization; never a ninth
+    # tool round or seventeenth execution.
+    assert provider_calls == tools_service.MAX_TOOL_ROUNDS + 1
 
 
 def test_assist_round_budget_is_bounded_for_large_rounds(
@@ -639,6 +1023,14 @@ def test_assist_round_budget_is_bounded_for_large_rounds(
 ) -> None:
     adapter = create_adapter(api_client, "round-budget")
     configure(api_client)
+    provider_calls = 0
+    executed = 0
+    original_execute = tools_service.execute_tool_call
+
+    def track_execution(*args: object, **kwargs: object) -> tools_service.ToolExecution:
+        nonlocal executed
+        executed += 1
+        return original_execute(*args, **kwargs)  # type: ignore[arg-type]
 
     def fake_request(
         _method: str,
@@ -647,6 +1039,10 @@ def test_assist_round_budget_is_bounded_for_large_rounds(
         payload: dict[str, object] | None = None,
         **_: object,
     ) -> object:
+        nonlocal provider_calls
+        provider_calls += 1
+        if "tools" not in payload:
+            return _final_response(message="Stopped before the oversized batch.")
         # One round carrying more calls than the total budget must be
         # rejected before any execution.
         calls = [
@@ -656,9 +1052,51 @@ def test_assist_round_budget_is_bounded_for_large_rounds(
         return _tool_response(calls)
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
+    monkeypatch.setattr(tools_service, "execute_tool_call", track_execution)
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
-    assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "ai_tool_limit_exceeded"
+    assert response.status_code == 200, response.text
+    assert response.json()["candidate"] is None
+    assert response.json()["tool_calls"] == []
+    assert executed == 0
+    assert provider_calls == 1
+
+
+def test_assist_round_budget_stops_before_ninth_tool_round(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = create_adapter(api_client, "eight-round-budget")
+    configure(api_client)
+    provider_calls = 0
+    tool_rounds = 0
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        nonlocal provider_calls, tool_rounds
+        provider_calls += 1
+        if "tools" not in payload:
+            return _final_response(message="Finalized after eight rounds.")
+        tool_rounds += 1
+        return _tool_response(
+            [
+                _call(
+                    "dlr_docs_search",
+                    json.dumps({"query": f"round-{tool_rounds}"}),
+                    call_id=f"round-{tool_rounds}",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
+    assert response.status_code == 200, response.text
+    assert len(response.json()["tool_calls"]) == tools_service.MAX_TOOL_ROUNDS
+    assert tool_rounds == tools_service.MAX_TOOL_ROUNDS
+    assert provider_calls == tools_service.MAX_TOOL_ROUNDS + 1
 
 
 # --- DLR docs tools ---------------------------------------------------------
@@ -741,6 +1179,7 @@ def test_tool_args_and_results_sanitize_api_key_and_secret_patterns() -> None:
     # The overlong raw input is never echoed verbatim: the summary is
     # sanitized and length-bounded with a deterministic truncation marker.
     assert len(huge.args_summary) <= tools_service.MAX_TOOL_SUMMARY_CHARS + 60
+    assert tools_service.truncation_suffix() == "…"
     assert huge.args_summary.endswith(tools_service.truncation_suffix())
 
 

@@ -461,6 +461,17 @@ class AiContextSnippet(_StrictSchema):
 
 
 class AiAssistRequest(_StrictSchema):
+    # Browser-generated, request-only correlation metadata. It is neither an
+    # authentication token nor persisted conversation state. Older clients
+    # may omit it and receive a request-scoped server fallback for auditing.
+    conversation_id: str | None = Field(
+        default=None,
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        ),
+        max_length=36,
+    )
     message: str
     working_copy: AiWorkingCopy
     recent_messages: list[AiRecentMessage] = Field(default_factory=list, max_length=8)

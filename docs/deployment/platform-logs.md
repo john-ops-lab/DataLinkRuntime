@@ -65,6 +65,49 @@ headers. DLR application logs must likewise contain metadata and diagnostics;
 application redaction excludes credential values, full Adapter input/output,
 source code, and secrets.
 
+## AI tool audit and application rotation
+
+Each Assist receives a server-generated request identifier and writes its
+whitelisted tool metadata to:
+
+```text
+<DLR_PLATFORM_LOG_ROOT>/control/ai-tool-audit.jsonl
+```
+
+`ai-tool-audit.jsonl` contains JSON Lines metadata only. It never stores full
+Prompts, attachment bodies, Adapter source code, complete tool results,
+Provider reasoning, raw Provider responses, Cookies, Tokens or credential
+values. Control flushes every completed, failed or blocked tool event before
+continuing the Assist, then writes one request-terminal event with the same
+request and conversation identifiers.
+
+This audit stream uses Python's application-owned `RotatingFileHandler`. Its
+configuration is always positive and bounded:
+
+| Environment variable | Default | Allowed range | Meaning |
+| --- | ---: | ---: | --- |
+| `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS` | `150` | `120–180` seconds | Hard deadline for one complete Assist |
+| `DLR_AI_TOOL_AUDIT_MAX_BYTES` | `10485760` | `1–104857600` bytes | Maximum configured size of one audit file |
+| `DLR_AI_TOOL_AUDIT_BACKUP_COUNT` | `10` | `1–100` files | Number of rotated history files |
+
+The configured footprint formula is
+`(DLR_AI_TOOL_AUDIT_BACKUP_COUNT + 1) × DLR_AI_TOOL_AUDIT_MAX_BYTES`.
+With defaults, the current 10 MiB file plus 10 history files has a worst-case
+footprint of 110 MiB. At the maximum accepted settings, the configured ceiling
+is 10,100 MiB; select smaller values when the host log partition is limited.
+Monitor the whole platform-log filesystem because ordinary service, Nginx and
+PostgreSQL logs consume additional space outside this audit calculation.
+
+The supplied host logrotate policy matches only `*.log`; it does not match the
+`.jsonl` audit stream and therefore cannot double-rotate it. A supported Control
+restart opens the existing current file in append mode and retains the same
+bounded size/count policy on the persistent bind mount.
+
+For rollback, roll back Control and Web together and remove the three variables
+above. There is no database migration. The old version ignores
+`ai-tool-audit.jsonl*`; retain those already-redacted files under the deployment
+policy or delete them after the required audit-retention period.
+
 ## External rotation
 
 Install `deploy/logrotate/dlr-platform-logs.conf` as

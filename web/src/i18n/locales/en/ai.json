@@ -90,7 +90,6 @@
       "argsLabel": "Args",
       "resultLabel": "Result",
       "rejected": "Tool call rejected or failed",
-      "truncated": "Result too large; truncated",
       "errorLabel": "Error code: {{code}}",
       "ariaGroup": "Tool {{name}}: {{status}}"
     },

@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "change": "issue117-ai-tool-followups",
+  "task": "6.5",
+  "result": "PASS",
+  "captured_at": "2026-08-25T13:09:39Z",
+  "environment": {
+    "compose_project": "dlr-i117-browser-6425",
+    "ao_session": "issue117-browser-6425",
+    "web_url": "http://localhost:8980/",
+    "account_url": "http://localhost:8981/",
+    "browser": "Google Chrome 151, existing profile controlled through the Chrome Browser plugin",
+    "viewport": {
+      "width": 1920,
+      "height": 820,
+      "language": "en"
+    },
+    "page_identity": {
+      "title": "DataLinkRuntime",
+      "url": "http://localhost:8980/"
+    },
+    "fixture_containers": [
+      {
+        "name": "dlr-i117-browser-6425-ai-fake",
+        "state": "running"
+      },
+      {
+        "name": "dlr-i117-browser-6425-ima-fake",
+        "state": "running"
+      }
+    ]
+  },
+  "browser_acceptance": {
+    "same_mounted_panel": true,
+    "knowledge_search_checked_for_all_requests": true,
+    "scenarios": [
+      {
+        "name": "success",
+        "http_status": 200,
+        "tool_order": [
+          "list_knowledge_bases",
+          "search_knowledge",
+          "read_knowledge"
+        ],
+        "tool_statuses": [
+          "success",
+          "success",
+          "success"
+        ],
+        "source_ids_observed": [
+          "ima:v1:dlr-interface-lib",
+          "ima:v1:browser-success-item"
+        ],
+        "knowledge_result_partition_visible": true,
+        "model_supplement_partition_visible": true,
+        "read_result_truncated_in_audit": true,
+        "read_tool_visible_ellipsis_count": 1,
+        "read_tool_a11y_ellipsis_count": 1,
+        "explicit_truncation_label_count": 0,
+        "legacy_truncation_marker_count": 0
+      },
+      {
+        "name": "empty",
+        "http_status": 200,
+        "tool_order": [
+          "list_knowledge_bases",
+          "search_knowledge"
+        ],
+        "tool_statuses": [
+          "success",
+          "success"
+        ],
+        "read_call_count": 0,
+        "transparent_empty_result_visible": true,
+        "knowledge_result_partition_visible": true,
+        "model_supplement_partition_visible": true
+      },
+      {
+        "name": "failure",
+        "http_status": 200,
+        "tool_order": [
+          "list_knowledge_bases",
+          "search_knowledge"
+        ],
+        "tool_statuses": [
+          "success",
+          "error"
+        ],
+        "stable_error_code": "ks_rate_limited",
+        "transparent_failure_visible": true,
+        "knowledge_result_partition_visible": true,
+        "model_supplement_partition_visible": true
+      }
+    ]
+  },
+  "network_summary": {
+    "source": "control access log for Chrome-driven requests",
+    "window_started_at": "2026-08-25T13:04:30Z",
+    "assist_post_count": 3,
+    "assist_post_statuses": [
+      200,
+      200,
+      200
+    ],
+    "all_control_http_status_counts_in_window": {
+      "200": 80,
+      "204": 37
+    },
+    "http_4xx_or_5xx_count": 0,
+    "raw_headers_bodies_and_cookies_archived": false
+  },
+  "audit_correlation": {
+    "source": "control:/var/lib/dlr/platform-logs/control/ai-tool-audit.jsonl",
+    "conversation_id_sha256": "3a3d3aff104783a9232b986ca75a854c6868de07d1958e817cdfecd435b4ed93",
+    "same_conversation_id": true,
+    "request_id_sha256": [
+      "2f35ace0a130457c477b74511e98f645c1951d6bb7b20af474f6367c9621cd80",
+      "d5cb287dbe6b8dbf0c5ba0288774bea90b3411fe72a9608aeb6a9e3c92fdee85",
+      "6e10b5fe93f2adec928cb4091c389b3cf734fbafb7011114f1c186a5ee7029b8"
+    ],
+    "distinct_request_id_count": 3,
+    "requests": [
+      {
+        "scenario": "success",
+        "stop_reason": "knowledge_ready",
+        "successful_calls": 3,
+        "failed_calls": 0,
+        "blocked_calls": 0,
+        "attempts": [
+          {
+            "tool": "list_knowledge_bases",
+            "round": 1,
+            "status": "success",
+            "result_truncated": false,
+            "result_size": 397
+          },
+          {
+            "tool": "search_knowledge",
+            "round": 2,
+            "status": "success",
+            "result_truncated": false,
+            "result_size": 276,
+            "knowledge_base_id": "dlr-interface-lib"
+          },
+          {
+            "tool": "read_knowledge",
+            "round": 3,
+            "status": "success",
+            "result_truncated": true,
+            "result_size": 4002,
+            "item_id": "browser-success-item",
+            "source": "ima"
+          }
+        ]
+      },
+      {
+        "scenario": "empty",
+        "stop_reason": "knowledge_search_empty",
+        "successful_calls": 2,
+        "failed_calls": 0,
+        "blocked_calls": 0,
+        "attempts": [
+          {
+            "tool": "list_knowledge_bases",
+            "round": 1,
+            "status": "success"
+          },
+          {
+            "tool": "search_knowledge",
+            "round": 2,
+            "status": "success",
+            "knowledge_base_id": "dlr-interface-lib"
+          }
+        ]
+      },
+      {
+        "scenario": "failure",
+        "stop_reason": "knowledge_search_failed",
+        "successful_calls": 1,
+        "failed_calls": 1,
+        "blocked_calls": 0,
+        "attempts": [
+          {
+            "tool": "list_knowledge_bases",
+            "round": 1,
+            "status": "success"
+          },
+          {
+            "tool": "search_knowledge",
+            "round": 2,
+            "status": "error",
+            "error_code": "ks_rate_limited",
+            "knowledge_base_id": "dlr-interface-lib"
+          }
+        ]
+      }
+    ]
+  },
+  "browser_quality": {
+    "console_warning_or_error_count": 0,
+    "framework_overlay_count": 0,
+    "failed_request_count": 0,
+    "document_scroll_width": 1920,
+    "document_client_width": 1920,
+    "body_scroll_width": 1920,
+    "body_client_width": 1920,
+    "horizontal_overflow": false
+  },
+  "file_sha256": {
+    "backend/src/dlr/control/ai/tools.py": "f5759b2df7321a506aebbbf840fed3d0d4563bc08c061d51bf75cc382d17090e",
+    "backend/tests/test_ai_tools.py": "d62fcc324910db0c5a52192065c73ea43e0182a7f5704434377848b0aebb0d4f",
+    "scripts/ai-fake-provider.py": "5af6d43b7b3b4751bc3af6bdbd5e1ac046484a6dab3f0aca686de7e67593d559",
+    "scripts/ima-fake-service.py": "2fcfed2cea8ec58079e82b715989f68a51fe85aac11edf1f382e135157733285"
+  },
+  "artifact_redaction": {
+    "prompt_archived": false,
+    "attachment_body_archived": false,
+    "credential_archived": false,
+    "provider_response_body_archived": false,
+    "source_code_archived": false,
+    "screenshots_archived": 0,
+    "screenshot_note": "The mounted conversation view contains user Prompt text, so structured DOM, HTTP status and redacted audit evidence were archived instead."
+  }
+}

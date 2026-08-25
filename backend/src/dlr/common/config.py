@@ -89,6 +89,20 @@ class Settings(BaseSettings):
     platform_log_root: str = Field(
         default="/var/lib/dlr/platform-logs", validation_alias="DLR_PLATFORM_LOG_ROOT"
     )
+    # AI tool audit records use an application-owned JSONL rotation policy so
+    # they stay bounded even when the host's optional *.log policy is absent.
+    ai_tool_audit_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1,
+        le=100 * 1024 * 1024,
+        validation_alias="DLR_AI_TOOL_AUDIT_MAX_BYTES",
+    )
+    ai_tool_audit_backup_count: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        validation_alias="DLR_AI_TOOL_AUDIT_BACKUP_COUNT",
+    )
     # Timeout sent to the Worker in every task payload.
     execution_timeout_seconds: int = Field(
         default=300, validation_alias="DLR_EXECUTION_TIMEOUT_SECONDS"
@@ -119,6 +133,16 @@ class Settings(BaseSettings):
         ge=10.0,
         le=600.0,
         validation_alias="DLR_AI_PROVIDER_TIMEOUT_SECONDS",
+    )
+    # One complete Assist may contain several bounded Provider/tool rounds.
+    # Keep the aggregate wall-clock budget narrower than the per-request
+    # Provider override and reserve its tail for a tools-disabled final answer.
+    ai_assist_total_timeout_seconds: float = Field(
+        default=150.0,
+        ge=120.0,
+        le=180.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS",
     )
 
     # M5.7 Wave C2: read-only KnowledgeSource (first target: Tencent ima).

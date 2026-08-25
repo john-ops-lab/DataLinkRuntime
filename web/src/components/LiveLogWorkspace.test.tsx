@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { applySystemLocale, DEFAULT_SYSTEM_LOCALE } from "../i18n";
 import type { Execution } from "../types";
@@ -49,6 +51,28 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
+function contrastRatio(foreground: string, background: string): number {
+  function luminance(hex: string): number {
+    const channels = hex
+      .match(/[0-9a-f]{2}/gi)
+      ?.map((channel) => Number.parseInt(channel, 16) / 255)
+      .map((channel) =>
+        channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+      );
+    if (channels === undefined || channels.length !== 3) {
+      throw new Error(`invalid color: ${hex}`);
+    }
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  }
+
+  const foregroundLuminance = luminance(foreground);
+  const backgroundLuminance = luminance(background);
+  return (
+    (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+  );
+}
+
 function renderWorkspace(overrides: Partial<Parameters<typeof LiveLogWorkspace>[0]> = {}) {
   const props: Parameters<typeof LiveLogWorkspace>[0] = {
     execution: makeExecution(),
@@ -70,6 +94,95 @@ it("renders the unified log tab without an internal Execution #N", () => {
   expect(screen.queryByText(/执行 #/)).toBeNull();
   expect(screen.queryByTestId("live-log-collapsed")).toBeNull();
   expect(screen.getByText("统一日志")).toBeTruthy();
+});
+
+it("scopes the shared toolbar contrast contract to history and live LogView controls", async () => {
+  render(
+    <>
+      <LogView
+        testId="history-contrast"
+        content="saved line\n"
+        truncated={false}
+        mode="history"
+        followControls={false}
+      />
+      <LogView
+        testId="live-contrast"
+        content="live line\n"
+        truncated={false}
+        mode="live"
+        onAddContext={vi.fn()}
+      />
+    </>,
+  );
+
+  const historyRegion = screen.getByTestId("history-contrast").closest("[role='region']");
+  const liveRegion = screen.getByTestId("live-contrast").closest("[role='region']");
+  expect(historyRegion?.classList.contains("log-pane")).toBe(true);
+  expect(historyRegion?.classList.contains("history-log-pane")).toBe(true);
+  expect(liveRegion?.classList.contains("log-pane")).toBe(true);
+  expect(liveRegion?.classList.contains("live-log-pane")).toBe(true);
+  expect(screen.getByTestId("history-contrast-toolbar").getAttribute("aria-label")).toBe(
+    "历史日志工具",
+  );
+  expect(screen.getByTestId("live-contrast-toolbar").getAttribute("aria-label")).toBe(
+    "执行日志工具栏",
+  );
+  expect(screen.getByTestId("history-contrast-search").getAttribute("aria-label")).toBe(
+    "搜索历史日志",
+  );
+  expect(screen.getByTestId("history-contrast-copy").getAttribute("aria-label")).toBe(
+    "复制已保存日志",
+  );
+  expect(screen.getByTestId("history-contrast-download").getAttribute("aria-label")).toBe(
+    "下载已保存日志",
+  );
+  expect(screen.getByTestId("history-contrast-maximize").getAttribute("aria-label")).toBe(
+    "最大化日志",
+  );
+  expect(screen.getByTestId("live-contrast-pause").getAttribute("aria-label")).toBe(
+    "暂停跟随",
+  );
+  expect(screen.getByTestId("live-contrast-maximize").getAttribute("aria-label")).toBe(
+    "最大化日志",
+  );
+  expect((screen.getByTestId("live-contrast-add-context") as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+
+  await act(async () => {
+    await applySystemLocale("en");
+  });
+  expect(screen.getByTestId("history-contrast-search").getAttribute("aria-label")).toBe(
+    "Search history logs",
+  );
+  expect(screen.getByTestId("history-contrast-copy").getAttribute("aria-label")).toBe(
+    "Copy saved logs",
+  );
+  expect(screen.getByTestId("history-contrast-download").getAttribute("aria-label")).toBe(
+    "Download saved logs",
+  );
+  expect(screen.getByTestId("live-contrast-pause").getAttribute("aria-label")).toBe(
+    "Pause following",
+  );
+
+  const styles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
+  expect(styles).toMatch(/\.log-pane \.log-toolbar \.ant-btn\s*\{/);
+  expect(styles).toMatch(/\.log-pane \.log-toolbar \.ant-btn:hover:not\(:disabled\)/);
+  expect(styles).toMatch(/\.log-pane \.log-toolbar \.ant-btn:focus-visible/);
+  expect(styles).toMatch(/\.log-pane \.log-toolbar \.ant-btn:disabled/);
+  expect(styles).toMatch(/\.log-pane \.log-toolbar \.ant-input-affix-wrapper\s*\{/);
+  expect(styles).toMatch(/\.log-pane \.log-toolbar \.ant-input-prefix/);
+  expect(styles).not.toContain(".live-log-workspace .log-toolbar .ant-btn");
+  expect(styles).not.toContain(".log-pane-maximized .log-toolbar .ant-btn");
+
+  expect(contrastRatio("#c9d1d9", "#21262d")).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio("#ffffff", "#30363d")).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio("#6e7681", "#161b22")).toBeGreaterThanOrEqual(3);
+  expect(contrastRatio("#24292f", "#ffffff")).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio("#57606a", "#ffffff")).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio("#8c959f", "#ffffff")).toBeGreaterThanOrEqual(3);
+  expect(contrastRatio("#58a6ff", "#161b22")).toBeGreaterThanOrEqual(3);
 });
 
 it("merges legacy stderr into the unified view without separate stream tabs", () => {
@@ -182,7 +295,7 @@ it("keeps the same follow semantics after an Execution reaches a terminal state"
   const { rerender } = render(
     <LiveLogWorkspace
       execution={makeExecution()}
-      liveStdout="line-1\n"
+      liveStdout={"line-1\n"}
       liveStderr=""
       fallbackExhausted={false}
       waitingForWebhook={false}
@@ -408,52 +521,160 @@ it("shows the number of lines appended while live reading is paused", () => {
   expect(screen.getByTestId("counted-log-new-count").textContent).toContain("2");
 });
 
-it("keeps full history searchable and copies the unfiltered saved content", async () => {
+it("keeps history search, copy and download intact across maximize and restore", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText },
   });
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+  if (typeof URL.createObjectURL !== "function") {
+    URL.createObjectURL = () => "blob:history-log";
+  }
+  if (typeof URL.revokeObjectURL !== "function") {
+    URL.revokeObjectURL = () => undefined;
+  }
+  const createObjectURL = vi
+    .spyOn(URL, "createObjectURL")
+    .mockReturnValue("blob:history-log");
+  const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL");
+  const clickedAnchors: HTMLAnchorElement[] = [];
+  const anchorClick = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(function recordDownload(this: HTMLAnchorElement) {
+      clickedAnchors.push(this);
+    });
   const saved = "before needle\nother line\nafter needle\n";
-  render(
-    <LogView
-      testId="history-tools"
-      content={saved}
-      truncated={false}
-      mode="history"
-      followControls={false}
-    />,
-  );
+  try {
+    render(
+      <LogView
+        testId="history-tools"
+        content={saved}
+        truncated={false}
+        mode="history"
+        followControls={false}
+        downloadFileName="execution-42"
+      />,
+    );
 
-  fireEvent.change(screen.getByTestId("history-tools-search"), {
-    target: { value: "needle" },
-  });
-  expect(screen.getByTestId("history-tools").textContent).toContain("before needle");
-  expect(screen.getByTestId("history-tools").textContent).not.toContain("other line");
-  expect(screen.getByText("匹配 2 行")).toBeTruthy();
+    const historyContent = screen.getByTestId("history-tools");
+    const historyRegion = historyContent.closest("[role='region']");
+    const search = screen.getByTestId("history-tools-search") as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "needle" } });
+    expect(historyContent.textContent).toContain("before needle");
+    expect(historyContent.textContent).not.toContain("other line");
+    expect(screen.getByText("匹配 2 行")).toBeTruthy();
 
-  await act(async () => {
-    fireEvent.click(screen.getByTestId("history-tools-copy"));
-  });
-  expect(writeText).toHaveBeenCalledWith(saved);
-  expect(screen.getByRole("status").textContent).toContain("已复制");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("history-tools-copy"));
+    });
+    expect(writeText).toHaveBeenCalledWith(saved);
+    expect(screen.getByRole("status").textContent).toContain("已复制");
+
+    fireEvent.click(screen.getByTestId("history-tools-download"));
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(createObjectURL.mock.calls[0]?.[0]).toBeInstanceOf(Blob);
+    expect((createObjectURL.mock.calls[0]?.[0] as Blob).size).toBe(new Blob([saved]).size);
+    expect(clickedAnchors).toHaveLength(1);
+    expect(clickedAnchors[0]?.download).toBe("execution-42.log");
+    expect(clickedAnchors[0]?.href).toBe("blob:history-log");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:history-log");
+
+    fireEvent.click(screen.getByTestId("history-tools-maximize"));
+    expect(historyRegion?.classList.contains("log-pane-maximized")).toBe(true);
+    expect(screen.getByTestId("history-tools-restore").getAttribute("aria-pressed")).toBe("true");
+    expect(document.activeElement).toBe(screen.getByTestId("history-tools-restore"));
+    expect(search.value).toBe("needle");
+    expect(historyContent.textContent).toBe("before needle\nafter needle\n");
+
+    fireEvent.click(screen.getByTestId("history-tools-restore"));
+    expect(historyRegion?.classList.contains("log-pane-maximized")).toBe(false);
+    expect(document.activeElement).toBe(screen.getByTestId("history-tools-maximize"));
+    expect(search.value).toBe("needle");
+    expect(historyContent.textContent).toBe("before needle\nafter needle\n");
+  } finally {
+    anchorClick.mockRestore();
+    createObjectURL.mockRestore();
+    revokeObjectURL.mockRestore();
+    if (originalCreateObjectURL === undefined) {
+      Reflect.deleteProperty(URL, "createObjectURL");
+    } else {
+      URL.createObjectURL = originalCreateObjectURL;
+    }
+    if (originalRevokeObjectURL === undefined) {
+      Reflect.deleteProperty(URL, "revokeObjectURL");
+    } else {
+      URL.revokeObjectURL = originalRevokeObjectURL;
+    }
+  }
 });
 
-it("maximizes and restores the live log without replacing its content", () => {
-  renderWorkspace({ liveStdout: "line-1\nline-2\n" });
-
+it("preserves live bottom-follow, paused content and dark terminal state across maximize and restore", () => {
+  const { rerender } = render(
+    <LiveLogWorkspace
+      execution={makeExecution()}
+      liveStdout="line-1\n"
+      liveStderr=""
+      fallbackExhausted={false}
+      waitingForWebhook={false}
+    />,
+  );
   const log = screen.getByTestId("live-log");
-  expect(screen.getByTestId("live-log-maximize")).toBeTruthy();
+  const liveRegion = log.closest("[role='region']");
+  setScrollMetrics(log, 400, 100);
+  rerender(
+    <LiveLogWorkspace
+      execution={makeExecution()}
+      liveStdout={"line-1\nline-2\n"}
+      liveStderr=""
+      fallbackExhausted={false}
+      waitingForWebhook={false}
+    />,
+  );
+  expect(log.scrollTop).toBe(400);
+  expect(screen.getByTestId("live-log-pause")).toBeTruthy();
+  expect(log.textContent).toBe("line-1\nline-2\n");
+
+  log.scrollTop = 70;
+  fireEvent.click(screen.getByTestId("live-log-pause"));
+  setScrollMetrics(log, 700, 100);
+  rerender(
+    <LiveLogWorkspace
+      execution={makeExecution()}
+      liveStdout={"line-1\nline-2\nline-3\n"}
+      liveStderr=""
+      fallbackExhausted={false}
+      waitingForWebhook={false}
+    />,
+  );
+  expect(screen.getByTestId("live-log-resume")).toBeTruthy();
+  expect(log.textContent).toBe("line-1\nline-2\n");
+  expect(log.scrollTop).toBe(70);
+
   fireEvent.click(screen.getByTestId("live-log-maximize"));
   expect(screen.getByTestId("live-log-restore")).toBeTruthy();
-  expect(screen.getByTestId("live-log").textContent).toBe(log.textContent);
+  expect(liveRegion?.classList.contains("log-pane-maximized")).toBe(true);
+  expect(screen.getByTestId("live-log-resume")).toBeTruthy();
+  expect(log.textContent).toBe("line-1\nline-2\n");
+  expect(log.classList.contains("terminal-view")).toBe(true);
   expect(document.activeElement).toBe(screen.getByTestId("live-log-restore"));
 
   fireEvent.click(screen.getByTestId("live-log-restore"));
   expect(screen.getByTestId("live-log-maximize")).toBeTruthy();
+  expect(liveRegion?.classList.contains("log-pane-maximized")).toBe(false);
+  expect(screen.getByTestId("live-log-resume")).toBeTruthy();
+  expect(log.textContent).toBe("line-1\nline-2\n");
+  expect(log.scrollTop).toBe(70);
   expect(document.activeElement).toBe(screen.getByTestId("live-log-maximize"));
 
-  fireEvent.click(screen.getByTestId("live-log-maximize"));
-  fireEvent.keyDown(document, { key: "Escape" });
-  expect(screen.getByTestId("live-log-maximize")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("live-log-resume"));
+  expect(screen.getByTestId("live-log-pause")).toBeTruthy();
+  expect(log.textContent).toBe("line-1\nline-2\nline-3\n");
+  expect(log.scrollTop).toBe(700);
+
+  const styles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
+  expect(styles).toMatch(
+    /\.terminal-view\s*\{[^}]*background\s*:\s*#111827[^}]*color\s*:\s*#d1d5db/s,
+  );
 });

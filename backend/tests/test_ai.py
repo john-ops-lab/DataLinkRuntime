@@ -6,6 +6,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib import error as url_error
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
 from dlr.common.config import Settings, settings
-from dlr.control.ai import providers
+from dlr.control.ai import providers, tool_audit
 from dlr.control.models import AdapterVersion, AiModelSetting, Execution
 from dlr.control.schemas.ai import AiModelOutput, AiSettingDraft
 
@@ -166,6 +167,33 @@ def test_ai_provider_timeout_settings_reject_out_of_bounds(
     monkeypatch: pytest.MonkeyPatch, value: float
 ) -> None:
     monkeypatch.setenv("DLR_AI_PROVIDER_TIMEOUT_SECONDS", str(value))
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_ai_assist_timeout_settings_default_and_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS", raising=False)
+    assert Settings().ai_assist_total_timeout_seconds == 150.0
+
+    monkeypatch.setenv("DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS", "135.5")
+    assert Settings().ai_assist_total_timeout_seconds == 135.5
+
+
+@pytest.mark.parametrize("value", [120.0, 180.0])
+def test_ai_assist_timeout_settings_accept_boundaries(
+    monkeypatch: pytest.MonkeyPatch, value: float
+) -> None:
+    monkeypatch.setenv("DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS", str(value))
+    assert Settings().ai_assist_total_timeout_seconds == value
+
+
+@pytest.mark.parametrize("value", [119.99, 180.01, float("nan"), float("inf")])
+def test_ai_assist_timeout_settings_reject_out_of_bounds(
+    monkeypatch: pytest.MonkeyPatch, value: float
+) -> None:
+    monkeypatch.setenv("DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS", str(value))
     with pytest.raises(ValidationError):
         Settings()
 
@@ -548,6 +576,86 @@ def test_provider_http_open_uses_configured_timeout(monkeypatch: pytest.MonkeyPa
     )
     assert response == {}
     assert opened_with == [247.5]
+
+
+def test_provider_http_open_never_exceeds_assist_remaining_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened_with: list[float] = []
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def read(self, _limit: int) -> bytes:
+            return b"{}"
+
+    class FakeOpener:
+        def open(self, _request: object, *, timeout: float) -> FakeResponse:
+            opened_with.append(timeout)
+            return FakeResponse()
+
+    monkeypatch.setattr(settings, "ai_provider_timeout_seconds", 180.0)
+    monkeypatch.setattr(providers, "_NO_REDIRECT_OPENER", FakeOpener())
+    response = providers._request_json(
+        "GET",
+        "http://fake-provider.invalid/v1/models",
+        {},
+        not_found_code="ai_provider_unreachable",
+        timeout_seconds=12.5,
+    )
+    assert response == {}
+    assert opened_with == [12.5]
+
+
+@pytest.mark.parametrize("remaining", [0.0, -1.0, float("nan"), float("inf")])
+def test_provider_http_rejects_invalid_remaining_timeout(
+    monkeypatch: pytest.MonkeyPatch, remaining: float
+) -> None:
+    called = False
+
+    class FakeOpener:
+        def open(self, *_: object, **__: object) -> object:
+            nonlocal called
+            called = True
+            raise AssertionError("network must not be reached")
+
+    monkeypatch.setattr(providers, "_NO_REDIRECT_OPENER", FakeOpener())
+    with pytest.raises(providers.AiProviderError) as error:
+        providers._request_json(
+            "GET",
+            "http://fake-provider.invalid/v1/models",
+            {},
+            not_found_code="ai_provider_unreachable",
+            timeout_seconds=remaining,
+        )
+    assert error.value.code == "ai_timeout"
+    assert called is False
+
+
+def test_chat_assist_passes_remaining_timeout_to_provider_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_request(*_: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return fake_chat_response(valid_output())
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    draft = AiSettingDraft(**setting_payload())
+    content, tool_calls = providers.chat_assist(
+        draft,
+        None,
+        [],
+        timeout_seconds=7.25,
+    )
+    assert content is not None
+    assert tool_calls is None
+    assert captured["timeout_seconds"] == 7.25
 
 
 def test_models_refresh_normalizes_ids_and_failure_keeps_manual_model(
@@ -1383,6 +1491,45 @@ def test_assist_can_answer_without_candidate(
     response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
     assert response.status_code == 200
     assert response.json()["candidate"] is None
+
+
+def test_assist_api_correlates_same_conversation_and_accepts_legacy_payload(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_adapter(api_client, "assist-correlation")
+    configure(api_client)
+    observed: list[tool_audit.AiAuditCorrelation] = []
+    create_correlation = tool_audit.new_request_correlation
+
+    def capture_correlation(conversation_id: str | None) -> tool_audit.AiAuditCorrelation:
+        correlation = create_correlation(conversation_id)
+        observed.append(correlation)
+        return correlation
+
+    def fake_request(*_: object, **__: object) -> object:
+        return fake_chat_response({"message": "Correlated.", "candidate": None})
+
+    monkeypatch.setattr(tool_audit, "new_request_correlation", capture_correlation)
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+
+    conversation_id = "3b241101-e2bb-4255-8caf-4136c566a962"
+    current = {**assist_body(), "conversation_id": conversation_id}
+    for _ in range(2):
+        response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=current)
+        assert response.status_code == 200, response.text
+    legacy_response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist",
+        json=assist_body(),
+    )
+    assert legacy_response.status_code == 200, legacy_response.text
+
+    assert len(observed) == 3
+    assert observed[0].conversation_id == observed[1].conversation_id == conversation_id
+    assert observed[0].request_id != observed[1].request_id
+    assert UUID(observed[0].request_id).version == 4
+    assert observed[2].conversation_id != conversation_id
+    assert UUID(observed[2].conversation_id).version == 4
 
 
 @pytest.mark.parametrize("content", ["", " \n\t"])

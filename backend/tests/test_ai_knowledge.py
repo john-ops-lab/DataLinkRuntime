@@ -43,6 +43,7 @@ from dlr.control.ai import knowledge, providers
 from dlr.control.ai import tools as tools_service
 from dlr.control.models import Credential
 from dlr.control.schemas.credential import CredentialCreate
+from dlr.control.services import ai as ai_service
 from dlr.control.services import secrets as secrets_service
 from test_ai import (
     assist_body,
@@ -494,6 +495,75 @@ def _knowledge_then_final(
 
 
 # --- registry / boundary ------------------------------------------------------
+
+
+def _state_execution(tool_name: str, payload: dict[str, object]) -> tools_service.ToolExecution:
+    content = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return tools_service.ToolExecution(
+        tool_name=tool_name,
+        status="success",
+        args_summary="",
+        result_summary="",
+        model_content=content,
+        error_code=None,
+        duration_ms=0,
+        result_truncated=False,
+        result_size=len(content),
+        source=None,
+    )
+
+
+def test_knowledge_state_enforces_order_and_ids_from_current_results() -> None:
+    state = ai_service._KnowledgeRetrievalState.create(True, True)
+    list_args = {"source": "ima"}
+    assert state.phase == "need_list"
+    assert state.accepts_call("dlr_docs_list", {}) is False
+    assert state.accepts_call("search_knowledge", {"source": "ima"}) is False
+    assert state.accepts_call("list_knowledge_bases", list_args) is True
+    state.record_execution(
+        list_args,
+        _state_execution(
+            "list_knowledge_bases",
+            {"items": [{"id": "kb-real", "source": "ima:v1:kb-real"}]},
+        ),
+    )
+    assert state.phase == "need_search"
+    assert (
+        state.accepts_call(
+            "search_knowledge",
+            {"source": "ima", "knowledge_base_id": "kb-forged", "query": "q"},
+        )
+        is False
+    )
+    search_args = {
+        "source": "ima",
+        "knowledge_base_id": "kb-real",
+        "query": "q",
+    }
+    assert state.accepts_call("search_knowledge", search_args) is True
+    state.record_execution(
+        search_args,
+        _state_execution(
+            "search_knowledge",
+            {"items": [{"id": "item-real", "source": "ima:v1:item-real"}]},
+        ),
+    )
+    assert state.phase == "need_read"
+    assert (
+        state.accepts_call("read_knowledge", {"source": "ima", "item_id": "item-forged"}) is False
+    )
+    read_args = {"source": "ima", "item_id": "item-real"}
+    assert state.accepts_call("read_knowledge", read_args) is True
+    state.record_execution(
+        read_args,
+        _state_execution(
+            "read_knowledge",
+            {"item": {"id": "item-real", "source": "ima:v1:item-real"}},
+        ),
+    )
+    assert state.phase == "ready"
+    assert state.stop_reason == ai_service._STOP_KNOWLEDGE_READY
+    assert state.evidence_sources == {"ima:v1:kb-real", "ima:v1:item-real"}
 
 
 def test_knowledge_tools_registered_and_read_only() -> None:
@@ -1015,8 +1085,9 @@ def test_ima_token_type_credential_rejected(
     response = api_client.post(
         f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
     )
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "ai_knowledge_unavailable"
+    assert response.status_code == 200, response.text
+    assert response.json()["candidate"] is None
+    assert "知识库检索当前不可用" in response.json()["message"]
 
 
 def test_redact_values_for_pre_resolution(ima_session: Session) -> None:
@@ -1056,7 +1127,7 @@ def test_secret_truth_never_reaches_prompt_ui_provider_or_logs(
                 _call(
                     "search_knowledge",
                     '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
-                    '"query": "contract"}',
+                    '"query": "secrets"}',
                     "call-search",
                 ),
                 _call("read_knowledge", '{"source": "ima", "item_id": "kb-item-2"}', "call-read"),
@@ -1142,6 +1213,355 @@ def test_secret_truth_absent_from_error_paths(
 # --- full assist chain: AiModelOutput, candidate=null, attachments, isolation --
 
 
+def test_assist_rejects_direct_final_then_completes_required_knowledge_order(
+    api_client: TestClient,
+    ima_config: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_adapter(api_client, "knowledge-direct-final")
+    configure(api_client)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
+    captured: list[dict[str, Any]] = []
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        captured.append(payload or {})
+        if len(captured) == 1:
+            return _final_response(message="This direct answer must be ignored.")
+        if len(captured) == 2:
+            return _tool_response(
+                [
+                    _call("list_knowledge_bases", '{"source": "ima"}', "direct-list"),
+                    _call(
+                        "search_knowledge",
+                        '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                        '"query": "secrets"}',
+                        "direct-search",
+                    ),
+                    _call(
+                        "read_knowledge",
+                        '{"source": "ima", "item_id": "kb-item-2"}',
+                        "direct-read",
+                    ),
+                ]
+            )
+        assert payload is not None and "tools" not in payload
+        return _final_response(message="知识库检索结果：已读取条目。\n\n模型补充：无。")
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+    )
+    assert response.status_code == 200, response.text
+    assert len(captured) == 3
+    assert "This direct answer must be ignored" not in response.text
+    assert [item["tool_name"] for item in response.json()["tool_calls"]] == [
+        "list_knowledge_bases",
+        "search_knowledge",
+        "read_knowledge",
+    ]
+    assert any(
+        "server-enforced stage need_list" in str(message.get("content"))
+        for message in captured[1]["messages"]
+    )
+    assert any(
+        "never invent a source" in str(message.get("content"))
+        for message in captured[2]["messages"]
+    )
+
+
+def test_assist_stops_after_three_direct_final_corrections(
+    api_client: TestClient,
+    ima_config: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_adapter(api_client, "knowledge-direct-final-loop")
+    configure(api_client)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
+    provider_calls = 0
+
+    def fake_request(*_: object, **__: object) -> object:
+        nonlocal provider_calls
+        provider_calls += 1
+        return _final_response(message="Still attempting to bypass retrieval.")
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+    )
+    assert response.status_code == 200, response.text
+    assert provider_calls == 3
+    assert response.json()["candidate"] is None
+    assert response.json()["tool_calls"] == []
+    assert "知识库检索顺序未完成" in response.json()["message"]
+
+
+def test_assist_blocks_nonknowledge_tool_before_corrected_knowledge_chain(
+    api_client: TestClient,
+    ima_config: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_adapter(api_client, "knowledge-nonknowledge-gate")
+    configure(api_client)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
+    rounds = 0
+
+    def fake_request(
+        _method: str,
+        _url: str,
+        _headers: dict[str, str],
+        payload: dict[str, object] | None = None,
+        **_: object,
+    ) -> object:
+        nonlocal rounds
+        if payload is not None and "tools" not in payload:
+            return _final_response(message="知识库检索结果：已读取。\n\n模型补充：无。")
+        rounds += 1
+        if rounds == 1:
+            return _tool_response([_call("dlr_docs_list", "{}", "wrong-tool")])
+        return _tool_response(
+            [
+                _call("list_knowledge_bases", '{"source": "ima"}', "fixed-list"),
+                _call(
+                    "search_knowledge",
+                    '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                    '"query": "secrets"}',
+                    "fixed-search",
+                ),
+                _call(
+                    "read_knowledge",
+                    '{"source": "ima", "item_id": "kb-item-2"}',
+                    "fixed-read",
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(providers, "_request_json", fake_request)
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+    )
+    assert response.status_code == 200, response.text
+    summaries = response.json()["tool_calls"]
+    assert summaries[0]["tool_name"] == "dlr_docs_list"
+    assert summaries[0]["status"] == "error"
+    assert summaries[0]["error_code"] == tools_service.CODE_KNOWLEDGE_SEQUENCE
+    assert [item["status"] for item in summaries[1:]] == ["success"] * 3
+
+
+def test_assist_knowledge_reuses_duplicate_protection_for_repeated_search(
+    api_client: TestClient,
+    ima_config: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_adapter(api_client, "knowledge-duplicate-search")
+    configure(api_client)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
+    search_args = '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", "query": "secrets"}'
+    monkeypatch.setattr(
+        providers,
+        "_request_json",
+        _knowledge_then_final(
+            [
+                _call("list_knowledge_bases", '{"source": "ima"}', "duplicate-list"),
+                _call("search_knowledge", search_args, "duplicate-search-1"),
+                _call("search_knowledge", search_args, "duplicate-search-2"),
+            ]
+        ),
+    )
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+    )
+    assert response.status_code == 200, response.text
+    summaries = response.json()["tool_calls"]
+    assert [item["status"] for item in summaries] == ["success", "success", "error"]
+    assert summaries[-1]["error_code"] == tools_service.CODE_DUPLICATE
+    assert FakeImaHandler.requested.count("POST /openapi/wiki/v1/search_knowledge") == 1
+    assert response.json()["candidate"] is None
+
+
+def test_assist_knowledge_empty_list_is_transparent_and_does_not_search(
+    api_client: TestClient,
+    ima_config: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeImaHandler.bases = []
+    adapter = create_adapter(api_client, "knowledge-empty-list")
+    configure(api_client)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
+    monkeypatch.setattr(
+        providers,
+        "_request_json",
+        _knowledge_then_final(
+            [_call("list_knowledge_bases", '{"source": "ima"}')],
+            message="General model context only.",
+        ),
+    )
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["candidate"] is None
+    assert "没有可检索的知识库" in response.json()["message"]
+    assert "模型补充：General model context only." in response.json()["message"]
+    assert "POST /openapi/wiki/v1/search_knowledge" not in FakeImaHandler.requested
+
+
+def test_assist_knowledge_empty_search_is_transparent_and_does_not_read(
+    api_client: TestClient,
+    ima_config: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_adapter(api_client, "knowledge-empty-search")
+    configure(api_client)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
+    monkeypatch.setattr(
+        providers,
+        "_request_json",
+        _knowledge_then_final(
+            [
+                _call("list_knowledge_bases", '{"source": "ima"}', "empty-list"),
+                _call(
+                    "search_knowledge",
+                    '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                    '"query": "zzz-no-match"}',
+                    "empty-search",
+                ),
+            ],
+            message="General model context only.",
+        ),
+    )
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["candidate"] is None
+    assert "知识库搜索未找到匹配条目" in response.json()["message"]
+    assert [item["tool_name"] for item in response.json()["tool_calls"]] == [
+        "list_knowledge_bases",
+        "search_knowledge",
+    ]
+    assert not any("get_media_info" in path for path in FakeImaHandler.requested)
+
+
+@pytest.mark.parametrize(
+    ("failing_tool", "calls", "expected_stage", "expected_count"),
+    [
+        (
+            "list_knowledge_bases",
+            [_call("list_knowledge_bases", '{"source": "ima"}')],
+            "知识库列表阶段失败",
+            1,
+        ),
+        (
+            "search_knowledge",
+            [
+                _call("list_knowledge_bases", '{"source": "ima"}', "failure-list"),
+                _call(
+                    "search_knowledge",
+                    '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                    '"query": "secrets"}',
+                    "failure-search",
+                ),
+            ],
+            "知识库搜索阶段失败",
+            2,
+        ),
+        (
+            "read_knowledge",
+            [
+                _call("list_knowledge_bases", '{"source": "ima"}', "read-failure-list"),
+                _call(
+                    "search_knowledge",
+                    '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                    '"query": "secrets"}',
+                    "read-failure-search",
+                ),
+                _call(
+                    "read_knowledge",
+                    '{"source": "ima", "item_id": "kb-item-2"}',
+                    "read-failure-read",
+                ),
+            ],
+            "知识条目正文读取失败",
+            3,
+        ),
+    ],
+)
+def test_assist_knowledge_stage_failures_are_transparent(
+    api_client: TestClient,
+    ima_config: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_tool: str,
+    calls: list[dict[str, Any]],
+    expected_stage: str,
+    expected_count: int,
+) -> None:
+    adapter = create_adapter(api_client, f"knowledge-stage-failure-{failing_tool}")
+    configure(api_client)
+    create_credential(
+        api_client,
+        name=CREDENTIAL_NAME,
+        credential_type="access_key",
+        fields={"access_key_id": IMA_CLIENT_ID, "access_key_secret": IMA_API_KEY},
+    )
+
+    def fail_handler(_args: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("private upstream detail")
+
+    monkeypatch.setattr(tools_service._TOOLS[failing_tool], "handler", fail_handler)
+    monkeypatch.setattr(
+        providers,
+        "_request_json",
+        _knowledge_then_final(calls, message="General model context only."),
+    )
+    response = api_client.post(
+        f"/api/adapters/{adapter['id']}/ai/assist", json=knowledge_assist_body()
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["candidate"] is None
+    assert len(result["tool_calls"]) == expected_count
+    assert result["tool_calls"][-1]["error_code"] == tools_service.CODE_FAILED
+    assert expected_stage in result["message"]
+    assert tools_service.CODE_FAILED in result["message"]
+    assert "private upstream detail" not in response.text
+
+
 def test_assist_knowledge_chain_final_output_candidate_null_and_attachments(
     api_client: TestClient,
     ima_config: ThreadingHTTPServer,
@@ -1172,7 +1592,7 @@ def test_assist_knowledge_chain_final_output_candidate_null_and_attachments(
                 _call(
                     "search_knowledge",
                     '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
-                    '"query": "contract"}',
+                    '"query": "secrets"}',
                     "call-2",
                 ),
                 _call("read_knowledge", '{"source": "ima", "item_id": "kb-item-2"}', "call-3"),
@@ -1223,7 +1643,20 @@ def test_assist_knowledge_chain_with_candidate_and_adapter_isolation(
         if any(m.get("role") == "tool" for m in payload["messages"]):
             return _final_response(message="Generated with knowledge.")
         return _tool_response(
-            [_call("read_knowledge", '{"source": "ima", "item_id": "kb-item-2"}')]
+            [
+                _call("list_knowledge_bases", '{"source": "ima"}', "call-list"),
+                _call(
+                    "search_knowledge",
+                    '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                    '"query": "secrets"}',
+                    "call-search",
+                ),
+                _call(
+                    "read_knowledge",
+                    '{"source": "ima", "item_id": "kb-item-2"}',
+                    "call-read",
+                ),
+            ]
         )
 
     monkeypatch.setattr(providers, "_request_json", fake_request)
@@ -1233,7 +1666,7 @@ def test_assist_knowledge_chain_with_candidate_and_adapter_isolation(
     assert response_a.status_code == 200, response_a.text
     result_a = response_a.json()
     assert result_a["candidate"] is not None
-    assert result_a["tool_calls"][0]["source"] == "ima:v1:kb-item-2"
+    assert result_a["tool_calls"][2]["source"] == "ima:v1:kb-item-2"
     # Adapter B keeps the plain single-shot path with its own conversation:
     # tool summaries never cross adapters, and recent_messages stays empty
     # (tool data never enters the conversation history).
@@ -1281,6 +1714,7 @@ def test_assist_knowledge_unknown_source_and_recent_messages_shape(
     summary = result["tool_calls"][0]
     assert summary["status"] == "error"
     assert summary["error_code"] == knowledge.KS_UNKNOWN_SOURCE
-    assert result["candidate"] is not None
+    assert result["candidate"] is None
+    assert "知识库列表阶段失败" in result["message"]
     # Tool data never joins recent_messages (C1 contract preserved).
     assert "bogus" not in json.dumps(result["message"])

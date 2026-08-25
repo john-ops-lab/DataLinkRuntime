@@ -90,7 +90,6 @@
       "argsLabel": "参数",
       "resultLabel": "结果",
       "rejected": "工具调用已被拒绝或失败",
-      "truncated": "结果过大，已截断",
       "errorLabel": "错误码：{{code}}",
       "ariaGroup": "工具 {{name}}：{{status}}"
     },

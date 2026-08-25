@@ -69,6 +69,12 @@ ITEMS: dict[str, dict[str, str]] = {
         "parent_folder_id": "",
         "highlight_content": "Cron-based schedule runs for task adapters.",
     },
+    "browser-success-item": {
+        "media_id": "browser-success-item",
+        "title": "Browser success fixture",
+        "parent_folder_id": "",
+        "highlight_content": "Safe bounded runtime guidance for browser acceptance.",
+    },
 }
 
 NOTES: dict[str, str] = {
@@ -85,6 +91,11 @@ MEDIA_TEXT: dict[str, str] = {
         "and context.logger; output is bounded and Credential truth never "
         "joins logs."
     ),
+    "browser-success-item": (
+        "Browser acceptance fixture: bounded runtime guidance is evidence-scoped, "
+        "read-only, and requires human review. "
+    )
+    * 45,
 }
 
 
@@ -176,12 +187,20 @@ class Handler(BaseHTTPRequestHandler):
             if kb_id != "dlr-interface-lib":
                 self._biz_error(110001, "参数非法")
                 return
-            hits = [
-                item
-                for item in ITEMS.values()
-                if query in item["title"].casefold()
-                or query in item["highlight_content"].casefold()
-            ]
+            if query == "browser-failure":
+                self._biz_error(110021, "浏览器验收固定限流错误")
+                return
+            if query == "browser-empty":
+                hits = []
+            elif query == "browser-success":
+                hits = [ITEMS["browser-success-item"]]
+            else:
+                hits = [
+                    item
+                    for item in ITEMS.values()
+                    if query in item["title"].casefold()
+                    or query in item["highlight_content"].casefold()
+                ]
             self._ok(
                 {
                     "info_list": hits,
@@ -194,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/openapi/wiki/v1/get_media_info":
             body = self._body()
             media_id = str(body.get("media_id", ""))
-            if media_id == "kb-item-1":
+            if media_id in {"kb-item-1", "browser-success-item"}:
                 # The media URL points back at this fake service using the
                 # hostname the Control container actually resolves (the
                 # container name on the private network); the adapter must

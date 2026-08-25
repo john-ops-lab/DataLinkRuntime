@@ -117,6 +117,7 @@ async function sendQuestion(text: string, expectedReply: string) {
 }
 
 type AssistPayload = {
+  conversation_id: string;
   message: string;
   working_copy: { code: string; requirements: string; runtime_config: Record<string, unknown> };
   recent_messages: { role: "user" | "assistant"; content: string }[];
@@ -138,6 +139,71 @@ beforeEach(() => {
 afterEach(async () => {
   await applySystemLocale(DEFAULT_SYSTEM_LOCALE);
   vi.restoreAllMocks();
+});
+
+it("reuses one in-memory conversation ID for send, retry and Regenerate, then rotates it by Adapter session", async () => {
+  const assistAdapter = vi
+    .spyOn(api, "assistAdapter")
+    .mockRejectedValueOnce(new Error("provider unavailable"))
+    .mockResolvedValueOnce(aiResponse("重试成功", null))
+    .mockResolvedValueOnce(aiResponse("重新生成成功", null))
+    .mockResolvedValueOnce(aiResponse("同会话第二轮", null))
+    .mockResolvedValueOnce(aiResponse("Adapter B 回复", null))
+    .mockResolvedValueOnce(aiResponse("新挂载回复", null));
+  const adapterA = makeAdapter({ id: 1, name: "adapter-a" });
+  const adapterB = makeAdapter({ id: 2, name: "adapter-b" });
+  const panel = renderPanel({ adapter: adapterA });
+
+  fireEvent.change(screen.getByTestId("ai-message-input"), {
+    target: { value: "首轮失败后重试" },
+  });
+  fireEvent.click(screen.getByTestId("ai-send"));
+  await screen.findByTestId("ai-panel-error");
+  fireEvent.click(screen.getByTestId("ai-retry"));
+  await screen.findByText("重试成功");
+  fireEvent.click(screen.getByTestId("ai-regenerate"));
+  await screen.findByText("重新生成成功");
+  await sendQuestion("同会话继续提问", "同会话第二轮");
+
+  const sameSessionPayloads = [0, 1, 2, 3].map((index) => payloadOf(assistAdapter, index));
+  const conversationId = sameSessionPayloads[0].conversation_id;
+  expect(conversationId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  expect(sameSessionPayloads.map((payload) => payload.conversation_id)).toEqual([
+    conversationId,
+    conversationId,
+    conversationId,
+    conversationId,
+  ]);
+  expect(Object.keys(sameSessionPayloads[0]).sort()).toEqual([
+    "base_version_id",
+    "conversation_id",
+    "message",
+    "recent_messages",
+    "working_copy",
+  ]);
+
+  panel.rerender({ adapter: adapterB });
+  await sendQuestion("切换 Adapter", "Adapter B 回复");
+  const switchedConversationId = payloadOf(assistAdapter, 4).conversation_id;
+  expect(switchedConversationId).not.toBe(conversationId);
+
+  panel.view.unmount();
+  renderPanel({ adapter: adapterB });
+  await sendQuestion("新挂载", "新挂载回复");
+  const remountedConversationId = payloadOf(assistAdapter, 5).conversation_id;
+  expect(remountedConversationId).not.toBe(switchedConversationId);
+  expect(remountedConversationId).not.toBe(conversationId);
+
+  const storageText = [window.localStorage, window.sessionStorage]
+    .flatMap((storage) =>
+      Array.from({ length: storage.length }, (_, index) => storage.getItem(storage.key(index) ?? "")),
+    )
+    .join("\n");
+  expect(storageText).not.toContain(conversationId);
+  expect(storageText).not.toContain(switchedConversationId);
+  expect(storageText).not.toContain(remountedConversationId);
 });
 
 it("regenerate reuses the frozen round snapshot, never the current editor/version/snippets, and adds no duplicate user message", async () => {

@@ -178,6 +178,7 @@ it("renders a successful tool call with name, status, args and result summary", 
   expect(screen.getByTestId("ai-tool-status").textContent).toBe("成功");
   expect(screen.getByTestId("ai-tool-args").textContent).toContain("参数");
   expect(screen.getByTestId("ai-tool-result").textContent).toContain("dlr-docs:v1");
+  expect(screen.getByTestId("ai-tool-result").textContent?.endsWith("…")).toBe(false);
   expect(screen.queryByTestId("ai-tool-error-code")).toBeNull();
   expect(screen.queryByTestId("ai-tool-truncated")).toBeNull();
 });
@@ -366,19 +367,39 @@ it("keeps long sanitized summaries bounded in the DOM (no layout blow-up, no raw
   expect(resultText).not.toContain(longResult);
 });
 
-it("renders the truncated marker when the server marked the result truncated", async () => {
+it("normalizes legacy, new and flag-only truncation to one ellipsis without visible or accessible notices", async () => {
   vi.spyOn(api, "assistAdapter").mockResolvedValue(
-    aiResponse("截断回复。", [
+    aiResponse("工具摘要完成。", [
       successSummary({
         result_truncated: true,
-        result_summary: '{"value":"…[DLR 工具结果已截断]","truncated":true}',
+        result_summary: '{"value":"legacy"}\n…[DLR 工具结果已截断]',
       }),
+      successSummary({ result_truncated: true, result_summary: '{"value":"new"}…' }),
+      successSummary({ result_truncated: true, result_summary: '{"value":"flag-only"}' }),
     ]),
   );
   renderPanel();
-  await sendQuestion("截断");
-  await screen.findByText("截断回复。");
-  expect(screen.getByTestId("ai-tool-truncated").textContent).toContain("已截断");
+  await sendQuestion("调用三个工具");
+  await screen.findByText("工具摘要完成。");
+
+  for (const result of screen.getAllByTestId("ai-tool-result")) {
+    const text = result.textContent ?? "";
+    expect(text.endsWith("…")).toBe(true);
+    expect(text.match(/…+$/u)?.[0]).toBe("…");
+    expect(text).not.toContain("[DLR 工具结果已截断]");
+  }
+  for (const card of screen.getAllByTestId("ai-tool-call")) {
+    expect(card.textContent).not.toContain("结果过大");
+    expect(card.textContent).not.toContain("已截断");
+    expect(card.getAttribute("aria-label")).not.toContain("截断");
+  }
+  expect(screen.queryByTestId("ai-tool-truncated")).toBeNull();
+
+  await applySystemLocale("en");
+  for (const card of screen.getAllByTestId("ai-tool-call")) {
+    expect(card.textContent?.toLocaleLowerCase()).not.toContain("truncated");
+    expect(card.getAttribute("aria-label")?.toLocaleLowerCase()).not.toContain("truncated");
+  }
 });
 
 it("keeps candidate=null and candidate rounds working with tools", async () => {

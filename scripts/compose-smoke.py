@@ -10,7 +10,9 @@ import socket
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, inspect, select, update
@@ -25,6 +27,7 @@ WORKER_TOKEN = os.environ["DLR_WORKER_TOKEN"]
 STORED_SECRET = os.environ["SMOKE_STORED_SECRET"]
 AI_FAKE_BASE_URL = os.environ["AI_FAKE_BASE_URL"]
 AI_FAKE_DISABLED_BASE_URL = os.environ["AI_FAKE_DISABLED_BASE_URL"]
+AUDIT_PROMPT_SENTINEL = "SMOKE_AUDIT_PROMPT_MUST_NOT_PERSIST"
 
 # M5.7 Wave B2: a real 1x1 PNG (magic bytes are sniffed server-side).
 PNG_1PX_BASE64 = (
@@ -970,7 +973,10 @@ tool_single = request(
     "POST",
     f"/adapters/{ai_adapter['id']}/ai/assist",
     {
-        "message": "SMOKE_TOOL_SINGLE Generate the deterministic python smoke Candidate.",
+        "message": (
+            f"SMOKE_TOOL_SINGLE {AUDIT_PROMPT_SENTINEL} "
+            "Generate the deterministic python smoke Candidate."
+        ),
         "working_copy": working_copy,
         "recent_messages": [],
         "base_version_id": ai_revision["id"],
@@ -1042,8 +1048,9 @@ assert "with write tool rejected" in tool_write["message"], tool_write
 assert tool_write["tool_calls"][0]["status"] == "error", tool_write
 assert tool_write["tool_calls"][0]["error_code"] == "ai_tool_unknown", tool_write
 
-# 无限循环模型被固定轮数/次数上限安全终止，绝不挂死。
-tool_loop = request(
+# 循环模型每轮使用不同的合法查询，证明第 8 轮完成后会禁用工具并强制最终化，
+# 不再沿用旧合同以 ai_tool_limit_exceeded 502 结束。
+tool_round_budget = request(
     "POST",
     f"/adapters/{ai_adapter['id']}/ai/assist",
     {
@@ -1052,10 +1059,32 @@ tool_loop = request(
         "recent_messages": [],
         "base_version_id": ai_revision["id"],
     },
-    expected=502,
 )
-assert tool_loop["detail"]["code"] == "ai_tool_limit_exceeded", tool_loop
-assert "安全上限" in tool_loop["detail"]["message"], tool_loop
+assert tool_round_budget["candidate"] is not None, tool_round_budget
+assert len(tool_round_budget["tool_calls"]) == 8, tool_round_budget
+assert all(
+    item["tool_name"] == "dlr_docs_search" and item["status"] == "success"
+    for item in tool_round_budget["tool_calls"]
+), tool_round_budget
+
+# 每轮四个不同查询，在第 16 次实际调用后触发调用预算并正常最终化；不得执行
+# 第 17 次调用，也不得把预算触顶单独返回为 502。
+tool_call_budget = request(
+    "POST",
+    f"/adapters/{ai_adapter['id']}/ai/assist",
+    {
+        "message": "SMOKE_TOOL_CALL_BUDGET Generate the deterministic python smoke Candidate.",
+        "working_copy": working_copy,
+        "recent_messages": [],
+        "base_version_id": ai_revision["id"],
+    },
+)
+assert tool_call_budget["candidate"] is not None, tool_call_budget
+assert len(tool_call_budget["tool_calls"]) == 16, tool_call_budget
+assert all(
+    item["tool_name"] == "dlr_docs_search" and item["status"] == "success"
+    for item in tool_call_budget["tool_calls"]
+), tool_call_budget
 
 # 工具调用不产生任何生命周期副作用。
 after_tools = request("GET", f"/adapters/{ai_adapter['id']}")
@@ -1113,8 +1142,8 @@ assert all(item["status"] == "success" for item in knowledge["tool_calls"]), kno
 # asserted here, never its id or content.
 assert knowledge["tool_calls"][0]["source"] == "ima:v1:dlr-interface-lib", knowledge
 assert "DLR接口库" in knowledge["tool_calls"][0]["result_summary"], knowledge
-# The "contract" query hits the runtime-contract item first.
-assert knowledge["tool_calls"][1]["source"] == "ima:v1:kb-item-1", knowledge
+# The "secrets" query returns the notes-backed credential-safety item.
+assert knowledge["tool_calls"][1]["source"] == "ima:v1:kb-item-2", knowledge
 # The read goes through the official notes branch (get_doc_content).
 assert knowledge["tool_calls"][2]["source"] == "ima:v1:kb-item-2", knowledge
 # The read content echoed the credential token; the tools layer redacted it
@@ -1129,5 +1158,116 @@ assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in serialized
 after_knowledge = request("GET", f"/adapters/{ai_adapter['id']}")
 assert after_knowledge["latest_version_id"] == before["latest_version_id"], after_knowledge
 assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
+
+# The dedicated audit stream is persisted in Control's platform-log mount.
+# Exercise both the current and rotated JSONL files with the small smoke-only
+# rotation limit, then pin the non-content schema and literal secrecy boundary.
+audit_current = (
+    Path(os.environ["DLR_PLATFORM_LOG_ROOT"]) / "control" / "ai-tool-audit.jsonl"
+)
+audit_files = sorted(audit_current.parent.glob(f"{audit_current.name}*"))
+assert audit_current in audit_files, audit_files
+assert any(path != audit_current for path in audit_files), audit_files
+
+audit_common_fields = {
+    "timestamp",
+    "schema_version",
+    "event_type",
+    "request_id",
+    "conversation_id",
+    "adapter_id",
+    "round",
+    "call_index",
+    "tool",
+    "args_summary",
+    "status",
+    "duration_ms",
+    "result_size",
+    "result_truncated",
+    "error_code",
+    "stop_reason",
+}
+audit_event_fields = {
+    "tool_attempt": audit_common_fields,
+    "guard": audit_common_fields,
+    "request_terminal": audit_common_fields
+    | {"successful_calls", "failed_calls", "blocked_calls"},
+}
+audit_statuses = {
+    "tool_attempt": {"success", "error", "blocked"},
+    "guard": {"blocked"},
+    "request_terminal": {"success", "stopped", "error"},
+}
+audit_records: list[dict[str, Any]] = []
+audit_text = ""
+request_conversations: dict[str, str] = {}
+for audit_path in audit_files:
+    assert audit_path.is_file(), audit_path
+    raw = audit_path.read_text(encoding="utf-8")
+    audit_text += raw
+    for line_number, line in enumerate(raw.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise AssertionError(f"{audit_path}:{line_number}: invalid JSONL") from error
+        assert isinstance(record, dict), (audit_path, line_number, record)
+        event_type = record.get("event_type")
+        assert event_type in audit_event_fields, (audit_path, line_number, record)
+        assert set(record) == audit_event_fields[event_type], (
+            audit_path,
+            line_number,
+            record,
+        )
+        assert record["schema_version"] == 1, record
+        assert isinstance(record["timestamp"], str) and record["timestamp"].endswith("Z"), record
+        assert type(record["adapter_id"]) is int and record["adapter_id"] > 0, record
+        assert type(record["round"]) is int and record["round"] >= 0, record
+        assert type(record["call_index"]) is int and record["call_index"] >= 0, record
+        assert isinstance(record["args_summary"], dict), record
+        assert record["status"] in audit_statuses[event_type], record
+        assert type(record["duration_ms"]) is int and record["duration_ms"] >= 0, record
+        assert type(record["result_size"]) is int and record["result_size"] >= 0, record
+        assert isinstance(record["result_truncated"], bool), record
+        assert record["error_code"] is None or isinstance(record["error_code"], str), record
+        assert record["stop_reason"] is None or isinstance(record["stop_reason"], str), record
+        if event_type == "tool_attempt":
+            assert isinstance(record["tool"], str) and record["tool"], record
+        else:
+            assert record["tool"] is None, record
+
+        for identifier_field in ("request_id", "conversation_id"):
+            identifier = record[identifier_field]
+            assert isinstance(identifier, str), record
+            parsed_identifier = uuid.UUID(identifier)
+            assert parsed_identifier.version == 4 and str(parsed_identifier) == identifier, record
+        request_id = record["request_id"]
+        conversation_id = record["conversation_id"]
+        previous_conversation = request_conversations.setdefault(request_id, conversation_id)
+        assert previous_conversation == conversation_id, record
+
+        if event_type == "request_terminal":
+            for count_field in ("successful_calls", "failed_calls", "blocked_calls"):
+                assert type(record[count_field]) is int and record[count_field] >= 0, record
+        audit_records.append(record)
+
+assert audit_records, audit_files
+assert any(record["event_type"] == "request_terminal" for record in audit_records), audit_records
+
+audit_sensitive_values = {
+    "admin token": ADMIN_TOKEN,
+    "worker token": WORKER_TOKEN,
+    "stored credential": STORED_SECRET,
+    "selected code": selected_text,
+    "log snippet": log_text,
+    "attachment body": attach_text,
+    "ima API key": ima_token,
+    "ima client ID": ima_client_id,
+    "Provider reasoning": "SMOKE_REASONING_MUST_NOT_REACH_BROWSER",
+    "Assist Prompt": AUDIT_PROMPT_SENTINEL,
+}
+for sensitive_name, sensitive_value in audit_sensitive_values.items():
+    assert sensitive_value not in audit_text, f"{sensitive_name} leaked into AI tool audit"
 
 print("M5.4.4 compose smoke passed")

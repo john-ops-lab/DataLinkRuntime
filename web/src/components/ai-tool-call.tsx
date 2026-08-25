@@ -11,9 +11,8 @@
  *
  * Accessibility: the whole card is one `role="status"` region with
  * `aria-label` identifying the tool and its state; the status text and every
- * label are localized (zh-CN / en) through the standard i18n contract, and
- * the state text is announced by screen readers when it appears (live
- * region) without being focus-trapping or keyboard-blocking.
+ * label are localized (zh-CN / en) through the standard i18n contract. The
+ * state is announced without adding a separate truncation notice.
  */
 
 import { useTranslation } from "react-i18next";
@@ -24,10 +23,14 @@ import type { ToolCallMessagePartProps } from "@assistant-ui/react";
  * layout even if a future server version misbehaves. */
 const DISPLAY_MAX_CHARS = 600;
 
-const TRUNCATION_MARKER = "…[DLR";
-
 function clampDisplay(value: string): string {
-  return value.length <= DISPLAY_MAX_CHARS ? value : value.slice(0, DISPLAY_MAX_CHARS);
+  if (value.length <= DISPLAY_MAX_CHARS) {
+    return value;
+  }
+  if (value.endsWith("…")) {
+    return `${value.slice(0, DISPLAY_MAX_CHARS - 1).replace(/…+$/u, "")}…`;
+  }
+  return value.slice(0, DISPLAY_MAX_CHARS);
 }
 
 /** True when the part is still running (no result yet) — the "calling"
@@ -83,9 +86,6 @@ export function DlrToolCallUI(props: ToolCallMessagePartProps) {
       ? "assistant.tools.status.error"
       : "assistant.tools.status.success";
   const statusLabel = t(statusKey);
-  // A result that was truncated server-side (or a result JSON that still
-  // carries the DLR truncation marker) gets an explicit notice.
-  const truncated = resultText.includes(TRUNCATION_MARKER);
   const errorCode = failed ? extractErrorCode(props.result, props.argsText) : null;
   const regionLabel = t("assistant.tools.ariaGroup", {
     name: toolName,
@@ -112,11 +112,6 @@ export function DlrToolCallUI(props: ToolCallMessagePartProps) {
       {!calling && (
         <span className="ai-tool-result" data-testid="ai-tool-result">
           {t("assistant.tools.resultLabel")}: {failed ? t("assistant.tools.rejected") : resultText}
-        </span>
-      )}
-      {truncated && (
-        <span className="ai-tool-truncated" data-testid="ai-tool-truncated">
-          {t("assistant.tools.truncated")}
         </span>
       )}
       {errorCode !== null && (

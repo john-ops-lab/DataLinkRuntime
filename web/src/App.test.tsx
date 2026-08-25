@@ -3774,6 +3774,7 @@ it.each(["python", "javascript", "java"] as const)(
     expect(screen.queryByTestId("ai-discard-candidate")).toBeNull();
 
     const payload = JSON.parse(assistBody) as {
+      conversation_id: string;
       message: string;
       working_copy: {
         code: string;
@@ -3790,6 +3791,7 @@ it.each(["python", "javascript", "java"] as const)(
       }[];
     };
     expect(payload).toEqual({
+      conversation_id: expect.any(String),
       message: "增加分页",
       working_copy: {
         code: `base-${language}\n`,

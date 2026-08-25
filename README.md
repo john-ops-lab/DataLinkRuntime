@@ -277,6 +277,15 @@ PostgreSQL 启动前会以容器内 `postgres` 用户检查 `postgres/` 是否�
 密码或其他真实凭据写入 `.env.example`、日志目录或命令输出。完整的生产路径、
 轮转和权限说明见 [平台日志部署文档](docs/deployment/platform-logs.md)。
 
+Control 的 AI 工具轨迹单独写入
+`<DLR_PLATFORM_LOG_ROOT>/control/ai-tool-audit.jsonl`，由应用按大小轮转，不进入
+宿主机仅匹配 `*.log` 的普通 logrotate。`DLR_AI_TOOL_AUDIT_MAX_BYTES` 默认
+`10485760`（10 MiB，允许 1～104857600），`DLR_AI_TOOL_AUDIT_BACKUP_COUNT`
+默认 `10`（允许 1～100）；默认最坏占用为当前文件加 10 份历史文件，即
+110 MiB。单次 Assist 总时限由 `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS` 控制，默认
+150 秒且仅允许 120～180 秒。回滚旧版 Control/Web 时移除这三个变量；审计文件
+无数据库依赖，可按部署保留策略保留或删除。
+
 ### 3. 启动 PostgreSQL 并执行迁移
 
 ```bash

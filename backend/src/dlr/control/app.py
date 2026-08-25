@@ -14,6 +14,7 @@ from starlette.responses import Response
 
 from dlr.common.platform_logging import configure_platform_logging
 from dlr.control import db
+from dlr.control.ai.tool_audit import configure_ai_tool_audit_logging
 from dlr.control.api import (
     adapters,
     ai,
@@ -91,6 +92,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Create the Control Node FastAPI application."""
     configure_platform_logging("control")
+    configure_ai_tool_audit_logging()
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
 
     @app.middleware("http")

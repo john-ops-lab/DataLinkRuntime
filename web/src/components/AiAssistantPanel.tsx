@@ -140,6 +140,9 @@ interface CandidateState {
  * retry lifetime and never rendered, logged or persisted. */
 interface AssistRoundSnapshot {
   adapterId: number;
+  /** Random correlation metadata for this mounted Adapter session. It is
+   * frozen with the round so retry / Regenerate always reuse the same ID. */
+  conversationId: string;
   message: string;
   baseSnapshot: AiWorkingCopy;
   runtimeConfig: Record<string, unknown>;
@@ -276,6 +279,23 @@ function recentVisibleMessages(messages: VisibleMessage[]): AiConversationMessag
  * echoing any rejected content. */
 type ThreadContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
+const LEGACY_TOOL_TRUNCATION_MARKER = "…[DLR 工具结果已截断]";
+
+/** Keep the server's truncation fact while hiding its legacy internal marker.
+ * Old and new Control responses converge to one trailing Unicode ellipsis;
+ * an untruncated summary is returned byte-for-byte unchanged. */
+function normalizedToolResultSummary(summary: AiToolCallSummary): string {
+  const hasLegacyMarker = summary.result_summary.includes(LEGACY_TOOL_TRUNCATION_MARKER);
+  if (!summary.result_truncated && !hasLegacyMarker) {
+    return summary.result_summary;
+  }
+  const withoutLegacyMarker = summary.result_summary
+    .split(LEGACY_TOOL_TRUNCATION_MARKER)
+    .join("")
+    .trimEnd();
+  return `${withoutLegacyMarker.replace(/…+$/u, "")}…`;
+}
+
 function toToolCallParts(message: VisibleMessage): ThreadContentPart[] {
   return message.toolCalls.map((summary, index) => ({
     type: "tool-call",
@@ -286,7 +306,7 @@ function toToolCallParts(message: VisibleMessage): ThreadContentPart[] {
     result:
       summary.status === "error"
         ? JSON.stringify({ ok: false, error_code: summary.error_code })
-        : summary.result_summary,
+        : normalizedToolResultSummary(summary),
     isError: summary.status === "error",
   }));
 }
@@ -772,6 +792,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [knowledgeCapabilityLoading, setKnowledgeCapabilityLoading] = useState(false);
   const [knowledgeSearchEnabled, setKnowledgeSearchEnabled] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
+  // Request correlation only: one UUID per mounted Adapter session, held in
+  // React memory and deliberately never written to browser storage.
+  const [conversationId, setConversationId] = useState(() => crypto.randomUUID());
   const maximizeButtonRef = useRef<HTMLButtonElement>(null);
   const wasMaximizedRef = useRef(false);
   // M5.5.13: the floating entry is draggable within the viewport. The position
@@ -977,6 +1000,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
       return;
     }
     previousAdapterIdRef.current = nextAdapterId;
+    setConversationId(crypto.randomUUID());
     setMessages((current) =>
       current.map((message) =>
         message.snapshot !== null &&
@@ -1134,6 +1158,7 @@ async function resolveComposerAttachment(
       const response = await api.assistAdapter(requestAdapterId, {
         // Wave B1: the frozen round snapshot, never the current editor,
         // Adapter or config.
+        conversation_id: snapshot.conversationId,
         message: snapshot.message,
         working_copy: {
           code: snapshot.baseSnapshot.code,
@@ -1269,6 +1294,7 @@ async function resolveComposerAttachment(
     }
     return {
       adapterId: adapter.id,
+      conversationId,
       message: message.trim(),
       baseSnapshot: { ...props.workingCopy },
       runtimeConfig,

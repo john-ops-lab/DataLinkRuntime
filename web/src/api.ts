@@ -13,12 +13,10 @@ import type {
   AccountUser,
   AdapterType,
   TaskRunMode,
+  AiAssistRequest,
   AiAssistResponse,
-  AiAttachment,
   AiAttachmentCapabilities,
   AiConnectionTestResult,
-  AiConversationMessage,
-  AiContextSnippet,
   AiCustomProvider,
   AiCustomProviderDraft,
   AiKnowledgeCapability,
@@ -505,22 +503,7 @@ export const api = {
 
   assistAdapter: (
     adapterId: number,
-    payload: {
-      message: string;
-      working_copy: {
-        code: string;
-        requirements: string;
-        runtime_config: Record<string, unknown>;
-      };
-      recent_messages: AiConversationMessage[];
-      base_version_id?: number | null;
-      /** M5.5.13: ordered exact context snippets (code and/or masked log). */
-      context_snippets?: AiContextSnippet[];
-      /** M5.7 Wave B2: request-only attachments (base64 bodies). */
-      attachments?: AiAttachment[];
-      /** M5.11 Wave D: opt-in knowledge search, frozen for this round. */
-      knowledge_search_enabled?: boolean;
-    },
+    payload: AiAssistRequest,
   ): Promise<AiAssistResponse> =>
     request(`/api/adapters/${adapterId}/ai/assist`, {
       method: "POST",

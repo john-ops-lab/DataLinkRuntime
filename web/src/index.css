@@ -781,31 +781,61 @@ body {
   color: #c9d1d9;
 }
 
-/* 日志区使用深色终端表面；disabled 也保持同一套对比和焦点语义，避免
- * Ant 默认白色按钮在无选区时像一个异常空框。 */
-.live-log-workspace .log-toolbar .ant-btn {
+/* 历史与实时日志复用同一套深色工具栏语义；selector 只覆盖 LogView，
+ * 避免影响工作区内其他 Ant Button / Input。 */
+.log-pane .log-toolbar .ant-btn {
   color: #c9d1d9;
   border-color: #484f58;
   background: #21262d;
 }
 
-.live-log-workspace .log-toolbar .ant-btn:hover:not(:disabled) {
+.log-pane .log-toolbar .ant-btn:hover:not(:disabled) {
   color: #fff;
   border-color: #58a6ff;
   background: #30363d;
 }
 
-.live-log-workspace .log-toolbar .ant-btn:focus-visible {
+.log-pane .log-toolbar .ant-btn:focus-visible {
   color: #fff;
   border-color: #58a6ff;
   box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.35);
 }
 
-.live-log-workspace .log-toolbar .ant-btn:disabled {
+.log-pane .log-toolbar .ant-btn:disabled {
   color: #6e7681;
   border-color: #30363d;
   background: #161b22;
   cursor: not-allowed;
+}
+
+/* 历史搜索框保留白色输入表面；默认边框、前缀/占位文字及键盘焦点
+ * 分别满足非文本 3:1、文字 4.5:1 和清晰 focus ring 的对比合同。 */
+.log-pane .log-toolbar .ant-input-affix-wrapper {
+  color: #24292f;
+  border-color: #8c959f;
+  background: #fff;
+}
+
+.log-pane .log-toolbar .ant-input-affix-wrapper:hover {
+  border-color: #0969da;
+}
+
+.log-pane .log-toolbar .ant-input-affix-wrapper:focus-within,
+.log-pane .log-toolbar .ant-input-affix-wrapper-focused {
+  border-color: #0969da;
+  box-shadow: 0 0 0 2px #58a6ff;
+}
+
+.log-pane .log-toolbar .ant-input {
+  color: #24292f;
+  background: #fff;
+}
+
+.log-pane .log-toolbar .ant-input::placeholder,
+.log-pane .log-toolbar .ant-input-prefix,
+.log-pane .log-toolbar .ant-input-clear-icon {
+  color: #57606a;
+  opacity: 1;
 }
 
 .log-pane-maximized {
@@ -822,25 +852,6 @@ body {
   border-bottom-color: #30363d;
   background: #161b22;
   color: #c9d1d9;
-}
-
-.log-pane-maximized .log-toolbar .ant-btn {
-  color: #c9d1d9;
-  border-color: #484f58;
-  background: #21262d;
-}
-
-.log-pane-maximized .log-toolbar .ant-btn:hover:not(:disabled),
-.log-pane-maximized .log-toolbar .ant-btn:focus-visible {
-  color: #fff;
-  border-color: #58a6ff;
-  background: #30363d;
-}
-
-.log-pane-maximized .log-toolbar .ant-btn:disabled {
-  color: #6e7681;
-  border-color: #30363d;
-  background: #161b22;
 }
 
 .task-live-log-handoff {
@@ -1496,7 +1507,6 @@ body {
   max-width: 100%;
 }
 
-.ai-tool-truncated,
 .ai-tool-error-code {
   color: #cf1322;
   font-size: 0.68rem;

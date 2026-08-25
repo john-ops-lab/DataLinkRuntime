@@ -52,8 +52,8 @@ logger = logging.getLogger("dlr.ai.tools")
 
 # --- Fixed bounds ------------------------------------------------------------
 
-MAX_TOOL_CALLS_PER_ASSIST = 8
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_CALLS_PER_ASSIST = 16
+MAX_TOOL_ROUNDS = 8
 MAX_TOOL_RESULT_CHARS = 4000
 MAX_TOOL_RESULT_TOTAL_CHARS = 16000
 MAX_TOOL_ARGS_CHARS = 500
@@ -61,7 +61,7 @@ MAX_TOOL_SUMMARY_CHARS = 400
 TOOL_TIMEOUT_SECONDS = 10.0
 MAX_TOOL_CONCURRENCY = 1
 
-_TRUNCATION_SUFFIX = "\n…[DLR 工具结果已截断]"
+_TRUNCATION_SUFFIX = "…"
 _REDACTED = "[REDACTED]"
 
 # Stable per-call error codes (never echo args or results).
@@ -70,6 +70,8 @@ CODE_ARGS_INVALID = "ai_tool_args_invalid"
 CODE_TIMEOUT = "ai_tool_timeout"
 CODE_FAILED = "ai_tool_failed"
 CODE_KNOWLEDGE_DISABLED = "ai_knowledge_disabled"
+CODE_DUPLICATE = "ai_tool_duplicate"
+CODE_KNOWLEDGE_SEQUENCE = "ai_knowledge_sequence_invalid"
 
 # Common secret shapes redacted wherever tool args/results could be rendered
 # (browser, model context or error messages). The round's API key is also
@@ -573,6 +575,45 @@ def is_registered_tool(name: str) -> bool:
     return name in _TOOLS
 
 
+def validated_tool_arguments(tool_name: str, raw_arguments: str) -> dict[str, Any] | None:
+    """Return canonical validated arguments when a registered call is valid.
+
+    The dispatcher still performs its own authoritative validation before
+    execution.  This read-only helper lets the request orchestrator detect an
+    equivalent call and validate knowledge-stage identifiers without running
+    a handler or reflecting malformed arguments.
+    """
+
+    spec = _TOOLS.get(tool_name)
+    if spec is None:
+        return None
+    try:
+        return ToolArgsValidator(spec.parameters).validate(raw_arguments)
+    except ToolFailure:
+        return None
+
+
+def tool_call_fingerprint(tool_name: str, raw_arguments: str) -> str | None:
+    """Deterministic fingerprint for one registered, schema-valid call."""
+
+    validated = validated_tool_arguments(tool_name, raw_arguments)
+    if validated is None:
+        return None
+    canonical = json.dumps(validated, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"{tool_name}:{canonical}"
+
+
+def rejected_tool_call(
+    tool_name: str,
+    error_code: str,
+    *,
+    args_summary: str = "",
+) -> ToolExecution:
+    """Build a sanitized non-executed result for an orchestration rejection."""
+
+    return _error_execution(_bounded_text(tool_name, 64), args_summary, error_code, 0)
+
+
 def _execute_one(
     spec: ToolSpec,
     validated_args: dict[str, Any],
@@ -632,6 +673,42 @@ def _sanitize_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> 
 
 def _truncate_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> dict[str, Any]:
     """Deterministically cut an oversized sanitized result to the bound."""
+    item = result.get("item")
+    if result.get("tool") == "read_knowledge" and isinstance(item, dict):
+        content = item.get("content")
+        if isinstance(content, str):
+            # Knowledge provenance remains machine-verifiable after the body
+            # is cut: the retrieval state still needs the actual item id and
+            # source to accept read -> ready. Only the safe body is shortened.
+            preserved_item = {key: item[key] for key in ("id", "title", "source") if key in item}
+
+            def candidate(content_limit: int) -> dict[str, Any]:
+                prefix_length = min(len(content), max(0, content_limit - 1))
+                return {
+                    "tool": "read_knowledge",
+                    "item": {
+                        **preserved_item,
+                        "content": f"{content[:prefix_length]}{_TRUNCATION_SUFFIX}",
+                    },
+                    "truncated": True,
+                }
+
+            low = 1
+            high = min(len(content) + 1, MAX_TOOL_RESULT_CHARS)
+            best = candidate(low)
+            if len(json.dumps(best, ensure_ascii=False, sort_keys=True)) <= MAX_TOOL_RESULT_CHARS:
+                while low <= high:
+                    middle = (low + high) // 2
+                    current = candidate(middle)
+                    if (
+                        len(json.dumps(current, ensure_ascii=False, sort_keys=True))
+                        <= MAX_TOOL_RESULT_CHARS
+                    ):
+                        best = current
+                        low = middle + 1
+                    else:
+                        high = middle - 1
+                return best
     raw = json.dumps(result, ensure_ascii=False, sort_keys=True)
     bounded = sanitize_text(raw, None, MAX_TOOL_RESULT_CHARS, redact_values)
     return {"value": bounded, "truncated": True}

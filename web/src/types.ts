@@ -388,6 +388,24 @@ export interface AiConversationMessage {
   content: string;
 }
 
+/** Browser-only AI conversation correlation. ``conversation_id`` is created
+ * in memory for one mounted Adapter session and is never authentication or
+ * persisted conversation state. */
+export interface AiAssistRequest {
+  conversation_id: string;
+  message: string;
+  working_copy: {
+    code: string;
+    requirements: string;
+    runtime_config: Record<string, unknown>;
+  };
+  recent_messages: AiConversationMessage[];
+  base_version_id?: number | null;
+  context_snippets?: AiContextSnippet[];
+  attachments?: AiAttachment[];
+  knowledge_search_enabled?: boolean;
+}
+
 /** M5.5.13: one exact browser-captured context snippet added to the AI
  * context. ``source`` distinguishes a Monaco code selection from a selection
  * of the browser-visible, already-masked live-log text. Captured at click

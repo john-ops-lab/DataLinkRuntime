@@ -1,0 +1,88 @@
+{
+  "change": "issue117-ai-tool-followups",
+  "task": "6.4",
+  "result": "PASS",
+  "performed_at": "2026-08-25T12:37:27Z",
+  "browser": {
+    "plugin": true,
+    "selection": "agent.browsers.getForUrl(http://localhost:8980/)",
+    "runtime": "Chrome 151",
+    "page": "http://localhost:8980/",
+    "title": "DataLinkRuntime",
+    "viewports": {"zh-CN": "1920x876", "en": "1920x820"}
+  },
+  "environment": {
+    "compose_project": "dlr-i117-browser-6425",
+    "ports": {"web": 8980, "account_web": 8981},
+    "services_healthy": ["postgres", "control", "worker", "web", "account-web"],
+    "left_running": true,
+    "preexisting_dlr_issue117_accept_103_touched": false,
+    "credential_values_archived": false
+  },
+  "fixtures": {
+    "history": {"adapter_id": 1, "execution_id": 1, "status": "succeeded", "stdout_characters": 24136},
+    "live_zh_CN": {"adapter_id": 2, "execution_id": 2, "status": "cancelled"},
+    "live_en": {"adapter_id": 2, "execution_id": 3, "status": "cancelled"},
+    "active_execution_count": 0,
+    "live_adapter_runnable": true
+  },
+  "checks": {
+    "history_both_locales": {
+      "states": ["normal", "maximized", "escape-restored"],
+      "search_marker_matches": 3,
+      "copied_characters": 24136,
+      "downloaded_bytes": 24136,
+      "keyboard_focus_checked": ["search", "copy", "download", "maximize"],
+      "contrast": {"text_min": 14.65, "enabled_icon_min": 6.39, "focus_min": 6.80, "restore_icon_min": 15.22}
+    },
+    "live_zh_CN": {
+      "initial_bottom_px": 0,
+      "pause_samples": [38108, 38108],
+      "resume_characters": 39324,
+      "maximized_bottom_px": 0,
+      "restored_bottom_px_after_transition": 0
+    },
+    "live_en": {
+      "initial_bottom_px": 0,
+      "pause_samples": [19814, 19814],
+      "resume_characters": 21030,
+      "maximized_bottom_px": 0,
+      "restored_bottom_px_after_transition": 0
+    },
+    "live_both_locales": {
+      "keyboard_focus_checked": ["pause-resume", "maximize"],
+      "contrast": {"enabled_icon_min": 9.86, "focus_min": 9.96, "restore_icon_min": 15.22},
+      "disabled_context_control_contrast": 3.77,
+      "disabled_control_excluded_from_enabled_gate": true
+    },
+    "thresholds": {"text": 4.5, "enabled_icon": 3.0, "focus": 3.0},
+    "horizontal_overflow": false,
+    "document_scroll_width": 1920,
+    "document_client_width": 1920,
+    "console_warn_or_error_count": 0,
+    "page_error_count": 0,
+    "framework_overlay_count": 0,
+    "requests": {"total": 150, "status_200": 141, "status_202": 2, "status_304": 7, "failed": 0},
+    "web_error_log_bytes": 0
+  },
+  "redaction": {
+    "screenshots_expose_credential_values": false,
+    "headers_cookies_bodies_archived": false
+  },
+  "screenshots_sha256": {
+    "en-history-maximized.png": "57de7ac6e31cbcf8f3f942a88ec3386c5f64b3010a3b77f49d6f2327ea460096",
+    "en-history-normal.png": "1157ee0978d17ca6942a319aa67ce91e94ba75ac2ff637eeec14eada8d6c1bb6",
+    "en-history-restored.png": "62a198f27a7c5e92556019f4d6c8c2321e10fb00421b704ba7abb42a7b4e1917",
+    "en-live-bottom.png": "11c1bfed1adb9bbb18a96e3c12fc61c9e1321289934c0421c22861641936379c",
+    "en-live-maximized.png": "73f0909e75eca2c233b8fdbbf51bc0f7e6e5e0d79fe5d058cce3fbf818fbc8c8",
+    "en-live-paused.png": "b2d2ad79b8389f3e276619bc02b64546a6ad61de404410c864a3f3334f6f6ab6",
+    "en-live-restored.png": "e22d15333aaf466b5c46f7c813f4e1d0264fe2ca7ba02a830be19231f861f15c",
+    "zh-history-maximized.png": "af77505b99a7904beabc5d674d40ba5d1087c676abfec7565f0fb13c53eb2b4e",
+    "zh-history-normal.png": "63061f2c9e4f2f92253dd496ef4095154188ac33b1fb4d4be91ec5da9bbde058",
+    "zh-history-restored.png": "0be80700d9f8b22857ffe1d4c26890703cadb087b384c59146f7fed6d36261d6",
+    "zh-live-bottom.png": "5e94c9d411d69cdce4af8677e5004a878c6cfe17ecc815e1ce09cb72034255a6",
+    "zh-live-maximized.png": "6f91d036c452386a8294c97f2f44da99d5b9cb5392fecb52517a8d2d999debe3",
+    "zh-live-paused.png": "1f5e95552fd3aac37b9883aecc3e81f370a6485801dae171cc624e2f5a5aa8dd",
+    "zh-live-restored.png": "f222a97022fb80f54f43e53ebc7837e443ca0de518601ff10f2eb972b20c634c"
+  }
+}

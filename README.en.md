@@ -286,6 +286,18 @@ credentials to `.env.example`, the log directories or command output. See the
 [platform log deployment documentation](docs/deployment/platform-logs.md) for
 the full production path, rotation and permission details.
 
+Control writes AI tool audit metadata separately to
+`<DLR_PLATFORM_LOG_ROOT>/control/ai-tool-audit.jsonl`. The application rotates
+this file by size, outside the host logrotate policy that matches only `*.log`.
+`DLR_AI_TOOL_AUDIT_MAX_BYTES` defaults to `10485760` (10 MiB; allowed
+1–104857600), and `DLR_AI_TOOL_AUDIT_BACKUP_COUNT` defaults to `10` (allowed
+1–100). The default worst-case footprint is the current file plus 10 history
+files, or 110 MiB. `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS` bounds one complete
+Assist to 150 seconds by default and accepts only 120–180 seconds. For rollback,
+remove these three variables when rolling back Control and Web; the audit files have no
+database dependency and may be retained or deleted under the deployment's log
+retention policy.
+
 ### 3. Start PostgreSQL and apply migrations
 
 ```bash
