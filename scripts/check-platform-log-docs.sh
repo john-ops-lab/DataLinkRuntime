@@ -7,10 +7,40 @@ cd "$(dirname "$0")/.."
 DOCS=(.env.example README.md docs/deployment/platform-logs.md)
 LOG_DIRS=(control/ worker/ web/ account-web/ postgres/)
 
+contains_literal() {
+  local file="$1"
+  local text="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg --fixed-strings --quiet -- "$text" "$file"
+  else
+    grep -Fq -- "$text" "$file"
+  fi
+}
+
+contains_pattern() {
+  local file="$1"
+  local pattern="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg --quiet -- "$pattern" "$file"
+  else
+    grep -Eq -- "$pattern" "$file"
+  fi
+}
+
+matching_lines() {
+  local pattern="$1"
+  shift
+  if command -v rg >/dev/null 2>&1; then
+    rg -n -i -- "$pattern" "$@"
+  else
+    grep -Eni -- "$pattern" "$@"
+  fi
+}
+
 require_literal() {
   local file="$1"
   local text="$2"
-  if ! rg --fixed-strings --quiet -- "$text" "$file"; then
+  if ! contains_literal "$file" "$text"; then
     echo "Missing expected text in $file: $text" >&2
     exit 1
   fi
@@ -19,7 +49,7 @@ require_literal() {
 require_pattern() {
   local file="$1"
   local pattern="$2"
-  if ! rg --quiet -- "$pattern" "$file"; then
+  if ! contains_pattern "$file" "$pattern"; then
     echo "Missing expected pattern in $file: $pattern" >&2
     exit 1
   fi
@@ -41,13 +71,13 @@ for doc in "${DOCS[@]}"; do
   require_pattern "$doc" '(Do not use.*chmod 777|不要使用.*chmod 777)'
 done
 
-if rg --quiet '^DLR_PLATFORM_LOG_ROOT=/var/lib/dlr/platform-logs' .env.example; then
+if contains_pattern .env.example '^DLR_PLATFORM_LOG_ROOT=/var/lib/dlr/platform-logs'; then
   echo "The .env.example active value must remain the local writable path" >&2
   exit 1
 fi
 require_literal .env.example 'DLR_PLATFORM_LOG_ROOT=./platform-logs'
 
-if ! rg --quiet '^/platform-logs/$' .gitignore; then
+if ! contains_pattern .gitignore '^/platform-logs/$'; then
   echo "Missing exact root platform-log ignore rule in .gitignore" >&2
   exit 1
 fi
@@ -63,11 +93,11 @@ require_literal .github/workflows/ci.yml 'run: ./scripts/check-platform-log-docs
 
 # A chmod 777 command must never be presented as an executable recommendation.
 while IFS= read -r line; do
-  if ! printf '%s\n' "$line" | rg --quiet -i '(Do not use|不要使用)'; then
+  if ! printf '%s\n' "$line" | grep -Eqi '(Do not use|不要使用)'; then
     echo "Unsafe chmod 777 recommendation found: $line" >&2
     exit 1
   fi
-done < <(rg -n -i 'chmod[[:space:]]+0?777' -- "${DOCS[@]}" || true)
+done < <(matching_lines 'chmod[[:space:]]+0?777' "${DOCS[@]}" || true)
 
 python3 - <<'PY'
 import re
