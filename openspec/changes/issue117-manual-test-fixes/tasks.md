@@ -57,3 +57,13 @@
 - [x] 10.1 重新运行全部相关 backend/web 自动化、静态检查、`./scripts/compose-smoke.sh` 和 OpenSpec 严格校验，验证 9 个 capability 与 tasks/proposal/design 一一对应、没有未勾选实施项或无关业务文件。
 - [x] 10.2 汇总每批自动化、Compose、浏览器视觉/交互、console、request、overflow 和安全边界证据，确认 zh-CN/en 与 1280/1440/1680/1920 覆盖完整，并明确记录任何无法验证的项而不是以 build 代替验收。
 - [x] 10.3 仅在 Batch 1–9 全部通过后复核 API/数据库/权限/Secret 兼容性和 clean worktree，创建本 change 的 Candidate commit；验证 Candidate 相对集成 `main` 的 delta 只包含 OpenSpec artifacts（`tasks.md` 与最终 evidence），集成 `main` 已包含 Batch 1–9 实现；本 final-gate worker 不实现业务代码、不 push、不创建 PR。
+
+## 11. 交付后非阻塞跟踪（不计入 OpenSpec 实施完成度）
+
+以下条目是交付后的人工验收跟踪载体，不是新的实施任务，不使用 checkbox，也不改变 10.1–10.3 的完成状态。
+
+| ID | 状态 | 责任方 | 触发条件 | 验收出口 |
+| --- | --- | --- | --- | --- |
+| F1 | `PENDING_POST_DELIVERY_NON_BLOCKING` | Product/QA + final human reviewer | 集成 Candidate 后、发布或归档前的人工验收窗口 | 留存 zh-CN/en、1280/1440/1680/1920 的统一人工视觉验收记录，并核对 console/page/request/overflow/security；结果回填对应 evidence 后关闭 |
+| F2 | `PENDING_POST_DELIVERY_NON_BLOCKING` | Web QA / Batch 4 owner | 下一次 reader 角色人工浏览器回归 | 补齐 reader 的 `en` 与 `zh-CN` 在 1280/1440/1680/1920 的矩阵，并归档键盘、console、request、overflow 证据后关闭 |
+| F3 | `PENDING_POST_DELIVERY_NON_BLOCKING` | Web QA / Batch 8 owner | 下一次 viewer 角色人工浏览器回归 | 补齐 viewer 的 `zh-CN/en` 在 1280/1440/1680/1920 的矩阵，并归档主要交互、console、request、overflow 证据后关闭 |

@@ -8,6 +8,31 @@
     "tree": "reported-in-REVIEW_READY",
     "reason": "Avoid a self-referential post-commit mutation; the final receipt records both values."
   },
+  "repair_metadata": {
+    "review_run_id": "a2863b36-aff6-4a21-9399-b3b0c224ab7f",
+    "sidecar_review_run_id": "a2863b36-aff6-4a21-9399-b3b0c224ab7f",
+    "review_archive_id": "john-ops-lab--DataLinkRuntime/issue117-final-gate-20260825-r5/7212b5a4c27ecdbb3808ef77bb44c4784fef7290/a2863b36-aff6-4a21-9399-b3b0c224ab7f",
+    "reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+    "reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+    "finding_class": "suggestion",
+    "repair_scope": "post-delivery non-blocking follow-up metadata only"
+  },
+  "verification_basis": {
+    "automated_gate_results": "inherited_from_reviewed_candidate",
+    "reviewed_candidate": "7212b5a4c27ecdbb3808ef77bb44c4784fef7290",
+    "reviewed_tree": "331cef055553a172ec54d87da4740dc026f9c7d2",
+    "web_backend_compose_rerun_on_repair_candidate": false,
+    "repair_validations": [
+      "openspec change strict",
+      "openspec all strict",
+      "JSON schema/parse",
+      "evidence links",
+      "tasks counts",
+      "git diff --check",
+      "sensitive information scan",
+      "machine absolute path scan"
+    ]
+  },
   "scope": {
     "change": "openspec/changes/issue117-manual-test-fixes",
     "allowed_candidate_delta": [
@@ -66,6 +91,32 @@
     ],
     "b2_provider_boundary": "fake/fixture provider only; no real Tencent ima credentials or environment"
   },
+  "follow_up": [
+    {
+      "id": "F1",
+      "status": "PENDING_POST_DELIVERY_NON_BLOCKING",
+      "owner": "Product/QA + final human reviewer",
+      "trigger": "集成 Candidate 后、发布或归档前的人工验收窗口",
+      "acceptance_exit": "留存 zh-CN/en、1280/1440/1680/1920 的统一人工视觉验收记录，并核对 console/page/request/overflow/security；结果回填对应 evidence 后关闭",
+      "tasks_reference": {"path": "openspec/changes/issue117-manual-test-fixes/tasks.md", "section": "11"}
+    },
+    {
+      "id": "F2",
+      "status": "PENDING_POST_DELIVERY_NON_BLOCKING",
+      "owner": "Web QA / Batch 4 owner",
+      "trigger": "下一次 reader 角色人工浏览器回归",
+      "acceptance_exit": "补齐 reader 的 en 与 zh-CN 在 1280/1440/1680/1920 的矩阵，并归档键盘、console、request、overflow 证据后关闭",
+      "tasks_reference": {"path": "openspec/changes/issue117-manual-test-fixes/tasks.md", "section": "11"}
+    },
+    {
+      "id": "F3",
+      "status": "PENDING_POST_DELIVERY_NON_BLOCKING",
+      "owner": "Web QA / Batch 8 owner",
+      "trigger": "下一次 viewer 角色人工浏览器回归",
+      "acceptance_exit": "补齐 viewer 的 zh-CN/en 在 1280/1440/1680/1920 的矩阵，并归档主要交互、console、request、overflow 证据后关闭",
+      "tasks_reference": {"path": "openspec/changes/issue117-manual-test-fixes/tasks.md", "section": "11"}
+    }
+  ],
   "privacy_scan": {
     "issue117_evidence_files": 221,
     "text_files": 106,

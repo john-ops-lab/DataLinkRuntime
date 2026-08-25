@@ -9,6 +9,8 @@
 - 本次 final-gate Candidate 只允许改变本文件、`gate.json` 和 OpenSpec `tasks.md`；集成 `main` 已包含 Batch 1–9 的实现。
 - Candidate 的最终 SHA/tree 由提交后的 `REVIEW_READY` 回执记录；不在提交内容中自引用 Git commit 元数据。
 
+本次 `MODE=REPAIR` 只补充交付后跟踪元数据；下表 10.1 的 Web/backend/Compose 结果继承自 reviewed Candidate `7212b5a4c27ecdbb3808ef77bb44c4784fef7290`，未声称在本 repair SHA 重跑。repair 实际只运行 OpenSpec strict、JSON/schema/links/task counts、`git diff --check` 与敏感信息/绝对路径扫描。
+
 开始前已确认：工作区无 tracked/untracked 修改；仅执行 `git merge --ff-only main` 对齐，未执行 `reset` 或删除 lock；对齐后 `HEAD=main=merge-base=ca8810f6fc1e5d5532aba2557fc16b49d18c77f2`。native 主 Worker 首个 `turn_context` 已独立复核为 `model=gpt-5.6-luna`、`effort=max`、`collaboration_mode.settings.reasoning_effort=max`；独立低 effort review transcript 未用于该判断。
 
 `.qoder/settings.json` 在本 worktree 不存在；只核对其路径元数据，未读取内容、修改、暂存或提交，未修改 ignore 规则。
@@ -62,6 +64,18 @@ Backend 使用独立 `postgres:16-alpine` 容器和独立端口 `55439`；测试
 - B9：只打开 README/部署文档，验证双语 heading、相对链接、文档一致性、静态页面与 Compose；按任务不启动业务浏览器流程。
 
 因此，主要合同路径的双语及四个目标桌面宽度已有固定自动化/截图矩阵；reader/viewer 人群的额外矩阵缺口如上如实保留。AO Browser/Playwright 自动化和无 overflow 不能替代最终人工视觉验收，人工视觉验收仍为 pending。
+
+### 4.1 交付后非阻塞跟踪
+
+后续跟踪载体已写入 [`tasks.md` 第 11 节](../../../openspec/changes/issue117-manual-test-fixes/tasks.md)，明确不计入 OpenSpec 实施完成度：
+
+| ID | 状态 | 责任方 | 触发条件 | 验收出口 |
+| --- | --- | --- | --- | --- |
+| F1 | `PENDING_POST_DELIVERY_NON_BLOCKING` | Product/QA + final human reviewer | 集成 Candidate 后、发布或归档前的人工验收窗口 | 完成双语四目标宽度的统一人工视觉记录，并核对 console/page/request/overflow/security 后回填 evidence |
+| F2 | `PENDING_POST_DELIVERY_NON_BLOCKING` | Web QA / Batch 4 owner | 下一次 reader 角色人工浏览器回归 | 补齐 reader `en`、`zh-CN` × 1280/1440/1680/1920 及键盘/console/request/overflow 证据 |
+| F3 | `PENDING_POST_DELIVERY_NON_BLOCKING` | Web QA / Batch 8 owner | 下一次 viewer 角色人工浏览器回归 | 补齐 viewer `zh-CN/en` × 1280/1440/1680/1920 及主要交互/console/request/overflow 证据 |
+
+F1–F3 均为交付后非阻塞条目；本 repair 不修改产品实现，也不取消 10.1–10.3。
 
 Issue117 B1–B9 evidence 语义扫描结果：221 个文件（106 个文本文件）中，机器绝对路径 marker `0`、credential value pattern `0`、实际 request/response body/header 字段 `0`。B9 `rg-cross-check.txt` 有一处仅用于审计规则的 `request body` 文字，不是 payload；B4 的 `secretValuesCaptured`/`secretExposed` 仅为布尔断言字段，无 Secret 值。未读取或归档真实凭据、raw provider response、request headers/bodies。
 
