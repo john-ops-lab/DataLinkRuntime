@@ -110,7 +110,7 @@ const DEFAULT_CUSTOM_PROVIDER: AiCustomProviderDraft = {
   credential_id: null,
   images_native: false,
   files_native: false,
-  tools_supported: false,
+  tools_supported: true,
 };
 
 function supportedReasoningEfforts(

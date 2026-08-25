@@ -332,17 +332,10 @@ async function runCase(page: Page, locale: Locale, width: number) {
   await expect(page.getByTestId("ai-composer-guidance")).toBeVisible();
 
   const guidance = await readGuidance(page);
-  if (width <= 1180) {
-    expect(guidance.line_count).toBeGreaterThan(1);
-    expect(guidance.flex_wrap).toBe("wrap");
-    expect(guidance.hint_white_space).toBe("normal");
-    expect(guidance.privacy_white_space).toBe("normal");
-  } else {
-    expect(guidance.line_count).toBe(1);
-    expect(guidance.flex_wrap).toBe("nowrap");
-    expect(guidance.hint_white_space).toBe("nowrap");
-    expect(guidance.privacy_white_space).toBe("nowrap");
-  }
+  expect(guidance.line_count).toBe(1);
+  expect(guidance.flex_wrap).toBe("nowrap");
+  expect(guidance.hint_white_space).toBe("nowrap");
+  expect(guidance.privacy_white_space).toBe("nowrap");
   expect(guidance.hint_client_width).toBeGreaterThan(0);
   expect(guidance.privacy_client_width).toBeGreaterThan(0);
   expect(guidance.hint_scroll_width).toBeLessThanOrEqual(guidance.client_width);
@@ -356,24 +349,23 @@ async function runCase(page: Page, locale: Locale, width: number) {
   }
   await expect(page.getByTestId("ai-composer-guidance").locator("br")).toHaveCount(0);
   await expect(page.getByTestId("ai-composer-guidance").locator(":scope > div, :scope > p")).toHaveCount(0);
-  expect(guidance.text).toContain(locale === "zh-CN" ? "最多 8 个" : "max 8");
-  expect(guidance.text).toContain(locale === "zh-CN" ? "敏感凭据" : "sensitive credentials");
-  expect(guidance.hint_text).toContain("6 MiB");
-  expect(guidance.hint_text).toContain("12 MiB");
+  expect(guidance.text).toContain(locale === "zh-CN" ? "最多上传8个附件" : "Upload up to 8 attachments");
+  expect(guidance.text).toContain(locale === "zh-CN" ? "请勿上传敏感信息" : "do not upload sensitive information");
+  expect(guidance.hint_text).toContain(locale === "zh-CN" ? "单附件最大6MB" : "6MB per attachment");
   expect(guidance.privacy_text).toContain(
-    locale === "zh-CN" ? "请勿上传密码/密钥/敏感凭据。" : "No passwords/keys or sensitive credentials.",
+    locale === "zh-CN" ? "请勿上传敏感信息。" : "do not upload sensitive information.",
   );
   expect(guidance.hint_aria_label).toContain(
-    locale === "zh-CN" ? "支持图片 / PDF / DOCX / 文本与代码文件" : "Images / PDF / DOCX / text and code files",
+    locale === "zh-CN" ? "最多上传8个附件" : "Upload up to 8 attachments",
   );
   expect(guidance.guidance_aria_label).toContain(
-    locale === "zh-CN" ? "附件内容会发送给管理员配置的模型服务" : "Attachment content is sent to the model service configured by the administrator",
+    locale === "zh-CN" ? "请勿上传敏感信息" : "do not upload sensitive information",
   );
   expect(guidance.privacy_aria_label).toContain(
-    locale === "zh-CN" ? "附件内容会发送给管理员配置的模型服务" : "Attachment content is sent to the model service configured by the administrator",
+    locale === "zh-CN" ? "请勿上传敏感信息" : "do not upload sensitive information",
   );
   expect(guidance.privacy_aria_label).toContain(
-    locale === "zh-CN" ? "请勿上传密码、密钥等敏感凭据" : "Do not upload passwords, keys or other sensitive credentials",
+    locale === "zh-CN" ? "请勿上传敏感信息" : "do not upload sensitive information",
   );
 
   await page.getByTestId("ai-attachment-input").setInputFiles({

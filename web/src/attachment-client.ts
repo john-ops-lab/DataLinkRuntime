@@ -20,7 +20,7 @@ import type { AiAttachment, AiAttachmentLimits } from "./types";
 export const DEFAULT_ATTACHMENT_LIMITS: AiAttachmentLimits = {
   max_attachments: 8,
   max_file_bytes: 6 * 1024 * 1024,
-  max_total_bytes: 12 * 1024 * 1024,
+  max_total_bytes: 8 * 6 * 1024 * 1024,
   max_parsed_chars_per_file: 64 * 1024,
   max_parsed_total_chars: 256 * 1024,
   parse_timeout_seconds: 30,

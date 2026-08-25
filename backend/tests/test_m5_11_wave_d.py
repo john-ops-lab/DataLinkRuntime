@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dlr.control.ai import providers
+from dlr.control.schemas.ai import AiCustomProviderDraft, AiSettingDraft
 from test_ai import configure, setting_payload
 
 
@@ -45,6 +46,31 @@ def test_gemini_model_discovery_maps_native_names_and_strips_prefix(
 
     assert models == ["gemini-2.5-pro", "gemini-2.5-flash"]
     assert requests == [("GET", "https://generativelanguage.googleapis.com/v1beta/models")]
+
+
+def test_minimax_tool_payload_uses_native_thinking_compatibility() -> None:
+    setting = AiSettingDraft.model_validate(setting_payload(provider="minimax"))
+    payload = providers._build_protocol_payload(
+        setting,
+        [{"role": "user", "content": "search knowledge"}],
+        structured=True,
+        adapter=providers.get_provider("minimax"),
+        tools=[{"type": "function", "function": {"name": "search_knowledge"}}],
+    )
+
+    assert payload["tool_choice"] == "auto"
+    assert payload["reasoning_split"] is False
+
+
+def test_custom_provider_draft_defaults_tool_support_on() -> None:
+    draft = AiCustomProviderDraft.model_validate(
+        {
+            "name": "default tools",
+            "protocol": "openai_compatible",
+            "base_url": "https://provider.example.invalid/v1",
+        }
+    )
+    assert draft.tools_supported is True
 
 
 def test_protocol_adapters_preserve_native_message_shapes_and_tool_rounds() -> None:

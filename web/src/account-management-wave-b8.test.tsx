@@ -490,9 +490,12 @@ it("filters by keyword, role and status locally without extra list requests", as
   fireEvent.change(screen.getByLabelText("搜索账号"), { target: { value: "" } });
   await screen.findByText("ordinary");
 
-  const queryFilter = document.querySelector(".wave-c-query-filter");
+  const queryFilter = screen.getByTestId("user-filter-form");
   expect(queryFilter).not.toBeNull();
-  const filterSelects = within(queryFilter as HTMLElement).getAllByRole("combobox");
+  expect(queryFilter.querySelector(".user-filter-keyword")).not.toBeNull();
+  expect(queryFilter.querySelector(".user-filter-role")).not.toBeNull();
+  expect(queryFilter.querySelector(".user-filter-status")).not.toBeNull();
+  const filterSelects = within(queryFilter).getAllByRole("combobox");
   const [roleFilter, statusFilter] = filterSelects;
 
   fireEvent.mouseDown(roleFilter);

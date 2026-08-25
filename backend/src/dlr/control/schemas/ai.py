@@ -174,7 +174,7 @@ class AiCustomProviderDraft(_StrictSchema):
     credential_id: int | None = None
     images_native: bool = False
     files_native: bool = False
-    tools_supported: bool = False
+    tools_supported: bool = True
 
     @model_validator(mode="before")
     @classmethod

@@ -183,6 +183,9 @@ def test_attachment_capabilities_endpoint_exposes_stable_contract(
         "parse_timeout_seconds": attachments_module.PARSE_TIMEOUT_SECONDS,
     }
     assert body["supported_content_types"] == sorted(attachments_module.MIME_EXTENSIONS)
+    assert attachments_module.MAX_TOTAL_BYTES == (
+        attachments_module.MAX_ATTACHMENTS * attachments_module.MAX_FILE_BYTES
+    )
     by_provider = {item["provider"]: item for item in body["providers"]}
     assert set(by_provider) == {
         "openai",
@@ -616,9 +619,11 @@ def test_assist_rejects_per_file_size_limit(
 
 def test_assist_rejects_total_size_limit(
     api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = create_adapter(api_client, "attach-total-reject")
     configure(api_client)
+    monkeypatch.setattr(attachments_module, "MAX_TOTAL_BYTES", 12 * 1024 * 1024)
     # Three files below the per-file cap still exceed the total cap.
     chunk = b"x" * (attachments_module.MAX_TOTAL_BYTES // 3 + 1024)
     body = assist_body()

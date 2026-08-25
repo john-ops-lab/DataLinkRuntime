@@ -233,7 +233,7 @@ class AiCustomProvider(Base):
         Boolean, nullable=False, default=False, server_default=text("false")
     )
     tools_supported: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("false")
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

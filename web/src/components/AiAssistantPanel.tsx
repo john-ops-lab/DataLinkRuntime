@@ -355,6 +355,11 @@ function attachmentServerErrorMessage(error: unknown, fallback: string): string 
   return userErrorMessage(error, fallback);
 }
 
+function formatAttachmentGuidanceSize(bytes: number): string {
+  const mebibytes = bytes / 1024 / 1024;
+  return Number.isInteger(mebibytes) ? `${mebibytes}MB` : formatAttachmentSize(bytes);
+}
+
 /** M5.7 Wave A: 发送按钮。点击路径由 DLR 同步启动 assist 流程（保持既有
  * “准备态先于请求可见”的生命周期回归语义），并阻止原语自带的异步 send()
  * 双路径；Enter / Ctrl/Cmd+Enter 键盘路径仍走表单提交 → External Store
@@ -582,40 +587,30 @@ function ComposerAttachmentArea(props: {
         className="ai-composer-guidance"
         data-testid="ai-composer-guidance"
         role="note"
-        aria-label={`${t("assistant.attachments.hint", {
+        aria-label={t("assistant.attachments.guidance", {
           count: props.limits.max_attachments,
-          size: formatAttachmentSize(props.limits.max_file_bytes),
-          total: formatAttachmentSize(props.limits.max_total_bytes),
-        })} ${t("assistant.attachments.privacyNoticeLead")} ${t("assistant.attachments.privacyNoticeSensitive")}`}
+          size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
+        })}
       >
         <span
           className="ai-attachment-hint"
           data-testid="ai-attachment-hint"
-          aria-label={t("assistant.attachments.hint", {
+          aria-label={t("assistant.attachments.guidance", {
             count: props.limits.max_attachments,
-            size: formatAttachmentSize(props.limits.max_file_bytes),
-            total: formatAttachmentSize(props.limits.max_total_bytes),
+            size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
           })}
-          title={t("assistant.attachments.hint", {
+          title={t("assistant.attachments.guidance", {
             count: props.limits.max_attachments,
-            size: formatAttachmentSize(props.limits.max_file_bytes),
-            total: formatAttachmentSize(props.limits.max_total_bytes),
+            size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
           })}
         >
-          {t("assistant.attachments.oneLineHint", {
+          {t("assistant.attachments.guidanceLead", {
             count: props.limits.max_attachments,
-            size: formatAttachmentSize(props.limits.max_file_bytes),
-            total: formatAttachmentSize(props.limits.max_total_bytes),
+            size: formatAttachmentGuidanceSize(props.limits.max_file_bytes),
           })}
-        </span>
-        <span
-          className="ai-attachment-privacy"
-          data-testid="ai-attachment-privacy"
-          aria-label={`${t("assistant.attachments.privacyNoticeLead")} ${t("assistant.attachments.privacyNoticeSensitive")}`}
-          title={`${t("assistant.attachments.privacyNoticeLead")} ${t("assistant.attachments.privacyNoticeSensitive")}`}
-        >
-          {t("assistant.attachments.oneLinePrivacyNoticeLead")}{" "}
-          <strong>{t("assistant.attachments.oneLinePrivacyNoticeSensitive")}</strong>
+          <strong className="ai-attachment-privacy" data-testid="ai-attachment-privacy">
+            {t("assistant.attachments.guidancePrivacy")}
+          </strong>
         </span>
       </div>
       <div

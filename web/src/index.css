@@ -774,6 +774,13 @@ body {
   min-width: 0;
 }
 
+.live-log-pane .log-toolbar,
+.history-log-pane .log-toolbar {
+  border-bottom-color: #30363d;
+  background: #161b22;
+  color: #c9d1d9;
+}
+
 /* 日志区使用深色终端表面；disabled 也保持同一套对比和焦点语义，避免
  * Ant 默认白色按钮在无选区时像一个异常空框。 */
 .live-log-workspace .log-toolbar .ant-btn {
@@ -1099,15 +1106,16 @@ body {
 }
 
 .editor-main.editor-main-maximized {
-  position: absolute;
-  inset: 0;
-  z-index: 45;
+  position: fixed;
+  inset: clamp(0px, 1.25vw, 16px);
+  z-index: 1000;
+  box-sizing: border-box;
   width: auto;
   height: auto;
   min-height: 0;
-  border: none;
-  border-radius: 0;
-  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.28), 0 12px 40px rgba(0, 0, 0, 0.2);
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45), 0 12px 40px rgba(0, 0, 0, 0.35);
 }
 
 .editor-main-maximized .editor-main-actions {
@@ -1849,15 +1857,13 @@ body {
 .ai-composer-guidance {
   display: flex;
   flex-wrap: nowrap;
-  gap: 0 2px;
   min-width: 0;
   color: var(--dlr-text-weak);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   line-height: 1.45;
 }
 
-.ai-attachment-hint,
-.ai-attachment-privacy {
+.ai-attachment-hint {
   flex: 0 0 auto;
   font-size: inherit;
   line-height: 1.45;
@@ -1866,10 +1872,6 @@ body {
 }
 
 .ai-attachment-privacy {
-  color: var(--dlr-text-weak);
-}
-
-.ai-attachment-privacy strong {
   font-weight: 600;
 }
 
@@ -3485,6 +3487,41 @@ body {
   gap: 8px;
 }
 
+.user-filter-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+  row-gap: 4px;
+  width: 100%;
+  padding: 12px 14px 6px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dlr-workspace-bg) 72%, transparent);
+}
+
+.user-filter-form .ant-form-item {
+  margin-bottom: 8px;
+}
+
+.user-filter-keyword {
+  grid-column: 1 / -1;
+}
+
+.user-filter-form .ant-input-affix-wrapper,
+.user-filter-form .ant-select {
+  width: 100%;
+}
+
+@media (max-width: 700px) {
+  .user-filter-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .user-filter-keyword {
+    grid-column: auto;
+  }
+}
+
 .user-reset-dialog {
   margin-top: 16px;
 }
@@ -3581,17 +3618,14 @@ body {
   }
 
   .ai-composer-guidance {
-    flex-wrap: wrap;
-    gap: 2px 4px;
-    font-size: 0.68rem;
+    flex-wrap: nowrap;
+    font-size: 0.72rem;
   }
 
-  .ai-attachment-hint,
-  .ai-attachment-privacy {
-    flex: 1 1 100%;
+  .ai-attachment-hint {
+    flex: 0 0 auto;
     min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
+    white-space: nowrap;
   }
 }
 

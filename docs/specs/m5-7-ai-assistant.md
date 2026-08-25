@@ -261,7 +261,7 @@ PDF / DOCX / 文本/代码 → 服务端有界解析文本（pypdf / stdlib zip+
 无文本层（扫描件） → 422 ai_attachment_no_text（提示换模型，可行动）
 ```
 
-**上限（前后端同源）**：单文件 6 MiB、总量 12 MiB、最多 8 个、单文件解析
+**上限（前后端同源）**：单文件 6 MiB、总量 48 MiB、最多 8 个、单文件解析
 文本 64 KiB 字符、总解析 256 KiB 字符（按附件数均分预算，`truncated` 标记）、
 解析超时 30s（线程 + 硬截止）。错误码均为稳定 `detail.code` 且不回显文件
 内容/文件名/base64：`ai_attachment_invalid`、`ai_attachment_filename_invalid`

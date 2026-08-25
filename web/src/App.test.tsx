@@ -3185,6 +3185,10 @@ it("maximizes and restores the editor without losing position, dirty edits, or l
   await waitFor(() => expect(screen.getByTestId("editor-restore")).toBeTruthy());
   await waitFor(() => expect(monacoHarness.getLayoutCalls()).toBeGreaterThan(0));
   expect(screen.getByTestId("editor-main").getAttribute("data-layout")).toBe("maximized");
+  const appStyles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
+  expect(appStyles).toMatch(
+    /\.editor-main\.editor-main-maximized\s*\{[^}]*position\s*:\s*fixed[^}]*z-index\s*:\s*1000/s,
+  );
   expectEditorPosition(expectedSelection, 7);
   expect(monacoHarness.getRestoredSelections().at(-1)).toEqual(expectedSelection);
   expect(monacoHarness.getLayoutCalls()).toBeGreaterThan(0);

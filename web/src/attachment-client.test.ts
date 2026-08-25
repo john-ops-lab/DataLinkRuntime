@@ -35,6 +35,10 @@ function makeFile(name: string, type: string, content: string | Uint8Array = "x"
 }
 
 describe("createDlrAttachmentAdapter", () => {
+  it("keeps the fallback total aligned with eight maximum-size attachments", () => {
+    expect(DEFAULT_ATTACHMENT_LIMITS.max_total_bytes).toBe(48 * 1024 * 1024);
+  });
+
   it("exposes accept as a getter that follows the current capability table", () => {
     const adapter = createDlrAttachmentAdapter(
       adapterOptions({ supportedContentTypes: () => ["text/plain", "application/json"] }),

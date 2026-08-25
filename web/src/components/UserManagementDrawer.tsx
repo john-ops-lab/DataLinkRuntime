@@ -4,7 +4,6 @@ import {
   ModalForm,
   ProForm,
   ProTable,
-  QueryFilter,
 } from "@ant-design/pro-components";
 import type { ProColumns } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
@@ -387,14 +386,10 @@ export default function UserManagementDrawer({
             </ProForm.Item>
           </ProForm>
         </section>
-        <QueryFilter<UserFilters>
-          className="wave-c-query-filter"
+        <Form<UserFilters>
+          className="wave-c-query-filter user-filter-form"
+          data-testid="user-filter-form"
           layout="vertical"
-          defaultCollapsed={false}
-          defaultColsNumber={3}
-          defaultFormItemsNumber={3}
-          labelWidth="auto"
-          submitter={false}
           initialValues={EMPTY_FILTERS}
           onValuesChange={(_, values) =>
             setFilters({
@@ -404,10 +399,10 @@ export default function UserManagementDrawer({
             })
           }
         >
-          <Form.Item name="keyword" label={t("users.filterKeyword")}>
+          <Form.Item className="user-filter-keyword" name="keyword" label={t("users.filterKeyword")}>
             <Input allowClear aria-label={t("users.filterKeyword")} />
           </Form.Item>
-          <Form.Item name="role" label={t("users.filterRole")}>
+          <Form.Item className="user-filter-role" name="role" label={t("users.filterRole")}>
             <Select<"all" | AccountRole>
               aria-label={t("users.filterRole")}
               options={[
@@ -417,7 +412,7 @@ export default function UserManagementDrawer({
               ]}
             />
           </Form.Item>
-          <Form.Item name="status" label={t("users.filterStatus")}>
+          <Form.Item className="user-filter-status" name="status" label={t("users.filterStatus")}>
             <Select<"all" | "enabled" | "disabled">
               aria-label={t("users.filterStatus")}
               options={[
@@ -427,7 +422,7 @@ export default function UserManagementDrawer({
               ]}
             />
           </Form.Item>
-        </QueryFilter>
+        </Form>
         <div
           className="settings-panel-toolbar user-management-toolbar"
           data-testid="user-management-toolbar"

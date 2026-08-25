@@ -79,12 +79,10 @@ class ProviderAdapter:
     # never assumed: only entries in this table enable provider-native input.
     images_native: bool = False
     files_native: bool = False
-    # M5.7 Wave C1: explicit read-only Tool Call capability. Only providers
-    # whose Chat Completions contract is known to accept ``tools`` offer the
-    # whitelisted function definitions; the flag is capability-table truth,
-    # never inferred from the model id. Providers without the flag keep the
-    # exact single-shot protocol (no ``tools`` payload key).
-    tools_supported: bool = False
+    # Tool calling is enabled by default for every model/provider. A custom
+    # provider may explicitly disable it when its compatible endpoint lacks
+    # that capability.
+    tools_supported: bool = True
     protocol: Protocol = "openai_compatible"
 
 
@@ -634,6 +632,12 @@ def _build_protocol_payload(
         if tools is not None:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            if adapter.split_reasoning:
+                # MiniMax requires the full assistant reasoning to be passed
+                # back between tool rounds. Keeping it inside ``content`` is
+                # the provider's documented OpenAI-native compatibility path
+                # and lets the common message loop preserve it unchanged.
+                payload["reasoning_split"] = False
         return payload
     if adapter.protocol == "anthropic":
         anthropic_system, converted = _anthropic_messages(messages)

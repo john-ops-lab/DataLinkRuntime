@@ -286,33 +286,18 @@ describe("Issue #117 Batch 6: one-line attachment guidance", () => {
       const guidance = await screen.findByTestId("ai-composer-guidance");
       const hint = screen.getByTestId("ai-attachment-hint");
       const privacy = screen.getByTestId("ai-attachment-privacy");
-      const expectedHint = locale === "zh-CN"
-        ? ["最多 8 个", "6 MiB", "12 MiB"]
-        : ["max 8", "6 MiB", "12 MiB"];
-      const expectedAccessibleHint = locale === "zh-CN"
-        ? "支持图片 / PDF / DOCX / 文本与代码文件"
-        : "Images / PDF / DOCX / text and code files";
-      const expectedAccessiblePrivacy = locale === "zh-CN"
-        ? "附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
-        : "Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.";
+      const expected = locale === "zh-CN"
+        ? "最多上传8个附件，单附件最大6MB，请勿上传敏感信息。"
+        : "Upload up to 8 attachments, max 6MB each. Do not upload sensitive information.";
 
-      for (const text of expectedHint) {
-        expect(hint.textContent).toContain(text);
-      }
-      expect(privacy.textContent).toContain(
-        locale === "zh-CN" ? "敏感凭据" : "sensitive credentials",
+      expect(hint.textContent).toBe(expected);
+      expect(privacy.textContent).toBe(
+        locale === "zh-CN" ? "请勿上传敏感信息。" : "Do not upload sensitive information.",
       );
-      expect(hint.getAttribute("aria-label")).toContain(expectedAccessibleHint);
-      expect(hint.getAttribute("title")).toContain(expectedAccessibleHint);
-      expect(privacy.getAttribute("aria-label")).toBe(expectedAccessiblePrivacy);
-      expect(privacy.getAttribute("title")).toBe(expectedAccessiblePrivacy);
-      expect(guidance.textContent).toContain(hint.textContent ?? "");
-      expect(guidance.textContent).toContain(privacy.textContent ?? "");
-      expect(guidance.getAttribute("aria-label")).toBe(
-        locale === "zh-CN"
-          ? "支持图片 / PDF / DOCX / 文本与代码文件：最多 8 个，单个不超过 6 MiB，总计不超过 12 MiB 附件内容会发送给管理员配置的模型服务。 请勿上传密码、密钥等敏感凭据。"
-          : "Images / PDF / DOCX / text and code files: up to 8, 6 MiB each, 12 MiB total Attachment content is sent to the model service configured by the administrator. Do not upload passwords, keys or other sensitive credentials.",
-      );
+      expect(hint.getAttribute("aria-label")).toBe(expected);
+      expect(hint.getAttribute("title")).toBe(expected);
+      expect(guidance.textContent).toBe(expected);
+      expect(guidance.getAttribute("aria-label")).toBe(expected);
       expect(guidance.querySelector("br")).toBeNull();
       expect(guidance.querySelectorAll(":scope > div, :scope > p")).toHaveLength(0);
 
@@ -513,7 +498,7 @@ describe("client-side bounds mirror the B2 contract", () => {
     expect(screen.getByTestId("ai-attachment-error").textContent).toContain("8 个");
     expect(screen.getAllByTestId("ai-attachment-item")).toHaveLength(8);
 
-    // 清空后测总大小：两个 5 MiB 合法，再拖入 3 MiB 超过 12 MiB 总上限。
+    // 清空后用测试能力覆盖值验证总大小错误：两个 5 MiB 合法，再拖入 3 MiB 超过 12 MiB。
     for (const remove of [...screen.getAllByTestId("ai-attachment-remove")]) {
       fireEvent.click(remove);
     }
@@ -922,17 +907,17 @@ describe("i18n parity and width gates", () => {
     await addFiles(makeFile("a.txt", "text/plain"));
     expect(screen.getByTestId("ai-attachment-add").textContent).toBe("添加附件");
     expect(screen.getByTestId("ai-attachment-ready").textContent).toBe("已就绪");
-    expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("最多 8 个");
-    expect(screen.getByTestId("ai-attachment-privacy").textContent).toContain("敏感凭据");
+    expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("最多上传8个附件");
+    expect(screen.getByTestId("ai-attachment-privacy").textContent).toContain("敏感信息");
 
     await applySystemLocale("en");
     await waitFor(() => {
       expect(screen.getByTestId("ai-attachment-add").textContent).toBe("Attach files");
     });
     expect(screen.getByTestId("ai-attachment-ready").textContent).toBe("Ready");
-    expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("max 8");
+    expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("Upload up to 8");
     expect(screen.getByTestId("ai-attachment-privacy").textContent).toContain(
-      "sensitive credentials",
+      "sensitive information",
     );
     expect(
       screen.getByTestId("ai-attachment-remove").getAttribute("aria-label"),
@@ -967,7 +952,7 @@ describe("i18n parity and width gates", () => {
 
     // 端点失败后仍按权威默认上限工作：合法文件可添加，超限文件被拒。
     await addFiles(makeFile("ok.txt", "text/plain"));
-    expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("6 MiB");
+    expect(screen.getByTestId("ai-attachment-hint").textContent).toContain("6MB");
     fireEvent.change(screen.getByTestId("ai-attachment-input"), {
       target: { files: [makeBigFile("big.txt", "text/plain", 6 * 1024 * 1024 + 1)] },
     });

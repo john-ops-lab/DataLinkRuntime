@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -98,12 +99,7 @@ def _call(
 
 
 def test_provider_capability_table_is_explicit() -> None:
-    assert providers.get_provider("openai").tools_supported is True
-    assert providers.get_provider("custom_openai_compatible").tools_supported is True
-    # Capability is never assumed: only table entries opt in.
-    assert providers.get_provider("deepseek").tools_supported is False
-    assert providers.get_provider("kimi").tools_supported is False
-    assert providers.get_provider("minimax").tools_supported is False
+    assert all(adapter.tools_supported for adapter in providers.PROVIDERS.values())
 
 
 def test_assist_without_tool_capability_keeps_pre_c1_payload_and_prompt(
@@ -113,6 +109,11 @@ def test_assist_without_tool_capability_keeps_pre_c1_payload_and_prompt(
     protocol: no ``tools`` payload key, no tool prose in the system prompt,
     and a working single-shot assist."""
     adapter = create_adapter(api_client, "no-tool-provider")
+    monkeypatch.setitem(
+        providers.PROVIDERS,
+        "deepseek",
+        replace(providers.get_provider("deepseek"), tools_supported=False),
+    )
     configure(api_client, provider="deepseek")
     captured: dict[str, object] = {}
 
@@ -234,6 +235,11 @@ def test_assist_rejects_fabricated_tool_calls_without_capability(
     """A provider without tool capability that fabricates tool calls gets the
     stable actionable ai_tool_unsupported error, never a guessed execution."""
     adapter = create_adapter(api_client, "fabricated-tools")
+    monkeypatch.setitem(
+        providers.PROVIDERS,
+        "kimi",
+        replace(providers.get_provider("kimi"), tools_supported=False),
+    )
     configure(api_client, provider="kimi")
     calls = 0
 

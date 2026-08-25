@@ -43,7 +43,7 @@ from pypdf.errors import PdfReadError
 
 MAX_ATTACHMENTS = 8
 MAX_FILE_BYTES = 6 * 1024 * 1024  # per-file decoded size
-MAX_TOTAL_BYTES = 12 * 1024 * 1024  # sum of decoded sizes
+MAX_TOTAL_BYTES = MAX_ATTACHMENTS * MAX_FILE_BYTES  # sum of decoded sizes
 MAX_PARSED_CHARS_PER_FILE = 64 * 1024  # extracted text budget per file
 MAX_PARSED_TOTAL_CHARS = 256 * 1024  # total extracted text budget
 PARSE_TIMEOUT_SECONDS = 30.0
