@@ -6,6 +6,7 @@ from sqlalchemy import JSON, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from dlr.common.config import settings
 from dlr.control.input_errors import InputConfigErrorCode
 from dlr.control.models import Adapter, AdapterInputConfig
 from dlr.control.schemas.input_config import (
@@ -16,6 +17,7 @@ from dlr.control.schemas.input_config import (
 )
 from dlr.control.services import adapter_runtime
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.execution import compact_json_bytes
 
 
 def _retention_response(config: AdapterInputConfig) -> InputRetention:
@@ -80,7 +82,7 @@ def get_input_config(session: Session, adapter_id: int) -> AdapterInputConfig:
         # choice, so do not silently invent a second source of truth on GET.
         raise domain_error(
             409,
-            "input_config_not_initialized",
+            InputConfigErrorCode.NOT_INITIALIZED.value,
             "Adapter input configuration is not initialized",
         )
     return config
@@ -111,7 +113,7 @@ def upsert_input_config(
     if config is None:
         raise domain_error(
             409,
-            "input_config_not_initialized",
+            InputConfigErrorCode.NOT_INITIALIZED.value,
             "Adapter input configuration is not initialized",
         )
     if config.revision != data.expected_revision:
@@ -130,6 +132,15 @@ def upsert_input_config(
         )
     if data.source_type == "managed_files":
         _validate_managed_files_payload(data)
+    if data.source_type == "json":
+        input_size = len(compact_json_bytes(data.json_value))
+        if input_size > settings.execution_input_max_bytes:
+            raise domain_error(
+                413,
+                "execution_input_too_large",
+                f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
+                {"max_bytes": settings.execution_input_max_bytes},
+            )
 
     config.source_type = data.source_type
     if data.source_type == "json":

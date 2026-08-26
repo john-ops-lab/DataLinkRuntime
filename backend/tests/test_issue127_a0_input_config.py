@@ -1,5 +1,6 @@
 """Issue #127 A0 red/green contract tests for the Adapter input object."""
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -7,7 +8,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from dlr.control.models import AdapterInputConfig, AdapterSchedule
+from dlr.common.config import settings
+from dlr.control.models import Adapter, AdapterInputConfig, AdapterPermission, AdapterSchedule, User
+from dlr.control.security import Principal, require_principal
 from test_adapters import create_adapter, save_version
 
 
@@ -75,6 +78,99 @@ def test_new_task_gets_none_config_and_safe_response(
         assert config is not None
         assert config.source_type == "none"
         assert config.revision == 1
+
+
+def test_input_config_json_size_limit_does_not_persist(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_adapter(api_client, name="a0-json-size-limit")
+    monkeypatch.setattr(settings, "execution_input_max_bytes", 64)
+
+    response = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "json",
+            "json_value": {"value": "x" * 128},
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == {
+        "code": "execution_input_too_large",
+        "message": "Input exceeds the 64 byte limit",
+        "params": {"max_bytes": 64},
+    }
+    with session_factory() as session:
+        config = session.get(AdapterInputConfig, adapter["id"])
+        assert config is not None
+        assert config.source_type == "none"
+        assert config.revision == 1
+
+
+def test_input_config_read_edit_acl_and_resource_errors(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter = create_adapter(api_client, name="a0-input-acl")
+    with session_factory() as session:
+        reader = User(
+            username="a0-input-reader",
+            password_hash="anonymous-test-hash",
+            role="user",
+        )
+        session.add(reader)
+        session.flush()
+        session.add(
+            AdapterPermission(adapter_id=adapter["id"], user_id=reader.id, permission="read")
+        )
+        session.commit()
+        reader_id = reader.id
+
+    api_client.app.dependency_overrides[require_principal] = lambda: Principal(
+        kind="account", role="user", user_id=reader_id, username="a0-input-reader"
+    )
+    try:
+        readable = api_client.get(f"/api/adapters/{adapter['id']}/input-config")
+        assert readable.status_code == 200, readable.text
+        forbidden = api_client.put(
+            f"/api/adapters/{adapter['id']}/input-config",
+            json={"expected_revision": 1, "source_type": "none"},
+        )
+        assert forbidden.status_code == 403, forbidden.text
+        assert forbidden.json()["detail"]["code"] == "adapter_read_only"
+    finally:
+        api_client.app.dependency_overrides.pop(require_principal, None)
+
+    unknown = api_client.put(
+        "/api/adapters/999999/input-config",
+        json={"expected_revision": 1, "source_type": "none"},
+    )
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"]["code"] == "adapter_not_found"
+
+    archived = create_adapter(api_client, name="a0-input-archived")
+    with session_factory() as session:
+        archived_row = session.get(Adapter, archived["id"])
+        assert archived_row is not None
+        archived_row.archived_at = datetime.now(UTC)
+        session.commit()
+    archived_response = api_client.put(
+        f"/api/adapters/{archived['id']}/input-config",
+        json={"expected_revision": 1, "source_type": "none"},
+    )
+    assert archived_response.status_code == 404
+    assert archived_response.json()["detail"]["code"] == "adapter_not_found"
+
+    webhook = create_adapter(api_client, name="a0-input-webhook", adapter_type="webhook")
+    webhook_response = api_client.put(
+        f"/api/adapters/{webhook['id']}/input-config",
+        json={"expected_revision": 1, "source_type": "none"},
+    )
+    assert webhook_response.status_code == 409
+    assert webhook_response.json()["detail"]["code"] == "adapter_type_mismatch"
 
 
 def test_none_save_rejects_type_specific_fields_without_revision_change(
@@ -248,6 +344,9 @@ def test_input_config_runtime_lock_is_authoritative(api_client: TestClient) -> N
     )
     assert schedule.status_code == 200, schedule.text
 
+    readable = api_client.get(f"/api/adapters/{adapter['id']}/input-config")
+    assert readable.status_code == 200, readable.text
+
     response = api_client.put(
         f"/api/adapters/{adapter['id']}/input-config",
         json={"expected_revision": 1, "source_type": "json", "json_value": {"blocked": True}},
@@ -256,6 +355,22 @@ def test_input_config_runtime_lock_is_authoritative(api_client: TestClient) -> N
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "adapter_runtime_locked"
     assert input_config(api_client, adapter["id"])["revision"] == 1
+
+
+def test_missing_input_config_uses_registered_error_code(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    adapter = create_adapter(api_client, name="a0-input-not-initialized")
+    with session_factory() as session:
+        config = session.get(AdapterInputConfig, adapter["id"])
+        assert config is not None
+        session.delete(config)
+        session.commit()
+
+    response = api_client.get(f"/api/adapters/{adapter['id']}/input-config")
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "input_config_not_initialized"
 
 
 def test_webhook_has_no_task_input_config(api_client: TestClient) -> None:
