@@ -554,6 +554,19 @@ def upsert_input_config(
             InputConfigErrorCode.SOURCE_NOT_AVAILABLE.value,
             "Remote file input is not available yet",
         )
+    if (
+        data.source_type == "managed_files"
+        and data.artifact_ids
+        and not settings.managed_files_enabled
+    ):
+        # Do not inspect submitted Artifact IDs while the wave is disabled:
+        # absent, foreign, and same-Adapter IDs must have one response. The
+        # contract still permits saving an empty managed_files selection.
+        raise domain_error(
+            422,
+            InputConfigErrorCode.SOURCE_NOT_AVAILABLE.value,
+            "Managed file input is not available yet",
+        )
     if data.source_type == "json":
         input_size = len(compact_json_bytes(data.json_value))
         if input_size > settings.execution_input_max_bytes:
@@ -661,7 +674,7 @@ def reconcile_current_bindings(
     owns those operations.
     """
     _get_task_adapter(session, adapter_id, for_update=True)
-    session.scalar(
+    schedule = session.scalar(
         select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter_id).with_for_update()
     )
     config = session.scalar(
@@ -732,6 +745,8 @@ def reconcile_current_bindings(
         }:
             artifact.status = ManagedInputArtifactStatus.PENDING_DELETE
     config.revision = new_revision
+    if schedule is not None:
+        schedule.input = _legacy_schedule_value(config)
     session.commit()
     session.refresh(config)
     return config

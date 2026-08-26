@@ -36,7 +36,10 @@ class AdapterInputConfigUpsert(BaseModel):
     # ``model_fields_set`` distinguishes omitted json_value from explicit
     # JSON null, which is a valid JSON source value.
     json_value: Any = None
-    artifact_ids: list[int] | None = Field(default=None, max_length=8)
+    # Keep the nine-file boundary in the domain service so it can return the
+    # stable structured ``managed_files_limit`` reason instead of a generic
+    # Pydantic list-length error.
+    artifact_ids: list[int] | None = Field(default=None)
     retention: InputRetention | None = None
 
     @model_validator(mode="after")

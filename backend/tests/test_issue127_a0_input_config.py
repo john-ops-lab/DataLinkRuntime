@@ -273,7 +273,9 @@ def test_managed_files_empty_is_saveable_but_not_runnable(api_client: TestClient
 
 def test_managed_files_unknown_artifact_is_not_found(
     api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
     adapter = create_adapter(api_client, name="a0-managed-not-ready")
 
     response = api_client.put(

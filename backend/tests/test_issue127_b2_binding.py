@@ -144,6 +144,60 @@ def test_binding_save_replaces_current_set_and_concretizes_retention(
         assert artifacts[second].expires_at == FIXED_NOW + timedelta(seconds=7200)
 
 
+def test_managed_files_limit_has_service_error_at_nine_and_accepts_eight(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    monkeypatch.setattr(input_config_service, "database_now", lambda _session: FIXED_NOW)
+    adapter = create_task(api_client, "b2-file-limit")
+    artifact_ids = [
+        create_artifact(session_factory, adapter["id"], f"limit-{index}.txt") for index in range(9)
+    ]
+
+    accepted = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "managed_files",
+            "artifact_ids": artifact_ids[:8],
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["revision"] == 2
+    assert binding_rows(session_factory, adapter["id"]) == [
+        (artifact_id, ordinal) for ordinal, artifact_id in enumerate(artifact_ids[:8])
+    ]
+
+    rejected = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 2,
+            "source_type": "managed_files",
+            "artifact_ids": artifact_ids,
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["detail"] == {
+        "code": "input_invalid",
+        "message": "At most eight managed input files may be bound",
+        "params": {"reason": "managed_files_limit", "max_files": 8},
+    }
+    assert binding_rows(session_factory, adapter["id"]) == [
+        (artifact_id, ordinal) for ordinal, artifact_id in enumerate(artifact_ids[:8])
+    ]
+    assert artifact_statuses(session_factory, artifact_ids) == {
+        **{artifact_id: "READY" for artifact_id in artifact_ids[:8]},
+        artifact_ids[8]: "STAGED",
+    }
+    with session_factory() as session:
+        config = session.get(AdapterInputConfig, adapter["id"])
+        assert config is not None and config.revision == 2
+
+
 def test_nfc_casefold_name_conflict_has_zero_side_effects(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
@@ -418,6 +472,17 @@ def test_active_execution_lock_and_lifecycle_keep_snapshot_immutable(
     assert locked.json()["detail"]["code"] == "adapter_runtime_locked"
 
     with session_factory.begin() as session:
+        session.add(
+            AdapterSchedule(
+                adapter_id=adapter["id"],
+                cron="* * * * *",
+                timezone="UTC",
+                input={"stale": "legacy-mirror"},
+                enabled=False,
+            )
+        )
+
+    with session_factory.begin() as session:
         artifact = session.get(ManagedInputArtifact, artifact_id)
         assert artifact is not None
         artifact.expires_at = FIXED_NOW - timedelta(seconds=1)
@@ -427,6 +492,10 @@ def test_active_execution_lock_and_lifecycle_keep_snapshot_immutable(
     assert binding_rows(session_factory, adapter["id"]) == []
     assert artifact_statuses(session_factory, [artifact_id]) == {artifact_id: "PENDING_DELETE"}
     with session_factory() as session:
+        schedule = session.scalar(
+            select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter["id"])
+        )
+        assert schedule is not None and schedule.input is None
         current_execution = session.scalar(
             select(Execution).where(Execution.id == execution.json()["id"])
         )
