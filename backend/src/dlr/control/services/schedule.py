@@ -256,7 +256,7 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
             adapter_id,
         )
     if data.enabled:
-        input_config_service.validate_saved_config(config)
+        input_config_service.validate_saved_config(config, session=session)
     now = worker_availability.current_time(session)
     next_run_at = next_run_after(cron, tz_name, now) if data.enabled else None
     if schedule is None:

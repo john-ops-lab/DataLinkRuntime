@@ -1,5 +1,6 @@
 """Pydantic contracts for the Adapter-level input object API."""
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -69,6 +70,22 @@ class AdapterInputConfigUpsert(BaseModel):
         return self
 
 
+class AdapterInputArtifactSummary(BaseModel):
+    """Safe metadata for one Artifact in the current input selection."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: int
+    ordinal: int
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str | None
+    status: str
+    retention_mode: InputRetentionMode
+    expires_at: datetime | None
+
+
 class AdapterInputConfigResponse(BaseModel):
     """Safe current input representation returned by GET/PUT."""
 
@@ -79,8 +96,8 @@ class AdapterInputConfigResponse(BaseModel):
     source_type: InputSourceType
     json_value: Any
     retention: InputRetention
-    # A0 has no Artifact table yet. Keeping the public field stable lets later
-    # waves add safe metadata without exposing IDs, keys, paths, or content.
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    # Current selection metadata is safe to expose; storage keys, upload
+    # sessions, paths, and contents remain outside the response contract.
+    artifacts: list[AdapterInputArtifactSummary] = Field(default_factory=list)
     valid_for_run: bool
     invalid_reason: str | None = None

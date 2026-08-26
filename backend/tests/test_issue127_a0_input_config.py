@@ -271,7 +271,7 @@ def test_managed_files_empty_is_saveable_but_not_runnable(api_client: TestClient
     assert body["artifacts"] == []
 
 
-def test_managed_files_artifacts_are_not_accepted_before_store_wave(
+def test_managed_files_unknown_artifact_is_not_found(
     api_client: TestClient,
 ) -> None:
     adapter = create_adapter(api_client, name="a0-managed-not-ready")
@@ -286,8 +286,8 @@ def test_managed_files_artifacts_are_not_accepted_before_store_wave(
         },
     )
 
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "input_source_not_available"
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "input_artifact_not_found"
     assert input_config(api_client, adapter["id"])["revision"] == 1
 
 

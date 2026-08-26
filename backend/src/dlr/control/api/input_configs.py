@@ -30,7 +30,7 @@ def get_input_config(
     """Return only safe current input metadata and the computed run gate."""
     adapter_access.require_adapter_access(session, adapter_id, principal, "read")
     return input_config_service.input_config_response(
-        input_config_service.get_input_config(session, adapter_id)
+        input_config_service.get_input_config(session, adapter_id), session=session
     )
 
 
@@ -47,4 +47,4 @@ def put_input_config(
     """Update the one current input object with optimistic revision control."""
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
     config = input_config_service.upsert_input_config(session, adapter_id, payload)
-    return input_config_service.input_config_response(config)
+    return input_config_service.input_config_response(config, session=session)

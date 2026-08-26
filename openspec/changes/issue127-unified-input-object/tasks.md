@@ -101,12 +101,12 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 7. B2 — Wave B Binding、retention 与系统生命周期事务
 
-- [ ] 7.1 实现 managed_files 0..8 原子保存：锁序、expected_revision、所有权/READY-STAGED/ordinal/同名NFC casefold校验、Binding全替换、revision+1；并发测试验证旧 revision零副作用。
-- [ ] 7.2 在保存事务中具体化 system_default/custom/manual_delete retention，并重算当前集合而不追溯已移除文件；冻结数据库时钟验证服务端 `expires_at` 权威和管理员默认变更不回写。
-- [ ] 7.3 实现显式替换和 source切换：新 STAGED→READY、旧 READY→PENDING_DELETE，保存失败保留 STAGED；验证绝不原地覆盖 Blob。
-- [ ] 7.4 接入用户 Runtime Lock与系统 lifecycle专用路径；锁竞争测试验证 enabled/active拒绝用户写入，而到期/损坏治理可在完整锁序下解绑、revision+1且保留 active Lease。
-- [ ] 7.5 验证 managed_files 空集合保存成功但 run/schedule enable返回 `input_invalid/managed_files_empty`，1..8 READY未过期可运行，过期/非READY返回结构化 reason。
-- [ ] 7.6 运行 B2 binding/retention/lock/expiry targeted tests及静态 Gate；生成锁序并发证据后才形成 Candidate。
+- [x] 7.1 实现 managed_files 0..8 原子保存：锁序、expected_revision、所有权/READY-STAGED/ordinal/同名NFC casefold校验、Binding全替换、revision+1；并发测试验证旧 revision零副作用。
+- [x] 7.2 在保存事务中具体化 system_default/custom/manual_delete retention，并重算当前集合而不追溯已移除文件；冻结数据库时钟验证服务端 `expires_at` 权威和管理员默认变更不回写。
+- [x] 7.3 实现显式替换和 source切换：新 STAGED→READY、旧 READY→PENDING_DELETE，保存失败保留 STAGED；验证绝不原地覆盖 Blob。
+- [x] 7.4 接入用户 Runtime Lock与系统 lifecycle专用路径；锁竞争测试验证 enabled/active拒绝用户写入，而到期/损坏治理可在完整锁序下解绑、revision+1且保留 active Lease。
+- [x] 7.5 验证 managed_files 空集合保存成功但 run/schedule enable返回 `input_invalid/managed_files_empty`，1..8 READY未过期可运行，过期/非READY返回结构化 reason。
+- [x] 7.6 运行 B2 binding/retention/lock/expiry targeted tests及静态 Gate；生成锁序并发证据后才形成 Candidate。
 
 ## 8. B3 — Wave B TTL、GC、删除任务、Adapter 删除与审计
 
