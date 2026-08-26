@@ -184,13 +184,15 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             query = str(body.get("query", "")).casefold()
             kb_id = str(body.get("knowledge_base_id", ""))
-            if kb_id != "dlr-interface-lib":
+            if kb_id not in {"dlr-interface-lib", "platform-manuals"}:
                 self._biz_error(110001, "参数非法")
                 return
-            if query == "browser-failure":
+            if kb_id == "platform-manuals":
+                hits = []
+            elif query == "browser-failure":
                 self._biz_error(110021, "浏览器验收固定限流错误")
                 return
-            if query == "browser-empty":
+            elif query == "browser-empty":
                 hits = []
             elif query == "browser-success":
                 hits = [ITEMS["browser-success-item"]]

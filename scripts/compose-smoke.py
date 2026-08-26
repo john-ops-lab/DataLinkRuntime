@@ -1098,8 +1098,9 @@ assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
 # DLR Secret Store API as an access_key Credential (access_key_id -> Client
 # ID, access_key_secret -> API Key); the fake rejects requests without the
 # exact headers and echoes the API Key inside the read content on purpose, so
-# the smoke proves: list -> search -> read -> final AiModelOutput, the ima:v1
-# source identifiers, and by-value credential redaction (token never reaches
+# the smoke proves: list -> two distinct-base searches -> read -> final
+# AiModelOutput, the ima:v1 source identifiers, and by-value credential
+# redaction (token never reaches
 # the browser response or the model chain). The target knowledge base is
 # matched by NAME only ("DLR接口库"); its id/content are never recorded.
 ima_token = os.environ["SMOKE_IMA_TOKEN"]
@@ -1131,9 +1132,10 @@ knowledge = request(
 )
 assert knowledge["candidate"] is not None, knowledge
 assert "with knowledge result" in knowledge["message"], knowledge
-assert len(knowledge["tool_calls"]) == 3, knowledge
+assert len(knowledge["tool_calls"]) == 4, knowledge
 assert [item["tool_name"] for item in knowledge["tool_calls"]] == [
     "list_knowledge_bases",
+    "search_knowledge",
     "search_knowledge",
     "read_knowledge",
 ], knowledge
@@ -1144,8 +1146,11 @@ assert knowledge["tool_calls"][0]["source"] == "ima:v1:dlr-interface-lib", knowl
 assert "DLR接口库" in knowledge["tool_calls"][0]["result_summary"], knowledge
 # The "secrets" query returns the notes-backed credential-safety item.
 assert knowledge["tool_calls"][1]["source"] == "ima:v1:kb-item-2", knowledge
+# The second candidate knowledge base is searched and returns an honest empty
+# page before the server permits the read.
+assert '"returned_matches": 0' in knowledge["tool_calls"][2]["result_summary"], knowledge
 # The read goes through the official notes branch (get_doc_content).
-assert knowledge["tool_calls"][2]["source"] == "ima:v1:kb-item-2", knowledge
+assert knowledge["tool_calls"][3]["source"] == "ima:v1:kb-item-2", knowledge
 # The read content echoed the credential token; the tools layer redacted it
 # by value before it could reach the browser.
 serialized = json.dumps(knowledge, ensure_ascii=False)

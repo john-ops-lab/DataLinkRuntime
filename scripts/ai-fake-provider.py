@@ -331,7 +331,8 @@ def tool_calls_for(scenario: str, round_index: int = 0) -> list[dict[str, Any]]:
     if scenario == "SMOKE_KNOWLEDGE":
         # M5.7 Wave C2: the read-only KnowledgeSource chain against the fake
         # official ima service (official OpenAPI contract): list -> search
-        # (inside the DLR接口库 knowledge base) -> read.
+        # DLR接口库 -> search 平台手册 -> read. The second distinct-base
+        # search satisfies the server-enforced cross-base retrieval contract.
         return [
             {
                 "id": "call-smoke-kb-list",
@@ -345,6 +346,17 @@ def tool_calls_for(scenario: str, round_index: int = 0) -> list[dict[str, Any]]:
                     "name": "search_knowledge",
                     "arguments": (
                         '{"source": "ima", "knowledge_base_id": "dlr-interface-lib", '
+                        '"query": "secrets", "limit": 2}'
+                    ),
+                },
+            },
+            {
+                "id": "call-smoke-kb-search-secondary",
+                "type": "function",
+                "function": {
+                    "name": "search_knowledge",
+                    "arguments": (
+                        '{"source": "ima", "knowledge_base_id": "platform-manuals", '
                         '"query": "secrets", "limit": 2}'
                     ),
                 },
