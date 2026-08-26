@@ -1,19 +1,25 @@
-/** Task 运行设置：单页动态表单（M5.5.11）。
+/** Task 运行设置：运行参数与唯一 Input Object 配置（M5.5.11 / Issue #127 A2）。
  *
- * 本页只负责配置，不承担“运行一次”操作（“运行一次”仅在右上角全局操作区，
- * 并受 #55 的未保存门禁约束）。固定结构为“运行节点 + 运行方式”，切换
- * “手动运行 / 定时运行”后立即呈现对应字段；单次执行超时是 Adapter 级配置，
- * 手动与定时共用（默认 300 秒，1/5/10/30/60 分钟预设 + 自定义，最大 24 小时，
- * 不提供“无限制”），页面底部统一保存运行配置。
+ * 运行方式只决定 Task 的触发配置；输入对象是一个独立的 Adapter 资源。
+ * manual、schedule 与 schedule 的“立即运行一次”都读取同一个已保存
+ * InputConfig，页面不再维护两套 JSON 编辑器，也不向 Execution API 传入 input。
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Alert, Button, Input, InputNumber, Radio, Select, Space, Spin, Tag, Typography } from "antd";
+import { Alert, Button, Card, Form, Input, InputNumber, Radio, Select, Space, Spin, Tag, Tooltip, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api } from "../api";
 import { isTerminal } from "../status";
-import type { Adapter, AdapterSchedule, Execution, TaskRunMode, Worker } from "../types";
+import type {
+  Adapter,
+  AdapterInputConfig,
+  AdapterSchedule,
+  Execution,
+  InputSourceType,
+  TaskRunMode,
+  Worker,
+} from "../types";
 import { userErrorMessage } from "../user-message";
 
 export interface TaskRuntimeState {
@@ -22,6 +28,8 @@ export interface TaskRuntimeState {
   activeExecution: boolean;
   canRun: boolean;
   scheduleEnableBlockedReason: string | null;
+  /** Optional for callers that construct the state outside this component. */
+  runBlockedReason?: string | null;
 }
 
 export interface TaskRunSettingsHandle {
@@ -54,9 +62,16 @@ function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
 
-function parseInput(text: string): { ok: true; value: unknown } | { ok: false } {
+function formatJson(value: unknown): string {
+  return JSON.stringify(value, null, 2) ?? "null";
+}
+
+function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
+  if (text.trim() === "") {
+    return { ok: false };
+  }
   try {
-    return { ok: true, value: text.trim() === "" ? null : JSON.parse(text) };
+    return { ok: true, value: JSON.parse(text) };
   } catch {
     return { ok: false };
   }
@@ -73,7 +88,7 @@ function presetMinutesFor(seconds: number): number | undefined {
 }
 
 const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPanelProps>(function TaskRunSettingsPanel(props, ref) {
-  const { i18n, t } = useTranslation(["runtime", "common"]);
+  const { i18n, t } = useTranslation(["runtime", "common", "adapter"]);
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const adapterId = props.adapter.id;
   const readOnly = props.readOnly === true;
@@ -85,13 +100,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
   const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
-  const [manualInput, setManualInput] = useState("{}");
   const [schedule, setSchedule] = useState<AdapterSchedule | null>(null);
   const [cron, setCron] = useState("*/5 * * * *");
   const [timezone, setTimezone] = useState("Asia/Shanghai");
-  const [scheduleInput, setScheduleInput] = useState("{}");
   const [loadingSchedule, setLoadingSchedule] = useState(props.adapter.run_mode === "schedule");
-  // 用户是否实际修改过定时字段（cron/timezone/input）。未修改时统一保存
+  // 用户是否实际修改过定时字段（cron/timezone）。未修改时统一保存
   // 不得用表单值整体 PUT，避免把线上真实 Schedule 冲掉。
   const [scheduleTouched, setScheduleTouched] = useState(false);
   // 初始 Schedule GET 非 404 失败时置位：此时表单仍是默认值，禁止 PUT。
@@ -100,9 +113,22 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+
+  // Input Object is one resource with one saved revision and one draft. These
+  // states intentionally do not depend on runMode, so changing manual/schedule
+  // cannot reset an unsaved JSON draft.
+  const [inputConfig, setInputConfig] = useState<AdapterInputConfig | null>(null);
+  const [inputSourceDraft, setInputSourceDraft] = useState<InputSourceType>("none");
+  const [inputJsonDraft, setInputJsonDraft] = useState("null");
+  const [loadingInput, setLoadingInput] = useState(true);
+  const [inputLoadFailed, setInputLoadFailed] = useState(false);
+  const [savingInput, setSavingInput] = useState(false);
+  const [inputValidationError, setInputValidationError] = useState<string | null>(null);
+
   // 保存流程（PATCH + PUT）完成后递增，使保存前发出的 Schedule GET 响应
   // 成为陈旧信号，不能覆盖刚保存成功的表单值。
   const scheduleLoadEpoch = useRef(0);
+  const inputLoadEpoch = useRef(0);
   const runMode = runModeOverride ?? props.adapter.run_mode;
 
   const refreshAdapter = useCallback(async () => {
@@ -114,6 +140,39 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     setTimeoutCustomMode(false);
   }, [adapterId, onAdapterChange]);
 
+  const loadInputConfig = useCallback(async () => {
+    const epoch = inputLoadEpoch.current + 1;
+    inputLoadEpoch.current = epoch;
+    setLoadingInput(true);
+    setInputLoadFailed(false);
+    try {
+      const loaded = await api.getInputConfig(adapterId);
+      if (inputLoadEpoch.current !== epoch) {
+        return;
+      }
+      setInputConfig(loaded);
+      setInputSourceDraft(loaded.source_type);
+      setInputJsonDraft(loaded.source_type === "json" ? formatJson(loaded.json_value) : "null");
+      setInputValidationError(null);
+    } catch (error) {
+      if (inputLoadEpoch.current === epoch) {
+        setInputLoadFailed(true);
+        onError(errorMessage(error));
+      }
+    } finally {
+      if (inputLoadEpoch.current === epoch) {
+        setLoadingInput(false);
+      }
+    }
+  }, [adapterId, onError]);
+
+  useEffect(() => {
+    void loadInputConfig();
+    return () => {
+      inputLoadEpoch.current += 1;
+    };
+  }, [loadInputConfig]);
+
   const loadSchedule = useCallback(async () => {
     setLoadingSchedule(true);
     try {
@@ -121,7 +180,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setSchedule(loaded);
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
-      setScheduleInput(JSON.stringify(loaded.input, null, 2));
       setScheduleLoadFailed(false);
       setScheduleTouched(false);
     } catch (error) {
@@ -149,7 +207,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setSchedule(loaded);
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
-      setScheduleInput(JSON.stringify(loaded.input, null, 2));
       setScheduleLoadFailed(false);
       setScheduleTouched(false);
     }).catch((error) => {
@@ -188,6 +245,78 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     return effectiveTimeoutSeconds;
   }
 
+  function localizedInputError(error: unknown): string {
+    if (error instanceof ApiError) {
+      if (error.code === "input_config_revision_conflict") {
+        return userErrorMessage(error, t("task.input.errors.revisionConflict"));
+      }
+      if (error.code === "input_source_not_available") {
+        return userErrorMessage(error, t("task.input.errors.sourceNotAvailable"));
+      }
+      if (error.code === "input_config_not_initialized") {
+        return userErrorMessage(error, t("task.input.errors.notInitialized"));
+      }
+      if (error.code === "input_invalid" && error.params.reason === "managed_files_empty") {
+        return userErrorMessage(error, t("task.input.errors.managedFilesEmpty"));
+      }
+    }
+    return errorMessage(error);
+  }
+
+  async function saveInputObject() {
+    if (
+      readOnly ||
+      savingInput ||
+      loadingInput ||
+      inputConfig === null ||
+      inputSourceDraft === "managed_files" ||
+      inputSourceDraft === "remote_files" ||
+      props.adapter.runtime_locked === true ||
+      schedule?.enabled === true
+    ) {
+      return;
+    }
+
+    const payload = inputSourceDraft === "none"
+      ? { expected_revision: inputConfig.revision, source_type: "none" as const }
+      : (() => {
+          const parsed = parseJson(inputJsonDraft);
+          if (!parsed.ok) {
+            return null;
+          }
+          return {
+            expected_revision: inputConfig.revision,
+            source_type: "json" as const,
+            json_value: parsed.value,
+          };
+        })();
+    if (payload === null) {
+      const message = t("task.input.invalidJson");
+      setInputValidationError(message);
+      onError(message);
+      return;
+    }
+
+    setSavingInput(true);
+    setInputValidationError(null);
+    onError(null);
+    try {
+      const saved = await api.putInputConfig(adapterId, payload);
+      setInputConfig(saved);
+      setInputSourceDraft(saved.source_type);
+      setInputJsonDraft(saved.source_type === "json" ? formatJson(saved.json_value) : "null");
+      setInputValidationError(null);
+    } catch (error) {
+      // Keep both the last valid server resource and the user's draft intact.
+      // In particular, a 409 must not silently replace the stale page's text.
+      const message = localizedInputError(error);
+      setInputValidationError(message);
+      onError(message);
+    } finally {
+      setSavingInput(false);
+    }
+  }
+
   async function saveRunConfig() {
     if (readOnly || savingRuntime || props.adapter.runtime_locked) {
       return;
@@ -198,14 +327,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     }
     const timeoutSeconds = resolveTimeoutSeconds();
     if (timeoutSeconds === null) {
-      return;
-    }
-    const scheduleDraft =
-      runMode === "schedule"
-        ? parseInput(scheduleInput)
-        : null;
-    if (scheduleDraft !== null && !scheduleDraft.ok) {
-      onError(t("task.settings.invalidScheduleInput"));
       return;
     }
     setSavingRuntime(true);
@@ -233,14 +354,12 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             enabled: schedule?.enabled === true,
             cron,
             timezone,
-            input: scheduleDraft?.ok === true ? scheduleDraft.value : null,
           });
           // 保存成功后的值立即落回表单，并作废任何在途的 Schedule GET。
           scheduleLoadEpoch.current += 1;
           setSchedule(saved);
           setCron(saved.cron);
           setTimezone(saved.timezone);
-          setScheduleInput(JSON.stringify(saved.input, null, 2));
           setScheduleTouched(false);
         } else if (scheduleUnknown) {
           onError(t("task.settings.savedScheduleNotLoaded"));
@@ -265,21 +384,18 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       onError(scheduleEnableBlockedReason);
       return;
     }
-    const parsed = parseInput(scheduleInput);
-    if (!parsed.ok) {
-      onError(t("task.settings.invalidScheduleInput"));
-      return;
-    }
     setSavingSchedule(true);
     onError(null);
     try {
+      // InputConfig is the only input editor. Schedule PUT keeps the legacy
+      // mirror server-owned by omitting its old input field entirely.
       const saved = await api.putSchedule(adapterId, {
         enabled,
         cron,
         timezone,
-        input: parsed.value,
       });
       setSchedule(saved);
+      setScheduleTouched(false);
       await refreshAdapter();
     } catch (error) {
       onError(errorMessage(error));
@@ -297,16 +413,16 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       onError(t("task.reasons.dirtyRun"));
       return;
     }
-    const text = props.adapter.run_mode === "schedule" ? scheduleInput : manualInput;
-    const parsed = parseInput(text);
-    if (!parsed.ok) {
-      onError(t("task.settings.invalidInput"));
+    if (runBlockedReason !== null) {
+      onError(runBlockedReason);
       return;
     }
     setSubmitting(true);
     onError(null);
     try {
-      const execution = await api.createExecution(adapterId, { input: parsed.value });
+      // Control resolves the saved InputConfig. The new Web never sends an
+      // input override, including for schedule-mode run-now.
+      const execution = await api.createExecution(adapterId);
       props.onExecutionStarted(execution);
       await refreshAdapter();
     } catch (error) {
@@ -359,9 +475,32 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     workerId !== (props.adapter.runtime_worker_id ?? null) ||
     effectiveTimeoutSeconds !== (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) ||
     scheduleTouched;
+
+  const inputDirty = inputConfig !== null && (
+    inputSourceDraft !== inputConfig.source_type ||
+    (inputSourceDraft === "json" && inputJsonDraft !== formatJson(inputConfig.json_value))
+  );
+  const inputInvalidReason = inputConfig?.invalid_reason ?? null;
+  const inputBlockedReason = (() => {
+    if (loadingInput) return t("task.input.loading");
+    if (inputLoadFailed || inputConfig === null) return t("task.input.loadFailed");
+    if (inputDirty) return t("task.input.saveBeforeRun");
+    if (!inputConfig.valid_for_run) {
+      if (inputInvalidReason === "managed_files_empty") {
+        return t("task.input.invalidManagedFiles");
+      }
+      if (inputInvalidReason === "input_source_not_available") {
+        return t("task.input.errors.sourceNotAvailable");
+      }
+      return t("task.input.invalidConfig");
+    }
+    return null;
+  })();
+
   const scheduleEnableBlockedReason = (() => {
     if (loadingSchedule) return t("task.reasons.loadingSchedule");
     if (scheduleLoadFailed) return t("task.reasons.scheduleLoadFailed");
+    if (inputBlockedReason !== null) return inputBlockedReason;
     if (props.adapter.latest_version_id === null) return t("task.reasons.saveVersionFirst");
     if (props.adapter.runtime_worker_id == null) return t("task.reasons.saveWorkerFirst");
     if (props.dirty) return t("task.reasons.saveChangesFirst");
@@ -369,32 +508,89 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (scheduleConfigMissing) return t("task.reasons.saveRuntimeFirst");
     return null;
   })();
+
   const compatibleWorkers = props.workers.filter((worker) =>
     worker.capabilities.includes(props.adapter.language),
   );
   const canRun =
     !readOnly &&
     !props.dirty &&
+    inputBlockedReason === null &&
     !props.adapter.archived_at &&
     props.adapter.latest_version_id !== null &&
     props.adapter.runtime_worker_id != null &&
     !activeExecution &&
     !submitting;
+  const runBlockedReason = props.dirty
+    ? t("task.reasons.dirtyRun")
+    : inputBlockedReason ?? (canRun ? null : activeExecution ? t("task.reasons.activeRun") : null);
+
+  const inputEditingLocked =
+    readOnly || runtimeLocked || scheduleEnabled || savingInput || loadingInput || inputLoadFailed || inputConfig === null;
+  const sourceCards: {
+    sourceType: InputSourceType;
+    title: string;
+    description: string;
+    status: string;
+    disabledReason: string | null;
+  }[] = [
+    {
+      sourceType: "none",
+      title: t("input.sources.none.title", { ns: "adapter" }),
+      description: t("input.sources.none.description", { ns: "adapter" }),
+      status: t("input.sources.none.status", { ns: "adapter" }),
+      disabledReason: inputEditingLocked ? t("task.input.locked") : null,
+    },
+    {
+      sourceType: "json",
+      title: t("input.sources.json.title", { ns: "adapter" }),
+      description: t("input.sources.json.description", { ns: "adapter" }),
+      status: t("input.sources.json.status", { ns: "adapter" }),
+      disabledReason: inputEditingLocked ? t("task.input.locked") : null,
+    },
+    {
+      sourceType: "managed_files",
+      title: t("input.sources.managedFiles.title", { ns: "adapter" }),
+      description: t("input.sources.managedFiles.description", { ns: "adapter" }),
+      status: t("input.sources.managedFiles.disabled", { ns: "adapter" }),
+      disabledReason: t("input.sources.managedFiles.disabled", { ns: "adapter" }),
+    },
+    {
+      sourceType: "remote_files",
+      title: t("input.sources.remoteFiles.title", { ns: "adapter" }),
+      description: t("input.sources.remoteFiles.description", { ns: "adapter" }),
+      status: t("input.sources.remoteFiles.disabled", { ns: "adapter" }),
+      disabledReason: t("input.sources.remoteFiles.disabled", { ns: "adapter" }),
+    },
+  ];
+
+  function selectInputSource(sourceType: InputSourceType, disabledReason: string | null): void {
+    if (disabledReason !== null) {
+      return;
+    }
+    setInputSourceDraft(sourceType);
+    setInputValidationError(null);
+    onError(null);
+  }
 
   useEffect(() => {
     onRuntimeStateChange({
       scheduleEnabled,
-      loading: loadingSchedule || savingRuntime || savingSchedule || submitting || cancelling,
+      loading: loadingInput || loadingSchedule || savingRuntime || savingInput || savingSchedule || submitting || cancelling,
       activeExecution,
       canRun,
       scheduleEnableBlockedReason,
+      runBlockedReason,
     });
   }, [
     activeExecution,
     canRun,
     cancelling,
+    loadingInput,
     loadingSchedule,
     onRuntimeStateChange,
+    runBlockedReason,
+    savingInput,
     savingRuntime,
     savingSchedule,
     scheduleEnableBlockedReason,
@@ -477,7 +673,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                   {t("units.minutes", { value: minutes })}
                 </Radio>
               ))}
-                <Radio value="custom">{t("task.settings.custom")}</Radio>
+              <Radio value="custom">{t("task.settings.custom")}</Radio>
             </Radio.Group>
             {effectiveCustom && (
               <InputNumber
@@ -520,10 +716,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 <span className="settings-field-label">{t("task.settings.timezone")}</span>
                 <Input data-testid="task-schedule-timezone" value={timezone} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setTimezone(event.target.value); setScheduleTouched(true); }} />
               </label>
-              <label className="settings-field">
-                <span className="settings-field-label">{t("task.settings.input")}</span>
-                <Input.TextArea data-testid="task-schedule-input" rows={4} value={scheduleInput} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setScheduleInput(event.target.value); setScheduleTouched(true); }} />
-              </label>
               <div className="settings-field">
                 <span className="settings-field-label">{t("task.settings.scheduleStatus")}</span>
                 <Space>
@@ -537,15 +729,109 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         </section>
       )}
 
-      {runMode === "manual" && (
-        <section className="task-manual-config">
-          <Typography.Title level={5}>{t("task.settings.manualTitle")}</Typography.Title>
-          <label className="settings-field">
-            <span className="settings-field-label">{t("task.settings.input")}</span>
-            <Input.TextArea data-testid="task-manual-input" rows={4} value={manualInput} disabled={readOnly || activeExecution} onChange={(event) => setManualInput(event.target.value)} />
-          </label>
-        </section>
-      )}
+      <section className="task-input-config" data-testid="task-input-config">
+        <div className="task-input-heading">
+          <div>
+            <Typography.Title level={5}>{t("input.objectTitle", { ns: "adapter" })}</Typography.Title>
+            <Typography.Text type="secondary">{t("task.input.description")}</Typography.Text>
+          </div>
+          <div className="task-input-state" data-testid="task-input-state" aria-live="polite">
+            <Tag color={inputDirty ? "gold" : "green"}>
+              {inputDirty ? t("task.input.draft") : t("task.input.saved")}
+            </Tag>
+            <span data-testid="task-input-revision">
+              {inputConfig === null ? t("task.input.revisionUnknown") : t("task.input.revision", { value: inputConfig.revision })}
+            </span>
+          </div>
+        </div>
+
+        <div className="task-input-source-grid" role="radiogroup" aria-label={t("task.input.sourceGroup")}>
+          {sourceCards.map((card) => {
+            const selected = inputSourceDraft === card.sourceType;
+            const cardContent = (
+              <Card
+                key={card.sourceType}
+                size="small"
+                className={`task-input-source-card${selected ? " is-selected" : ""}${card.disabledReason !== null ? " is-disabled" : ""}`}
+                data-testid={`task-input-source-${card.sourceType}`}
+                role="radio"
+                aria-checked={selected}
+                aria-disabled={card.disabledReason !== null}
+                aria-label={`${card.title}: ${card.status}`}
+                tabIndex={0}
+                hoverable={card.disabledReason === null}
+                onClick={() => selectInputSource(card.sourceType, card.disabledReason)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    selectInputSource(card.sourceType, card.disabledReason);
+                  }
+                }}
+              >
+                <div className="task-input-source-card-title">{card.title}</div>
+                <Typography.Text type="secondary">{card.description}</Typography.Text>
+                <Tag color={selected ? "blue" : card.disabledReason === null ? "default" : "gold"}>
+                  {card.status}
+                </Tag>
+              </Card>
+            );
+            return card.disabledReason === null ? cardContent : (
+              <Tooltip key={card.sourceType} title={card.disabledReason} trigger={["hover", "focus"]}>
+                {cardContent}
+              </Tooltip>
+            );
+          })}
+        </div>
+
+        <Form layout="vertical" className="task-input-form">
+          {inputSourceDraft === "json" && (
+            <Form.Item
+              label={t("task.input.jsonLabel")}
+              validateStatus={inputValidationError !== null ? "error" : undefined}
+              help={inputValidationError ?? t("task.input.jsonHint")}
+            >
+              <Input.TextArea
+                data-testid="task-input-json"
+                aria-label={t("task.input.jsonLabel")}
+                aria-invalid={inputValidationError !== null}
+                rows={8}
+                value={inputJsonDraft}
+                disabled={inputEditingLocked}
+                placeholder={t("task.input.jsonPlaceholder")}
+                onChange={(event) => {
+                  setInputJsonDraft(event.target.value);
+                  setInputValidationError(null);
+                }}
+              />
+            </Form.Item>
+          )}
+          {inputConfig !== null && !inputConfig.valid_for_run && inputSourceDraft === inputConfig.source_type && !inputDirty && (
+            <Alert
+              type="warning"
+              showIcon
+              data-testid="task-input-invalid"
+              message={inputInvalidReason === "managed_files_empty"
+                ? t("task.input.invalidManagedFiles")
+                : inputInvalidReason === "input_source_not_available"
+                  ? t("task.input.errors.sourceNotAvailable")
+                  : t("task.input.invalidConfig")}
+            />
+          )}
+          <div className="task-input-actions">
+            <Button
+              type="primary"
+              htmlType="button"
+              data-testid="save-task-input"
+              loading={savingInput}
+              disabled={inputEditingLocked || inputConfig === null}
+              onClick={() => void saveInputObject()}
+            >
+              {t("task.input.save")}
+            </Button>
+            {inputDirty && <Typography.Text type="warning">{t("task.input.unsavedHint")}</Typography.Text>}
+          </div>
+        </Form>
+      </section>
 
       <Button
         type="primary"

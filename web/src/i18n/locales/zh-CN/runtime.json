@@ -74,18 +74,40 @@
       "scheduleTitle": "定时配置",
       "cron": "Cron（5 字段）",
       "timezone": "时区（IANA）",
-      "input": "输入（JSON）",
       "scheduleStatus": "定时状态",
       "scheduleRunning": "定时运行中",
       "disabled": "已停用",
       "nextRun": "下一次执行：{{time}}",
-      "manualTitle": "手动运行配置",
       "save": "保存运行配置",
       "invalidTimeout": "单次执行超时必须是 1–{{max}} 秒（最大 24 小时）。",
       "chooseWorker": "请先选择运行节点。",
-      "invalidScheduleInput": "Schedule Input 必须是合法 JSON",
-      "savedScheduleNotLoaded": "运行配置已保存；但 Schedule 尚未加载完成（或加载失败），定时字段未保存，请刷新后重试。",
-      "invalidInput": "Input 必须是合法 JSON"
+      "savedScheduleNotLoaded": "运行配置已保存；但 Schedule 尚未加载完成（或加载失败），定时字段未保存，请刷新后重试。"
+    },
+    "input": {
+      "description": "手动运行和定时运行共用同一个已保存的输入对象。",
+      "sourceGroup": "输入对象来源",
+      "loading": "输入对象正在加载，请稍候。",
+      "loadFailed": "输入对象加载失败，请刷新后重试。",
+      "draft": "草稿",
+      "saved": "已保存",
+      "revisionUnknown": "Revision：未知",
+      "revision": "已保存 Revision {{value}}",
+      "save": "保存输入对象",
+      "saveBeforeRun": "请先保存输入对象，再运行或启用定时。",
+      "invalidConfig": "当前输入对象不可运行，请修复配置后重试。",
+      "invalidManagedFiles": "托管文件为空，当前输入对象不可运行。",
+      "locked": "运行中或定时已启用，输入对象已锁定。",
+      "invalidJson": "请输入合法 JSON。",
+      "jsonLabel": "JSON 值",
+      "jsonHint": "支持对象、数组、字符串、数字、布尔值和 null；保存后才会用于运行。",
+      "jsonPlaceholder": "例如 {\"region\":\"cn-east\"}",
+      "unsavedHint": "有未保存的输入对象修改。",
+      "errors": {
+        "revisionConflict": "输入对象已被其他页面更新，请刷新后重试。",
+        "sourceNotAvailable": "该输入对象来源尚未启用。",
+        "notInitialized": "输入对象尚未初始化，请刷新后重试。",
+        "managedFilesEmpty": "托管文件为空，请先准备文件后再运行。"
+      }
     }
   },
   "webhook": {

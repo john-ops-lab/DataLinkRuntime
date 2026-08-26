@@ -174,6 +174,25 @@ function makeVersion(overrides: Partial<VersionDetail> = {}): VersionDetail {
   };
 }
 
+function inputConfigRoute(): Route {
+  return {
+    method: "GET",
+    match: "/api/adapters/1/input-config",
+    respond: () => ({
+      body: {
+        adapter_id: 1,
+        revision: 1,
+        source_type: "none",
+        json_value: null,
+        retention: { mode: "system_default", seconds: null },
+        artifacts: [],
+        valid_for_run: true,
+        invalid_reason: null,
+      },
+    }),
+  };
+}
+
 /** Authenticated console with one Task Adapter that has a saved Revision. */
 function taskConsoleRoutes(adapter: Adapter, version: VersionDetail) {
   return [
@@ -183,6 +202,7 @@ function taskConsoleRoutes(adapter: Adapter, version: VersionDetail) {
     { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
     { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [{ id: 10, seq: 1 }] }) },
     { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: version }) },
+    inputConfigRoute(),
     { method: "GET", match: /^\/api\/adapters\/1\/schedule$/, respond: () => ({ status: 404, body: { code: "schedule_not_configured" } }) },
     { method: "GET", match: /^\/api\/adapters\/1\/bindings$/, respond: () => ({ body: [] }) },
   ];
@@ -542,6 +562,7 @@ it("keeps zh-CN/en key sets identical and renders the English console at 1280–
     { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
     { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [{ id: 10, seq: 1 }] }) },
     { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: version }) },
+    inputConfigRoute(),
   ]);
   for (const width of [1280, 1440, 1680, 1920]) {
     Object.defineProperty(window, "innerWidth", { value: width, configurable: true });

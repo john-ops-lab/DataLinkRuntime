@@ -66,12 +66,12 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 3. A2 — Wave A none/json Web 与四卡片占位
 
-- [ ] 3.1 按 antd 5.29.3 固定 CLI 查询实际使用的 Card/Form/Tooltip API/demo并记录结果；验证未更改 `package.json` 与 antd/pro-components 锁定版本。
-- [ ] 3.2 在 Task 运行设置建立独立 Input Object 草稿/revision/save 状态，移除 manual/Schedule 两套 JSON 编辑路径；Vitest 验证切换 run_mode 不丢草稿且保存失败保留最近有效配置。
-- [ ] 3.3 实现 none/json 四种顶层 JSON 保存和语法校验，Execution/run-now 只发送空 body；验证 object/array/scalar/null、dirty草稿提示和 `input` 字段永不由新 Web 发出。
-- [ ] 3.4 展示四张可聚焦卡片：remote_files 永久“开发中”，managed_files 在 flag 关闭时“尚未启用”；验证禁用状态不调用上传/文件 API且后端绕过请求仍稳定拒绝。
-- [ ] 3.5 补齐 zh-CN/en adapter/runtime key、错误映射与插值一致性；运行 i18n key/placeholder Vitest，验证无 raw key和非本地化 machine code。
-- [ ] 3.6 运行 A2 Gate：`npm run test -- <focused files>`、`npm run lint`、`npm run typecheck`、`npm run build`；在独立浏览器以 zh-CN/en、1280/1920 验证 none/json、revision conflict、run-now、console/request/overflow。
+- [x] 3.1 按 antd 5.29.3 固定 CLI 查询实际使用的 Card/Form/Tooltip API/demo并记录结果；验证未更改 `package.json` 与 antd/pro-components 锁定版本。
+- [x] 3.2 在 Task 运行设置建立独立 Input Object 草稿/revision/save 状态，移除 manual/Schedule 两套 JSON 编辑路径；Vitest 验证切换 run_mode 不丢草稿且保存失败保留最近有效配置。
+- [x] 3.3 实现 none/json 四种顶层 JSON 保存和语法校验，Execution/run-now 只发送空 body；验证 object/array/scalar/null、dirty草稿提示和 `input` 字段永不由新 Web 发出。
+- [x] 3.4 展示四张可聚焦卡片：remote_files 永久“开发中”，managed_files 在 flag 关闭时“尚未启用”；验证禁用状态不调用上传/文件 API且后端绕过请求仍稳定拒绝。
+- [x] 3.5 补齐 zh-CN/en adapter/runtime key、错误映射与插值一致性；运行 i18n key/placeholder Vitest，验证无 raw key和非本地化 machine code。
+- [x] 3.6 运行 A2 Gate：`npm run test -- <focused files>`、`npm run lint`、`npm run typecheck`、`npm run build`；在独立浏览器以 zh-CN/en、1280/1920 验证 none/json、revision conflict、run-now、console/request/overflow。
 
 ## 4. A3 — Wave A 迁移、回滚与集成 Gate
 

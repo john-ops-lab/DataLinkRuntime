@@ -1,5 +1,30 @@
 {
   "namespace": "Adapter",
+  "input": {
+    "objectTitle": "Input Object",
+    "sources": {
+      "none": {
+        "title": "No input",
+        "description": "Passes no additional data to the Task.",
+        "status": "Default"
+      },
+      "json": {
+        "title": "JSON",
+        "description": "Save any JSON top-level value: object, array, string, number, boolean or null.",
+        "status": "Configurable"
+      },
+      "managedFiles": {
+        "title": "Managed files",
+        "description": "File input managed by the platform lifecycle.",
+        "disabled": "Not enabled yet"
+      },
+      "remoteFiles": {
+        "title": "Remote files",
+        "description": "File input from a remote source.",
+        "disabled": "In development"
+      }
+    }
+  },
   "types": {
     "task": "Task",
     "webhook": "Webhook",

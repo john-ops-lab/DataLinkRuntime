@@ -231,6 +231,25 @@ function stubFetch(routes: Route[]) {
         ? candidate.match === url
         : candidate.match.test(url);
     });
+    // A1 creates an Adapter-level Input Object for every Task Adapter. Keep
+    // older Console fixtures focused on their own behavior by supplying the
+    // stable default resource when a test does not need to customize it.
+    if (!route && method === "GET" && /^\/api\/adapters\/\d+\/input-config$/.test(url)) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          adapter_id: Number(url.match(/\d+/)?.[0] ?? 0),
+          revision: 1,
+          source_type: "none",
+          json_value: null,
+          retention: { mode: "system_default", seconds: null },
+          artifacts: [],
+          valid_for_run: true,
+          invalid_reason: null,
+        }),
+      };
+    }
     if (!route) {
       throw new Error(`Unexpected request: ${method} ${url}`);
     }
@@ -479,7 +498,7 @@ it("persists the Task run mode and reveals Schedule settings", async () => {
     run_mode: "schedule",
     timeout_seconds: 300,
   });
-  // 统一保存同时把 Cron/Timezone/Input 以停用状态落库（Schedule 尚未启用）。
+  // 统一保存只提交 Schedule 字段；输入对象由独立资源负责保存。
   const putCall = fetchMock.mock.calls.find(
     ([url, init]) => String(url) === "/api/adapters/1/schedule" && init?.method === "PUT",
   );
@@ -487,7 +506,6 @@ it("persists the Task run mode and reveals Schedule settings", async () => {
     enabled: false,
     cron: "*/5 * * * *",
     timezone: "Asia/Shanghai",
-    input: {},
   });
 });
 
@@ -532,7 +550,8 @@ it("loads an existing disabled Schedule before saving a manual-to-schedule switc
   // 已存在的停用配置，不能把 null 当成“确认未配置”。
   await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("0 9 * * *"));
   expect(valueOf("task-schedule-timezone")).toBe("UTC");
-  expect(valueOf("task-schedule-input")).toContain('"preserved": true');
+  expect(screen.getByTestId("task-input-config")).toBeTruthy();
+  expect(screen.queryByTestId("task-schedule-input")).toBeNull();
 
   fireEvent.click(screen.getByTestId("save-task-runtime"));
   await waitFor(() => {
@@ -627,8 +646,9 @@ it("switches manual/schedule fields immediately and keeps run-once out of run se
   await selectFirstAdapter();
   fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
 
-  // 手动模式：只显示手动配置（输入）与超时，不显示定时字段。
-  expect(await screen.findByTestId("task-manual-input")).toBeTruthy();
+  // 手动模式：显示唯一输入对象区与超时，不显示定时字段。
+  expect(await screen.findByTestId("task-input-config")).toBeTruthy();
+  expect(screen.queryByTestId("task-input-json")).toBeNull();
   expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
   // 默认超时 5 分钟（300 秒）预设选中。
   const preset = screen.getByTestId("task-timeout-preset");
@@ -641,18 +661,18 @@ it("switches manual/schedule fields immediately and keeps run-once out of run se
   expect(screen.queryByText("立即运行一次")).toBeNull();
   expect(screen.queryByText("手动运行", { selector: "h5" })).toBeNull();
 
-  // 选择“定时运行”后立即显示 Cron / Timezone / Input / 定时状态。
+  // 选择“定时运行”后立即显示 Cron / Timezone / 输入对象 / 定时状态。
   fireEvent.click(screen.getByLabelText("定时运行"));
   await screen.findByTestId("task-schedule-cron");
   expect(screen.getByTestId("task-schedule-timezone")).toBeTruthy();
-  expect(screen.getByTestId("task-schedule-input")).toBeTruthy();
+  expect(screen.getByTestId("task-input-config")).toBeTruthy();
   expect(screen.getByTestId("task-schedule-next-run")).toBeTruthy();
   expect(screen.queryByTestId("enable-task-schedule")).toBeNull();
-  expect(screen.queryByTestId("task-manual-input")).toBeNull();
+  expect(screen.queryByTestId("task-schedule-input")).toBeNull();
 
-  // 切回手动：手动字段回来，定时字段消失。
+  // 切回手动：唯一输入对象仍在，定时字段消失。
   fireEvent.click(screen.getByLabelText("手动运行"));
-  await screen.findByTestId("task-manual-input");
+  await screen.findByTestId("task-input-config");
   expect(screen.queryByTestId("task-schedule-cron")).toBeNull();
 });
 
@@ -2188,9 +2208,9 @@ it("runs a Task from the Workbench header and follows it in the 实时日志 tab
 
   render(<App />);
   await selectFirstAdapter();
-  const runButton = await screen.findByTestId("header-task-run-once") as HTMLButtonElement;
-  await waitFor(() => expect(runButton.disabled).toBe(false));
-  fireEvent.click(runButton);
+  await screen.findByTestId("header-task-run-once");
+  await waitFor(() => expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByTestId("header-task-run-once"));
 
   // M5.5.10：手动运行自动切换到「实时日志」Tab，统一视图展示全部日志。
   const workspace = await screen.findByTestId("live-log-workspace");

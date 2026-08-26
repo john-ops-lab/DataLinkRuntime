@@ -4,6 +4,8 @@ export type AdapterLanguage = "python" | "javascript" | "java";
 export type AdapterType = "task" | "webhook";
 export type TaskRunMode = "manual" | "schedule";
 export type SystemLocale = "zh-CN" | "en";
+export type InputSourceType = "none" | "json" | "managed_files" | "remote_files";
+export type InputRetentionMode = "system_default" | "custom" | "manual_delete";
 
 export type AccountRole = "admin" | "user";
 export type AdapterAccessLevel = "admin" | "owner" | "edit" | "read";
@@ -158,8 +160,47 @@ export interface AdapterScheduleDraft {
   enabled: boolean;
   cron: string;
   timezone: string;
-  input: unknown;
+  /** Legacy mirror only; new Web input edits use AdapterInputConfig. */
+  input?: unknown;
 }
+
+export interface InputRetention {
+  mode: InputRetentionMode;
+  seconds: number | null;
+}
+
+/** Safe current Input Object state; operational file identities are omitted. */
+export interface AdapterInputConfig {
+  adapter_id: number;
+  revision: number;
+  source_type: InputSourceType;
+  json_value: unknown;
+  retention: InputRetention;
+  artifacts: Record<string, unknown>[];
+  valid_for_run: boolean;
+  invalid_reason: string | null;
+}
+
+export type AdapterInputConfigDraft =
+  | {
+      expected_revision: number;
+      source_type: "none";
+    }
+  | {
+      expected_revision: number;
+      source_type: "json";
+      json_value: unknown;
+    }
+  | {
+      expected_revision: number;
+      source_type: "managed_files";
+      artifact_ids: number[];
+      retention: InputRetention;
+    }
+  | {
+      expected_revision: number;
+      source_type: "remote_files";
+    };
 
 // --- M5.3: Webhook Trigger ---------------------------------------------------
 

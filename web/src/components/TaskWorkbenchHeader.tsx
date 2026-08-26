@@ -60,15 +60,17 @@ export default function TaskWorkbenchHeader(props: TaskWorkbenchHeaderProps) {
     ? t("task.reasons.dirtyRun")
     : props.runtimeState.canRun
       ? null
-      : activeExecution
-        ? t("task.reasons.activeRun")
-        : props.adapter.latest_version_id === null
-          ? t("task.reasons.noVersion")
-          : props.adapter.runtime_worker_id == null
-            ? t("task.reasons.noWorker")
-            : props.runtimeState.loading || props.busy
-              ? t("task.reasons.processing")
-              : t("task.reasons.unavailable");
+      : props.runtimeState.runBlockedReason ?? (
+        activeExecution
+          ? t("task.reasons.activeRun")
+          : props.adapter.latest_version_id === null
+            ? t("task.reasons.noVersion")
+            : props.adapter.runtime_worker_id == null
+              ? t("task.reasons.noWorker")
+              : props.runtimeState.loading || props.busy
+                ? t("task.reasons.processing")
+                : t("task.reasons.unavailable")
+      );
   const scheduleToggleReason = props.runtimeState.scheduleEnabled
     ? null
     : activeExecution

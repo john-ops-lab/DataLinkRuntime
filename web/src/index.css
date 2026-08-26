@@ -2553,6 +2553,7 @@ body {
 
 .task-runtime-config,
 .task-schedule-config,
+.task-input-config,
 .task-manual-config,
 .task-execution-status {
   min-width: 0;
@@ -2571,6 +2572,10 @@ body {
 
 .task-schedule-config {
   border-top: 3px solid #d48806;
+}
+
+.task-input-config {
+  border-top: 3px solid #0891b2;
 }
 
 .task-manual-config {
@@ -2604,6 +2609,92 @@ body {
   margin: 0;
   font-size: 0.78rem;
   color: var(--dlr-text-weak);
+}
+
+.task-input-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.task-input-heading .ant-typography {
+  margin-bottom: 0;
+}
+
+.task-input-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--dlr-text-secondary);
+  font-size: 0.78rem;
+  text-align: right;
+}
+
+.task-input-source-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.task-input-source-card.ant-card {
+  height: 100%;
+  border-color: var(--dlr-border);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+
+.task-input-source-card.ant-card .ant-card-body {
+  display: flex;
+  min-height: 132px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+}
+
+.task-input-source-card.ant-card.is-selected {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
+}
+
+.task-input-source-card.ant-card.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.task-input-source-card.ant-card:focus-visible {
+  outline: 3px solid rgba(22, 119, 255, 0.28);
+  outline-offset: 2px;
+}
+
+.task-input-source-card-title {
+  color: var(--dlr-text);
+  font-weight: 600;
+}
+
+.task-input-source-card .ant-typography {
+  flex: 1;
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-input-form .ant-form-item {
+  margin-bottom: 12px;
+}
+
+.task-input-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-input-actions .ant-typography {
+  margin: 0;
 }
 
 /* M3.2 设置抽屉生命周期区。 */

@@ -2,6 +2,8 @@
 
 import type {
   Adapter,
+  AdapterInputConfig,
+  AdapterInputConfigDraft,
   AdapterPermission,
   AdapterPermissionCandidate,
   AdapterLanguage,
@@ -297,6 +299,20 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  /** The sole current Input Object resource for a Task Adapter. */
+  getInputConfig: (adapterId: number): Promise<AdapterInputConfig> =>
+    request(`/api/adapters/${adapterId}/input-config`),
+
+  /** Save a draft with optimistic revision control; file transport is separate. */
+  putInputConfig: (
+    adapterId: number,
+    payload: AdapterInputConfigDraft,
+  ): Promise<AdapterInputConfig> =>
+    request(`/api/adapters/${adapterId}/input-config`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
   // --- M5.3: Webhook Trigger --------------------------------------------------
 
   /** Singleton Webhook config; throws ApiError webhook_not_configured (404) before configuration. */
@@ -312,13 +328,13 @@ export const api = {
 
   // --- M3: executions, history and workers ---------------------------------
 
-  createExecution: (
-    adapterId: number,
-    payload: { input?: unknown },
-  ): Promise<Execution> =>
+  createExecution: (adapterId: number): Promise<Execution> =>
     request(`/api/adapters/${adapterId}/executions`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      // The saved Adapter Input Object is resolved by Control.  Keep the
+      // request body deliberately empty so the Web cannot reintroduce a
+      // per-execution input override.
+      body: JSON.stringify({}),
     }),
 
   getExecution: (executionId: number): Promise<Execution> =>

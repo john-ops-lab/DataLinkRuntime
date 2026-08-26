@@ -74,18 +74,40 @@
       "scheduleTitle": "Schedule configuration",
       "cron": "Cron (5 fields)",
       "timezone": "Timezone (IANA)",
-      "input": "Input (JSON)",
       "scheduleStatus": "Schedule status",
       "scheduleRunning": "Schedule running",
       "disabled": "Disabled",
       "nextRun": "Next execution: {{time}}",
-      "manualTitle": "Manual run configuration",
       "save": "Save runtime configuration",
       "invalidTimeout": "Per-execution timeout must be between 1 and {{max}} seconds (maximum 24 hours).",
       "chooseWorker": "Choose a Runtime Worker first.",
-      "invalidScheduleInput": "Schedule Input must be valid JSON",
-      "savedScheduleNotLoaded": "Runtime configuration was saved, but Schedule has not finished loading (or failed to load), so schedule fields were not saved. Refresh and try again.",
-      "invalidInput": "Input must be valid JSON"
+      "savedScheduleNotLoaded": "Runtime configuration was saved, but Schedule has not finished loading (or failed to load), so schedule fields were not saved. Refresh and try again."
+    },
+    "input": {
+      "description": "Manual and scheduled runs share one saved Input Object.",
+      "sourceGroup": "Input Object source",
+      "loading": "Loading the Input Object. Please wait.",
+      "loadFailed": "The Input Object could not be loaded. Refresh and try again.",
+      "draft": "Draft",
+      "saved": "Saved",
+      "revisionUnknown": "Revision: unknown",
+      "revision": "Saved Revision {{value}}",
+      "save": "Save Input Object",
+      "saveBeforeRun": "Save the Input Object before running or enabling the schedule.",
+      "invalidConfig": "The current Input Object cannot run. Fix the configuration and try again.",
+      "invalidManagedFiles": "Managed files are empty, so the current Input Object cannot run.",
+      "locked": "The Input Object is locked while a run is active or the schedule is enabled.",
+      "invalidJson": "Enter valid JSON.",
+      "jsonLabel": "JSON value",
+      "jsonHint": "Objects, arrays, strings, numbers, booleans and null are supported; changes apply to runs after saving.",
+      "jsonPlaceholder": "e.g. {\"region\":\"cn-east\"}",
+      "unsavedHint": "The Input Object has unsaved changes.",
+      "errors": {
+        "revisionConflict": "The Input Object was updated by another page. Refresh and try again.",
+        "sourceNotAvailable": "This Input Object source is not enabled yet.",
+        "notInitialized": "The Input Object is not initialized. Refresh and try again.",
+        "managedFilesEmpty": "Managed files are empty. Prepare the files before running."
+      }
     }
   },
   "webhook": {
