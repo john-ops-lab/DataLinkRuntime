@@ -150,6 +150,8 @@ async def _stream_upload(
     digest = hashlib.sha256()
     try:
         reader = MultipartReader(request.stream(), request.headers.get("content-type"))
+        # The low-watermark snapshot is captured at reservation creation and
+        # refreshed only by bounded reservation growth, never per chunk.
         while True:
             part = await reader.next_part()
             if part is None:

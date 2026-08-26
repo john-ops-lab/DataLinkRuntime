@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -32,9 +33,16 @@ from dlr.control.models import (
     ManagedInputUploadReservation,
     User,
 )
-from dlr.control.security import Principal, require_principal
+from dlr.control.security import (
+    ACCOUNT_ENTRY_MODE,
+    ENTRY_MODE_SCOPE_KEY,
+    Principal,
+    require_principal,
+    require_upload_principal,
+)
 from dlr.control.services import artifact_store as artifact_store_module
 from dlr.control.services import managed_input_upload
+from dlr.control.services.accounts import SESSION_COOKIE_NAME, create_session
 from dlr.control.services.artifact_store import (
     ArtifactStoreAtomicityError,
     ArtifactStoreSecurityError,
@@ -555,6 +563,111 @@ def test_low_watermark_rejects_before_any_upload_bytes_are_written(
         assert capacity is not None
         assert capacity.reserved_bytes == 0
     assert not list((store_root / "objects").rglob("*"))
+
+
+def test_regular_and_stream_upload_principals_share_session_validation(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    def account_request(raw_token: str) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/adapters",
+                "headers": [(b"cookie", f"{SESSION_COOKIE_NAME}={raw_token}".encode())],
+                ENTRY_MODE_SCOPE_KEY: ACCOUNT_ENTRY_MODE,
+            }
+        )
+
+    with session_factory() as session:
+        user = User(
+            username="b1-shared-session-helper",
+            password_hash="anonymous-test-hash",
+            role="admin",
+            must_change_password=False,
+        )
+        session.add(user)
+        session.flush()
+        raw_token = create_session(session, user)
+        request = account_request(raw_token)
+
+        regular_principal = require_principal(request, session)
+        upload_principal = require_upload_principal(request)
+        assert upload_principal == regular_principal
+
+        user.must_change_password = True
+        session.commit()
+        with pytest.raises(HTTPException) as regular_error:
+            require_principal(request, session)
+        with pytest.raises(HTTPException) as upload_error:
+            require_upload_principal(request)
+
+    assert regular_error.value.status_code == upload_error.value.status_code == 403
+    assert (
+        regular_error.value.detail
+        == upload_error.value.detail
+        == {
+            "code": "account_password_change_required",
+            "message": "Change the account password before using the application",
+        }
+    )
+
+
+def test_stream_low_watermark_snapshot_refreshes_at_reservation_growth(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_task(api_client, "b1-watermark-boundary")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    initial_watermark = 64 * 1024 * 1024
+    refreshed_watermark = 128 * 1024 * 1024
+    set_policy(session_factory, min_free_space_bytes=initial_watermark)
+
+    with session_factory() as session:
+        state = managed_input_upload.begin_upload(
+            session,
+            adapter["id"],
+            original_filename="watermark.txt",
+            content_type="text/plain",
+            store=store,
+        )
+    assert state.min_free_space_bytes == initial_watermark
+
+    set_policy(session_factory, min_free_space_bytes=refreshed_watermark)
+    monkeypatch.setattr(managed_input_upload, "_free_bytes", lambda _store: initial_watermark + 2)
+    managed_input_upload.check_stream_low_watermark_bytes(store, state.min_free_space_bytes, 1)
+
+    monkeypatch.setattr(
+        managed_input_upload,
+        "_free_bytes",
+        lambda _store: refreshed_watermark + managed_input_upload.RESERVATION_GROWTH_BYTES + 2,
+    )
+    with session_factory() as session:
+        expanded = managed_input_upload.expand_upload_reservation(
+            session,
+            adapter["id"],
+            state.upload_session_id,
+            state.reserved_bytes + 1,
+            store=store,
+            growth_bytes=managed_input_upload.RESERVATION_GROWTH_BYTES,
+        )
+    assert expanded.min_free_space_bytes == refreshed_watermark
+
+    monkeypatch.setattr(managed_input_upload, "_free_bytes", lambda _store: initial_watermark + 2)
+    with pytest.raises(HTTPException) as watermark_error:
+        managed_input_upload.check_stream_low_watermark_bytes(
+            store, expanded.min_free_space_bytes, 1
+        )
+    assert watermark_error.value.status_code == 507
+
+    with session_factory() as session:
+        managed_input_upload.abort_upload(
+            session, adapter["id"], expanded.upload_session_id, store=store
+        )
 
 
 def test_staged_artifact_routes_require_adapter_edit_acl(

@@ -65,6 +65,9 @@ class UploadSessionState:
     storage_key: str
     reserved_bytes: int
     expires_at: datetime | None = None
+    # Captured at a reservation create/renew/growth boundary.  Stream chunks
+    # use this snapshot between bounded growth commits instead of querying the
+    # policy database for every chunk.
     min_free_space_bytes: int = 0
 
 
@@ -244,7 +247,7 @@ def check_stream_low_watermark(
 def check_stream_low_watermark_bytes(
     store: LocalFileArtifactStore, min_free_space_bytes: int, additional_bytes: int
 ) -> None:
-    """Check a captured watermark without holding a database Session."""
+    """Check a reservation-boundary watermark without holding a DB Session."""
     if additional_bytes <= 0:
         return
     if _free_bytes(store) - additional_bytes < min_free_space_bytes:
@@ -319,6 +322,9 @@ def _state(
     reservation: ManagedInputUploadReservation,
     setting: ManagedInputSettings | None = None,
 ) -> UploadSessionState:
+    # Policy values are intentionally captured only at reservation transition
+    # boundaries.  The streaming loop carries this value across its bounded
+    # growth interval and never opens a policy Session per transport chunk.
     min_free_space_bytes = int(setting.min_free_space_bytes) if setting is not None else 0
     return UploadSessionState(
         adapter_id=int(artifact.adapter_id),
@@ -461,8 +467,9 @@ def expand_upload_reservation(
 ) -> UploadSessionState:
     """Atomically extend a reservation before a writer stores new bytes.
 
-    ``growth_bytes`` lets a streaming caller grow in bounded batches rather
-    than committing one row-lock transaction for every transport chunk.
+    ``growth_bytes`` lets a streaming caller grow in bounded batches.  The
+    returned state refreshes the low-watermark snapshot at that boundary;
+    callers must not turn this into a per-transport-chunk policy query.
     """
     if requested_total_bytes < 0:
         raise domain_error(
