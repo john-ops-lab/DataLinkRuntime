@@ -1,6 +1,7 @@
 {
   "schema": "issue127-a3-cleanup-evidence-v1",
   "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "reviewed_candidate": "718b79d6fa00c661c27bd5c7e970e98e238fc028",
   "compose_project": "dlr-issue127-a3",
   "compose_containers_removed": [
     "dlr-issue127-a3-postgres-1",
@@ -21,6 +22,11 @@
     ],
     "network": "dlr-issue127-a3-migration",
     "volume": "dlr_issue127_a3_pgdata"
+  },
+  "repair_resources_removed": {
+    "container": "dlr-issue127-a3-repair-postgres",
+    "volume": "dlr_issue127_a3_repair_pgdata",
+    "workspace_log_root": ".tmp-platform-logs/issue127-a3-repair"
   },
   "session_image_tags_removed": [
     "dlr-issue127-a3-test-runner:latest",

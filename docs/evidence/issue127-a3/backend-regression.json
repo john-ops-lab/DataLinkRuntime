@@ -1,6 +1,7 @@
 {
   "schema": "issue127-a3-backend-evidence-v1",
   "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "reviewed_candidate": "718b79d6fa00c661c27bd5c7e970e98e238fc028",
   "full_container_diagnostic": {
     "passed": 792,
     "failed": 15,
@@ -107,7 +108,43 @@
       "scope": "Ruff/format/mypy",
       "result": "Ruff pass; 138 files formatted; mypy 90 source files pass",
       "toolchain": "fixed dev-deps runner"
+    },
+    {
+      "scope": "complete backend pytest after repair",
+      "result": "807 passed, 8 warnings",
+      "toolchain": "host locked uv, backend cwd, session PostgreSQL"
     }
   ],
+  "repair": {
+    "review_run_id": "5ade9c4e-d374-4e1e-be60-c920b967cd81",
+    "parent_candidate": "718b79d6fa00c661c27bd5c7e970e98e238fc028",
+    "minimal_test_fixes": [
+      "tests/test_migration_m5_4_1.py: fresh-schema head assertion now expects 0027_issue127_a1_execution_input",
+      "tests/test_migration_m5_4_3.py: legacy Webhook fixture upgrades to current head 0027 before ORM assertions",
+      "tests/test_migration_m5_5_9.py: fresh-schema head assertion now expects 0027_issue127_a1_execution_input",
+      "tests/test_schedule_trigger.py: recovery heartbeat uses a fresh UTC timestamp in the long full-suite fixture",
+      "tests/test_ai_tools.py: caplog assertion selects ordinary dlr.ai.tools lines; JSON audit records remain covered by test_ai_tool_audit.py"
+    ],
+    "pre_final_host_regression": {
+      "passed": 806,
+      "failed": 1,
+      "warnings": 8,
+      "failure": "tests/test_ai_tools.py::test_tool_logs_contain_only_safe_metadata; existing text-log assertion also captured the JSON audit logger record"
+    },
+    "full_host_pytest": {
+      "command": "cd backend && DLR_PLATFORM_LOG_ROOT=<scoped local root> DATABASE_URL=<anonymous local PostgreSQL> uv run --frozen --project . pytest -q",
+      "passed": 807,
+      "failed": 0,
+      "warnings": 8,
+      "duration": "163.85s",
+      "result": "PASS"
+    },
+    "product_code_changed": false,
+    "product_failure": false
+  },
+  "diff_check": {
+    "command": "git diff --check",
+    "result": "PASS"
+  },
   "a3_product_failure": false
 }

@@ -344,11 +344,12 @@ def test_offline_worker_holds_due_point_then_recovers_once(
         )
     with session_factory() as session:
         assert scheduler_tick(session, now=BASE) == 0
+    recovered_at = datetime.now(UTC)
     with session_factory.begin() as session:
         session.execute(
             update(Worker)
             .where(Worker.id == worker["id"])
-            .values(last_heartbeat=BASE, status="online")
+            .values(last_heartbeat=recovered_at, status="online")
         )
     with session_factory() as session:
         assert scheduler_tick(session, now=BASE) == 1

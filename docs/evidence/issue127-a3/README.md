@@ -1,6 +1,7 @@
 # Issue #127 A3 Wave A evidence
 
 - `source_candidate`: `a910b832dbea6ff330f9440c7a0ce412ffb99dbe`
+- `reviewed_candidate`: `718b79d6fa00c661c27bd5c7e970e98e238fc028`
 - `scope`: OpenSpec tasks `4.1`–`4.4` only
 - `product_code_changed`: `false`
 - `verdict`: all A3 gates PASS; B0+ not run
@@ -21,6 +22,10 @@ AO Browser was used for the live page observation. The anonymous login click rem
 ## Diagnostic transparency
 
 The first full Python-only container diagnostic reported `792 passed, 15 failed`; it is retained as a non-green diagnostic with all 15 reasons and classifications in `backend-regression.json`. The fixed runner lacked the repository root and Node/Java runtimes, and three older tests have current-head/legacy-schema expectations. Correct host/Compose environment replacement runs passed and are listed in the same file. No A3 product failure was found.
+
+## Repair transparency
+
+The first correct host full-suite repair run reached `806 passed, 1 failed`: the remaining failure was an existing `caplog` expectation that also collected the JSON `dlr.ai.tool-audit` record. The minimal test-only selector fix was focused-verified and the same locked host PostgreSQL/uv environment then completed `807 passed, 8 warnings`; no product code changed. The migration fixtures now assert current head `0027_issue127_a1_execution_input`, and the legacy Webhook compatibility fixture upgrades to that head before checking its stop/restart behavior. The exact `git diff --check` command and PASS are archived in `backend-regression.json`.
 
 ## Fixture security correction
 

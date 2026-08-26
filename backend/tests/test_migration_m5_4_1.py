@@ -58,7 +58,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0025_default_ai_tools_enabled"
+    assert revision == "0027_issue127_a1_execution_input"
     assert {
         "adapter_type",
         "run_mode",

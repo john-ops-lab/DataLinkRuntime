@@ -1196,7 +1196,7 @@ def test_tool_logs_contain_only_safe_metadata(
     with caplog.at_level(logging.INFO, logger="dlr.ai.tools"):
         response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=assist_body())
     assert response.status_code == 200
-    tool_logs = [record.message for record in caplog.records]
+    tool_logs = [record.message for record in caplog.records if record.name == "dlr.ai.tools"]
     assert any("status=success" in line and "tool=dlr_docs_list" in line for line in tool_logs)
     assert any(
         "status=error" in line and "code=ai_tool_unknown" in line and "tool=not_registered" in line
