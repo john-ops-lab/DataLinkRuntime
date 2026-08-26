@@ -36,6 +36,7 @@ from dlr.control.schemas.managed_input import (
     ManagedInputUsage,
 )
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.managed_input_audit import record_audit_event
 
 SINGLETON_ID = 1
 
@@ -199,7 +200,11 @@ def settings_response(
 
 
 def update_settings(
-    session: Session, data: ManagedInputSettingsUpdate
+    session: Session,
+    data: ManagedInputSettingsUpdate,
+    *,
+    actor_kind: str | None = None,
+    actor_id: int | None = None,
 ) -> ManagedInputSettingsResponse:
     """Replace policy values while leaving artifacts and charges untouched."""
     setting = get_settings(session, for_update=True)
@@ -209,10 +214,24 @@ def update_settings(
         session.commit()
     except IntegrityError:
         session.rollback()
+        record_audit_event(
+            "admin_governance",
+            "failed",
+            actor_kind=actor_kind or "admin",
+            actor_id=actor_id,
+            code="managed_input_settings_invalid",
+        )
         raise domain_error(
             422,
             "managed_input_settings_invalid",
             "Managed Input settings are invalid",
         ) from None
     session.refresh(setting)
+    record_audit_event(
+        "admin_governance",
+        "updated",
+        actor_kind=actor_kind or "admin",
+        actor_id=actor_id,
+        code=None,
+    )
     return settings_response(session, setting)

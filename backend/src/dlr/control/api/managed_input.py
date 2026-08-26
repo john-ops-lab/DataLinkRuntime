@@ -59,10 +59,16 @@ def get_managed_input_settings(session: DbSession) -> ManagedInputSettingsRespon
 )
 def put_managed_input_settings(
     payload: ManagedInputSettingsUpdate,
+    principal: CurrentPrincipal,
     session: DbSession,
 ) -> ManagedInputSettingsResponse:
     """Replace the database policy without changing stored artifacts."""
-    return managed_input_service.update_settings(session, payload)
+    return managed_input_service.update_settings(
+        session,
+        payload,
+        actor_kind=principal.kind,
+        actor_id=principal.user_id,
+    )
 
 
 def _safe_upload_error(code: str, status_code: int) -> HTTPException:
@@ -177,6 +183,7 @@ async def _stream_upload(
                     original_filename=filename,
                     content_type=content_type,
                     created_by_user_id=principal.user_id,
+                    actor_kind=principal.kind,
                     store=store,
                 )
             )
@@ -345,5 +352,11 @@ def delete_input_artifact(
 ) -> Response:
     """Delete one same-Adapter staged artifact idempotently."""
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
-    managed_input_upload.delete_staged(session, adapter_id, artifact_id)
+    managed_input_upload.delete_staged(
+        session,
+        adapter_id,
+        artifact_id,
+        actor_kind=principal.kind,
+        actor_id=principal.user_id,
+    )
     return Response(status_code=204)

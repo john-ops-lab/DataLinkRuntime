@@ -43,6 +43,7 @@ from dlr.control.services.artifact_store import (
     ArtifactStoreError,
     LocalFileArtifactStore,
 )
+from dlr.control.services.managed_input_audit import record_audit_event
 
 logger = logging.getLogger("dlr.control.managed_input_upload")
 
@@ -302,12 +303,6 @@ def _release_reserved(capacity: ManagedInputCapacity, reserved_bytes: int) -> No
     capacity.reserved_bytes -= reserved_bytes
 
 
-def _release_actual(capacity: ManagedInputCapacity, size_bytes: int) -> None:
-    if size_bytes < 0 or int(capacity.actual_bytes) < size_bytes:
-        raise RuntimeError("Managed Input actual accounting is inconsistent")
-    capacity.actual_bytes -= size_bytes
-
-
 def _mark_upload_deleted(
     artifact: ManagedInputArtifact | None, now: datetime, error_code: str
 ) -> None:
@@ -345,6 +340,7 @@ def begin_upload(
     original_filename: str,
     content_type: str | None,
     created_by_user_id: int | None = None,
+    actor_kind: str | None = None,
     store: LocalFileArtifactStore | None = None,
 ) -> UploadSessionState:
     """Create one UPLOADING Artifact and its ACTIVE reservation atomically."""
@@ -396,6 +392,14 @@ def begin_upload(
         adapter.id,
         artifact.id,
         reservation.id,
+    )
+    record_audit_event(
+        "upload",
+        "started",
+        actor_kind=actor_kind or ("user" if created_by_user_id is not None else "system"),
+        actor_id=created_by_user_id,
+        adapter_id=int(adapter.id),
+        artifact_id=int(artifact.id),
     )
     return _state(artifact, reservation, setting)
 
@@ -605,6 +609,12 @@ def consume_upload_reservation(
         reservation.id,
         actual_size_bytes,
     )
+    record_audit_event(
+        "upload",
+        "staged",
+        adapter_id=adapter_id,
+        artifact_id=int(artifact.id),
+    )
     return artifact
 
 
@@ -637,6 +647,13 @@ def abort_upload(
         adapter_id,
         artifact.id if artifact is not None else None,
         error_code,
+    )
+    record_audit_event(
+        "upload",
+        "failed",
+        adapter_id=adapter_id,
+        artifact_id=int(artifact.id) if artifact is not None else None,
+        code=error_code,
     )
 
 
@@ -705,6 +722,13 @@ def expire_upload_reservations(
             artifact.id if artifact is not None else None,
             reservation_id,
         )
+        record_audit_event(
+            "upload_ttl",
+            "expired",
+            adapter_id=int(adapter_id),
+            artifact_id=int(artifact.id) if artifact is not None else None,
+            code=ManagedInputErrorCode.SESSION_EXPIRED.value,
+        )
         count += 1
     return count
 
@@ -747,11 +771,12 @@ def delete_staged(
     adapter_id: int,
     artifact_id: int,
     *,
+    actor_kind: str | None = None,
+    actor_id: int | None = None,
     store: LocalFileArtifactStore | None = None,
 ) -> bool:
     """Delete a staged blob and release actual bytes exactly once."""
     _lock_adapter(session, adapter_id)
-    capacity = _lock_capacity(session)
     artifact = _lock_artifact(session, adapter_id, artifact_id)
     if artifact.status == ManagedInputArtifactStatus.DELETED:
         session.commit()
@@ -766,26 +791,57 @@ def delete_staged(
             "Input Artifact is not staged",
         )
     store = store or LocalFileArtifactStore()
+    # Keep the synchronous HTTP contract for explicit user deletion while
+    # using the same short database claim and idempotent finalization as GC.
+    # ``force`` only bypasses a previous GC backoff because this is an explicit
+    # user retry; it never takes over a live DELETING lease.
+    from dlr.control.services import managed_input_gc
+
+    session.commit()
+    claim = managed_input_gc.claim_artifact_deletion(
+        session,
+        artifact_id,
+        adapter_id=adapter_id,
+        force=True,
+    )
+    if claim is None:
+        raise domain_error(
+            409,
+            ManagedInputErrorCode.ARTIFACT_NOT_READY.value,
+            "Input Artifact is not staged",
+        )
     try:
-        store.delete(artifact.storage_key)
+        store.delete(claim.storage_key)
     except (ArtifactStoreError, OSError):
-        artifact.status = ManagedInputArtifactStatus.DELETE_FAILED
-        artifact.last_error_code = ManagedInputErrorCode.ARTIFACT_DELETE_FAILED.value
-        artifact.delete_attempts += 1
-        artifact.delete_started_at = utcnow()
-        session.commit()
+        managed_input_gc.finalize_artifact_deletion(
+            session,
+            claim,
+            succeeded=False,
+            error_code=ManagedInputErrorCode.ARTIFACT_DELETE_FAILED.value,
+        )
+        record_audit_event(
+            "delete",
+            "failed",
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+            adapter_id=adapter_id,
+            artifact_id=artifact_id,
+            code=ManagedInputErrorCode.ARTIFACT_DELETE_FAILED.value,
+        )
         raise domain_error(
             503,
             ManagedInputErrorCode.ARTIFACT_DELETE_FAILED.value,
             "Input Artifact could not be deleted",
         ) from None
-    _release_actual(capacity, int(artifact.size_bytes))
-    artifact.status = ManagedInputArtifactStatus.DELETED
-    artifact.deleted_at = utcnow()
-    artifact.delete_attempts += 1
-    artifact.delete_started_at = artifact.deleted_at
-    artifact.last_error_code = None
-    session.commit()
+    managed_input_gc.finalize_artifact_deletion(session, claim, succeeded=True)
+    record_audit_event(
+        "delete",
+        "success",
+        actor_kind=actor_kind,
+        actor_id=actor_id,
+        adapter_id=adapter_id,
+        artifact_id=artifact_id,
+    )
     logger.info("managed input artifact deleted adapter=%s artifact=%s", adapter_id, artifact_id)
     return True
 

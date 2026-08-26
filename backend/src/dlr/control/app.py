@@ -36,6 +36,7 @@ from dlr.control.api import (
 )
 from dlr.control.security import require_csrf
 from dlr.control.services import accounts as account_service
+from dlr.control.services.managed_input_gc import artifact_gc_loop, orphan_audit_loop
 from dlr.control.services.retention import retention_loop
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
@@ -78,18 +79,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     bootstrap_task = asyncio.create_task(_demo_bootstrap_loop())
     task = asyncio.create_task(scheduler_loop())
     retention_task = asyncio.create_task(retention_loop())
+    artifact_gc_task = asyncio.create_task(artifact_gc_loop())
+    orphan_audit_task = asyncio.create_task(orphan_audit_loop())
     try:
         yield
     finally:
         task.cancel()
         bootstrap_task.cancel()
         retention_task.cancel()
+        artifact_gc_task.cancel()
+        orphan_audit_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         with contextlib.suppress(asyncio.CancelledError):
             await bootstrap_task
         with contextlib.suppress(asyncio.CancelledError):
             await retention_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await artifact_gc_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await orphan_audit_task
 
 
 def create_app() -> FastAPI:

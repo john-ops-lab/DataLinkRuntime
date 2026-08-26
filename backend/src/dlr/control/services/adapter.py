@@ -390,6 +390,13 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
     if adapter is None or adapter.archived_at is not None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
 
+    # Upload creation and permanent deletion both serialize on the Adapter
+    # row.  Check the writer state before any runtime stop/cancellation work so
+    # a concurrent upload is never converted into an orphaned reservation.
+    from dlr.control.services import managed_input_gc
+
+    managed_input_gc.ensure_no_active_upload(session, adapter.id)
+
     active = lock_active_execution(session, adapter.id)
     if active is not None:
         if not stop:
@@ -426,6 +433,12 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
 
     cleanup_worker_ids = _require_cleanup_workers(session, adapter)
 
+    # Move charged Blob responsibility to rows that do not reference the
+    # Adapter before removing any managed-input metadata.  The detached jobs
+    # keep platform actual_bytes charged until their own worker confirms the
+    # object is gone.
+    deletion_job_ids = managed_input_gc.prepare_adapter_deletion(session, adapter.id)
+
     # Child rows are deleted explicitly so the permanent-delete contract is
     # visible in the transaction and remains correct if a future FK changes
     # from CASCADE to RESTRICT. Credential rows are intentionally untouched.
@@ -448,6 +461,12 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
         if cleanup_request_id is None:
             cleanup_request_id = cleanup.id
     session.commit()
+    managed_input_gc.record_audit_event(
+        "adapter_delete",
+        "success",
+        adapter_id=adapter.id,
+        deletion_job_id=deletion_job_ids[0] if deletion_job_ids else None,
+    )
     return AdapterDeleteResult(cleanup_request_id=cleanup_request_id)
 
 

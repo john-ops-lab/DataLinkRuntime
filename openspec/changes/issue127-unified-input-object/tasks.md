@@ -111,13 +111,13 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 8. B3 — Wave B TTL、GC、删除任务、Adapter 删除与审计
 
-- [ ] 8.1 实现 UPLOADING/STAGED TTL领取与 Artifact `PENDING_DELETE/DELETE_FAILED→DELETING→DELETED` 删除租约、有限退避和告警；冻结时间/崩溃测试验证 stale DELETING可重领且对象不存在算成功。
-- [ ] 8.2 在 GC 领取/删除路径实现不依赖具体 Lease 表或 ORM 的删除保护 hook，并保持实际容量只释放一次；以可控 fake/stub 分别验证 protected 时不迁移状态、不删 Blob、不释放 charge，unprotected 时才可继续幂等删除。本批次尚无 Lease schema，不声称完成真实 active Lease 查询或 GC 与 Execution 创建竞争验证。
-- [ ] 8.3 实现当前 Binding到期的系统生命周期转换与低频 orphan audit；验证 audit只隔离合法随机、超过宽限、无Artifact/job记录对象，不碰未知目录。
-- [ ] 8.4 扩展 Adapter delete：与上传创建都先锁 Adapter，UPLOADING/ACTIVE时409；原子把已计费 Blob和charge转入独立 deletion jobs，再删除元数据。
-- [ ] 8.5 对 deletion job重复消费、对象缺失、删除失败/重启注入故障；验证 `capacity_released_at`只写一次、平台charge不在Adapter事务中丢失。
-- [ ] 8.6 审计上传/绑定/替换/删除/管理员治理和GC失败，验证主体/Adapter/Artifact/stable code可观测且文件内容、Token、storage key、宿主路径脱敏。
-- [ ] 8.7 运行 B3 TTL/GC/adapter-delete/audit并发与故障测试、删除保护 hook 合同测试及静态 Gate；证据明确标注真实 Lease provider/竞争尚待 C0，证明只清理本批次临时 store 后形成 Candidate。
+- [x] 8.1 实现 UPLOADING/STAGED TTL领取与 Artifact `PENDING_DELETE/DELETE_FAILED→DELETING→DELETED` 删除租约、有限退避和告警；冻结时间/崩溃测试验证 stale DELETING可重领且对象不存在算成功。
+- [x] 8.2 在 GC 领取/删除路径实现不依赖具体 Lease 表或 ORM 的删除保护 hook，并保持实际容量只释放一次；以可控 fake/stub 分别验证 protected 时不迁移状态、不删 Blob、不释放 charge，unprotected 时才可继续幂等删除。本批次尚无 Lease schema，不声称完成真实 active Lease 查询或 GC 与 Execution 创建竞争验证。
+- [x] 8.3 实现当前 Binding到期的系统生命周期转换与低频 orphan audit；验证 audit只隔离合法随机、超过宽限、无Artifact/job记录对象，不碰未知目录。
+- [x] 8.4 扩展 Adapter delete：与上传创建都先锁 Adapter，UPLOADING/ACTIVE时409；原子把已计费 Blob和charge转入独立 deletion jobs，再删除元数据。
+- [x] 8.5 对 deletion job重复消费、对象缺失、删除失败/重启注入故障；验证 `capacity_released_at`只写一次、平台charge不在Adapter事务中丢失。
+- [x] 8.6 审计上传/绑定/替换/删除/管理员治理和GC失败，验证主体/Adapter/Artifact/stable code可观测且文件内容、Token、storage key、宿主路径脱敏。
+- [x] 8.7 运行 B3 TTL/GC/adapter-delete/audit并发与故障测试、删除保护 hook 合同测试及静态 Gate；证据明确标注真实 Lease provider/竞争尚待 C0，证明只清理本批次临时 store 后形成 Candidate。
 
 ## 9. B4 — Wave B 全生命周期与 Compose Gate
 
