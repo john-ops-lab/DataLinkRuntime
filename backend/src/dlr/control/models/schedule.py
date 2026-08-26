@@ -51,6 +51,14 @@ class AdapterSchedule(Base):
     input: Mapped[object] = mapped_column(
         JSONB, nullable=False, default=None, server_default=text("'null'::jsonb")
     )
+    # A structural input failure consumes one due point and remains visible
+    # for repair; the legacy ``input`` column stays during the compatibility
+    # window and is not the Scheduler's long-term source of truth.
+    last_blocked_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_processed_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )

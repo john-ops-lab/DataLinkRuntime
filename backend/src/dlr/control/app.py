@@ -23,6 +23,7 @@ from dlr.control.api import (
     events,
     executions,
     health,
+    input_configs,
     knowledge_sources,
     locale,
     package_sources,
@@ -159,6 +160,19 @@ def create_app() -> FastAPI:
                     }
                 },
             )
+        if request.url.path.startswith("/api/adapters/") and request.url.path.endswith(
+            "/input-config"
+        ):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "input_invalid",
+                        "message": "Input configuration request is invalid",
+                        "params": {"reason": "request_validation"},
+                    }
+                },
+            )
         if request.url.path.startswith("/api/auth/account/") or request.url.path.startswith(
             "/api/users"
         ):
@@ -179,6 +193,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(adapters.router)
+    app.include_router(input_configs.router)
     app.include_router(ai.router)
     app.include_router(ai.adapter_router)
     app.include_router(credentials.router)

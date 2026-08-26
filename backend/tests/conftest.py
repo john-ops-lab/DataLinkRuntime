@@ -22,7 +22,7 @@ from dlr.control import db
 from dlr.control.app import create_app
 from dlr.control.services import events as events_service
 
-TEST_DATABASE = "dlr_test"
+TEST_DATABASE = os.environ.get("DLR_TEST_DATABASE", "dlr_test")
 
 # M2: fixed test tokens. conftest configures them on the settings singleton
 # so every protected endpoint is exercised with real authentication in place.
@@ -84,7 +84,8 @@ def _truncate(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE adapters, adapter_versions, adapter_schedules, adapter_webhooks, "
+                "TRUNCATE TABLE adapters, adapter_versions, adapter_schedules, "
+                "adapter_input_configs, adapter_webhooks, "
                 "workers, executions, adapter_permissions, worker_cleanup_requests, "
                 "knowledge_source_settings, credentials, adapter_credential_bindings, "
                 "package_sources, ai_custom_providers, ai_model_settings, "

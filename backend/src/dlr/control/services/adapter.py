@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models import (
     Adapter,
+    AdapterInputConfig,
     AdapterPermission,
     AdapterSchedule,
     AdapterVersion,
@@ -166,6 +167,10 @@ def create_adapter(
     session.add(adapter)
     try:
         session.flush()
+        if adapter.adapter_type == "task":
+            # A new Task starts with one explicit Adapter-level input object;
+            # the later migration handles historical rows.
+            session.add(AdapterInputConfig(adapter_id=adapter.id))
         if adapter.adapter_type == "webhook":
             session.add(
                 AdapterWebhook(
@@ -541,6 +546,11 @@ def clone_adapter(
             "Adapter name already exists",
             {"name": data.name},
         ) from None
+
+    if clone.adapter_type == "task":
+        # A clone is a new Task and therefore receives its own default input
+        # row. Copying JSON/file selections belongs to the later clone wave.
+        session.add(AdapterInputConfig(adapter_id=clone.id))
 
     if source.latest_version_id is not None:
         source_version = session.get(AdapterVersion, source.latest_version_id)
