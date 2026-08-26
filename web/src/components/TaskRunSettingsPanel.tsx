@@ -77,6 +77,25 @@ function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
   }
 }
 
+type InputErrorTranslationKey = "revisionConflict" | "sourceNotAvailable" | "notInitialized" | "managedFilesEmpty";
+
+function localizedInputReason(
+  codeOrReason: string | null,
+  reason: unknown,
+  translate: (key: InputErrorTranslationKey) => string,
+): string | null {
+  const key = codeOrReason === "input_config_revision_conflict"
+    ? "revisionConflict"
+    : codeOrReason === "input_source_not_available"
+      ? "sourceNotAvailable"
+      : codeOrReason === "input_config_not_initialized"
+        ? "notInitialized"
+        : codeOrReason === "managed_files_empty" || (codeOrReason === "input_invalid" && reason === "managed_files_empty")
+          ? "managedFilesEmpty"
+          : null;
+  return key === null ? null : translate(key);
+}
+
 function formatTime(value: string | null, locale: "zh-CN" | "en"): string {
   return value === null
     ? "—"
@@ -247,17 +266,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
 
   function localizedInputError(error: unknown): string {
     if (error instanceof ApiError) {
-      if (error.code === "input_config_revision_conflict") {
-        return userErrorMessage(error, t("task.input.errors.revisionConflict"));
-      }
-      if (error.code === "input_source_not_available") {
-        return userErrorMessage(error, t("task.input.errors.sourceNotAvailable"));
-      }
-      if (error.code === "input_config_not_initialized") {
-        return userErrorMessage(error, t("task.input.errors.notInitialized"));
-      }
-      if (error.code === "input_invalid" && error.params.reason === "managed_files_empty") {
-        return userErrorMessage(error, t("task.input.errors.managedFilesEmpty"));
+      const localizedReason = localizedInputReason(
+        error.code,
+        error.params.reason,
+        (key) => t(`task.input.errors.${key}`),
+      );
+      if (localizedReason !== null) {
+        return userErrorMessage(error, localizedReason);
       }
     }
     return errorMessage(error);
@@ -269,6 +284,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       savingInput ||
       loadingInput ||
       inputConfig === null ||
+      !inputConfig.valid_for_run ||
       inputSourceDraft === "managed_files" ||
       inputSourceDraft === "remote_files" ||
       props.adapter.runtime_locked === true ||
@@ -405,16 +421,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function runOnce() {
-    if (readOnly) {
-      return;
-    }
-    // M5.5.9：未保存修改时不得启动运行，先保存。
-    if (props.dirty) {
-      onError(t("task.reasons.dirtyRun"));
-      return;
-    }
-    if (runBlockedReason !== null) {
-      onError(runBlockedReason);
+    if (!canRun) {
+      onError(runBlockedReason ?? t("task.reasons.unavailable"));
       return;
     }
     setSubmitting(true);
@@ -481,17 +489,17 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     (inputSourceDraft === "json" && inputJsonDraft !== formatJson(inputConfig.json_value))
   );
   const inputInvalidReason = inputConfig?.invalid_reason ?? null;
+  const inputInvalidMessage = localizedInputReason(
+    inputInvalidReason,
+    undefined,
+    (key) => t(`task.input.errors.${key}`),
+  );
   const inputBlockedReason = (() => {
     if (loadingInput) return t("task.input.loading");
     if (inputLoadFailed || inputConfig === null) return t("task.input.loadFailed");
     if (inputDirty) return t("task.input.saveBeforeRun");
     if (!inputConfig.valid_for_run) {
-      if (inputInvalidReason === "managed_files_empty") {
-        return t("task.input.invalidManagedFiles");
-      }
-      if (inputInvalidReason === "input_source_not_available") {
-        return t("task.input.errors.sourceNotAvailable");
-      }
+      if (inputInvalidMessage !== null) return inputInvalidMessage;
       return t("task.input.invalidConfig");
     }
     return null;
@@ -521,12 +529,20 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     props.adapter.runtime_worker_id != null &&
     !activeExecution &&
     !submitting;
-  const runBlockedReason = props.dirty
-    ? t("task.reasons.dirtyRun")
-    : inputBlockedReason ?? (canRun ? null : activeExecution ? t("task.reasons.activeRun") : null);
+  const runBlockedReason = (() => {
+    if (readOnly) return t("task.reasons.readOnly");
+    if (props.dirty) return t("task.reasons.dirtyRun");
+    if (props.adapter.archived_at) return t("task.reasons.deleted");
+    if (inputBlockedReason !== null) return inputBlockedReason;
+    if (props.adapter.latest_version_id === null) return t("task.reasons.noVersion");
+    if (props.adapter.runtime_worker_id == null) return t("task.reasons.noWorker");
+    if (activeExecution) return t("task.reasons.activeRun");
+    if (submitting) return t("task.reasons.processing");
+    return canRun ? null : t("task.reasons.unavailable");
+  })();
 
   const inputEditingLocked =
-    readOnly || runtimeLocked || scheduleEnabled || savingInput || loadingInput || inputLoadFailed || inputConfig === null;
+    readOnly || runtimeLocked || scheduleEnabled || savingInput || loadingInput || inputLoadFailed || inputConfig === null || inputConfig.valid_for_run === false;
   const sourceCards: {
     sourceType: InputSourceType;
     title: string;
@@ -810,11 +826,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
               type="warning"
               showIcon
               data-testid="task-input-invalid"
-              message={inputInvalidReason === "managed_files_empty"
-                ? t("task.input.invalidManagedFiles")
-                : inputInvalidReason === "input_source_not_available"
-                  ? t("task.input.errors.sourceNotAvailable")
-                  : t("task.input.invalidConfig")}
+              message={inputInvalidMessage ?? t("task.input.invalidConfig")}
             />
           )}
           <div className="task-input-actions">

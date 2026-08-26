@@ -84,10 +84,21 @@ function makeExecution(): Execution {
 
 function renderPanel(
   inputConfig: AdapterInputConfig,
-  options: { runMode?: TaskRunMode; onRuntimeStateChange?: ReturnType<typeof vi.fn> } = {},
+  options: {
+    runMode?: TaskRunMode;
+    onRuntimeStateChange?: ReturnType<typeof vi.fn>;
+    onError?: ReturnType<typeof vi.fn>;
+    inputLoadError?: unknown;
+  } = {},
 ) {
-  vi.spyOn(api, "getInputConfig").mockResolvedValue(inputConfig);
+  const getInputConfig = vi.spyOn(api, "getInputConfig");
+  if (options.inputLoadError !== undefined) {
+    getInputConfig.mockRejectedValue(options.inputLoadError);
+  } else {
+    getInputConfig.mockResolvedValue(inputConfig);
+  }
   const runtimeRef = createRef<TaskRunSettingsHandle>();
+  const onError = options.onError ?? vi.fn();
   render(
     <TaskRunSettingsPanel
       ref={runtimeRef}
@@ -108,7 +119,7 @@ function renderPanel(
       onAdapterChange={vi.fn()}
       onExecutionStarted={vi.fn()}
       onRuntimeStateChange={options.onRuntimeStateChange ?? vi.fn()}
-      onError={vi.fn()}
+      onError={onError}
     />,
   );
   return runtimeRef;
@@ -217,6 +228,44 @@ describe("Task Input Object A2", () => {
     expect((screen.getByTestId("task-input-json") as HTMLTextAreaElement).value).toBe('{"draft":true}');
     expect(screen.getByTestId("task-input-revision").textContent).toContain("4");
     expect(document.body.textContent).toContain("输入对象已被其他页面更新");
+  });
+
+  it("blocks save and imperative run when InputConfig loading fails", async () => {
+    const put = vi.spyOn(api, "putInputConfig");
+    const createExecution = vi.spyOn(api, "createExecution");
+    const onError = vi.fn();
+    const runtimeRef = renderPanel(makeInputConfig(), {
+      inputLoadError: new ApiError(503, "input_config_not_initialized", "fixture load failure"),
+      onError,
+    });
+
+    await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(true));
+    expect(screen.getByTestId("task-input-revision").textContent).toContain("未知");
+    runtimeRef.current?.runOnce();
+
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("输入对象加载失败，请刷新后重试。"));
+    expect(put).not.toHaveBeenCalled();
+    expect(createExecution).not.toHaveBeenCalled();
+  });
+
+  it("blocks save and run for an invalid persisted InputConfig", async () => {
+    const put = vi.spyOn(api, "putInputConfig");
+    const createExecution = vi.spyOn(api, "createExecution");
+    const onError = vi.fn();
+    const runtimeRef = renderPanel(makeInputConfig({
+      source_type: "managed_files",
+      valid_for_run: false,
+      invalid_reason: "managed_files_empty",
+    }), { onError });
+
+    await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(true));
+    expect(screen.getByTestId("task-input-invalid").textContent).toContain("托管文件为空");
+    fireEvent.click(screen.getByTestId("save-task-input"));
+    runtimeRef.current?.runOnce();
+
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("托管文件为空，请先准备文件后再运行。"));
+    expect(put).not.toHaveBeenCalled();
+    expect(createExecution).not.toHaveBeenCalled();
   });
 
   it("blocks an invalid JSON draft before the save request", async () => {
