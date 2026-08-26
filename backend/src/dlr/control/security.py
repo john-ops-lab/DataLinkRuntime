@@ -170,6 +170,38 @@ def require_principal(
     return _account_principal(matched)
 
 
+def require_upload_principal(
+    request: Request,
+    authorization: AuthorizationHeader = None,
+) -> Principal:
+    """Authenticate an upload before streaming, without a request-held Session."""
+    if entry_mode(request) == TOKEN_ENTRY_MODE:
+        _require_token(authorization, settings.admin_token)
+        return SUPERADMIN_PRINCIPAL
+
+    if entry_mode(request) != ACCOUNT_ENTRY_MODE:
+        raise _entry_error(ACCOUNT_ENTRY_MODE)
+    with db.SessionLocal() as session:
+        matched = find_session(session, request.cookies.get("dlr_account_session"))
+        if matched is None:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "account_session_required",
+                    "message": "Account session is required",
+                },
+            )
+        if matched.user.must_change_password:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "account_password_change_required",
+                    "message": "Change the account password before using the application",
+                },
+            )
+        return _account_principal(matched)
+
+
 def require_admin_principal(
     principal: Annotated[Principal, Depends(require_principal)],
 ) -> Principal:

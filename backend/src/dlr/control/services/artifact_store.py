@@ -153,22 +153,24 @@ class LocalFileArtifactStore:
     def _path(self, namespace: Path, storage_key: str, *, create: bool) -> Path:
         key = self.validate_storage_key(storage_key)
         prefix = self._prefix_directory(namespace, key, create=create)
-        path = prefix / key
-        info = self._regular_info(path)
-        if info is not None:
-            return path
-        return path
+        return prefix / key
 
     def object_path(self, storage_key: str) -> Path:
         """Return an internal object path after validating the opaque key."""
-        return self._path(self.objects_root, storage_key, create=True)
+        path = self._path(self.objects_root, storage_key, create=True)
+        self._regular_info(path)
+        return path
 
     def part_path(self, storage_key: str) -> Path:
         """Return an internal upload-part path after validating the key."""
+        return self._part_path(storage_key, create=True)
+
+    def _part_path(self, storage_key: str, *, create: bool) -> Path:
         key = self.validate_storage_key(storage_key)
-        prefix = self._prefix_directory(self.parts_root, key, create=True)
+        prefix = self._prefix_directory(self.parts_root, key, create=create)
         path = prefix / f"{key}.part"
-        self._validate_existing_path(path, "ArtifactStore part")
+        if create:
+            self._validate_existing_path(path, "ArtifactStore part")
         return path
 
     def quarantine_path(self, storage_key: str) -> Path:
@@ -278,6 +280,18 @@ class LocalFileArtifactStore:
         """Return safe size/time facts, or ``None`` for a missing object."""
         path = self._path(self.objects_root, storage_key, create=False)
         info = self._regular_info(path)
+        if info is None:
+            return None
+        return ArtifactObjectStat(
+            storage_key=self.validate_storage_key(storage_key),
+            size_bytes=info.st_size,
+            modified_at=_utc_from_timestamp(info.st_mtime),
+        )
+
+    def stat_part(self, storage_key: str) -> ArtifactObjectStat | None:
+        """Return one partial-upload stat without creating a prefix directory."""
+        path = self._part_path(storage_key, create=False)
+        info = self._validate_existing_path(path, "ArtifactStore part")
         if info is None:
             return None
         return ArtifactObjectStat(

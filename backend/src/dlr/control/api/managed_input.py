@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import logging
-from typing import Annotated
+from collections.abc import Callable
+from typing import Annotated, BinaryIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
@@ -23,6 +25,7 @@ from dlr.control.security import (
     require_admin_principal,
     require_business_principal,
     require_principal,
+    require_upload_principal,
 )
 from dlr.control.services import adapter_access, managed_input_upload
 from dlr.control.services import managed_input as managed_input_service
@@ -34,9 +37,11 @@ logger = logging.getLogger("dlr.control.managed_input")
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
 adapter_router = APIRouter(dependencies=[Depends(require_business_principal)])
+upload_router = APIRouter()
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
+CurrentUploadPrincipal = Annotated[Principal, Depends(require_upload_principal)]
 
 
 @router.get(
@@ -72,43 +77,69 @@ def _safe_upload_error(code: str, status_code: int) -> HTTPException:
     )
 
 
-def _compensate_upload(
-    session: Session,
+def _run_in_session[T](operation: Callable[[Session], T]) -> T:
+    """Run one blocking DB operation in a short-lived worker-thread Session."""
+    with db.SessionLocal() as short_session:
+        return operation(short_session)
+
+
+async def _run_db[T](operation: Callable[[Session], T]) -> T:
+    """Keep synchronous SQLAlchemy work off the event loop and release it promptly."""
+    return await asyncio.to_thread(_run_in_session, operation)
+
+
+def _new_store_or_error() -> LocalFileArtifactStore:
+    """Map local-store startup failures to the stable upload boundary."""
+    try:
+        return LocalFileArtifactStore(settings.artifact_store_root)
+    except (ArtifactStoreError, OSError):
+        raise _safe_upload_error("artifact_store_unavailable", 503) from None
+
+
+def _delete_upload_paths(store: LocalFileArtifactStore, storage_key: str) -> None:
+    """Best-effort filesystem cleanup used only after DB compensation fails."""
+    store.delete_part(storage_key)
+    store.delete(storage_key)
+
+
+async def _compensate_upload(
     state: UploadSessionState | None,
     store: LocalFileArtifactStore | None,
     *,
     error_code: str,
 ) -> None:
-    """Best-effort DB and filesystem compensation without sensitive logging."""
+    """Best-effort compensation using short DB work and worker-thread I/O."""
     if state is None:
         return
     try:
-        session.rollback()
-        managed_input_upload.abort_upload(
-            session,
-            state.adapter_id,
-            state.upload_session_id,
-            error_code=error_code,
-            store=store,
+        await _run_db(
+            lambda short_session: managed_input_upload.abort_upload(
+                short_session,
+                state.adapter_id,
+                state.upload_session_id,
+                error_code=error_code,
+                store=store,
+            )
         )
     except Exception:
-        session.rollback()
         if store is not None:
             try:
-                store.delete_part(state.storage_key)
-                store.delete(state.storage_key)
+                await asyncio.to_thread(_delete_upload_paths, store, state.storage_key)
             except (ArtifactStoreError, OSError):
                 logger.warning("managed input upload compensation deferred")
 
 
 async def _stream_upload(
     request: Request,
-    session: DbSession,
     adapter_id: int,
-    principal: CurrentPrincipal,
+    principal: Principal,
 ) -> ManagedInputArtifactResponse:
     """Parse and persist one multipart file without buffering its contents."""
-    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    await _run_db(
+        lambda short_session: adapter_access.require_adapter_access(
+            short_session, adapter_id, principal, "edit"
+        )
+    )
     managed_input_upload.require_feature_enabled()
     reader: MultipartReader
     state: UploadSessionState | None = None
@@ -132,46 +163,67 @@ async def _stream_upload(
                     pass
                 raise _safe_upload_error("input_invalid", 422)
             file_seen = True
-            managed_input_upload.validate_original_filename(part.filename)
+            filename = managed_input_upload.validate_original_filename(part.filename)
+            content_type = part.content_type
             # The feature flag and metadata checks happen before construction;
             # a disabled or rejected upload must not create a store root.
-            store = LocalFileArtifactStore(settings.artifact_store_root)
-            state = managed_input_upload.begin_upload(
-                session,
-                adapter_id,
-                original_filename=part.filename,
-                content_type=part.content_type,
-                created_by_user_id=principal.user_id,
-                store=store,
+            store = await asyncio.to_thread(_new_store_or_error)
+            state = await _run_db(
+                functools.partial(
+                    managed_input_upload.begin_upload,
+                    adapter_id=adapter_id,
+                    original_filename=filename,
+                    content_type=content_type,
+                    created_by_user_id=principal.user_id,
+                    store=store,
+                )
             )
-            with store.put_part(state.storage_key) as handle:
+            part_context = store.put_part(state.storage_key)
+            handle: BinaryIO | None = None
+            try:
+                handle = await asyncio.to_thread(part_context.__enter__)
                 async for chunk in reader.iter_part_body():
                     if not chunk:
                         continue
                     total_bytes += len(chunk)
-                    state = managed_input_upload.expand_upload_reservation(
-                        session,
-                        adapter_id,
-                        state.upload_session_id,
-                        total_bytes,
-                        store=store,
+                    if total_bytes > state.reserved_bytes:
+                        state = await _run_db(
+                            functools.partial(
+                                managed_input_upload.expand_upload_reservation,
+                                adapter_id=adapter_id,
+                                upload_session_id=state.upload_session_id,
+                                requested_total_bytes=total_bytes,
+                                store=store,
+                                growth_bytes=managed_input_upload.RESERVATION_GROWTH_BYTES,
+                            )
+                        )
+                    await asyncio.to_thread(
+                        managed_input_upload.check_stream_low_watermark_bytes,
+                        store,
+                        state.min_free_space_bytes,
+                        len(chunk),
                     )
-                    policy = managed_input_service.get_settings(session)
-                    managed_input_upload.check_stream_low_watermark(store, policy, len(chunk))
-                    handle.write(chunk)
+                    await asyncio.to_thread(handle.write, chunk)
                     digest.update(chunk)
+            finally:
+                if handle is not None:
+                    await asyncio.to_thread(part_context.__exit__, None, None, None)
 
         await reader.ensure_complete()
         if not file_seen or state is None or store is None:
             raise _safe_upload_error("input_invalid", 422)
-        store.commit(state.storage_key)
-        artifact = managed_input_upload.consume_upload_reservation(
-            session,
-            adapter_id,
-            state.upload_session_id,
-            actual_size_bytes=total_bytes,
-            sha256=digest.hexdigest(),
-            store=store,
+        upload_state = state
+        upload_store = store
+        await asyncio.to_thread(upload_store.commit, upload_state.storage_key)
+        artifact = await _run_db(
+            functools.partial(
+                managed_input_upload.consume_upload_reservation,
+                adapter_id=adapter_id,
+                upload_session_id=upload_state.upload_session_id,
+                actual_size_bytes=total_bytes,
+                sha256=digest.hexdigest(),
+                store=upload_store,
+            )
         )
         finalized = True
         return managed_input_upload.artifact_response(artifact)
@@ -186,7 +238,7 @@ async def _stream_upload(
         elif isinstance(exc, (ArtifactStoreError, OSError)):
             error_code = "artifact_store_unavailable"
         if not finalized:
-            _compensate_upload(session, state, store, error_code=error_code)
+            await _compensate_upload(state, store, error_code=error_code)
         if isinstance(exc, HTTPException):
             raise
         if isinstance(exc, asyncio.CancelledError):
@@ -199,7 +251,7 @@ async def _stream_upload(
         raise _safe_upload_error("input_upload_failed", 503) from None
 
 
-@adapter_router.post(
+@upload_router.post(
     "/api/adapters/{adapter_id}/input-artifacts",
     response_model=ManagedInputArtifactResponse,
     status_code=201,
@@ -207,11 +259,10 @@ async def _stream_upload(
 async def upload_input_artifact(
     adapter_id: int,
     request: Request,
-    principal: CurrentPrincipal,
-    session: DbSession,
+    principal: CurrentUploadPrincipal,
 ) -> ManagedInputArtifactResponse:
     """Stream one file part into an opaque local object."""
-    return await _stream_upload(request, session, adapter_id, principal)
+    return await _stream_upload(request, adapter_id, principal)
 
 
 @adapter_router.get(
@@ -227,11 +278,14 @@ def recover_input_upload(
     """Return safe progress metadata for an active upload session."""
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
     managed_input_upload.require_feature_enabled()
-    store = LocalFileArtifactStore(settings.artifact_store_root)
-    state = managed_input_upload.recover_upload_session(
-        session, adapter_id, upload_session_id, store=store
-    )
-    return managed_input_upload.upload_session_response(state, store)
+    try:
+        store = _new_store_or_error()
+        state = managed_input_upload.recover_upload_session(
+            session, adapter_id, upload_session_id, store=store
+        )
+        return managed_input_upload.upload_session_response(state, store)
+    except (ArtifactStoreError, OSError):
+        raise _safe_upload_error("artifact_store_unavailable", 503) from None
 
 
 @adapter_router.post(
@@ -247,11 +301,14 @@ def renew_input_upload(
     """Renew the same active reservation used by an upload writer."""
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
     managed_input_upload.require_feature_enabled()
-    store = LocalFileArtifactStore(settings.artifact_store_root)
-    state = managed_input_upload.renew_upload_reservation(
-        session, adapter_id, upload_session_id, store=store
-    )
-    return managed_input_upload.upload_session_response(state, store)
+    try:
+        store = _new_store_or_error()
+        state = managed_input_upload.renew_upload_reservation(
+            session, adapter_id, upload_session_id, store=store
+        )
+        return managed_input_upload.upload_session_response(state, store)
+    except (ArtifactStoreError, OSError):
+        raise _safe_upload_error("artifact_store_unavailable", 503) from None
 
 
 @adapter_router.get(

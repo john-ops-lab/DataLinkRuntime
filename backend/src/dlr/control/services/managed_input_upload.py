@@ -48,6 +48,7 @@ logger = logging.getLogger("dlr.control.managed_input_upload")
 
 ALLOWED_FILE_EXTENSIONS = frozenset({".xlsx", ".xls", ".csv", ".log", ".txt", ".json"})
 INITIAL_RESERVATION_BYTES = 64 * 1024
+RESERVATION_GROWTH_BYTES = 1024 * 1024
 MAX_FILENAME_BYTES = 512
 MAX_CONTENT_TYPE_BYTES = 256
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
@@ -64,6 +65,7 @@ class UploadSessionState:
     storage_key: str
     reserved_bytes: int
     expires_at: datetime | None = None
+    min_free_space_bytes: int = 0
 
 
 def utcnow() -> datetime:
@@ -171,6 +173,17 @@ def _lock_reservation(
     return reservation
 
 
+def _lock_reservation_by_id(
+    session: Session, reservation_id: int
+) -> ManagedInputUploadReservation | None:
+    """Lock an expiry candidate without requiring its Adapter to be active."""
+    return session.scalar(
+        select(ManagedInputUploadReservation)
+        .where(ManagedInputUploadReservation.id == reservation_id)
+        .with_for_update()
+    )
+
+
 def _lock_artifact(session: Session, adapter_id: int, artifact_id: int) -> ManagedInputArtifact:
     artifact = session.scalar(
         select(ManagedInputArtifact)
@@ -225,9 +238,16 @@ def check_stream_low_watermark(
     store: LocalFileArtifactStore, setting: ManagedInputSettings, additional_bytes: int
 ) -> None:
     """Check free space immediately before one stream write."""
+    check_stream_low_watermark_bytes(store, int(setting.min_free_space_bytes), additional_bytes)
+
+
+def check_stream_low_watermark_bytes(
+    store: LocalFileArtifactStore, min_free_space_bytes: int, additional_bytes: int
+) -> None:
+    """Check a captured watermark without holding a database Session."""
     if additional_bytes <= 0:
         return
-    if _free_bytes(store) - additional_bytes < int(setting.min_free_space_bytes):
+    if _free_bytes(store) - additional_bytes < min_free_space_bytes:
         raise domain_error(
             507,
             ManagedInputErrorCode.LOW_WATERMARK.value,
@@ -297,7 +317,9 @@ def _mark_upload_deleted(
 def _state(
     artifact: ManagedInputArtifact,
     reservation: ManagedInputUploadReservation,
+    setting: ManagedInputSettings | None = None,
 ) -> UploadSessionState:
+    min_free_space_bytes = int(setting.min_free_space_bytes) if setting is not None else 0
     return UploadSessionState(
         adapter_id=int(artifact.adapter_id),
         artifact_id=int(artifact.id),
@@ -306,6 +328,7 @@ def _state(
         storage_key=artifact.storage_key,
         reserved_bytes=int(reservation.reserved_bytes),
         expires_at=reservation.expires_at,
+        min_free_space_bytes=min_free_space_bytes,
     )
 
 
@@ -368,7 +391,7 @@ def begin_upload(
         artifact.id,
         reservation.id,
     )
-    return _state(artifact, reservation)
+    return _state(artifact, reservation, setting)
 
 
 def _terminal_upload_error() -> NoReturn:
@@ -424,7 +447,7 @@ def renew_upload_reservation(
             ManagedInputErrorCode.ARTIFACT_NOT_READY.value,
             "Input Artifact is not uploading",
         )
-    return _state(artifact, reservation)
+    return _state(artifact, reservation, setting)
 
 
 def expand_upload_reservation(
@@ -434,8 +457,13 @@ def expand_upload_reservation(
     requested_total_bytes: int,
     *,
     store: LocalFileArtifactStore | None = None,
+    growth_bytes: int | None = None,
 ) -> UploadSessionState:
-    """Atomically extend a reservation before a writer stores new bytes."""
+    """Atomically extend a reservation before a writer stores new bytes.
+
+    ``growth_bytes`` lets a streaming caller grow in bounded batches rather
+    than committing one row-lock transaction for every transport chunk.
+    """
     if requested_total_bytes < 0:
         raise domain_error(
             422,
@@ -470,6 +498,11 @@ def expand_upload_reservation(
             ManagedInputErrorCode.FILE_TOO_LARGE.value,
             "Input file is too large",
         )
+    if growth_bytes is not None and growth_bytes > 0:
+        requested_total_bytes = min(
+            int(setting.max_file_bytes),
+            max(requested_total_bytes, int(reservation.reserved_bytes) + growth_bytes),
+        )
     delta = requested_total_bytes - int(reservation.reserved_bytes)
     if delta > 0:
         store = store or LocalFileArtifactStore()
@@ -479,7 +512,7 @@ def expand_upload_reservation(
     reservation.expires_at = _refresh_expiry(setting, now)
     artifact.expires_at = reservation.expires_at
     session.commit()
-    return _state(artifact, reservation)
+    return _state(artifact, reservation, setting)
 
 
 def consume_upload_reservation(
@@ -639,11 +672,12 @@ def expire_upload_reservations(
     count = 0
     for reservation_id, adapter_id, upload_session_id in candidates:
         try:
-            _lock_adapter(session, int(adapter_id))
             capacity = _lock_capacity(session)
-            reservation = _lock_reservation(session, int(adapter_id), upload_session_id)
+            reservation = _lock_reservation_by_id(session, int(reservation_id))
             if (
-                reservation.id != reservation_id
+                reservation is None
+                or reservation.adapter_id != adapter_id
+                or reservation.upload_session_id != upload_session_id
                 or reservation.status != ManagedInputReservationStatus.ACTIVE
                 or _as_utc(reservation.expires_at) > now
             ):
@@ -795,21 +829,23 @@ def recover_upload_session(
         if store is not None:
             _cleanup_paths(store, key)
         _terminal_upload_error()
+    setting = policy_service.get_settings(session)
     session.rollback()
-    return _state(artifact, reservation)
+    return _state(artifact, reservation, setting)
 
 
 def upload_session_response(
     state: UploadSessionState, store: LocalFileArtifactStore
 ) -> ManagedInputUploadSessionResponse:
     """Build a safe progress response while keeping the key internal."""
-    stat = store.stat(state.storage_key)
-    part = store.part_path(state.storage_key)
-    received = 0
-    if part.exists():
-        received = int(part.stat().st_size)
-    elif stat is not None:
-        received = int(stat.size_bytes)
+    part_stat = store.stat_part(state.storage_key)
+    object_stat = None if part_stat is not None else store.stat(state.storage_key)
+    if part_stat is not None:
+        received = int(part_stat.size_bytes)
+    elif object_stat is not None:
+        received = int(object_stat.size_bytes)
+    else:
+        received = 0
     if state.expires_at is None:
         raise RuntimeError("Upload session has no expiry")
     return ManagedInputUploadSessionResponse(
@@ -823,12 +859,14 @@ def upload_session_response(
 __all__ = [
     "ALLOWED_FILE_EXTENSIONS",
     "INITIAL_RESERVATION_BYTES",
+    "RESERVATION_GROWTH_BYTES",
     "UploadSessionState",
     "abort_upload",
     "artifact_response",
     "audit_unowned_objects",
     "begin_upload",
     "check_stream_low_watermark",
+    "check_stream_low_watermark_bytes",
     "consume_upload_reservation",
     "delete_staged",
     "expand_upload_reservation",
