@@ -46,7 +46,7 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 1. A0 — Wave A 公共 schema、迁移与 InputConfig API
 
-- [ ] 1.1 用现有 API 测试固定最小复现：manual Execution 接受 per-run input、Schedule 独立保存 input、新建 manual 默认 `{}`，并保存红灯结果；验证测试在实现前准确失败于“唯一 InputConfig/revision”预期。
+- [ ] 1.1 用现有 API 测试固定最小复现：manual Execution 接受 per-run input，省略 manual per-run `input` 时 `Execution.input` 按固定基线持久化为 JSON `null`，Schedule 独立保存 input；历史无 Schedule 的 manual Task Adapter 迁移回填仍保持 1.3 的 `json/{}` 合同。保存基线事实与红灯结果，验证测试在实现前准确失败于“唯一 InputConfig/revision”预期；A0 仅记录现状，不改动属于 A1 的 Execution 创建语义。
 - [ ] 1.2 新增 AdapterInputConfig 模型、枚举/check/index、GET/PUT schema 与路由，覆盖 none/json/managed_files 空集合/remote_files 拒绝和类型专属字段；验证 API 单元测试检查 200/409/422 与响应 `valid_for_run/invalid_reason`。
 - [ ] 1.3 编写 expand Alembic migration：回填 Schedule JSON、manual `json/{}`、revision=1，新建 Task 默认 none，增加 Schedule blocked 字段并保留旧 input 列；验证 fresh head、从 `896f715` 对应 schema 升级、重复回填计数一致。
 - [ ] 1.4 对重复/孤儿 Schedule、既有 InputConfig 冲突和非法 source 构造迁移 fixture；验证 migration fail-fast 输出 Adapter ID、source 计数与冲突数且不静默选择。
