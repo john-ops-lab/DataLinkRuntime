@@ -479,12 +479,6 @@ def _validate_managed_files_payload(
             "At most eight managed input files may be bound",
             {"reason": "managed_files_limit", "max_files": 8},
         )
-    if artifact_ids and not settings.managed_files_enabled:
-        raise domain_error(
-            422,
-            InputConfigErrorCode.SOURCE_NOT_AVAILABLE.value,
-            "Managed file input is not available yet",
-        )
     _validate_retention(data, setting=setting)
     if not artifact_ids:
         return
@@ -689,8 +683,6 @@ def reconcile_current_bindings(
             "Adapter input configuration is not initialized",
         )
     if config.source_type != "managed_files":
-        session.commit()
-        session.refresh(config)
         return config
 
     binding_rows = _lock_binding_rows(session, adapter_id)
@@ -723,8 +715,6 @@ def reconcile_current_bindings(
         if _artifact_run_reason(artifact, now=current_now) is not None
     ]
     if not expired_ids:
-        session.commit()
-        session.refresh(config)
         return config
 
     new_revision = config.revision + 1

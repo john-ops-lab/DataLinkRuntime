@@ -293,6 +293,28 @@ def test_managed_files_unknown_artifact_is_not_found(
     assert input_config(api_client, adapter["id"])["revision"] == 1
 
 
+def test_managed_files_disabled_hides_unknown_artifact(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", False)
+    adapter = create_adapter(api_client, name="a0-managed-disabled-not-ready")
+
+    response = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "managed_files",
+            "artifact_ids": [101],
+            "retention": {"mode": "custom", "seconds": 3600},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "input_source_not_available"
+    assert input_config(api_client, adapter["id"])["revision"] == 1
+
+
 def test_remote_files_is_stably_rejected(api_client: TestClient) -> None:
     adapter = create_adapter(api_client, name="a0-remote-files")
 

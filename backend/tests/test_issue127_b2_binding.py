@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
 from dlr.control.models import (
+    Adapter,
     AdapterInputArtifactBinding,
     AdapterInputConfig,
     AdapterSchedule,
@@ -502,6 +503,44 @@ def test_active_execution_lock_and_lifecycle_keep_snapshot_immutable(
         assert current_execution is not None
         assert current_execution.status == "pending"
         assert current_execution.input_snapshot == snapshot
+
+
+def test_lifecycle_noop_does_not_commit_callers_unrelated_changes(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    monkeypatch.setattr(input_config_service, "database_now", lambda _session: FIXED_NOW)
+    adapter = create_task(api_client, "b2-lifecycle-noop-transaction")
+    artifact_id = create_artifact(session_factory, adapter["id"], "stable.txt")
+    saved = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "managed_files",
+            "artifact_ids": [artifact_id],
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+
+    with session_factory() as session:
+        adapter_row = session.get(Adapter, adapter["id"])
+        assert adapter_row is not None
+        original_name = adapter_row.name
+        adapter_row.name = "b2-uncommitted-lifecycle-change"
+
+        result = input_config_service.reconcile_current_bindings(
+            session, adapter["id"], now=FIXED_NOW
+        )
+        assert result.revision == 2
+        session.rollback()
+
+    with session_factory() as session:
+        adapter_row = session.get(Adapter, adapter["id"])
+        assert adapter_row is not None
+        assert adapter_row.name == original_name
 
 
 def test_schedule_managed_files_snapshot_survives_later_replacement(
