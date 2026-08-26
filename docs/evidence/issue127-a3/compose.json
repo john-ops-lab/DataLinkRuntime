@@ -1,0 +1,76 @@
+{
+  "schema": "issue127-a3-compose-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "project": "dlr-issue127-a3",
+  "ports": {
+    "web": 18920,
+    "account_web": 18921
+  },
+  "services": {
+    "postgres": "healthy",
+    "control": "healthy",
+    "worker": "healthy",
+    "web": "healthy",
+    "account-web": "healthy"
+  },
+  "postgres": {
+    "select_1": true,
+    "pinned_image_uid_gid": "70:70",
+    "colima_bind_container_owner": "0:0",
+    "host_chown_to_pinned_uid": "not permitted by bind mapping",
+    "scoped_log_dir": ".tmp-platform-logs/issue127-a3-gate/postgres",
+    "temporary_initial_mode": "0777",
+    "corrected_final_mode": "0733",
+    "container_mode_after_correction": "0733",
+    "postgres_write_check_after_restart": true,
+    "entrypoint_and_health_after_restart": true
+  },
+  "cases": {
+    "manual_empty_body": {
+      "status": 202,
+      "input_snapshot": {
+        "source_type": "json",
+        "revision": 2
+      }
+    },
+    "single_active_gate": {
+      "status": 409,
+      "code": "adapter_busy"
+    },
+    "schedule_run_now": {
+      "status": 202,
+      "trigger": "manual",
+      "cursor_unchanged": true
+    },
+    "schedule_due_point": {
+      "status": 202,
+      "cursor_advanced": true,
+      "no_hot_loop": true
+    },
+    "invalid_cursor": {
+      "status": "PASS",
+      "last_blocked_reason": "input_invalid",
+      "last_processed_due_at_present": true,
+      "cursor_future": true,
+      "schedule_execution_count_unchanged_after_2s": true
+    },
+    "remote_files_bypass": {
+      "status": 422,
+      "code": "input_source_not_available"
+    },
+    "flag_off_cards": {
+      "managed_files_disabled": true,
+      "remote_files_disabled": true
+    }
+  },
+  "config": {
+    "default_compose_config": true,
+    "dns_example_overlay_config": true,
+    "default_embedded_dns_and_fallbacks": true
+  },
+  "secret_scan": {
+    "compose_logs": true,
+    "platform_logs": true,
+    "raw_logs_archived": false
+  }
+}

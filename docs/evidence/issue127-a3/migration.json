@@ -1,0 +1,52 @@
+{
+  "schema": "issue127-a3-migration-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "runner": "fixed dev-deps test-runner on migration named network",
+  "databases": {
+    "fixed_baseline": {
+      "database": "dlr_i127_a3_datalinkruntime_127_upgrade",
+      "baseline_revision": "0025_default_ai_tools_enabled",
+      "alembic_head": "0027_issue127_a1_execution_input",
+      "adapter_count": 2,
+      "config_count": 2,
+      "execution_count": 2,
+      "schedule_count": 1,
+      "source_type_counts": {
+        "json": 2
+      },
+      "migration_conflict_count": 0,
+      "inserted_count_from_head": 2,
+      "historical_execution_input_unchanged": true,
+      "legacy_schedule_input_unchanged": true,
+      "repeated_upgrade_state_unchanged": true,
+      "backfill_first": {
+        "adapter_count": 2,
+        "source_type_counts": {
+          "json": 2
+        },
+        "conflicts": 0,
+        "inserted": 0
+      },
+      "backfill_second": {
+        "adapter_count": 2,
+        "source_type_counts": {
+          "json": 2
+        },
+        "conflicts": 0,
+        "inserted": 0
+      }
+    },
+    "fresh": {
+      "database": "dlr_i127_a3_datalinkruntime_127_fresh",
+      "alembic_head": "0027_issue127_a1_execution_input",
+      "adapter_count": 0,
+      "config_count": 0,
+      "execution_count": 0,
+      "schedule_count": 0,
+      "source_type_counts": {},
+      "migration_conflict_count": 0,
+      "repeated_upgrade_state_unchanged": true
+    }
+  },
+  "database_cleanup": "both harness databases dropped in finally"
+}

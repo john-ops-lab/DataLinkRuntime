@@ -1,0 +1,57 @@
+{
+  "schema": "issue127-a3-cleanup-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "compose_project": "dlr-issue127-a3",
+  "compose_containers_removed": [
+    "dlr-issue127-a3-postgres-1",
+    "dlr-issue127-a3-control-1",
+    "dlr-issue127-a3-worker-1",
+    "dlr-issue127-a3-web-1",
+    "dlr-issue127-a3-account-web-1"
+  ],
+  "compose_volumes_removed": [
+    "dlr-issue127-a3_dlr_pg_data",
+    "dlr-issue127-a3_dlr_worker_runtime"
+  ],
+  "compose_network_removed": "dlr-issue127-a3_default",
+  "standalone_migration_resources_removed": {
+    "container": [
+      "dlr-issue127-a3-postgres",
+      "dlr-issue127-a3-test-runner-build"
+    ],
+    "network": "dlr-issue127-a3-migration",
+    "volume": "dlr_issue127_a3_pgdata"
+  },
+  "session_image_tags_removed": [
+    "dlr-issue127-a3-test-runner:latest",
+    "dlr-issue127-a3-web-test-runner:latest",
+    "dlr-issue127-a3-postgres:latest",
+    "dlr-issue127-a3-control:latest",
+    "dlr-issue127-a3-worker:latest",
+    "dlr-issue127-a3-web:latest",
+    "dlr-issue127-a3-account-web:latest"
+  ],
+  "ports_released": [
+    55432,
+    18920,
+    18921
+  ],
+  "temporary_workspace_paths_removed": [
+    "web/node_modules",
+    "web/test-results/issue127-a2",
+    "web/test-results/m5-10-wave-a",
+    "web/dist",
+    ".tmp-platform-logs/issue127-a3-gate"
+  ],
+  "temporary_scripts_removed": [
+    "dlr-issue127-a3-migration.py",
+    "dlr-issue127-a3-compat.py",
+    "dlr-issue127-a3-compose.py",
+    "dlr-issue127-a3-invalid.py",
+    "dlr-issue127-a3-compose-compat.py",
+    "dlr-issue127-a3-compose-remote.py"
+  ],
+  "canonical_node_modules_preserved": true,
+  "unrelated_docker_resources_touched": false,
+  "raw_headers_bodies_logs_traces_retained": false
+}

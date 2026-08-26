@@ -1,0 +1,12 @@
+{
+  "schema": "issue127-a3-scan-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "compose_config_default": "PASS with anonymous placeholder environment",
+  "compose_config_dns_example_overlay": "PASS with anonymous placeholder environment",
+  "default_dns_entries": "127.0.0.11, 1.1.1.1, 8.8.8.8 present",
+  "compose_logs_secret_scan": "PASS",
+  "platform_logs_secret_scan": "PASS",
+  "evidence_payload_scan": "PASS: sanitized metadata only",
+  "absolute_path_scan": "PASS: no local absolute paths in retained text evidence",
+  "raw_headers_bodies_tokens_secrets_archived": false
+}

@@ -75,10 +75,10 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 4. A3 — Wave A 迁移、回滚与集成 Gate
 
-- [ ] 4.1 在新鲜 DB 与固定基线 DB分别演练 Alembic head，核对 Adapter 总数/source 分布/冲突数、历史 Execution input 未改；验证重复 upgrade/check 无副作用。
-- [ ] 4.2 用旧 Web 风格 manual/Schedule 请求和新 Web请求执行兼容矩阵；验证开关开启无静默分叉、关闭后两类旧字段均明确拒绝、重新开启可回滚。
-- [ ] 4.3 在独立 Compose 执行 manual、Schedule、schedule run-now，验证单活跃门禁、invalid cursor推进、服务日志脱敏与四卡片 flag off。
-- [ ] 4.4 运行 Wave A 完整 backend/web 相关回归与 `git diff --check`，归档 exact-SHA、命令、PASS/FAIL、迁移计数、浏览器截图/console/request证据；任何失败不勾选、不进入 B。
+- [x] 4.1 在新鲜 DB 与固定基线 DB分别演练 Alembic head，核对 Adapter 总数/source 分布/冲突数、历史 Execution input 未改；验证重复 upgrade/check 无副作用。
+- [x] 4.2 用旧 Web 风格 manual/Schedule 请求和新 Web请求执行兼容矩阵；验证开关开启无静默分叉、关闭后两类旧字段均明确拒绝、重新开启可回滚。
+- [x] 4.3 在独立 Compose 执行 manual、Schedule、schedule run-now，验证单活跃门禁、invalid cursor推进、服务日志脱敏与四卡片 flag off。
+- [x] 4.4 运行 Wave A 完整 backend/web 相关回归与 `git diff --check`，归档 exact-SHA、命令、PASS/FAIL、迁移计数、浏览器截图/console/request证据；任何失败不勾选、不进入 B。
 
 ## 5. B0 — Wave B Managed Settings、容量与 Artifact 公共 schema
 
