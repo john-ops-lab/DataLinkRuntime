@@ -91,13 +91,13 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 6. B1 — Wave B LocalFileArtifactStore、上传与 reservation
 
-- [ ] 6.1 用临时同/跨文件系统、symlink、`../`、伪 Content-Length、上传中断和并发最后配额构造最小复现；验证红灯精确覆盖原子 rename/路径/预留风险。
-- [ ] 6.2 实现无第三方依赖的 LocalFileArtifactStore 窄接口、随机 storage key、同挂载 `.part→object` 原子 rename、幂等 delete/stat/quarantine；文件系统测试验证路径穿越和 symlink拒绝。
-- [ ] 6.3 实现 multipart 流式 upload API：Adapter权限、白名单、大小/SHA-256、低水位、reservation创建/续租/扩容/核销与失败补偿；验证不信任 MIME/Content-Length且超限立即停止。
-- [ ] 6.4 实现 staged list/delete API和 upload session恢复；验证刷新只看到同 Adapter STAGED元数据、跨 Adapter猜测不泄露存在性、STAGED删除不改 revision。
-- [ ] 6.5 实现 reservation TTL与 writer竞争的条件状态更新；并发/故障注入验证 ACTIVE只能单向 terminal、reserved/actual bytes不重复释放或提前释放。
-- [ ] 6.6 扫描 API/日志/审计响应，验证不出现 storage key、store root、`.part`路径、文件内容或认证凭据，并验证稳定错误码全集中的上传子集。
-- [ ] 6.7 运行 B1 unit/integration/concurrency/fault tests及 Ruff/format/mypy；使用独立临时 store演练中断后无无主对象或由 audit可治理，PASS才形成 Candidate。
+- [x] 6.1 用临时同/跨文件系统、symlink、`../`、伪 Content-Length、上传中断和并发最后配额构造最小复现；验证红灯精确覆盖原子 rename/路径/预留风险。
+- [x] 6.2 实现无第三方依赖的 LocalFileArtifactStore 窄接口、随机 storage key、同挂载 `.part→object` 原子 rename、幂等 delete/stat/quarantine；文件系统测试验证路径穿越和 symlink拒绝。
+- [x] 6.3 实现 multipart 流式 upload API：Adapter权限、白名单、大小/SHA-256、低水位、reservation创建/续租/扩容/核销与失败补偿；验证不信任 MIME/Content-Length且超限立即停止。
+- [x] 6.4 实现 staged list/delete API和 upload session恢复；验证刷新只看到同 Adapter STAGED元数据、跨 Adapter猜测不泄露存在性、STAGED删除不改 revision。
+- [x] 6.5 实现 reservation TTL与 writer竞争的条件状态更新；并发/故障注入验证 ACTIVE只能单向 terminal、reserved/actual bytes不重复释放或提前释放。
+- [x] 6.6 扫描 API/日志/审计响应，验证不出现 storage key、store root、`.part`路径、文件内容或认证凭据，并验证稳定错误码全集中的上传子集。
+- [x] 6.7 运行 B1 unit/integration/concurrency/fault tests及 Ruff/format/mypy；使用独立临时 store演练中断后无无主对象或由 audit可治理，PASS才形成 Candidate。
 
 ## 7. B2 — Wave B Binding、retention 与系统生命周期事务
 

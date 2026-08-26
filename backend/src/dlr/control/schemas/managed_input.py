@@ -1,6 +1,7 @@
 """Public contracts for the B0 Managed Input policy API."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -90,3 +91,29 @@ class ManagedInputSettingsResponse(ManagedInputSettingsUpdate):
     adapter_over_quota: list[int] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class ManagedInputArtifactResponse(BaseModel):
+    """Safe metadata for one Adapter-owned staged Artifact."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: int
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str
+    status: Literal["STAGED"]
+    created_at: datetime
+    expires_at: datetime | None
+
+
+class ManagedInputUploadSessionResponse(BaseModel):
+    """Safe progress metadata for an active upload session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: int
+    status: Literal["UPLOADING"]
+    received_bytes: int
+    expires_at: datetime
