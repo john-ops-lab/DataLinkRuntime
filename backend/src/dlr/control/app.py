@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from dlr.common.config import settings, validate_deployment_configuration
 from dlr.common.platform_logging import configure_platform_logging
 from dlr.control import db
 from dlr.control.ai.tool_audit import configure_ai_tool_audit_logging
@@ -26,6 +27,7 @@ from dlr.control.api import (
     input_configs,
     knowledge_sources,
     locale,
+    managed_input,
     package_sources,
     schedules,
     users,
@@ -92,6 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Create the Control Node FastAPI application."""
+    validate_deployment_configuration(settings)
     configure_platform_logging("control")
     configure_ai_tool_audit_logging()
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
@@ -173,6 +176,16 @@ def create_app() -> FastAPI:
                     }
                 },
             )
+        if request.url.path == "/api/system/managed-input-settings":
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "managed_input_settings_invalid",
+                        "message": "Managed Input settings are invalid",
+                    }
+                },
+            )
         if request.url.path.startswith("/api/auth/account/") or request.url.path.startswith(
             "/api/users"
         ):
@@ -194,6 +207,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(adapters.router)
     app.include_router(input_configs.router)
+    app.include_router(managed_input.router)
     app.include_router(ai.router)
     app.include_router(ai.adapter_router)
     app.include_router(credentials.router)

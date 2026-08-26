@@ -82,12 +82,12 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 5. B0 — Wave B Managed Settings、容量与 Artifact 公共 schema
 
-- [ ] 5.1 固定配额超卖、低水位、retention 追溯重算和 null/无限设置的最小红灯 fixture；验证实现前无法满足 settings/usage 合同。
-- [ ] 5.2 新增 ManagedInputSettings、platform capacity、reservation、Artifact、Binding、deletion job 模型及全部 PK/FK/复合 FK/unique/check/index；用 PostgreSQL catalog 测试验证约束和 GC/TTL 查询索引。
-- [ ] 5.3 新增管理员 GET/PUT settings API、初始值/范围/跨字段不变量与 usage/over_quota 响应；验证普通用户拒绝、降配额不删现有文件且减少占用操作仍允许。
-- [ ] 5.4 新增 `DLR_ARTIFACT_STORE_ROOT`、feature flag、GC/audit intervals 与有界启动校验；验证数据库设置不返回/覆盖部署路径，非法环境配置阻止启动。
-- [ ] 5.5 编写 B0 migration与 fresh/upgrade schema测试，验证种子单例、capacity 计数初始一致、回滚只作为测试清理而不定义生产破坏性 downgrade。
-- [ ] 5.6 运行 B0 targeted pytest、Ruff/format/mypy和 migration catalog Gate；全部 PASS 才允许 B1。
+- [x] 5.1 固定配额超卖、低水位、retention 追溯重算和 null/无限设置的最小红灯 fixture；验证实现前无法满足 settings/usage 合同。
+- [x] 5.2 新增 ManagedInputSettings、platform capacity、reservation、Artifact、Binding、deletion job 模型及全部 PK/FK/复合 FK/unique/check/index；用 PostgreSQL catalog 测试验证约束和 GC/TTL 查询索引。
+- [x] 5.3 新增管理员 GET/PUT settings API、初始值/范围/跨字段不变量与 usage/over_quota 响应；验证普通用户拒绝、降配额不删现有文件且减少占用操作仍允许。
+- [x] 5.4 新增 `DLR_ARTIFACT_STORE_ROOT`、feature flag、GC/audit intervals 与有界启动校验；验证数据库设置不返回/覆盖部署路径，非法环境配置阻止启动。
+- [x] 5.5 编写 B0 migration与 fresh/upgrade schema测试，验证种子单例、capacity 计数初始一致、回滚只作为测试清理而不定义生产破坏性 downgrade。
+- [x] 5.6 运行 B0 targeted pytest、Ruff/format/mypy和 migration catalog Gate；全部 PASS 才允许 B1。
 
 ## 6. B1 — Wave B LocalFileArtifactStore、上传与 reservation
 

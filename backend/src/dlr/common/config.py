@@ -1,6 +1,8 @@
 """Platform settings loaded from environment variables."""
 
-from pydantic import Field
+from os.path import isabs
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -115,6 +117,28 @@ class Settings(BaseSettings):
         default=300, validation_alias="DLR_EXECUTION_TIMEOUT_SECONDS"
     )
 
+    # Issue #127 B0: physical ArtifactStore placement and lifecycle loops are
+    # deployment concerns.  The managed-files flag remains disabled until the
+    # later storage/Worker waves pass their release gates.
+    artifact_store_root: str = Field(
+        default="/var/lib/dlr/artifacts", validation_alias="DLR_ARTIFACT_STORE_ROOT"
+    )
+    managed_files_enabled: bool = Field(default=False, validation_alias="DLR_MANAGED_FILES_ENABLED")
+    artifact_gc_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        le=86_400.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_ARTIFACT_GC_INTERVAL_SECONDS",
+    )
+    artifact_audit_interval_seconds: float = Field(
+        default=3_600.0,
+        gt=0,
+        le=604_800.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS",
+    )
+
     # M3 SSE: the simplest possible PostgreSQL polling implementation; see
     # docs/specs/m3-observability-ux.md §7.
     sse_poll_interval_seconds: float = Field(
@@ -195,6 +219,28 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
         validation_alias="DLR_IMA_TIMEOUT_SECONDS",
     )
+
+    @model_validator(mode="after")
+    def validate_deployment_configuration(self) -> "Settings":
+        """Reject invalid B0 deployment values before the app can start.
+
+        Pydantic validates values loaded from the environment.  The explicit
+        method is also called by ``create_app`` so tests and embedders that
+        mutate the settings singleton cannot bypass the startup gate.
+        """
+        return validate_deployment_configuration(self)
+
+
+def validate_deployment_configuration(value: Settings) -> Settings:
+    """Run the deployment gate for both Pydantic and app-factory callers."""
+    root = value.artifact_store_root
+    if not isinstance(root, str) or not root.strip() or "\x00" in root or not isabs(root):
+        raise ValueError("DLR_ARTIFACT_STORE_ROOT must be a non-empty absolute path")
+    if not 0 < value.artifact_gc_interval_seconds <= 86_400:
+        raise ValueError("DLR_ARTIFACT_GC_INTERVAL_SECONDS must be between 0 and 86400")
+    if not 0 < value.artifact_audit_interval_seconds <= 604_800:
+        raise ValueError("DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS must be between 0 and 604800")
+    return value
 
 
 settings = Settings()
