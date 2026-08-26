@@ -20,8 +20,8 @@ def input_config(client: TestClient, adapter_id: int) -> dict[str, Any]:
     return response.json()
 
 
-def test_a0_red_light_requires_one_adapter_input_config(api_client: TestClient) -> None:
-    """The pre-A0 contract had per-run and Schedule input but no shared row."""
+def test_a1_compat_schedule_input_becomes_saved_config(api_client: TestClient) -> None:
+    """The compatibility Schedule field mirrors the unified saved input."""
     adapter = create_adapter(api_client, name="a0-input-red-light")
     save_version(api_client, adapter["id"])
     mode = api_client.patch(f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"})
@@ -47,11 +47,12 @@ def test_a0_red_light_requires_one_adapter_input_config(api_client: TestClient) 
     assert cancelled.status_code == 200, cancelled.text
     manual_without_input = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
     assert manual_without_input.status_code == 202, manual_without_input.text
-    assert manual_without_input.json()["input"] is None
+    assert manual_without_input.json()["input"] == {"legacy_schedule": True}
 
     body = input_config(api_client, adapter["id"])
-    assert body["source_type"] == "none"
-    assert body["revision"] == 1
+    assert body["source_type"] == "json"
+    assert body["json_value"] == {"legacy_schedule": True}
+    assert body["revision"] == 2
     assert body["valid_for_run"] is True
 
 

@@ -55,14 +55,14 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 2. A1 — Wave A 统一 resolver、Manual/Schedule/run-now 与兼容门禁
 
-- [ ] 2.1 实现受锁统一 resolver 与 Execution 创建事务，保持 `Execution.input` 原始 JSON/null 并固定 source/revision/snapshot；验证 manual 与 scheduler 针对 none、object/array/scalar/null 产出相同快照合同。
-- [ ] 2.2 将 `POST /api/adapters/{id}/executions` 改为读取已保存配置并支持 schedule run-now `trigger=manual`；验证 run-now 不改变 enabled/Cron/timezone/next_run_at/last_processed_due_at。
-- [ ] 2.3 实现 `legacy_input_compat_enabled`：开启时旧 per-run input 仅作用本次 Execution且记录弃用指标，关闭时任何 `input` 字段（含 null）返回 `execution_input_override_not_supported`；验证两种开关与输入大小门禁。
-- [ ] 2.4 让旧 Schedule PUT 与新 JSON InputConfig 在兼容期同事务双向镜像，Scheduler 只读统一 resolver；验证并发 revision conflict 不产生双写分叉。
-- [ ] 2.5 实现 Schedule input_invalid 持久阻塞与 future cursor 推进；用冻结数据库时钟、多 scheduler、Cron/timezone/DST fixture 验证不创建 Execution、不热循环、不补跑。
-- [ ] 2.6 将启用 Schedule、manual/run-now、保存输入接入现有 Adapter Runtime Lock和 active unique index；验证 stale 页面、enabled Schedule、pending/running 竞争均返回权威 409且失败不改 revision。
-- [ ] 2.7 扩展 Adapter clone：复制 source/json/retention，managed_files 副本为空且 Schedule disabled；验证不复制任何 Artifact/Binding/Lease 标识。
-- [ ] 2.8 运行 A1 Gate：统一 resolver、schedule、execution、clone、锁竞争和兼容开关测试，以及相关 Ruff/format/mypy；执行兼容开关 on→off→on 回滚 smoke，全部 PASS 才形成 A1 Candidate。
+- [x] 2.1 实现受锁统一 resolver 与 Execution 创建事务，保持 `Execution.input` 原始 JSON/null 并固定 source/revision/snapshot；验证 manual 与 scheduler 针对 none、object/array/scalar/null 产出相同快照合同。
+- [x] 2.2 将 `POST /api/adapters/{id}/executions` 改为读取已保存配置并支持 schedule run-now `trigger=manual`；验证 run-now 不改变 enabled/Cron/timezone/next_run_at/last_processed_due_at。
+- [x] 2.3 实现 `legacy_input_compat_enabled`：开启时旧 per-run input 仅作用本次 Execution且记录弃用指标，关闭时任何 `input` 字段（含 null）返回 `execution_input_override_not_supported`；验证两种开关与输入大小门禁。
+- [x] 2.4 让旧 Schedule PUT 与新 JSON InputConfig 在兼容期同事务双向镜像，Scheduler 只读统一 resolver；验证并发 revision conflict 不产生双写分叉。
+- [x] 2.5 实现 Schedule input_invalid 持久阻塞与 future cursor 推进；用冻结数据库时钟、多 scheduler、Cron/timezone/DST fixture 验证不创建 Execution、不热循环、不补跑。
+- [x] 2.6 将启用 Schedule、manual/run-now、保存输入接入现有 Adapter Runtime Lock和 active unique index；验证 stale 页面、enabled Schedule、pending/running 竞争均返回权威 409且失败不改 revision。
+- [x] 2.7 扩展 Adapter clone：复制 source/json/retention，managed_files 副本为空且 Schedule disabled；验证不复制任何 Artifact/Binding/Lease 标识。
+- [x] 2.8 运行 A1 Gate：统一 resolver、schedule、execution、clone、锁竞争和兼容开关测试，以及相关 Ruff/format/mypy；执行兼容开关 on→off→on 回滚 smoke，全部 PASS 才形成 A1 Candidate。
 
 ## 3. A2 — Wave A none/json Web 与四卡片占位
 

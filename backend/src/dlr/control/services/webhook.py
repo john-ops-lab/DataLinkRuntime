@@ -404,6 +404,9 @@ def receive_webhook(
         status="pending",
         target_worker_id=adapter.runtime_worker_id,
         input=payload,
+        input_source_type="json",
+        input_config_revision=1,
+        input_snapshot={"source_type": "json", "revision": 1},
         locale=get_system_locale(session),
     )
     # Retention is a unified periodic service, not an inline side effect of

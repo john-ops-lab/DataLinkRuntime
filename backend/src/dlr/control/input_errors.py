@@ -11,6 +11,3 @@ class InputConfigErrorCode(StrEnum):
     NOT_INITIALIZED = "input_config_not_initialized"
     INVALID = "input_invalid"
     EXECUTION_OVERRIDE_NOT_SUPPORTED = "execution_input_override_not_supported"
-
-
-INPUT_CONFIG_ERROR_CODES = frozenset(code.value for code in InputConfigErrorCode)

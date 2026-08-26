@@ -6,6 +6,9 @@ appends and the cursor-paged execution history.
 """
 
 import json
+import logging
+from collections import Counter
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +28,8 @@ from dlr.control.services.adapter import domain_error, resolve_runtime_worker
 from dlr.control.services.execution_cancellation import lock_execution, request_cancellation
 from dlr.control.services.locale import get_system_locale
 
+logger = logging.getLogger("dlr.control.execution")
+
 # Statuses after which an Execution never changes again.
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
 
@@ -33,47 +38,107 @@ DEFAULT_HISTORY_LIMIT = 50
 MAX_HISTORY_LIMIT = 100
 
 
+class _NoInputOverride:
+    """Sentinel distinguishing an omitted request field from JSON null."""
+
+
+NO_INPUT_OVERRIDE = _NoInputOverride()
+
+# This is intentionally a small in-process metric until the platform metrics
+# sink is introduced.  The stable key is useful to tests and operators, while
+# the log never includes the legacy value itself.
+LEGACY_INPUT_COMPAT_METRICS: Counter[str] = Counter()
+
+
 def compact_json_bytes(value: object) -> bytes:
     """Compact JSON serialization as UTF-8 bytes (the big-field unit)."""
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -> Execution:
-    """Create one Manual Execution pinned to the latest immutable Revision."""
-    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+def _create_execution_locked(
+    session: Session,
+    adapter: Adapter | None,
+    *,
+    trigger: str,
+    scheduled_for: Any = None,
+    input_override: object = NO_INPUT_OVERRIDE,
+    schedule: Any = None,
+) -> Execution:
+    """Create one Execution while the caller owns the Adapter transaction lock."""
+    from dlr.control.services.input_config import resolve_for_execution
+
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     if adapter.archived_at is not None:
         raise domain_error(409, "adapter_deleted", "Adapter is deleted")
-    # Oversized input is rejected before anything is persisted; it is never
-    # truncated and executed.
-    if len(compact_json_bytes(data.input)) > settings.execution_input_max_bytes:
-        raise domain_error(
-            413,
-            "execution_input_too_large",
-            f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
-            {"max_bytes": settings.execution_input_max_bytes},
-        )
     if adapter.latest_version_id is None:
         raise domain_error(409, "adapter_has_no_version", "Adapter has no saved Revision yet")
-    if adapter_runtime.active_execution(session, adapter_id) is not None:
+    if adapter_runtime.active_execution(session, adapter.id) is not None:
         raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
+
+    # A Schedule run-now must take the same Schedule lock as the Scheduler,
+    # but it never mutates the row or its cursor.
+    if schedule is None and adapter.run_mode == "schedule":
+        from dlr.control.models import AdapterSchedule
+
+        schedule = session.scalar(
+            select(AdapterSchedule)
+            .where(AdapterSchedule.adapter_id == adapter.id)
+            .with_for_update()
+        )
+
+    if input_override is NO_INPUT_OVERRIDE:
+        resolved = resolve_for_execution(session, adapter.id)
+    else:
+        resolved = resolve_for_execution(session, adapter.id, override=input_override)
+        LEGACY_INPUT_COMPAT_METRICS["execution_override"] += 1
+        logger.info(
+            "legacy_input_compat deprecated operation=execution_override adapter_id=%s",
+            adapter.id,
+        )
+
     worker = resolve_runtime_worker(
         session,
         adapter,
         now=worker_availability.current_time(session),
     )
     execution = Execution(
-        adapter_id=adapter_id,
+        adapter_id=adapter.id,
         version_id=adapter.latest_version_id,
-        trigger="manual",
+        trigger=trigger,
         status="pending",
-        input=data.input,
+        input=resolved.runtime_input,
+        input_source_type=resolved.source_type,
+        input_config_revision=resolved.revision,
+        input_snapshot=resolved.snapshot,
         target_worker_id=worker.id,
+        scheduled_for=scheduled_for,
         locale=get_system_locale(session),
     )
     session.add(execution)
+    session.flush()
+    return execution
+
+
+def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -> Execution:
+    """Create one Manual or schedule run-now Execution from saved input."""
+    input_is_present = "input" in data.model_fields_set
+    if input_is_present and not settings.legacy_input_compat_enabled:
+        raise domain_error(
+            422,
+            "execution_input_override_not_supported",
+            "Per-run input overrides are disabled; save the Adapter input first",
+        )
+
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    input_override = data.input if input_is_present else NO_INPUT_OVERRIDE
     try:
+        execution = _create_execution_locked(
+            session,
+            adapter,
+            trigger="manual",
+            input_override=input_override,
+        )
         session.commit()
     except IntegrityError:
         session.rollback()

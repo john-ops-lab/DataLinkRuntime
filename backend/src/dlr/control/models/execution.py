@@ -145,6 +145,16 @@ class Execution(Base):
     )
     # Any JSON value is valid input, including JSON null.
     input: Mapped[object] = mapped_column(JSONB, nullable=False)
+    # A1: immutable Adapter input facts captured in the same transaction as
+    # the raw runtime input.  The snapshot is deliberately public metadata;
+    # later waves may add file summaries without exposing operational IDs.
+    input_source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="json")
+    input_config_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    input_snapshot: Mapped[dict[str, object]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=lambda: {"source_type": "json", "revision": 1},
+    )
     # Full output, only stored when it fits the big-field limit.
     output: Mapped[object | None] = mapped_column(JSONB, nullable=True)
     # UTF-8 byte size of the complete JSON output.

@@ -35,6 +35,9 @@ class ExecutionResponse(BaseModel):
     status: str
     cancel_requested: bool
     input: Any
+    input_source_type: str
+    input_config_revision: int
+    input_snapshot: dict[str, Any]
     output: Any = None
     output_size: int | None
     output_truncated: bool

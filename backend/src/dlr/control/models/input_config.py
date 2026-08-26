@@ -81,7 +81,7 @@ class AdapterInputConfig(Base):
     )
     # JSONB stores any JSON top-level value, including JSON null. SQL NULL is
     # reserved for source types that do not carry a JSON value.
-    json_value: Mapped[object | None] = mapped_column(JSONB, nullable=True)
+    json_value: Mapped[object | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     retention_mode: Mapped[str] = mapped_column(
         String(16),
         nullable=False,

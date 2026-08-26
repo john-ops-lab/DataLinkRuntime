@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import JSON, delete, func, null, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -517,6 +517,17 @@ def clone_adapter(
     if source is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(source)
+    source_input_config = None
+    source_schedule = None
+    if source.adapter_type == "task":
+        source_schedule = session.scalar(
+            select(AdapterSchedule).where(AdapterSchedule.adapter_id == source.id).with_for_update()
+        )
+        source_input_config = session.scalar(
+            select(AdapterInputConfig)
+            .where(AdapterInputConfig.adapter_id == source.id)
+            .with_for_update()
+        )
     if _active_name_conflict(session, data.name):
         raise domain_error(
             409,
@@ -548,9 +559,32 @@ def clone_adapter(
         ) from None
 
     if clone.adapter_type == "task":
-        # A clone is a new Task and therefore receives its own default input
-        # row. Copying JSON/file selections belongs to the later clone wave.
-        session.add(AdapterInputConfig(adapter_id=clone.id))
+        # Copy the current source/revision-independent input selection, but
+        # never copy operational file identity.  A managed_files clone keeps
+        # its retention/source contract with an empty selection.
+        clone_json_value: object | None = None
+        if source_input_config is None:
+            clone_input_config = AdapterInputConfig(adapter_id=clone.id)
+        else:
+            if source_input_config.source_type == "json":
+                # JSONB result processing represents a saved JSON null as
+                # Python None; keep it a JSON null when none_as_null=True.
+                clone_json_value = (
+                    JSON.NULL
+                    if source_input_config.json_value is None
+                    else source_input_config.json_value
+                )
+            clone_input_config = AdapterInputConfig(
+                adapter_id=clone.id,
+                source_type=source_input_config.source_type,
+                json_value=(
+                    clone_json_value if source_input_config.source_type == "json" else null()
+                ),
+                retention_mode=source_input_config.retention_mode,
+                retention_seconds=source_input_config.retention_seconds,
+                revision=1,
+            )
+        session.add(clone_input_config)
 
     if source.latest_version_id is not None:
         source_version = session.get(AdapterVersion, source.latest_version_id)
@@ -580,18 +614,18 @@ def clone_adapter(
             )
         )
     if source.adapter_type == "task":
-        source_schedule = session.scalar(
-            select(AdapterSchedule)
-            .where(AdapterSchedule.adapter_id == adapter_id)
-            .with_for_update()
-        )
         if source_schedule is not None:
             session.add(
                 AdapterSchedule(
                     adapter_id=clone.id,
                     cron=source_schedule.cron,
                     timezone=source_schedule.timezone,
-                    input=source_schedule.input,
+                    input=(
+                        clone_json_value
+                        if source_input_config is not None
+                        and source_input_config.source_type == "json"
+                        else None
+                    ),
                     enabled=False,
                     next_run_at=None,
                 )

@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     execution_input_max_bytes: int = Field(
         default=512 * 1024, validation_alias="DLR_EXECUTION_INPUT_MAX_BYTES"
     )
+    # Issue #127 A1: keep old per-run input and Schedule input accepted only
+    # during the bounded compatibility window.  The default preserves the
+    # rolling-deploy contract; callers still distinguish an omitted field from
+    # an explicit JSON null before consulting this setting.
+    legacy_input_compat_enabled: bool = Field(
+        default=True, validation_alias="DLR_LEGACY_INPUT_COMPAT_ENABLED"
+    )
     execution_output_max_bytes: int = Field(
         default=512 * 1024, validation_alias="DLR_EXECUTION_OUTPUT_MAX_BYTES"
     )

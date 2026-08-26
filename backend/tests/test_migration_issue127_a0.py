@@ -69,7 +69,9 @@ def fresh_engine() -> Iterator[Engine]:
         connection.execute(text(f"CREATE DATABASE {FRESH_DATABASE}"))
     maintenance.dispose()
 
-    _upgrade(_alembic_config(url), "head")
+    # Keep this fixture pinned to the A0 boundary; later changes advance the
+    # repository head without changing the A0 migration contract under test.
+    _upgrade(_alembic_config(url), FINAL_REVISION)
     engine = create_engine(url)
     yield engine
     engine.dispose()
