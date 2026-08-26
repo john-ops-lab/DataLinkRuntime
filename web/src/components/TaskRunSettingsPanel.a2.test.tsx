@@ -248,24 +248,51 @@ describe("Task Input Object A2", () => {
     expect(createExecution).not.toHaveBeenCalled();
   });
 
-  it("blocks save and run for an invalid persisted InputConfig", async () => {
-    const put = vi.spyOn(api, "putInputConfig");
+  it.each([
+    ["managed_files_empty", "托管文件为空，请先准备文件后再运行。", "none", null, "托管文件为空"],
+    ["input_source_not_available", "该输入对象来源尚未启用。", "json", { recovered: true }, "来源尚未启用"],
+  ] as const)("recovers invalid managed_files (%s) through %s and only runs after save", async (invalidReason, blockedReason, sourceType, jsonValue, invalidMessage) => {
+    const put = vi.spyOn(api, "putInputConfig").mockImplementation(async (_adapterId, payload) =>
+      makeInputConfig({
+        revision: 5,
+        source_type: payload.source_type,
+        json_value: payload.source_type === "json" ? payload.json_value : null,
+        valid_for_run: true,
+        invalid_reason: null,
+      }),
+    );
     const createExecution = vi.spyOn(api, "createExecution");
     const onError = vi.fn();
     const runtimeRef = renderPanel(makeInputConfig({
       source_type: "managed_files",
       valid_for_run: false,
-      invalid_reason: "managed_files_empty",
+      invalid_reason: invalidReason,
     }), { onError });
 
-    await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(true));
-    expect(screen.getByTestId("task-input-invalid").textContent).toContain("托管文件为空");
-    fireEvent.click(screen.getByTestId("save-task-input"));
+    await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByTestId("task-input-invalid").textContent).toContain(invalidMessage);
     runtimeRef.current?.runOnce();
-
-    await waitFor(() => expect(onError).toHaveBeenLastCalledWith("托管文件为空，请先准备文件后再运行。"));
-    expect(put).not.toHaveBeenCalled();
+    await waitFor(() => expect(onError).toHaveBeenLastCalledWith(blockedReason));
     expect(createExecution).not.toHaveBeenCalled();
+
+    const sourceCard = screen.getByTestId(`task-input-source-${sourceType}`);
+    expect(sourceCard.getAttribute("aria-disabled")).toBe("false");
+    fireEvent.click(sourceCard);
+    if (sourceType === "json") {
+      fireEvent.change(await screen.findByTestId("task-input-json"), {
+        target: { value: JSON.stringify(jsonValue) },
+      });
+    }
+    expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId("save-task-input"));
+
+    await waitFor(() => expect(put).toHaveBeenCalledWith(7, {
+      expected_revision: 4,
+      source_type: sourceType,
+      ...(sourceType === "json" ? { json_value: jsonValue } : {}),
+    }));
+    runtimeRef.current?.runOnce();
+    await waitFor(() => expect(createExecution).toHaveBeenCalledTimes(1));
   });
 
   it("blocks an invalid JSON draft before the save request", async () => {

@@ -95,7 +95,6 @@
       "save": "保存输入对象",
       "saveBeforeRun": "请先保存输入对象，再运行或启用定时。",
       "invalidConfig": "当前输入对象不可运行，请修复配置后重试。",
-      "invalidManagedFiles": "托管文件为空，当前输入对象不可运行。",
       "locked": "运行中或定时已启用，输入对象已锁定。",
       "invalidJson": "请输入合法 JSON。",
       "jsonLabel": "JSON 值",

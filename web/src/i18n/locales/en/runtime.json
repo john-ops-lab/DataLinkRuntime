@@ -95,7 +95,6 @@
       "save": "Save Input Object",
       "saveBeforeRun": "Save the Input Object before running or enabling the schedule.",
       "invalidConfig": "The current Input Object cannot run. Fix the configuration and try again.",
-      "invalidManagedFiles": "Managed files are empty, so the current Input Object cannot run.",
       "locked": "The Input Object is locked while a run is active or the schedule is enabled.",
       "invalidJson": "Enter valid JSON.",
       "jsonLabel": "JSON value",

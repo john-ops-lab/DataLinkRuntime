@@ -284,7 +284,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       savingInput ||
       loadingInput ||
       inputConfig === null ||
-      !inputConfig.valid_for_run ||
       inputSourceDraft === "managed_files" ||
       inputSourceDraft === "remote_files" ||
       props.adapter.runtime_locked === true ||
@@ -538,11 +537,12 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (props.adapter.runtime_worker_id == null) return t("task.reasons.noWorker");
     if (activeExecution) return t("task.reasons.activeRun");
     if (submitting) return t("task.reasons.processing");
+    // 防御性兜底：未来若新增 canRun 条件但遗漏对应文案，命令式入口仍保持阻断。
     return canRun ? null : t("task.reasons.unavailable");
   })();
 
   const inputEditingLocked =
-    readOnly || runtimeLocked || scheduleEnabled || savingInput || loadingInput || inputLoadFailed || inputConfig === null || inputConfig.valid_for_run === false;
+    readOnly || runtimeLocked || scheduleEnabled || savingInput || loadingInput || inputLoadFailed || inputConfig === null;
   const sourceCards: {
     sourceType: InputSourceType;
     title: string;
