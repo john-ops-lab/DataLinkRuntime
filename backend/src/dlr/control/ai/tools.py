@@ -482,7 +482,10 @@ _TOOLS: dict[str, ToolSpec] = {
             "Search one registered read-only knowledge source (currently "
             "'ima', Tencent ima) inside one knowledge base. Pass the "
             "knowledge_base_id exactly as returned by list_knowledge_bases. "
-            "Returns bounded hit summaries with an ima:v1 source identifier. "
+            "Use short core keywords; retry empty searches with a shorter term "
+            "or synonym and search other plausibly relevant listed bases. "
+            "Returns bounded, citable title + summary search evidence with an "
+            "ima:v1 source identifier. The local limit is not sent upstream. "
             "Read-only."
         ),
         parameters={
@@ -513,12 +516,13 @@ _TOOLS: dict[str, ToolSpec] = {
     "read_knowledge": ToolSpec(
         name="read_knowledge",
         description=(
-            "Read one knowledge item's text content by its exact media_id "
+            "Optionally upgrade one search hit to full-text evidence by its exact media_id "
             "(from search_knowledge) of a registered read-only knowledge "
             "source (currently 'ima', Tencent ima). Uses the official ima "
             "read chain (get_media_info; notes get_doc_content or the "
             "bounded official media URL). Bounded content with an ima:v1 "
-            "source identifier. Read-only."
+            "source identifier. A read failure does not invalidate the search "
+            "summary. Read-only."
         ),
         parameters={
             "type": "object",
@@ -599,6 +603,15 @@ def tool_call_fingerprint(tool_name: str, raw_arguments: str) -> str | None:
     validated = validated_tool_arguments(tool_name, raw_arguments)
     if validated is None:
         return None
+    if tool_name == "search_knowledge":
+        # Fingerprint the effective local search, not superficial JSON
+        # differences. Missing/default/clamped limits and harmless query
+        # whitespace/case must not bypass duplicate network-call protection.
+        validated = {
+            **validated,
+            "query": validated["query"].strip().casefold(),
+            "limit": min(max(1, int(validated.get("limit", 5))), 10),
+        }
     canonical = json.dumps(validated, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"{tool_name}:{canonical}"
 
@@ -709,6 +722,26 @@ def _truncate_result(result: dict[str, Any], redact_values: tuple[str, ...]) -> 
                     else:
                         high = middle - 1
                 return best
+    items = result.get("items")
+    if isinstance(items, list):
+        # Keep complete top-ranked list/search entries instead of turning an
+        # oversized result into an opaque string. Retrieval provenance and
+        # honest upstream page metadata remain machine-readable to the state machine.
+        preserved = {key: value for key, value in result.items() if key != "items"}
+        list_best: dict[str, Any] = {**preserved, "items": [], "truncated": True}
+        for candidate_item in items:
+            list_candidate = {
+                **preserved,
+                "items": [*list_best["items"], candidate_item],
+                "truncated": True,
+            }
+            if (
+                len(json.dumps(list_candidate, ensure_ascii=False, sort_keys=True))
+                > MAX_TOOL_RESULT_CHARS
+            ):
+                break
+            list_best = list_candidate
+        return list_best
     raw = json.dumps(result, ensure_ascii=False, sort_keys=True)
     bounded = sanitize_text(raw, None, MAX_TOOL_RESULT_CHARS, redact_values)
     return {"value": bounded, "truncated": True}

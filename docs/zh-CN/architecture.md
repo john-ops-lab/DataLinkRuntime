@@ -1,6 +1,6 @@
 # DLR（DataLinkRuntime）总体架构
 
-> 当前基线：`v0.1.0`（M5.11 已完成并通过最终人工验收）。
+> 当前基线：`v0.1.1`（包含 Issue #117 手工测试问题修复）。
 > 本文档描述当前已经实现的架构；历史阶段合同见 `docs/specs/README.md`、历史 Specs 与 Alembic migration。新任务的目标以当前明确授权的 GitHub Issue 为准。
 
 ## 1. 组件总览

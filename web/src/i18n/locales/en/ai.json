@@ -37,6 +37,7 @@
     "copyFailed": "Copy failed; select the text manually",
     "knowledgeSearch": {
       "label": "Knowledge search",
+      "developing": "In development",
       "available": "Read-only tools for the configured knowledge source are allowed this round",
       "unavailable": "Knowledge search is not enabled or configured; no external source will be contacted",
       "loading": "Checking knowledge capability…",

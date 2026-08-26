@@ -133,6 +133,7 @@ const STABLE_M57_CODES = [
   "ai_tool_unsupported",
   "ai_tool_limit_exceeded",
   "ai_tool_result_too_large",
+  "ks_full_text_unavailable",
 ] as const;
 
 function flattenKeys(value: object, prefix = ""): string[] {

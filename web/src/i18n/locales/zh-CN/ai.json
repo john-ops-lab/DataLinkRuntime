@@ -37,6 +37,7 @@
     "copyFailed": "复制失败，请手动选择文本",
     "knowledgeSearch": {
       "label": "知识库检索",
+      "developing": "开发中",
       "available": "本轮允许使用已配置知识源的只读检索工具",
       "unavailable": "知识库未启用或尚未配置；不会访问外部知识源",
       "loading": "正在检查知识库能力…",

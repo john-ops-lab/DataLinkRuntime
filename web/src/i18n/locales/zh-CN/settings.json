@@ -232,6 +232,7 @@
       "ks_response_invalid": "知识库服务返回了无法解析的响应",
       "ks_too_large": "知识库服务响应超过大小限制",
       "ks_unsupported": "知识库服务不支持该只读操作",
+      "ks_full_text_unavailable": "知识条目全文不可用，仍可使用搜索摘要",
       "ks_upstream_error": "知识库服务返回上游错误",
       "network_error": "无法连接控制服务",
       "unknown_error": "知识库连接验证失败"

@@ -54,6 +54,7 @@ KS_TIMEOUT = "ks_timeout"
 KS_RESPONSE_INVALID = "ks_response_invalid"
 KS_TOO_LARGE = "ks_too_large"
 KS_UNSUPPORTED = "ks_unsupported"
+KS_FULL_TEXT_UNAVAILABLE = "ks_full_text_unavailable"
 
 # --- Fixed result bounds (enforced before anything reaches the model/UI) ------
 
@@ -85,7 +86,7 @@ class KnowledgeBaseSummary:
     id: str
     name: str
     description: str
-    item_count: int
+    item_count: int | None
     source: str
 
 
@@ -97,6 +98,20 @@ class KnowledgeHit:
     title: str
     summary: str
     source: str
+
+
+@dataclass(frozen=True)
+class KnowledgeSearchResult:
+    """One bounded search page plus honest upstream page metadata.
+
+    ``hits`` contains only the locally retained top results.
+    ``returned_matches`` is the number returned in this response page, never
+    a fabricated all-pages total. Missing upstream ``is_end`` stays unknown.
+    """
+
+    hits: list[KnowledgeHit]
+    returned_matches: int
+    is_end: bool | None
 
 
 @dataclass(frozen=True)
@@ -123,7 +138,7 @@ class KnowledgeSource(ABC):
     @abstractmethod
     def search_knowledge(
         self, query: str, limit: int, knowledge_base_id: str
-    ) -> list[KnowledgeHit]:
+    ) -> KnowledgeSearchResult:
         """Search one knowledge base of this source; ``limit`` is already
         clamped by the tool. ``knowledge_base_id`` comes from
         :meth:`list_knowledge_bases` (the official ima API requires it)."""
@@ -204,6 +219,12 @@ def _bounded_int(value: object) -> int:
     return value
 
 
+def _bounded_opt_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _bounded_int(value)
+
+
 def _bounded_opt_str(value: object, max_chars: int) -> str:
     """Optional string field: empty strings allowed, oversized rejected."""
     if value is None:
@@ -272,7 +293,7 @@ def list_knowledge_bases(source_id: str, context: ToolContext | None) -> dict[st
                 "id": _bounded_str(item.id, MAX_KNOWLEDGE_FIELD_CHARS),
                 "name": _bounded_str(item.name, MAX_KNOWLEDGE_FIELD_CHARS),
                 "description": _bounded_opt_str(item.description, MAX_KNOWLEDGE_FIELD_CHARS),
-                "item_count": _bounded_int(item.item_count),
+                "item_count": _bounded_opt_int(item.item_count),
                 "source": _bounded_str(item.source, 128),
             }
         )
@@ -294,7 +315,15 @@ def search_knowledge(
     source = build_source(source_id, context)
     _to_result(source)
     _collect_redact_values(source, context)
-    hits = source.search_knowledge(query, limit, knowledge_base_id)
+    result = source.search_knowledge(query, limit, knowledge_base_id)
+    if not isinstance(result, KnowledgeSearchResult):
+        raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
+    hits = result.hits
+    returned_matches = _bounded_int(result.returned_matches)
+    if returned_matches < len(hits):
+        raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
+    if result.is_end is not None and not isinstance(result.is_end, bool):
+        raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
     payload: list[dict[str, Any]] = []
     for hit in hits:
         if not isinstance(hit, KnowledgeHit):
@@ -311,7 +340,8 @@ def search_knowledge(
         "tool": "search_knowledge",
         "query": query,
         "limit": limit,
-        "total_matches": len(payload),
+        "returned_matches": returned_matches,
+        "is_end": result.is_end,
         "items": payload,
     }
 

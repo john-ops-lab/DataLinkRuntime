@@ -382,6 +382,7 @@
     "ks_response_invalid": "The knowledge source returned an unparseable response",
     "ks_too_large": "The knowledge source response exceeds the size limit",
     "ks_unsupported": "The knowledge source does not support this read-only operation",
+    "ks_full_text_unavailable": "Full text is unavailable; search summaries remain usable",
     "ks_upstream_error": "The knowledge source returned an upstream error",
     "ai_not_configured": "AI model is not configured",
     "ai_credential_invalid": "The AI Credential is missing, invalid or not a Token",

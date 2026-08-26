@@ -1,6 +1,6 @@
 # DLR 历史 Specs 使用说明与现行性索引
 
-`docs/specs/` 保留了 DLR 各历史里程碑的详细设计和关键决策记录。**截至 `v0.1.0`，本目录没有正在执行的 Target Spec；目录内文件均不得单独视为当前产品合同。**
+`docs/specs/` 保留了 DLR 各历史里程碑的详细设计和关键决策记录。**截至 `v0.1.1`，本目录没有正在执行的 Target Spec；目录内文件均不得单独视为当前产品合同。**
 
 在 M5.4 之后，DLR 的用户侧产品模型发生过明显收敛：早期围绕 `Publish / Published Version / Production Version / Production Worker / Start / Stop` 的设计已不再是当前用户流程，但相关文档仍保留作为实现历史和底层决策参考。
 

@@ -233,6 +233,29 @@ it("keeps zh-CN / en display-name key parity", () => {
   expect(Object.keys(zhNames).sort()).toEqual(Object.keys(enNames).sort());
 });
 
+it("keeps knowledge search disabled while the feature is in development", async () => {
+  const capabilitySpy = vi.spyOn(api, "getAiKnowledgeCapability");
+  const assistSpy = vi
+    .spyOn(api, "assistAdapter")
+    .mockResolvedValue(aiResponse("普通回答。", []));
+  renderPanel();
+
+  const toggle = screen.getByRole("switch", { name: "知识库检索" });
+  expect((toggle as HTMLButtonElement).disabled).toBe(true);
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  expect(capabilitySpy).not.toHaveBeenCalled();
+
+  const control = screen.getByText("知识库检索").closest(".ai-knowledge-search-control");
+  expect(control).not.toBeNull();
+  fireEvent.mouseOver(control as HTMLElement);
+  expect((await screen.findByText("开发中")).textContent).toBe("开发中");
+
+  await sendQuestion("普通问题");
+  await screen.findByText("普通回答。");
+  const payload = assistSpy.mock.calls[0][1];
+  expect(payload.knowledge_search_enabled).toBeUndefined();
+});
+
 // --- knowledge round keeps the Wave A/B contracts -----------------------------
 
 it("renders a knowledge round with candidate=null and no raw payload echo", async () => {

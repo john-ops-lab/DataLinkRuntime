@@ -94,7 +94,6 @@ import type {
   AiConversationMessage,
   AiContextSnippet,
   AiToolCallSummary,
-  AiKnowledgeCapability,
 } from "../types";
 import { logSnippetTimeLabel } from "../unified-log";
 import { userErrorMessage } from "../user-message";
@@ -155,8 +154,6 @@ interface AssistRoundSnapshot {
   attachments: AiAttachment[];
   /** Display-only names frozen from the successful attachment snapshot. */
   attachmentNames: string[];
-  /** Knowledge search opt-in frozen for this round and its retries. */
-  knowledgeSearchEnabled: boolean;
   locale: string;
 }
 
@@ -519,10 +516,6 @@ function ComposerAttachmentArea(props: {
   supportedContentTypes: readonly string[];
   error: string | null;
   onErrorChange: (message: string | null) => void;
-  knowledgeCapability: AiKnowledgeCapability | null;
-  knowledgeCapabilityLoading: boolean;
-  knowledgeSearchEnabled: boolean;
-  onKnowledgeSearchChange: (enabled: boolean) => void;
   onSend: (text: string, attachments: readonly Attachment[]) => void;
 }) {
   const { t } = useTranslation(["ai"]);
@@ -639,28 +632,13 @@ function ComposerAttachmentArea(props: {
         role="toolbar"
         aria-label={t("assistant.composerActions")}
       >
-        <Tooltip
-          title={
-            props.knowledgeCapabilityLoading
-              ? t("assistant.knowledgeSearch.loading")
-              : props.knowledgeCapability?.available
-                ? t("assistant.knowledgeSearch.available")
-                : t("assistant.knowledgeSearch.unavailable")
-          }
-          trigger={["hover", "focus"]}
-        >
+        <Tooltip title={t("assistant.knowledgeSearch.developing")} trigger={["hover", "focus"]}>
           <span className="ai-knowledge-search-control">
             <Switch
               size="small"
-              checked={props.knowledgeSearchEnabled}
-              loading={props.knowledgeCapabilityLoading}
-              disabled={
-                props.disabled ||
-                props.knowledgeCapabilityLoading ||
-                props.knowledgeCapability?.available !== true
-              }
+              checked={false}
+              disabled
               aria-label={t("assistant.knowledgeSearch.label")}
-              onChange={props.onKnowledgeSearchChange}
             />
             <span>{t("assistant.knowledgeSearch.label")}</span>
           </span>
@@ -787,10 +765,6 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
   const [candidateDiff, setCandidateDiff] = useState<CandidateDiffState | null>(null);
   const [progressStage, setProgressStage] = useState<ProgressStage | null>(null);
   const [maximized, setMaximized] = useState(false);
-  const [knowledgeCapability, setKnowledgeCapability] =
-    useState<AiKnowledgeCapability | null>(null);
-  const [knowledgeCapabilityLoading, setKnowledgeCapabilityLoading] = useState(false);
-  const [knowledgeSearchEnabled, setKnowledgeSearchEnabled] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null);
   // Request correlation only: one UUID per mounted Adapter session, held in
   // React memory and deliberately never written to browser storage.
@@ -931,39 +905,6 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     };
   }, [adapterId, canUseAi, props.open]);
 
-  // Wave D: capability is metadata-only and ACL-checked by Control. The
-  // toggle remains off unless this round's adapter can use a configured,
-  // server-approved read-only knowledge source.
-  useEffect(() => {
-    if (!canUseAi || !props.open || adapterId === null) {
-      return;
-    }
-    let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- opening the panel starts an intentional capability load
-    setKnowledgeCapabilityLoading(true);
-    setKnowledgeSearchEnabled(false);
-    void api
-      .getAiKnowledgeCapability(adapterId)
-      .then((capability) => {
-        if (!cancelled) {
-          setKnowledgeCapability(capability);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setKnowledgeCapability({ available: false, reason: "knowledge_search_unavailable" });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setKnowledgeCapabilityLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [adapterId, canUseAi, props.open]);
-
   // M5.7 Wave B3: load the stable B2 capability table (limits + accepted MIME
   // types) while the panel is open. Fail-soft: the canonical B2 defaults keep
   // the upload UI bounded; the server remains the authoritative validator.
@@ -1014,8 +955,6 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     );
     void composerControlsRef.current?.clearAttachments();
     setAttachmentError(null);
-    setKnowledgeCapability(null);
-    setKnowledgeSearchEnabled(false);
   }, [props.adapter?.id]);
 
   /** M5.7 Wave B3: type predicate — the runtime's Attachment union nests the
@@ -1180,12 +1119,6 @@ async function resolveComposerAttachment(
         ...(snapshot.attachments.length === 0
           ? {}
           : { attachments: snapshot.attachments }),
-        // Keep the historical attachment-free/default request shape stable;
-        // the backend default is disabled and only an explicit opt-in needs
-        // to cross the wire.
-        ...(snapshot.knowledgeSearchEnabled
-          ? { knowledge_search_enabled: true }
-          : {}),
       });
       // The component is keyed by Adapter in App, and this explicit guard also
       // prevents a late response from committing across an Adapter switch.
@@ -1311,7 +1244,6 @@ async function resolveComposerAttachment(
       contextSnippetIds: props.contextSnippets.map(({ id }) => id),
       attachments,
       attachmentNames: attachments.map((attachment) => attachment.filename),
-      knowledgeSearchEnabled,
       locale: i18n.language,
     };
   }
@@ -2010,14 +1942,6 @@ async function resolveComposerAttachment(
               limits={attachmentLimits}
               supportedContentTypes={supportedContentTypes}
               error={attachmentError}
-              knowledgeCapability={knowledgeCapability}
-              knowledgeCapabilityLoading={knowledgeCapabilityLoading}
-              knowledgeSearchEnabled={knowledgeSearchEnabled}
-              onKnowledgeSearchChange={(enabled) => {
-                if (knowledgeCapability?.available === true) {
-                  setKnowledgeSearchEnabled(enabled);
-                }
-              }}
               onErrorChange={(message) => setAttachmentError(message)}
               onSend={(text, attachments) => void sendMessage(text, attachments)}
             />

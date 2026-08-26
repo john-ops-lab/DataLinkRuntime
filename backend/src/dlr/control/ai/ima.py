@@ -19,13 +19,16 @@ interface is implemented or registered:
 - ``list_knowledge_bases``:
     POST /openapi/wiki/v1/search_knowledge_base
       body {"query": "", "cursor": "", "limit": N}
-      -> data.info_list: [{kb_id, kb_name, cover_url}] (legacy id/name accepted)
+      -> data.info_list: [{kb_id, kb_name, cover_url, content_count?}]
+         (legacy id/name accepted; missing content_count remains unknown)
     optional enrichment: POST /openapi/wiki/v1/get_knowledge_base
       body {"ids": [...]} -> data.infos keyed by the normalized kb_id/id values from those ids
 - ``search_knowledge``:
     POST /openapi/wiki/v1/search_knowledge
       body {"query": ..., "cursor": "", "knowledge_base_id": ...}
       -> data.info_list: [{media_id, title, parent_folder_id, highlight_content}]
+      The official request has no limit field; DLR keeps the upstream order
+      and locally retains the requested top N within the 512 KiB page bound.
 - ``read_knowledge`` (official content read chain):
     POST /openapi/wiki/v1/get_media_info  body {"media_id": ...}
       -> data {media_type, url_info{url, headers}, notebook_ext_info{notebook_id}}
@@ -35,7 +38,8 @@ interface is implemented or registered:
            -> data.content
       2) url_info.url: bounded HTTPS fetch of the official media URL (with
          the returned headers); the URL host must be an official media host
-         (ima.qq.com / *.myqcloud.com) or an explicitly configured host.
+         (ima.qq.com / *.myqcloud.com / exact mp.weixin.qq.com) or an
+         explicitly configured host. WeChat is media-only, never an API host.
       3) neither -> stable ks_not_found (content not readable via the API).
 
 Credentials: the Client ID / API Key are stored in a DLR ``access_key``
@@ -59,6 +63,7 @@ import re
 import socket
 import time
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from http import client as http_client
 from typing import Any
 from urllib import error as url_error
@@ -75,6 +80,7 @@ from dlr.control.ai.knowledge import (
     KS_CONFIG_INVALID,
     KS_CREDENTIAL_INVALID,
     KS_DNS_FAILED,
+    KS_FULL_TEXT_UNAVAILABLE,
     KS_NOT_CONFIGURED,
     KS_NOT_FOUND,
     KS_RATE_LIMITED,
@@ -90,6 +96,7 @@ from dlr.control.ai.knowledge import (
     KnowledgeBaseSummary,
     KnowledgeHit,
     KnowledgeItem,
+    KnowledgeSearchResult,
     KnowledgeSource,
     KnowledgeSourceError,
 )
@@ -104,6 +111,10 @@ DEFAULT_OFFICIAL_BASE_URL = "https://ima.qq.com"
 
 # Official hosts that may be contacted directly (endpoint allowlist).
 DEFAULT_OFFICIAL_HOSTS = frozenset(("ima.qq.com",))
+# ``get_media_info`` may return a public WeChat article as the readable media
+# for an item.  This exact host is accepted only for the media-URL branch; it
+# is deliberately not an allowed ima API endpoint.
+OFFICIAL_MEDIA_EXACT_HOSTS = frozenset(("mp.weixin.qq.com",))
 # Official media-content hosts that get_media_info may return in url_info.url
 # (wildcard suffix match for the COS/CDN storage domain).
 OFFICIAL_MEDIA_HOST_SUFFIXES = (".myqcloud.com",)
@@ -121,6 +132,7 @@ MAX_KNOWLEDGE_RESPONSE_BYTES = 512 * 1024
 # Media-URL fetch bounds.
 MAX_MEDIA_HEADERS = 8
 MAX_MEDIA_HEADER_VALUE_CHARS = 512
+MAX_KNOWLEDGE_CONTENT_COUNT = 2_147_483_647
 
 # Official business error codes -> stable DLR codes. ``msg`` is never echoed.
 _BUSINESS_ERROR_CODES: dict[int, str] = {
@@ -131,8 +143,54 @@ _BUSINESS_ERROR_CODES: dict[int, str] = {
     110030: KS_AUTH_FAILED,  # 无权限
 }
 
+# These codes mean that a search result cannot be upgraded to full text only
+# when returned by the official get_media_info/get_doc_content read chain.
+# 210005 is NOTE_NOT_OWNER in the official skill mapping. 220030 was
+# live-observed in 2026-08 for subscribed-base get_media_info access and is not
+# claimed as a published API-wide contract.
+_FULL_TEXT_UNAVAILABLE_CODES = frozenset((210005, 220030))
+_FULL_TEXT_READ_PATHS = frozenset((PATH_GET_MEDIA_INFO, PATH_GET_DOC_CONTENT))
+
 _HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$")
 _HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_BLOCKED_MEDIA_HEADERS = frozenset(
+    (
+        "accept-encoding",
+        "connection",
+        "content-length",
+        "host",
+        "ima-openapi-apikey",
+        "ima-openapi-clientid",
+        "proxy-authorization",
+        "transfer-encoding",
+    )
+)
+_PUBLIC_MEDIA_AUTH_HEADERS = frozenset(("authorization", "cookie"))
+
+
+class _VisibleHTMLTextParser(HTMLParser):
+    """Extract visible UTF-8 text without executing or retaining markup."""
+
+    _SKIPPED_ELEMENTS = frozenset(("script", "style", "noscript", "svg"))
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_stack: list[str] = []
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        lowered = tag.casefold()
+        if lowered in self._SKIPPED_ELEMENTS:
+            self._skip_stack.append(lowered)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._skip_stack and tag.casefold() == self._skip_stack[-1]:
+            self._skip_stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_stack and data.strip():
+            self.parts.append(data)
 
 
 def _is_ip_literal(hostname: str) -> bool:
@@ -186,6 +244,7 @@ def _validate_http_url(
     allow_http: bool,
     allowed_hosts: frozenset[str],
     allow_query: bool,
+    allow_official_media_hosts: bool = False,
 ) -> str:
     """Validate one HTTPS URL against the official host allowlist (SSRF guard).
 
@@ -213,15 +272,28 @@ def _validate_http_url(
     hostname = parts.hostname.lower()
     if _is_ip_literal(hostname):
         raise KnowledgeSourceError(KS_CONFIG_INVALID, "knowledge source URL is invalid")
-    if not _media_host_allowed(hostname, allowed_hosts):
+    if not _host_allowed(
+        hostname,
+        allowed_hosts,
+        allow_official_media_hosts=allow_official_media_hosts,
+    ):
         raise KnowledgeSourceError(KS_CONFIG_INVALID, "knowledge source URL is not allowed")
     if parts.scheme == "http" and not allow_http:
         raise KnowledgeSourceError(KS_CONFIG_INVALID, "knowledge source URL must use HTTPS")
     return url
 
 
-def _media_host_allowed(hostname: str, allowed_hosts: frozenset[str]) -> bool:
+def _host_allowed(
+    hostname: str,
+    allowed_hosts: frozenset[str],
+    *,
+    allow_official_media_hosts: bool,
+) -> bool:
     if hostname in DEFAULT_OFFICIAL_HOSTS or hostname in allowed_hosts:
+        return True
+    if not allow_official_media_hosts:
+        return False
+    if hostname in OFFICIAL_MEDIA_EXACT_HOSTS:
         return True
     return any(hostname.endswith(suffix) for suffix in OFFICIAL_MEDIA_HOST_SUFFIXES)
 
@@ -276,6 +348,8 @@ class TencentImaKnowledgeSource(KnowledgeSource):
         url: str,
         headers: dict[str, str],
         payload: dict[str, Any] | None = None,
+        *,
+        full_text_read: bool = False,
     ) -> dict[str, Any]:
         """One bounded, sanitized JSON request.
 
@@ -347,9 +421,11 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             ) from None
         if not isinstance(parsed, dict):
             raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
-        return self._unwrap_envelope(parsed)
+        return self._unwrap_envelope(parsed, full_text_read=full_text_read)
 
-    def _unwrap_envelope(self, parsed: dict[str, Any]) -> dict[str, Any]:
+    def _unwrap_envelope(
+        self, parsed: dict[str, Any], *, full_text_read: bool = False
+    ) -> dict[str, Any]:
         """Validate the official ``{code, msg, data}`` envelope.
 
         Business errors (``code != 0``) map to stable ``ks_*`` codes; the
@@ -359,7 +435,11 @@ class TencentImaKnowledgeSource(KnowledgeSource):
         if not isinstance(code, int):
             raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
         if code != 0:
-            stable = _BUSINESS_ERROR_CODES.get(code, KS_UPSTREAM_ERROR)
+            stable = (
+                KS_FULL_TEXT_UNAVAILABLE
+                if full_text_read and code in _FULL_TEXT_UNAVAILABLE_CODES
+                else _BUSINESS_ERROR_CODES.get(code, KS_UPSTREAM_ERROR)
+            )
             raise KnowledgeSourceError(stable, "knowledge source upstream error")
         data = parsed.get("data")
         if not isinstance(data, dict):
@@ -367,7 +447,13 @@ class TencentImaKnowledgeSource(KnowledgeSource):
         return data
 
     def _call(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request_json("POST", f"{self.endpoint}{path}", self._headers(), payload)
+        return self._request_json(
+            "POST",
+            f"{self.endpoint}{path}",
+            self._headers(),
+            payload,
+            full_text_read=path in _FULL_TEXT_READ_PATHS,
+        )
 
     @staticmethod
     def _field(value: object, max_chars: int) -> str:
@@ -418,6 +504,59 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
         return items
 
+    @staticmethod
+    def _search_info_list(
+        data: dict[str, Any], field: str, limit: int
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return only the locally consumed top hits from one bounded page.
+
+        ima's official search request has no ``limit`` field and the live API
+        can return far more than DLR's 20-item listing bound.  The 512 KiB
+        wire bound is authoritative for the full page; after parsing it, only
+        the first local ``limit`` entries cross the normalization boundary.
+        Every entry must at least be an object so malformed tail data cannot
+        inflate the reported trajectory count. Only consumed entries undergo
+        the deeper field-level validation needed for normalization.
+        """
+        items = data.get(field)
+        if not isinstance(items, list):
+            raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
+        if any(not isinstance(item, dict) for item in items):
+            raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
+        return items[:limit], len(items)
+
+    def _search_page_is_end(self, data: dict[str, Any]) -> bool | None:
+        is_end = data.get("is_end")
+        if is_end is not None and not isinstance(is_end, bool):
+            raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
+        next_cursor = data.get("next_cursor")
+        if next_cursor is not None:
+            self._opt_field(next_cursor, MAX_KNOWLEDGE_FIELD_CHARS)
+        return is_end
+
+    @staticmethod
+    def _content_count(item: dict[str, Any] | None) -> int | None:
+        if item is None or "content_count" not in item or item.get("content_count") is None:
+            return None
+        value = item.get("content_count")
+        if isinstance(value, str):
+            # Live ima responses encode this field as a JSON decimal string.
+            # Only the canonical unsigned form is accepted: no signs,
+            # whitespace, fractions, leading zeroes or unbounded integers.
+            if not re.fullmatch(r"(?:0|[1-9][0-9]{0,9})", value):
+                raise KnowledgeSourceError(
+                    KS_RESPONSE_INVALID, "malformed knowledge source response"
+                )
+            value = int(value)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value > MAX_KNOWLEDGE_CONTENT_COUNT
+        ):
+            raise KnowledgeSourceError(KS_RESPONSE_INVALID, "malformed knowledge source response")
+        return value
+
     def list_knowledge_bases(self) -> list[KnowledgeBaseSummary]:
         """POST search_knowledge_base (empty query = all KBs) + optional
         get_knowledge_base description enrichment (official read flow)."""
@@ -427,7 +566,7 @@ class TencentImaKnowledgeSource(KnowledgeSource):
         )
         bases = self._info_list(data, "info_list")
         ids = [self._preferred_field(item, "kb_id", "id") for item in bases]
-        descriptions: dict[str, str] = {}
+        details: dict[str, dict[str, Any]] = {}
         if ids:
             # Enrichment is optional: a failed get_knowledge_base must not
             # fail the listing itself (names alone already identify the KBs).
@@ -436,10 +575,12 @@ class TencentImaKnowledgeSource(KnowledgeSource):
                 infos = info_data.get("infos")
                 if isinstance(infos, dict):
                     for key, info in infos.items():
-                        if isinstance(info, dict):
-                            descriptions[key] = self._opt_field(
-                                info.get("description"), MAX_KNOWLEDGE_FIELD_CHARS
-                            )
+                        if isinstance(key, str) and isinstance(info, dict):
+                            # Validate enrichment only when it is consumed;
+                            # the whole enrichment call remains optional.
+                            self._opt_field(info.get("description"), MAX_KNOWLEDGE_FIELD_CHARS)
+                            self._content_count(info)
+                            details[key] = info
             except KnowledgeSourceError:
                 logger.info(
                     "ai_knowledge ima op=list enrichment=skipped source=%s",
@@ -448,12 +589,20 @@ class TencentImaKnowledgeSource(KnowledgeSource):
         summaries: list[KnowledgeBaseSummary] = []
         for item in bases:
             item_id = self._preferred_field(item, "kb_id", "id")
+            detail = details.get(item_id)
+            item_count = self._content_count(item)
+            if item_count is None:
+                item_count = self._content_count(detail)
             summaries.append(
                 KnowledgeBaseSummary(
                     id=item_id,
                     name=self._preferred_field(item, "kb_name", "name"),
-                    description=descriptions.get(item_id, ""),
-                    item_count=0,
+                    description=(
+                        self._opt_field(detail.get("description"), MAX_KNOWLEDGE_FIELD_CHARS)
+                        if detail is not None
+                        else ""
+                    ),
+                    item_count=item_count,
                     source=self._src(item_id),
                 )
             )
@@ -461,13 +610,15 @@ class TencentImaKnowledgeSource(KnowledgeSource):
 
     def search_knowledge(
         self, query: str, limit: int, knowledge_base_id: str
-    ) -> list[KnowledgeHit]:
+    ) -> KnowledgeSearchResult:
         data = self._call(
             PATH_SEARCH_KNOWLEDGE,
             {"query": query, "cursor": "", "knowledge_base_id": knowledge_base_id},
         )
         hits: list[KnowledgeHit] = []
-        for item in self._info_list(data, "info_list")[:limit]:
+        items, returned_matches = self._search_info_list(data, "info_list", limit)
+        is_end = self._search_page_is_end(data)
+        for item in items:
             media_id = self._field(item.get("media_id"), MAX_KNOWLEDGE_FIELD_CHARS)
             hits.append(
                 KnowledgeHit(
@@ -479,7 +630,11 @@ class TencentImaKnowledgeSource(KnowledgeSource):
                     source=self._src(media_id),
                 )
             )
-        return hits
+        return KnowledgeSearchResult(
+            hits=hits,
+            returned_matches=returned_matches,
+            is_end=is_end,
+        )
 
     def read_knowledge(self, item_id: str) -> KnowledgeItem:
         """The official content read chain: get_media_info, then either the
@@ -535,8 +690,13 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             allow_http=self.allow_http,
             allowed_hosts=self.allowed_hosts,
             allow_query=True,
+            allow_official_media_hosts=True,
         )
-        headers = self._bounded_headers(raw_headers)
+        hostname = url_parse.urlsplit(validated_url).hostname
+        headers = self._bounded_headers(
+            raw_headers,
+            allow_origin_auth=hostname not in OFFICIAL_MEDIA_EXACT_HOSTS,
+        )
         deadline = time.monotonic() + self.timeout_seconds
         try:
             request = url_request.Request(validated_url, headers=headers, method="GET")
@@ -597,6 +757,7 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             not in (
                 "application/json",
                 "application/xml",
+                "application/xhtml+xml",
                 "application/markdown",
                 "application/x-markdown",
             )
@@ -610,6 +771,18 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             raise KnowledgeSourceError(
                 KS_UNSUPPORTED, "knowledge item content is not text-readable"
             ) from None
+        if media_type in ("text/html", "application/xhtml+xml"):
+            parser = _VisibleHTMLTextParser()
+            try:
+                parser.feed(text)
+                parser.close()
+            except (ValueError, RecursionError):
+                raise KnowledgeSourceError(
+                    KS_RESPONSE_INVALID, "malformed knowledge source response"
+                ) from None
+            text = " ".join(" ".join(parser.parts).split())
+            if len(text) > MAX_KNOWLEDGE_CONTENT_CHARS:
+                text = f"{text[: MAX_KNOWLEDGE_CONTENT_CHARS - 1]}…"
         return KnowledgeItem(
             id=item_id,
             title="",
@@ -617,8 +790,15 @@ class TencentImaKnowledgeSource(KnowledgeSource):
             source=self._src(item_id),
         )
 
-    def _bounded_headers(self, raw_headers: object) -> dict[str, str]:
-        """Bound server-provided media headers (name/value length + count)."""
+    def _bounded_headers(self, raw_headers: object, *, allow_origin_auth: bool) -> dict[str, str]:
+        """Bound official media headers without leaking DLR credentials.
+
+        ima/COS and explicitly configured media hosts may require an
+        upstream-provided Authorization or Cookie signature. Public WeChat
+        articles do not receive either. Hop-by-hop, host-routing, proxy auth,
+        ima OpenAPI auth, compression negotiation and any value containing
+        the actual DLR Client ID/API Key are always refused.
+        """
         if raw_headers is None:
             return {}
         if not isinstance(raw_headers, dict):
@@ -627,7 +807,14 @@ class TencentImaKnowledgeSource(KnowledgeSource):
         for name, value in raw_headers.items():
             if not isinstance(name, str) or not _HEADER_NAME_PATTERN.fullmatch(name):
                 continue
+            lowered_name = name.casefold()
+            if lowered_name in _BLOCKED_MEDIA_HEADERS:
+                continue
+            if not allow_origin_auth and lowered_name in _PUBLIC_MEDIA_AUTH_HEADERS:
+                continue
             if not isinstance(value, str) or len(value) > MAX_MEDIA_HEADER_VALUE_CHARS:
+                continue
+            if any(secret and secret in value for secret in self.auth.values()):
                 continue
             headers[name] = value
             if len(headers) >= MAX_MEDIA_HEADERS:
