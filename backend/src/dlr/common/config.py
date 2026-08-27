@@ -117,6 +117,40 @@ class Settings(BaseSettings):
         default=300, validation_alias="DLR_EXECUTION_TIMEOUT_SECONDS"
     )
 
+    # Issue #127 C0: these values are copied into every new Execution.  The
+    # cleanup budgets must remain shorter than the recovery grace period so a
+    # Worker has a bounded chance to report before Control reconciles it.
+    execution_claim_timeout_seconds: int = Field(
+        default=300,
+        ge=30,
+        le=86_400,
+        validation_alias="DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS",
+    )
+    execution_recovery_grace_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=3_600,
+        validation_alias="DLR_EXECUTION_RECOVERY_GRACE_SECONDS",
+    )
+    workspace_cleanup_attempt_timeout_seconds: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        validation_alias="DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS",
+    )
+    workspace_cleanup_total_timeout_seconds: int = Field(
+        default=20,
+        ge=5,
+        le=300,
+        validation_alias="DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS",
+    )
+    min_worker_protocol_version: int = Field(
+        default=1,
+        ge=1,
+        le=2,
+        validation_alias="DLR_MIN_WORKER_PROTOCOL_VERSION",
+    )
+
     # Issue #127 B0: physical ArtifactStore placement and lifecycle loops are
     # deployment concerns.  The managed-files flag remains disabled until the
     # later storage/Worker waves pass their release gates.
@@ -240,6 +274,21 @@ def validate_deployment_configuration(value: Settings) -> Settings:
         raise ValueError("DLR_ARTIFACT_GC_INTERVAL_SECONDS must be between 0 and 86400")
     if not 0 < value.artifact_audit_interval_seconds <= 604_800:
         raise ValueError("DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS must be between 0 and 604800")
+    if (
+        value.workspace_cleanup_attempt_timeout_seconds
+        > value.workspace_cleanup_total_timeout_seconds
+    ):
+        raise ValueError(
+            "DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS must not exceed "
+            "DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS"
+        )
+    if value.workspace_cleanup_total_timeout_seconds >= value.execution_recovery_grace_seconds:
+        raise ValueError(
+            "DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS must be less than "
+            "DLR_EXECUTION_RECOVERY_GRACE_SECONDS"
+        )
+    if value.min_worker_protocol_version not in {1, 2}:
+        raise ValueError("DLR_MIN_WORKER_PROTOCOL_VERSION must be 1 or 2")
     return value
 
 

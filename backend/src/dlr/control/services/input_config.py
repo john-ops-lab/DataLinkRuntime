@@ -45,6 +45,9 @@ class ResolvedInput:
     source_type: str
     revision: int
     snapshot: dict[str, Any]
+    # Internal-only IDs used by C0 to create runtime Leases.  They never
+    # participate in the public immutable snapshot.
+    artifact_ids: tuple[int, ...] = ()
 
 
 def _retention_response(config: AdapterInputConfig) -> InputRetention:
@@ -183,6 +186,7 @@ def _resolve_config(
                 "revision": config.revision,
                 "artifacts": snapshot_artifacts,
             },
+            artifact_ids=tuple(artifact.id for artifact in current),
         )
     if config.source_type not in {"none", "json"}:
         raise domain_error(

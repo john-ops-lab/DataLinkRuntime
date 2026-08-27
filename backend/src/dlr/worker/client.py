@@ -68,9 +68,17 @@ class ControlClient:
             raise ClientError(status, raw.decode(errors="replace"))
         return raw
 
-    def register(self, name: str, capabilities: list[str]) -> dict[str, Any]:
+    def register(
+        self, name: str, capabilities: list[str], *, protocol_version: int = 1
+    ) -> dict[str, Any]:
         raw = self._expect(
-            "POST", "/api/workers/register", {"name": name, "capabilities": capabilities}
+            "POST",
+            "/api/workers/register",
+            {
+                "name": name,
+                "capabilities": capabilities,
+                "protocol_version": protocol_version,
+            },
         )
         body: dict[str, Any] = json.loads(raw)
         return body

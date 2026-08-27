@@ -2,7 +2,7 @@
 
 from dlr.control.models.account import User, UserSession
 from dlr.control.models.adapter import Adapter, AdapterPermission, AdapterVersion
-from dlr.control.models.execution import Execution, Worker
+from dlr.control.models.execution import Execution, ExecutionInputArtifactLease, Worker
 from dlr.control.models.input_config import (
     AdapterInputConfig,
     AdapterInputRetentionMode,
@@ -50,6 +50,7 @@ __all__ = [
     "AiCustomProvider",
     "Credential",
     "Execution",
+    "ExecutionInputArtifactLease",
     "AdapterInputConfig",
     "AdapterInputRetentionMode",
     "AdapterInputSourceType",

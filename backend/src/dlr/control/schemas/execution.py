@@ -38,6 +38,14 @@ class ExecutionResponse(BaseModel):
     input_source_type: str
     input_config_revision: int
     input_snapshot: dict[str, Any]
+    timeout_seconds_snapshot: int | None = None
+    recovery_grace_seconds_snapshot: int | None = None
+    workspace_cleanup_attempt_timeout_seconds_snapshot: int | None = None
+    workspace_cleanup_total_timeout_seconds_snapshot: int | None = None
+    claim_deadline_at: datetime | None = None
+    execution_deadline_at: datetime | None = None
+    workspace_cleanup_status: Literal["completed", "deferred"] | None = None
+    workspace_cleanup_error_code: str | None = None
     output: Any = None
     output_size: int | None
     output_truncated: bool
@@ -71,6 +79,9 @@ class ExecutionResultReport(BaseModel):
     stderr: str = ""
     stderr_truncated: bool = False
     error: str | None = None
+    error_code: str | None = None
+    workspace_cleanup_status: Literal["completed", "deferred"] | None = None
+    workspace_cleanup_error_code: str | None = None
 
 
 class ProgressReport(BaseModel):
@@ -82,6 +93,14 @@ class ProgressReport(BaseModel):
 
     stdout_chunk: str = ""
     stderr_chunk: str = ""
+
+
+class WorkspaceCleanupReceipt(BaseModel):
+    """C0 wire shape for the later deferred-cleanup acknowledgement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["completed"] = "completed"
 
 
 class ProgressAck(BaseModel):

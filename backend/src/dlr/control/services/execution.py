@@ -8,15 +8,22 @@ appends and the cursor-paged execution history.
 import json
 import logging
 from collections import Counter
+from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.bigfields import truncate_utf8
-from dlr.common.config import settings
-from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
+from dlr.common.config import settings, validate_deployment_configuration
+from dlr.control.models import (
+    Adapter,
+    AdapterVersion,
+    Execution,
+    ExecutionInputArtifactLease,
+    Worker,
+)
 from dlr.control.schemas.execution import (
     ExecutionCreate,
     ExecutionResultReport,
@@ -27,6 +34,7 @@ from dlr.control.services import adapter_runtime, worker_availability
 from dlr.control.services.adapter import domain_error, resolve_runtime_worker
 from dlr.control.services.execution_cancellation import lock_execution, request_cancellation
 from dlr.control.services.locale import get_system_locale
+from dlr.control.services.worker_protocol import require_claim_token
 
 logger = logging.getLogger("dlr.control.execution")
 
@@ -55,6 +63,15 @@ def compact_json_bytes(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+def release_execution_leases(session: Session, execution_id: int) -> None:
+    """Release all file Leases for one locked Execution."""
+    session.execute(
+        delete(ExecutionInputArtifactLease).where(
+            ExecutionInputArtifactLease.execution_id == int(execution_id)
+        )
+    )
+
+
 def _create_execution_locked(
     session: Session,
     adapter: Adapter | None,
@@ -67,6 +84,7 @@ def _create_execution_locked(
     """Create one Execution while the caller owns the Adapter transaction lock."""
     from dlr.control.services.input_config import resolve_for_execution
 
+    validate_deployment_configuration(settings)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     if adapter.archived_at is not None:
@@ -102,6 +120,9 @@ def _create_execution_locked(
         adapter,
         now=worker_availability.current_time(session),
     )
+    from dlr.control.services.input_config import database_now
+
+    created_at = database_now(session)
     execution = Execution(
         adapter_id=adapter.id,
         version_id=adapter.latest_version_id,
@@ -111,12 +132,31 @@ def _create_execution_locked(
         input_source_type=resolved.source_type,
         input_config_revision=resolved.revision,
         input_snapshot=resolved.snapshot,
+        timeout_seconds_snapshot=adapter.timeout_seconds,
+        recovery_grace_seconds_snapshot=settings.execution_recovery_grace_seconds,
+        workspace_cleanup_attempt_timeout_seconds_snapshot=(
+            settings.workspace_cleanup_attempt_timeout_seconds
+        ),
+        workspace_cleanup_total_timeout_seconds_snapshot=settings.workspace_cleanup_total_timeout_seconds,
+        claim_deadline_at=created_at + timedelta(seconds=settings.execution_claim_timeout_seconds),
+        workspace_cleanup_status="completed",
         target_worker_id=worker.id,
         scheduled_for=scheduled_for,
         locale=get_system_locale(session),
+        created_at=created_at,
     )
     session.add(execution)
     session.flush()
+    if resolved.artifact_ids:
+        session.add_all(
+            ExecutionInputArtifactLease(
+                execution_id=execution.id,
+                artifact_id=artifact_id,
+                ordinal=ordinal,
+            )
+            for ordinal, artifact_id in enumerate(resolved.artifact_ids)
+        )
+        session.flush()
     return execution
 
 
@@ -208,7 +248,12 @@ def _cap_stream(value: str) -> tuple[str, bool]:
 
 
 def apply_result(
-    session: Session, worker_id: int, execution_id: int, report: ExecutionResultReport
+    session: Session,
+    worker_id: int,
+    execution_id: int,
+    report: ExecutionResultReport,
+    *,
+    claim_token: str | None = None,
 ) -> Execution:
     """Persist a terminal result reported by the owning Worker.
 
@@ -231,6 +276,8 @@ def apply_result(
     # Execution has already reached a terminal state.
     if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
+    if execution.claim_token_hash is not None:
+        require_claim_token(claim_token, execution.claim_token_hash)
     if execution.status != "running":
         # Already terminal: idempotent return. The row lock above guarantees a
         # concurrent second report from the same Worker observes the same
@@ -256,6 +303,16 @@ def apply_result(
     execution.stderr = stderr
     execution.stderr_truncated = stderr_truncated
     execution.error = report.error
+    execution.error_code = report.error_code
+    if execution.claim_token_hash is None:
+        execution.workspace_cleanup_status = "deferred"
+        execution.workspace_cleanup_error_code = "workspace_cleanup_legacy_unverified"
+    elif report.workspace_cleanup_status is not None:
+        execution.workspace_cleanup_status = report.workspace_cleanup_status
+        execution.workspace_cleanup_error_code = report.workspace_cleanup_error_code
+        if report.workspace_cleanup_status == "completed":
+            execution.workspace_cleanup_error_code = None
+    release_execution_leases(session, execution.id)
     # Both timestamps come from the database clock, so duration_ms never
     # mixes client and server clocks. The numeric expression is assignment-
     # cast to the BIGINT column by PostgreSQL.
@@ -285,7 +342,12 @@ def _append_stream(existing: str, already_truncated: bool, chunk: str) -> tuple[
 
 
 def apply_progress(
-    session: Session, worker_id: int, execution_id: int, report: ProgressReport
+    session: Session,
+    worker_id: int,
+    execution_id: int,
+    report: ProgressReport,
+    *,
+    claim_token: str | None = None,
 ) -> bool:
     """Append best-effort stdout/stderr chunks from the owning Worker.
 
@@ -309,6 +371,8 @@ def apply_progress(
         raise domain_error(404, "execution_not_found", "Execution not found")
     if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
+    if execution.claim_token_hash is not None:
+        require_claim_token(claim_token, execution.claim_token_hash)
     if execution.status != "running":
         # Terminal: drop the chunks, still answer the cancel flag.
         return execution.cancel_requested
@@ -340,6 +404,8 @@ def cancel_execution(session: Session, execution_id: int) -> Execution:
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
     request_cancellation(execution)
+    if execution.status == "cancelled":
+        release_execution_leases(session, execution.id)
     # Terminal states are never rewritten.
     session.commit()
     session.refresh(execution)

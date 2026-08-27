@@ -129,13 +129,13 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 10. C0 — Wave C Execution/Lease 与 Worker v1/v2 公共协议
 
-- [ ] 10.1 固定最小红灯：配置替换影响pending文件、v1领取文件、无Token下载/Result、stale Execution永久Lease；验证测试在C0前精确失败。
-- [ ] 10.2 新增 Execution snapshot/deadline/token-hash/cleanup字段、Worker protocol_version与Lease表约束/索引，并以数据库 active Lease 查询实现 B3 的删除保护 hook；migration/集成测试验证fresh/upgrade、nullable v1兼容、历史Execution不被改写，以及 protected 判定阻止 GC 状态迁移、Blob 删除和 charge 释放。
-- [ ] 10.3 扩展统一Execution创建事务以固定timeout/claim/recovery/cleanup快照和文件Lease；在真实 PostgreSQL 锁序下并发验证 GC与Execution创建竞争时要么先建Lease并阻止治理，要么先治理并使创建失败/重试，绝不删除 pending/running 所需 Blob；同时验证 attempt<=total<grace、数据库时钟deadline和后续配置不改变既有运行。
-- [ ] 10.4 扩展Worker register/claim/TaskPayload与最低协议门禁：缺失=1、v1仅none/json、v2文件任务；验证mixed pool不让旧Worker领取不可完成任务。
-- [ ] 10.5 在v2 claim行锁事务生成32-byte Claim/Cleanup Token、只存hash并定义Header校验依赖；constant-time/hash/API schema测试验证两类Token不可互换且不进入公开响应。
-- [ ] 10.6 新增Worker内部下载和cleanup receipt协议schema/路由骨架，锁定stable code与HTTP合同；契约测试验证非Worker入口和非法Header拒绝。
-- [ ] 10.7 运行C0 migration/protocol/lease/contract、数据库 Lease provider及真实 GC/Execution 创建竞争 targeted tests与Ruff/format/mypy；公共协议通过后才允许C1/C3并行。
+- [x] 10.1 固定最小红灯：配置替换影响pending文件、v1领取文件、无Token下载/Result、stale Execution永久Lease；验证测试在C0前精确失败。（A=FIXED_BASE实际4-fail；stale exact-base隔离2-fail；C0新增回归通过）
+- [x] 10.2 新增 Execution snapshot/deadline/token-hash/cleanup字段、Worker protocol_version与Lease表约束/索引，并以数据库 active Lease 查询实现 B3 的删除保护 hook；migration/集成测试验证fresh/upgrade、nullable v1兼容、历史Execution不被改写，以及 protected 判定阻止 GC 状态迁移、Blob 删除和 charge 释放。
+- [x] 10.3 扩展统一Execution创建事务以固定timeout/claim/recovery/cleanup快照和文件Lease；在真实 PostgreSQL 锁序下并发验证 GC与Execution创建竞争时要么先建Lease并阻止治理，要么先治理并使创建失败/重试，绝不删除 pending/running 所需 Blob；同时验证 attempt<=total<grace、数据库时钟deadline和后续配置不改变既有运行。
+- [x] 10.4 扩展Worker register/claim/TaskPayload与最低协议门禁：缺失=1、v1仅none/json、v2文件任务；验证mixed pool不让旧Worker领取不可完成任务。
+- [x] 10.5 在v2 claim行锁事务生成32-byte Claim/Cleanup Token、只存hash并定义Header校验依赖；constant-time/hash/API schema测试验证两类Token不可互换且不进入公开响应。
+- [x] 10.6 新增Worker内部下载和cleanup receipt协议schema/路由骨架，锁定stable code与HTTP合同；契约测试验证非Worker入口和非法Header拒绝。
+- [x] 10.7 运行C0 migration/protocol/lease/contract、数据库 Lease provider及真实 GC/Execution 创建竞争 targeted tests与Ruff/format/mypy；公共协议通过后才允许C1/C3并行。
 
 ## 11. C1 — Wave C Worker 下载、journal 与同步/延迟清理
 

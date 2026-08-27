@@ -23,6 +23,8 @@ from dlr.control.models import (
     AdapterInputArtifactBinding,
     AdapterInputConfig,
     ArtifactDeletionJob,
+    Execution,
+    ExecutionInputArtifactLease,
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
     ManagedInputCapacity,
@@ -138,16 +140,25 @@ def _artifact_expired(artifact: ManagedInputArtifact, now: datetime) -> bool:
 
 
 def has_active_artifact_lease(session: Session, artifact_id: int) -> bool:
-    """Default B3 protection hook; the C0 Lease provider is injected later.
+    """Return whether a pending/running Execution still leases an Artifact.
 
-    B3 deliberately does not create, inspect, or reference the C0 Lease
-    schema.  The hook remains a replaceable seam: C0 supplies a database-backed
-    provider through ``protection_hook`` once its Lease schema and lock order
-    exist.  Returning ``False`` here is the B3-only unprotected fixture, not a
-    claim that active Execution Leases have been queried.
+    ``claim_artifact_deletion`` locks the Artifact before calling this
+    provider.  Execution creation takes the same Artifact lock before adding
+    its Lease, so the provider participates in one PostgreSQL serialization
+    order rather than relying on an eventually consistent status check.
     """
-    _ = session, artifact_id
-    return False
+    return (
+        session.scalar(
+            select(ExecutionInputArtifactLease.execution_id)
+            .join(Execution, Execution.id == ExecutionInputArtifactLease.execution_id)
+            .where(
+                ExecutionInputArtifactLease.artifact_id == int(artifact_id),
+                Execution.status.in_(("pending", "running")),
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def _artifact_delete_due(
