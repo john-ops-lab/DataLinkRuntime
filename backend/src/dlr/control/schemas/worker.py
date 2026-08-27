@@ -72,7 +72,7 @@ class TaskInputFile(BaseModel):
     original_filename: str
     content_type: str
     size_bytes: int
-    sha256: str
+    sha256: str | None
 
 
 class TaskPayload(BaseModel):

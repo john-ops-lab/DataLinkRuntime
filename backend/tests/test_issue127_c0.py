@@ -106,12 +106,16 @@ def _materialize_blob(
 
 
 def _bind_artifact(client: TestClient, adapter_id: int, artifact_id: int) -> dict[str, Any]:
+    return _bind_artifacts(client, adapter_id, [artifact_id])
+
+
+def _bind_artifacts(client: TestClient, adapter_id: int, artifact_ids: list[int]) -> dict[str, Any]:
     response = client.put(
         f"/api/adapters/{adapter_id}/input-config",
         json={
             "expected_revision": 1,
             "source_type": "managed_files",
-            "artifact_ids": [artifact_id],
+            "artifact_ids": artifact_ids,
             "retention": {"mode": "system_default", "seconds": None},
         },
     )
@@ -238,6 +242,7 @@ def test_c0_execution_snapshot_and_v2_claim_credentials_are_immutable(
     assert execution["workspace_cleanup_attempt_timeout_seconds_snapshot"] == 5
     assert execution["workspace_cleanup_total_timeout_seconds_snapshot"] == 20
     assert execution["claim_deadline_at"] is not None
+    assert execution["workspace_cleanup_status"] is None
     assert "claim_token_hash" not in execution_response.text
     assert "cleanup_receipt_token_hash" not in execution_response.text
 
@@ -261,6 +266,106 @@ def test_c0_execution_snapshot_and_v2_claim_credentials_are_immutable(
         assert row.claim_token_hash != claim_token
         assert row.cleanup_receipt_token_hash != cleanup_token
         assert row.execution_deadline_at is not None
+
+
+def test_c0_v2_managed_files_claim_exposes_ordered_input_file_metadata(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    worker = _register_worker(api_client, "c0-managed-files-v2-worker", protocol_version=2)
+    adapter = create_adapter(api_client, name="c0-managed-files-v2")
+    save_version(api_client, adapter["id"])
+    first_id = _create_staged_artifact(session_factory, adapter["id"], "first.txt")
+    second_id = _create_staged_artifact(session_factory, adapter["id"], "second.txt")
+    _bind_artifacts(api_client, adapter["id"], [second_id, first_id])
+    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert execution.status_code == 202, execution.text
+
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+    payload = claimed.json()
+    assert payload["input"] is None
+    assert payload["input_files"] == [
+        {
+            "id": second_id,
+            "ordinal": 0,
+            "mount_name": "input-00",
+            "original_filename": "second.txt",
+            "content_type": "text/plain",
+            "size_bytes": 8,
+            "sha256": "a" * 64,
+        },
+        {
+            "id": first_id,
+            "ordinal": 1,
+            "mount_name": "input-01",
+            "original_filename": "first.txt",
+            "content_type": "text/plain",
+            "size_bytes": 8,
+            "sha256": "a" * 64,
+        },
+    ]
+
+
+def test_c0_task_payload_preserves_nullable_artifact_sha256(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy/corrupt metadata row keeps missing SHA-256 distinguishable."""
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    worker = _register_worker(api_client, "c0-nullable-sha-worker", protocol_version=2)
+    adapter = create_adapter(api_client, name="c0-nullable-sha")
+    save_version(api_client, adapter["id"])
+    artifact_id = _create_staged_artifact(session_factory, adapter["id"], "nullable.txt")
+    _bind_artifact(api_client, adapter["id"], artifact_id)
+    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert execution.status_code == 202, execution.text
+
+    with session_factory.begin() as session:
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        assert artifact is not None
+        artifact.sha256 = None
+
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["input_files"][0]["sha256"] is None
+
+
+def test_c0_v2_claim_without_historical_lease_stays_pending(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing pre-C0 Lease cannot publish running state or Token hashes."""
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    worker = _register_worker(api_client, "c0-missing-lease-worker", protocol_version=2)
+    adapter = create_adapter(api_client, name="c0-missing-lease")
+    save_version(api_client, adapter["id"])
+    artifact_id = _create_staged_artifact(session_factory, adapter["id"], "missing-lease.txt")
+    _bind_artifact(api_client, adapter["id"], artifact_id)
+    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert execution.status_code == 202, execution.text
+    execution_id = execution.json()["id"]
+
+    with session_factory.begin() as session:
+        removed = (
+            session.query(ExecutionInputArtifactLease).filter_by(execution_id=execution_id).delete()
+        )
+        assert removed == 1
+
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 409, claimed.text
+    assert claimed.json()["detail"]["code"] == "execution_input_lease_unavailable"
+    with session_factory() as session:
+        row = session.get(Execution, execution_id)
+        assert row is not None
+        assert row.status == "pending"
+        assert row.worker_id is None
+        assert row.claim_token_hash is None
+        assert row.cleanup_receipt_token_hash is None
 
 
 def test_c0_database_lease_provider_blocks_gc_state_blob_and_charge_release(
@@ -329,6 +434,27 @@ def test_c0_database_lease_provider_blocks_gc_state_blob_and_charge_release(
         assert deleted is not None and deleted.status == ManagedInputArtifactStatus.DELETED
         assert capacity is not None and capacity.actual_bytes == 0
         assert deleted_keys == [artifact.storage_key]
+
+
+def test_c0_v2_result_without_cleanup_report_is_deferred_unknown(
+    api_client: TestClient,
+) -> None:
+    worker = _register_worker(api_client, "c0-result-without-cleanup-worker", protocol_version=2)
+    adapter = create_adapter(api_client, name="c0-result-without-cleanup")
+    save_version(api_client, adapter["id"])
+    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert execution.status_code == 202, execution.text
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+
+    result = api_client.post(
+        f"/api/workers/{worker['id']}/executions/{execution.json()['id']}/result",
+        json={"status": "succeeded"},
+        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["workspace_cleanup_status"] == "deferred"
+    assert result.json()["workspace_cleanup_error_code"] == "workspace_cleanup_unknown"
 
 
 @pytest.mark.parametrize("stale_status", ["pending", "running"])

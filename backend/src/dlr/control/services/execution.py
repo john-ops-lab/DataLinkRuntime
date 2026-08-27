@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.bigfields import truncate_utf8
-from dlr.common.config import settings, validate_deployment_configuration
+from dlr.common.config import settings
 from dlr.control.models import (
     Adapter,
     AdapterVersion,
@@ -84,7 +84,6 @@ def _create_execution_locked(
     """Create one Execution while the caller owns the Adapter transaction lock."""
     from dlr.control.services.input_config import resolve_for_execution
 
-    validate_deployment_configuration(settings)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     if adapter.archived_at is not None:
@@ -139,7 +138,6 @@ def _create_execution_locked(
         ),
         workspace_cleanup_total_timeout_seconds_snapshot=settings.workspace_cleanup_total_timeout_seconds,
         claim_deadline_at=created_at + timedelta(seconds=settings.execution_claim_timeout_seconds),
-        workspace_cleanup_status="completed",
         target_worker_id=worker.id,
         scheduled_for=scheduled_for,
         locale=get_system_locale(session),
@@ -307,7 +305,10 @@ def apply_result(
     if execution.claim_token_hash is None:
         execution.workspace_cleanup_status = "deferred"
         execution.workspace_cleanup_error_code = "workspace_cleanup_legacy_unverified"
-    elif report.workspace_cleanup_status is not None:
+    elif report.workspace_cleanup_status is None:
+        execution.workspace_cleanup_status = "deferred"
+        execution.workspace_cleanup_error_code = "workspace_cleanup_unknown"
+    else:
         execution.workspace_cleanup_status = report.workspace_cleanup_status
         execution.workspace_cleanup_error_code = report.workspace_cleanup_error_code
         if report.workspace_cleanup_status == "completed":

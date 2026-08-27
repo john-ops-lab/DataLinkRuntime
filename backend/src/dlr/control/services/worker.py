@@ -191,13 +191,17 @@ def build_task_payload(
                 original_filename=artifact.original_filename,
                 content_type=artifact.content_type,
                 size_bytes=artifact.size_bytes,
-                sha256=artifact.sha256 or "",
+                sha256=artifact.sha256,
             )
             for lease, artifact in rows
         ]
         snapshot_artifacts = execution.input_snapshot.get("artifacts", [])
         if not isinstance(snapshot_artifacts, list) or len(input_files) != len(snapshot_artifacts):
-            raise RuntimeError("execution input Lease set is incomplete")
+            raise domain_error(
+                409,
+                "execution_input_lease_unavailable",
+                "Execution input Lease is unavailable",
+            )
     timeout_seconds = execution.timeout_seconds_snapshot or (
         adapter.timeout_seconds
         if adapter.timeout_seconds is not None
@@ -353,15 +357,23 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
                 else settings.execution_timeout_seconds
             )
         execution.execution_deadline_at = now + timedelta(seconds=timeout_seconds)
+    try:
+        # Build the response while the claim is still uncommitted. A historical
+        # managed-files row may predate the C0 Lease table; a structured
+        # rejection must leave it pending rather than publishing running state
+        # and Token hashes without a deliverable payload.
+        payload = build_task_payload(
+            session,
+            execution,
+            worker=worker,
+            claim_token=claim_token,
+            cleanup_token=cleanup_token,
+        )
+    except Exception:
+        session.rollback()
+        raise
     session.commit()
-    session.refresh(execution)
-    return build_task_payload(
-        session,
-        execution,
-        worker=worker,
-        claim_token=claim_token,
-        cleanup_token=cleanup_token,
-    )
+    return payload
 
 
 def claim_task(
