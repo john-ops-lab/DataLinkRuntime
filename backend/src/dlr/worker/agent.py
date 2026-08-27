@@ -235,6 +235,8 @@ class Agent:
             self._config.workspace_cleanup_journal_root,
             self._config.runtime_root,
             report_cleanup=report_cleanup,
+            scan_timeout_seconds=workspace_manager.RECOVERY_SCAN_TIMEOUT_SECONDS,
+            retry_backoff_seconds=workspace_manager.RECOVERY_RETRY_BACKOFF_SECONDS,
         )
         if counts["retained"] or counts["deferred"]:
             logger.info(

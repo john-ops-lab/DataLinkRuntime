@@ -146,7 +146,7 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 - [x] 11.5 实现同步清理attempt/total硬预算、有限退避/存在确认与Result cleanup字段；挂起删除注入验证总时长有界、业务成功不被cleanup失败覆盖。
 - [x] 11.6 实现journal启动/周期扫描与幂等receipt：只删名称+marker+manifest三重匹配Workspace，不删version依赖/未知目录；重启/响应丢失测试验证completed→completed后才删journal。
 - [x] 11.7 对Worker/Control日志和journal做敏感值扫描，验证Claim Token从不落盘、Cleanup Token仅在私有journal，用户文件名/input/Secret/output不入journal。
-- [x] 11.8 运行C1 Worker unit/integration/fault/timeout tests与静态Gate，在独立runtime/journal根证明可恢复清理后形成Candidate。（证据：`c1-green.txt` 17 passed；`worker-control-regression.txt` 166 passed；Ruff/format/mypy/OpenSpec strict/git diff --check 全部通过。）
+- [x] 11.8 运行C1 Worker unit/integration/fault/timeout tests与静态Gate，在独立runtime/journal根证明可恢复清理后形成Candidate。（证据：`repair-c1-full.txt` 21 passed；focused/fault/timeout 分别 9/7/3 passed；`repair-worker-control-regression.txt` 170 passed；Ruff/format/mypy/OpenSpec strict/git diff --check 全部通过。）
 
 ## 12. C2 — Wave C Python/JavaScript/Java Context 文件 API
 

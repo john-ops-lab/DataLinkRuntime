@@ -350,6 +350,57 @@ def test_c1_bad_download_never_starts_adapter(tmp_path: Path) -> None:
     assert not started.exists()
 
 
+def test_c1_oversized_stream_stops_at_declared_size_and_never_starts_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = tmp_path / "adapter-started"
+    expected = b"payload"
+    payload = _v2_payload(
+        code=(
+            "from pathlib import Path\n"
+            f"def handle(context, input):\n    Path({str(started)!r}).write_text('started')\n"
+            "    return {}\n"
+        ),
+        input_files=[
+            {
+                "id": 9,
+                "ordinal": 0,
+                "mount_name": "input-00",
+                "original_filename": "input.txt",
+                "content_type": "text/plain",
+                "size_bytes": len(expected),
+                "sha256": hashlib.sha256(expected).hexdigest(),
+            }
+        ],
+    )
+    overflow_seen = False
+
+    def oversized(_file: dict[str, Any], destination: Any) -> int:
+        nonlocal overflow_seen
+        destination.write(expected)
+        with pytest.raises(workspace_manager._InputSizeExceeded):
+            destination.write(b"x" * (1024 * 1024))
+        overflow_seen = True
+        return len(expected)
+
+    monkeypatch.setattr(
+        venv_manager,
+        "prepare_version_venv",
+        lambda *args, **kwargs: Path(sys.executable),
+    )
+    result = executor.run(
+        payload,
+        _runtime_settings(tmp_path / "runtime", tmp_path / "journal"),
+        input_downloader=oversized,
+    )
+
+    assert overflow_seen
+    assert result["status"] == "failed"
+    assert result["error_code"] == "input_artifact_checksum_mismatch"
+    assert not started.exists()
+
+
 def test_c1_v1_executor_report_keeps_legacy_cleanup_shape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -594,7 +645,10 @@ def test_c1_journal_failure_prevents_workspace_download_and_process(
     assert not (tmp_path / "runtime" / "workspaces").exists()
 
 
-def test_c1_interrupted_download_never_starts_adapter(tmp_path: Path) -> None:
+def test_c1_interrupted_download_never_starts_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     started = tmp_path / "started"
     payload = _v2_payload(
         code=(
@@ -619,6 +673,15 @@ def test_c1_interrupted_download_never_starts_adapter(tmp_path: Path) -> None:
         destination.write(b"part")
         raise OSError("connection interrupted")
 
+    cleanup_calls = 0
+    original_cleanup = workspace_manager.cleanup_workspace
+
+    def count_cleanup(path: Path, **kwargs: Any) -> workspace_manager.CleanupOutcome:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return original_cleanup(path, **kwargs)
+
+    monkeypatch.setattr(workspace_manager, "cleanup_workspace", count_cleanup)
     result = executor.run(
         payload,
         _runtime_settings(tmp_path / "runtime", tmp_path / "journal"),
@@ -627,6 +690,7 @@ def test_c1_interrupted_download_never_starts_adapter(tmp_path: Path) -> None:
     assert result["status"] == "failed"
     assert result["error_code"] == "input_artifact_not_ready"
     assert result["workspace_cleanup_status"] == "completed"
+    assert cleanup_calls == 1
     assert not started.exists()
     assert not (tmp_path / "runtime" / "workspaces" / "dlr-exec-1").exists()
 
@@ -804,6 +868,147 @@ def test_c1_recovery_requires_name_marker_manifest_triple_and_receipt(
     assert unknown.exists()
     assert workspace_manager.journal_path(journal_root, 2).exists()
     assert (version_cache / "keep").exists()
+
+
+def test_c1_recovery_scan_budget_bounds_claim_delay_and_keeps_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
+    config = agent_module.WorkerConfig()
+    layout = workspace_manager.create_workspace(config.runtime_root, 1)
+    workspace_manager.prepare_input_files(layout, [], None)
+    journal = workspace_manager.write_cleanup_journal(
+        config.workspace_cleanup_journal_root,
+        1,
+        layout.root,
+        "cleanup-token-scan-budget",
+    )
+    entered = Event()
+    release = Event()
+    finished = Event()
+
+    def stuck_cleanup(path: Path, **kwargs: Any) -> workspace_manager.CleanupOutcome:
+        entered.set()
+        release.wait(timeout=2)
+        finished.set()
+        return workspace_manager.CleanupOutcome("deferred", "workspace_cleanup_failed")
+
+    monkeypatch.setattr(workspace_manager, "cleanup_workspace", stuck_cleanup)
+    monkeypatch.setattr(workspace_manager, "RECOVERY_SCAN_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(workspace_manager, "RECOVERY_RETRY_BACKOFF_SECONDS", 0.2)
+    claim_times: list[float] = []
+    agent_holder: dict[str, agent_module.Agent] = {}
+
+    class FakeClient:
+        def claim(self, _worker_id: int, _wait_seconds: int) -> None:
+            claim_times.append(time.monotonic())
+            agent_holder["agent"].request_stop()
+            return None
+
+    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
+    agent_holder["agent"] = agent
+    started = time.monotonic()
+    agent._claim_loop(7)
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert entered.wait(timeout=1)
+    assert finished.wait(timeout=1)
+    assert claim_times
+    assert claim_times[0] - started < 0.5
+    assert elapsed < 0.5
+    assert journal.exists()
+
+
+def test_c1_recovery_receipt_rejection_has_persistent_bounded_backoff(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    journal_root = tmp_path / "journal"
+    layout = workspace_manager.create_workspace(runtime_root, 1)
+    workspace_manager.prepare_input_files(layout, [], None)
+    journal = workspace_manager.write_cleanup_journal(
+        journal_root,
+        1,
+        layout.root,
+        "cleanup-token-retry",
+    )
+    receipts: list[tuple[int, str]] = []
+
+    def reject(execution_id: int, token: str) -> bool:
+        receipts.append((execution_id, token))
+        return False
+
+    first = workspace_manager.recover_cleanup_journals(
+        journal_root,
+        runtime_root,
+        report_cleanup=reject,
+        scan_timeout_seconds=1,
+        retry_backoff_seconds=0.2,
+    )
+    second = workspace_manager.recover_cleanup_journals(
+        journal_root,
+        runtime_root,
+        report_cleanup=reject,
+        scan_timeout_seconds=1,
+        retry_backoff_seconds=0.2,
+    )
+    time.sleep(0.25)
+    third = workspace_manager.recover_cleanup_journals(
+        journal_root,
+        runtime_root,
+        report_cleanup=reject,
+        scan_timeout_seconds=1,
+        retry_backoff_seconds=0.2,
+    )
+
+    assert first == {"inspected": 1, "completed": 0, "deferred": 1, "retained": 0}
+    assert second == {"inspected": 1, "completed": 0, "deferred": 0, "retained": 0}
+    assert third == {"inspected": 1, "completed": 0, "deferred": 1, "retained": 0}
+    assert receipts == [(1, "cleanup-token-retry"), (1, "cleanup-token-retry")]
+    assert journal.exists()
+    assert not layout.root.exists()
+
+
+def test_c1_recovery_receipt_timeout_keeps_journal_and_scan_bounded(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    journal_root = tmp_path / "journal"
+    layout = workspace_manager.create_workspace(runtime_root, 1)
+    workspace_manager.prepare_input_files(layout, [], None)
+    journal = workspace_manager.write_cleanup_journal(
+        journal_root,
+        1,
+        layout.root,
+        "cleanup-token-timeout",
+    )
+    entered = Event()
+    release = Event()
+
+    def stuck_receipt(_execution_id: int, _token: str) -> bool:
+        entered.set()
+        release.wait(timeout=2)
+        return False
+
+    started = time.monotonic()
+    counts = workspace_manager.recover_cleanup_journals(
+        journal_root,
+        runtime_root,
+        report_cleanup=stuck_receipt,
+        scan_timeout_seconds=0.05,
+        retry_backoff_seconds=0.2,
+    )
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert entered.wait(timeout=1)
+    assert counts == {"inspected": 1, "completed": 0, "deferred": 1, "retained": 0}
+    assert elapsed < 0.5
+    assert journal.exists()
+    assert not layout.root.exists()
 
 
 def test_c1_journal_contains_only_recovery_fields_and_no_claim_or_user_data(

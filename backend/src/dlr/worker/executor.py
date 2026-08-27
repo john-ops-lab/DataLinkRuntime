@@ -821,6 +821,7 @@ def run(
     cancelled = False
     returncode = 0
     cleanup_outcome = workspace_manager.CleanupOutcome("deferred", "workspace_cleanup_failed")
+    cleanup_attempted = False
     try:
         try:
             if language == "python":
@@ -854,6 +855,7 @@ def run(
             workspace_manager.prepare_input_files(layout, raw_input_files, input_downloader)
         except (workspace_manager.InputPreparationError, workspace_manager.WorkspaceError) as error:
             logger.warning("input preparation failed for execution %s", execution_id)
+            cleanup_attempted = True
             cleanup_outcome = workspace_manager.cleanup_workspace(
                 workspace,
                 attempt_timeout_seconds=attempt_timeout,
@@ -891,11 +893,13 @@ def run(
             output_file = workspace / "output.json"
             output_raw = output_file.read_bytes() if output_file.exists() else None
     finally:
-        cleanup_outcome = workspace_manager.cleanup_workspace(
-            workspace,
-            attempt_timeout_seconds=attempt_timeout,
-            total_timeout_seconds=total_timeout,
-        )
+        if not cleanup_attempted:
+            cleanup_attempted = True
+            cleanup_outcome = workspace_manager.cleanup_workspace(
+                workspace,
+                attempt_timeout_seconds=attempt_timeout,
+                total_timeout_seconds=total_timeout,
+            )
 
     cleanup_fields = {
         "workspace_cleanup_status": cleanup_outcome.status,

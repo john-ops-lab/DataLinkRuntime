@@ -39,6 +39,13 @@ JOURNAL_NAME_PATTERN = re.compile(r"([1-9][0-9]*)\.json\Z")
 MOUNT_NAME_PATTERN = re.compile(r"input-([0-9]{2})\Z")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
+# Recovery runs in the claim loop, so one scan must not monopolize the loop
+# behind a slow filesystem or Control response.  Retry timing is kept in the
+# journal inode metadata rather than its schema, which must remain the exact
+# four recovery fields below.
+RECOVERY_SCAN_TIMEOUT_SECONDS = 5.0
+RECOVERY_RETRY_BACKOFF_SECONDS = 60.0
+
 # Keep this list deliberately small.  A journal must never become a general
 # task snapshot or a convenient place to retain user data.
 JOURNAL_FIELDS = frozenset({"execution_id", "protocol_version", "workspace_path", "cleanup_token"})
@@ -231,6 +238,18 @@ def write_cleanup_journal(
         )
     except OSError as error:
         raise WorkspaceError("workspace_cleanup_failed") from error
+    # A newly-created journal is immediately eligible for its first recovery
+    # attempt.  Later deferred attempts move the mtime forward and therefore
+    # retain the retry backoff across Worker restarts without adding fields to
+    # the private journal contract.
+    try:
+        initial_mtime = time.time() - RECOVERY_RETRY_BACKOFF_SECONDS
+        os.utime(target, (initial_mtime, initial_mtime), follow_symlinks=False)
+        _sync_directory(root)
+    except OSError:
+        # The durable journal is still safe to retry early if mtime updates
+        # are unavailable on the mounted filesystem.
+        pass
     return target
 
 
@@ -298,14 +317,19 @@ def create_workspace(
 class _HashingWriter:
     """Bounded adapter around a binary file used during input streaming."""
 
-    def __init__(self, stream: Any) -> None:
+    def __init__(self, stream: Any, expected_size: int) -> None:
         self._stream = stream
+        self._expected_size = expected_size
         self.size = 0
         self.digest = hashlib.sha256()
+        self.exceeded = False
 
     def write(self, data: bytes) -> int:
         if not isinstance(data, bytes):
             raise TypeError("input downloader must write bytes")
+        if self.size + len(data) > self._expected_size:
+            self.exceeded = True
+            raise _InputSizeExceeded
         written = self._stream.write(data)
         if written is None:
             written = len(data)
@@ -314,6 +338,10 @@ class _HashingWriter:
         self.size += written
         self.digest.update(data)
         return int(written)
+
+
+class _InputSizeExceeded(Exception):
+    """The downloader attempted to write beyond its declared byte budget."""
 
 
 def _input_descriptor(value: object, expected_ordinal: int) -> dict[str, Any]:
@@ -364,10 +392,15 @@ def prepare_input_files(
         stream: BinaryIO | None = None
         try:
             stream = _open_input_destination(target)
-            hashing = _HashingWriter(stream)
+            hashing = _HashingWriter(stream, int(descriptor["size_bytes"]))
             assert downloader is not None
             try:
                 downloader(descriptor, hashing)
+            except _InputSizeExceeded:
+                # The writer has already stopped the over-limit write.  Flush
+                # and hash the bytes accepted so the final size/SHA check
+                # below still determines the stable failure code.
+                pass
             except InputPreparationError:
                 raise
             except Exception as error:
@@ -388,7 +421,11 @@ def prepare_input_files(
             raise InputPreparationError("input_artifact_not_ready") from error
         else:
             stream.close()
-        if actual_size != int(descriptor["size_bytes"]) or actual_sha != descriptor["sha256"]:
+        if (
+            hashing.exceeded
+            or actual_size != int(descriptor["size_bytes"])
+            or actual_sha != descriptor["sha256"]
+        ):
             target.unlink(missing_ok=True)
             raise InputPreparationError("input_artifact_checksum_mismatch")
         try:
@@ -518,6 +555,86 @@ def cleanup_workspace(
     return CleanupOutcome("deferred", "workspace_cleanup_failed")
 
 
+def _bounded_workspace_cleanup(
+    workspace: Path,
+    *,
+    attempt_timeout_seconds: float,
+    total_timeout_seconds: float,
+    timeout_seconds: float,
+) -> CleanupOutcome:
+    """Keep one recovery item from exceeding the scan's remaining budget."""
+    outcome_holder: list[CleanupOutcome] = []
+    error_holder: list[BaseException] = []
+
+    def run_cleanup() -> None:
+        try:
+            outcome_holder.append(
+                cleanup_workspace(
+                    workspace,
+                    attempt_timeout_seconds=attempt_timeout_seconds,
+                    total_timeout_seconds=total_timeout_seconds,
+                )
+            )
+        except BaseException as error:  # pragma: no cover - thread handoff
+            error_holder.append(error)
+
+    thread = threading.Thread(target=run_cleanup, name="dlr-recovery-cleanup", daemon=True)
+    try:
+        thread.start()
+    except BaseException:
+        return CleanupOutcome("deferred", "workspace_cleanup_failed")
+    thread.join(max(0.0, timeout_seconds))
+    if thread.is_alive() or error_holder or not outcome_holder:
+        return CleanupOutcome("deferred", "workspace_cleanup_failed")
+    return outcome_holder[0]
+
+
+def _bounded_cleanup_receipt(
+    report_cleanup: CleanupReporter,
+    execution_id: int,
+    cleanup_token: str,
+    timeout_seconds: float,
+) -> bool:
+    """Bound a recovery receipt call without dropping its journal."""
+    result_holder: list[bool] = []
+
+    def report() -> None:
+        try:
+            result_holder.append(bool(report_cleanup(execution_id, cleanup_token)))
+        except Exception:  # noqa: BLE001 - retryable recovery transport failure
+            result_holder.append(False)
+
+    thread = threading.Thread(target=report, name="dlr-recovery-receipt", daemon=True)
+    try:
+        thread.start()
+    except BaseException:
+        return False
+    thread.join(max(0.0, timeout_seconds))
+    return not thread.is_alive() and bool(result_holder and result_holder[0])
+
+
+def _journal_retry_due(path: Path, now: float, backoff_seconds: float) -> bool:
+    info = _lstat(path)
+    return info is not None and now >= info.st_mtime + backoff_seconds
+
+
+def _defer_journal_retry(path: Path, execution_id: int) -> None:
+    """Persist the next retry boundary without changing journal contents."""
+    try:
+        now = time.time()
+        os.utime(path, (now, now), follow_symlinks=False)
+        _sync_directory(path.parent)
+        logger.info(
+            "cleanup journal deferred for execution %s; retry backoff persisted",
+            execution_id,
+        )
+    except OSError:
+        logger.warning(
+            "cleanup journal deferred for execution %s; retry backoff persistence unavailable",
+            execution_id,
+        )
+
+
 def _read_json(path: Path) -> object | None:
     if not _is_regular(path):
         return None
@@ -611,12 +728,32 @@ def recover_cleanup_journals(
     report_cleanup: CleanupReporter | None = None,
     attempt_timeout_seconds: float = 5.0,
     total_timeout_seconds: float = 20.0,
+    scan_timeout_seconds: float = RECOVERY_SCAN_TIMEOUT_SECONDS,
+    retry_backoff_seconds: float = RECOVERY_RETRY_BACKOFF_SECONDS,
 ) -> dict[str, int]:
     """Recover only journaled, triple-matched workspaces.
 
     Unknown directories and malformed journals are retained.  Counts are safe
     operational facts and contain no filenames, tokens, or file contents.
     """
+    try:
+        scan_budget = (
+            float(scan_timeout_seconds)
+            if math.isfinite(float(scan_timeout_seconds)) and float(scan_timeout_seconds) > 0
+            else RECOVERY_SCAN_TIMEOUT_SECONDS
+        )
+    except (TypeError, ValueError):
+        scan_budget = RECOVERY_SCAN_TIMEOUT_SECONDS
+    try:
+        retry_backoff = (
+            float(retry_backoff_seconds)
+            if math.isfinite(float(retry_backoff_seconds)) and float(retry_backoff_seconds) > 0
+            else RECOVERY_RETRY_BACKOFF_SECONDS
+        )
+    except (TypeError, ValueError):
+        retry_backoff = RECOVERY_RETRY_BACKOFF_SECONDS
+    deadline = time.monotonic() + scan_budget
+    budget_exhausted = False
     root = Path(journal_root)
     if not root.is_absolute() or not _is_directory(root):
         return {"inspected": 0, "completed": 0, "deferred": 0, "retained": 0}
@@ -630,6 +767,9 @@ def recover_cleanup_journals(
     except OSError:
         return counts
     for candidate in candidates:
+        if time.monotonic() >= deadline:
+            budget_exhausted = True
+            break
         match = JOURNAL_NAME_PATTERN.fullmatch(candidate.name)
         if match is None or not _is_regular(candidate):
             continue
@@ -651,23 +791,48 @@ def recover_cleanup_journals(
             counts["retained"] += 1
             logger.warning("retained unverified workspace for execution %s", execution_id)
             continue
-        outcome = cleanup_workspace(
+        if not _journal_retry_due(candidate, time.time(), retry_backoff):
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            budget_exhausted = True
+            break
+        outcome = _bounded_workspace_cleanup(
             workspace,
-            attempt_timeout_seconds=attempt_timeout_seconds,
-            total_timeout_seconds=total_timeout_seconds,
+            attempt_timeout_seconds=min(attempt_timeout_seconds, remaining),
+            total_timeout_seconds=min(total_timeout_seconds, remaining),
+            timeout_seconds=remaining,
         )
         if outcome.status != "completed":
             counts["deferred"] += 1
+            _defer_journal_retry(candidate, execution_id)
+            if time.monotonic() >= deadline:
+                budget_exhausted = True
+                break
             continue
         if report_cleanup is None:
             counts["retained"] += 1
             continue
-        try:
-            receipt_accepted = report_cleanup(execution_id, str(record["cleanup_token"]))
-        except Exception:  # noqa: BLE001 - recovery retries on the next scan
-            receipt_accepted = False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            counts["deferred"] += 1
+            _defer_journal_retry(candidate, execution_id)
+            budget_exhausted = True
+            break
+        receipt_accepted = _bounded_cleanup_receipt(
+            report_cleanup,
+            execution_id,
+            str(record["cleanup_token"]),
+            remaining,
+        )
         if receipt_accepted and remove_cleanup_journal(root, execution_id):
             counts["completed"] += 1
         else:
-            counts["retained"] += 1
+            counts["deferred"] += 1
+            _defer_journal_retry(candidate, execution_id)
+            if time.monotonic() >= deadline:
+                budget_exhausted = True
+                break
+    if budget_exhausted:
+        logger.info("workspace cleanup scan reached its bounded time budget")
     return counts
