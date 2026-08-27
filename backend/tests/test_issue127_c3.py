@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -21,6 +22,7 @@ from dlr.control.models import (
     ManagedInputUploadReservation,
     Worker,
 )
+from dlr.control.schemas.execution import ExecutionResponse
 from dlr.control.services import execution_reconciler
 from test_adapters import create_adapter, save_version
 
@@ -115,6 +117,41 @@ def _mark_stale(
             execution.execution_deadline_at = FIXED_NOW - timedelta(minutes=5)
 
 
+def test_c3_execution_response_requires_explicit_nullable_error_code(
+    api_client: TestClient,
+) -> None:
+    worker = _register_worker(api_client, "c3-response-schema-worker")
+    adapter = create_adapter(api_client, name="c3-response-schema")
+    save_version(api_client, adapter["id"])
+    execution = _create_execution(api_client, adapter["id"])
+
+    pending_response = api_client.get(f"/api/executions/{execution['id']}")
+    assert pending_response.status_code == 200, pending_response.text
+    pending_body = pending_response.json()
+    assert pending_body["error_code"] is None
+    assert ExecutionResponse.model_validate(pending_body).error_code is None
+
+    missing_error_code = dict(pending_body)
+    del missing_error_code["error_code"]
+    with pytest.raises(ValidationError) as error_info:
+        ExecutionResponse.model_validate(missing_error_code)
+    assert any(
+        error["loc"] == ("error_code",) and error["type"] == "missing"
+        for error in error_info.value.errors()
+    )
+
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+    result = api_client.post(
+        f"/api/workers/{worker['id']}/executions/{execution['id']}/result",
+        json={"status": "failed", "error_code": "business_code"},
+        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["error_code"] == "business_code"
+    assert ExecutionResponse.model_validate(result.json()).error_code == "business_code"
+
+
 def test_c3_red_high_risk_stale_paths_are_not_silent(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
@@ -202,6 +239,79 @@ def test_c3_stale_pending_releases_a_live_input_lease(
             )
             is None
         )
+
+
+def test_c3_reconciler_continues_across_postgres_batches_without_duplicates(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real PostgreSQL SKIP LOCKED batches continue until every Lease is released."""
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    execution_ids: list[int] = []
+    for index in range(3):
+        adapter = create_adapter(api_client, name=f"c3-batch-{index}")
+        save_version(api_client, adapter["id"])
+        artifact_id = _create_staged_artifact(session_factory, adapter["id"], f"batch-{index}.txt")
+        _bind_artifact(api_client, adapter["id"], artifact_id)
+        execution = _create_execution(api_client, adapter["id"])
+        execution_ids.append(execution["id"])
+        _mark_stale(session_factory, execution["id"])
+
+    batch_size = 2
+    with session_factory() as session:
+        assert (
+            session.query(ExecutionInputArtifactLease)
+            .filter(ExecutionInputArtifactLease.execution_id.in_(execution_ids))
+            .count()
+            == 3
+        )
+        first = execution_reconciler.reconcile_stale_executions(
+            session, now=FIXED_NOW, batch_size=batch_size
+        )
+        assert first.scanned == batch_size
+        assert first.reconciled == batch_size
+        assert first.pending_failed == batch_size
+
+    with session_factory() as session:
+        rows = session.scalars(select(Execution).where(Execution.id.in_(execution_ids))).all()
+        assert sum(row.status == "failed" for row in rows) == batch_size
+        assert sum(row.status == "pending" for row in rows) == 1
+        assert (
+            session.query(ExecutionInputArtifactLease)
+            .filter(ExecutionInputArtifactLease.execution_id.in_(execution_ids))
+            .count()
+            == 1
+        )
+
+    with session_factory() as session:
+        second = execution_reconciler.reconcile_stale_executions(
+            session, now=FIXED_NOW, batch_size=batch_size
+        )
+        assert second.scanned == 1
+        assert second.reconciled == 1
+        assert second.pending_failed == 1
+
+    with session_factory() as session:
+        third = execution_reconciler.reconcile_stale_executions(
+            session, now=FIXED_NOW, batch_size=batch_size
+        )
+        assert third.scanned == 0
+        assert third.reconciled == 0
+        rows = session.scalars(select(Execution).where(Execution.id.in_(execution_ids))).all()
+        assert len(rows) == len(execution_ids)
+        assert all(row.status == "failed" for row in rows)
+        assert all(row.error_code == "worker_unavailable" for row in rows)
+        assert all(row.workspace_cleanup_status == "completed" for row in rows)
+        assert all(row.ended_at == FIXED_NOW for row in rows)
+        assert (
+            session.query(ExecutionInputArtifactLease)
+            .filter(ExecutionInputArtifactLease.execution_id.in_(execution_ids))
+            .count()
+            == 0
+        )
+
+    assert first.reconciled + second.reconciled + third.reconciled == len(execution_ids)
 
 
 @pytest.mark.parametrize(

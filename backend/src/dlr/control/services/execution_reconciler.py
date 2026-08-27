@@ -29,7 +29,6 @@ logger = logging.getLogger("dlr.control.execution_reconciler")
 # Keep a single tick bounded.  A later tick continues with the next batch, so
 # one slow or large deployment cannot hold the row locks indefinitely.
 STALE_RECONCILER_BATCH_SIZE = 100
-RECONCILER_BATCH_SIZE = STALE_RECONCILER_BATCH_SIZE
 
 # These aliases are replaceable in tests without mutating the process-wide
 # asyncio module.  The existing schedule polling cadence is the deployment's
@@ -53,10 +52,6 @@ class StaleExecutionReport:
     def running_reconciled(self) -> int:
         """Number of running rows converged in this batch."""
         return self.running_timeout + self.running_worker_lost
-
-
-ReconciliationReport = StaleExecutionReport
-StaleReconciliationReport = StaleExecutionReport
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -273,22 +268,7 @@ async def stale_execution_reconciler_loop() -> None:
         await _asyncio_sleep(settings.schedule_poll_seconds)
 
 
-# Explicit names keep the lifecycle entry point discoverable while allowing
-# callers/tests to use the vocabulary from the C3 task and design.
-execution_reconciler_loop = stale_execution_reconciler_loop
-stale_reconciler_loop = stale_execution_reconciler_loop
-reconcile_stale = reconcile_stale_executions
-
-
 __all__ = [
-    "RECONCILER_BATCH_SIZE",
-    "ReconciliationReport",
-    "STALE_RECONCILER_BATCH_SIZE",
-    "StaleExecutionReport",
-    "StaleReconciliationReport",
-    "execution_reconciler_loop",
-    "reconcile_stale",
     "reconcile_stale_executions",
     "stale_execution_reconciler_loop",
-    "stale_reconciler_loop",
 ]
