@@ -1,9 +1,10 @@
 """Worker-internal endpoints of the Control Node (Worker Token protected)."""
 
-from typing import Annotated
+from collections.abc import Iterator
+from typing import Annotated, BinaryIO
 
 from fastapi import APIRouter, Depends, Header, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -153,8 +154,7 @@ def report_progress(
 
 
 @router.get(
-    "/api/workers/{worker_id}/executions/{execution_id}/input-artifacts/{artifact_id}/content",
-    status_code=501,
+    "/api/workers/{worker_id}/executions/{execution_id}/input-artifacts/{artifact_id}/content"
 )
 def download_input_artifact(
     request: Request,
@@ -164,24 +164,38 @@ def download_input_artifact(
     session: DbSession,
     claim_token: ClaimHeader = None,
     cleanup_token: CleanupHeader = None,
-) -> Response:
-    """Reserve the C0 download contract without starting the C1 stream path."""
+) -> StreamingResponse:
+    """Stream one active-Lease Artifact after full metadata verification."""
     _reject_query_tokens(request, error_code="execution_claim_token_invalid")
     _reject_swapped_cleanup_header(cleanup_token)
-    worker_service.validate_claim_for_route(session, worker_id, execution_id, claim_token)
-    # ``artifact_id`` is deliberately accepted only as a route placeholder;
-    # checking the Lease and streaming bytes belong to task 11.1.
-    _ = artifact_id
-    raise domain_error(
-        501,
-        "worker_input_download_not_ready",
-        "Worker input download is not available in this protocol wave",
+    download = worker_service.open_input_artifact_for_download(
+        session,
+        worker_id,
+        execution_id,
+        artifact_id,
+        claim_token,
+    )
+
+    def chunks(stream: BinaryIO) -> Iterator[bytes]:
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            stream.close()
+
+    return StreamingResponse(
+        chunks(download.stream),
+        media_type=download.content_type,
+        headers={"Content-Length": str(download.size_bytes)},
     )
 
 
 @router.post(
     "/api/workers/{worker_id}/executions/{execution_id}/cleanup-receipt",
-    status_code=501,
+    response_model=ExecutionResponse,
 )
 def report_cleanup_receipt(
     request: Request,
@@ -191,8 +205,8 @@ def report_cleanup_receipt(
     session: DbSession,
     claim_token: ClaimHeader = None,
     cleanup_token: CleanupHeader = None,
-) -> Response:
-    """Reserve the independent Cleanup Token receipt route for C1/C3."""
+) -> ExecutionResponse:
+    """Confirm local Workspace cleanup without changing business state."""
     _reject_query_tokens(request, error_code="execution_cleanup_token_invalid")
     if claim_token is not None:
         raise domain_error(
@@ -200,12 +214,14 @@ def report_cleanup_receipt(
             "execution_cleanup_token_invalid",
             "The Claim Token cannot authorize cleanup",
         )
-    worker_service.validate_cleanup_for_route(session, worker_id, execution_id, cleanup_token)
     _ = payload
-    raise domain_error(
-        501,
-        "worker_cleanup_receipt_not_ready",
-        "Worker cleanup receipts are not available in this protocol wave",
+    return ExecutionResponse.model_validate(
+        worker_service.apply_cleanup_receipt(
+            session,
+            worker_id,
+            execution_id,
+            cleanup_token,
+        )
     )
 
 

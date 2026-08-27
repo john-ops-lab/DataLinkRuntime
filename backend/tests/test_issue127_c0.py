@@ -871,8 +871,8 @@ def test_c0_worker_route_headers_and_non_worker_boundary(
         artifact_path,
         headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
     )
-    assert ready.status_code == 501
-    assert ready.json()["detail"]["code"] == "worker_input_download_not_ready"
+    assert ready.status_code == 422
+    assert ready.json()["detail"]["code"] == "input_artifact_not_ready"
 
 
 def test_c0_cleanup_receipt_route_keeps_cleanup_token_separate(
@@ -908,8 +908,8 @@ def test_c0_cleanup_receipt_route_keeps_cleanup_token_separate(
         json={"status": "completed"},
         headers={**WORKER_HEADERS, "X-DLR-Cleanup-Token": claimed.json()["cleanup_token"]},
     )
-    assert accepted.status_code == 501
-    assert accepted.json()["detail"]["code"] == "worker_cleanup_receipt_not_ready"
+    assert accepted.status_code == 200
+    assert accepted.json()["workspace_cleanup_status"] == "completed"
 
 
 def test_c0_cleanup_budget_invariant_and_existing_execution_snapshot(

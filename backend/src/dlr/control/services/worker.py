@@ -5,20 +5,26 @@ claim the same Execution, while different Executions are claimed in
 parallel. Long polling simply retries the atomic claim until the deadline.
 """
 
+import hashlib
+import re
 import time
+from dataclasses import dataclass
 from datetime import timedelta
+from typing import BinaryIO
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.control.input_errors import ManagedInputErrorCode
 from dlr.control.models import (
     Adapter,
     AdapterVersion,
     Execution,
     ExecutionInputArtifactLease,
     ManagedInputArtifact,
+    ManagedInputArtifactStatus,
     Worker,
     WorkerCleanupRequest,
 )
@@ -32,6 +38,7 @@ from dlr.control.schemas.worker import (
 from dlr.control.services import package_source as package_source_service
 from dlr.control.services import secrets as secrets_service
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.artifact_store import ArtifactStoreError, LocalFileArtifactStore
 from dlr.control.services.worker_protocol import (
     generate_token,
     hash_token,
@@ -41,6 +48,34 @@ from dlr.control.services.worker_protocol import (
 
 MAX_CLAIM_WAIT_SECONDS = 30
 CLAIM_POLL_INTERVAL_SECONDS = 1.0
+READABLE_ARTIFACT_STATUSES = frozenset(
+    {
+        ManagedInputArtifactStatus.READY,
+        ManagedInputArtifactStatus.PENDING_DELETE,
+        ManagedInputArtifactStatus.DELETING,
+        ManagedInputArtifactStatus.DELETE_FAILED,
+    }
+)
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+DEFAULT_CONTENT_TYPE = "application/octet-stream"
+
+
+def _safe_content_type(value: object) -> str:
+    """Return a bounded header-safe MIME value from persisted metadata."""
+    if not isinstance(value, str) or not value or len(value) > 256:
+        return DEFAULT_CONTENT_TYPE
+    if not all(0x20 <= ord(character) < 0x7F for character in value):
+        return DEFAULT_CONTENT_TYPE
+    return value
+
+
+@dataclass(frozen=True)
+class WorkerInputDownload:
+    """Verified Artifact handle and safe HTTP metadata for one Worker stream."""
+
+    stream: BinaryIO
+    size_bytes: int
+    content_type: str
 
 
 def get_worker(session: Session, worker_id: int) -> Worker:
@@ -75,6 +110,87 @@ def validate_claim_for_route(
     return execution
 
 
+def open_input_artifact_for_download(
+    session: Session,
+    worker_id: int,
+    execution_id: int,
+    artifact_id: int,
+    claim_token: str | None,
+    *,
+    store: LocalFileArtifactStore | None = None,
+) -> WorkerInputDownload:
+    """Authorize, verify, and open one leased Artifact for streaming.
+
+    The database Lease is checked before the Artifact row is exposed to the
+    caller.  The object is hashed through its already-open descriptor before
+    the descriptor is returned, so a stale or tampered Blob never becomes an
+    HTTP stream.  Error details intentionally collapse missing, unleased,
+    unreadable, and unavailable objects into stable machine codes.
+    """
+    execution = validate_claim_for_route(session, worker_id, execution_id, claim_token)
+    artifact = session.scalar(
+        select(ManagedInputArtifact)
+        .join(
+            ExecutionInputArtifactLease,
+            ExecutionInputArtifactLease.artifact_id == ManagedInputArtifact.id,
+        )
+        .where(
+            ExecutionInputArtifactLease.execution_id == execution.id,
+            ManagedInputArtifact.id == artifact_id,
+        )
+    )
+    if (
+        artifact is None
+        or artifact.status not in READABLE_ARTIFACT_STATUSES
+        or artifact.size_bytes < 0
+        or artifact.sha256 is None
+        or SHA256_PATTERN.fullmatch(artifact.sha256) is None
+    ):
+        raise domain_error(
+            422,
+            ManagedInputErrorCode.ARTIFACT_NOT_READY.value,
+            "Input Artifact is not available for this Execution",
+        )
+
+    stream: BinaryIO | None = None
+    try:
+        artifact_store = store or LocalFileArtifactStore(settings.artifact_store_root)
+        stream = artifact_store.open(artifact.storage_key)
+        digest = hashlib.sha256()
+        actual_size = 0
+        while True:
+            chunk = stream.read(64 * 1024)
+            if not chunk:
+                break
+            actual_size += len(chunk)
+            digest.update(chunk)
+        if actual_size != artifact.size_bytes or digest.hexdigest() != artifact.sha256:
+            stream.close()
+            raise domain_error(
+                422,
+                ManagedInputErrorCode.CHECKSUM_INVALID.value,
+                "Input Artifact content does not match its metadata",
+            )
+        stream.seek(0)
+    except HTTPException:
+        raise
+    except (ArtifactStoreError, OSError, ValueError) as error:
+        if stream is not None:
+            stream.close()
+        # Do not include storage_key, object paths, or exception text in the
+        # response or log.  The caller can safely retry this stable state.
+        raise domain_error(
+            422,
+            ManagedInputErrorCode.ARTIFACT_NOT_READY.value,
+            "Input Artifact is not available for this Execution",
+        ) from error
+    return WorkerInputDownload(
+        stream=stream,
+        size_bytes=artifact.size_bytes,
+        content_type=_safe_content_type(artifact.content_type),
+    )
+
+
 def validate_cleanup_for_route(
     session: Session, worker_id: int, execution_id: int, cleanup_token: str | None
 ) -> Execution:
@@ -92,6 +208,55 @@ def validate_cleanup_for_route(
             "A valid Cleanup Token is required",
         )
     require_cleanup_token(cleanup_token, execution.cleanup_receipt_token_hash)
+    return execution
+
+
+def apply_cleanup_receipt(
+    session: Session,
+    worker_id: int,
+    execution_id: int,
+    cleanup_token: str | None,
+) -> Execution:
+    """Advance only the cleanup state after a valid v2 receipt.
+
+    The row lock and ownership/token checks make retries after a lost HTTP
+    response idempotent.  No business result, timestamp, or Lease is changed
+    here.
+    """
+    execution = (
+        session.query(Execution)
+        .filter(Execution.id == execution_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if (
+        execution is None
+        or execution.worker_id != worker_id
+        or execution.cleanup_receipt_token_hash is None
+    ):
+        raise domain_error(
+            422,
+            "execution_cleanup_token_invalid",
+            "A valid Cleanup Token is required",
+        )
+    require_cleanup_token(cleanup_token, execution.cleanup_receipt_token_hash)
+    if execution.status not in {"succeeded", "failed", "timeout", "cancelled"}:
+        raise domain_error(
+            422,
+            "workspace_cleanup_transition_invalid",
+            "Workspace cleanup is not available before the Execution is terminal",
+        )
+    if execution.workspace_cleanup_status == "deferred":
+        execution.workspace_cleanup_status = "completed"
+        execution.workspace_cleanup_error_code = None
+    elif execution.workspace_cleanup_status != "completed":
+        raise domain_error(
+            422,
+            "workspace_cleanup_transition_invalid",
+            "Workspace cleanup state cannot transition to completed",
+        )
+    session.commit()
+    session.refresh(execution)
     return execution
 
 

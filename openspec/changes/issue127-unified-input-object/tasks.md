@@ -139,14 +139,14 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 11. C1 — Wave C Worker 下载、journal 与同步/延迟清理
 
-- [ ] 11.1 实现Control内部下载授权：Worker ownership、running状态、Claim Token、active Lease、Artifact可读与metadata/content一致；越权/猜测/终态测试验证不泄露对象存在性。
-- [ ] 11.2 扩展Worker client对download/progress/result携带Claim Header、cleanup receipt携带Cleanup Header；单元测试验证Token不进URL/body/log且v1请求保持旧合同。
-- [ ] 11.3 将Workspace改为受控确定路径，在创建前以0700目录/0600文件、fsync+atomic rename写外部journal；故障注入journal失败验证不创建目录、不下载、不启动Adapter。
-- [ ] 11.4 下载全部输入到受控mount name，流式复核size/SHA-256并写marker/manifest、0444/0555；验证任一下载/校验失败不启动子进程且进入清理。
-- [ ] 11.5 实现同步清理attempt/total硬预算、有限退避/存在确认与Result cleanup字段；挂起删除注入验证总时长有界、业务成功不被cleanup失败覆盖。
-- [ ] 11.6 实现journal启动/周期扫描与幂等receipt：只删名称+marker+manifest三重匹配Workspace，不删version依赖/未知目录；重启/响应丢失测试验证completed→completed后才删journal。
-- [ ] 11.7 对Worker/Control日志和journal做敏感值扫描，验证Claim Token从不落盘、Cleanup Token仅在私有journal，用户文件名/input/Secret/output不入journal。
-- [ ] 11.8 运行C1 Worker unit/integration/fault/timeout tests与静态Gate，在独立runtime/journal根证明可恢复清理后形成Candidate。
+- [x] 11.1 实现Control内部下载授权：Worker ownership、running状态、Claim Token、active Lease、Artifact可读与metadata/content一致；越权/猜测/终态测试验证不泄露对象存在性。
+- [x] 11.2 扩展Worker client对download/progress/result携带Claim Header、cleanup receipt携带Cleanup Header；单元测试验证Token不进URL/body/log且v1请求保持旧合同。
+- [x] 11.3 将Workspace改为受控确定路径，在创建前以0700目录/0600文件、fsync+atomic rename写外部journal；故障注入journal失败验证不创建目录、不下载、不启动Adapter。
+- [x] 11.4 下载全部输入到受控mount name，流式复核size/SHA-256并写marker/manifest、0444/0555；验证任一下载/校验失败不启动子进程且进入清理。
+- [x] 11.5 实现同步清理attempt/total硬预算、有限退避/存在确认与Result cleanup字段；挂起删除注入验证总时长有界、业务成功不被cleanup失败覆盖。
+- [x] 11.6 实现journal启动/周期扫描与幂等receipt：只删名称+marker+manifest三重匹配Workspace，不删version依赖/未知目录；重启/响应丢失测试验证completed→completed后才删journal。
+- [x] 11.7 对Worker/Control日志和journal做敏感值扫描，验证Claim Token从不落盘、Cleanup Token仅在私有journal，用户文件名/input/Secret/output不入journal。
+- [x] 11.8 运行C1 Worker unit/integration/fault/timeout tests与静态Gate，在独立runtime/journal根证明可恢复清理后形成Candidate。（证据：`c1-green.txt` 17 passed；`worker-control-regression.txt` 166 passed；Ruff/format/mypy/OpenSpec strict/git diff --check 全部通过。）
 
 ## 12. C2 — Wave C Python/JavaScript/Java Context 文件 API
 
