@@ -29,6 +29,11 @@ def _identifier(value: object | None) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
+def _code_label(value: object | None) -> str:
+    """Keep an omitted stable code distinct from an invalid label."""
+    return "none" if value is None else _label(value)
+
+
 def record_audit_event(
     operation: str,
     outcome: str,
@@ -52,7 +57,7 @@ def record_audit_event(
         _identifier(adapter_id),
         _identifier(artifact_id),
         _identifier(deletion_job_id),
-        _label(code),
+        _code_label(code),
     )
 
 

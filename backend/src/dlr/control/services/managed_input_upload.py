@@ -77,6 +77,16 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _delete_claim_is_live(artifact: ManagedInputArtifact) -> bool:
+    """Return whether another deletion worker still owns this Artifact."""
+    lease_until = artifact.delete_lease_until
+    if lease_until is None:
+        return False
+    if lease_until.tzinfo is None:
+        lease_until = lease_until.replace(tzinfo=UTC)
+    return lease_until > utcnow()
+
+
 def feature_enabled() -> bool:
     """Return the deployment flag without creating a store or a DB row."""
     return bool(settings.managed_files_enabled)
@@ -781,9 +791,16 @@ def delete_staged(
     if artifact.status == ManagedInputArtifactStatus.DELETED:
         session.commit()
         return False
+    if artifact.status == ManagedInputArtifactStatus.DELETING and _delete_claim_is_live(artifact):
+        raise domain_error(
+            409,
+            ManagedInputErrorCode.ARTIFACT_DELETE_IN_PROGRESS.value,
+            "Input Artifact deletion is already in progress",
+        )
     if artifact.status not in {
         ManagedInputArtifactStatus.STAGED,
         ManagedInputArtifactStatus.DELETE_FAILED,
+        ManagedInputArtifactStatus.DELETING,
     }:
         raise domain_error(
             409,
@@ -805,6 +822,18 @@ def delete_staged(
         force=True,
     )
     if claim is None:
+        current = session.get(ManagedInputArtifact, artifact_id)
+        if (
+            current is not None
+            and current.adapter_id == adapter_id
+            and current.status == ManagedInputArtifactStatus.DELETING
+            and _delete_claim_is_live(current)
+        ):
+            raise domain_error(
+                409,
+                ManagedInputErrorCode.ARTIFACT_DELETE_IN_PROGRESS.value,
+                "Input Artifact deletion is already in progress",
+            )
         raise domain_error(
             409,
             ManagedInputErrorCode.ARTIFACT_NOT_READY.value,

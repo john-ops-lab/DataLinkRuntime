@@ -29,5 +29,6 @@ class ManagedInputErrorCode(StrEnum):
     SESSION_EXPIRED = "upload_session_expired"
     ARTIFACT_NOT_FOUND = "input_artifact_not_found"
     ARTIFACT_NOT_READY = "input_artifact_not_ready"
+    ARTIFACT_DELETE_IN_PROGRESS = "artifact_delete_in_progress"
     ARTIFACT_DELETE_FAILED = "input_artifact_delete_failed"
     CHECKSUM_INVALID = "input_artifact_checksum_mismatch"

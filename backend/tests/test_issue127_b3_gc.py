@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from dlr.control.input_errors import ManagedInputErrorCode
 from dlr.control.models import (
     Adapter,
     AdapterInputArtifactBinding,
@@ -106,7 +107,12 @@ def test_stale_deleting_artifact_is_reclaimed_when_object_is_missing(
 
     with session_factory() as session:
         store.delete(artifact.storage_key)
-        report = managed_input_gc.run_gc_cycle(session, store=store, now=now)
+        report = managed_input_gc.run_gc_cycle(
+            session,
+            store=store,
+            now=now,
+            protection_hook=lambda _session, _artifact_id: False,
+        )
         assert report.artifacts_deleted == 1
 
     with session_factory() as session:
@@ -177,13 +183,12 @@ def test_startup_gc_does_not_sweep_fresh_staged_artifact(
         assert store.stat(artifact.storage_key) is not None
 
 
-def test_active_lease_protects_artifact_from_gc(
+def test_protected_delete_hook_blocks_gc(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    adapter = create_task(api_client, "b3-lease-protected")
+    adapter = create_task(api_client, "b3-protected-hook")
     store = LocalFileArtifactStore(tmp_path / "store")
     now = datetime.now(UTC)
     with session_factory.begin() as session:
@@ -195,11 +200,63 @@ def test_active_lease_protects_artifact_from_gc(
             size_bytes=3,
         )
 
-    monkeypatch.setattr(managed_input_gc, "has_active_artifact_lease", lambda *_: True)
+    protected_ids: list[int] = []
+
+    def protected_hook(_session: Session, artifact_id: int) -> bool:
+        protected_ids.append(artifact_id)
+        return True
+
     with session_factory() as session:
-        report = managed_input_gc.run_gc_cycle(session, store=store, now=now)
+        report = managed_input_gc.run_gc_cycle(
+            session,
+            store=store,
+            now=now,
+            protection_hook=protected_hook,
+        )
+        protected = session.get(ManagedInputArtifact, artifact.id)
+        capacity = session.get(ManagedInputCapacity, 1)
         assert report.artifacts_deleted == 0
+        assert protected_ids == [artifact.id]
+        assert (
+            protected is not None and protected.status == ManagedInputArtifactStatus.PENDING_DELETE
+        )
+        assert capacity is not None and capacity.actual_bytes == 3
         assert store.stat(artifact.storage_key) is not None
+
+
+def test_manual_delete_reports_live_deleting_claim(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    adapter = create_task(api_client, "b3-delete-in-progress")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    now = datetime.now(UTC)
+    with session_factory.begin() as session:
+        artifact = create_artifact(
+            session,
+            adapter["id"],
+            store,
+            status=ManagedInputArtifactStatus.DELETING,
+            size_bytes=3,
+        )
+        artifact.delete_attempts = 1
+        artifact.delete_started_at = now
+        artifact.delete_lease_until = now + timedelta(minutes=5)
+        artifact_id = int(artifact.id)
+        storage_key = artifact.storage_key
+
+    response = api_client.delete(f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}")
+    assert response.status_code == 409, response.text
+    assert (
+        response.json()["detail"]["code"] == ManagedInputErrorCode.ARTIFACT_DELETE_IN_PROGRESS.value
+    )
+    with session_factory() as session:
+        current = session.get(ManagedInputArtifact, artifact_id)
+        capacity = session.get(ManagedInputCapacity, 1)
+        assert current is not None and current.status == ManagedInputArtifactStatus.DELETING
+        assert capacity is not None and capacity.actual_bytes == 3
+    assert store.stat(storage_key) is not None
 
 
 def test_adapter_delete_rejects_active_upload_before_metadata_changes(
@@ -353,6 +410,19 @@ def test_deletion_failure_audit_is_redacted(caplog: pytest.LogCaptureFixture) ->
     assert host_path not in caplog.text
     assert token not in caplog.text
     assert content not in caplog.text
+
+
+def test_success_audit_uses_explicit_none_code(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="dlr.control.managed_input_audit")
+    managed_input_gc.record_audit_event(
+        "gc_delete",
+        "success",
+        adapter_id=7,
+        artifact_id=8,
+        code=None,
+    )
+    assert "code=none" in caplog.text
+    assert "code=unknown" not in caplog.text
 
 
 def test_gc_delete_failure_is_backed_off_and_reclaimed(

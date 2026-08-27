@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -18,7 +19,6 @@ from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control import db
-from dlr.control.db import Base
 from dlr.control.models import (
     AdapterInputArtifactBinding,
     AdapterInputConfig,
@@ -44,8 +44,7 @@ DELETE_LEASE_SECONDS = 60
 DELETE_BACKOFF_BASE_SECONDS = 5
 MAX_DELETE_BACKOFF_SECONDS = 300
 GC_BATCH_SIZE = 100
-LEASE_TABLE_NAME = "execution_input_artifact_leases"
-ACTIVE_EXECUTION_STATUSES = ("pending", "running")
+ArtifactProtectionHook = Callable[[Session, int], bool]
 
 
 @dataclass(frozen=True)
@@ -134,38 +133,16 @@ def _artifact_expired(artifact: ManagedInputArtifact, now: datetime) -> bool:
 
 
 def has_active_artifact_lease(session: Session, artifact_id: int) -> bool:
-    """Return whether a pending/running Execution currently leases an Artifact.
+    """Default B3 protection hook; the C0 Lease provider is injected later.
 
-    B3 deliberately does not create the C0 Lease table.  When C0 is present,
-    its imported model is visible in ``Base.metadata`` and this helper uses the
-    table without coupling B3 to C0's ORM class.  On the B3-only schema there
-    is no lease table, so no lease can protect an Artifact yet.  C0's resolver
-    must take the Artifact row lock before inserting its Lease; that is the
-    lock hand-off that closes the GC/Execution-create race.
+    B3 deliberately does not create, inspect, or reference the C0 Lease
+    schema.  The hook remains a replaceable seam: C0 supplies a database-backed
+    provider through ``protection_hook`` once its Lease schema and lock order
+    exist.  Returning ``False`` here is the B3-only unprotected fixture, not a
+    claim that active Execution Leases have been queried.
     """
-    lease_table = Base.metadata.tables.get(LEASE_TABLE_NAME)
-    execution_table = Base.metadata.tables.get("executions")
-    if lease_table is None or execution_table is None:
-        return False
-    artifact_column = lease_table.c.get("artifact_id")
-    execution_id_column = lease_table.c.get("execution_id")
-    status_column = execution_table.c.get("status")
-    if artifact_column is None or execution_id_column is None or status_column is None:
-        return False
-    conditions = [
-        artifact_column == int(artifact_id),
-        status_column.in_(ACTIVE_EXECUTION_STATUSES),
-    ]
-    released_column = lease_table.c.get("released_at")
-    if released_column is not None:
-        conditions.append(released_column.is_(None))
-    statement = (
-        select(artifact_column)
-        .select_from(lease_table.join(execution_table, execution_id_column == execution_table.c.id))
-        .where(*conditions)
-        .limit(1)
-    )
-    return session.scalar(statement) is not None
+    _ = session, artifact_id
+    return False
 
 
 def _artifact_delete_due(
@@ -226,8 +203,14 @@ def claim_artifact_deletion(
     now: datetime | None = None,
     force: bool = False,
     lease_seconds: int = DELETE_LEASE_SECONDS,
+    protection_hook: ArtifactProtectionHook | None = None,
 ) -> ArtifactDeletionClaim | None:
-    """Claim one eligible Artifact without holding a DB lock over file I/O."""
+    """Claim one eligible Artifact without holding a DB lock over file I/O.
+
+    The optional protection hook is the schema-independent B3 seam.  C0 can
+    provide its database-backed Lease implementation without making this
+    lifecycle module import or inspect the C0 schema.
+    """
     effective_now = _as_utc(now) or utcnow()
     artifact = session.scalar(
         select(ManagedInputArtifact)
@@ -241,7 +224,12 @@ def claim_artifact_deletion(
     ):
         session.rollback()
         return None
-    if has_active_artifact_lease(session, int(artifact.id)):
+    protected = (
+        protection_hook(session, int(artifact.id))
+        if protection_hook is not None
+        else has_active_artifact_lease(session, int(artifact.id))
+    )
+    if protected:
         session.rollback()
         return None
     started_at = effective_now
@@ -338,6 +326,7 @@ def process_artifact_deletions(
     store: LocalFileArtifactStore | None = None,
     now: datetime | None = None,
     limit: int = GC_BATCH_SIZE,
+    protection_hook: ArtifactProtectionHook | None = None,
 ) -> ArtifactDeletionReport:
     """Claim and process bounded Artifact deletes, retrying failures later."""
     if limit <= 0:
@@ -347,7 +336,12 @@ def process_artifact_deletions(
     claimed = deleted = failed = 0
     candidate_ids = _artifact_candidate_ids(session, effective_now, limit)
     for artifact_id in candidate_ids:
-        claim = claim_artifact_deletion(session, int(artifact_id), now=effective_now)
+        claim = claim_artifact_deletion(
+            session,
+            int(artifact_id),
+            now=effective_now,
+            protection_hook=protection_hook,
+        )
         if claim is None:
             continue
         claimed += 1
@@ -817,6 +811,7 @@ def run_gc_cycle(
     store: LocalFileArtifactStore | None = None,
     now: datetime | None = None,
     limit: int = GC_BATCH_SIZE,
+    protection_hook: ArtifactProtectionHook | None = None,
 ) -> GarbageCollectionReport:
     """Run one bounded TTL, lifecycle, Artifact and detached-job cycle."""
     if limit <= 0:
@@ -838,6 +833,7 @@ def run_gc_cycle(
         store=store,
         now=effective_now,
         limit=limit,
+        protection_hook=protection_hook,
     )
     jobs = process_deletion_jobs(
         session,
@@ -920,10 +916,10 @@ process_artifact_deletion_jobs = process_deletion_jobs
 handoff_adapter_artifacts_for_deletion = prepare_adapter_deletion
 
 __all__ = [
-    "ACTIVE_EXECUTION_STATUSES",
     "ArtifactDeletionClaim",
     "ArtifactDeletionReport",
     "ArtifactGCReport",
+    "ArtifactProtectionHook",
     "DELETE_BACKOFF_BASE_SECONDS",
     "DELETE_LEASE_SECONDS",
     "DeletionJobClaim",
