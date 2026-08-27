@@ -130,6 +130,7 @@ class Agent:
         self._stop = threading.Event()
         self._state_lock = threading.Lock()
         self._in_flight = 0
+        self._in_flight_execution_ids: set[int] = set()
         # (adapter_id, version_id) -> number of Executions currently running
         # against that version. Reference counting prevents a concurrent
         # cleanup from deleting a venv while a second Execution is still
@@ -139,6 +140,14 @@ class Agent:
 
     def request_stop(self) -> None:
         self._stop.set()
+
+    def _mark_execution_in_flight(self, execution_id: int) -> None:
+        with self._state_lock:
+            self._in_flight_execution_ids.add(execution_id)
+
+    def _unmark_execution_in_flight(self, execution_id: int) -> None:
+        with self._state_lock:
+            self._in_flight_execution_ids.discard(execution_id)
 
     # --- lifecycle ------------------------------------------------------------
 
@@ -231,13 +240,18 @@ class Agent:
                 )
             return False
 
-        counts = workspace_manager.recover_cleanup_journals(
-            self._config.workspace_cleanup_journal_root,
-            self._config.runtime_root,
-            report_cleanup=report_cleanup,
-            scan_timeout_seconds=workspace_manager.RECOVERY_SCAN_TIMEOUT_SECONDS,
-            retry_backoff_seconds=workspace_manager.RECOVERY_RETRY_BACKOFF_SECONDS,
-        )
+        # Keep the snapshot and task-start marker under one lock.  A task
+        # thread that has not yet established its journal waits here, while
+        # already-running tasks remain protected for the whole scan.
+        with self._state_lock:
+            counts = workspace_manager.recover_cleanup_journals(
+                self._config.workspace_cleanup_journal_root,
+                self._config.runtime_root,
+                report_cleanup=report_cleanup,
+                scan_timeout_seconds=workspace_manager.RECOVERY_SCAN_TIMEOUT_SECONDS,
+                retry_backoff_seconds=workspace_manager.RECOVERY_RETRY_BACKOFF_SECONDS,
+                in_flight_execution_ids=frozenset(self._in_flight_execution_ids),
+            )
         if counts["retained"] or counts["deferred"]:
             logger.info(
                 "workspace cleanup scan inspected %s; completed %s, deferred %s, retained %s",
@@ -287,7 +301,11 @@ class Agent:
                 if task is None:
                     continue
                 self._track_start(task)
-                future = pool.submit(self._execute_task, worker_id, task)
+                try:
+                    future = pool.submit(self._execute_task, worker_id, task)
+                except BaseException:
+                    self._track_end(task)
+                    raise
                 future.add_done_callback(partial(self._task_done, task))
 
     def _task_done(self, task: dict[str, Any], _future: Future[None]) -> None:
@@ -317,6 +335,14 @@ class Agent:
         if task.get("kind") == "adapter_cleanup":
             self._execute_cleanup_task(worker_id, task)
             return
+        execution_id = int(task["execution_id"])
+        self._mark_execution_in_flight(execution_id)
+        try:
+            self._execute_execution_task(worker_id, task)
+        finally:
+            self._unmark_execution_in_flight(execution_id)
+
+    def _execute_execution_task(self, worker_id: int, task: dict[str, Any]) -> None:
         execution_id = int(task["execution_id"])
         logger.info(
             "executing execution %s (adapter %s version %s)",

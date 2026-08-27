@@ -20,7 +20,7 @@ import stat as stat_module
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
@@ -95,6 +95,8 @@ InputDownloader = Callable[[Mapping[str, Any], WritableBinary], int]
 
 _CLEANUP_LOCK = threading.Lock()
 _CLEANUP_IN_PROGRESS: set[Path] = set()
+_RECOVERY_WORK_LOCK = threading.Lock()
+_RECOVERY_WORK_IN_PROGRESS: set[tuple[Path, str]] = set()
 
 
 def _lstat(path: Path) -> os.stat_result | None:
@@ -556,13 +558,19 @@ def cleanup_workspace(
 
 
 def _bounded_workspace_cleanup(
+    journal_path: Path,
     workspace: Path,
     *,
     attempt_timeout_seconds: float,
     total_timeout_seconds: float,
     timeout_seconds: float,
-) -> CleanupOutcome:
+) -> tuple[CleanupOutcome, bool, bool]:
     """Keep one recovery item from exceeding the scan's remaining budget."""
+    work_key = (journal_path, "cleanup")
+    with _RECOVERY_WORK_LOCK:
+        if work_key in _RECOVERY_WORK_IN_PROGRESS:
+            return CleanupOutcome("deferred", "workspace_cleanup_failed"), False, False
+        _RECOVERY_WORK_IN_PROGRESS.add(work_key)
     outcome_holder: list[CleanupOutcome] = []
     error_holder: list[BaseException] = []
 
@@ -577,25 +585,37 @@ def _bounded_workspace_cleanup(
             )
         except BaseException as error:  # pragma: no cover - thread handoff
             error_holder.append(error)
+        finally:
+            with _RECOVERY_WORK_LOCK:
+                _RECOVERY_WORK_IN_PROGRESS.discard(work_key)
 
     thread = threading.Thread(target=run_cleanup, name="dlr-recovery-cleanup", daemon=True)
     try:
         thread.start()
     except BaseException:
-        return CleanupOutcome("deferred", "workspace_cleanup_failed")
+        with _RECOVERY_WORK_LOCK:
+            _RECOVERY_WORK_IN_PROGRESS.discard(work_key)
+        return CleanupOutcome("deferred", "workspace_cleanup_failed"), True, False
     thread.join(max(0.0, timeout_seconds))
-    if thread.is_alive() or error_holder or not outcome_holder:
-        return CleanupOutcome("deferred", "workspace_cleanup_failed")
-    return outcome_holder[0]
+    timed_out = thread.is_alive()
+    if timed_out or error_holder or not outcome_holder:
+        return CleanupOutcome("deferred", "workspace_cleanup_failed"), True, timed_out
+    return outcome_holder[0], True, False
 
 
 def _bounded_cleanup_receipt(
+    journal_path: Path,
     report_cleanup: CleanupReporter,
     execution_id: int,
     cleanup_token: str,
     timeout_seconds: float,
-) -> bool:
+) -> tuple[bool, bool, bool]:
     """Bound a recovery receipt call without dropping its journal."""
+    work_key = (journal_path, "receipt")
+    with _RECOVERY_WORK_LOCK:
+        if work_key in _RECOVERY_WORK_IN_PROGRESS:
+            return False, False, False
+        _RECOVERY_WORK_IN_PROGRESS.add(work_key)
     result_holder: list[bool] = []
 
     def report() -> None:
@@ -603,14 +623,20 @@ def _bounded_cleanup_receipt(
             result_holder.append(bool(report_cleanup(execution_id, cleanup_token)))
         except Exception:  # noqa: BLE001 - retryable recovery transport failure
             result_holder.append(False)
+        finally:
+            with _RECOVERY_WORK_LOCK:
+                _RECOVERY_WORK_IN_PROGRESS.discard(work_key)
 
     thread = threading.Thread(target=report, name="dlr-recovery-receipt", daemon=True)
     try:
         thread.start()
     except BaseException:
-        return False
+        with _RECOVERY_WORK_LOCK:
+            _RECOVERY_WORK_IN_PROGRESS.discard(work_key)
+        return False, True, False
     thread.join(max(0.0, timeout_seconds))
-    return not thread.is_alive() and bool(result_holder and result_holder[0])
+    timed_out = thread.is_alive()
+    return not timed_out and bool(result_holder and result_holder[0]), True, timed_out
 
 
 def _journal_retry_due(path: Path, now: float, backoff_seconds: float) -> bool:
@@ -730,6 +756,7 @@ def recover_cleanup_journals(
     total_timeout_seconds: float = 20.0,
     scan_timeout_seconds: float = RECOVERY_SCAN_TIMEOUT_SECONDS,
     retry_backoff_seconds: float = RECOVERY_RETRY_BACKOFF_SECONDS,
+    in_flight_execution_ids: Collection[int] | None = None,
 ) -> dict[str, int]:
     """Recover only journaled, triple-matched workspaces.
 
@@ -775,6 +802,10 @@ def recover_cleanup_journals(
             continue
         execution_id = int(match.group(1))
         counts["inspected"] += 1
+        if in_flight_execution_ids is not None and execution_id in in_flight_execution_ids:
+            counts["retained"] += 1
+            logger.info("skipped cleanup journal for in-flight execution %s", execution_id)
+            continue
         record = _load_journal(candidate, execution_id)
         try:
             expected_workspace = workspace_path(Path(runtime_root), execution_id)
@@ -797,7 +828,8 @@ def recover_cleanup_journals(
         if remaining <= 0:
             budget_exhausted = True
             break
-        outcome = _bounded_workspace_cleanup(
+        outcome, cleanup_started, cleanup_timed_out = _bounded_workspace_cleanup(
+            candidate,
             workspace,
             attempt_timeout_seconds=min(attempt_timeout_seconds, remaining),
             total_timeout_seconds=min(total_timeout_seconds, remaining),
@@ -805,6 +837,16 @@ def recover_cleanup_journals(
         )
         if outcome.status != "completed":
             counts["deferred"] += 1
+            if not cleanup_started:
+                logger.info(
+                    "workspace cleanup already in progress for execution %s; journal retained",
+                    execution_id,
+                )
+            elif cleanup_timed_out:
+                logger.warning(
+                    "workspace cleanup recovery timed out for execution %s; journal retained",
+                    execution_id,
+                )
             _defer_journal_retry(candidate, execution_id)
             if time.monotonic() >= deadline:
                 budget_exhausted = True
@@ -819,7 +861,8 @@ def recover_cleanup_journals(
             _defer_journal_retry(candidate, execution_id)
             budget_exhausted = True
             break
-        receipt_accepted = _bounded_cleanup_receipt(
+        receipt_accepted, receipt_started, receipt_timed_out = _bounded_cleanup_receipt(
+            candidate,
             report_cleanup,
             execution_id,
             str(record["cleanup_token"]),
@@ -829,6 +872,16 @@ def recover_cleanup_journals(
             counts["completed"] += 1
         else:
             counts["deferred"] += 1
+            if not receipt_started:
+                logger.info(
+                    "cleanup receipt already in progress for execution %s; journal retained",
+                    execution_id,
+                )
+            elif receipt_timed_out:
+                logger.warning(
+                    "cleanup receipt recovery timed out for execution %s; journal retained",
+                    execution_id,
+                )
             _defer_journal_retry(candidate, execution_id)
             if time.monotonic() >= deadline:
                 budget_exhausted = True

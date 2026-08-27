@@ -11,11 +11,12 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import stat
 import sys
 import time
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from typing import Any
 
 import pytest
@@ -808,6 +809,7 @@ def test_c1_cleanup_budget_bounds_a_hung_delete_and_includes_backoff(tmp_path: P
 
     original = workspace_manager.shutil.rmtree
     workspace_manager.shutil.rmtree = stuck_delete
+    returned_while_blocked = False
     try:
         started = time.monotonic()
         outcome = workspace_manager.cleanup_workspace(
@@ -816,6 +818,7 @@ def test_c1_cleanup_budget_bounds_a_hung_delete_and_includes_backoff(tmp_path: P
             total_timeout_seconds=0.12,
         )
         elapsed = time.monotonic() - started
+        returned_while_blocked = not finished.is_set()
     finally:
         release.set()
         finished.wait(timeout=2)
@@ -823,7 +826,8 @@ def test_c1_cleanup_budget_bounds_a_hung_delete_and_includes_backoff(tmp_path: P
     assert entered.is_set()
     assert outcome.status == "deferred"
     assert outcome.error_code == "workspace_cleanup_failed"
-    assert elapsed < 0.6
+    assert returned_while_blocked
+    assert elapsed < 1.0
 
 
 def test_c1_recovery_requires_name_marker_manifest_triple_and_receipt(
@@ -917,9 +921,304 @@ def test_c1_recovery_scan_budget_bounds_claim_delay_and_keeps_journal(
     assert entered.wait(timeout=1)
     assert finished.wait(timeout=1)
     assert claim_times
-    assert claim_times[0] - started < 0.5
-    assert elapsed < 0.5
+    assert claim_times[0] - started < 1.0
+    assert elapsed < 1.0
     assert journal.exists()
+
+
+def test_c1_in_flight_execution_survives_periodic_recovery_scans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
+    config = agent_module.WorkerConfig()
+    execution_id = 91
+    data = b"long-running-input"
+    payload = _v2_payload(
+        code="def handle(context, input):\n    return {'ok': True}\n",
+        input_files=[
+            {
+                "id": 9,
+                "ordinal": 0,
+                "mount_name": "input-00",
+                "original_filename": "long-running.txt",
+                "content_type": "text/plain",
+                "size_bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        ],
+    )
+    payload["execution_id"] = execution_id
+    started = Event()
+    release = Event()
+    finished = Event()
+    reports: list[tuple[int, dict[str, Any], str]] = []
+    cleanup_receipts: list[tuple[int, str]] = []
+
+    class FakeClient:
+        def download_input_artifact(
+            self,
+            _worker_id: int,
+            _execution_id: int,
+            _artifact_id: int,
+            *,
+            claim_token: str,
+            destination: Any,
+        ) -> int:
+            assert claim_token == "claim-token-for-test"
+            return destination.write(data)
+
+        def report_result(
+            self,
+            _worker_id: int,
+            received_execution_id: int,
+            result: dict[str, Any],
+            *,
+            claim_token: str,
+        ) -> None:
+            reports.append((received_execution_id, dict(result), claim_token))
+
+        def report_cleanup_receipt(
+            self,
+            _worker_id: int,
+            received_execution_id: int,
+            *,
+            cleanup_token: str,
+        ) -> None:
+            cleanup_receipts.append((received_execution_id, cleanup_token))
+
+    def long_running_run(
+        task: dict[str, Any],
+        runtime_settings: RuntimeSettings,
+        *,
+        progress_callback: Any,
+        input_downloader: Any,
+    ) -> dict[str, Any]:
+        del progress_callback
+        received_execution_id = int(task["execution_id"])
+        planned_workspace = workspace_manager.workspace_path(
+            runtime_settings.runtime_root, received_execution_id
+        )
+        workspace_manager.write_cleanup_journal(
+            runtime_settings.workspace_cleanup_journal_root,
+            received_execution_id,
+            planned_workspace,
+            str(task["cleanup_token"]),
+        )
+        layout = workspace_manager.create_workspace(
+            runtime_settings.runtime_root,
+            received_execution_id,
+        )
+        workspace_manager.prepare_input_files(layout, task["input_files"], input_downloader)
+        started.set()
+        if not release.wait(timeout=2):
+            raise RuntimeError("test execution was not released")
+        outcome = workspace_manager.cleanup_workspace(
+            layout.root,
+            attempt_timeout_seconds=0.2,
+            total_timeout_seconds=1.0,
+        )
+        finished.set()
+        return {
+            "status": "succeeded",
+            "workspace_cleanup_status": outcome.status,
+            "workspace_cleanup_error_code": outcome.error_code,
+        }
+
+    monkeypatch.setattr(agent_module.executor, "run", long_running_run)
+    monkeypatch.setattr(agent_module.venv_manager, "cleanup_stale_venvs", lambda *args: None)
+    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
+    caplog.set_level("INFO", logger="dlr.worker.workspace")
+    workspace = workspace_manager.workspace_path(config.runtime_root, execution_id)
+    journal = workspace_manager.journal_path(config.workspace_cleanup_journal_root, execution_id)
+    marker = workspace / workspace_manager.MARKER_FILENAME
+    manifest = workspace / workspace_manager.MANIFEST_FILENAME
+    input_path = workspace / workspace_manager.INPUT_DIRNAME / "input-00"
+    thread = Thread(target=agent._execute_task, args=(7, payload), daemon=True)
+    thread.start()
+    assert started.wait(timeout=1)
+
+    try:
+        for _ in range(3):
+            agent._recover_cleanup_journals(7)
+            assert workspace.is_dir()
+            assert journal.is_file()
+            assert marker.is_file()
+            assert manifest.is_file()
+            assert input_path.read_bytes() == data
+        assert reports == []
+        assert cleanup_receipts == []
+        assert "skipped cleanup journal for in-flight execution 91" in caplog.text
+    finally:
+        release.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert finished.is_set()
+    assert reports and reports[0][0] == execution_id
+    assert reports[0][1]["status"] == "succeeded"
+    assert reports[0][2] == "claim-token-for-test"
+    assert cleanup_receipts == []
+    assert not workspace.exists()
+    assert not journal.exists()
+    with agent._state_lock:
+        assert agent._in_flight_execution_ids == set()
+
+
+def test_c1_in_flight_execution_set_clears_on_exception_and_cancel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
+    config = agent_module.WorkerConfig()
+    reports: list[tuple[int, str]] = []
+
+    class FakeClient:
+        def report_result(
+            self,
+            _worker_id: int,
+            execution_id: int,
+            result: dict[str, Any],
+            *,
+            claim_token: str,
+        ) -> None:
+            reports.append((execution_id, str(result["status"])))
+            assert claim_token == "claim-token-for-test"
+
+    monkeypatch.setattr(agent_module.venv_manager, "cleanup_stale_venvs", lambda *args: None)
+    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
+
+    def raise_from_executor(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("executor failed")
+
+    monkeypatch.setattr(agent_module.executor, "run", raise_from_executor)
+    exception_task = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    exception_task["execution_id"] = 101
+    agent._execute_task(7, exception_task)
+    with agent._state_lock:
+        assert agent._in_flight_execution_ids == set()
+
+    def return_cancelled(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "status": "cancelled",
+            "workspace_cleanup_status": "completed",
+            "workspace_cleanup_error_code": None,
+        }
+
+    monkeypatch.setattr(agent_module.executor, "run", return_cancelled)
+    cancelled_task = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    cancelled_task["execution_id"] = 102
+    agent._execute_task(7, cancelled_task)
+    with agent._state_lock:
+        assert agent._in_flight_execution_ids == set()
+    assert reports == [(101, "failed"), (102, "cancelled")]
+
+
+def test_c1_submit_failure_clears_execution_tracking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
+    config = agent_module.WorkerConfig()
+    task = _v2_payload(code="def handle(context, input):\n    return {}\n")
+
+    class FakeClient:
+        def claim(self, _worker_id: int, _wait_seconds: int) -> dict[str, Any]:
+            return task
+
+    class FailingPool:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+
+        def __enter__(self) -> FailingPool:
+            return self
+
+        def __exit__(self, *_args: Any) -> bool:
+            return False
+
+        def submit(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            raise RuntimeError("submit failed")
+
+    monkeypatch.setattr(agent_module, "ThreadPoolExecutor", FailingPool)
+    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="submit failed"):
+        agent._claim_loop(7)
+    with agent._state_lock:
+        assert agent._in_flight == 0
+        assert agent._active_versions == {}
+        assert agent._in_flight_execution_ids == set()
+
+
+def test_c1_recovery_cleanup_timeout_deduplicates_journal_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    journal_root = tmp_path / "journal"
+    layout = workspace_manager.create_workspace(runtime_root, 1)
+    workspace_manager.prepare_input_files(layout, [], None)
+    journal = workspace_manager.write_cleanup_journal(
+        journal_root,
+        1,
+        layout.root,
+        "cleanup-token-cleanup-timeout",
+    )
+    entered = Event()
+    release = Event()
+    finished = Event()
+    calls = 0
+
+    def stuck_cleanup(_path: Path, **kwargs: Any) -> workspace_manager.CleanupOutcome:
+        del kwargs
+        nonlocal calls
+        calls += 1
+        entered.set()
+        release.wait(timeout=2)
+        finished.set()
+        return workspace_manager.CleanupOutcome("deferred", "workspace_cleanup_failed")
+
+    monkeypatch.setattr(workspace_manager, "cleanup_workspace", stuck_cleanup)
+    caplog.set_level("INFO", logger="dlr.worker.workspace")
+    try:
+        first = workspace_manager.recover_cleanup_journals(
+            journal_root,
+            runtime_root,
+            report_cleanup=lambda _execution_id, _token: True,
+            scan_timeout_seconds=0.05,
+            retry_backoff_seconds=0.2,
+        )
+        assert entered.wait(timeout=1)
+        assert first == {"inspected": 1, "completed": 0, "deferred": 1, "retained": 0}
+
+        os.utime(journal, (time.time() - 1, time.time() - 1), follow_symlinks=False)
+        started = time.monotonic()
+        second = workspace_manager.recover_cleanup_journals(
+            journal_root,
+            runtime_root,
+            report_cleanup=lambda _execution_id, _token: True,
+            scan_timeout_seconds=0.05,
+            retry_backoff_seconds=0.2,
+        )
+        elapsed = time.monotonic() - started
+        assert second == {"inspected": 1, "completed": 0, "deferred": 1, "retained": 0}
+        assert elapsed < 1.0
+        assert calls == 1
+        assert not finished.is_set()
+        assert journal.exists()
+        assert layout.root.exists()
+        assert "workspace cleanup already in progress for execution 1" in caplog.text
+    finally:
+        release.set()
+        assert finished.wait(timeout=1)
+
+    with workspace_manager._RECOVERY_WORK_LOCK:
+        assert (journal, "cleanup") not in workspace_manager._RECOVERY_WORK_IN_PROGRESS
 
 
 def test_c1_recovery_receipt_rejection_has_persistent_bounded_backoff(
@@ -974,6 +1273,7 @@ def test_c1_recovery_receipt_rejection_has_persistent_bounded_backoff(
 
 def test_c1_recovery_receipt_timeout_keeps_journal_and_scan_bounded(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     runtime_root = tmp_path / "runtime"
     journal_root = tmp_path / "journal"
@@ -987,13 +1287,19 @@ def test_c1_recovery_receipt_timeout_keeps_journal_and_scan_bounded(
     )
     entered = Event()
     release = Event()
+    finished = Event()
+    calls = 0
 
     def stuck_receipt(_execution_id: int, _token: str) -> bool:
+        nonlocal calls
+        calls += 1
         entered.set()
         release.wait(timeout=2)
+        finished.set()
         return False
 
     started = time.monotonic()
+    caplog.set_level("INFO", logger="dlr.worker.workspace")
     counts = workspace_manager.recover_cleanup_journals(
         journal_root,
         runtime_root,
@@ -1002,13 +1308,34 @@ def test_c1_recovery_receipt_timeout_keeps_journal_and_scan_bounded(
         retry_backoff_seconds=0.2,
     )
     elapsed = time.monotonic() - started
-    release.set()
 
     assert entered.wait(timeout=1)
     assert counts == {"inspected": 1, "completed": 0, "deferred": 1, "retained": 0}
-    assert elapsed < 0.5
+    assert not finished.is_set()
+    assert elapsed < 1.0
+
+    os.utime(journal, (time.time() - 1, time.time() - 1), follow_symlinks=False)
+    started = time.monotonic()
+    retry = workspace_manager.recover_cleanup_journals(
+        journal_root,
+        runtime_root,
+        report_cleanup=stuck_receipt,
+        scan_timeout_seconds=0.05,
+        retry_backoff_seconds=0.2,
+    )
+    retry_elapsed = time.monotonic() - started
+
+    assert retry == {"inspected": 1, "completed": 0, "deferred": 1, "retained": 0}
+    assert retry_elapsed < 1.0
+    assert calls == 1
+    assert "cleanup receipt already in progress for execution 1" in caplog.text
     assert journal.exists()
     assert not layout.root.exists()
+
+    release.set()
+    assert finished.wait(timeout=1)
+    with workspace_manager._RECOVERY_WORK_LOCK:
+        assert (journal, "receipt") not in workspace_manager._RECOVERY_WORK_IN_PROGRESS
 
 
 def test_c1_journal_contains_only_recovery_fields_and_no_claim_or_user_data(

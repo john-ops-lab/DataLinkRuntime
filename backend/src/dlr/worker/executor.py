@@ -894,7 +894,6 @@ def run(
             output_raw = output_file.read_bytes() if output_file.exists() else None
     finally:
         if not cleanup_attempted:
-            cleanup_attempted = True
             cleanup_outcome = workspace_manager.cleanup_workspace(
                 workspace,
                 attempt_timeout_seconds=attempt_timeout,
