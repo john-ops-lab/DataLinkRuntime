@@ -18,6 +18,7 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 - `depends_on` 是硬门禁；前序批次未形成已验证 Candidate 时不得开始后序。
 - 允许并行的只有 `B2/B3`、`C1/C3`、`D1/D2`，且必须使用独立 worktree、独立 PostgreSQL database、独立 Compose project/volume、唯一 host ports、独立浏览器 profile 与匿名 fixture；本地 `main` 集成始终串行。
 - 公共 schema/API/protocol/migration 仅由 A0、B0、C0、D0 定义；并行批次不得各自改写公共合同。每个 Wave 的集成顺序固定为编号升序，失败即停止、不勾选、不进入下一 Wave。
+- B3 基线尚无 Lease 表：B3 只交付不依赖具体 Lease schema 的 GC 删除保护 hook 及其 protected/unprotected 行为验证，不得把 stub/fake hook 测试写成真实 Lease 或 GC 与 Execution 创建竞争已通过；Lease schema、数据库实现与真实竞争验证由 C0 10.2/10.3 串行完成，且长期 active Lease 保护 MUST 不变。
 - PostgreSQL database 命名 `dlr_i127_<batch>_<session>`；Compose project 命名 `dlr-i127-<batch>-<session>`；容器必须带 `ao.session=$AO_SESSION_ID`；临时 ArtifactStore/journal/fixture 使用 `/private/tmp/dlr-i127-<batch>-<session>/`，只清理经本批次证明拥有的资源。
 - 浏览器批次分配独立 token/account ports，默认从 `8920/9020` 起按批次递增；不得占用当前 retained app。所有测试数据、文件名、Token 与用户均使用明显匿名值。
 
@@ -30,9 +31,9 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 | B0 | B | A3 | Alembic head、managed models/settings/config/app routers | 独立 migration DB | 串行公共存储 schema/API |
 | B1 | B | B0 | ArtifactStore、upload API/service、capacity/reservation | 独立 store root 与 DB | 串行；先建立上传不变量 |
 | B2 | B | B1 | InputConfig binding/retention/runtime lock | 独立 DB/fixture；不改 GC modules | 可与 B3 并行；本地先集成 B2 |
-| B3 | B | B1 | TTL/GC/audit/Adapter deletion/background loops | 独立 DB/store；不改 binding API | 可与 B2 并行；本地后集成 B3 |
+| B3 | B | B1 | TTL/GC/audit/Adapter deletion/background loops、schema-independent 删除保护 hook | 独立 DB/store；不改 binding API，不新增/引用 Lease schema | 可与 B2 并行；本地后集成 B3 |
 | B4 | B | B2,B3 | Wave B Compose volumes 与全生命周期 | 独立 Compose/store/ports | 串行 Gate；通过后才可进入 C |
-| C0 | C | B4 | Alembic head、Execution/Worker protocol schema/API | 独立 migration DB | 串行公共协议先行 |
+| C0 | C | B4 | Alembic head、Execution/Worker protocol/Lease schema/API、GC 保护 hook 的数据库实现 | 独立 migration DB | 串行公共协议先行；完成真实 GC/Execution 创建竞争 |
 | C1 | C | C0 | Worker agent/client/executor、download/journal/cleanup | 独立 Worker root/journal/store | 可与 C3 并行；本地先集成 C1 |
 | C2 | C | C1 | Python/Node/Java harness 与 manifest | 独立 runtime roots，固定 toolchains | 串行跟随 C1 manifest 合同 |
 | C3 | C | C0 | Control stale reconciler/result/receipt/Lease release | 独立 DB/冻结时钟/fake Worker | 可与 C1 并行；本地在 C2 后集成 C3 |
@@ -111,12 +112,12 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 ## 8. B3 — Wave B TTL、GC、删除任务、Adapter 删除与审计
 
 - [ ] 8.1 实现 UPLOADING/STAGED TTL领取与 Artifact `PENDING_DELETE/DELETE_FAILED→DELETING→DELETED` 删除租约、有限退避和告警；冻结时间/崩溃测试验证 stale DELETING可重领且对象不存在算成功。
-- [ ] 8.2 实现 active Lease删除保护和实际容量一次释放；并发测试验证 GC与Execution创建竞争时要么先建Lease要么先治理，永不删除运行所需Blob。
+- [ ] 8.2 在 GC 领取/删除路径实现不依赖具体 Lease 表或 ORM 的删除保护 hook，并保持实际容量只释放一次；以可控 fake/stub 分别验证 protected 时不迁移状态、不删 Blob、不释放 charge，unprotected 时才可继续幂等删除。本批次尚无 Lease schema，不声称完成真实 active Lease 查询或 GC 与 Execution 创建竞争验证。
 - [ ] 8.3 实现当前 Binding到期的系统生命周期转换与低频 orphan audit；验证 audit只隔离合法随机、超过宽限、无Artifact/job记录对象，不碰未知目录。
 - [ ] 8.4 扩展 Adapter delete：与上传创建都先锁 Adapter，UPLOADING/ACTIVE时409；原子把已计费 Blob和charge转入独立 deletion jobs，再删除元数据。
 - [ ] 8.5 对 deletion job重复消费、对象缺失、删除失败/重启注入故障；验证 `capacity_released_at`只写一次、平台charge不在Adapter事务中丢失。
 - [ ] 8.6 审计上传/绑定/替换/删除/管理员治理和GC失败，验证主体/Adapter/Artifact/stable code可观测且文件内容、Token、storage key、宿主路径脱敏。
-- [ ] 8.7 运行 B3 TTL/GC/adapter-delete/audit并发与故障测试、静态 Gate；证明只清理本批次临时 store 后形成 Candidate。
+- [ ] 8.7 运行 B3 TTL/GC/adapter-delete/audit并发与故障测试、删除保护 hook 合同测试及静态 Gate；证据明确标注真实 Lease provider/竞争尚待 C0，证明只清理本批次临时 store 后形成 Candidate。
 
 ## 9. B4 — Wave B 全生命周期与 Compose Gate
 
@@ -129,12 +130,12 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 ## 10. C0 — Wave C Execution/Lease 与 Worker v1/v2 公共协议
 
 - [ ] 10.1 固定最小红灯：配置替换影响pending文件、v1领取文件、无Token下载/Result、stale Execution永久Lease；验证测试在C0前精确失败。
-- [ ] 10.2 新增 Execution snapshot/deadline/token-hash/cleanup字段、Worker protocol_version与Lease表约束/索引；migration测试验证fresh/upgrade、nullable v1兼容和历史Execution不被改写。
-- [ ] 10.3 扩展统一Execution创建事务以固定timeout/claim/recovery/cleanup快照和文件Lease；验证 attempt<=total<grace、数据库时钟deadline、后续配置/GC不改变pending/running。
+- [ ] 10.2 新增 Execution snapshot/deadline/token-hash/cleanup字段、Worker protocol_version与Lease表约束/索引，并以数据库 active Lease 查询实现 B3 的删除保护 hook；migration/集成测试验证fresh/upgrade、nullable v1兼容、历史Execution不被改写，以及 protected 判定阻止 GC 状态迁移、Blob 删除和 charge 释放。
+- [ ] 10.3 扩展统一Execution创建事务以固定timeout/claim/recovery/cleanup快照和文件Lease；在真实 PostgreSQL 锁序下并发验证 GC与Execution创建竞争时要么先建Lease并阻止治理，要么先治理并使创建失败/重试，绝不删除 pending/running 所需 Blob；同时验证 attempt<=total<grace、数据库时钟deadline和后续配置不改变既有运行。
 - [ ] 10.4 扩展Worker register/claim/TaskPayload与最低协议门禁：缺失=1、v1仅none/json、v2文件任务；验证mixed pool不让旧Worker领取不可完成任务。
 - [ ] 10.5 在v2 claim行锁事务生成32-byte Claim/Cleanup Token、只存hash并定义Header校验依赖；constant-time/hash/API schema测试验证两类Token不可互换且不进入公开响应。
 - [ ] 10.6 新增Worker内部下载和cleanup receipt协议schema/路由骨架，锁定stable code与HTTP合同；契约测试验证非Worker入口和非法Header拒绝。
-- [ ] 10.7 运行C0 migration/protocol/lease/contract targeted tests及Ruff/format/mypy；公共协议通过后才允许C1/C3并行。
+- [ ] 10.7 运行C0 migration/protocol/lease/contract、数据库 Lease provider及真实 GC/Execution 创建竞争 targeted tests与Ruff/format/mypy；公共协议通过后才允许C1/C3并行。
 
 ## 11. C1 — Wave C Worker 下载、journal 与同步/延迟清理
 
@@ -168,7 +169,7 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 ## 14. C4 — Wave C 协议、故障恢复与 Compose Gate
 
 - [ ] 14.1 在隔离Compose先以v1/v2 Control+v1 Worker运行none/json，再滚动v2 Worker；验证旧Worker可上报、v1 cleanup标记legacy_unverified、文件任务只给v2。
-- [ ] 14.2 真实运行Python/JavaScript/Java各一个多文件Execution，验证TaskPayload无Control路径、下载hash一致、Context可读、Workspace终态删除、Blob由Lease保护。
+- [ ] 14.2 真实运行Python/JavaScript/Java各一个多文件Execution，并在隔离 Compose 重放 GC 与 Execution 创建竞争；验证TaskPayload无Control路径、下载hash一致、Context可读、Workspace终态删除，且 pending/running 所需 Blob 由真实 Lease 保护。
 - [ ] 14.3 故障注入claim响应丢失、下载中断/hash篡改、Progress/Result Token错误、Cleanup Token互换、Worker崩溃/断网/晚到Result和清理挂起；验证stable终态、无重跑、journal恢复与日志脱敏。
 - [ ] 14.4 验证managed_files开放前门禁：目标Worker全v2、无v1 active、B/C Gate通过；条件不满足时flag/API/UI继续关闭。
 - [ ] 14.5 演练Worker/Control回滚顺序：先关flag并排空active，保持双协议Control和Blob/journal，再回滚Worker；验证不丢Lease/cleanup治理。
@@ -210,7 +211,7 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 - [ ] 19.1 对新鲜DB、固定基线、重复回填和冲突fixture运行完整Alembic验证，核对计数、历史input、旧列镜像与schema约束。
 - [ ] 19.2 运行backend全量`uv run --frozen --project backend ruff check .`、`ruff format --check .`、`mypy`、`pytest`，逐项记录PASS/FAIL。
 - [ ] 19.3 运行web全量`npm run lint`、`npm run typecheck`、`npm run test`、`npm run build`及目标Playwright矩阵，逐项记录PASS/FAIL。
-- [ ] 19.4 在全新隔离Compose运行三语言、Schedule/run-now、配额/到期/GC、Worker崩溃/恢复、Adapter删除与敏感值扫描；验证单Control边界和所有任务资源归属。
+- [ ] 19.4 在全新隔离Compose运行三语言、Schedule/run-now、配额/到期/GC、真实 Lease 与 Execution 创建竞争、Worker崩溃/恢复、Adapter删除与敏感值扫描；验证单Control边界和所有任务资源归属。
 - [ ] 19.5 完成API变更、LocalFileArtifactStore单Control、迁移/兼容/回滚运维文档并演练非破坏回滚：关flag、禁新增、排空active、保持双协议与表/Blob/job/旧列；验证文档命令可执行且恢复新版后治理继续。
 - [ ] 19.6 对Candidate exact SHA运行OpenSpec strict/all strict、`git diff --check`、scope/密钥/绝对路径扫描并归档source_candidate；所有机器GatePASS才允许E1。
 
@@ -248,7 +249,7 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 | AC-L07 | 未保存/中断/失败释放预留并TTL清理 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 6.5, 8.1, 9.3 |
 | AC-L08 | 白名单、8文件、同名与显式替换 | managed-input-lifecycle：文件类型、名称和大小由服务端权威校验 | 6.3, 7.1-7.3, 16.2-16.3 |
 | AC-L09 | 文件/Adapter/平台配额与低水位并发有效 | managed-input-lifecycle：磁盘低水位与容量记账覆盖所有占用阶段 | 6.3, 6.5, 9.2-9.3 |
-| AC-L10 | GC仅删无active Lease且失败可重试 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 8.1-8.2, 9.3 |
+| AC-L10 | GC仅删无active Lease且失败可重试 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 8.1-8.2（schema-independent hook）, 10.2-10.3（真实Lease/竞争）, 14.2, 19.4 |
 | AC-L11 | stale DELETING可安全重领 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 8.1, 9.3 |
 | AC-L12 | Adapter删除与上传按行锁串行 | managed-input-lifecycle：Adapter删除与上传创建串行化 | 8.4, 9.3 |
 | AC-L13 | Adapter删除移交job/charge且只释放一次 | managed-input-lifecycle：Adapter删除与上传创建串行化 | 8.4-8.5, 9.3 |
@@ -257,7 +258,7 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 | AC-E03 | Execution.input/handle保持原JSON | execution-input-snapshot：Execution固化完整输入快照 | 2.1, 12.1-12.4, 14.2 |
 | AC-E04 | invalid Schedule不建Execution且推进未来点 | execution-input-snapshot：Schedule输入失效必须消费计划点而不热循环 | 2.5, 4.3, 18.2 |
 | AC-E05 | 输入修复要求停用/保存/重启且不补跑 | execution-input-snapshot：Schedule输入失效必须消费计划点而不热循环 | 2.5, 18.2 |
-| AC-E06 | 替换/删除/GC不影响既有active Execution | execution-input-snapshot：文件Execution使用运行期Lease固定具体集合 | 8.2, 10.3, 14.2 |
+| AC-E06 | 替换/删除/GC不影响既有active Execution | execution-input-snapshot：文件Execution使用运行期Lease固定具体集合 | 8.2（hook合同）, 10.2-10.3（真实Lease/竞争）, 14.2, 19.4 |
 | AC-E07 | stale pending/running稳定终态并释放Lease | execution-input-snapshot：stale pending/running Execution在Control侧收敛 | 13.1-13.2, 14.3 |
 | AC-E08 | 晚到Result不覆盖终态或重跑 | execution-input-snapshot：终态与晚到报告幂等 | 13.3, 14.3 |
 | AC-W01 | 二进制不进PG、payload无Control路径 | worker-input-protocol：TaskPayload不暴露存储路径 | 6.2, 10.4, 14.2 |

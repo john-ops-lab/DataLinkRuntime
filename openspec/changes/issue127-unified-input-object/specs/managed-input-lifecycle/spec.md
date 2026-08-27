@@ -106,7 +106,7 @@ Artifact SHALL 使用 `UPLOADING → STAGED → READY → PENDING_DELETE → DEL
 - **THEN** Artifact 进入 `DELETE_FAILED` 并保留容量 charge、错误码、尝试次数与可观测告警
 
 ### Requirement: TTL 与 GC 必须幂等且可重领
-上传中断、失败 reservation、UPLOADING 与未绑定 STAGED SHALL 按短 TTL 收敛；GC 只能处理无 pending/running Execution Lease 的候选，并用数据库删除租约支持 stale `DELETING` 被其他实例安全重领。
+上传中断、失败 reservation、UPLOADING 与未绑定 STAGED SHALL 按短 TTL 收敛；GC 核心在领取或删除候选前 MUST 调用不依赖具体 Lease schema 的运行保护 hook，完整系统中的 hook MUST 以 pending/running Execution Lease 为权威，GC 只能处理 hook 确认为 unprotected 的候选，并用数据库删除租约支持 stale `DELETING` 被其他实例安全重领。
 
 #### Scenario: Reservation TTL 与完成竞争
 - **WHEN** TTL cleaner 与 writer 完成并发
@@ -115,6 +115,10 @@ Artifact SHALL 使用 `UPLOADING → STAGED → READY → PENDING_DELETE → DEL
 #### Scenario: GC 崩溃后重领
 - **WHEN** GC 在 `DELETING` 后崩溃且删除租约到期
 - **THEN** 其他 GC 可重领并幂等删除；对象已不存在按成功处理
+
+#### Scenario: 删除保护 hook 拒绝候选
+- **WHEN** 运行保护 hook 报告 Artifact 为 protected
+- **THEN** GC 不迁移 Artifact 状态、不删除 Blob、不释放实际容量 charge
 
 #### Scenario: 活跃 Lease 保护
 - **WHEN** Artifact 存在 pending/running Execution Lease

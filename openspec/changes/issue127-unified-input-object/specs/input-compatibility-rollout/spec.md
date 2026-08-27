@@ -74,6 +74,10 @@ Control SHALL 先支持 v1/v2 与 nullable Token hash，并以 `DLR_MIN_WORKER_P
 - **WHEN** GC 幂等、reservation 并发或 Adapter 删除测试失败
 - **THEN** 不进入 Wave C，不打开文件 feature flag，也不提交最终 PR
 
+#### Scenario: B3 与 C0 的 Lease 责任边界
+- **WHEN** B3 在尚无 Lease 表的 Wave B schema 上实现 GC
+- **THEN** B3 只验证 schema-independent 删除保护 hook 的 protected/unprotected 行为；C0 必须新增真实 Lease schema/provider并验证 GC 与统一 Execution 创建竞争，C0/C4 Gate 前不得宣称 active Lease 保护完成或打开文件 feature flag
+
 #### Scenario: 本地批次并行
 - **WHEN** 同一 Wave 内无公共 schema/API/protocol/迁移依赖且文件与资源隔离
 - **THEN** 可在独立 worktree/数据库/Compose project/端口中并行验证，但本地 main 集成始终逐批串行

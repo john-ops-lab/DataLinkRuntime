@@ -142,6 +142,10 @@ PENDING_DELETE/DELETE_FAILED
 
 到期扫描若 Artifact 仍在当前 Binding，先走系统生命周期事务：完整 Adapter 锁序、解绑、revision+1、记录 invalid reason、Artifact→PENDING_DELETE；随后普通 GC 永不反向锁 Adapter。
 
+GC 核心在领取或删除候选前调用一个不依赖具体 Lease 表、ORM 或迁移版本的删除保护 hook。B3 只实现这个接缝，并用可控 fake/stub 固定两类事实：hook 报告 protected 时不得迁移 Artifact 状态、删除 Blob 或释放 charge；报告 unprotected 时才可继续幂等删除。B3 基线没有 Lease 表，因此其证据不得声称真实 active Lease 查询或 GC 与 Execution 创建竞争已经通过。
+
+C0 10.2 新增 Lease schema 后，以数据库 pending/running active Lease 查询实现该 hook；C0 10.3 再把统一 Execution 创建事务与 GC 放入同一真实 PostgreSQL 锁竞争，证明结果只能是“Lease 先提交并阻止删除”或“治理先提交并使 Execution 创建失败/重试”。在 C0/C4 风险 Gate 完成前，managed-files feature flag 保持关闭。该分批接线不改变长期合同：任何 active Lease 都 MUST 阻止 Blob 删除和实际容量释放。
+
 永久删除 Adapter 前，上传创建与删除都先锁 Adapter。若存在 UPLOADING/ACTIVE reservation，返回 `adapter_upload_in_progress`。对每个已计费未删除 Blob创建 `artifact_deletion_jobs`，字段采用 Issue 给出的 storage key/SHA/size/former adapter/charged bytes/lease/status/attempt/error/capacity release 时间；在同一事务把删除责任移交、删除 Binding/Artifact/terminal reservation/InputConfig/Adapter。平台 `actual_bytes` 在移交时不变，job 完成后以 `capacity_released_at IS NULL` 扣减一次。
 
 只依赖 FK cascade 的备选方案会先删除唯一 storage key，造成不可回收 Blob；同步删除 Blob 的备选会把用户请求绑定到不可控文件系统延迟，均否决。
@@ -155,6 +159,8 @@ Execution 新字段分三类：
 - 协议与清理：`claim_token_hash/cleanup_receipt_token_hash/workspace_cleanup_status/workspace_cleanup_error_code`。
 
 `execution_input_artifact_leases` 仅含 execution/artifact/ordinal 和索引/约束，负责运行授权与 GC 保护；公开 snapshot 不含 Artifact ID。Execution 业务终态与 Lease 释放在同一事务，历史保留 snapshot 而不保留可操作 Lease。
+
+Lease 表和数据库-backed 删除保护 provider 均属于 C0 公共 schema/API；Wave B 的 B3 不创建、引用或模拟这张表，只证明 GC 会正确遵守抽象保护判定。真实 Lease 保护、统一 Execution 创建原子性及两者与 GC 的竞争必须以 C0 及后续 Compose 风险 Gate 为准，不能复用 B3 hook 单测作为通过证据。
 
 只用 snapshot 授权下载会让历史详情包含可猜测引用；只用 Lease 审计则 Blob 删除后丢失展示事实，因此二者不能合并。
 
@@ -222,6 +228,7 @@ Control 定义单一 machine code registry，Pydantic/domain/Worker report复用
 - [Blob rename 与数据库提交仍不是跨介质原子] → 固定先 Blob 后 STAGED，失败补偿 + TTL + orphan audit；任何对象删除均按随机 key且幂等。
 - [平台容量单例行会成为上传串行点] → 上传开始/扩容/完成事务保持极短，文件流不持锁；第一阶段自托管规模优先正确性，记录锁等待指标供后续分片决策。
 - [系统生命周期转换可在 Schedule enabled 时修改输入] → 仅独立系统权限路径、完整锁序、revision+1与审计；活跃 Execution 由 Lease 保持不变。
+- [B3 hook 测试被误报为真实 Lease 并发证明] → B3 证据只覆盖 schema-independent protected/unprotected 接缝；C0 使用真实 Lease schema/provider 与 PostgreSQL 锁竞争，C4/E0 再以 Compose 回归，完成前 feature flag 保持关闭。
 - [过早释放 Lease 与 Worker 残留副本并存] → Control仅在稳定终态释放，Worker journal/cleanup receipt处理副本；两种状态分栏观测，不把 cleanup 失败改写业务结果。
 - [v1/v2 双协议扩大短期复杂度] → 协议兼容与 managed-files flag 独立，48小时零 v1 claim + active排空后收敛到 v2，兼容代码标注有期限且有指标。
 - [保留 manual_delete 可能长期占满磁盘] → 仍受配额、管理员/用户删除与治理；“永久”文案明确不是不可删除。
@@ -233,8 +240,8 @@ Control 定义单一 machine code registry，Pydantic/domain/Worker report复用
 
 1. **Wave A / expand schema**：新增 InputConfig、Execution/Schedule兼容字段与 `legacy_input_compat_enabled=true`；从固定基线回填 Schedule json、manual `json/{}`、revision=1，输出计数并对冲突 fail-fast。部署新 Control，继续 v1 Worker和旧字段镜像。
 2. **Wave A / unified JSON**：manual/Scheduler/run-now 改用 resolver；新 Web先保存 InputConfig再空 body运行，四卡片可见但 managed-files/remote disabled。连续记录旧 manual/Schedule调用指标。
-3. **Wave B / storage closed**：新增 settings/capacity/reservation/artifact/binding/deletion job、LocalFileArtifactStore、上传/TTL/GC/audit与Compose Control持久卷；flag仍关闭。完成并发配额、rename补偿、Adapter删除与GC故障 Gate。
-4. **Wave C / execution and worker**：新增 Lease、Execution deadline/Token/cleanup字段、Worker protocol version；先部署 v1/v2 Control，再滚动 v2 Worker和journal持久卷；实现下载、三语言Context、同步/孤儿清理、receipt与stale reconciler，故障注入 claim响应丢失/崩溃/晚到Result/Token错误。
+3. **Wave B / storage closed**：新增 settings/capacity/reservation/artifact/binding/deletion job、LocalFileArtifactStore、上传/TTL/GC/audit与Compose Control持久卷；flag仍关闭。完成并发配额、rename补偿、Adapter删除、GC故障 Gate与 schema-independent 删除保护 hook，但不声明真实 Lease/Execution 创建竞争已验证。
+4. **Wave C / execution and worker**：新增 Lease、Execution deadline/Token/cleanup字段、Worker protocol version，把数据库 active Lease provider 接入 GC hook并完成真实 GC/Execution 创建竞争；先部署 v1/v2 Control，再滚动 v2 Worker和journal持久卷；实现下载、三语言Context、同步/孤儿清理、receipt与stale reconciler，故障注入 claim响应丢失/崩溃/晚到Result/Token错误。
 5. **Wave D / expose**：确认目标 Worker全v2且v1 active排空后打开 managed-files flag；部署完整上传/retention/example/history/copy UI，完成双语四视口和端到端验证。
 6. **兼容收敛**：新 Web上线且外部客户端迁移后，连续48小时无旧 manual/Schedule调用再关闭 `legacy_input_compat_enabled`；连续48小时无v1 claim再把最低协议升到2。
 7. **观察与旧列后续**：至少7天且每个 enabled Schedule覆盖两个真实计划点，迁移计数、Smoke、故障与回滚演练通过后，另开独立变更停止镜像并删除旧 Schedule input列。
