@@ -883,7 +883,10 @@ async def artifact_gc_loop() -> None:
             logger.warning("managed input GC cycle unavailable; retrying next interval")
         except Exception:  # noqa: BLE001 - one failed cycle must not stop governance
             record_audit_event("gc_cycle", "failed", code="gc_cycle_failed")
-            logger.warning("managed input GC cycle failed; retrying next interval")
+            logger.warning(
+                "managed input GC cycle failed; retrying next interval",
+                exc_info=True,
+            )
         await asyncio.sleep(settings.artifact_gc_interval_seconds)
 
 
@@ -903,7 +906,10 @@ async def orphan_audit_loop() -> None:
             logger.warning("managed input orphan audit unavailable; retrying next interval")
         except Exception:  # noqa: BLE001 - one failed audit must not stop governance
             record_audit_event("orphan_audit", "failed", code="orphan_audit_failed")
-            logger.warning("managed input orphan audit failed; retrying next interval")
+            logger.warning(
+                "managed input orphan audit failed; retrying next interval",
+                exc_info=True,
+            )
         await asyncio.sleep(settings.artifact_audit_interval_seconds)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -259,6 +260,76 @@ def test_manual_delete_reports_live_deleting_claim(
     assert store.stat(storage_key) is not None
 
 
+def test_manual_delete_is_idempotent_for_repeated_request(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_task(api_client, "b3-repeat-delete")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    from dlr.common.config import settings
+
+    monkeypatch.setattr(settings, "artifact_store_root", str(store.root))
+    with session_factory.begin() as session:
+        artifact = create_artifact(session, adapter["id"], store, size_bytes=3)
+        artifact_id = int(artifact.id)
+        storage_key = artifact.storage_key
+
+    first = api_client.delete(f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}")
+    second = api_client.delete(f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}")
+    assert first.status_code == 204, first.text
+    assert second.status_code == 204, second.text
+    with session_factory() as session:
+        deleted = session.get(ManagedInputArtifact, artifact_id)
+        capacity = session.get(ManagedInputCapacity, 1)
+        assert deleted is not None and deleted.status == ManagedInputArtifactStatus.DELETED
+        assert capacity is not None and capacity.actual_bytes == 0
+    assert store.stat(storage_key) is None
+
+
+def test_manual_delete_is_idempotent_when_adapter_delete_wins_race(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_task(api_client, "b3-adapter-delete-race")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    with session_factory.begin() as session:
+        artifact = create_artifact(session, adapter["id"], store, size_bytes=3)
+        artifact_id = int(artifact.id)
+        storage_key = artifact.storage_key
+
+    from dlr.control.services import adapter as adapter_service
+
+    def adapter_delete_wins(
+        session: Session,
+        _artifact_id: int,
+        *,
+        adapter_id: int | None = None,
+        **_kwargs: object,
+    ) -> None:
+        assert adapter_id == adapter["id"]
+        adapter_service.delete_adapter(session, int(adapter_id))
+        return None
+
+    monkeypatch.setattr(managed_input_gc, "claim_artifact_deletion", adapter_delete_wins)
+    response = api_client.delete(f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}")
+    assert response.status_code == 204, response.text
+
+    with session_factory() as session:
+        assert session.get(Adapter, adapter["id"]) is None
+        assert session.get(ManagedInputArtifact, artifact_id) is None
+        job = session.scalar(
+            select(ArtifactDeletionJob).where(ArtifactDeletionJob.storage_key == storage_key)
+        )
+        capacity = session.get(ManagedInputCapacity, 1)
+        assert job is not None and job.status == "pending"
+        assert capacity is not None and capacity.actual_bytes == 3
+    assert store.stat(storage_key) is not None
+
+
 def test_adapter_delete_rejects_active_upload_before_metadata_changes(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
@@ -423,6 +494,47 @@ def test_success_audit_uses_explicit_none_code(caplog: pytest.LogCaptureFixture)
     )
     assert "code=none" in caplog.text
     assert "code=unknown" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("loop_name", "warning_text", "audit_code"),
+    [
+        ("artifact_gc_loop", "managed input GC cycle failed", "gc_cycle_failed"),
+        ("orphan_audit_loop", "managed input orphan audit failed", "orphan_audit_failed"),
+    ],
+)
+def test_background_loops_log_unexpected_failures_with_traceback(
+    loop_name: str,
+    warning_text: str,
+    audit_code: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def fail_to_thread(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("EXAMPLE_BACKGROUND_FAILURE")
+
+    async def stop_after_one_cycle(_delay: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(managed_input_gc.asyncio, "to_thread", fail_to_thread)
+    monkeypatch.setattr(managed_input_gc.asyncio, "sleep", stop_after_one_cycle)
+    caplog.set_level(logging.INFO, logger="dlr.control")
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(getattr(managed_input_gc, loop_name)())
+
+    warning = next(
+        record
+        for record in caplog.records
+        if record.name == "dlr.control.managed_input_gc" and warning_text in record.getMessage()
+    )
+    assert warning.exc_info is not None
+    assert isinstance(warning.exc_info[1], RuntimeError)
+    assert any(
+        record.name == "dlr.control.managed_input_audit"
+        and f"code={audit_code}" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_gc_delete_failure_is_backed_off_and_reclaimed(

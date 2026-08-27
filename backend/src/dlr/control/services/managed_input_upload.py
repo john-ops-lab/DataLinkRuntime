@@ -198,16 +198,19 @@ def _lock_reservation_by_id(
     )
 
 
-def _lock_artifact(session: Session, adapter_id: int, artifact_id: int) -> ManagedInputArtifact:
+def _lock_artifact(
+    session: Session, adapter_id: int, artifact_id: int
+) -> ManagedInputArtifact | None:
     artifact = session.scalar(
         select(ManagedInputArtifact)
         .where(
-            ManagedInputArtifact.adapter_id == adapter_id,
             ManagedInputArtifact.id == artifact_id,
         )
         .with_for_update()
     )
     if artifact is None:
+        return None
+    if artifact.adapter_id != adapter_id:
         raise domain_error(
             404,
             ManagedInputErrorCode.ARTIFACT_NOT_FOUND.value,
@@ -788,6 +791,9 @@ def delete_staged(
     """Delete a staged blob and release actual bytes exactly once."""
     _lock_adapter(session, adapter_id)
     artifact = _lock_artifact(session, adapter_id, artifact_id)
+    if artifact is None:
+        session.commit()
+        return False
     if artifact.status == ManagedInputArtifactStatus.DELETED:
         session.commit()
         return False
@@ -823,12 +829,19 @@ def delete_staged(
     )
     if claim is None:
         current = session.get(ManagedInputArtifact, artifact_id)
-        if (
-            current is not None
-            and current.adapter_id == adapter_id
-            and current.status == ManagedInputArtifactStatus.DELETING
-            and _delete_claim_is_live(current)
+        if current is None or (
+            current.adapter_id == adapter_id
+            and current.status == ManagedInputArtifactStatus.DELETED
         ):
+            session.commit()
+            return False
+        if current.adapter_id != adapter_id:
+            raise domain_error(
+                404,
+                ManagedInputErrorCode.ARTIFACT_NOT_FOUND.value,
+                "Input Artifact not found",
+            )
+        if current.status == ManagedInputArtifactStatus.DELETING and _delete_claim_is_live(current):
             raise domain_error(
                 409,
                 ManagedInputErrorCode.ARTIFACT_DELETE_IN_PROGRESS.value,
