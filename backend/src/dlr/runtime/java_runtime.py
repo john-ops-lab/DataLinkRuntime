@@ -191,7 +191,10 @@ public class DlrRuntime {
                 || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
                 throw new InputManifestException("input_artifact_not_ready");
             }
-            try (var stream = Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS)) { }
+            // Openability only: do not read or hash here; Worker owns size/SHA verification.
+            var stream = Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS);
+            // A successful open proves the controlled file is readable.
+            stream.close();
         } catch (InputManifestException error) {
             throw error;
         } catch (Exception error) {

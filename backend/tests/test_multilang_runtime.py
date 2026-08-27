@@ -40,6 +40,20 @@ def payload(language: str, code: str) -> dict[str, object]:
 
 C2_INPUT_CONTENT = b"same C2 manifest fixture\n"
 
+# One shared table drives the Worker pre-start contract and all three harness
+# diagnostics.  Size/SHA failures deliberately have no harness expectation:
+# the Worker is authoritative for content verification, while each harness
+# only defends the minimum manifest/path/existence/openability boundary.
+C2_MANIFEST_CONFORMANCE = (
+    ("accepted", None, None),
+    ("invalid", "input_artifact_not_ready", "input_artifact_not_ready"),
+    ("ordinal", "input_artifact_not_ready", "input_artifact_not_ready"),
+    ("mount", "input_artifact_not_ready", "input_artifact_not_ready"),
+    ("missing", "input_artifact_not_ready", "input_artifact_not_ready"),
+    ("size", "input_artifact_checksum_mismatch", None),
+    ("sha", "input_artifact_checksum_mismatch", None),
+)
+
 
 def c2_input_file() -> dict[str, object]:
     return {
@@ -356,24 +370,13 @@ def _mutate_c2_manifest(
         raise AssertionError(f"unknown C2 mutation: {mutation}")
 
 
-@pytest.mark.parametrize(
-    ("mutation", "expected_code"),
-    [
-        ("invalid", "input_artifact_not_ready"),
-        ("ordinal", "input_artifact_not_ready"),
-        ("mount", "input_artifact_not_ready"),
-        ("missing", "input_artifact_not_ready"),
-        ("size", "input_artifact_checksum_mismatch"),
-        ("sha", "input_artifact_checksum_mismatch"),
-    ],
-)
-def test_c2_worker_manifest_rejection_is_prestart_and_structured(
+def _run_c2_worker_manifest_case(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    language: str,
     mutation: str,
-    expected_code: str,
-) -> None:
-    marker = tmp_path / f"python-{mutation}-prestart"
+) -> dict[str, object]:
+    marker = tmp_path / f"{language}-{mutation}-prestart"
     original_prepare = workspace_manager.prepare_input_files
 
     def prepare_then_mutate(
@@ -382,15 +385,36 @@ def test_c2_worker_manifest_rejection_is_prestart_and_structured(
         input_downloader: workspace_manager.InputDownloader | None,
     ) -> None:
         original_prepare(layout, input_files, input_downloader)
-        _mutate_c2_manifest(layout, mutation)
+        if mutation != "accepted":
+            _mutate_c2_manifest(layout, mutation)
 
     monkeypatch.setattr(workspace_manager, "prepare_input_files", prepare_then_mutate)
-    result = executor.run(
-        payload("python", _c2_started_adapter_code("python", marker))
+    return executor.run(
+        payload(language, _c2_started_adapter_code(language, marker))
         | {"input": None, "input_files": [c2_input_file()]},
         runtime_settings(tmp_path / "runtime"),
         input_downloader=lambda _file, destination: destination.write(C2_INPUT_CONTENT),
     )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code", "_harness_expected_code"), C2_MANIFEST_CONFORMANCE
+)
+def test_c2_worker_manifest_conformance_is_prestart_and_structured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    expected_code: str | None,
+    _harness_expected_code: str | None,
+) -> None:
+    marker = tmp_path / f"python-{mutation}-prestart"
+    result = _run_c2_worker_manifest_case(tmp_path, monkeypatch, "python", mutation)
+
+    if expected_code is None:
+        assert mutation == "accepted"
+        assert result["status"] == "succeeded", result
+        assert marker.exists()
+        return
 
     assert result["status"] == "failed", result
     assert result["error_code"] == expected_code
@@ -400,9 +424,16 @@ def test_c2_worker_manifest_rejection_is_prestart_and_structured(
     assert "/control/internal/secret-input.txt" not in str(result)
 
 
-@pytest.mark.parametrize("mutation,expected_code", [("invalid", "input_artifact_not_ready")])
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (mutation, harness_code)
+        for mutation, _worker_code, harness_code in C2_MANIFEST_CONFORMANCE
+        if harness_code is not None
+    ],
+)
 @pytest.mark.parametrize("language", ["python", "javascript", "java"])
-def test_c2_harness_manifest_diagnostic_does_not_drive_error_code(
+def test_c2_harness_manifest_conformance_is_diagnostic_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     language: str,
@@ -434,37 +465,26 @@ def test_c2_harness_manifest_diagnostic_does_not_drive_error_code(
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     [
-        ("ordinal", "input_artifact_not_ready"),
-        ("mount", "input_artifact_not_ready"),
-        ("missing", "input_artifact_not_ready"),
+        (mutation, worker_code)
+        for mutation, worker_code, _harness_code in C2_MANIFEST_CONFORMANCE
+        if mutation in {"invalid", "sha"}
     ],
 )
 @pytest.mark.parametrize("language", ["python", "javascript", "java"])
-def test_c2_manifest_boundary_rejection_does_not_start_adapter(
+def test_c2_worker_manifest_conformance_prestart_samples_cover_all_languages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     language: str,
     mutation: str,
     expected_code: str,
 ) -> None:
-    marker = tmp_path / f"{language}-{mutation}-started"
-    original_validate = workspace_manager.validate_input_manifest
-
-    def validate_then_mutate(layout: workspace_manager.WorkspaceLayout) -> None:
-        original_validate(layout)
-        _mutate_c2_manifest(layout, mutation)
-
-    monkeypatch.setattr(workspace_manager, "validate_input_manifest", validate_then_mutate)
-    result = executor.run(
-        payload(language, _c2_started_adapter_code(language, marker))
-        | {"input": None, "input_files": [c2_input_file()]},
-        runtime_settings(tmp_path / "runtime"),
-        input_downloader=lambda _file, destination: destination.write(C2_INPUT_CONTENT),
-    )
+    marker = tmp_path / f"{language}-{mutation}-prestart"
+    result = _run_c2_worker_manifest_case(tmp_path, monkeypatch, language, mutation)
 
     assert result["status"] == "failed", result
-    assert result.get("error_code") is None
-    assert f"DLR_INPUT_ERROR:{expected_code}" in result["stdout"]
+    assert result["error_code"] == expected_code
+    assert result["stdout"] == ""
+    assert result["stderr"] == ""
     assert not marker.exists()
     assert "/control/internal/secret-input.txt" not in str(result)
 
@@ -487,6 +507,8 @@ def test_c2_adapter_cannot_forge_input_error_code(
 
 def test_c2_input_permissions_are_documented_as_best_effort_only() -> None:
     doc = workspace_manager.validate_input_manifest.__doc__ or ""
+    assert "Worker owns the size/SHA-256 verification" in doc
+    assert "minimal structure, path, existence, and openability checks" in doc
     assert "best-effort accidental-write protection only" in doc
     assert "never a same-OS-user security boundary" in doc
 

@@ -34,6 +34,7 @@ function isInteger(value, positive = false) {
 function validateInputFile(filePath) {
   let descriptor;
   try {
+    // Openability only; the Worker owns size/SHA verification.
     const info = fs.lstatSync(filePath);
     if (info.isSymbolicLink() || !info.isFile()) failInput("input_artifact_not_ready");
     const noFollow = fs.constants.O_NOFOLLOW ?? 0;

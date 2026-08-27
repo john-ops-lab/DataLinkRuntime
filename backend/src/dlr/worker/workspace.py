@@ -516,6 +516,8 @@ def validate_input_manifest(layout: WorkspaceLayout) -> None:
     The manifest is a Worker-local hand-off, not an authorization source. It
     is deliberately strict so a malformed or modified workspace fails with a
     stable code before the language harness imports or starts Adapter code.
+    The Worker owns the size/SHA-256 verification; language harnesses only
+    repeat minimal structure, path, existence, and openability checks.
     Input permissions remain best-effort accidental-write protection only,
     never a same-OS-user security boundary.
     """
