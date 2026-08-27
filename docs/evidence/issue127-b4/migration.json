@@ -1,0 +1,24 @@
+{
+  "dispatch_id": "issue127-b4-gate-20260827-r1",
+  "fixed_base_sha": "1d91452fdb4dc2b6b302555d3ff7983940a31137",
+  "status": "PASS",
+  "fresh_compose_migration": {
+    "status": "PASS",
+    "head": "0028_issue127_b0_managed_input"
+  },
+  "migration_tests": {
+    "relevant_result": "3 passed, 1 deselected, 1 warning",
+    "deselected": "test_repeated_upgrade_and_test_only_downgrade",
+    "reason": "rollback contract prohibits destructive test-only downgrade"
+  },
+  "repeat_upgrade": {
+    "upgrade_head_runs": 2,
+    "status": "PASS",
+    "head_after_repeat": "0028_issue127_b0_managed_input",
+    "artifact_rows": 18,
+    "binding_rows": 7,
+    "deletion_job_rows": 1,
+    "actual_bytes": 1100059
+  },
+  "schema_downgrade_executed": false
+}

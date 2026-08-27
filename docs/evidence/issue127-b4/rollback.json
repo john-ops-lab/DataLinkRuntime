@@ -1,0 +1,38 @@
+{
+  "dispatch_id": "issue127-b4-gate-20260827-r1",
+  "status": "PASS",
+  "operation": "owned Compose Control stop/start only",
+  "pre_rollback": {
+    "artifact_rows": 18,
+    "reservation_rows": 18,
+    "binding_rows": 7,
+    "deletion_job_rows": 1,
+    "actual_bytes": 1100059,
+    "reserved_bytes": 0,
+    "objects": 8,
+    "parts": 0
+  },
+  "rollback_checks": {
+    "flag_off": true,
+    "control_stopped": true,
+    "tables_retained": true,
+    "artifact_store_volume_retained": true,
+    "jobs_retained": true,
+    "managed_input_request_status": 422,
+    "managed_input_error_code": "input_source_not_available",
+    "schema_downgrade": "NOT_RUN",
+    "drop_or_delete_history": "NOT_RUN"
+  },
+  "post_rollback": {
+    "artifact_rows": 18,
+    "reservation_rows": 18,
+    "binding_rows": 7,
+    "deletion_job_rows": 1,
+    "actual_bytes": 1100059,
+    "reserved_bytes": 0,
+    "objects": 8,
+    "parts": 0,
+    "database_health": true
+  },
+  "counts_unchanged": true
+}

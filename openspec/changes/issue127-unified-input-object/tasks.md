@@ -121,11 +121,11 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 9. B4 — Wave B 全生命周期与 Compose Gate
 
-- [ ] 9.1 更新 Compose为Control ArtifactStore持久卷和全部B阶段环境变量，保持 managed_files flag off；`docker compose config -q`验证默认/覆盖值与单Control边界。
-- [ ] 9.2 在隔离 Compose 上传 allowed/blocked/oversize 文件、刷新恢复、保存0/8、替换、到期、删除、配额下降/恢复和低水位；验证DB/Blob/charge状态逐步一致。
-- [ ] 9.3 故障注入上传中断、rename后DB失败、reservation TTL竞争、GC崩溃、delete失败与Adapter删除竞争；重启Control后验证最终收敛且无静默残留。
-- [ ] 9.4 执行B阶段 rollback演练：flag保持关闭、停止后台loop后再启、保留表/Blob/job并恢复治理；验证不做schema downgrade或自动删数据。
-- [ ] 9.5 运行 Wave B backend、fresh/upgrade migration、Compose smoke和日志敏感值扫描，归档 exact-SHA/资源清单/证据；任何失败不进入 C。
+- [x] 9.1 更新 Compose为Control ArtifactStore持久卷和全部B阶段环境变量，保持 managed_files flag off；`docker compose config -q`验证默认/覆盖值与单Control边界。（证据：`docs/evidence/issue127-b4/compose-config.json`）
+- [x] 9.2 在隔离 Compose 上传 allowed/blocked/oversize 文件、刷新恢复、保存0/8、替换、到期、删除、配额下降/恢复和低水位；验证DB/Blob/charge状态逐步一致。（证据：`docs/evidence/issue127-b4/lifecycle.json`）
+- [x] 9.3 故障注入上传中断、rename后DB失败、reservation TTL竞争、GC崩溃、delete失败与Adapter删除竞争；重启Control后验证最终收敛且无静默残留。（证据：`docs/evidence/issue127-b4/fault-injection.json`）
+- [x] 9.4 执行B阶段 rollback演练：flag保持关闭、停止后台loop后再启、保留表/Blob/job并恢复治理；验证不做schema downgrade或自动删数据。（证据：`docs/evidence/issue127-b4/rollback.json`）
+- [x] 9.5 运行 Wave B backend、fresh/upgrade migration、Compose smoke和日志敏感值扫描，归档 exact-SHA/资源清单/证据；任何失败不进入 C。（证据：`docs/evidence/issue127-b4/README.md`、`migration.json`、`quality.json`、`scans.json`、`resources.json`）
 
 ## 10. C0 — Wave C Execution/Lease 与 Worker v1/v2 公共协议
 
