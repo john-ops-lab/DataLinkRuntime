@@ -6,9 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.LinkOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,6 +80,7 @@ public class DlrRuntime {
         try {
             inputFiles = readInputFiles(workspace);
         } catch (InputManifestException error) {
+            // Diagnostic only. The Worker preflight owns the structured error code.
             System.err.println("DLR_INPUT_ERROR:" + error.code);
             System.exit(1);
             return;
@@ -166,7 +165,7 @@ public class DlrRuntime {
             if (!target.isAbsolute() || !target.getParent().equals(inputDirectory)) {
                 throw new InputManifestException("input_artifact_not_ready");
             }
-            verifyInputFile(target, sizeBytes, sha256);
+            validateInputFile(target);
             result.add(new InputFile(
                 expectedOrdinal, target, originalName, contentType, sizeBytes, sha256
             ));
@@ -185,27 +184,14 @@ public class DlrRuntime {
         return (double) integer == decimal ? integer : null;
     }
 
-    private static void verifyInputFile(Path target, long expectedSize, String expectedSha)
+    private static void validateInputFile(Path target)
         throws InputManifestException {
         try {
             if (Files.isSymbolicLink(target)
                 || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
                 throw new InputManifestException("input_artifact_not_ready");
             }
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            long actualSize = 0;
-            try (var stream = Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS)) {
-                byte[] buffer = new byte[1024 * 1024];
-                int count;
-                while ((count = stream.read(buffer)) != -1) {
-                    actualSize += count;
-                    digest.update(buffer, 0, count);
-                }
-            }
-            String actualSha = HexFormat.of().formatHex(digest.digest());
-            if (actualSize != expectedSize || !actualSha.equals(expectedSha)) {
-                throw new InputManifestException("input_artifact_checksum_mismatch");
-            }
+            try (var stream = Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS)) { }
         } catch (InputManifestException error) {
             throw error;
         } catch (Exception error) {

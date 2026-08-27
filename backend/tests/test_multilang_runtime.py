@@ -301,6 +301,31 @@ def _c2_started_adapter_code(language: str, marker: Path) -> str:
     )
 
 
+def _c2_fake_input_error_adapter_code(language: str) -> str:
+    marker = "DLR_INPUT_ERROR:input_artifact_checksum_mismatch"
+    if language == "python":
+        return (
+            "def handle(context, input):\n"
+            f"    print({marker!r})\n"
+            "    raise RuntimeError('adapter failure')\n"
+        )
+    if language == "javascript":
+        return (
+            "export function handle(context, input) { "
+            f"console.error({json.dumps(marker)}); "
+            "throw new Error('adapter failure'); "
+            "}"
+        )
+    return (
+        "public class Adapter {\n"
+        "    public Object handle(Context context, Object input) {\n"
+        f'        System.err.println("{marker}");\n'
+        '        throw new RuntimeException("adapter failure");\n'
+        "    }\n"
+        "}\n"
+    )
+
+
 def _mutate_c2_manifest(
     layout: workspace_manager.WorkspaceLayout,
     mutation: str,
@@ -331,9 +356,53 @@ def _mutate_c2_manifest(
         raise AssertionError(f"unknown C2 mutation: {mutation}")
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("invalid", "input_artifact_not_ready"),
+        ("ordinal", "input_artifact_not_ready"),
+        ("mount", "input_artifact_not_ready"),
+        ("missing", "input_artifact_not_ready"),
+        ("size", "input_artifact_checksum_mismatch"),
+        ("sha", "input_artifact_checksum_mismatch"),
+    ],
+)
+def test_c2_worker_manifest_rejection_is_prestart_and_structured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    expected_code: str,
+) -> None:
+    marker = tmp_path / f"python-{mutation}-prestart"
+    original_prepare = workspace_manager.prepare_input_files
+
+    def prepare_then_mutate(
+        layout: workspace_manager.WorkspaceLayout,
+        input_files: list[object],
+        input_downloader: workspace_manager.InputDownloader | None,
+    ) -> None:
+        original_prepare(layout, input_files, input_downloader)
+        _mutate_c2_manifest(layout, mutation)
+
+    monkeypatch.setattr(workspace_manager, "prepare_input_files", prepare_then_mutate)
+    result = executor.run(
+        payload("python", _c2_started_adapter_code("python", marker))
+        | {"input": None, "input_files": [c2_input_file()]},
+        runtime_settings(tmp_path / "runtime"),
+        input_downloader=lambda _file, destination: destination.write(C2_INPUT_CONTENT),
+    )
+
+    assert result["status"] == "failed", result
+    assert result["error_code"] == expected_code
+    assert result["stdout"] == ""
+    assert result["stderr"] == ""
+    assert not marker.exists()
+    assert "/control/internal/secret-input.txt" not in str(result)
+
+
 @pytest.mark.parametrize("mutation,expected_code", [("invalid", "input_artifact_not_ready")])
 @pytest.mark.parametrize("language", ["python", "javascript", "java"])
-def test_c2_invalid_manifest_does_not_start_adapter(
+def test_c2_harness_manifest_diagnostic_does_not_drive_error_code(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     language: str,
@@ -356,7 +425,7 @@ def test_c2_invalid_manifest_does_not_start_adapter(
     )
 
     assert result["status"] == "failed", result
-    assert result["error_code"] == expected_code
+    assert result.get("error_code") is None
     assert f"DLR_INPUT_ERROR:{expected_code}" in result["stdout"]
     assert not marker.exists()
     assert "/control/internal/secret-input.txt" not in str(result)
@@ -368,8 +437,6 @@ def test_c2_invalid_manifest_does_not_start_adapter(
         ("ordinal", "input_artifact_not_ready"),
         ("mount", "input_artifact_not_ready"),
         ("missing", "input_artifact_not_ready"),
-        ("size", "input_artifact_checksum_mismatch"),
-        ("sha", "input_artifact_checksum_mismatch"),
     ],
 )
 @pytest.mark.parametrize("language", ["python", "javascript", "java"])
@@ -396,10 +463,26 @@ def test_c2_manifest_boundary_rejection_does_not_start_adapter(
     )
 
     assert result["status"] == "failed", result
-    assert result["error_code"] == expected_code
+    assert result.get("error_code") is None
     assert f"DLR_INPUT_ERROR:{expected_code}" in result["stdout"]
     assert not marker.exists()
     assert "/control/internal/secret-input.txt" not in str(result)
+
+
+@pytest.mark.parametrize("language", ["python", "javascript", "java"])
+def test_c2_adapter_cannot_forge_input_error_code(
+    tmp_path: Path,
+    language: str,
+) -> None:
+    result = executor.run(
+        payload(language, _c2_fake_input_error_adapter_code(language)),
+        runtime_settings(tmp_path / language),
+    )
+
+    assert result["status"] == "failed", result
+    assert result.get("error_code") is None
+    assert "DLR_INPUT_ERROR:input_artifact_checksum_mismatch" in result["stdout"]
+    assert "adapter failure" in result["stdout"]
 
 
 def test_c2_input_permissions_are_documented_as_best_effort_only() -> None:

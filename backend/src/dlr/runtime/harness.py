@@ -16,7 +16,6 @@ Any exception (including a non-JSON-serializable return value) prints a
 traceback to stderr and exits non-zero, which the Worker reports as failed.
 """
 
-import hashlib
 import importlib.util
 import json
 import logging
@@ -100,8 +99,8 @@ def _manifest_int(value: object, *, positive: bool = False) -> int | None:
     return value
 
 
-def _verify_input_file(path: Path, expected_size: int, expected_sha: str) -> None:
-    """Verify one input file without following a symlink leaf."""
+def _validate_input_file(path: Path) -> None:
+    """Validate one Worker-verified file without reading its contents."""
     try:
         info = path.lstat()
     except OSError as error:
@@ -114,15 +113,6 @@ def _verify_input_file(path: Path, expected_size: int, expected_sha: str) -> Non
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise InputManifestError("input_artifact_not_ready")
-        actual_size = 0
-        digest = hashlib.sha256()
-        with os.fdopen(descriptor, "rb") as stream:
-            descriptor = -1
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                actual_size += len(chunk)
-                digest.update(chunk)
-        if actual_size != expected_size or digest.hexdigest() != expected_sha:
-            raise InputManifestError("input_artifact_checksum_mismatch")
     except InputManifestError:
         raise
     except (OSError, TypeError) as error:
@@ -133,7 +123,12 @@ def _verify_input_file(path: Path, expected_size: int, expected_sha: str) -> Non
 
 
 def _load_input_files(workspace: Path) -> tuple[InputFile, ...]:
-    """Parse and verify the Worker manifest before importing Adapter code."""
+    """Parse the Worker manifest before importing Adapter code.
+
+    The Worker owns the size/SHA-256 verification before process start.  The
+    harness only repeats cheap path, existence, and controlled-file checks so
+    those checks cannot consume the Adapter execution budget.
+    """
     workspace_match = _WORKSPACE_NAME_PATTERN.fullmatch(workspace.name)
     if not workspace.is_absolute() or workspace_match is None:
         raise InputManifestError("input_artifact_not_ready")
@@ -196,7 +191,7 @@ def _load_input_files(workspace: Path) -> tuple[InputFile, ...]:
         target = workspace / "input" / mount_name
         if target.parent != workspace / "input" or not target.is_absolute():
             raise InputManifestError("input_artifact_not_ready")
-        _verify_input_file(target, size_bytes, sha256)
+        _validate_input_file(target)
         result.append(
             InputFile(
                 ordinal=expected_ordinal,
@@ -256,6 +251,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except InputManifestError as error:
+        # Diagnostic only.  The Worker preflight owns the structured error code.
         print(f"DLR_INPUT_ERROR:{error.code}", file=sys.stderr)
         sys.exit(1)
     except Exception:

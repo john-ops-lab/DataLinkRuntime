@@ -4,8 +4,6 @@ SOURCE = r"""import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import crypto from "node:crypto";
-
 const workspace = process.argv[2];
 const adapterPath = process.argv[3];
 const manifestFields = new Set([
@@ -33,7 +31,7 @@ function isInteger(value, positive = false) {
   return Number.isInteger(value) && (!positive || value > 0);
 }
 
-function verifyInputFile(filePath, expectedSize, expectedSha) {
+function validateInputFile(filePath) {
   let descriptor;
   try {
     const info = fs.lstatSync(filePath);
@@ -42,18 +40,6 @@ function verifyInputFile(filePath, expectedSize, expectedSha) {
     descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
     const opened = fs.fstatSync(descriptor);
     if (!opened.isFile()) failInput("input_artifact_not_ready");
-    const digest = crypto.createHash("sha256");
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
-    let actualSize = 0;
-    while (true) {
-      const count = fs.readSync(descriptor, buffer, 0, buffer.length, null);
-      if (count === 0) break;
-      actualSize += count;
-      digest.update(buffer.subarray(0, count));
-    }
-    if (actualSize !== expectedSize || digest.digest("hex") !== expectedSha) {
-      failInput("input_artifact_checksum_mismatch");
-    }
   } catch (error) {
     if (error instanceof InputManifestError) throw error;
     failInput("input_artifact_not_ready");
@@ -121,7 +107,7 @@ function inputFilesFromManifest() {
     if (path.dirname(target) !== inputDir || !path.isAbsolute(target)) {
       failInput("input_artifact_not_ready");
     }
-    verifyInputFile(target, raw.size_bytes, raw.sha256);
+    validateInputFile(target);
     files.push(Object.freeze({
       ordinal: expectedOrdinal,
       path: target,
@@ -160,6 +146,7 @@ try {
   fs.writeFileSync(path.join(workspace, "output.json"), serialized, "utf8");
 } catch (error) {
   if (error instanceof InputManifestError) {
+    // Diagnostic only. The Worker preflight owns the structured error code.
     console.error(`DLR_INPUT_ERROR:${error.code}`);
   } else {
     console.error(error?.stack ?? String(error));

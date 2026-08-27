@@ -49,9 +49,6 @@ logger = logging.getLogger("dlr.worker.executor")
 
 HARNESS_PATH = Path(harness.__file__)
 REDACTED = "[REDACTED]"
-_INPUT_MANIFEST_ERROR_CODES = frozenset(
-    {"input_artifact_not_ready", "input_artifact_checksum_mismatch"}
-)
 
 # Display labels for the supported Adapter languages; unknown identifiers fall
 # back to the raw internal language key.
@@ -539,18 +536,6 @@ def _workspace_failure(
     return result
 
 
-def _input_manifest_error_code(log: str) -> str | None:
-    """Extract only the harness' stable input validation marker."""
-    marker = "DLR_INPUT_ERROR:"
-    for line in reversed(log.splitlines()):
-        if marker not in line:
-            continue
-        code = line.split(marker, 1)[1].strip()
-        if code in _INPUT_MANIFEST_ERROR_CODES:
-            return code
-    return None
-
-
 def _write_workspace_text(path: Path, value: str) -> None:
     """Write task material as a private file; user code only reads it."""
     try:
@@ -994,9 +979,6 @@ def run(
                 f"adapter process exited with code {returncode}", secret_values
             ),
         }
-        manifest_error_code = _input_manifest_error_code(unified_log)
-        if manifest_error_code is not None:
-            failure_result["error_code"] = manifest_error_code
         return base | failure_result
     if output_raw is None:
         return base | {"status": "failed", "error": "adapter produced no output.json"}
