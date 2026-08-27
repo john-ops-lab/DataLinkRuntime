@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExecutionCreate(BaseModel):
@@ -79,9 +79,9 @@ class ExecutionResultReport(BaseModel):
     stderr: str = ""
     stderr_truncated: bool = False
     error: str | None = None
-    error_code: str | None = None
+    error_code: str | None = Field(default=None, max_length=64)
     workspace_cleanup_status: Literal["completed", "deferred"] | None = None
-    workspace_cleanup_error_code: str | None = None
+    workspace_cleanup_error_code: str | None = Field(default=None, max_length=64)
 
 
 class ProgressReport(BaseModel):

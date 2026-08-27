@@ -8,6 +8,7 @@ parallel. Long polling simply retries the atomic claim until the deadline.
 import time
 from datetime import timedelta
 
+from fastapi import HTTPException
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
@@ -277,103 +278,128 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
         session.refresh(cleanup)
         return CleanupTaskPayload(cleanup_id=cleanup.id, adapter_id=cleanup.adapter_id)
 
-    candidate_query = (
-        select(Execution)
-        .join(Adapter, Adapter.id == Execution.adapter_id)
-        .where(
-            Execution.status == "pending",
-            Execution.cancel_requested.is_(False),
-            Adapter.language.in_(worker.capabilities),
-            or_(
-                Execution.target_worker_id.is_(None),
-                Execution.target_worker_id == worker_id,
-            ),
-        )
-    )
-    if protocol_version < 2:
-        candidate_query = candidate_query.where(Execution.input_source_type.in_(("none", "json")))
-    candidate_query = (
-        candidate_query.order_by(Execution.created_at.asc(), Execution.id.asc())
-        .with_for_update(skip_locked=True)
-        .limit(1)
-    )
-    execution = session.scalar(candidate_query)
-    if execution is None:
-        if protocol_version < 2:
-            incompatible_exists = session.scalar(
-                select(Execution.id)
-                .join(Adapter, Adapter.id == Execution.adapter_id)
-                .where(
-                    Execution.status == "pending",
-                    Execution.cancel_requested.is_(False),
-                    Execution.input_source_type.not_in(("none", "json")),
-                    Adapter.language.in_(worker.capabilities),
-                    or_(
-                        Execution.target_worker_id.is_(None),
-                        Execution.target_worker_id == worker_id,
-                    ),
-                )
-                .order_by(Execution.created_at.asc(), Execution.id.asc())
-                .limit(1)
+    rejected_execution_ids: set[int] = set()
+    while True:
+        candidate_query = (
+            select(Execution)
+            .join(Adapter, Adapter.id == Execution.adapter_id)
+            .where(
+                Execution.status == "pending",
+                Execution.cancel_requested.is_(False),
+                Adapter.language.in_(worker.capabilities),
+                or_(
+                    Execution.target_worker_id.is_(None),
+                    Execution.target_worker_id == worker_id,
+                ),
             )
-            if incompatible_exists is not None:
+        )
+        if protocol_version < 2:
+            candidate_query = candidate_query.where(
+                Execution.input_source_type.in_(("none", "json"))
+            )
+        if rejected_execution_ids:
+            candidate_query = candidate_query.where(Execution.id.not_in(rejected_execution_ids))
+        candidate_query = (
+            candidate_query.order_by(Execution.created_at.asc(), Execution.id.asc())
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        execution = session.scalar(candidate_query)
+        if execution is None:
+            if rejected_execution_ids:
                 session.rollback()
                 raise domain_error(
                     409,
-                    "worker_protocol_incompatible",
-                    "This Execution requires a newer Worker protocol",
+                    "execution_input_lease_unavailable",
+                    "Execution input Lease is unavailable",
                 )
-        # Release any snapshot state before the next poll iteration.
-        session.rollback()
-        return None
-    if protocol_version < 2 and execution.input_source_type not in {"none", "json"}:
-        # Defensive guard for rows introduced by a concurrent migration or a
-        # future source type: do not transition an unclaimable Execution.
-        session.rollback()
-        raise domain_error(
-            409,
-            "worker_protocol_incompatible",
-            "This Execution requires a newer Worker protocol",
-        )
-    now = session.scalar(select(func.clock_timestamp()))
-    if now is None:  # pragma: no cover - PostgreSQL always returns a value
-        raise RuntimeError("Database clock did not return a timestamp")
-    claim_token: str | None = None
-    cleanup_token: str | None = None
-    execution.status = "running"
-    execution.worker_id = worker_id
-    execution.started_at = now
-    if protocol_version >= 2:
-        claim_token = generate_token()
-        cleanup_token = generate_token()
-        execution.claim_token_hash = hash_token(claim_token)
-        execution.cleanup_receipt_token_hash = hash_token(cleanup_token)
-        timeout_seconds = execution.timeout_seconds_snapshot
-        if timeout_seconds is None:
-            adapter = session.get(Adapter, execution.adapter_id)
-            timeout_seconds = (
-                adapter.timeout_seconds
-                if adapter is not None
-                else settings.execution_timeout_seconds
+            if protocol_version < 2:
+                incompatible_exists = session.scalar(
+                    select(Execution.id)
+                    .join(Adapter, Adapter.id == Execution.adapter_id)
+                    .where(
+                        Execution.status == "pending",
+                        Execution.cancel_requested.is_(False),
+                        Execution.input_source_type.not_in(("none", "json")),
+                        Adapter.language.in_(worker.capabilities),
+                        or_(
+                            Execution.target_worker_id.is_(None),
+                            Execution.target_worker_id == worker_id,
+                        ),
+                    )
+                    .order_by(Execution.created_at.asc(), Execution.id.asc())
+                    .limit(1)
+                )
+                if incompatible_exists is not None:
+                    session.rollback()
+                    raise domain_error(
+                        409,
+                        "worker_protocol_incompatible",
+                        "This Execution requires a newer Worker protocol",
+                    )
+            # Release any snapshot state before the next poll iteration.
+            session.rollback()
+            return None
+        if protocol_version < 2 and execution.input_source_type not in {"none", "json"}:
+            # Defensive guard for rows introduced by a concurrent migration or a
+            # future source type: do not transition an unclaimable Execution.
+            session.rollback()
+            raise domain_error(
+                409,
+                "worker_protocol_incompatible",
+                "This Execution requires a newer Worker protocol",
             )
-        execution.execution_deadline_at = now + timedelta(seconds=timeout_seconds)
-    try:
-        # Build the response while the claim is still uncommitted. A historical
-        # managed-files row may predate the C0 Lease table; a structured
-        # rejection must leave it pending rather than publishing running state
-        # and Token hashes without a deliverable payload.
-        payload = build_task_payload(
-            session,
-            execution,
-            worker=worker,
-            claim_token=claim_token,
-            cleanup_token=cleanup_token,
-        )
-    except Exception:
-        session.rollback()
-        raise
-    session.commit()
-    return payload
+        now = session.scalar(select(func.clock_timestamp()))
+        if now is None:  # pragma: no cover - PostgreSQL always returns a value
+            raise RuntimeError("Database clock did not return a timestamp")
+        claim_token: str | None = None
+        cleanup_token: str | None = None
+        execution.status = "running"
+        execution.worker_id = worker_id
+        execution.started_at = now
+        if protocol_version >= 2:
+            claim_token = generate_token()
+            cleanup_token = generate_token()
+            execution.claim_token_hash = hash_token(claim_token)
+            execution.cleanup_receipt_token_hash = hash_token(cleanup_token)
+            timeout_seconds = execution.timeout_seconds_snapshot
+            if timeout_seconds is None:
+                adapter = session.get(Adapter, execution.adapter_id)
+                timeout_seconds = (
+                    adapter.timeout_seconds
+                    if adapter is not None
+                    else settings.execution_timeout_seconds
+                )
+            execution.execution_deadline_at = now + timedelta(seconds=timeout_seconds)
+        try:
+            # Build the response while the claim is still uncommitted. A
+            # historical managed-files row may predate the C0 Lease table; a
+            # structured rejection leaves it pending and lets this same claim
+            # attempt continue to a later valid candidate.
+            payload = build_task_payload(
+                session,
+                execution,
+                worker=worker,
+                claim_token=claim_token,
+                cleanup_token=cleanup_token,
+            )
+        except HTTPException as exc:
+            detail = exc.detail
+            if (
+                exc.status_code == 409
+                and isinstance(detail, dict)
+                and detail.get("code") == "execution_input_lease_unavailable"
+            ):
+                rejected_execution_ids.add(int(execution.id))
+                session.rollback()
+                continue
+            session.rollback()
+            raise
+        except Exception:
+            session.rollback()
+            raise
+        session.commit()
+        return payload
 
 
 def claim_task(

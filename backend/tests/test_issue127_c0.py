@@ -368,6 +368,54 @@ def test_c0_v2_claim_without_historical_lease_stays_pending(
         assert row.cleanup_receipt_token_hash is None
 
 
+def test_c0_malformed_managed_files_row_does_not_block_later_valid_claim(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed historical row stays pending while a later row is claimable."""
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    worker = _register_worker(api_client, "c0-malformed-first-worker", protocol_version=2)
+
+    malformed_adapter = create_adapter(api_client, name="c0-malformed-first")
+    save_version(api_client, malformed_adapter["id"])
+    malformed_artifact_id = _create_staged_artifact(
+        session_factory, malformed_adapter["id"], "malformed-first.txt"
+    )
+    _bind_artifact(api_client, malformed_adapter["id"], malformed_artifact_id)
+    malformed = api_client.post(f"/api/adapters/{malformed_adapter['id']}/executions", json={})
+    assert malformed.status_code == 202, malformed.text
+    malformed_id = malformed.json()["id"]
+
+    with session_factory.begin() as session:
+        removed = (
+            session.query(ExecutionInputArtifactLease).filter_by(execution_id=malformed_id).delete()
+        )
+        assert removed == 1
+
+    valid_adapter = create_adapter(api_client, name="c0-valid-second")
+    save_version(api_client, valid_adapter["id"])
+    valid = api_client.post(f"/api/adapters/{valid_adapter['id']}/executions", json={})
+    assert valid.status_code == 202, valid.text
+    valid_id = valid.json()["id"]
+
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["execution_id"] == valid_id
+    assert claimed.json()["input_files"] == []
+
+    with session_factory() as session:
+        malformed_row = session.get(Execution, malformed_id)
+        valid_row = session.get(Execution, valid_id)
+        assert malformed_row is not None and valid_row is not None
+        assert malformed_row.status == "pending"
+        assert malformed_row.worker_id is None
+        assert malformed_row.claim_token_hash is None
+        assert malformed_row.cleanup_receipt_token_hash is None
+        assert valid_row.status == "running"
+        assert valid_row.worker_id == worker["id"]
+
+
 def test_c0_database_lease_provider_blocks_gc_state_blob_and_charge_release(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
@@ -455,6 +503,43 @@ def test_c0_v2_result_without_cleanup_report_is_deferred_unknown(
     assert result.status_code == 200, result.text
     assert result.json()["workspace_cleanup_status"] == "deferred"
     assert result.json()["workspace_cleanup_error_code"] == "workspace_cleanup_unknown"
+
+
+@pytest.mark.parametrize("field_name", ["error_code", "workspace_cleanup_error_code"])
+def test_c0_result_error_code_length_is_validated_before_state_change(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    field_name: str,
+) -> None:
+    worker = _register_worker(
+        api_client,
+        f"c0-result-error-code-{field_name}",
+        protocol_version=2,
+    )
+    adapter = create_adapter(api_client, name=f"c0-result-error-code-{field_name}")
+    save_version(api_client, adapter["id"])
+    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert execution.status_code == 202, execution.text
+    execution_id = execution.json()["id"]
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+
+    payload = {"status": "succeeded", field_name: "x" * 65}
+    result = api_client.post(
+        f"/api/workers/{worker['id']}/executions/{execution_id}/result",
+        json=payload,
+        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
+    )
+    assert result.status_code == 422, result.text
+
+    with session_factory() as session:
+        row = session.get(Execution, execution_id)
+        assert row is not None
+        assert row.status == "running"
+        assert row.ended_at is None
+        assert row.error_code is None
+        assert row.workspace_cleanup_status is None
+        assert row.workspace_cleanup_error_code is None
 
 
 @pytest.mark.parametrize("stale_status", ["pending", "running"])
