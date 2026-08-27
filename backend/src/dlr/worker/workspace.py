@@ -38,6 +38,17 @@ WORKSPACE_NAME_PATTERN = re.compile(r"dlr-exec-([1-9][0-9]*)\Z")
 JOURNAL_NAME_PATTERN = re.compile(r"([1-9][0-9]*)\.json\Z")
 MOUNT_NAME_PATTERN = re.compile(r"input-([0-9]{2})\Z")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+MANIFEST_FIELDS = frozenset(
+    {
+        "artifact_id",
+        "ordinal",
+        "mount_name",
+        "original_filename",
+        "content_type",
+        "size_bytes",
+        "sha256",
+    }
+)
 
 # Recovery runs in the claim loop, so one scan must not monopolize the loop
 # behind a slow filesystem or Control response.  Retry timing is kept in the
@@ -460,6 +471,121 @@ def prepare_input_files(
         )
     except (AttributeError, OSError, WorkspaceError) as error:
         raise InputPreparationError("input_artifact_not_ready") from error
+
+
+def _manifest_int(value: object, *, positive: bool = False) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    if positive and value <= 0:
+        return None
+    return value
+
+
+def _verify_manifest_file(path: Path, expected_size: int, expected_sha: str) -> None:
+    """Verify one manifest file without following a symlink leaf."""
+    info = _lstat(path)
+    if info is None or stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode):
+        raise InputPreparationError("input_artifact_not_ready")
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if not stat_module.S_ISREG(opened.st_mode):
+            raise InputPreparationError("input_artifact_not_ready")
+        actual_size = 0
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                actual_size += len(chunk)
+                digest.update(chunk)
+        if actual_size != expected_size or digest.hexdigest() != expected_sha:
+            raise InputPreparationError("input_artifact_checksum_mismatch")
+    except InputPreparationError:
+        raise
+    except (OSError, TypeError) as error:
+        raise InputPreparationError("input_artifact_not_ready") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def validate_input_manifest(layout: WorkspaceLayout) -> None:
+    """Validate the C1 manifest before any Adapter code is imported.
+
+    The manifest is a Worker-local hand-off, not an authorization source. It
+    is deliberately strict so a malformed or modified workspace fails with a
+    stable code before the language harness imports or starts Adapter code.
+    Input permissions remain best-effort accidental-write protection only,
+    never a same-OS-user security boundary.
+    """
+    workspace = layout.root
+    workspace_match = WORKSPACE_NAME_PATTERN.fullmatch(workspace.name)
+    if not workspace.is_absolute() or workspace_match is None:
+        raise InputPreparationError("input_artifact_not_ready")
+    execution_id = _manifest_int(int(workspace_match.group(1)), positive=True)
+    if execution_id is None:
+        raise InputPreparationError("input_artifact_not_ready")
+    input_info = _lstat(layout.input)
+    if (
+        input_info is None
+        or stat_module.S_ISLNK(input_info.st_mode)
+        or not stat_module.S_ISDIR(input_info.st_mode)
+    ):
+        raise InputPreparationError("input_artifact_not_ready")
+    manifest_path = workspace / MANIFEST_FILENAME
+    manifest_info = _lstat(manifest_path)
+    if (
+        manifest_info is None
+        or stat_module.S_ISLNK(manifest_info.st_mode)
+        or not stat_module.S_ISREG(manifest_info.st_mode)
+    ):
+        raise InputPreparationError("input_artifact_not_ready")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
+        raise InputPreparationError("input_artifact_not_ready") from error
+    if not isinstance(manifest, Mapping) or set(manifest) != {"execution_id", "files"}:
+        raise InputPreparationError("input_artifact_not_ready")
+    if _manifest_int(manifest.get("execution_id"), positive=True) != execution_id:
+        raise InputPreparationError("input_artifact_not_ready")
+    files = manifest.get("files")
+    if not isinstance(files, list) or len(files) > 8:
+        raise InputPreparationError("input_artifact_not_ready")
+    for expected_ordinal, raw_descriptor in enumerate(files):
+        if not isinstance(raw_descriptor, Mapping) or set(raw_descriptor) != MANIFEST_FIELDS:
+            raise InputPreparationError("input_artifact_not_ready")
+        artifact_id = _manifest_int(raw_descriptor.get("artifact_id"), positive=True)
+        ordinal = _manifest_int(raw_descriptor.get("ordinal"))
+        mount_name = raw_descriptor.get("mount_name")
+        original_filename = raw_descriptor.get("original_filename")
+        content_type = raw_descriptor.get("content_type")
+        size_bytes = _manifest_int(raw_descriptor.get("size_bytes"))
+        sha256 = raw_descriptor.get("sha256")
+        mount_match = (
+            MOUNT_NAME_PATTERN.fullmatch(mount_name) if isinstance(mount_name, str) else None
+        )
+        if (
+            artifact_id is None
+            or ordinal != expected_ordinal
+            or ordinal < 0
+            or ordinal > 7
+            or mount_match is None
+            or int(mount_match.group(1)) != expected_ordinal
+            or not isinstance(original_filename, str)
+            or not isinstance(content_type, str)
+            or size_bytes is None
+            or size_bytes < 0
+            or not isinstance(sha256, str)
+            or SHA256_PATTERN.fullmatch(sha256) is None
+        ):
+            raise InputPreparationError("input_artifact_not_ready")
+        if not isinstance(mount_name, str):
+            raise InputPreparationError("input_artifact_not_ready")
+        target = layout.input / mount_name
+        if target.parent != layout.input or not target.is_absolute():
+            raise InputPreparationError("input_artifact_not_ready")
+        _verify_manifest_file(target, size_bytes, sha256)
 
 
 def _path_exists(path: Path) -> bool:

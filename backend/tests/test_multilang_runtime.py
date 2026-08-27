@@ -1,5 +1,6 @@
 """M3.3 regression tests for language dispatch and Worker capabilities."""
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from conftest import WORKER_TOKEN
 from dlr.worker import agent as worker_agent
 from dlr.worker import executor, javaenv, nodeenv, venv
+from dlr.worker import workspace as workspace_manager
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 
@@ -34,6 +36,398 @@ def payload(language: str, code: str) -> dict[str, object]:
         "input": {"n": 7},
         "secrets": {"TOKEN": "secret-value"},
     }
+
+
+C2_INPUT_CONTENT = b"same C2 manifest fixture\n"
+
+
+def c2_input_file() -> dict[str, object]:
+    return {
+        "id": 9001,
+        "ordinal": 0,
+        "mount_name": "input-00",
+        "original_filename": "fixture.txt",
+        "content_type": "text/plain",
+        "size_bytes": len(C2_INPUT_CONTENT),
+        "sha256": hashlib.sha256(C2_INPUT_CONTENT).hexdigest(),
+    }
+
+
+C2_ORDERED_INPUT_CONTENTS = (b"first ordered file\n", b"second ordered file\n")
+
+
+def c2_input_files() -> list[dict[str, object]]:
+    return [
+        {
+            "id": 9001 + ordinal,
+            "ordinal": ordinal,
+            "mount_name": f"input-{ordinal:02d}",
+            "original_filename": f"fixture-{ordinal}.txt",
+            "content_type": "text/plain",
+            "size_bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+        for ordinal, content in enumerate(C2_ORDERED_INPUT_CONTENTS)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("language", "code"),
+    [
+        (
+            "python",
+            """
+from pathlib import Path
+
+def handle(context, input):
+    item = context.input_files[0]
+    return {
+        "input": input,
+        "file": {
+            "path": str(item.path),
+            "original_name": item.original_name,
+            "content_type": item.content_type,
+            "size_bytes": item.size_bytes,
+            "sha256": item.sha256,
+            "ordinal": item.ordinal,
+            "content": Path(item.path).read_text(),
+        },
+    }
+""",
+        ),
+        (
+            "javascript",
+            """
+import fs from "node:fs";
+
+export function handle(context, input) {
+  const item = context.inputFiles[0];
+  return {
+    input,
+    file: {
+      path: item.path,
+      originalName: item.originalName,
+      contentType: item.contentType,
+      sizeBytes: item.sizeBytes,
+      sha256: item.sha256,
+      ordinal: item.ordinal,
+      content: fs.readFileSync(item.path, "utf8"),
+    },
+  };
+}
+""",
+        ),
+        (
+            "java",
+            """
+import java.nio.file.Files;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class Adapter {
+    public Object handle(Context context, Object input) throws Exception {
+        InputFile item = context.inputFiles.get(0);
+        Map<String, Object> file = new LinkedHashMap<>();
+        file.put("path", item.path.toString());
+        file.put("originalName", item.originalName);
+        file.put("contentType", item.contentType);
+        file.put("sizeBytes", item.sizeBytes);
+        file.put("sha256", item.sha256);
+        file.put("ordinal", item.ordinal);
+        file.put("content", Files.readString(item.path));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("input", input);
+        result.put("file", file);
+        return result;
+    }
+}
+""",
+        ),
+    ],
+)
+def test_c2_same_manifest_fixture_exposes_ordered_input_file(
+    tmp_path: Path,
+    language: str,
+    code: str,
+) -> None:
+    result = executor.run(
+        payload(language, code) | {"input": None, "input_files": [c2_input_file()]},
+        runtime_settings(tmp_path / language),
+        input_downloader=lambda _file, destination: destination.write(C2_INPUT_CONTENT),
+    )
+
+    assert result["status"] == "succeeded", result
+    assert result["output"]["input"] is None
+    item = result["output"]["file"]
+    assert Path(item["path"]).is_absolute()
+    assert Path(item["path"]).name == "input-00"
+    assert Path(item["path"]).parent.name == "input"
+    assert item["ordinal"] == 0
+    assert item["content"] == C2_INPUT_CONTENT.decode()
+    if language == "python":
+        assert item["original_name"] == "fixture.txt"
+        assert item["content_type"] == "text/plain"
+        assert item["size_bytes"] == len(C2_INPUT_CONTENT)
+    else:
+        assert item["originalName"] == "fixture.txt"
+        assert item["contentType"] == "text/plain"
+        assert item["sizeBytes"] == len(C2_INPUT_CONTENT)
+    assert item["sha256"] == hashlib.sha256(C2_INPUT_CONTENT).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("language", "code"),
+    [
+        (
+            "python",
+            """
+from pathlib import Path
+
+def handle(context, input):
+    return {
+        "input": input,
+        "files": [
+            {
+                "ordinal": item.ordinal,
+                "name": item.original_name,
+                "content": Path(item.path).read_text(),
+            }
+            for item in context.input_files
+        ],
+    }
+""",
+        ),
+        (
+            "javascript",
+            """
+import fs from "node:fs";
+
+export function handle(context, input) {
+  return {
+    input,
+    files: context.inputFiles.map((item) => ({
+      ordinal: item.ordinal,
+      name: item.originalName,
+      content: fs.readFileSync(item.path, "utf8"),
+    })),
+  };
+}
+""",
+        ),
+        (
+            "java",
+            """
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class Adapter {
+    public Object handle(Context context, Object input) throws Exception {
+        List<Map<String, Object>> files = new ArrayList<>();
+        for (InputFile item : context.inputFiles) {
+            Map<String, Object> file = new LinkedHashMap<>();
+            file.put("ordinal", item.ordinal);
+            file.put("name", item.originalName);
+            file.put("content", Files.readString(item.path));
+            files.add(file);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("input", input);
+        result.put("files", files);
+        return result;
+    }
+}
+""",
+        ),
+    ],
+)
+def test_c2_all_languages_preserve_input_file_order(
+    tmp_path: Path,
+    language: str,
+    code: str,
+) -> None:
+    result = executor.run(
+        payload(language, code) | {"input": None, "input_files": c2_input_files()},
+        runtime_settings(tmp_path / language),
+        input_downloader=lambda file, destination: destination.write(
+            C2_ORDERED_INPUT_CONTENTS[int(file["ordinal"])]
+        ),
+    )
+
+    assert result["status"] == "succeeded", result
+    assert result["output"] == {
+        "input": None,
+        "files": [
+            {"ordinal": 0, "name": "fixture-0.txt", "content": "first ordered file\n"},
+            {"ordinal": 1, "name": "fixture-1.txt", "content": "second ordered file\n"},
+        ],
+    }
+
+
+def _c2_started_adapter_code(language: str, marker: Path) -> str:
+    if language == "python":
+        return (
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('imported')\n"
+            "def handle(context, input):\n"
+            "    return {}\n"
+        )
+    if language == "javascript":
+        return (
+            'import fs from "node:fs";\n'
+            f"const marker = {json.dumps(str(marker))};\n"
+            "fs.writeFileSync(marker, 'imported');\n"
+            "export function handle(context, input) { "
+            "return {}; }\n"
+        )
+    java_marker = str(marker).replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        "import java.nio.file.Files;\n"
+        "import java.nio.file.Path;\n"
+        "public class Adapter {\n"
+        "    static {\n"
+        "        try {\n"
+        f'            Files.writeString(Path.of("{java_marker}"), "imported");\n'
+        "        } catch (Exception error) {\n"
+        "            throw new ExceptionInInitializerError(error);\n"
+        "        }\n"
+        "    }\n"
+        "    public Object handle(Context context, Object input) throws Exception {\n"
+        "        return new java.util.LinkedHashMap<String, Object>();\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def _mutate_c2_manifest(
+    layout: workspace_manager.WorkspaceLayout,
+    mutation: str,
+) -> None:
+    manifest_path = layout.root / workspace_manager.MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][0]["original_filename"] = "/control/internal/secret-input.txt"
+    if mutation == "invalid":
+        manifest["unexpected"] = "must not be accepted"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif mutation == "ordinal":
+        manifest["files"][0]["ordinal"] = 8
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif mutation == "mount":
+        manifest["files"][0]["mount_name"] = "input-08"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif mutation == "missing":
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        (layout.input).chmod(0o755)
+        (layout.input / "input-00").unlink()
+    elif mutation == "size":
+        manifest["files"][0]["size_bytes"] += 1
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif mutation == "sha":
+        manifest["files"][0]["sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    else:
+        raise AssertionError(f"unknown C2 mutation: {mutation}")
+
+
+@pytest.mark.parametrize("mutation,expected_code", [("invalid", "input_artifact_not_ready")])
+@pytest.mark.parametrize("language", ["python", "javascript", "java"])
+def test_c2_invalid_manifest_does_not_start_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    language: str,
+    mutation: str,
+    expected_code: str,
+) -> None:
+    marker = tmp_path / f"{language}-{mutation}-started"
+    original_validate = workspace_manager.validate_input_manifest
+
+    def validate_then_mutate(layout: workspace_manager.WorkspaceLayout) -> None:
+        original_validate(layout)
+        _mutate_c2_manifest(layout, mutation)
+
+    monkeypatch.setattr(workspace_manager, "validate_input_manifest", validate_then_mutate)
+    result = executor.run(
+        payload(language, _c2_started_adapter_code(language, marker))
+        | {"input": None, "input_files": [c2_input_file()]},
+        runtime_settings(tmp_path / "runtime"),
+        input_downloader=lambda _file, destination: destination.write(C2_INPUT_CONTENT),
+    )
+
+    assert result["status"] == "failed", result
+    assert result["error_code"] == expected_code
+    assert f"DLR_INPUT_ERROR:{expected_code}" in result["stdout"]
+    assert not marker.exists()
+    assert "/control/internal/secret-input.txt" not in str(result)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("ordinal", "input_artifact_not_ready"),
+        ("mount", "input_artifact_not_ready"),
+        ("missing", "input_artifact_not_ready"),
+        ("size", "input_artifact_checksum_mismatch"),
+        ("sha", "input_artifact_checksum_mismatch"),
+    ],
+)
+@pytest.mark.parametrize("language", ["python", "javascript", "java"])
+def test_c2_manifest_boundary_rejection_does_not_start_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    language: str,
+    mutation: str,
+    expected_code: str,
+) -> None:
+    marker = tmp_path / f"{language}-{mutation}-started"
+    original_validate = workspace_manager.validate_input_manifest
+
+    def validate_then_mutate(layout: workspace_manager.WorkspaceLayout) -> None:
+        original_validate(layout)
+        _mutate_c2_manifest(layout, mutation)
+
+    monkeypatch.setattr(workspace_manager, "validate_input_manifest", validate_then_mutate)
+    result = executor.run(
+        payload(language, _c2_started_adapter_code(language, marker))
+        | {"input": None, "input_files": [c2_input_file()]},
+        runtime_settings(tmp_path / "runtime"),
+        input_downloader=lambda _file, destination: destination.write(C2_INPUT_CONTENT),
+    )
+
+    assert result["status"] == "failed", result
+    assert result["error_code"] == expected_code
+    assert f"DLR_INPUT_ERROR:{expected_code}" in result["stdout"]
+    assert not marker.exists()
+    assert "/control/internal/secret-input.txt" not in str(result)
+
+
+def test_c2_input_permissions_are_documented_as_best_effort_only() -> None:
+    doc = workspace_manager.validate_input_manifest.__doc__ or ""
+    assert "best-effort accidental-write protection only" in doc
+    assert "never a same-OS-user security boundary" in doc
+
+
+@pytest.mark.parametrize(
+    ("language", "code"),
+    [
+        ("python", "def handle(context, input):\n    return input\n"),
+        ("javascript", "export function handle(context, input) { return input; }"),
+        (
+            "java",
+            "public class Adapter { "
+            "public Object handle(Context context, Object input) { return input; } }",
+        ),
+    ],
+)
+def test_c2_json_handle_contract_remains_unwrapped_retained(
+    tmp_path: Path,
+    language: str,
+    code: str,
+) -> None:
+    result = executor.run(payload(language, code), runtime_settings(tmp_path / language))
+    assert result["status"] == "succeeded", result
+    assert result["output"] == {"n": 7}
 
 
 def test_javascript_sync_async_config_secret_logs_and_output(tmp_path: Path) -> None:

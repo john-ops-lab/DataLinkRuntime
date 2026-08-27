@@ -150,12 +150,12 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 12. C2 — Wave C Python/JavaScript/Java Context 文件 API
 
-- [ ] 12.1 固定三语言manifest/InputFile相同fixture，验证现有Context缺少文件API的红灯且JSON `handle(context,input)`行为作为retained assertion。
-- [ ] 12.2 Python harness实现`context.input_files`与InputFile元数据，验证ordinal/path/original_name/content_type/size_bytes/sha256和managed_files时input=null。
-- [ ] 12.3 Node harness实现等价`context.inputFiles`/camelCase字段，验证读取文件内容、顺序与JSON输入不包装。
-- [ ] 12.4 Java Runtime实现等价`context.inputFiles`不可变列表/字段，使用Java 21真实编译运行验证文件和JSON合同。
-- [ ] 12.5 为非法manifest、mount路径越界、文件缺失/篡改加入三语言拒绝测试；验证Adapter未启动或稳定失败且Control路径不暴露。
-- [ ] 12.6 运行`backend/tests/test_multilang_runtime.py`相关完整三语言测试、Ruff/format/mypy；文档测试验证0444/0555仅称best-effort防误写。
+- [x] 12.1 固定三语言manifest/InputFile相同fixture，验证现有Context缺少文件API的红灯且JSON `handle(context,input)`行为作为retained assertion。
+- [x] 12.2 Python harness实现`context.input_files`与InputFile元数据，验证ordinal/path/original_name/content_type/size_bytes/sha256和managed_files时input=null。
+- [x] 12.3 Node harness实现等价`context.inputFiles`/camelCase字段，验证读取文件内容、顺序与JSON输入不包装。
+- [x] 12.4 Java Runtime实现等价`context.inputFiles`不可变列表/字段，使用Java 21真实编译运行验证文件和JSON合同。
+- [x] 12.5 为非法manifest、mount路径越界、文件缺失/篡改加入三语言拒绝测试；验证Adapter未启动或稳定失败且Control路径不暴露。
+- [x] 12.6 运行`backend/tests/test_multilang_runtime.py`相关完整三语言测试、Ruff/format/mypy；文档测试验证0444/0555仅称best-effort防误写。
 
 ## 13. C3 — Wave C stale Execution、晚到 Result 与 cleanup receipt
 
