@@ -36,6 +36,7 @@ from dlr.control.api import (
 )
 from dlr.control.security import require_csrf
 from dlr.control.services import accounts as account_service
+from dlr.control.services.execution_reconciler import stale_execution_reconciler_loop
 from dlr.control.services.managed_input_gc import artifact_gc_loop, orphan_audit_loop
 from dlr.control.services.retention import retention_loop
 from dlr.control.services.schedule import scheduler_loop
@@ -71,16 +72,17 @@ async def _demo_bootstrap_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the M5.2 lightweight Schedule polling loop while the app serves.
+    """Run lightweight Schedule, retention, GC and stale Execution loops.
 
-    PostgreSQL is the only scheduling state source; the loop is a plain
-    background task and no external scheduler framework is introduced.
+    PostgreSQL is the only Control-plane state source; these loops are plain
+    background tasks and no external scheduler framework is introduced.
     """
     bootstrap_task = asyncio.create_task(_demo_bootstrap_loop())
     task = asyncio.create_task(scheduler_loop())
     retention_task = asyncio.create_task(retention_loop())
     artifact_gc_task = asyncio.create_task(artifact_gc_loop())
     orphan_audit_task = asyncio.create_task(orphan_audit_loop())
+    stale_execution_task = asyncio.create_task(stale_execution_reconciler_loop())
     try:
         yield
     finally:
@@ -89,6 +91,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         retention_task.cancel()
         artifact_gc_task.cancel()
         orphan_audit_task.cancel()
+        stale_execution_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         with contextlib.suppress(asyncio.CancelledError):
@@ -99,6 +102,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await artifact_gc_task
         with contextlib.suppress(asyncio.CancelledError):
             await orphan_audit_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await stale_execution_task
 
 
 def create_app() -> FastAPI:

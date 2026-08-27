@@ -908,7 +908,7 @@ def test_c0_cleanup_receipt_route_keeps_cleanup_token_separate(
         json={"status": "completed"},
         headers={**WORKER_HEADERS, "X-DLR-Cleanup-Token": claimed.json()["cleanup_token"]},
     )
-    assert accepted.status_code == 200
+    assert accepted.status_code == 200, accepted.text
     assert accepted.json()["workspace_cleanup_status"] == "completed"
 
 

@@ -159,12 +159,12 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 13. C3 — Wave C stale Execution、晚到 Result 与 cleanup receipt
 
-- [ ] 13.1 实现分批`SKIP LOCKED` stale reconciler：pending超claim deadline→failed/worker_unavailable+cleanup completed+Lease释放；冻结时钟/多Control测试验证单次收敛。
-- [ ] 13.2 实现running超deadline+grace按Worker健康进入timeout或failed/worker_lost，cleanup deferred/unknown并释放Lease；验证不自动重跑。
-- [ ] 13.3 扩展Result/progress终态幂等与ownership-first校验；竞态测试验证晚到succeeded不能覆盖stale终态、非owner即使终态也拒绝。
-- [ ] 13.4 实现cleanup receipt仅terminal deferred→completed和completed→completed；验证不改业务status/output/error/ended_at，非法转换返回`workspace_cleanup_transition_invalid`。
-- [ ] 13.5 验证业务终态、cleanup字段、ended_at/error_code与Lease释放同一事务；DB故障注入证明不会出现终态已写但Lease遗留的部分提交。
-- [ ] 13.6 运行C3 stale/late-result/receipt/concurrency tests、Ruff/format/mypy与loop启动/取消测试；PASS后形成Candidate。
+- [x] 13.1 实现分批`SKIP LOCKED` stale reconciler：pending超claim deadline→failed/worker_unavailable+cleanup completed+Lease释放；冻结时钟/多Control测试验证单次收敛。
+- [x] 13.2 实现running超deadline+grace按Worker健康进入timeout或failed/worker_lost，cleanup deferred/unknown并释放Lease；验证不自动重跑。
+- [x] 13.3 扩展Result/progress终态幂等与ownership-first校验；竞态测试验证晚到succeeded不能覆盖stale终态、非owner即使终态也拒绝。
+- [x] 13.4 实现cleanup receipt仅terminal deferred→completed和completed→completed；验证不改业务status/output/error/ended_at，非法转换返回`workspace_cleanup_transition_invalid`。
+- [x] 13.5 验证业务终态、cleanup字段、ended_at/error_code与Lease释放同一事务；DB故障注入证明不会出现终态已写但Lease遗留的部分提交。
+- [x] 13.6 运行C3 stale/late-result/receipt/concurrency tests、Ruff/format/mypy与loop启动/取消测试；PASS后形成Candidate。
 
 ## 14. C4 — Wave C 协议、故障恢复与 Compose Gate
 
