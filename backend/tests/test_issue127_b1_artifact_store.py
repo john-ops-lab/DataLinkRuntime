@@ -458,8 +458,11 @@ def test_staged_list_delete_is_adapter_scoped_and_keeps_revision(
     assert hidden.json() == []
 
     guessed = api_client.delete(f"/api/adapters/{second['id']}/input-artifacts/{artifact_id}")
-    assert guessed.status_code == 404, guessed.text
+    assert guessed.status_code == 204, guessed.text
     assert "storage_key" not in guessed.text
+    with session_factory() as session:
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        assert artifact is not None and artifact.status == "STAGED"
 
     before = api_client.get(f"/api/adapters/{first['id']}/input-config").json()["revision"]
     deleted = api_client.delete(f"/api/adapters/{first['id']}/input-artifacts/{artifact_id}")

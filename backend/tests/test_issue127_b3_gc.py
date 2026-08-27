@@ -260,6 +260,34 @@ def test_manual_delete_reports_live_deleting_claim(
     assert store.stat(storage_key) is not None
 
 
+def test_manual_delete_is_idempotent_for_missing_or_cross_adapter_artifact(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    adapter = create_task(api_client, "b3-missing-delete")
+    other_adapter = create_task(api_client, "b3-cross-adapter-delete")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    with session_factory.begin() as session:
+        artifact = create_artifact(session, other_adapter["id"], store, size_bytes=3)
+        artifact_id = int(artifact.id)
+        storage_key = artifact.storage_key
+
+    missing = api_client.delete(f"/api/adapters/{adapter['id']}/input-artifacts/999999")
+    cross_adapter = api_client.delete(
+        f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}"
+    )
+    assert missing.status_code == 204, missing.text
+    assert cross_adapter.status_code == 204, cross_adapter.text
+    with session_factory() as session:
+        current = session.get(ManagedInputArtifact, artifact_id)
+        capacity = session.get(ManagedInputCapacity, 1)
+        assert current is not None and current.adapter_id == other_adapter["id"]
+        assert current.status == ManagedInputArtifactStatus.STAGED
+        assert capacity is not None and capacity.actual_bytes == 3
+    assert store.stat(storage_key) is not None
+
+
 def test_manual_delete_is_idempotent_for_repeated_request(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
@@ -516,12 +544,16 @@ def test_background_loops_log_unexpected_failures_with_traceback(
     async def stop_after_one_cycle(_delay: float) -> None:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(managed_input_gc.asyncio, "to_thread", fail_to_thread)
-    monkeypatch.setattr(managed_input_gc.asyncio, "sleep", stop_after_one_cycle)
+    original_to_thread = asyncio.to_thread
+    original_sleep = asyncio.sleep
+    monkeypatch.setattr(managed_input_gc, "_asyncio_to_thread", fail_to_thread)
+    monkeypatch.setattr(managed_input_gc, "_asyncio_sleep", stop_after_one_cycle)
     caplog.set_level(logging.INFO, logger="dlr.control")
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(getattr(managed_input_gc, loop_name)())
+    assert asyncio.to_thread is original_to_thread
+    assert asyncio.sleep is original_sleep
 
     warning = next(
         record

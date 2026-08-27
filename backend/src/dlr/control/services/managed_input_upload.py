@@ -208,14 +208,8 @@ def _lock_artifact(
         )
         .with_for_update()
     )
-    if artifact is None:
+    if artifact is None or artifact.adapter_id != adapter_id:
         return None
-    if artifact.adapter_id != adapter_id:
-        raise domain_error(
-            404,
-            ManagedInputErrorCode.ARTIFACT_NOT_FOUND.value,
-            "Input Artifact not found",
-        )
     return artifact
 
 
@@ -829,18 +823,12 @@ def delete_staged(
     )
     if claim is None:
         current = session.get(ManagedInputArtifact, artifact_id)
-        if current is None or (
-            current.adapter_id == adapter_id
-            and current.status == ManagedInputArtifactStatus.DELETED
-        ):
+        if current is None or current.adapter_id != adapter_id:
             session.commit()
             return False
-        if current.adapter_id != adapter_id:
-            raise domain_error(
-                404,
-                ManagedInputErrorCode.ARTIFACT_NOT_FOUND.value,
-                "Input Artifact not found",
-            )
+        if current.status == ManagedInputArtifactStatus.DELETED:
+            session.commit()
+            return False
         if current.status == ManagedInputArtifactStatus.DELETING and _delete_claim_is_live(current):
             raise domain_error(
                 409,

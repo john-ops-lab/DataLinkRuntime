@@ -40,6 +40,11 @@ from dlr.control.services.managed_input_audit import record_audit_event
 
 logger = logging.getLogger("dlr.control.managed_input_gc")
 
+# Keep the loop's scheduling boundaries replaceable in tests without mutating
+# the process-wide asyncio module.
+_asyncio_to_thread = asyncio.to_thread
+_asyncio_sleep = asyncio.sleep
+
 DELETE_LEASE_SECONDS = 60
 DELETE_BACKOFF_BASE_SECONDS = 5
 MAX_DELETE_BACKOFF_SECONDS = 300
@@ -875,7 +880,7 @@ async def artifact_gc_loop() -> None:
     )
     while True:
         try:
-            await asyncio.to_thread(_gc_tick)
+            await _asyncio_to_thread(_gc_tick)
         except asyncio.CancelledError:
             raise
         except (ArtifactStoreError, OSError):
@@ -887,7 +892,7 @@ async def artifact_gc_loop() -> None:
                 "managed input GC cycle failed; retrying next interval",
                 exc_info=True,
             )
-        await asyncio.sleep(settings.artifact_gc_interval_seconds)
+        await _asyncio_sleep(settings.artifact_gc_interval_seconds)
 
 
 async def orphan_audit_loop() -> None:
@@ -898,7 +903,7 @@ async def orphan_audit_loop() -> None:
     )
     while True:
         try:
-            await asyncio.to_thread(_audit_tick)
+            await _asyncio_to_thread(_audit_tick)
         except asyncio.CancelledError:
             raise
         except (ArtifactStoreError, OSError):
@@ -910,7 +915,7 @@ async def orphan_audit_loop() -> None:
                 "managed input orphan audit failed; retrying next interval",
                 exc_info=True,
             )
-        await asyncio.sleep(settings.artifact_audit_interval_seconds)
+        await _asyncio_sleep(settings.artifact_audit_interval_seconds)
 
 
 # Explicit aliases keep the service discoverable for lifecycle callers.
