@@ -68,7 +68,7 @@ def _interval(seconds: object) -> Any:
     return func.make_interval(0, 0, 0, 0, 0, 0, seconds)
 
 
-def _stale_query(now: datetime, *, batch_size: int) -> Select[tuple[Execution]]:
+def _stale_query(now: datetime | None, *, batch_size: int) -> Select[tuple[Execution]]:
     """Select only due active rows and lock one bounded batch.
 
     New C0 rows carry explicit deadlines.  The null-deadline branches retain
@@ -77,6 +77,10 @@ def _stale_query(now: datetime, *, batch_size: int) -> Select[tuple[Execution]]:
     platform fallback.  The running branch still honors each row's frozen
     recovery grace value.
     """
+    # Candidate selection only needs a monotonic cutoff.  Production's
+    # clock_timestamp() decision clock is deliberately sampled after
+    # SKIP LOCKED returns, as close as possible to health and ended_at writes.
+    comparison_now: Any = now if now is not None else func.now()
     pending_fallback_deadline = Execution.created_at + _interval(
         settings.execution_claim_timeout_seconds
     )
@@ -85,11 +89,11 @@ def _stale_query(now: datetime, *, batch_size: int) -> Select[tuple[Execution]]:
         or_(
             and_(
                 Execution.claim_deadline_at.is_not(None),
-                Execution.claim_deadline_at <= now,
+                Execution.claim_deadline_at <= comparison_now,
             ),
             and_(
                 Execution.claim_deadline_at.is_(None),
-                pending_fallback_deadline <= now,
+                pending_fallback_deadline <= comparison_now,
             ),
         ),
     )
@@ -109,17 +113,7 @@ def _stale_query(now: datetime, *, batch_size: int) -> Select[tuple[Execution]]:
     )
     running_stale = and_(
         Execution.status == "running",
-        or_(
-            and_(
-                Execution.execution_deadline_at.is_not(None),
-                execution_deadline + _interval(grace_seconds) <= now,
-            ),
-            and_(
-                Execution.execution_deadline_at.is_(None),
-                Execution.started_at.is_not(None),
-                execution_deadline + _interval(grace_seconds) <= now,
-            ),
-        ),
+        execution_deadline + _interval(grace_seconds) <= comparison_now,
     )
     return (
         select(Execution)
@@ -182,19 +176,21 @@ def reconcile_stale_executions(
 ) -> StaleExecutionReport:
     """Atomically converge one bounded batch of stale active Executions.
 
-    ``now`` is intended for a frozen-clock test.  Production callers omit it,
-    so the decision timestamp comes from PostgreSQL ``clock_timestamp()`` and
-    is reused for every Worker health check and terminal row in this batch.
+    ``now`` is intended for a frozen-clock test.  Production callers omit it;
+    the stale predicate uses the database clock for candidate selection, then
+    a fresh PostgreSQL ``clock_timestamp()`` is sampled after SKIP LOCKED
+    returns and reused for every Worker health check and terminal row.
     A commit failure rolls the whole batch back, including Lease deletion.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
-    effective_now = (
-        _as_utc(now) if now is not None else _as_utc(worker_availability.current_time(session))
-    )
+    injected_now = _as_utc(now) if now is not None else None
     executions = list(
         session.scalars(
-            _stale_query(effective_now, batch_size=min(batch_size, STALE_RECONCILER_BATCH_SIZE))
+            _stale_query(
+                injected_now,
+                batch_size=min(batch_size, STALE_RECONCILER_BATCH_SIZE),
+            )
         ).all()
     )
     if not executions:
@@ -202,6 +198,14 @@ def reconcile_stale_executions(
         # so a long-running Control loop does not retain a snapshot/connection.
         session.rollback()
         return StaleExecutionReport()
+
+    # Keep the explicit test clock deterministic, but sample production time
+    # only after the SKIP LOCKED candidate query has acquired row locks.
+    effective_now = (
+        injected_now
+        if injected_now is not None
+        else _as_utc(worker_availability.current_time(session))
+    )
 
     pending_failed = 0
     running_timeout = 0

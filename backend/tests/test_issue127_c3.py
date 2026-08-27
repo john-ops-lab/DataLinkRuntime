@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
@@ -150,6 +151,58 @@ def test_c3_execution_response_requires_explicit_nullable_error_code(
     assert result.status_code == 200, result.text
     assert result.json()["error_code"] == "business_code"
     assert ExecutionResponse.model_validate(result.json()).error_code == "business_code"
+
+
+def test_c3_production_clock_is_sampled_after_skip_locked_selection(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    test_engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_adapter(api_client, name="c3-production-clock")
+    save_version(api_client, adapter["id"])
+    execution = _create_execution(api_client, adapter["id"])
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        row.claim_deadline_at = datetime.now(UTC) - timedelta(days=1)
+
+    events: list[str] = []
+
+    def after_cursor_execute(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        normalized = statement.upper()
+        if "FOR UPDATE" in normalized:
+            events.append("locked_candidates")
+        elif "CLOCK_TIMESTAMP()" in normalized:
+            events.append("clock_timestamp")
+
+    event.listen(test_engine, "after_cursor_execute", after_cursor_execute)
+    original_current_time = execution_reconciler.worker_availability.current_time
+
+    def recording_current_time(session: Session) -> datetime:
+        events.append("current_time_call")
+        return original_current_time(session)
+
+    monkeypatch.setattr(
+        execution_reconciler.worker_availability,
+        "current_time",
+        recording_current_time,
+    )
+    try:
+        with session_factory() as session:
+            report = execution_reconciler.reconcile_stale_executions(session)
+    finally:
+        event.remove(test_engine, "after_cursor_execute", after_cursor_execute)
+
+    assert report.reconciled == 1
+    assert events == ["locked_candidates", "current_time_call", "clock_timestamp"]
 
 
 def test_c3_red_high_risk_stale_paths_are_not_silent(
@@ -364,6 +417,43 @@ def test_c3_running_stale_uses_effective_worker_health_and_does_not_rerun(
             is None
         )
     assert _claim(api_client, worker["id"]).status_code == 204
+
+
+def test_c3_running_stale_deadline_grace_boundary_is_inclusive(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    worker = _register_worker(api_client, "c3-running-boundary")
+    adapter = create_adapter(api_client, name="c3-running-boundary")
+    save_version(api_client, adapter["id"])
+    execution = _create_execution(api_client, adapter["id"])
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        registered = session.get(Worker, worker["id"])
+        assert row is not None and registered is not None
+        assert row.recovery_grace_seconds_snapshot is not None
+        row.started_at = FIXED_NOW - timedelta(minutes=5)
+        row.execution_deadline_at = FIXED_NOW - timedelta(
+            seconds=row.recovery_grace_seconds_snapshot
+        )
+        registered.status = "online"
+        registered.last_heartbeat = FIXED_NOW
+
+    with session_factory() as session:
+        report = execution_reconciler.reconcile_stale_executions(session, now=FIXED_NOW)
+
+    assert report.running_timeout == 1
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        assert row.status == "timeout"
+        assert row.error_code is None
+        assert row.workspace_cleanup_status == "deferred"
+        assert row.workspace_cleanup_error_code == "workspace_cleanup_unknown"
+        assert row.ended_at == FIXED_NOW
 
 
 def test_c3_late_result_and_non_owner_cannot_change_stale_terminal(
