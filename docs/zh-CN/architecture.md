@@ -177,6 +177,8 @@ Workbench 层只有一个当前实时 watcher：
 
 浏览器显式提交当前 Working Copy、用户指令与有限最近对话。Control 补充服务端 language、基准 Revision 元数据、Runtime Contract 和 Secret env key 名称。Provider final answer 必须通过 Candidate Schema 校验。
 
+一次性附件中的 XLSX 仅打开受限 ZIP/XML member，XLS 仅通过固定版本 `xlrd` 的内存入口读取 BIFF 单元格；两者复用附件大小、膨胀率、字符和解析超时预算，不执行公式、宏或外部关系。当前 `managed_files` 只通过数据库窄投影向 Prompt 增加按 ordinal 排序的公开标签和三语言 Context 文件 API，不读取 ArtifactStore、不创建 Lease，也不暴露 Artifact ID、storage key、路径、Token 或文件内容。
+
 Candidate Apply 只改浏览器 Working Copy；stale Candidate 需要再次明确确认。Credential 真值、平台 Token、Provider reasoning、Prompt 与原始 Response 不进入普通日志或持久化。
 
 ## 10. 部署与配置
@@ -195,6 +197,9 @@ AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smo
 - `system_settings` 单例行保存部署级系统语言（默认 `zh-CN`），仅允许 `zh-CN / en`
   两个值；公开只读接口 `GET /api/locale` 只返回当前语言（管理员登录前可用），
   管理员经 `PUT /api/locale` 修改并持久化；
+- 未认证管理员/账号登录页使用独立的浏览器 `dlr-login-locale` 偏好，首次默认
+  `zh-CN`；该键不进入账号或数据库。认证成功和强制改密时重新应用服务端系统语言，
+  locale 请求失败时使用有效系统缓存或安全默认值且不阻断认证；
 - `executions.locale` 在创建 Execution 时捕获当时的系统语言并固定，运行期间切换
   系统语言不改变该 Execution 后续平台消息语言；
 - Control / Worker 自己生成的平台消息通过内置中英文模板输出；用户代码的

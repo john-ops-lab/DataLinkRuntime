@@ -30,6 +30,7 @@ import {
   i18n,
   resources,
 } from "./i18n";
+import { LOGIN_LOCALE_STORAGE_KEY } from "./login-locale";
 import { statusLabel } from "./status";
 import type { Adapter, AiAssistResponse, VersionDetail } from "./types";
 import { userErrorMessage } from "./user-message";
@@ -120,6 +121,17 @@ function stubFetch(routes: Route[]) {
           ? candidate.match === url
           : candidate.match.test(url)),
     );
+    // TaskRunSettingsPanel now probes the public Managed Input release gate
+    // on every runtime-settings mount. Keep older Wave 2 fixtures explicit
+    // about the new safe boolean-only resource without treating it as an
+    // unexpected request.
+    if (!route && method === "GET" && url === "/api/system/managed-input-capability") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ managed_files_enabled: false, ready: false, default_retention_seconds: 86_400, max_custom_retention_seconds: 2_592_000, allow_manual_delete: true, allowed_extensions: [".xlsx", ".xls", ".csv", ".log", ".txt", ".json"] }),
+      };
+    }
     if (!route) {
       console.error(`UNEXPECTED REQUEST: ${method} ${url}`);
       throw new Error(`Unexpected request: ${method} ${url}`);
@@ -593,6 +605,9 @@ it("reflects the backend locale across refresh without mutating anything", async
 
   // A stale zh-CN browser cache must never override the backend authority.
   window.localStorage.setItem("dlr-system-locale", "zh-CN");
+  // Nor may the unauthenticated login preference leak into an existing
+  // authenticated Console session.
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "zh-CN");
   const first = render(<App />);
   await screen.findByTestId("control-status");
   expect(screen.getByTestId("control-status").textContent).toBe("Control service healthy");

@@ -16,6 +16,7 @@
       "managedFiles": {
         "title": "Managed files",
         "description": "File input managed by the platform lifecycle.",
+        "status": "Available",
         "disabled": "Not enabled yet"
       },
       "remoteFiles": {
@@ -158,6 +159,7 @@
     "ok": "Clone",
     "description": "The current code, dependencies, runtime configuration (including the per-execution timeout), Credential references and Runtime Worker will be copied.",
     "historyNote": "Execution history is not copied; the new Adapter remains stopped and will not run automatically.",
+    "inputNote": "Input configuration is copied, but managed file bytes are not. Upload and save them again in the new Adapter.",
     "name": "New Adapter name"
   },
   "save": {

@@ -314,10 +314,11 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.String(length=16),
-            server_default=sa.text("'pending'"),
+            server_default=sa.text("'PENDING'"),
             nullable=False,
         ),
-        sa.Column("attempts", sa.BigInteger(), server_default=sa.text("0"), nullable=False),
+        sa.Column("delete_attempts", sa.BigInteger(), server_default=sa.text("0"), nullable=False),
+        sa.Column("delete_started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error_code", sa.String(length=64), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
@@ -328,12 +329,14 @@ def upgrade() -> None:
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("capacity_released_at", sa.DateTime(timezone=True), nullable=True),
         sa.CheckConstraint(
-            "status IN ('pending', 'deleting', 'completed', 'failed')",
+            "status IN ('PENDING', 'DELETING', 'DELETED', 'DELETE_FAILED')",
             name="ck_artifact_deletion_jobs_status",
         ),
         sa.CheckConstraint("size_bytes >= 0", name="ck_artifact_deletion_jobs_size_bytes"),
         sa.CheckConstraint("charged_bytes >= 0", name="ck_artifact_deletion_jobs_charged_bytes"),
-        sa.CheckConstraint("attempts >= 0", name="ck_artifact_deletion_jobs_attempts"),
+        sa.CheckConstraint(
+            "delete_attempts >= 0", name="ck_artifact_deletion_jobs_delete_attempts"
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("storage_key", name="uq_artifact_deletion_jobs_storage_key"),
     )

@@ -89,6 +89,7 @@ function renderPanel(
     onRuntimeStateChange?: ReturnType<typeof vi.fn>;
     onError?: ReturnType<typeof vi.fn>;
     inputLoadError?: unknown;
+    managedFilesEnabled?: boolean;
   } = {},
 ) {
   const getInputConfig = vi.spyOn(api, "getInputConfig");
@@ -97,6 +98,16 @@ function renderPanel(
   } else {
     getInputConfig.mockResolvedValue(inputConfig);
   }
+  const managedFilesEnabled = options.managedFilesEnabled === true;
+  vi.spyOn(api, "getManagedInputCapability").mockResolvedValue({
+    managed_files_enabled: managedFilesEnabled,
+    ready: managedFilesEnabled,
+    default_retention_seconds: 86_400,
+    max_custom_retention_seconds: 2_592_000,
+    allow_manual_delete: true,
+    allowed_extensions: [".xlsx", ".xls", ".csv", ".log", ".txt", ".json"],
+  });
+  vi.spyOn(api, "listInputArtifacts").mockResolvedValue([]);
   const runtimeRef = createRef<TaskRunSettingsHandle>();
   const onError = options.onError ?? vi.fn();
   render(
@@ -172,7 +183,7 @@ describe("Task Input Object A2", () => {
     renderPanel(makeInputConfig());
 
     await screen.findByTestId("task-input-source-json");
-    await waitFor(() => expect(screen.getByTestId("task-input-revision").textContent).toContain("4"));
+    await waitFor(() => expect(screen.queryByTestId("task-input-revision")).toBeNull());
     await waitFor(() => expect(screen.getByTestId("task-input-source-json").getAttribute("aria-disabled")).toBe("false"));
     fireEvent.click(screen.getByTestId("task-input-source-json"));
     fireEvent.change(await screen.findByTestId("task-input-json"), {
@@ -186,7 +197,7 @@ describe("Task Input Object A2", () => {
       source_type: "json",
       json_value: value,
     });
-    expect(screen.getByTestId("task-input-revision").textContent).toContain("5");
+    expect(screen.queryByTestId("task-input-revision")).toBeNull();
   });
 
   it("saves none without a JSON field and keeps all four source cards focusable", async () => {
@@ -197,7 +208,7 @@ describe("Task Input Object A2", () => {
 
     const inputConfigSection = screen.getByTestId("task-input-config");
     const cards = within(inputConfigSection).getAllByRole("radio");
-    await waitFor(() => expect(screen.getByTestId("task-input-revision").textContent).toContain("4"));
+    await waitFor(() => expect(screen.queryByTestId("task-input-revision")).toBeNull());
     await waitFor(() => expect(screen.getByTestId("task-input-source-none").getAttribute("aria-disabled")).toBe("false"));
     expect(cards).toHaveLength(4);
     expect(cards.every((card) => card.getAttribute("tabindex") === "0")).toBe(true);
@@ -226,7 +237,7 @@ describe("Task Input Object A2", () => {
 
     await waitFor(() => expect(screen.getByTestId("task-input-state").textContent).toContain("草稿"));
     expect((screen.getByTestId("task-input-json") as HTMLTextAreaElement).value).toBe('{"draft":true}');
-    expect(screen.getByTestId("task-input-revision").textContent).toContain("4");
+    expect(screen.queryByTestId("task-input-revision")).toBeNull();
     expect(document.body.textContent).toContain("输入对象已被其他页面更新");
   });
 
@@ -240,7 +251,7 @@ describe("Task Input Object A2", () => {
     });
 
     await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(true));
-    expect(screen.getByTestId("task-input-revision").textContent).toContain("未知");
+    expect(screen.queryByTestId("task-input-revision")).toBeNull();
     runtimeRef.current?.runOnce();
 
     await waitFor(() => expect(onError).toHaveBeenLastCalledWith("输入对象加载失败，请刷新后重试。"));
@@ -267,7 +278,7 @@ describe("Task Input Object A2", () => {
       source_type: "managed_files",
       valid_for_run: false,
       invalid_reason: invalidReason,
-    }), { onError });
+    }), { onError, managedFilesEnabled: true });
 
     await waitFor(() => expect((screen.getByTestId("save-task-input") as HTMLButtonElement).disabled).toBe(false));
     expect(screen.getByTestId("task-input-invalid").textContent).toContain(invalidMessage);
@@ -306,7 +317,7 @@ describe("Task Input Object A2", () => {
     await waitFor(() => expect(screen.getByTestId("task-input-json").getAttribute("aria-invalid")).toBe("true"));
     expect(put).not.toHaveBeenCalled();
     expect((screen.getByTestId("task-input-json") as HTMLTextAreaElement).value).toBe('{"broken":');
-    expect(screen.getByTestId("task-input-revision").textContent).toContain("4");
+    expect(screen.queryByTestId("task-input-revision")).toBeNull();
   });
 
   it("runs through the saved Input Object and never passes a per-run input override", async () => {

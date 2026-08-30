@@ -508,7 +508,7 @@ def test_c3_cleanup_receipt_is_idempotent_and_preserves_business_facts(
     execution = _create_execution(api_client, adapter["id"])
     claimed = _claim(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
-    path = f"/api/workers/{worker['id']}/executions/{execution['id']}/cleanup-receipt"
+    path = f"/api/workers/executions/{execution['id']}/workspace-cleanup"
     result = api_client.post(
         f"/api/workers/{worker['id']}/executions/{execution['id']}/result",
         json={
@@ -556,7 +556,7 @@ def test_c3_cleanup_receipt_rejects_non_terminal_transition(
     claimed = _claim(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
     response = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution['id']}/cleanup-receipt",
+        f"/api/workers/executions/{execution['id']}/workspace-cleanup",
         json={"status": "completed"},
         headers={**WORKER_HEADERS, "X-DLR-Cleanup-Token": claimed.json()["cleanup_token"]},
     )

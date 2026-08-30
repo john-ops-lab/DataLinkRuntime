@@ -75,6 +75,7 @@ class DeletionJobClaim:
     storage_key: str
     charged_bytes: int
     attempt: int
+    started_at: datetime
     lease_until: datetime
 
 
@@ -176,10 +177,14 @@ def _artifact_delete_due(
         ManagedInputArtifactStatus.DELETING,
     }:
         return False
-    if force and status in {
-        ManagedInputArtifactStatus.PENDING_DELETE,
-        ManagedInputArtifactStatus.DELETE_FAILED,
-    }:
+    if (
+        status == ManagedInputArtifactStatus.DELETE_FAILED
+        and int(artifact.delete_attempts) >= settings.artifact_delete_alert_threshold
+    ):
+        return False
+    if force and status == ManagedInputArtifactStatus.PENDING_DELETE:
+        return True
+    if force and status == ManagedInputArtifactStatus.DELETE_FAILED:
         return True
     lease_until = _as_utc(artifact.delete_lease_until)
     return lease_until is None or lease_until <= now
@@ -192,16 +197,18 @@ def _artifact_candidate_ids(session: Session, now: datetime, limit: int) -> list
         ManagedInputArtifact.delete_lease_until.is_(None),
         ManagedInputArtifact.delete_lease_until <= now,
     )
+    alert_threshold = settings.artifact_delete_alert_threshold
     return list(
         session.scalars(
             select(ManagedInputArtifact.id)
             .where(
-                ManagedInputArtifact.status.in_(
-                    (
-                        ManagedInputArtifactStatus.PENDING_DELETE,
-                        ManagedInputArtifactStatus.DELETE_FAILED,
-                        ManagedInputArtifactStatus.DELETING,
-                    )
+                or_(
+                    ManagedInputArtifact.status == ManagedInputArtifactStatus.PENDING_DELETE,
+                    ManagedInputArtifact.status == ManagedInputArtifactStatus.DELETING,
+                    and_(
+                        ManagedInputArtifact.status == ManagedInputArtifactStatus.DELETE_FAILED,
+                        ManagedInputArtifact.delete_attempts < alert_threshold,
+                    ),
                 ),
                 due,
             )
@@ -316,7 +323,11 @@ def finalize_artifact_deletion(
 
     artifact.status = ManagedInputArtifactStatus.DELETE_FAILED
     artifact.last_error_code = error_code
-    artifact.delete_lease_until = effective_now + timedelta(seconds=_backoff_seconds(claim.attempt))
+    artifact.delete_lease_until = (
+        None
+        if claim.attempt >= settings.artifact_delete_alert_threshold
+        else effective_now + timedelta(seconds=_backoff_seconds(claim.attempt))
+    )
     session.commit()
     logger.warning(
         "managed input artifact deletion failed adapter=%s artifact=%s code=%s "
@@ -333,6 +344,14 @@ def finalize_artifact_deletion(
         artifact_id=int(artifact.id),
         code=error_code,
     )
+    if claim.attempt >= settings.artifact_delete_alert_threshold:
+        logger.error(
+            "managed input artifact deletion requires admin retry adapter=%s artifact=%s "
+            "attempts=%s",
+            int(artifact.adapter_id),
+            int(artifact.id),
+            claim.attempt,
+        )
     return True
 
 
@@ -631,10 +650,15 @@ def prepare_adapter_deletion(
 
 def _job_delete_due(job: ArtifactDeletionJob, now: datetime) -> bool:
     status = str(job.status)
+    if (
+        status == ManagedInputDeletionJobStatus.DELETE_FAILED
+        and int(job.delete_attempts) >= settings.artifact_delete_alert_threshold
+    ):
+        return False
     if status not in {
         ManagedInputDeletionJobStatus.PENDING,
         ManagedInputDeletionJobStatus.DELETING,
-        ManagedInputDeletionJobStatus.FAILED,
+        ManagedInputDeletionJobStatus.DELETE_FAILED,
     }:
         return False
     lease_until = _as_utc(job.delete_lease_until)
@@ -648,16 +672,18 @@ def _job_candidate_ids(session: Session, now: datetime, limit: int) -> list[int]
         ArtifactDeletionJob.delete_lease_until.is_(None),
         ArtifactDeletionJob.delete_lease_until <= now,
     )
+    alert_threshold = settings.artifact_delete_alert_threshold
     return list(
         session.scalars(
             select(ArtifactDeletionJob.id)
             .where(
-                ArtifactDeletionJob.status.in_(
-                    (
-                        ManagedInputDeletionJobStatus.PENDING,
-                        ManagedInputDeletionJobStatus.DELETING,
-                        ManagedInputDeletionJobStatus.FAILED,
-                    )
+                or_(
+                    ArtifactDeletionJob.status == ManagedInputDeletionJobStatus.PENDING,
+                    ArtifactDeletionJob.status == ManagedInputDeletionJobStatus.DELETING,
+                    and_(
+                        ArtifactDeletionJob.status == ManagedInputDeletionJobStatus.DELETE_FAILED,
+                        ArtifactDeletionJob.delete_attempts < alert_threshold,
+                    ),
                 ),
                 due,
             )
@@ -684,10 +710,11 @@ def claim_deletion_job(
     if job is None or not _job_delete_due(job, effective_now):
         session.rollback()
         return None
-    attempt = int(job.attempts) + 1
+    attempt = int(job.delete_attempts) + 1
     lease_until = effective_now + timedelta(seconds=max(10, int(lease_seconds)))
     job.status = ManagedInputDeletionJobStatus.DELETING
-    job.attempts = attempt
+    job.delete_attempts = attempt
+    job.delete_started_at = effective_now
     job.delete_lease_until = lease_until
     job.last_error_code = None
     session.commit()
@@ -696,7 +723,71 @@ def claim_deletion_job(
         storage_key=job.storage_key,
         charged_bytes=int(job.charged_bytes),
         attempt=attempt,
+        started_at=effective_now,
         lease_until=lease_until,
+    )
+
+
+def retry_failed_artifact_deletion(session: Session, artifact_id: int) -> None:
+    """Explicitly release one thresholded Artifact for a single new attempt."""
+    from dlr.control.services.adapter import domain_error
+
+    artifact = session.scalar(
+        select(ManagedInputArtifact)
+        .where(ManagedInputArtifact.id == int(artifact_id))
+        .with_for_update()
+    )
+    if artifact is None:
+        raise domain_error(404, "input_artifact_not_found", "Input Artifact not found")
+    if (
+        artifact.status != ManagedInputArtifactStatus.DELETE_FAILED
+        or int(artifact.delete_attempts) < settings.artifact_delete_alert_threshold
+    ):
+        raise domain_error(
+            409,
+            "input_artifact_retry_not_allowed",
+            "Input Artifact is not waiting for an administrator retry",
+        )
+    artifact.status = ManagedInputArtifactStatus.PENDING_DELETE
+    artifact.delete_started_at = None
+    artifact.delete_lease_until = None
+    artifact.last_error_code = None
+    session.commit()
+    record_audit_event(
+        "gc_delete",
+        "admin_retry",
+        adapter_id=int(artifact.adapter_id),
+        artifact_id=int(artifact.id),
+    )
+
+
+def retry_failed_deletion_job(session: Session, job_id: int) -> None:
+    """Explicitly release one detached job for a single new attempt."""
+    from dlr.control.services.adapter import domain_error
+
+    job = session.scalar(
+        select(ArtifactDeletionJob).where(ArtifactDeletionJob.id == int(job_id)).with_for_update()
+    )
+    if job is None:
+        raise domain_error(404, "input_deletion_job_not_found", "Deletion job not found")
+    if (
+        job.status != ManagedInputDeletionJobStatus.DELETE_FAILED
+        or int(job.delete_attempts) < settings.artifact_delete_alert_threshold
+    ):
+        raise domain_error(
+            409,
+            "input_deletion_job_retry_not_allowed",
+            "Deletion job is not waiting for an administrator retry",
+        )
+    job.status = ManagedInputDeletionJobStatus.PENDING
+    job.delete_started_at = None
+    job.delete_lease_until = None
+    job.last_error_code = None
+    session.commit()
+    record_audit_event(
+        "deletion_job",
+        "admin_retry",
+        deletion_job_id=int(job.id),
     )
 
 
@@ -716,7 +807,8 @@ def finalize_deletion_job(
     if (
         job is None
         or job.status != ManagedInputDeletionJobStatus.DELETING
-        or int(job.attempts) != claim.attempt
+        or int(job.delete_attempts) != claim.attempt
+        or not _same_timestamp(job.delete_started_at, claim.started_at)
         or not _same_timestamp(job.delete_lease_until, claim.lease_until)
     ):
         session.rollback()
@@ -726,7 +818,7 @@ def finalize_deletion_job(
         if job.capacity_released_at is None:
             _release_actual(capacity, int(job.charged_bytes))
             job.capacity_released_at = effective_now
-        job.status = ManagedInputDeletionJobStatus.COMPLETED
+        job.status = ManagedInputDeletionJobStatus.DELETED
         job.completed_at = effective_now
         job.delete_lease_until = None
         job.last_error_code = None
@@ -739,9 +831,13 @@ def finalize_deletion_job(
         )
         return True
 
-    job.status = ManagedInputDeletionJobStatus.FAILED
+    job.status = ManagedInputDeletionJobStatus.DELETE_FAILED
     job.last_error_code = error_code
-    job.delete_lease_until = effective_now + timedelta(seconds=_backoff_seconds(claim.attempt))
+    job.delete_lease_until = (
+        None
+        if claim.attempt >= settings.artifact_delete_alert_threshold
+        else effective_now + timedelta(seconds=_backoff_seconds(claim.attempt))
+    )
     session.commit()
     logger.warning(
         "managed input deletion job failed job=%s code=%s retry_after_seconds=%s",
@@ -755,6 +851,12 @@ def finalize_deletion_job(
         deletion_job_id=int(job.id),
         code=error_code,
     )
+    if claim.attempt >= settings.artifact_delete_alert_threshold:
+        logger.error(
+            "managed input deletion job requires admin retry job=%s attempts=%s",
+            int(job.id),
+            claim.attempt,
+        )
     return True
 
 
@@ -967,6 +1069,8 @@ __all__ = [
     "process_artifact_deletions",
     "process_deletion_jobs",
     "record_audit_event",
+    "retry_failed_artifact_deletion",
+    "retry_failed_deletion_job",
     "run_artifact_gc",
     "run_gc_cycle",
     "run_orphan_audit",

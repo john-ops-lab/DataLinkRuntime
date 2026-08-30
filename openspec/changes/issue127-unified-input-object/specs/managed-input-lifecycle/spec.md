@@ -43,7 +43,7 @@
 
 #### Scenario: Writer 续租
 - **WHEN** 活跃上传持续流式写入
-- **THEN** writer 只续租同一 ACTIVE session；若 reservation 已过期/取消，writer 立即中止并幂等删除 `.part` 或最终 Blob
+- **THEN** writer 按单调时钟的有界周期续租同一 ACTIVE session，而不只在扩容时续租；若 reservation 已过期/取消或续租失败，writer 立即中止并幂等删除 `.part` 或最终 Blob
 
 #### Scenario: 完成上传核销
 - **WHEN** Blob 校验并原子落盘完成
@@ -99,11 +99,19 @@ Artifact SHALL 使用 `UPLOADING → STAGED → READY → PENDING_DELETE → DEL
 
 #### Scenario: 低水位拒绝
 - **WHEN** 新写入会使 ArtifactStore 可用空间低于配置下限
-- **THEN** 系统返回 `artifact_store_low_watermark`，清理上传副作用且不自动删除现有文件
+- **THEN** 系统返回 HTTP 409 与 `artifact_store_low_watermark`，清理上传副作用且不自动删除现有文件
 
 #### Scenario: 删除重试
 - **WHEN** Blob 删除第一次失败
-- **THEN** Artifact 进入 `DELETE_FAILED` 并保留容量 charge、错误码、尝试次数与可观测告警
+- **THEN** Artifact 进入 `DELETE_FAILED` 并保留容量 charge、错误码、尝试次数与可观测告警；达到部署定义的连续失败阈值后必须产生显式管理员告警并停止无界热重试，管理员可在原状态机上显式重试
+
+#### Scenario: 达阈值后业务删除不得绕过治理
+- **WHEN** Artifact 已在 `DELETE_FAILED` 达到连续失败阈值，普通编辑者再次调用业务删除端点
+- **THEN** 系统返回 409 `input_artifact_retry_not_allowed`，保持 Blob、容量 charge、尝试次数和失败状态不变，直到管理员显式 retry
+
+#### Scenario: 管理员不得提前跳过 backoff
+- **WHEN** Artifact 或 deletion job 仍在未达阈值的 `DELETE_FAILED` backoff 期
+- **THEN** 管理员 retry 端点返回稳定 409，且不得清空删除租约或提前形成热重试
 
 ### Requirement: TTL 与 GC 必须幂等且可重领
 上传中断、失败 reservation、UPLOADING 与未绑定 STAGED SHALL 按短 TTL 收敛；GC 核心在领取或删除候选前 MUST 调用不依赖具体 Lease schema 的运行保护 hook，完整系统中的 hook MUST 以 pending/running Execution Lease 为权威，GC 只能处理 hook 确认为 unprotected 的候选，并用数据库删除租约支持 stale `DELETING` 被其他实例安全重领。
@@ -134,6 +142,14 @@ Artifact SHALL 使用 `UPLOADING → STAGED → READY → PENDING_DELETE → DEL
 #### Scenario: 删除任务释放容量
 - **WHEN** deletion job 确认 Blob 已删除或不存在
 - **THEN** 仅在 `capacity_released_at` 为空时原子扣减一次平台占用并完成任务
+
+#### Scenario: 删除任务状态可审计
+- **WHEN** Adapter 删除事务创建或后台 worker 领取、完成、失败 deletion job
+- **THEN** job 依次使用 `PENDING`、`DELETING`、`DELETED` 或 `DELETE_FAILED`，并持久化 `delete_attempts`、`delete_started_at`、最近稳定错误与显式管理员重试结果
+
+#### Scenario: 显式删除当前 READY Artifact
+- **WHEN** 有编辑权限的用户携带当前 `expected_revision` 删除已绑定 READY Artifact
+- **THEN** 系统在完整 Adapter/InputConfig/Binding/Artifact 锁序中解绑、递增 revision、将 Artifact 置为 `PENDING_DELETE`；旧 revision 返回 409 且不产生部分删除
 
 #### Scenario: 删除任务不依赖 Adapter
 - **WHEN** Adapter、Binding、Artifact 和 terminal reservation 元数据已删除

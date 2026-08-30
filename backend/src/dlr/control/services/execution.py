@@ -58,6 +58,13 @@ NO_INPUT_OVERRIDE = _NoInputOverride()
 LEGACY_INPUT_COMPAT_METRICS: Counter[str] = Counter()
 
 
+def integrity_constraint_name(error: IntegrityError) -> str | None:
+    """Return a PostgreSQL constraint name without parsing driver messages."""
+    diagnostic = getattr(getattr(error, "orig", None), "diag", None)
+    value = getattr(diagnostic, "constraint_name", None)
+    return str(value) if value else None
+
+
 def compact_json_bytes(value: object) -> bytes:
     """Compact JSON serialization as UTF-8 bytes (the big-field unit)."""
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
@@ -137,6 +144,7 @@ def _create_execution_locked(
             settings.workspace_cleanup_attempt_timeout_seconds
         ),
         workspace_cleanup_total_timeout_seconds_snapshot=settings.workspace_cleanup_total_timeout_seconds,
+        workspace_cleanup_status="pending",
         claim_deadline_at=created_at + timedelta(seconds=settings.execution_claim_timeout_seconds),
         target_worker_id=worker.id,
         scheduled_for=scheduled_for,
@@ -178,8 +186,10 @@ def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -
             input_override=input_override,
         )
         session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         session.rollback()
+        if integrity_constraint_name(exc) != "uq_executions_active_adapter":
+            raise
         raise domain_error(
             409, "adapter_busy", "The Adapter already has an active Execution"
         ) from None

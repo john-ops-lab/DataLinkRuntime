@@ -46,8 +46,9 @@
     },
     "attachments": {
       "add": "Attach files",
-      "addAria": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX and text / code files",
-      "hint": "Images / PDF / DOCX / text and code files: up to {{count}}, {{size}} each, {{total}} total",
+      "addAria": "Attach files: images (PNG / JPEG / WebP), PDF, DOCX, XLS, XLSX and text / code files",
+      "addTooltip": "Supported formats: PNG, JPEG, WebP, PDF, DOCX, XLS, XLSX and text / code files",
+      "hint": "Images / PDF / DOCX / XLS / XLSX / text and code files: up to {{count}}, {{size}} each, {{total}} total",
       "oneLineHint": "max {{count}} · ≤{{size}}/file · ≤{{total}} total",
       "guidance": "Upload up to {{count}} attachments, max {{size}} each. Do not upload sensitive information.",
       "guidanceLead": "Upload up to {{count}} attachments, max {{size}} each. ",
@@ -62,11 +63,13 @@
         "image": "Image",
         "pdf": "PDF",
         "docx": "DOCX",
+        "xls": "XLS",
+        "xlsx": "XLSX",
         "text": "Text",
         "code": "Code"
       },
       "error": {
-        "unsupported": "Unsupported file type: only images (PNG / JPEG / WebP), PDF, DOCX and text / code files are supported, and the file extension must match the declared type",
+        "unsupported": "Unsupported file type: only images (PNG / JPEG / WebP), PDF, DOCX, XLS, XLSX and text / code files are supported, and the file extension must match the declared type",
         "filenameInvalid": "Invalid attachment filename: use a plain filename without path separators",
         "tooLarge": "The file exceeds the per-file size limit ({{size}}): compress or split it and upload again",
         "totalTooLarge": "The attachments exceed the total size limit ({{total}}): remove or compress attachments and try again",

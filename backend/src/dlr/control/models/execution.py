@@ -148,7 +148,7 @@ class Execution(Base):
         ),
         CheckConstraint(
             "workspace_cleanup_status IS NULL OR "
-            "workspace_cleanup_status IN ('completed', 'deferred')",
+            "workspace_cleanup_status IN ('pending', 'completed', 'deferred')",
             name="ck_executions_workspace_cleanup_status",
         ),
         CheckConstraint(
@@ -295,3 +295,6 @@ class ExecutionInputArtifactLease(Base):
         primary_key=True,
     )
     ordinal: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -5,7 +5,7 @@
 ## ADDED Requirements
 
 ### Requirement: Execution 固化完整输入快照
-每个 Task Execution SHALL 在创建事务中固化 `input_source_type`、`input_config_revision`、不可变 `input_snapshot`、Adapter timeout、claim/recovery/Workspace cleanup 超时快照和 `claim_deadline_at`；协议 v2 claim 时再固化 `execution_deadline_at` 和 Token 哈希。
+每个 Task Execution SHALL 在创建事务中固化 `input_source_type`、`input_config_revision`、不可变 `input_snapshot`、Adapter timeout、claim/recovery/Workspace cleanup 超时快照和 `claim_deadline_at`；协议 v2 claim 时再固化 `execution_deadline_at` 和 Token 哈希。公开 `input_snapshot` 顶层对所有来源固定使用 `source_type` 与 `revision`；只有 `managed_files` 额外包含 `artifacts`，其他来源不得携带该键。
 
 #### Scenario: JSON 输入快照
 - **WHEN** 当前配置为 `json`
@@ -19,8 +19,12 @@
 - **WHEN** 创建 managed_files Execution
 - **THEN** snapshot 文件项包含原始展示名、content type、size bytes、SHA-256，不包含 Artifact ID、storage key、Control 路径或 Worker 路径
 
+#### Scenario: 快照顶层键保持封闭
+- **WHEN** 序列化 none、json、managed_files 或 remote_files 的公开 Execution snapshot
+- **THEN** 顶层只出现合同允许的 `source_type`、`revision` 与 managed_files 专属 `artifacts`，不得增加 Artifact ID、Binding、Lease、路径或 Token 键
+
 ### Requirement: 文件 Execution 使用运行期 Lease 固定具体集合
-managed_files Execution 创建时 SHALL 在持有 Artifact 锁的同一事务中创建有序 Lease；Lease MUST 只授权该 Execution 的 Worker 下载并阻止 Blob 在 Execution 为 pending/running 时被删除。
+managed_files Execution 创建时 SHALL 在持有 Artifact 锁的同一事务中创建带 `created_at` 的有序 Lease；Lease MUST 只授权该 Execution 的 Worker 下载并阻止 Blob 在 Execution 为 pending/running 时被删除。新建 Task Execution 的 Workspace cleanup 状态 SHALL 为 `pending`，并只可由终态、stale reconciler 或合法 cleanup receipt 收敛为 `completed/deferred`；迁移前历史行可保持 NULL。
 
 #### Scenario: 保存后立即替换配置
 - **WHEN** Execution 已创建后用户替换当前 Binding
@@ -42,11 +46,11 @@ Control SHALL 以数据库时间计算 deadline，并在 Execution 创建时固�
 - **THEN** Control 启动校验失败，Worker 领取到非法 payload 时也拒绝启动 Adapter并返回稳定错误
 
 ### Requirement: Schedule 输入失效必须消费计划点而不热循环
-Scheduler SHALL 在锁定同一 Schedule 行的事务中记录 due point、`last_blocked_reason=input_invalid`、阻塞时间与已处理计划点，并按现有 Cron/timezone/DST 规则把 `next_run_at` 推进到当前时间之后；不得创建 Execution 或补跑失效期间计划点。
+Scheduler SHALL 在锁定同一 Schedule 行的事务中记录 due point、顶层 `last_blocked_reason=input_invalid`、非本地化结构化 invalid detail、阻塞时间与已处理计划点，并按现有 Cron/timezone/DST 规则把 `next_run_at` 推进到当前时间之后；不得创建 Execution 或补跑失效期间计划点。
 
 #### Scenario: 到期文件导致计划点阻塞
 - **WHEN** Schedule due 且当前 managed_files 无有效文件
-- **THEN** 系统不创建 Execution，持久化结构化 invalid reason，并推进到下一个未来点
+- **THEN** 系统不创建 Execution，保持顶层 reason 为 `input_invalid`，另行持久化 `managed_files_empty`、`artifact_expired` 等结构化 detail，并推进到下一个未来点
 
 #### Scenario: 多 Scheduler 竞争阻塞点
 - **WHEN** 多个 Control 同时处理同一无效 due point
@@ -91,6 +95,10 @@ Execution SHALL 分别保存业务 `status/error_code` 与 `workspace_cleanup_st
 #### Scenario: 业务成功但同步清理失败
 - **WHEN** Adapter 成功且 Worker 在清理总预算内未删除 Workspace
 - **THEN** Execution 保持 succeeded，cleanup 为 `deferred/workspace_cleanup_failed`
+
+#### Scenario: Result 报告 deferred 缺少原因
+- **WHEN** Worker Result 提交 `workspace_cleanup_status=deferred` 但未携带受支持的 cleanup error code
+- **THEN** Control 返回稳定 schema/domain 校验错误且不写入含糊的 cleanup 状态
 
 #### Scenario: 从未创建 Workspace
 - **WHEN** stale pending 从未 claim

@@ -172,6 +172,12 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
         validation_alias="DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS",
     )
+    artifact_delete_alert_threshold: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        validation_alias="DLR_ARTIFACT_DELETE_ALERT_THRESHOLD",
+    )
 
     # M3 SSE: the simplest possible PostgreSQL polling implementation; see
     # docs/specs/m3-observability-ux.md §7.

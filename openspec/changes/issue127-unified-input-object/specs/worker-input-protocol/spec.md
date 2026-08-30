@@ -5,7 +5,7 @@
 ## ADDED Requirements
 
 ### Requirement: Worker 注册显式协商协议版本
-Worker 注册 SHALL 携带 `protocol_version`；缺失值按 v1 兼容，支持 Claim/Cleanup Token 与持久清理日志的 Worker 使用 v2。Control MUST 保存并在调度判断中使用该版本。
+Worker 注册 SHALL 携带 `protocol_version`；缺失或显式 JSON `null` 按 v1 兼容，支持 Claim/Cleanup Token 与持久清理日志的 Worker 使用 v2。TaskPayload 中非空版本 MUST 是整数 `1` 或 `2`，不得把 bool、float 或数字字符串强制转换为协议版本。Control MUST 保存并在调度判断中使用该版本。
 
 #### Scenario: 旧 Worker 注册
 - **WHEN** Worker 注册未携带 protocol_version
@@ -14,6 +14,10 @@ Worker 注册 SHALL 携带 `protocol_version`；缺失值按 v1 兼容，支持 
 #### Scenario: v1 领取文件 Execution
 - **WHEN** v1 Worker 尝试领取 managed_files Execution
 - **THEN** Control 返回 `worker_protocol_incompatible` 且 Execution 保持可由合格 v2 Worker 领取
+
+#### Scenario: 非整数协议版本
+- **WHEN** TaskPayload 携带 bool、float、数字字符串或未知整数协议版本
+- **THEN** Worker 在 journal、Workspace、依赖准备和 Adapter 进程副作用前返回 `worker_protocol_payload_invalid`
 
 ### Requirement: v2 Claim 签发分权 Token
 v2 Worker 原子 claim 时 SHALL 获得至少 256-bit CSPRNG 的 Claim Token 和独立 Cleanup Token；Control 只保存各自单向哈希并使用 constant-time comparison。两类 Token MUST 不可互换。
@@ -42,11 +46,11 @@ v2 Worker 原子 claim 时 SHALL 获得至少 256-bit CSPRNG 的 Claim Token 和
 - **THEN** Control 不接受该凭据，且访问日志不出现 Token
 
 ### Requirement: TaskPayload 不暴露存储路径
-managed_files TaskPayload SHALL 只包含 Execution 文件项的 ID、ordinal、受控 mount name、展示元数据、大小和 SHA-256，以及 Execution 固化的清理超时；MUST 不包含 Control 宿主路径、storage key 或 ArtifactStore 根路径。
+managed_files TaskPayload SHALL 只包含 Execution 文件项的 ID、ordinal、受控 mount name、展示元数据、大小和 SHA-256，以及 Execution 固化的清理超时；MUST 不包含 Control 宿主路径、storage key 或 ArtifactStore 根路径。受控 mount name SHALL 由 ordinal 与白名单扩展名生成，未知或非法扩展名退化为无扩展名安全名称。
 
 #### Scenario: 领取文件任务
 - **WHEN** v2 Worker claim managed_files Execution
-- **THEN** 每个文件具有稳定 ordinal 与平台生成 mount name，原始文件名仅为元数据
+- **THEN** 每个文件具有稳定 ordinal 与平台生成的 `input-<ordinal>.<controlled-extension>` 或安全无扩展名 mount name，原始文件名仅为元数据且不参与目录选择
 
 ### Requirement: Worker 在启动 Adapter 前完整准备输入
 Worker SHALL 在受控 Execution Workspace 内下载全部 Lease 文件，逐项复核 size 与 SHA-256，写入不含敏感路径的 manifest，并将文件设为 `0444`、输入目录设为 `0555` 作为 best-effort 防误写；任一失败 MUST 不启动 Adapter 子进程。
@@ -74,6 +78,10 @@ v2 Worker MUST 在创建 Workspace、下载文件或启动 Adapter 前，把 exe
 - **WHEN** 安全测试读取 journal schema
 - **THEN** 只存在 cleanup 所需 execution/path/token，不包含 Claim Token、用户文件名、JSON input、业务 Secret 或 Adapter 输出
 
+#### Scenario: 创建 Workspace 后立即崩溃
+- **WHEN** journal 已持久化且 Worker 在 Workspace mkdir 后、完整下载 manifest 写入前崩溃
+- **THEN** Workspace 已具有最小归属 marker/manifest，重启扫描可由 journal、受控名称与最小归属事实证明并安全清理，不留下无法收敛的空目录
+
 ### Requirement: 同步 Workspace 清理具有硬预算
 所有业务终态 SHALL 尝试删除整个 Execution Workspace；单次尝试与总阶段分别受 TaskPayload 快照限制，总预算包含全部尝试、退避和本地确认。达到预算后 MUST 立即以 `deferred` 上报，不得无限阻塞结果。
 
@@ -86,7 +94,15 @@ v2 Worker MUST 在创建 Workspace、下载文件或启动 Adapter 前，把 exe
 - **THEN** Result 仍为 succeeded，并附 `workspace_cleanup_status=deferred`、`workspace_cleanup_error_code=workspace_cleanup_failed`
 
 ### Requirement: Cleanup Receipt 独立且幂等
-Worker SHALL 通过仅接受 Cleanup Token 的独立端点上报 Workspace 清理；端点只允许业务终态的 `deferred→completed` 与 `completed→completed`，MUST 不修改业务状态、output、业务 error、ended_at 或触发重跑。
+Worker SHALL 通过 canonical `/api/workers/executions/{execution_id}/workspace-cleanup`、仅接受 Cleanup Token 的独立端点上报 Workspace 清理；端点只允许业务终态的 `deferred→completed` 与 `completed→completed`，MUST 不修改业务状态、output、业务 error、ended_at 或触发重跑。若保留旧路径兼容别名，文档与 Worker client MUST 只使用 canonical 路径。
+
+#### Scenario: 非法 v2 payload
+- **WHEN** v2 TaskPayload 缺少 Token、超时不变量、受控 mount name 或其他必需字段
+- **THEN** Worker 在创建 journal、Workspace或 Adapter 进程前拒绝 payload并返回稳定协议错误
+
+#### Scenario: v2 代码与依赖字段
+- **WHEN** v2 TaskPayload 的 `language` 或 `code` 为空白，或 `requirements` 缺失/不是字符串
+- **THEN** Worker 在任何本地副作用前返回 `worker_protocol_payload_invalid`；`requirements=""` 表示无外部依赖并保持合法
 
 #### Scenario: Result 响应丢失但 Workspace 已删除
 - **WHEN** Worker 重启后 journal 显示 Workspace 不存在且先前 Result 响应未知

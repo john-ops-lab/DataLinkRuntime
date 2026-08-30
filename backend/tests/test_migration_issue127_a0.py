@@ -152,6 +152,7 @@ def test_fresh_head_creates_a0_schema(fresh_engine: Engine) -> None:
     }.issubset({column["name"] for column in inspector.get_columns("adapter_input_configs")})
     assert {
         "last_blocked_reason",
+        "last_blocked_detail",
         "last_blocked_at",
         "last_processed_due_at",
     }.issubset({column["name"] for column in inspector.get_columns("adapter_schedules")})
@@ -218,6 +219,7 @@ def test_fixed_base_upgrade_backfills_and_preserves_legacy_input(
         }
         assert {
             "last_blocked_reason",
+            "last_blocked_detail",
             "last_blocked_at",
             "last_processed_due_at",
         }.issubset(schedule_columns)

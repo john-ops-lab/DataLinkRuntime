@@ -90,7 +90,7 @@ function inputFilesFromManifest() {
       failInput("input_artifact_not_ready");
     }
     const mountMatch = typeof raw.mount_name === "string"
-      ? raw.mount_name.match(/^input-([0-9]{2})$/)
+      ? raw.mount_name.match(/^input-([0-9]{2})(?:\.[a-z0-9]{1,10})?$/)
       : null;
     if (
       !isInteger(raw.artifact_id, true)

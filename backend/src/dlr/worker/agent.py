@@ -37,6 +37,8 @@ DEFAULT_READY_FILE = "/tmp/dlr-worker.ready"
 MAX_BACKOFF_SECONDS = 30.0
 REPORT_ATTEMPTS = 3
 MIN_JAVA_MAJOR_VERSION = 21
+DEFAULT_PROTOCOL_VERSION = 1
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2})
 
 
 def _runtime_major_version(command: str) -> int | None:
@@ -74,6 +76,14 @@ class WorkerConfig:
         self.control_url = os.environ.get("DLR_CONTROL_URL", "http://control:8000")
         self.token = os.environ.get("DLR_WORKER_TOKEN", "")
         self.name = os.environ.get("DLR_WORKER_NAME", "worker-1")
+        try:
+            self.protocol_version = int(
+                os.environ.get("DLR_WORKER_PROTOCOL_VERSION", str(DEFAULT_PROTOCOL_VERSION))
+            )
+        except ValueError as error:
+            raise ValueError("DLR_WORKER_PROTOCOL_VERSION must be 1 or 2") from error
+        if self.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
+            raise ValueError("DLR_WORKER_PROTOCOL_VERSION must be 1 or 2")
         self.heartbeat_seconds = float(os.environ.get("DLR_WORKER_HEARTBEAT_SECONDS", "10"))
         self.claim_wait_seconds = int(os.environ.get("DLR_WORKER_CLAIM_WAIT_SECONDS", "20"))
         self.max_concurrency = int(os.environ.get("DLR_WORKER_MAX_CONCURRENCY", "4"))
@@ -178,7 +188,11 @@ class Agent:
                 capabilities = self._config.capabilities()
                 if not capabilities:
                     raise RuntimeError("no supported Runtime is installed")
-                info = self._client.register(self._config.name, capabilities)
+                info = self._client.register(
+                    self._config.name,
+                    capabilities,
+                    protocol_version=self._config.protocol_version,
+                )
                 return int(info["id"])
             except ControlUnavailableError as error:
                 logger.warning(
@@ -417,7 +431,7 @@ class Agent:
                     result.update(
                         {
                             "workspace_cleanup_status": "deferred",
-                            "workspace_cleanup_error_code": "workspace_cleanup_unknown",
+                            "workspace_cleanup_error_code": "workspace_cleanup_failed",
                         }
                     )
             except (TypeError, ValueError):

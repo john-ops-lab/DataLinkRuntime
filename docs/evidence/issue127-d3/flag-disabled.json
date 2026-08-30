@@ -1,0 +1,203 @@
+{
+  "stage": "disabled",
+  "adapter_id": 1,
+  "facts": {
+    "capability": {
+      "status": 200,
+      "body": {
+        "managed_files_enabled": false,
+        "ready": false
+      }
+    },
+    "config": {
+      "status": 200,
+      "summary": {
+        "revision": 10,
+        "source_type": "managed_files",
+        "artifact_count": 1,
+        "artifacts": [
+          {
+            "id": 16,
+            "ordinal": 0,
+            "original_filename": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+            "status": "READY",
+            "sha256": "828a057ffc4a1fe0e60617d9a37a2d1a9ef6853076f7f02c402fcab0960e4afa"
+          }
+        ],
+        "retention": {
+          "mode": "custom",
+          "seconds": 7200
+        },
+        "valid_for_run": false
+      }
+    },
+    "executions": {
+      "status": 200,
+      "summary": {
+        "count": 15,
+        "ids": [
+          15,
+          14,
+          13,
+          12,
+          11,
+          10,
+          9,
+          8,
+          7,
+          6,
+          5,
+          4,
+          3,
+          2,
+          1
+        ],
+        "statuses": [
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded",
+          "succeeded"
+        ]
+      }
+    }
+  },
+  "browser": {
+    "status": "PASS",
+    "managed_card_disabled": true,
+    "telemetry": {
+      "console": [
+        {
+          "type": "info",
+          "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+        }
+      ],
+      "page_errors": [],
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/admin/verify"
+        },
+        {
+          "method": "GET",
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "path": "/api/health"
+        },
+        {
+          "method": "GET",
+          "path": "/api/workers"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "GET",
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions/1"
+        }
+      ],
+      "responses": [
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/auth/admin/verify"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/health"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/workers"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/versions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/versions/1"
+        }
+      ]
+    }
+  },
+  "human_acceptance": "待人工验收",
+  "disabled_api": {
+    "upload": {
+      "status": 422,
+      "code": "input_source_not_available"
+    },
+    "input_config_put": {
+      "status": 422,
+      "code": "input_source_not_available"
+    }
+  },
+  "machine_gate": "PASS"
+}

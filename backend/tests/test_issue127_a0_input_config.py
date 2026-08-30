@@ -364,7 +364,6 @@ def test_input_config_runtime_lock_is_authoritative(api_client: TestClient) -> N
             "enabled": True,
             "cron": "0 * * * *",
             "timezone": "UTC",
-            "input": None,
         },
     )
     assert schedule.status_code == 200, schedule.text
@@ -416,6 +415,7 @@ def test_schedule_blocked_columns_are_migrated(
     }
     assert {
         "last_blocked_reason",
+        "last_blocked_detail",
         "last_blocked_at",
         "last_processed_due_at",
     }.issubset(columns)

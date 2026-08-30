@@ -194,12 +194,11 @@ def download_input_artifact(
 
 
 @router.post(
-    "/api/workers/{worker_id}/executions/{execution_id}/cleanup-receipt",
+    "/api/workers/executions/{execution_id}/workspace-cleanup",
     response_model=ExecutionResponse,
 )
 def report_cleanup_receipt(
     request: Request,
-    worker_id: int,
     execution_id: int,
     payload: WorkspaceCleanupReceipt,
     session: DbSession,
@@ -218,7 +217,6 @@ def report_cleanup_receipt(
     return ExecutionResponse.model_validate(
         worker_service.apply_cleanup_receipt(
             session,
-            worker_id,
             execution_id,
             cleanup_token,
         )

@@ -64,7 +64,7 @@ B0_CHECKS = {
     "ck_artifact_deletion_jobs_status",
     "ck_artifact_deletion_jobs_size_bytes",
     "ck_artifact_deletion_jobs_charged_bytes",
-    "ck_artifact_deletion_jobs_attempts",
+    "ck_artifact_deletion_jobs_delete_attempts",
 }
 
 B0_UNIQUES = {
@@ -285,6 +285,18 @@ def test_catalog_has_b0_constraints_and_gc_ttl_indexes(fresh_engine: Engine) -> 
     assert index_names >= B0_INDEXES
     assert check_names >= B0_CHECKS
     assert unique_names >= B0_UNIQUES
+    deletion_job_columns = {
+        column["name"] for column in inspector.get_columns("artifact_deletion_jobs")
+    }
+    assert {"delete_attempts", "delete_started_at"}.issubset(deletion_job_columns)
+    assert "attempts" not in deletion_job_columns
+    deletion_job_checks = {
+        constraint["name"]: constraint["sqltext"]
+        for constraint in inspector.get_check_constraints("artifact_deletion_jobs")
+    }
+    status_check = deletion_job_checks["ck_artifact_deletion_jobs_status"]
+    for status in ("PENDING", "DELETING", "DELETED", "DELETE_FAILED"):
+        assert status in status_check
 
     assert inspector.get_pk_constraint("managed_input_settings")["constrained_columns"] == ["id"]
     assert inspector.get_pk_constraint("managed_input_capacity")["constrained_columns"] == ["id"]

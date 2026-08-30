@@ -1,0 +1,51 @@
+{
+  "schema": "issue127-e0-real-postgres-race-v1",
+  "runner": "DLR_E0_RACE_TAG=round3 docker exec dlr-i127-e0-r2-141-control-1 python /tmp/issue127-e0-race.py",
+  "race_tag": "round3",
+  "lease_first": {
+    "adapter_id": 9,
+    "artifact_id": 19,
+    "execution_id": 18,
+    "creator_execution_status": "pending",
+    "gc_observed_active_lease": true,
+    "gc_claimed": 0,
+    "gc_deleted": 0,
+    "artifact_status_after_race": "PENDING_DELETE",
+    "capacity_actual_before": 64,
+    "capacity_actual_after": 64,
+    "capacity_unchanged": true,
+    "blob_still_present": true,
+    "blob_read": true,
+    "blob_read_bytes": 8,
+    "blob_sha256_matches": true
+  },
+  "no_governance_control": {
+    "adapter_id": 10,
+    "artifact_id": 20,
+    "execution_id": 19,
+    "execution_status": "pending",
+    "blob_read": true,
+    "blob_read_bytes": 8,
+    "blob_sha256_matches": true
+  },
+  "governance_first": {
+    "adapter_id": 11,
+    "artifact_id": 21,
+    "governance_committed": true,
+    "gc_claimed": true,
+    "create_failure_status": 422,
+    "create_failure_code": "input_invalid",
+    "artifact_status_after_race": "DELETED",
+    "execution_exists": false,
+    "capacity_actual_before": 80,
+    "capacity_actual_after": 72,
+    "capacity_released": true,
+    "blob_deleted": true,
+    "blob_read": true,
+    "blob_read_bytes": 8,
+    "blob_sha256_matches": true
+  },
+  "database": "PostgreSQL",
+  "machine_gate": "PASS",
+  "human_acceptance": "待人工验收"
+}

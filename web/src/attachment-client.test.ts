@@ -11,7 +11,9 @@ import type { PendingAttachment } from "@assistant-ui/react";
 import {
   createDlrAttachmentAdapter,
   DEFAULT_ATTACHMENT_LIMITS,
+  DEFAULT_SUPPORTED_CONTENT_TYPES,
   firstRejectedRowMessage,
+  classifyAttachment,
   rejectedRowMessage,
   type AttachmentRowStatus,
   type DlrAttachmentAdapterOptions,
@@ -49,6 +51,26 @@ describe("createDlrAttachmentAdapter", () => {
       adapterOptions({ supportedContentTypes: () => ["text/plain"] }),
     );
     expect(narrowed.accept).toBe("text/plain");
+  });
+
+  it("classifies legacy XLS and XLSX as supported spreadsheet categories", () => {
+    expect(DEFAULT_SUPPORTED_CONTENT_TYPES).toContain("application/vnd.ms-excel");
+    expect(DEFAULT_SUPPORTED_CONTENT_TYPES).toContain(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    expect(classifyAttachment("legacy.xls", "application/vnd.ms-excel")).toEqual({
+      ok: true,
+      category: "xls",
+      contentType: "application/vnd.ms-excel",
+    });
+    expect(classifyAttachment(
+      "report.xlsx",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )).toEqual({
+      ok: true,
+      category: "xlsx",
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
   });
 
   it("add() returns a visible error row for a rejected file, and send() refuses to resolve it", async () => {

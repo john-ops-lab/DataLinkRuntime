@@ -1,0 +1,39 @@
+{
+  "schema": "issue127-e0-web-gates-v1",
+  "web_cwd": "web",
+  "commands": {
+    "npm run lint": {
+      "result": "PASS"
+    },
+    "npm run typecheck": {
+      "result": "PASS"
+    },
+    "npm run test": {
+      "result": "PASS",
+      "test_files": 37,
+      "tests": 415
+    },
+    "npm run build": {
+      "result": "PASS",
+      "modules_transformed": 6123,
+      "warning": "existing large chunk warning only"
+    }
+  },
+  "targeted_browser": {
+    "result": "PASS",
+    "transport": "in-app Browser / Chrome",
+    "locales": ["zh-CN", "en"],
+    "login_preference_before_authentication": "English",
+    "authenticated_system_locale": "zh-CN",
+    "managed_input_saved_files": 1,
+    "upload_enabled": true,
+    "replace_visible": true,
+    "duplicate_filename_error_visible": false,
+    "console_errors_or_warnings": 0,
+    "framework_overlay": false,
+    "note": "The prior exhaustive Playwright matrix is not reused as exact-Candidate evidence; final exact-SHA review remains task 22.13/4.2.",
+    "human_acceptance": "待人工验收"
+  },
+  "machine_gate": "PASS",
+  "human_acceptance": "待人工验收"
+}

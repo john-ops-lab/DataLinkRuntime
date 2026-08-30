@@ -2543,12 +2543,19 @@ body {
 /* --- M5.5.11 Task 运行设置：单页动态表单 ---------------------------------- */
 
 .task-run-settings {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 14px;
   padding: 14px;
   align-items: stretch;
   max-width: 760px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 .task-runtime-config,
@@ -2697,6 +2704,149 @@ body {
   margin: 0;
 }
 
+.managed-input-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--dlr-border);
+  border-radius: 6px;
+  background: rgba(240, 249, 255, 0.64);
+}
+
+.managed-input-editor-header,
+.managed-input-file-card .ant-card-body,
+.managed-input-file-main,
+.managed-input-file-actions,
+.managed-input-progress-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.managed-input-editor-header {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.managed-input-editor-header > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.managed-input-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.managed-input-file-card {
+  width: 100%;
+  min-width: 0;
+}
+
+.managed-input-file-card .ant-card-body {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+}
+
+.managed-input-file-main {
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  max-width: 100%;
+}
+
+.managed-input-filename {
+  display: block;
+  min-width: 0;
+  max-width: min(100%, 340px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.managed-input-file-main > .managed-input-filename {
+  flex: 0 1 240px;
+}
+
+.managed-input-file-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.managed-input-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+
+.managed-input-progress-row {
+  gap: 10px;
+  width: 100%;
+}
+
+.managed-input-progress-row .managed-input-filename {
+  flex: 0 1 220px;
+}
+
+.managed-input-progress-row .ant-progress {
+  flex: 1 1 180px;
+  min-width: 120px;
+}
+
+.managed-input-retention-item {
+  width: 100%;
+  margin-bottom: 0 !important;
+}
+
+.managed-input-retention-item .ant-form-item-control-input-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.managed-input-examples {
+  width: 100%;
+  min-width: 0;
+}
+
+.managed-input-examples-content {
+  width: 100%;
+  min-width: 0;
+}
+
+.managed-input-example-code {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  background: #f6f8fa;
+  border: 1px solid var(--dlr-border);
+  border-radius: 4px;
+  font-family: var(--dlr-mono-font);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.managed-input-example-copy-wrapper {
+  display: inline-flex;
+  max-width: 100%;
+}
+
 /* M3.2 设置抽屉生命周期区。 */
 .settings-section-title {
   margin: 0;
@@ -2823,7 +2973,8 @@ body {
 }
 
 .settings-content-ai-model,
-.settings-content-knowledge-sources {
+.settings-content-knowledge-sources,
+.settings-content-managed-input {
   width: min(100%, 720px);
 }
 
@@ -3002,6 +3153,59 @@ body {
 .settings-panel .ant-pagination {
   flex-wrap: wrap;
   row-gap: 6px;
+}
+
+.managed-input-settings-panel .ant-card {
+  width: 100%;
+  min-width: 0;
+}
+
+.managed-input-policy-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  width: 100%;
+}
+
+.managed-input-policy-form .ant-form-item {
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
+.managed-input-policy-form .ant-input-number {
+  max-width: 100%;
+}
+
+.managed-input-usage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  width: 100%;
+}
+
+.managed-input-usage-table .ant-table-body {
+  max-height: 280px;
+  overflow-y: auto !important;
+  scrollbar-gutter: stable;
+}
+
+.managed-input-policy-form .managed-input-unit-compact {
+  width: 100%;
+  min-width: 0;
+}
+
+.managed-input-policy-form .managed-input-unit-compact .ant-input-number {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+
+.managed-input-policy-form .managed-input-unit-compact .managed-input-unit-select {
+  flex: 0 0 92px;
+  width: 92px;
+  min-width: 82px;
+  box-sizing: border-box;
 }
 
 .credentials-settings-panel {
@@ -3249,6 +3453,10 @@ body {
 @media (max-width: 560px) {
   .settings-center-content {
     padding: 16px;
+  }
+
+  .managed-input-policy-form {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .settings-toolbar-filters,

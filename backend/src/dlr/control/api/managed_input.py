@@ -10,15 +10,18 @@ from collections.abc import Callable
 from typing import Annotated, BinaryIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.common.managed_input import MANAGED_INPUT_FILE_EXTENSIONS
 from dlr.control import db
+from dlr.control.models import ManagedInputArtifact, ManagedInputArtifactStatus
 from dlr.control.schemas.managed_input import (
     ManagedInputArtifactResponse,
+    ManagedInputCapabilityResponse,
     ManagedInputSettingsResponse,
     ManagedInputSettingsUpdate,
-    ManagedInputUploadSessionResponse,
 )
 from dlr.control.security import (
     Principal,
@@ -27,7 +30,8 @@ from dlr.control.security import (
     require_principal,
     require_upload_principal,
 )
-from dlr.control.services import adapter_access, managed_input_upload
+from dlr.control.services import adapter_access, managed_input_gc, managed_input_upload
+from dlr.control.services import input_config as input_config_service
 from dlr.control.services import managed_input as managed_input_service
 from dlr.control.services.artifact_store import ArtifactStoreError, LocalFileArtifactStore
 from dlr.control.services.managed_input_upload import UploadSessionState
@@ -37,6 +41,9 @@ logger = logging.getLogger("dlr.control.managed_input")
 
 router = APIRouter(dependencies=[Depends(require_admin_principal)])
 adapter_router = APIRouter(dependencies=[Depends(require_business_principal)])
+# Capability is intentionally readable by ordinary business users.  It is a
+# small set of safe release/form facts, not an alias for the admin settings resource.
+capability_router = APIRouter(dependencies=[Depends(require_business_principal)])
 upload_router = APIRouter()
 
 DbSession = Annotated[Session, Depends(db.get_session)]
@@ -68,6 +75,50 @@ def put_managed_input_settings(
         payload,
         actor_kind=principal.kind,
         actor_id=principal.user_id,
+    )
+
+
+@router.post(
+    "/api/system/managed-input-artifacts/{artifact_id}/retry-delete",
+    status_code=204,
+)
+def retry_managed_input_artifact_delete(artifact_id: int, session: DbSession) -> Response:
+    """Release one DELETE_FAILED Artifact for an explicit administrator retry."""
+    managed_input_gc.retry_failed_artifact_deletion(session, artifact_id)
+    return Response(status_code=204)
+
+
+@router.post(
+    "/api/system/managed-input-deletion-jobs/{job_id}/retry-delete",
+    status_code=204,
+)
+def retry_managed_input_deletion_job(job_id: int, session: DbSession) -> Response:
+    """Release one thresholded detached job for an administrator retry."""
+    managed_input_gc.retry_failed_deletion_job(session, job_id)
+    return Response(status_code=204)
+
+
+@capability_router.get(
+    "/api/system/managed-input-capability",
+    response_model=ManagedInputCapabilityResponse,
+)
+def get_managed_input_capability(session: DbSession) -> ManagedInputCapabilityResponse:
+    """Expose only the user-facing Managed Input release facts.
+
+    ``ready`` is intentionally tied to the deployment flag at this boundary.
+    The retention limits are safe business-form constraints; storage paths,
+    quota usage, credentials and administrator-only details remain excluded.
+    """
+
+    enabled = bool(settings.managed_files_enabled)
+    policy = managed_input_service.get_settings(session)
+    return ManagedInputCapabilityResponse(
+        managed_files_enabled=enabled,
+        ready=enabled,
+        default_retention_seconds=int(policy.default_retention_seconds),
+        max_custom_retention_seconds=int(policy.max_custom_retention_seconds),
+        allow_manual_delete=bool(policy.allow_manual_delete),
+        allowed_extensions=list(MANAGED_INPUT_FILE_EXTENSIONS),
     )
 
 
@@ -135,6 +186,53 @@ async def _compensate_upload(
                 logger.warning("managed input upload compensation deferred")
 
 
+UPLOAD_RENEWAL_INTERVAL_SECONDS = 30.0
+
+
+def _renewal_delay_seconds(_state: UploadSessionState) -> float:
+    """Return the fixed event-loop interval used by the monotonic waiter."""
+    return UPLOAD_RENEWAL_INTERVAL_SECONDS
+
+
+async def _renew_upload_writer(
+    state_box: list[UploadSessionState],
+    store: LocalFileArtifactStore,
+    stop: asyncio.Event,
+) -> None:
+    """Keep one active writer lease alive independently of incoming chunks."""
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_renewal_delay_seconds(state_box[0]))
+            return
+        except TimeoutError:
+            pass
+        current = state_box[0]
+        state_box[0] = await _run_db(
+            functools.partial(
+                managed_input_upload.renew_upload_reservation,
+                adapter_id=current.adapter_id,
+                upload_session_id=current.upload_session_id,
+                store=store,
+            )
+        )
+
+
+async def _stop_upload_renewal(
+    task: asyncio.Task[None] | None,
+    stop: asyncio.Event | None,
+    *,
+    suppress_errors: bool,
+) -> None:
+    if task is None or stop is None:
+        return
+    stop.set()
+    try:
+        await task
+    except Exception:
+        if not suppress_errors:
+            raise
+
+
 async def _stream_upload(
     request: Request,
     adapter_id: int,
@@ -154,6 +252,9 @@ async def _stream_upload(
     file_seen = False
     total_bytes = 0
     digest = hashlib.sha256()
+    renewal_state: list[UploadSessionState] | None = None
+    renewal_stop: asyncio.Event | None = None
+    renewal_task: asyncio.Task[None] | None = None
     try:
         reader = MultipartReader(request.stream(), request.headers.get("content-type"))
         # The low-watermark snapshot is captured at reservation creation and
@@ -187,6 +288,11 @@ async def _stream_upload(
                     store=store,
                 )
             )
+            renewal_state = [state]
+            renewal_stop = asyncio.Event()
+            renewal_task = asyncio.create_task(
+                _renew_upload_writer(renewal_state, store, renewal_stop)
+            )
             part_context = store.put_part(state.storage_key)
             handle: BinaryIO | None = None
             try:
@@ -194,6 +300,10 @@ async def _stream_upload(
                 async for chunk in reader.iter_part_body():
                     if not chunk:
                         continue
+                    if renewal_task.done():
+                        await renewal_task
+                    if renewal_state is not None:
+                        state = renewal_state[0]
                     total_bytes += len(chunk)
                     if total_bytes > state.reserved_bytes:
                         state = await _run_db(
@@ -206,6 +316,7 @@ async def _stream_upload(
                                 growth_bytes=managed_input_upload.RESERVATION_GROWTH_BYTES,
                             )
                         )
+                        renewal_state[0] = state
                     await asyncio.to_thread(
                         managed_input_upload.check_stream_low_watermark_bytes,
                         store,
@@ -221,6 +332,9 @@ async def _stream_upload(
         await reader.ensure_complete()
         if not file_seen or state is None or store is None:
             raise _safe_upload_error("input_invalid", 422)
+        await _stop_upload_renewal(renewal_task, renewal_stop, suppress_errors=False)
+        if renewal_state is not None:
+            state = renewal_state[0]
         upload_state = state
         upload_store = store
         await asyncio.to_thread(upload_store.commit, upload_state.storage_key)
@@ -237,6 +351,7 @@ async def _stream_upload(
         finalized = True
         return managed_input_upload.artifact_response(artifact)
     except BaseException as exc:
+        await _stop_upload_renewal(renewal_task, renewal_stop, suppress_errors=True)
         error_code = "input_upload_failed"
         if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
             candidate = exc.detail.get("code")
@@ -275,52 +390,6 @@ async def upload_input_artifact(
 
 
 @adapter_router.get(
-    "/api/adapters/{adapter_id}/input-artifacts/sessions/{upload_session_id}",
-    response_model=ManagedInputUploadSessionResponse,
-)
-def recover_input_upload(
-    adapter_id: int,
-    upload_session_id: str,
-    principal: CurrentPrincipal,
-    session: DbSession,
-) -> ManagedInputUploadSessionResponse:
-    """Return safe progress metadata for an active upload session."""
-    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
-    managed_input_upload.require_feature_enabled()
-    try:
-        store = _new_store_or_error()
-        state = managed_input_upload.recover_upload_session(
-            session, adapter_id, upload_session_id, store=store
-        )
-        return managed_input_upload.upload_session_response(state, store)
-    except (ArtifactStoreError, OSError):
-        raise _safe_upload_error("artifact_store_unavailable", 503) from None
-
-
-@adapter_router.post(
-    "/api/adapters/{adapter_id}/input-artifacts/sessions/{upload_session_id}/renew",
-    response_model=ManagedInputUploadSessionResponse,
-)
-def renew_input_upload(
-    adapter_id: int,
-    upload_session_id: str,
-    principal: CurrentPrincipal,
-    session: DbSession,
-) -> ManagedInputUploadSessionResponse:
-    """Renew the same active reservation used by an upload writer."""
-    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
-    managed_input_upload.require_feature_enabled()
-    try:
-        store = _new_store_or_error()
-        state = managed_input_upload.renew_upload_reservation(
-            session, adapter_id, upload_session_id, store=store
-        )
-        return managed_input_upload.upload_session_response(state, store)
-    except (ArtifactStoreError, OSError):
-        raise _safe_upload_error("artifact_store_unavailable", 503) from None
-
-
-@adapter_router.get(
     "/api/adapters/{adapter_id}/input-artifacts",
     response_model=list[ManagedInputArtifactResponse],
 )
@@ -349,9 +418,35 @@ def delete_input_artifact(
     artifact_id: int,
     principal: CurrentPrincipal,
     session: DbSession,
+    expected_revision: int | None = Query(default=None, ge=1),
 ) -> Response:
-    """Delete one same-Adapter staged artifact idempotently."""
+    """Delete STAGED bytes or revision-safely unbind one current READY Artifact."""
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    status = session.scalar(
+        select(ManagedInputArtifact.status).where(
+            ManagedInputArtifact.id == int(artifact_id),
+            ManagedInputArtifact.adapter_id == int(adapter_id),
+        )
+    )
+    if status == ManagedInputArtifactStatus.READY:
+        if expected_revision is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "input_invalid",
+                    "message": "expected_revision is required for a READY Input Artifact",
+                    "params": {"reason": "expected_revision_required"},
+                },
+            )
+        input_config_service.remove_ready_artifact(
+            session,
+            adapter_id,
+            artifact_id,
+            expected_revision=expected_revision,
+        )
+        return Response(status_code=204)
+    if status == ManagedInputArtifactStatus.PENDING_DELETE:
+        return Response(status_code=204)
     managed_input_upload.delete_staged(
         session,
         adapter_id,

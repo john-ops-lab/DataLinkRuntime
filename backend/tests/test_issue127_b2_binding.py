@@ -617,6 +617,120 @@ def test_schedule_managed_files_snapshot_survives_later_replacement(
     assert fetched.json()["input_snapshot"] == snapshot
 
 
+def test_legacy_schedule_input_uses_full_binding_transition_and_distinguishes_omission(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    adapter = create_task(api_client, "b2-legacy-schedule-transition")
+    artifact_id = create_artifact(session_factory, adapter["id"], "legacy-switch.txt")
+    saved = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "managed_files",
+            "artifact_ids": [artifact_id],
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["revision"] == 2
+    switched = api_client.patch(f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"})
+    assert switched.status_code == 200, switched.text
+
+    omitted = api_client.put(
+        f"/api/adapters/{adapter['id']}/schedule",
+        json={"enabled": False, "cron": "* * * * *", "timezone": "UTC"},
+    )
+    assert omitted.status_code == 200, omitted.text
+    current = api_client.get(f"/api/adapters/{adapter['id']}/input-config")
+    assert current.status_code == 200, current.text
+    assert current.json()["source_type"] == "managed_files"
+    assert current.json()["revision"] == 2
+    assert binding_rows(session_factory, adapter["id"]) == [(artifact_id, 0)]
+    assert artifact_statuses(session_factory, [artifact_id]) == {artifact_id: "READY"}
+
+    explicit_null = api_client.put(
+        f"/api/adapters/{adapter['id']}/schedule",
+        json={
+            "enabled": False,
+            "cron": "* * * * *",
+            "timezone": "UTC",
+            "input": None,
+        },
+    )
+    assert explicit_null.status_code == 200, explicit_null.text
+    assert explicit_null.json()["input"] is None
+    current = api_client.get(f"/api/adapters/{adapter['id']}/input-config")
+    assert current.status_code == 200, current.text
+    assert current.json()["source_type"] == "json"
+    assert current.json()["json_value"] is None
+    assert current.json()["revision"] == 3
+    assert current.json()["artifacts"] == []
+    assert binding_rows(session_factory, adapter["id"]) == []
+    assert artifact_statuses(session_factory, [artifact_id]) == {artifact_id: "PENDING_DELETE"}
+
+    omitted_again = api_client.put(
+        f"/api/adapters/{adapter['id']}/schedule",
+        json={"enabled": False, "cron": "*/5 * * * *", "timezone": "UTC"},
+    )
+    assert omitted_again.status_code == 200, omitted_again.text
+    current = api_client.get(f"/api/adapters/{adapter['id']}/input-config")
+    assert current.status_code == 200, current.text
+    assert current.json()["source_type"] == "json"
+    assert current.json()["json_value"] is None
+    assert current.json()["revision"] == 3
+
+
+def test_ready_artifact_delete_requires_current_revision_and_uses_binding_transition(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    adapter = create_task(api_client, "b2-ready-delete-revision")
+    artifact_id = create_artifact(session_factory, adapter["id"], "ready-delete.txt")
+    saved = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "managed_files",
+            "artifact_ids": [artifact_id],
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["revision"] == 2
+
+    missing = api_client.delete(f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}")
+    assert missing.status_code == 422
+    assert missing.json()["detail"]["params"] == {"reason": "expected_revision_required"}
+    stale = api_client.delete(
+        f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}?expected_revision=1"
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "input_config_revision_conflict"
+    assert binding_rows(session_factory, adapter["id"]) == [(artifact_id, 0)]
+    assert artifact_statuses(session_factory, [artifact_id]) == {artifact_id: "READY"}
+
+    deleted = api_client.delete(
+        f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}?expected_revision=2"
+    )
+    assert deleted.status_code == 204, deleted.text
+    current = api_client.get(f"/api/adapters/{adapter['id']}/input-config")
+    assert current.status_code == 200, current.text
+    assert current.json()["revision"] == 3
+    assert current.json()["source_type"] == "managed_files"
+    assert current.json()["artifacts"] == []
+    assert binding_rows(session_factory, adapter["id"]) == []
+    assert artifact_statuses(session_factory, [artifact_id]) == {artifact_id: "PENDING_DELETE"}
+    repeated = api_client.delete(
+        f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}?expected_revision=2"
+    )
+    assert repeated.status_code == 204
+
+
 def test_corrupt_artifact_uses_stable_reason_and_redacted_response(
     api_client: TestClient,
     session_factory: sessionmaker[Session],

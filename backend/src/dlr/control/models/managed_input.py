@@ -53,10 +53,10 @@ class ManagedInputArtifactStatus(StrEnum):
 class ManagedInputDeletionJobStatus(StrEnum):
     """Status of a deletion job after Adapter metadata is removed."""
 
-    PENDING = "pending"
-    DELETING = "deleting"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    PENDING = "PENDING"
+    DELETING = "DELETING"
+    DELETED = "DELETED"
+    DELETE_FAILED = "DELETE_FAILED"
 
 
 class ManagedInputSettings(Base):
@@ -330,12 +330,12 @@ class ArtifactDeletionJob(Base):
     __tablename__ = "artifact_deletion_jobs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'deleting', 'completed', 'failed')",
+            "status IN ('PENDING', 'DELETING', 'DELETED', 'DELETE_FAILED')",
             name="ck_artifact_deletion_jobs_status",
         ),
         CheckConstraint("size_bytes >= 0", name="ck_artifact_deletion_jobs_size_bytes"),
         CheckConstraint("charged_bytes >= 0", name="ck_artifact_deletion_jobs_charged_bytes"),
-        CheckConstraint("attempts >= 0", name="ck_artifact_deletion_jobs_attempts"),
+        CheckConstraint("delete_attempts >= 0", name="ck_artifact_deletion_jobs_delete_attempts"),
         UniqueConstraint("storage_key", name="uq_artifact_deletion_jobs_storage_key"),
         Index("ix_artifact_deletion_jobs_status_lease_until", "status", "delete_lease_until"),
         Index("ix_artifact_deletion_jobs_former_adapter_id", "former_adapter_id"),
@@ -353,8 +353,11 @@ class ArtifactDeletionJob(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=ManagedInputDeletionJobStatus.PENDING
     )
-    attempts: Mapped[int] = mapped_column(
+    delete_attempts: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    delete_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

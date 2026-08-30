@@ -17,6 +17,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.common.managed_input import MANAGED_INPUT_FILE_EXTENSION_SET
 from dlr.control.input_errors import ManagedInputErrorCode
 from dlr.control.models import (
     Adapter,
@@ -67,6 +68,16 @@ def _safe_content_type(value: object) -> str:
     if not all(0x20 <= ord(character) < 0x7F for character in value):
         return DEFAULT_CONTENT_TYPE
     return value
+
+
+def _controlled_input_mount_name(ordinal: int, original_filename: str) -> str:
+    """Keep only a known lowercase type suffix in the opaque workspace name."""
+    suffix = (
+        f".{original_filename.rsplit('.', 1)[-1].casefold()}" if "." in original_filename else ""
+    )
+    if suffix not in MANAGED_INPUT_FILE_EXTENSION_SET:
+        suffix = ""
+    return f"input-{ordinal:02d}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -191,35 +202,14 @@ def open_input_artifact_for_download(
     )
 
 
-def validate_cleanup_for_route(
-    session: Session, worker_id: int, execution_id: int, cleanup_token: str | None
-) -> Execution:
-    """Validate the C0 Cleanup credential for the receipt route skeleton."""
-    execution = session.get(Execution, execution_id)
-    if (
-        execution is None
-        or execution.worker_id != worker_id
-        or execution.status not in {"succeeded", "failed", "timeout", "cancelled"}
-        or execution.cleanup_receipt_token_hash is None
-    ):
-        raise domain_error(
-            422,
-            "execution_cleanup_token_invalid",
-            "A valid Cleanup Token is required",
-        )
-    require_cleanup_token(cleanup_token, execution.cleanup_receipt_token_hash)
-    return execution
-
-
 def apply_cleanup_receipt(
     session: Session,
-    worker_id: int,
     execution_id: int,
     cleanup_token: str | None,
 ) -> Execution:
     """Advance only the cleanup state after a valid v2 receipt.
 
-    The row lock and ownership/token checks make retries after a lost HTTP
+    The row lock and capability-token check make retries after a lost HTTP
     response idempotent.  No business result, timestamp, or Lease is changed
     here.
     """
@@ -229,11 +219,7 @@ def apply_cleanup_receipt(
         .with_for_update()
         .one_or_none()
     )
-    if (
-        execution is None
-        or execution.worker_id != worker_id
-        or execution.cleanup_receipt_token_hash is None
-    ):
+    if execution is None or execution.cleanup_receipt_token_hash is None:
         raise domain_error(
             422,
             "execution_cleanup_token_invalid",
@@ -353,7 +339,7 @@ def build_task_payload(
             TaskInputFile(
                 id=lease.artifact_id,
                 ordinal=lease.ordinal,
-                mount_name=f"input-{lease.ordinal:02d}",
+                mount_name=_controlled_input_mount_name(lease.ordinal, artifact.original_filename),
                 original_filename=artifact.original_filename,
                 content_type=artifact.content_type,
                 size_bytes=artifact.size_bytes,

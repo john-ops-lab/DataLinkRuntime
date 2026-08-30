@@ -960,6 +960,9 @@ it("locks Task editing while Schedule is enabled and unlocks after disable", asy
     throw new Error("clone dialog not found");
   }
   expect(within(cloneDialog).getByText("执行历史不会复制；新适配器创建后保持停止，不会自动运行。")).toBeTruthy();
+  expect(within(cloneDialog).getByTestId("clone-input-note").textContent).toContain(
+    "托管文件本体不会复制",
+  );
   expect((within(cloneDialog).getByTestId("clone-adapter-name") as HTMLInputElement).value).toBe("adapter-a-copy");
   fireEvent.click(within(cloneDialog).getByRole("button", { name: /取\s*消/ }));
   // 关闭设置抽屉后继续验证解锁（抽屉 destroyOnHidden，内容随关闭卸载）。
@@ -3644,6 +3647,100 @@ it("manages credentials and package sources from the system settings drawer", as
   );
   expect(screen.getByTestId("package-source-test-result").getAttribute("role")).toBe("alert");
   expect(document.body.textContent).not.toContain("Connection refused");
+});
+
+it("opens Runtime settings when a managed-input usage link selects the same or another adapter", async () => {
+  const adapterA = makeAdapter({ id: 1, name: "adapter-a" });
+  const adapterB = makeAdapter({ id: 2, name: "adapter-b" });
+  const managedSettings = {
+    id: 1,
+    default_retention_seconds: 86_400,
+    max_file_bytes: 100 * 1024 * 1024,
+    platform_quota_bytes: 10 * 1024 * 1024 * 1024,
+    adapter_quota_bytes: 1024 * 1024 * 1024,
+    allow_manual_delete: true,
+    max_custom_retention_seconds: 2_592_000,
+    min_free_space_bytes: 1024 * 1024 * 1024,
+    staged_ttl_seconds: 3_600,
+    usage: {
+      platform_actual_bytes: 0,
+      platform_reserved_bytes: 0,
+      platform_total_bytes: 0,
+      adapters: [
+        {
+          adapter_id: adapterA.id,
+          actual_bytes: 0,
+          reserved_bytes: 0,
+          total_bytes: 0,
+          quota_bytes: 1024 * 1024 * 1024,
+          over_quota: false,
+        },
+        {
+          adapter_id: adapterB.id,
+          actual_bytes: 0,
+          reserved_bytes: 0,
+          total_bytes: 0,
+          quota_bytes: 1024 * 1024 * 1024,
+          over_quota: false,
+        },
+      ],
+    },
+    over_quota: false,
+    platform_over_quota: false,
+    adapter_over_quota: [],
+    created_at: "2026-08-11T00:00:00Z",
+    updated_at: "2026-08-11T00:00:00Z",
+  };
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [adapterA, adapterB] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/versions",
+      respond: () => ({ body: [] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/2/versions",
+      respond: () => ({ body: [] }),
+    },
+    {
+      method: "GET",
+      match: "/api/system/managed-input-capability",
+      respond: () => ({ body: { managed_files_enabled: false, ready: false, default_retention_seconds: 86_400, max_custom_retention_seconds: 2_592_000, allow_manual_delete: true, allowed_extensions: [".xlsx", ".xls", ".csv", ".log", ".txt", ".json"] } }),
+    },
+    {
+      method: "GET",
+      match: "/api/system/managed-input-settings",
+      respond: () => ({ body: managedSettings }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+
+  async function openManagedInputSettings() {
+    fireEvent.click(await screen.findByTestId("user-menu"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /系统设置|System settings/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /托管输入|文件托管|Managed Input|Managed files/i }));
+    await screen.findByTestId("managed-input-settings-save");
+  }
+
+  const runtimeTab = () => screen.getByRole("tab", { name: /运行设置|Runtime settings/ });
+
+  await openManagedInputSettings();
+  fireEvent.click(screen.getByTestId("managed-input-adapter-1"));
+  await waitFor(() => expect(runtimeTab().getAttribute("aria-selected")).toBe("true"));
+
+  await waitFor(() => expect(screen.queryByTestId("system-settings-center")).toBeNull());
+  await openManagedInputSettings();
+  fireEvent.click(screen.getByTestId("managed-input-adapter-2"));
+  await screen.findByRole("heading", { name: "adapter-b" });
+  await waitFor(() => expect(runtimeTab().getAttribute("aria-selected")).toBe("true"));
 });
 
 // --- M4 AI Editor -----------------------------------------------------------

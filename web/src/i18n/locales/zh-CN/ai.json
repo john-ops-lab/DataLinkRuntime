@@ -46,8 +46,9 @@
     },
     "attachments": {
       "add": "添加附件",
-      "addAria": "添加附件：支持图片（PNG / JPEG / WebP）、PDF、DOCX 与文本 / 代码文件",
-      "hint": "支持图片 / PDF / DOCX / 文本与代码文件：最多 {{count}} 个，单个不超过 {{size}}，总计不超过 {{total}}",
+      "addAria": "添加附件：支持图片（PNG / JPEG / WebP）、PDF、DOCX、XLS、XLSX 与文本 / 代码文件",
+      "addTooltip": "支持格式：PNG、JPEG、WebP、PDF、DOCX、XLS、XLSX 及文本 / 代码文件",
+      "hint": "支持图片 / PDF / DOCX / XLS / XLSX / 文本与代码文件：最多 {{count}} 个，单个不超过 {{size}}，总计不超过 {{total}}",
       "oneLineHint": "附件：最多 {{count}} 个 · ≤{{size}}/个 · ≤{{total}} 总计",
       "guidance": "最多上传{{count}}个附件，单附件最大{{size}}，请勿上传敏感信息。",
       "guidanceLead": "最多上传{{count}}个附件，单附件最大{{size}}，",
@@ -62,11 +63,13 @@
         "image": "图片",
         "pdf": "PDF",
         "docx": "DOCX",
+        "xls": "XLS",
+        "xlsx": "XLSX",
         "text": "文本",
         "code": "代码"
       },
       "error": {
-        "unsupported": "不支持的文件类型：仅支持图片（PNG / JPEG / WebP）、PDF、DOCX 与文本 / 代码文件，且文件扩展名必须与类型一致",
+        "unsupported": "不支持的文件类型：仅支持图片（PNG / JPEG / WebP）、PDF、DOCX、XLS、XLSX 与文本 / 代码文件，且文件扩展名必须与类型一致",
         "filenameInvalid": "附件文件名无效：请使用不含路径分隔符的普通文件名",
         "tooLarge": "文件超过单文件大小上限（{{size}}）：请压缩或拆分后重新上传",
         "totalTooLarge": "附件总大小超过上限（{{total}}）：请减少或压缩附件后重新上传",

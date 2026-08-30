@@ -31,4 +31,5 @@ class ManagedInputErrorCode(StrEnum):
     ARTIFACT_NOT_READY = "input_artifact_not_ready"
     ARTIFACT_DELETE_IN_PROGRESS = "artifact_delete_in_progress"
     ARTIFACT_DELETE_FAILED = "input_artifact_delete_failed"
+    ARTIFACT_RETRY_NOT_ALLOWED = "input_artifact_retry_not_allowed"
     CHECKSUM_INVALID = "input_artifact_checksum_mismatch"

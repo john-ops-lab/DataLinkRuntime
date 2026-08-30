@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { applyUiLocale, currentSystemLocale, i18n, isSystemLocale } from "./i18n";
+import { applyUiLocale, currentSystemLocale, DEFAULT_SYSTEM_LOCALE, i18n, isSystemLocale } from "./i18n";
 import type { SystemLocale } from "./types";
 
 /** Separate from the deployment-locale cache: this is only the current browser's login preference. */
@@ -10,16 +10,33 @@ export function readLoginLocalePreference(): SystemLocale | null {
   if (typeof window === "undefined") {
     return null;
   }
-  const value = window.localStorage.getItem(LOGIN_LOCALE_STORAGE_KEY);
-  return isSystemLocale(value) ? value : null;
+  try {
+    const value = window.localStorage.getItem(LOGIN_LOCALE_STORAGE_KEY);
+    return isSystemLocale(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 export function cacheLoginLocalePreference(locale: SystemLocale): void {
-  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, locale);
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, locale);
+  } catch {
+    // Storage can be unavailable in private or policy-restricted contexts;
+    // choosing a login language must never block authentication.
+  }
 }
 
-export function preferredLoginLocale(serverLocale?: SystemLocale): SystemLocale {
-  return readLoginLocalePreference() ?? serverLocale ?? currentSystemLocale();
+export function preferredLoginLocale(_serverLocale?: SystemLocale): SystemLocale {
+  // The public deployment locale must not silently choose the login language.
+  // Until the user explicitly picks one here, the login surface is zh-CN.
+  // Keep the optional argument for callers compiled against the previous
+  // helper signature; server locale is intentionally ignored for login.
+  void _serverLocale;
+  return readLoginLocalePreference() ?? DEFAULT_SYSTEM_LOCALE;
 }
 
 /** Apply the browser preference without changing the deployment system-locale cache. */
@@ -29,15 +46,18 @@ export async function applyLoginLocalePreference(serverLocale?: SystemLocale): P
   return locale;
 }
 
-export function useLoginLocale(): [SystemLocale, (locale: SystemLocale) => void] {
+export function useLoginLocale(loginSurface = true): [SystemLocale, (locale: SystemLocale) => void] {
   const [explicitLocale, setExplicitLocale] = useState<SystemLocale | null>(null);
 
   useEffect(() => {
-    const preferred = readLoginLocalePreference();
-    if (preferred !== null && (i18n.resolvedLanguage ?? i18n.language) !== preferred) {
+    if (!loginSurface) {
+      return;
+    }
+    const preferred = preferredLoginLocale();
+    if ((i18n.resolvedLanguage ?? i18n.language) !== preferred) {
       void applyUiLocale(preferred);
     }
-  }, []);
+  }, [loginSurface]);
 
   function selectLocale(nextLocale: SystemLocale): void {
     cacheLoginLocalePreference(nextLocale);
@@ -45,5 +65,8 @@ export function useLoginLocale(): [SystemLocale, (locale: SystemLocale) => void]
     void applyUiLocale(nextLocale);
   }
 
-  return [explicitLocale ?? readLoginLocalePreference() ?? currentSystemLocale(), selectLocale];
+  if (!loginSurface) {
+    return [currentSystemLocale(), () => undefined];
+  }
+  return [explicitLocale ?? preferredLoginLocale(), selectLocale];
 }

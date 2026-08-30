@@ -18,6 +18,9 @@ dependencies = [
     "cryptography>=43",
     "croniter>=6",
     "tzdata>=2024",
+    # Legacy BIFF .xls fallback stays in memory; xlrd is the maintained,
+    # pure-Python parser for the historical Excel format.
+    "xlrd>=2.0.2,<3",
 ]
 
 [dependency-groups]
@@ -59,7 +62,7 @@ packages = ["dlr"]
 
 [[tool.mypy.overrides]]
 # croniter ships no type annotations.
-module = ["croniter"]
+module = ["croniter", "xlrd"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

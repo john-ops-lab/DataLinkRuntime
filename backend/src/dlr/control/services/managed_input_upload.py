@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.common.managed_input import MANAGED_INPUT_FILE_EXTENSION_SET
 from dlr.control.input_errors import ManagedInputErrorCode
 from dlr.control.models import (
     Adapter,
@@ -34,7 +35,6 @@ from dlr.control.models import (
 )
 from dlr.control.schemas.managed_input import (
     ManagedInputArtifactResponse,
-    ManagedInputUploadSessionResponse,
 )
 from dlr.control.services import managed_input as policy_service
 from dlr.control.services.adapter import domain_error
@@ -47,7 +47,7 @@ from dlr.control.services.managed_input_audit import record_audit_event
 
 logger = logging.getLogger("dlr.control.managed_input_upload")
 
-ALLOWED_FILE_EXTENSIONS = frozenset({".xlsx", ".xls", ".csv", ".log", ".txt", ".json"})
+ALLOWED_FILE_EXTENSIONS = MANAGED_INPUT_FILE_EXTENSION_SET
 INITIAL_RESERVATION_BYTES = 64 * 1024
 RESERVATION_GROWTH_BYTES = 1024 * 1024
 MAX_FILENAME_BYTES = 512
@@ -260,7 +260,7 @@ def check_stream_low_watermark_bytes(
         return
     if _free_bytes(store) - additional_bytes < min_free_space_bytes:
         raise domain_error(
-            507,
+            409,
             ManagedInputErrorCode.LOW_WATERMARK.value,
             "Artifact storage is below its configured free-space watermark",
         )
@@ -797,6 +797,15 @@ def delete_staged(
             ManagedInputErrorCode.ARTIFACT_DELETE_IN_PROGRESS.value,
             "Input Artifact deletion is already in progress",
         )
+    if (
+        artifact.status == ManagedInputArtifactStatus.DELETE_FAILED
+        and int(artifact.delete_attempts) >= settings.artifact_delete_alert_threshold
+    ):
+        raise domain_error(
+            409,
+            ManagedInputErrorCode.ARTIFACT_RETRY_NOT_ALLOWED.value,
+            "Input Artifact requires an administrator retry",
+        )
     if artifact.status not in {
         ManagedInputArtifactStatus.STAGED,
         ManagedInputArtifactStatus.DELETE_FAILED,
@@ -834,6 +843,15 @@ def delete_staged(
                 409,
                 ManagedInputErrorCode.ARTIFACT_DELETE_IN_PROGRESS.value,
                 "Input Artifact deletion is already in progress",
+            )
+        if (
+            current.status == ManagedInputArtifactStatus.DELETE_FAILED
+            and int(current.delete_attempts) >= settings.artifact_delete_alert_threshold
+        ):
+            raise domain_error(
+                409,
+                ManagedInputErrorCode.ARTIFACT_RETRY_NOT_ALLOWED.value,
+                "Input Artifact requires an administrator retry",
             )
         raise domain_error(
             409,
@@ -895,60 +913,6 @@ def audit_unowned_objects(
     return store.audit_orphans(artifact_keys | deletion_keys, older_than=older_than)
 
 
-def recover_upload_session(
-    session: Session,
-    adapter_id: int,
-    upload_session_id: str,
-    *,
-    store: LocalFileArtifactStore | None = None,
-) -> UploadSessionState:
-    """Recover internal state for an active writer without exposing its key."""
-    _lock_adapter(session, adapter_id)
-    capacity = _lock_capacity(session)
-    reservation = _lock_reservation(session, adapter_id, upload_session_id)
-    artifact = _artifact_for_session(session, adapter_id, upload_session_id)
-    now = utcnow()
-    if (
-        reservation.status != ManagedInputReservationStatus.ACTIVE
-        or artifact is None
-        or artifact.status != ManagedInputArtifactStatus.UPLOADING
-    ):
-        session.rollback()
-        _terminal_upload_error()
-    if _as_utc(reservation.expires_at) <= now:
-        key = artifact.storage_key
-        _expire_locked_upload(capacity, reservation, artifact, now)
-        session.commit()
-        if store is not None:
-            _cleanup_paths(store, key)
-        _terminal_upload_error()
-    setting = policy_service.get_settings(session)
-    session.rollback()
-    return _state(artifact, reservation, setting)
-
-
-def upload_session_response(
-    state: UploadSessionState, store: LocalFileArtifactStore
-) -> ManagedInputUploadSessionResponse:
-    """Build a safe progress response while keeping the key internal."""
-    part_stat = store.stat_part(state.storage_key)
-    object_stat = None if part_stat is not None else store.stat(state.storage_key)
-    if part_stat is not None:
-        received = int(part_stat.size_bytes)
-    elif object_stat is not None:
-        received = int(object_stat.size_bytes)
-    else:
-        received = 0
-    if state.expires_at is None:
-        raise RuntimeError("Upload session has no expiry")
-    return ManagedInputUploadSessionResponse(
-        artifact_id=state.artifact_id,
-        status="UPLOADING",
-        received_bytes=received,
-        expires_at=state.expires_at,
-    )
-
-
 __all__ = [
     "ALLOWED_FILE_EXTENSIONS",
     "INITIAL_RESERVATION_BYTES",
@@ -967,10 +931,8 @@ __all__ = [
     "feature_enabled",
     "list_staged",
     "normalize_content_type",
-    "recover_upload_session",
     "renew_upload_reservation",
     "require_feature_enabled",
-    "upload_session_response",
     "utcnow",
     "validate_original_filename",
 ]

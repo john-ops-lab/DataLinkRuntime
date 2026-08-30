@@ -38,7 +38,7 @@ JSON 输入区 SHALL 允许 object、array、scalar 和 `null`，保存前进行
 - **THEN** 页面阻止保存、定位错误且保留最近一次服务端配置
 
 ### Requirement: 文件上传使用独立 multipart 客户端
-Web SHALL 使用独立 multipart client 携带当前认证、same-origin Cookie、账户入口 CSRF Header 与上传进度，不得把二进制塞入现有 JSON client。
+Web SHALL 使用独立 multipart client 携带当前认证、same-origin Cookie、账户入口 CSRF Header 与上传进度，不得把二进制塞入现有 JSON client。Managed Input capability SHALL 下发服务端有序 `allowed_extensions`；Web 的文件选择提示、客户端预校验和双语支持格式文案 MUST 由该字段派生，后端仍是最终权威。
 
 #### Scenario: 账户入口上传
 - **WHEN** 已登录账户用户上传允许文件
@@ -48,12 +48,20 @@ Web SHALL 使用独立 multipart client 携带当前认证、same-origin Cookie�
 - **WHEN** 上传完成为 STAGED 但用户尚未保存并刷新页面
 - **THEN** 页面从 staged list API 恢复为“待保存”，不自动绑定或改变 revision
 
+#### Scenario: staged 列表暂时失败
+- **WHEN** capability 已成功但 staged list API 暂时失败
+- **THEN** 页面保留已加载 capability、retention 与草稿，单独提示列表失败并只重试列表；不得误报策略失败或过度禁用 managed_files
+
+#### Scenario: capability 未知时保存托管文件
+- **WHEN** 当前草稿来源为 managed_files 且 capability 正在加载或加载失败
+- **THEN** 页面阻止提交该 managed_files 草稿；none/json 保存不受此故障连带阻断
+
 ### Requirement: 文件列表完整表达当前与待保存状态
 文件对象区 SHALL 展示最多 8 个文件的文件名、扩展名、大小、上传状态、上传时间、服务端过期时间及删除/替换动作；同名冲突按 NFC 与大小写折叠显示，替换表现为新上传后一次保存。
 
 #### Scenario: 第九个文件
 - **WHEN** 当前草稿已含 8 个文件且用户继续添加
-- **THEN** 页面阻止选择并提示上限，服务端仍作为最终防线拒绝绕过请求
+- **THEN** 页面在文件选择与恢复 STAGED 合并两处都阻止形成超过 8 个的草稿并提示上限，服务端仍作为最终防线拒绝绕过请求
 
 #### Scenario: 同名冲突
 - **WHEN** 两个展示名经 NFC 与大小写折叠后相同
@@ -61,7 +69,11 @@ Web SHALL 使用独立 multipart client 携带当前认证、same-origin Cookie�
 
 #### Scenario: 离开含 STAGED 的页面
 - **WHEN** 用户导航离开且仍有未绑定 STAGED Artifact
-- **THEN** 页面给出离开提示；若用户直接关闭，后端 TTL 仍独立回收
+- **THEN** SPA 路由切换与浏览器关闭都给出离开提示；若用户确认离开，后端 TTL 仍独立回收
+
+#### Scenario: 保存只选择部分 STAGED
+- **WHEN** 页面存在多个 STAGED Artifact 而用户只把其中一部分加入本次保存
+- **THEN** 保存成功后未选择的 STAGED 仍显示为待保存并可继续绑定或显式删除，不被错误清空或展示为 READY
 
 ### Requirement: 空 managed_files 状态明确不可运行
 页面 SHALL 允许保存空 managed_files，并显示“输入尚未就绪/尚未上传文件”；运行一次、立即运行和 Schedule 启用动作 MUST disabled 并显示权威 invalid reason。
@@ -71,7 +83,7 @@ Web SHALL 使用独立 multipart client 携带当前认证、same-origin Cookie�
 - **THEN** 页面刷新后显示新的 revision、空态和 `managed_files_empty` 本地化说明，不显示陈旧文件
 
 ### Requirement: Retention 由服务端计算并受管理员策略约束
-文件区 SHALL 提供系统默认、自定义、手动删除（用户文案“永久保留”）三种选择；页面展示管理员允许范围与服务端返回的具体过期时间，不得自行推算为权威值。
+文件区 SHALL 提供系统默认、自定义、手动删除（用户文案“永久保留”）三种选择；页面 MUST 从服务端 capability/settings 获取 `allow_manual_delete` 与 `max_custom_retention_seconds`，展示管理员允许范围与服务端返回的具体过期时间，不得用硬编码或自行推算作为权威值。
 
 #### Scenario: 自定义期限超上限
 - **WHEN** 用户输入超过管理员上限的 retention
@@ -91,6 +103,10 @@ Web SHALL 使用 `runtime_locked` 与 InputConfig 响应作为提示，但所有
 #### Scenario: STAGED 删除
 - **WHEN** 当前配置锁定但用户删除未绑定 STAGED 文件
 - **THEN** 页面允许删除，且成功后不刷新为新的 input revision
+
+#### Scenario: Schedule 启用期间上传
+- **WHEN** Schedule enabled 或存在 active Execution 且用户选择合法文件
+- **THEN** 页面允许上传成为 STAGED 并保留待保存状态，但保存/替换当前 Binding 继续由服务端 Runtime Lock 拒绝
 
 ### Requirement: Schedule Adapter 提供无覆盖的立即运行
 schedule 模式 SHALL 显示“立即运行一次”，动作只提交空 Execution body并使用已保存输入；不得提供临时 JSON/文件覆盖控件。
@@ -115,7 +131,7 @@ schedule 模式 SHALL 显示“立即运行一次”，动作只提交空 Execut
 - **THEN** 示例使用 `context.inputFiles` 对应语言语法且元数据字段与 Runtime 合同一致
 
 ### Requirement: Execution 详情按 source 只读展示快照
-历史详情 SHALL 对 none 显示无输入、对 json 显示当次只读 JSON、对 managed_files 显示文件名/类型/大小/SHA-256；不得出现下载、复用、恢复配置、再次运行或内部标识入口。
+历史详情 SHALL 对 none 显示无输入、对 json 显示当次只读 JSON、对 managed_files 显示文件名/类型/大小/SHA-256；不得出现输入文件下载、复用、恢复配置、再次运行或内部标识入口。既有 Execution 业务日志下载不是输入文件下载，MUST 保持原有可用性与权限边界。
 
 #### Scenario: 历史 Artifact 已删除
 - **WHEN** 用户查看 Blob 已 GC 的旧 Execution

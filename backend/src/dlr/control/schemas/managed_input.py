@@ -93,6 +93,24 @@ class ManagedInputSettingsResponse(ManagedInputSettingsUpdate):
     updated_at: datetime
 
 
+class ManagedInputCapabilityResponse(BaseModel):
+    """Minimum business-user capability facts for the Managed Input UI.
+
+    Keep this resource deliberately smaller than the administrator settings
+    response: only business-form retention bounds are included; deployment
+    paths, quota usage and credentials are not part of a capability check.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    managed_files_enabled: bool
+    ready: bool
+    default_retention_seconds: int
+    max_custom_retention_seconds: int
+    allow_manual_delete: bool
+    allowed_extensions: list[str] = Field(min_length=1)
+
+
 class ManagedInputArtifactResponse(BaseModel):
     """Safe metadata for one Adapter-owned staged Artifact."""
 
@@ -106,14 +124,3 @@ class ManagedInputArtifactResponse(BaseModel):
     status: Literal["STAGED"]
     created_at: datetime
     expires_at: datetime | None
-
-
-class ManagedInputUploadSessionResponse(BaseModel):
-    """Safe progress metadata for an active upload session."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    artifact_id: int
-    status: Literal["UPLOADING"]
-    received_bytes: int
-    expires_at: datetime

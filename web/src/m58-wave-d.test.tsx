@@ -9,10 +9,12 @@ import {
   DEFAULT_SYSTEM_LOCALE,
   SYSTEM_LOCALE_STORAGE_KEY,
 } from "./i18n";
+import { LOGIN_LOCALE_STORAGE_KEY } from "./login-locale";
 
 afterEach(async () => {
   await applySystemLocale(DEFAULT_SYSTEM_LOCALE);
   window.localStorage.removeItem(SYSTEM_LOCALE_STORAGE_KEY);
+  window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
 });
 
 it("renders the confirmed zh-CN product copy on the login page", () => {
@@ -35,6 +37,7 @@ it("renders the confirmed zh-CN product copy on the login page", () => {
 
 it("renders the natural English equivalent on the en login page", async () => {
   await applySystemLocale("en");
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "en");
   render(<LoginPage notice={null} onSubmit={vi.fn()} />);
 
   expect(screen.getByText("DataLinkRuntime")).toBeTruthy();

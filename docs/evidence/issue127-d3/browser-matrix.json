@@ -1,0 +1,2724 @@
+{
+  "browser": {
+    "engine": "Chromium",
+    "headless": true,
+    "transport": "repository-local Playwright",
+    "in_app_browser": "unavailable: no browser runtime was available",
+    "base_url": "http://127.0.0.1:8923",
+    "account_base_url": "http://127.0.0.1:9023"
+  },
+  "business_flow": {
+    "status": "PASS",
+    "adapter_id": 1,
+    "steps": [
+      {
+        "name": "replace",
+        "status": "PASS",
+        "filename": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt"
+      },
+      {
+        "name": "save-custom-retention",
+        "status": "PASS",
+        "response_status": 200
+      },
+      {
+        "name": "python-context-example",
+        "status": "PASS",
+        "contains_stable_api": true
+      },
+      {
+        "name": "manual-run",
+        "status": "PASS",
+        "trigger": "manual",
+        "execution_status": "succeeded"
+      },
+      {
+        "name": "schedule-config",
+        "status": "PASS"
+      },
+      {
+        "name": "runtime-lock",
+        "status": "PASS",
+        "managed_card_disabled": true
+      },
+      {
+        "name": "runtime-lock-error",
+        "status": "PASS",
+        "response_status": 409,
+        "error_code": "adapter_runtime_locked"
+      },
+      {
+        "name": "schedule-run-now",
+        "status": "PASS",
+        "trigger": "manual",
+        "execution_status": "succeeded"
+      },
+      {
+        "name": "schedule-disable",
+        "status": "PASS"
+      },
+      {
+        "name": "history-safe-summary",
+        "status": "PASS",
+        "forbidden_terms": []
+      },
+      {
+        "name": "managed-files-clone",
+        "status": "PASS",
+        "clone_adapter_id": 6
+      }
+    ],
+    "telemetry": {
+      "console": [
+        {
+          "type": "info",
+          "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+        }
+      ],
+      "page_errors": [],
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/admin/verify"
+        },
+        {
+          "method": "GET",
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "path": "/api/health"
+        },
+        {
+          "method": "GET",
+          "path": "/api/workers"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "GET",
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions/1"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-artifacts"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/1/input-artifacts"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/1/executions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/14/events"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/14"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/1/executions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/15/events"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/15"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/executions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/15"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/5/clone"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/6/versions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/6/input-config"
+        },
+        {
+          "method": "GET",
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/6/schedule"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/6/executions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/6/versions/6"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/6/input-artifacts"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "GET",
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/executions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions/1"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-artifacts"
+        }
+      ],
+      "responses": [
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/auth/admin/verify"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/health"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/workers"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/versions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/versions/1"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/input-artifacts"
+        },
+        {
+          "method": "POST",
+          "status": 201,
+          "path": "/api/adapters/1/input-artifacts"
+        },
+        {
+          "method": "PUT",
+          "status": 200,
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "POST",
+          "status": 202,
+          "path": "/api/adapters/1/executions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/executions/14/events"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/executions/14"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "PATCH",
+          "status": 200,
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "PUT",
+          "status": 200,
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "POST",
+          "status": 202,
+          "path": "/api/adapters/1/executions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/executions/15/events"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "PUT",
+          "status": 200,
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/executions/15"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/executions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/executions/15"
+        },
+        {
+          "method": "POST",
+          "status": 201,
+          "path": "/api/adapters/5/clone"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/6/versions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/6/schedule"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/6/executions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/6/input-config"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/6/input-artifacts"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/6/versions/6"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/versions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/executions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/versions/1"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/input-artifacts"
+        }
+      ],
+      "request_failures": [
+        {
+          "method": "GET",
+          "path": "/api/executions/14/events",
+          "error": "net::ERR_ABORTED"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/15/events",
+          "error": "net::ERR_ABORTED"
+        }
+      ],
+      "upload_headers": [
+        {
+          "has_authorization": true,
+          "has_cookie": false,
+          "has_csrf": false
+        }
+      ]
+    }
+  },
+  "account_upload": {
+    "status": "PASS",
+    "steps": [
+      {
+        "name": "account-csrf-multipart",
+        "status": "PASS",
+        "before_file_count": 1,
+        "headers": {
+          "has_authorization": false,
+          "has_cookie": true,
+          "has_csrf": true
+        }
+      },
+      {
+        "name": "account-staged-delete",
+        "status": "PASS"
+      }
+    ],
+    "telemetry": {
+      "console": [
+        {
+          "type": "info",
+          "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+        }
+      ],
+      "page_errors": [],
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/account/csrf"
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/account/me"
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/account/csrf"
+        },
+        {
+          "method": "POST",
+          "path": "/api/auth/account/login"
+        },
+        {
+          "method": "GET",
+          "path": "/api/health"
+        },
+        {
+          "method": "GET",
+          "path": "/api/workers"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "GET",
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions/1"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-artifacts"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/1/input-artifacts"
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/adapters/1/input-artifacts/17"
+        }
+      ],
+      "responses": [
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/auth/account/csrf"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/locale"
+        },
+        {
+          "method": "GET",
+          "status": 401,
+          "path": "/api/auth/account/me"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/auth/account/csrf"
+        },
+        {
+          "method": "POST",
+          "status": 200,
+          "path": "/api/auth/account/login"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/health"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/workers"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/versions"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/system/managed-input-capability"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/schedule"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/input-config"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/input-artifacts"
+        },
+        {
+          "method": "GET",
+          "status": 200,
+          "path": "/api/adapters/1/versions/1"
+        },
+        {
+          "method": "POST",
+          "status": 201,
+          "path": "/api/adapters/1/input-artifacts"
+        },
+        {
+          "method": "DELETE",
+          "status": 204,
+          "path": "/api/adapters/1/input-artifacts/17"
+        }
+      ],
+      "request_failures": [
+        {
+          "method": "DELETE",
+          "path": "/api/adapters/1/input-artifacts/17",
+          "error": "net::ERR_ABORTED"
+        }
+      ],
+      "upload_headers": [
+        {
+          "has_authorization": false,
+          "has_cookie": true,
+          "has_csrf": true
+        }
+      ]
+    }
+  },
+  "matrix": [
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "height": 800,
+      "status": "PASS",
+      "cards": {
+        "count": 4,
+        "managed_disabled": "false",
+        "managed_enabled": true
+      },
+      "long_filename": {
+        "title": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+        "title_matches_fixture": true,
+        "keyboard_selected": true
+      },
+      "overflow": {
+        "runtime": {
+          "viewport": 1280,
+          "document_scroll_width": 1280,
+          "body_scroll_width": 1280,
+          "horizontal_overflow": false
+        },
+        "settings": {
+          "viewport": 1280,
+          "document_scroll_width": 1280,
+          "body_scroll_width": 1280,
+          "horizontal_overflow": false
+        },
+        "history": {
+          "viewport": 1280,
+          "document_scroll_width": 1280,
+          "body_scroll_width": 1280,
+          "horizontal_overflow": false
+        },
+        "detail": {
+          "viewport": 1280,
+          "document_scroll_width": 1280,
+          "body_scroll_width": 1280,
+          "horizontal_overflow": false
+        }
+      },
+      "localization": {
+        "runtime": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "settings": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "history": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "detail": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        }
+      },
+      "history_forbidden_terms": [],
+      "telemetry": {
+        "console": [
+          {
+            "type": "info",
+            "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+          }
+        ],
+        "page_errors": [],
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions/15"
+          }
+        ],
+        "responses": [
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/executions/15"
+          }
+        ],
+        "request_failures": [],
+        "upload_headers": []
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1440,
+      "height": 900,
+      "status": "PASS",
+      "cards": {
+        "count": 4,
+        "managed_disabled": "false",
+        "managed_enabled": true
+      },
+      "long_filename": {
+        "title": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+        "title_matches_fixture": true,
+        "keyboard_selected": true
+      },
+      "overflow": {
+        "runtime": {
+          "viewport": 1440,
+          "document_scroll_width": 1440,
+          "body_scroll_width": 1440,
+          "horizontal_overflow": false
+        },
+        "settings": {
+          "viewport": 1440,
+          "document_scroll_width": 1440,
+          "body_scroll_width": 1440,
+          "horizontal_overflow": false
+        },
+        "history": {
+          "viewport": 1440,
+          "document_scroll_width": 1440,
+          "body_scroll_width": 1440,
+          "horizontal_overflow": false
+        },
+        "detail": {
+          "viewport": 1440,
+          "document_scroll_width": 1440,
+          "body_scroll_width": 1440,
+          "horizontal_overflow": false
+        }
+      },
+      "localization": {
+        "runtime": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "settings": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "history": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "detail": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        }
+      },
+      "history_forbidden_terms": [],
+      "telemetry": {
+        "console": [
+          {
+            "type": "info",
+            "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+          }
+        ],
+        "page_errors": [],
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions/15"
+          }
+        ],
+        "responses": [
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/executions/15"
+          }
+        ],
+        "request_failures": [],
+        "upload_headers": []
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1680,
+      "height": 1050,
+      "status": "PASS",
+      "cards": {
+        "count": 4,
+        "managed_disabled": "false",
+        "managed_enabled": true
+      },
+      "long_filename": {
+        "title": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+        "title_matches_fixture": true,
+        "keyboard_selected": true
+      },
+      "overflow": {
+        "runtime": {
+          "viewport": 1680,
+          "document_scroll_width": 1680,
+          "body_scroll_width": 1680,
+          "horizontal_overflow": false
+        },
+        "settings": {
+          "viewport": 1680,
+          "document_scroll_width": 1680,
+          "body_scroll_width": 1680,
+          "horizontal_overflow": false
+        },
+        "history": {
+          "viewport": 1680,
+          "document_scroll_width": 1680,
+          "body_scroll_width": 1680,
+          "horizontal_overflow": false
+        },
+        "detail": {
+          "viewport": 1680,
+          "document_scroll_width": 1680,
+          "body_scroll_width": 1680,
+          "horizontal_overflow": false
+        }
+      },
+      "localization": {
+        "runtime": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "settings": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "history": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "detail": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        }
+      },
+      "history_forbidden_terms": [],
+      "telemetry": {
+        "console": [
+          {
+            "type": "info",
+            "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+          }
+        ],
+        "page_errors": [],
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions/15"
+          }
+        ],
+        "responses": [
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/executions/15"
+          }
+        ],
+        "request_failures": [],
+        "upload_headers": []
+      }
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "cards": {
+        "count": 4,
+        "managed_disabled": "false",
+        "managed_enabled": true
+      },
+      "long_filename": {
+        "title": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+        "title_matches_fixture": true,
+        "keyboard_selected": true
+      },
+      "overflow": {
+        "runtime": {
+          "viewport": 1920,
+          "document_scroll_width": 1920,
+          "body_scroll_width": 1920,
+          "horizontal_overflow": false
+        },
+        "settings": {
+          "viewport": 1920,
+          "document_scroll_width": 1920,
+          "body_scroll_width": 1920,
+          "horizontal_overflow": false
+        },
+        "history": {
+          "viewport": 1920,
+          "document_scroll_width": 1920,
+          "body_scroll_width": 1920,
+          "horizontal_overflow": false
+        },
+        "detail": {
+          "viewport": 1920,
+          "document_scroll_width": 1920,
+          "body_scroll_width": 1920,
+          "horizontal_overflow": false
+        }
+      },
+      "localization": {
+        "runtime": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "settings": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "history": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "detail": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        }
+      },
+      "history_forbidden_terms": [],
+      "telemetry": {
+        "console": [
+          {
+            "type": "info",
+            "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+          }
+        ],
+        "page_errors": [],
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions/15"
+          }
+        ],
+        "responses": [
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/executions/15"
+          }
+        ],
+        "request_failures": [],
+        "upload_headers": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "height": 800,
+      "status": "PASS",
+      "cards": {
+        "count": 4,
+        "managed_disabled": "false",
+        "managed_enabled": true
+      },
+      "long_filename": {
+        "title": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+        "title_matches_fixture": true,
+        "keyboard_selected": true
+      },
+      "overflow": {
+        "runtime": {
+          "viewport": 1280,
+          "document_scroll_width": 1280,
+          "body_scroll_width": 1280,
+          "horizontal_overflow": false
+        },
+        "settings": {
+          "viewport": 1280,
+          "document_scroll_width": 1280,
+          "body_scroll_width": 1280,
+          "horizontal_overflow": false
+        },
+        "history": {
+          "viewport": 1280,
+          "document_scroll_width": 1280,
+          "body_scroll_width": 1280,
+          "horizontal_overflow": false
+        },
+        "detail": {
+          "viewport": 1280,
+          "document_scroll_width": 1280,
+          "body_scroll_width": 1280,
+          "horizontal_overflow": false
+        }
+      },
+      "localization": {
+        "runtime": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "settings": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "history": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "detail": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        }
+      },
+      "history_forbidden_terms": [],
+      "telemetry": {
+        "console": [
+          {
+            "type": "info",
+            "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+          }
+        ],
+        "page_errors": [],
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions/15"
+          }
+        ],
+        "responses": [
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/executions/15"
+          }
+        ],
+        "request_failures": [],
+        "upload_headers": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1440,
+      "height": 900,
+      "status": "PASS",
+      "cards": {
+        "count": 4,
+        "managed_disabled": "false",
+        "managed_enabled": true
+      },
+      "long_filename": {
+        "title": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+        "title_matches_fixture": true,
+        "keyboard_selected": true
+      },
+      "overflow": {
+        "runtime": {
+          "viewport": 1440,
+          "document_scroll_width": 1440,
+          "body_scroll_width": 1440,
+          "horizontal_overflow": false
+        },
+        "settings": {
+          "viewport": 1440,
+          "document_scroll_width": 1440,
+          "body_scroll_width": 1440,
+          "horizontal_overflow": false
+        },
+        "history": {
+          "viewport": 1440,
+          "document_scroll_width": 1440,
+          "body_scroll_width": 1440,
+          "horizontal_overflow": false
+        },
+        "detail": {
+          "viewport": 1440,
+          "document_scroll_width": 1440,
+          "body_scroll_width": 1440,
+          "horizontal_overflow": false
+        }
+      },
+      "localization": {
+        "runtime": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "settings": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "history": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "detail": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        }
+      },
+      "history_forbidden_terms": [],
+      "telemetry": {
+        "console": [
+          {
+            "type": "info",
+            "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+          }
+        ],
+        "page_errors": [],
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions/15"
+          }
+        ],
+        "responses": [
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/executions/15"
+          }
+        ],
+        "request_failures": [],
+        "upload_headers": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1680,
+      "height": 1050,
+      "status": "PASS",
+      "cards": {
+        "count": 4,
+        "managed_disabled": "false",
+        "managed_enabled": true
+      },
+      "long_filename": {
+        "title": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+        "title_matches_fixture": true,
+        "keyboard_selected": true
+      },
+      "overflow": {
+        "runtime": {
+          "viewport": 1680,
+          "document_scroll_width": 1680,
+          "body_scroll_width": 1680,
+          "horizontal_overflow": false
+        },
+        "settings": {
+          "viewport": 1680,
+          "document_scroll_width": 1680,
+          "body_scroll_width": 1680,
+          "horizontal_overflow": false
+        },
+        "history": {
+          "viewport": 1680,
+          "document_scroll_width": 1680,
+          "body_scroll_width": 1680,
+          "horizontal_overflow": false
+        },
+        "detail": {
+          "viewport": 1680,
+          "document_scroll_width": 1680,
+          "body_scroll_width": 1680,
+          "horizontal_overflow": false
+        }
+      },
+      "localization": {
+        "runtime": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "settings": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "history": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "detail": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        }
+      },
+      "history_forbidden_terms": [],
+      "telemetry": {
+        "console": [
+          {
+            "type": "info",
+            "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+          }
+        ],
+        "page_errors": [],
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions/15"
+          }
+        ],
+        "responses": [
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/executions/15"
+          }
+        ],
+        "request_failures": [],
+        "upload_headers": []
+      }
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "height": 1080,
+      "status": "PASS",
+      "cards": {
+        "count": 4,
+        "managed_disabled": "false",
+        "managed_enabled": true
+      },
+      "long_filename": {
+        "title": "D3-very-long-文件名-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789.txt",
+        "title_matches_fixture": true,
+        "keyboard_selected": true
+      },
+      "overflow": {
+        "runtime": {
+          "viewport": 1920,
+          "document_scroll_width": 1920,
+          "body_scroll_width": 1920,
+          "horizontal_overflow": false
+        },
+        "settings": {
+          "viewport": 1920,
+          "document_scroll_width": 1920,
+          "body_scroll_width": 1920,
+          "horizontal_overflow": false
+        },
+        "history": {
+          "viewport": 1920,
+          "document_scroll_width": 1920,
+          "body_scroll_width": 1920,
+          "horizontal_overflow": false
+        },
+        "detail": {
+          "viewport": 1920,
+          "document_scroll_width": 1920,
+          "body_scroll_width": 1920,
+          "horizontal_overflow": false
+        }
+      },
+      "localization": {
+        "runtime": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "settings": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "history": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        },
+        "detail": {
+          "raw_input_key_visible": false,
+          "deployment_detail_visible": false
+        }
+      },
+      "history_forbidden_terms": [],
+      "telemetry": {
+        "console": [
+          {
+            "type": "info",
+            "text": "🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙"
+          }
+        ],
+        "page_errors": [],
+        "requests": [
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "path": "/api/executions/15"
+          }
+        ],
+        "responses": [
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/auth/admin/verify"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/locale"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/health"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/workers"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/versions/1"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-settings"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/system/managed-input-capability"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/schedule"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-config"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/input-artifacts"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/adapters/1/executions"
+          },
+          {
+            "method": "GET",
+            "status": 200,
+            "path": "/api/executions/15"
+          }
+        ],
+        "request_failures": [],
+        "upload_headers": []
+      }
+    }
+  ],
+  "clone": {
+    "status": "PASS",
+    "adapter_id": 6,
+    "steps": [
+      {
+        "name": "empty-managed-files",
+        "status": "PASS",
+        "count": "0/8 个文件",
+        "invalid_reason": "managed_files_empty"
+      },
+      {
+        "name": "reupload-notice",
+        "status": "PASS",
+        "visible": true
+      },
+      {
+        "name": "schedule-disabled",
+        "status": "PASS",
+        "response_status": 200,
+        "enabled": false
+      }
+    ]
+  },
+  "human_acceptance": "待人工验收",
+  "machine_gate": "PASS"
+}

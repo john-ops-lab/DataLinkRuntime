@@ -1,0 +1,45 @@
+{
+  "schema": "issue127-e0-rollback-v1",
+  "project": "dlr-i127-e0-141",
+  "rollback_strategy": "deployment flag close/reopen; no Alembic downgrade and no volume deletion",
+  "browser_runner": "repository-local Playwright/Chromium; in-app Browser unavailable",
+  "baseline": {
+    "capability": {"managed_files_enabled": true, "ready": true},
+    "adapter_id": 1,
+    "input_config_revision": 8,
+    "source_type": "managed_files",
+    "artifact_count": 1,
+    "execution_history_count": 21,
+    "artifact_sha256_preserved": true
+  },
+  "flag_off": {
+    "compose_action": "force-recreate control web account-web with DLR_MANAGED_FILES_ENABLED=false",
+    "health": "5 services healthy",
+    "capability": {"managed_files_enabled": false, "ready": false},
+    "managed_upload": {"status": 422, "code": "input_source_not_available"},
+    "input_config_write": {"status": 422, "code": "input_source_not_available"},
+    "input_config_revision": 8,
+    "execution_history_count": 21,
+    "browser_managed_card_disabled": true
+  },
+  "reopened": {
+    "compose_action": "force-recreate control worker web account-web with DLR_MANAGED_FILES_ENABLED=true",
+    "health": "5 services healthy",
+    "capability": {"managed_files_enabled": true, "ready": true},
+    "input_config_revision": 8,
+    "source_type": "managed_files",
+    "artifact_count": 1,
+    "execution_history_count": 21,
+    "artifact_sha256_preserved": true,
+    "browser_managed_card_disabled": false
+  },
+  "checks": {
+    "new_admission_closed": true,
+    "active_execution_drained_before_toggle": true,
+    "legacy_columns_tables_blobs_jobs_retained": true,
+    "history_and_config_preserved": true,
+    "no_destructive_downgrade": true,
+    "machine_gate": "PASS"
+  },
+  "human_acceptance": "待人工验收"
+}

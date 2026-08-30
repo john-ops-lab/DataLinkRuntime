@@ -54,6 +54,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Test-only cleanup path; production downgrade would discard snapshots."""
     op.drop_constraint("ck_executions_input_config_revision_positive", "executions")
     op.drop_constraint("ck_executions_input_source_type", "executions")
     op.drop_column("executions", "input_snapshot")

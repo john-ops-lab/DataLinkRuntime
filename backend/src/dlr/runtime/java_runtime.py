@@ -153,8 +153,8 @@ public class DlrRuntime {
                 || ordinal == null || ordinal != expectedOrdinal
                 || ordinal < 0 || ordinal > 7
                 || !(mountValue instanceof String mountName)
-                || !mountName.matches("input-[0-9]{2}")
-                || Integer.parseInt(mountName.substring(6)) != expectedOrdinal
+                || !mountName.matches("input-[0-9]{2}(\\.[a-z0-9]{1,10})?")
+                || Integer.parseInt(mountName.substring(6, 8)) != expectedOrdinal
                 || !(originalNameValue instanceof String originalName)
                 || !(contentTypeValue instanceof String contentType)
                 || sizeBytes == null || sizeBytes < 0

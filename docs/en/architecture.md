@@ -233,6 +233,13 @@ bounded recent conversation. Control adds server-side language, base Revision
 metadata, the Runtime Contract and Secret env-key names. The Provider's final answer
 must pass Candidate Schema validation.
 
+For one-request attachments, XLSX opens only bounded ZIP/XML members and XLS uses the
+pinned `xlrd` in-memory BIFF entry point. Both reuse file, inflation, character, and
+parse-time budgets and never execute formulas, macros, or external relationships.
+Current `managed_files` contributes only an ordinal-ordered narrow database projection
+and the three-language Context file API; it never reads ArtifactStore, creates a Lease,
+or exposes Artifact IDs, storage keys, paths, Tokens, or file contents.
+
 Candidate Apply only changes the browser Working Copy; a stale Candidate needs
 explicit re-confirmation. Credential true values, platform Tokens, Provider
 reasoning, Prompts and raw Responses never enter ordinary logs or persistence.
@@ -257,6 +264,11 @@ only.
   (default `zh-CN`), allowing only `zh-CN / en`; the public read-only endpoint
   `GET /api/locale` returns only the current language (available before admin
   login), and administrators change and persist it via `PUT /api/locale`;
+- Unauthenticated administrator and account login pages use a separate browser-local
+  `dlr-login-locale` preference, defaulting to `zh-CN` on first visit. It never enters
+  an account or the database. Authentication and forced password change restore the
+  server system locale; a failed locale request falls back to a valid system cache or
+  safe default without blocking authentication;
 - `executions.locale` captures the system language at Execution creation and stays
   fixed; switching the system language while running does not change that
   Execution's later platform messages;

@@ -510,6 +510,93 @@ def _cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
     return attempt, total
 
 
+def _v2_cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
+    """Validate immutable v2 cleanup snapshots before any local side effect."""
+    names = (
+        "workspace_cleanup_attempt_timeout_seconds_snapshot",
+        "workspace_cleanup_total_timeout_seconds_snapshot",
+        "recovery_grace_seconds_snapshot",
+    )
+    values = [payload.get(name) for name in names]
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+        raise ValueError("v2 cleanup snapshots are required integers")
+    attempt, total, grace = values
+    assert isinstance(attempt, int) and isinstance(total, int) and isinstance(grace, int)
+    if not (1 <= attempt <= 60 and 5 <= total <= 300 and 10 <= grace <= 3600):
+        raise ValueError("v2 cleanup snapshots are out of range")
+    if not (attempt <= total < grace):
+        raise ValueError("v2 cleanup snapshot ordering is invalid")
+    return float(attempt), float(total)
+
+
+@dataclass(frozen=True)
+class _ValidatedV2Payload:
+    execution_id: int
+    adapter_id: int
+    version_id: int
+    timeout_seconds: int
+    cleanup_token: str
+    input_files: list[dict[str, Any]]
+    cleanup_budget: tuple[float, float]
+
+
+def _required_v2_integer(
+    payload: Mapping[str, Any], name: str, *, minimum: int = 1, maximum: int | None = None
+) -> int:
+    value = payload.get(name)
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise ValueError(f"v2 {name} is invalid")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"v2 {name} is invalid")
+    return value
+
+
+def _validated_v2_payload(payload: Mapping[str, Any]) -> _ValidatedV2Payload:
+    """Validate the complete protocol-v2 envelope before local side effects."""
+    execution_id = _required_v2_integer(payload, "execution_id")
+    adapter_id = _required_v2_integer(payload, "adapter_id")
+    version_id = _required_v2_integer(payload, "version_id")
+    timeout_seconds = _required_v2_integer(payload, "execution_timeout_seconds", maximum=86_400)
+    for name in ("language", "code", "requirements", "claim_token", "cleanup_token"):
+        value = payload.get(name)
+        if not isinstance(value, str):
+            raise ValueError(f"v2 {name} is invalid")
+        if name in {"language", "code"} and not value.strip():
+            raise ValueError(f"v2 {name} is invalid")
+        if name.endswith("token") and not value:
+            raise ValueError(f"v2 {name} is invalid")
+    if "input" not in payload or "latest_version_id" not in payload:
+        raise ValueError("v2 required field is missing")
+    latest_version_id = payload["latest_version_id"]
+    if latest_version_id is not None and (
+        not isinstance(latest_version_id, int)
+        or isinstance(latest_version_id, bool)
+        or latest_version_id <= 0
+    ):
+        raise ValueError("v2 latest_version_id is invalid")
+    runtime_config = payload.get("runtime_config")
+    secrets = payload.get("secrets")
+    if not isinstance(runtime_config, Mapping) or not isinstance(secrets, Mapping):
+        raise ValueError("v2 object field is invalid")
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in secrets.items()):
+        raise ValueError("v2 secrets are invalid")
+    try:
+        input_files = workspace_manager.validate_input_descriptors(payload.get("input_files"))
+    except workspace_manager.InputPreparationError as error:
+        raise ValueError("v2 input descriptors are invalid") from error
+    cleanup_token = payload["cleanup_token"]
+    assert isinstance(cleanup_token, str)
+    return _ValidatedV2Payload(
+        execution_id=execution_id,
+        adapter_id=adapter_id,
+        version_id=version_id,
+        timeout_seconds=timeout_seconds,
+        cleanup_token=cleanup_token,
+        input_files=input_files,
+        cleanup_budget=_v2_cleanup_budget(payload),
+    )
+
+
 def _workspace_failure(
     locale: i18n.WorkerLocale,
     error_code: str,
@@ -559,19 +646,64 @@ def run(
     flag; a cancel request kills the subprocess and yields a ``cancelled``
     report. It never influences any other part of the final report.
     """
-    execution_id = int(payload["execution_id"])
-    adapter_id = int(payload["adapter_id"])
-    version_id = int(payload["version_id"])
     language = str(payload.get("language") or "python")
-    timeout = int(payload.get("execution_timeout_seconds") or config.execution_timeout_seconds)
     locale = i18n.resolve_locale(payload.get("locale"))
     # Payloads created before M5.6 have no locale. Keep their terminal error
     # text compatible; Control-created payloads always carry the field.
     legacy_terminal_text = "locale" not in payload
-    try:
-        protocol_version = int(payload.get("protocol_version") or 1)
-    except (TypeError, ValueError):
-        protocol_version = 1
+    raw_protocol_version = payload.get("protocol_version", 1)
+    if raw_protocol_version is None:
+        # Payloads written before protocol negotiation had no version; an
+        # explicit null followed the same legacy-v1 compatibility path.
+        raw_protocol_version = 1
+    if not isinstance(raw_protocol_version, int) or isinstance(raw_protocol_version, bool):
+        return _workspace_failure(
+            locale,
+            "worker_protocol_payload_invalid",
+            protocol_version=2,
+        )
+    protocol_version = raw_protocol_version
+    if protocol_version not in {1, 2}:
+        return _workspace_failure(
+            locale,
+            "worker_protocol_payload_invalid",
+            protocol_version=2,
+        )
+    if protocol_version == 2:
+        try:
+            validated_v2 = _validated_v2_payload(payload)
+        except (TypeError, ValueError):
+            return _workspace_failure(
+                locale,
+                "worker_protocol_payload_invalid",
+                protocol_version=protocol_version,
+            )
+        execution_id = validated_v2.execution_id
+        adapter_id = validated_v2.adapter_id
+        version_id = validated_v2.version_id
+        timeout = validated_v2.timeout_seconds
+        input_files: list[dict[str, Any]] = validated_v2.input_files
+        input_files_valid = True
+        cleanup_budget = validated_v2.cleanup_budget
+    else:
+        execution_id = int(payload["execution_id"])
+        adapter_id = int(payload["adapter_id"])
+        version_id = int(payload["version_id"])
+        timeout = int(payload.get("execution_timeout_seconds") or config.execution_timeout_seconds)
+        raw_input_files = payload.get("input_files") or []
+        input_files_valid = isinstance(raw_input_files, list)
+        input_files = raw_input_files if input_files_valid else []
+        cleanup_budget = _cleanup_budget(payload)
+
+    if protocol_version >= 2 and language not in LANGUAGE_LABELS:
+        return {
+            **_workspace_failure(
+                locale,
+                "unsupported_language",
+                protocol_version=protocol_version,
+            ),
+            "error": i18n.text(locale, "runtime.unsupported_language", language=language),
+        }
 
     # The Cleanup Token is needed after a Worker crash, so the journal is
     # durable before dependency preparation, Workspace creation, or input
@@ -587,7 +719,7 @@ def run(
                 cleanup_journal_root,
                 execution_id,
                 planned_workspace,
-                payload.get("cleanup_token"),  # type: ignore[arg-type]
+                validated_v2.cleanup_token,
                 protocol_version=protocol_version,
             )
         except (workspace_manager.WorkspaceError, OSError, ValueError) as error:
@@ -793,7 +925,7 @@ def run(
 
     assert runtime_path is not None
     dependency_log_text = "".join(dependency_log)
-    attempt_timeout, total_timeout = _cleanup_budget(payload)
+    attempt_timeout, total_timeout = cleanup_budget
     try:
         if planned_workspace is None:
             planned_workspace = workspace_manager.workspace_path(config.runtime_root, execution_id)
@@ -849,10 +981,9 @@ def run(
                 workspace / "runtime_config.json",
                 json.dumps(payload.get("runtime_config") or {}),
             )
-            raw_input_files = payload.get("input_files") or []
-            if not isinstance(raw_input_files, list):
+            if not input_files_valid:
                 raise workspace_manager.InputPreparationError("input_artifact_not_ready")
-            workspace_manager.prepare_input_files(layout, raw_input_files, input_downloader)
+            workspace_manager.prepare_input_files(layout, input_files, input_downloader)
             workspace_manager.validate_input_manifest(layout)
         except (workspace_manager.InputPreparationError, workspace_manager.WorkspaceError) as error:
             logger.warning("input preparation failed for execution %s", execution_id)

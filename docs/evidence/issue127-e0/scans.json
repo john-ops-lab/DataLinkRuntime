@@ -1,0 +1,38 @@
+{
+  "schema": "issue127-e0-scans-v1",
+  "scope": {
+    "result": "PASS",
+    "statement": "E0 additions are limited to issue127-e0 scripts/docs/evidence plus the existing Issue #127 dirty Candidate; no unrelated project resource was changed",
+    "unrelated_projects_touched": false
+  },
+  "secret_scan": {
+    "result": "PASS_WITH_CLASSIFIED_FALSE_POSITIVES",
+    "scanner": "gitleaks 8.30.1 --redact",
+    "scope": "git tracked plus non-ignored untracked public file set; ignored local env/runtime data excluded",
+    "scanner_exit_code": 1,
+    "redacted_findings": 13,
+    "classified_false_positives": 13,
+    "unclassified_findings": 0,
+    "classification": {
+      "api_client_plus_anonymous_test_fixture_name": 9,
+      "DLR_SECRET_SPLIT_test_placeholder": 3,
+      "accessible_list_prose": 1
+    },
+    "private_key_markers": 0,
+    "github_token_markers": 0,
+    "aws_access_key_markers": 0
+  },
+  "absolute_path_scan": {
+    "result": "PASS",
+    "scope": "changed and non-ignored untracked Candidate files",
+    "worktree_absolute_paths_found": 0,
+    "inherited_tracked_host_path_files_outside_change": 2,
+    "inherited_classification": "older m5-10/m5-11 evidence only; not introduced or modified by this Candidate"
+  },
+  "notes": [
+    "Evidence records use loopback URLs and anonymous fixture labels only.",
+    "All gitleaks output was redacted before inspection; each finding is a test fixture label or prose false positive.",
+    "The Issue #127 D0 receipt was normalized to a repository-relative working directory."
+  ],
+  "human_acceptance": "待人工验收"
+}

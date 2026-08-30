@@ -8,11 +8,16 @@ import type { SystemLocale } from "../types";
 interface LoginShellProps {
   children: ReactNode;
   testId?: string;
+  /** Authenticated account surfaces follow the backend locale, not login preference. */
+  loginSurface?: boolean;
 }
 
-export default function LoginShell({ children, testId }: LoginShellProps) {
-  const { t } = useTranslation("common");
-  const [locale, selectLocale] = useLoginLocale();
+export default function LoginShell({ children, testId, loginSurface = true }: LoginShellProps) {
+  const [locale, selectLocale] = useLoginLocale(loginSurface);
+  const { i18n } = useTranslation("common");
+  // Bind the first render to the login preference. The global i18n instance
+  // may still carry the deployment locale until useLoginLocale's effect runs.
+  const t = i18n.getFixedT(locale, "common");
 
   return (
     <main className="auth-page" data-testid={testId}>
@@ -36,11 +41,12 @@ export default function LoginShell({ children, testId }: LoginShellProps) {
               aria-labelledby="auth-language-label"
               data-testid="login-locale-select"
               value={locale}
+              disabled={!loginSurface}
               options={[
                 { value: "zh-CN", label: t("auth.languageZh") },
                 { value: "en", label: t("auth.languageEn") },
               ]}
-              onChange={selectLocale}
+              onChange={loginSurface ? selectLocale : undefined}
             />
           </div>
           {children}

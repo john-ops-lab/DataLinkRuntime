@@ -35,7 +35,11 @@
 
 #### Scenario: 旧客户端更新 Schedule
 - **WHEN** 旧客户端在兼容期修改 Schedule input
-- **THEN** 新 InputConfig 与旧列原子镜像为同一值，冲突失败不得留下分叉
+- **THEN** 旧列、InputConfig、Binding 与 Artifact 生命周期在同一事务中迁移为 JSON 真值；原 managed_files Binding 被释放，移除的 READY Artifact 进入 `PENDING_DELETE`，冲突失败不得留下分叉或可运行的旧文件配置
+
+#### Scenario: 旧客户端显式清空 Schedule input
+- **WHEN** 兼容期 PUT 请求显式携带 `input:null`
+- **THEN** 系统把它作为 JSON `null` 写入 InputConfig 与旧列并递增 revision；请求省略 `input` 时则保持 InputConfig、Binding、Artifact 和 revision 不变
 
 #### Scenario: 新客户端更新 JSON 输入
 - **WHEN** 新 Web 保存 json InputConfig
@@ -114,3 +118,7 @@ Control SHALL 先支持 v1/v2 与 nullable Token hash，并以 `DLR_MIN_WORKER_P
 #### Scenario: 人工验收失败
 - **WHEN** 用户在 retained app 判定视觉或业务 FAIL
 - **THEN** 候选不得视为最终完成，后续整改必须产生新 SHA并重新运行受影响 Gate
+
+#### Scenario: 审计后产生代码变化
+- **WHEN** 独立审计修复、rebase 或伴随 change 改变 Candidate SHA/tree
+- **THEN** 旧 SHA 的自动证据只能作为历史记录，新 Candidate 必须重跑受影响 Gate、最终 exact-SHA Gate 与独立复审，且用户验收任务保持未完成直到用户明确 PASS

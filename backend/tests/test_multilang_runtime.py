@@ -59,7 +59,7 @@ def c2_input_file() -> dict[str, object]:
     return {
         "id": 9001,
         "ordinal": 0,
-        "mount_name": "input-00",
+        "mount_name": "input-00.txt",
         "original_filename": "fixture.txt",
         "content_type": "text/plain",
         "size_bytes": len(C2_INPUT_CONTENT),
@@ -75,7 +75,7 @@ def c2_input_files() -> list[dict[str, object]]:
         {
             "id": 9001 + ordinal,
             "ordinal": ordinal,
-            "mount_name": f"input-{ordinal:02d}",
+            "mount_name": f"input-{ordinal:02d}.txt",
             "original_filename": f"fixture-{ordinal}.txt",
             "content_type": "text/plain",
             "size_bytes": len(content),
@@ -174,7 +174,7 @@ def test_c2_same_manifest_fixture_exposes_ordered_input_file(
     assert result["output"]["input"] is None
     item = result["output"]["file"]
     assert Path(item["path"]).is_absolute()
-    assert Path(item["path"]).name == "input-00"
+    assert Path(item["path"]).name == "input-00.txt"
     assert Path(item["path"]).parent.name == "input"
     assert item["ordinal"] == 0
     assert item["content"] == C2_INPUT_CONTENT.decode()
@@ -354,12 +354,12 @@ def _mutate_c2_manifest(
         manifest["files"][0]["ordinal"] = 8
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     elif mutation == "mount":
-        manifest["files"][0]["mount_name"] = "input-08"
+        manifest["files"][0]["mount_name"] = "input-08.txt"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     elif mutation == "missing":
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         (layout.input).chmod(0o755)
-        (layout.input / "input-00").unlink()
+        (layout.input / "input-00.txt").unlink()
     elif mutation == "size":
         manifest["files"][0]["size_bytes"] += 1
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -533,6 +533,17 @@ def test_c2_json_handle_contract_remains_unwrapped_retained(
     result = executor.run(payload(language, code), runtime_settings(tmp_path / language))
     assert result["status"] == "succeeded", result
     assert result["output"] == {"n": 7}
+
+
+def test_c2_v1_invalid_input_file_container_remains_a_stable_failure(tmp_path: Path) -> None:
+    result = executor.run(
+        payload("python", "def handle(context, input):\n    return input\n")
+        | {"input_files": "not-a-list"},
+        runtime_settings(tmp_path),
+    )
+
+    assert result["status"] == "failed", result
+    assert result["error_code"] == "input_artifact_not_ready"
 
 
 def test_javascript_sync_async_config_secret_logs_and_output(tmp_path: Path) -> None:

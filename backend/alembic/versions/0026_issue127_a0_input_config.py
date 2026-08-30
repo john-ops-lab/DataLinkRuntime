@@ -314,6 +314,7 @@ def _add_schedule_blocked_columns_if_needed(connection: Connection) -> None:
     columns = {column["name"] for column in inspector.get_columns("adapter_schedules")}
     additions = (
         ("last_blocked_reason", sa.String(length=64)),
+        ("last_blocked_detail", sa.dialects.postgresql.JSONB()),
         ("last_blocked_at", sa.DateTime(timezone=True)),
         ("last_processed_due_at", sa.DateTime(timezone=True)),
     )
@@ -330,8 +331,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Test-only cleanup path; production downgrade would discard authority."""
     op.drop_column("adapter_schedules", "last_processed_due_at")
     op.drop_column("adapter_schedules", "last_blocked_at")
+    op.drop_column("adapter_schedules", "last_blocked_detail")
     op.drop_column("adapter_schedules", "last_blocked_reason")
     op.drop_index("ix_adapter_input_configs_revision", table_name="adapter_input_configs")
     op.drop_index("ix_adapter_input_configs_source_type", table_name="adapter_input_configs")

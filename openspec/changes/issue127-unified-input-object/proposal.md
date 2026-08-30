@@ -13,6 +13,7 @@ Task Adapter 的手动运行与定时运行目前分别持有 JSON 输入，导�
 - 为 Python、JavaScript、Java Context 增加文件读取 API；文件二进制仅存在 ArtifactStore 与 Execution 期间的 Worker 临时副本，不进入 PostgreSQL 或 TaskPayload 路径字段。
 - 在 Web 运行设置中提供独立输入对象区、上传/刷新恢复/替换/删除/保留策略、双语错误与运行门禁；在 Execution 历史中仅展示不可操作的输入摘要，并提供按语言生成、显式复制的文件读取示例。
 - 迁移现有 Schedule JSON 和 manual 默认输入，保留有期限的旧字段镜像与 Worker 双协议窗口；按 Wave A-D 串行集成，并通过 feature flag 延后开放 `managed_files`。
+- 根据本地 Round 1 独立审计收紧兼容写入、上传续租、删除重试、Worker 恢复、Web 权威能力与 exact-SHA 证据；AI 表格附件和登录 locale 作为同 PR 的独立伴随 change 管理，不计入本 Issue 的人工验收。
 
 目标是形成一套当前输入、一条 Execution 固化路径和一套文件治理闭环。非目标包括真实 `remote_files`、通用文件库/历史下载与复用、跨 Adapter 共享或去重、PostgreSQL 二进制存储、多 Control LocalFileArtifactStore 写入、强 OS 只读隔离、新 overlap/misfire 策略、per-run 输入覆盖及自动写入示例代码。
 

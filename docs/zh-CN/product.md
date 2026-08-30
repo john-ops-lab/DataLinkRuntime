@@ -138,7 +138,7 @@ Task Starter Code 输出“任务开始 / 任务结束”；Webhook Starter Code
 
 ## 10. AI Assistant 边界
 
-AI Assistant 可以读取当前 Working Copy 和最小非敏感上下文，返回完整 Candidate 并提供 Diff。Apply 只更新浏览器 Working Copy，不保存、不运行、不修改 Credential 真值或运行状态。Prompt、Provider 原始响应、reasoning 与对话不落库。
+AI Assistant 可以读取当前 Working Copy 和最小非敏感上下文，返回完整 Candidate 并提供 Diff。一次性附件支持 PDF、DOCX、XLS、XLSX、文本、代码与受支持图片；表格只在内存中读取有界单元格显示值，不执行公式、宏或外链。当前 Managed Input 只向 AI 暴露排序后的文件名、类型等安全标签和三语言 `context.input_files` / `context.inputFiles` 指引，AI 不读取 Blob，也不得声称看见未作为附件上传的文件内容。Apply 只更新浏览器 Working Copy，不保存、不运行、不修改 Credential 真值或运行状态。Prompt、Provider 原始响应、reasoning、附件正文与对话不落库。
 
 ## 11. 安全原则
 
@@ -152,7 +152,7 @@ AI Assistant 可以读取当前 Working Copy 和最小非敏感上下文，返�
 
 系统设置中的「语言」是部署级系统语言，默认 `zh-CN`，可切换为 `en`：
 
-- 由管理员修改并持久化为权威值，页面切换后立即生效，登录页与 Ant Design 内置文案同步跟随；
+- 由管理员修改并持久化为认证态权威值，控制台与 Ant Design 内置文案同步跟随；未认证登录页使用独立浏览器偏好（首次 `zh-CN`），认证成功后立即恢复系统语言；
 - 新建 Execution 时捕获当时的系统语言，并在该 Execution 生命周期内固定，不因运行中切换而改变；
 - 后端稳定错误以 `error code + structured params` 为机器合同，前端按当前语言本地化展示，现有 message 兼容保留；
 - 系统预置内容（依赖源、Credential 类型等）按语言显示本地化名称，内部 code / ID 不变，业务判断不依赖显示名称；

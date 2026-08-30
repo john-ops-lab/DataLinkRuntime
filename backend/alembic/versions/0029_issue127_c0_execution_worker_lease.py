@@ -93,7 +93,8 @@ def upgrade() -> None:
     op.create_check_constraint(
         "ck_executions_workspace_cleanup_status",
         "executions",
-        "workspace_cleanup_status IS NULL OR workspace_cleanup_status IN ('completed', 'deferred')",
+        "workspace_cleanup_status IS NULL OR "
+        "workspace_cleanup_status IN ('pending', 'completed', 'deferred')",
     )
     op.create_check_constraint(
         "ck_executions_claim_token_hash_sha256",
@@ -129,6 +130,12 @@ def upgrade() -> None:
         sa.Column("execution_id", sa.BigInteger(), nullable=False),
         sa.Column("artifact_id", sa.BigInteger(), nullable=False),
         sa.Column("ordinal", sa.SmallInteger(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
         sa.CheckConstraint(
             "ordinal BETWEEN 0 AND 7",
             name="ck_execution_input_artifact_leases_ordinal",

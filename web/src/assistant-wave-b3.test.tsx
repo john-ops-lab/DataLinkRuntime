@@ -263,6 +263,10 @@ describe("selection / drop / delete / clear", () => {
     add.focus();
     expect(document.activeElement).toBe(add);
     expect(add.tabIndex).toBe(0);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("XLS");
+    expect(tooltip.textContent).toContain("XLSX");
+    expect(tooltip.textContent).not.toContain("不支持 XLS");
 
     await addFiles(makeFile("k.txt", "text/plain"));
     const remove = screen.getByTestId("ai-attachment-remove") as HTMLButtonElement;

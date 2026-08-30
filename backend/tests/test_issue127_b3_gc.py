@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from dlr.common.config import settings
 from dlr.control.input_errors import ManagedInputErrorCode
 from dlr.control.models import (
     Adapter,
@@ -24,6 +25,7 @@ from dlr.control.models import (
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
     ManagedInputCapacity,
+    ManagedInputDeletionJobStatus,
     ManagedInputUploadReservation,
 )
 from dlr.control.services import managed_input_gc
@@ -324,6 +326,9 @@ def test_manual_delete_is_idempotent_when_adapter_delete_wins_race(
 ) -> None:
     adapter = create_task(api_client, "b3-adapter-delete-race")
     store = LocalFileArtifactStore(tmp_path / "store")
+    from dlr.common.config import settings
+
+    monkeypatch.setattr(settings, "artifact_store_root", str(store.root))
     with session_factory.begin() as session:
         artifact = create_artifact(session, adapter["id"], store, size_bytes=3)
         artifact_id = int(artifact.id)
@@ -353,7 +358,7 @@ def test_manual_delete_is_idempotent_when_adapter_delete_wins_race(
             select(ArtifactDeletionJob).where(ArtifactDeletionJob.storage_key == storage_key)
         )
         capacity = session.get(ManagedInputCapacity, 1)
-        assert job is not None and job.status == "pending"
+        assert job is not None and job.status == "PENDING"
         assert capacity is not None and capacity.actual_bytes == 3
     assert store.stat(storage_key) is not None
 
@@ -400,14 +405,14 @@ def test_adapter_delete_handoffs_charge_and_job_releases_it_once(
         )
         capacity = session.get(ManagedInputCapacity, 1)
         assert job is not None and job.former_adapter_id == adapter["id"]
-        assert job.charged_bytes == 3 and job.status == "pending"
+        assert job.charged_bytes == 3 and job.status == "PENDING"
         assert capacity is not None and capacity.actual_bytes == 3
 
         # Simulate a worker crash after the durable DELETING claim.  A later
         # cycle must reclaim only after the lease expires.
         claim = managed_input_gc.claim_deletion_job(session, job.id, now=datetime.now(UTC))
         assert claim is not None
-        assert job.status == "deleting"
+        assert job.status == "DELETING"
         job_id = int(job.id)
 
     with session_factory() as session:
@@ -420,9 +425,7 @@ def test_adapter_delete_handoffs_charge_and_job_releases_it_once(
         managed_input_gc.process_deletion_jobs(session, store=store)
         job = session.get(ArtifactDeletionJob, job_id)
         capacity = session.get(ManagedInputCapacity, 1)
-        assert (
-            job is not None and job.status == "completed" and job.capacity_released_at is not None
-        )
+        assert job is not None and job.status == "DELETED" and job.capacity_released_at is not None
         assert capacity is not None and capacity.actual_bytes == 0
         first_release = job.capacity_released_at
         managed_input_gc.process_deletion_jobs(session, store=store)
@@ -637,7 +640,7 @@ def test_deletion_job_failure_restarts_without_losing_charge(
             )
         )
         capacity = session.get(ManagedInputCapacity, 1)
-        assert job is not None and job.status == "failed"
+        assert job is not None and job.status == "DELETE_FAILED"
         assert capacity is not None and capacity.actual_bytes == 3
         job.delete_lease_until = datetime.now(UTC) - timedelta(seconds=1)
         session.commit()
@@ -652,6 +655,189 @@ def test_deletion_job_failure_restarts_without_losing_charge(
             )
         )
         capacity = session.get(ManagedInputCapacity, 1)
-        assert job is not None and job.status == "completed"
+        assert job is not None and job.status == "DELETED"
         assert job.capacity_released_at is not None
         assert capacity is not None and capacity.actual_bytes == 0
+
+
+def test_delete_failure_threshold_stops_automatic_retry_until_admin_releases_it(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    adapter = create_task(api_client, "b3-threshold-admin-retry")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    with session_factory.begin() as session:
+        artifact = create_artifact(
+            session,
+            adapter["id"],
+            store,
+            status=ManagedInputArtifactStatus.DELETE_FAILED,
+            size_bytes=3,
+        )
+        artifact.delete_attempts = settings.artifact_delete_alert_threshold
+        artifact.delete_lease_until = None
+        artifact_id = int(artifact.id)
+
+    with session_factory() as session:
+        stopped = managed_input_gc.process_artifact_deletions(session, store=store)
+        assert stopped.claimed == 0
+        assert (
+            managed_input_gc.claim_artifact_deletion(
+                session,
+                artifact_id,
+                force=False,
+                protection_hook=lambda _session, _artifact_id: False,
+            )
+            is None
+        )
+    released = api_client.post(f"/api/system/managed-input-artifacts/{artifact_id}/retry-delete")
+    assert released.status_code == 204, released.text
+    with session_factory() as session:
+        current = session.get(ManagedInputArtifact, artifact_id)
+        assert current is not None
+        assert current.status == ManagedInputArtifactStatus.PENDING_DELETE
+        assert current.delete_attempts == settings.artifact_delete_alert_threshold
+        retried = managed_input_gc.process_artifact_deletions(session, store=store)
+        assert retried.deleted == 1
+
+
+def test_thresholded_artifact_rejects_business_delete_until_admin_retry(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    adapter = create_task(api_client, "b3-threshold-business-delete")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    with session_factory.begin() as session:
+        artifact = create_artifact(
+            session,
+            adapter["id"],
+            store,
+            status=ManagedInputArtifactStatus.DELETE_FAILED,
+            size_bytes=3,
+        )
+        artifact.delete_attempts = settings.artifact_delete_alert_threshold
+        artifact.delete_lease_until = None
+        artifact_id = int(artifact.id)
+        storage_key = artifact.storage_key
+
+    response = api_client.delete(f"/api/adapters/{adapter['id']}/input-artifacts/{artifact_id}")
+
+    assert response.status_code == 409, response.text
+    assert (
+        response.json()["detail"]["code"] == ManagedInputErrorCode.ARTIFACT_RETRY_NOT_ALLOWED.value
+    )
+    with session_factory() as session:
+        current = session.get(ManagedInputArtifact, artifact_id)
+        capacity = session.get(ManagedInputCapacity, 1)
+        assert current is not None
+        assert current.status == ManagedInputArtifactStatus.DELETE_FAILED
+        assert current.delete_attempts == settings.artifact_delete_alert_threshold
+        assert capacity is not None and capacity.actual_bytes == 3
+        assert store.stat(storage_key) is not None
+
+
+def test_admin_retry_rejects_subthreshold_artifact_backoff(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    adapter = create_task(api_client, "b3-subthreshold-artifact-retry")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    retry_at = datetime.now(UTC) + timedelta(minutes=5)
+    with session_factory.begin() as session:
+        artifact = create_artifact(
+            session,
+            adapter["id"],
+            store,
+            status=ManagedInputArtifactStatus.DELETE_FAILED,
+            size_bytes=3,
+        )
+        artifact.delete_attempts = settings.artifact_delete_alert_threshold - 1
+        artifact.delete_lease_until = retry_at
+        artifact_id = int(artifact.id)
+
+    response = api_client.post(f"/api/system/managed-input-artifacts/{artifact_id}/retry-delete")
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "input_artifact_retry_not_allowed"
+    with session_factory() as session:
+        current = session.get(ManagedInputArtifact, artifact_id)
+        assert current is not None
+        assert current.status == ManagedInputArtifactStatus.DELETE_FAILED
+        assert current.delete_attempts == settings.artifact_delete_alert_threshold - 1
+        assert current.delete_lease_until == retry_at
+
+
+def test_deletion_job_threshold_requires_admin_retry_and_uses_contract_fields(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    adapter = create_task(api_client, "b3-job-threshold-admin-retry")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    with session_factory.begin() as session:
+        artifact = create_artifact(session, adapter["id"], store, size_bytes=3)
+        storage_key = artifact.storage_key
+    assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
+    with session_factory.begin() as session:
+        job = session.scalar(
+            select(ArtifactDeletionJob).where(ArtifactDeletionJob.storage_key == storage_key)
+        )
+        assert job is not None
+        job.status = ManagedInputDeletionJobStatus.DELETE_FAILED
+        job.delete_attempts = settings.artifact_delete_alert_threshold
+        job.delete_started_at = datetime.now(UTC)
+        job.delete_lease_until = None
+        job_id = int(job.id)
+
+    with session_factory() as session:
+        stopped = managed_input_gc.process_deletion_jobs(session, store=store)
+        assert stopped.claimed == 0
+    released = api_client.post(f"/api/system/managed-input-deletion-jobs/{job_id}/retry-delete")
+    assert released.status_code == 204, released.text
+    with session_factory() as session:
+        job = session.get(ArtifactDeletionJob, job_id)
+        assert job is not None
+        assert job.status == ManagedInputDeletionJobStatus.PENDING
+        assert job.delete_attempts == settings.artifact_delete_alert_threshold
+        assert job.delete_started_at is None
+        retried = managed_input_gc.process_deletion_jobs(session, store=store)
+        assert retried.completed == 1
+        session.refresh(job)
+        assert job.status == ManagedInputDeletionJobStatus.DELETED
+
+
+def test_admin_retry_rejects_subthreshold_deletion_job_backoff(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+) -> None:
+    adapter = create_task(api_client, "b3-subthreshold-job-retry")
+    store = LocalFileArtifactStore(tmp_path / "store")
+    with session_factory.begin() as session:
+        artifact = create_artifact(session, adapter["id"], store, size_bytes=3)
+        storage_key = artifact.storage_key
+    assert api_client.delete(f"/api/adapters/{adapter['id']}").status_code == 204
+    retry_at = datetime.now(UTC) + timedelta(minutes=5)
+    with session_factory.begin() as session:
+        job = session.scalar(
+            select(ArtifactDeletionJob).where(ArtifactDeletionJob.storage_key == storage_key)
+        )
+        assert job is not None
+        job.status = ManagedInputDeletionJobStatus.DELETE_FAILED
+        job.delete_attempts = settings.artifact_delete_alert_threshold - 1
+        job.delete_lease_until = retry_at
+        job_id = int(job.id)
+
+    response = api_client.post(f"/api/system/managed-input-deletion-jobs/{job_id}/retry-delete")
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "input_deletion_job_retry_not_allowed"
+    with session_factory() as session:
+        job = session.get(ArtifactDeletionJob, job_id)
+        assert job is not None
+        assert job.status == ManagedInputDeletionJobStatus.DELETE_FAILED
+        assert job.delete_attempts == settings.artifact_delete_alert_threshold - 1
+        assert job.delete_lease_until == retry_at

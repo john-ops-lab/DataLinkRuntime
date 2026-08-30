@@ -26,7 +26,7 @@ export const DEFAULT_ATTACHMENT_LIMITS: AiAttachmentLimits = {
   parse_timeout_seconds: 30,
 };
 
-export type AttachmentCategory = "image" | "pdf" | "docx" | "text" | "code";
+export type AttachmentCategory = "image" | "pdf" | "docx" | "xls" | "xlsx" | "text" | "code";
 
 const TEXT_EXTENSIONS = new Set([
   "txt",
@@ -78,6 +78,8 @@ export const MIME_EXTENSIONS: Record<string, ReadonlySet<string>> = {
   "image/webp": new Set(["webp"]),
   "application/pdf": new Set(["pdf"]),
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": new Set(["docx"]),
+  "application/vnd.ms-excel": new Set(["xls"]),
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": new Set(["xlsx"]),
   "text/plain": new Set([...TEXT_EXTENSIONS, ...CODE_EXTENSIONS]),
   "text/markdown": new Set(["md", "markdown"]),
   "text/csv": new Set(["csv"]),
@@ -99,6 +101,8 @@ const MIME_CATEGORY: Record<string, AttachmentCategory> = {
   "image/webp": "image",
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
   "text/plain": "text",
   "text/markdown": "text",
   "text/csv": "text",

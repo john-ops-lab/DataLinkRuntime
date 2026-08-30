@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
 
+from dlr.common.managed_input import MANAGED_INPUT_FILE_EXTENSION_ALTERNATION
+
 logger = logging.getLogger("dlr.worker.workspace")
 
 WORKSPACES_DIRNAME = "workspaces"
@@ -36,7 +38,9 @@ TEMP_DIRNAME = "temp"
 OUTPUT_DIRNAME = "output"
 WORKSPACE_NAME_PATTERN = re.compile(r"dlr-exec-([1-9][0-9]*)\Z")
 JOURNAL_NAME_PATTERN = re.compile(r"([1-9][0-9]*)\.json\Z")
-MOUNT_NAME_PATTERN = re.compile(r"input-([0-9]{2})\Z")
+MOUNT_NAME_PATTERN = re.compile(
+    rf"input-([0-9]{{2}})(?:\.(?:{MANAGED_INPUT_FILE_EXTENSION_ALTERNATION}))?\Z"
+)
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 MANIFEST_FIELDS = frozenset(
     {
@@ -309,6 +313,14 @@ def create_workspace(
         for child in (input_path, temp_path, output_path):
             child.mkdir(mode=0o700)
         _write_json(root / MARKER_FILENAME, {"execution_id": execution_id, "format": 1}, mode=0o600)
+        # Establish the full recovery triple before dependency preparation or
+        # input download. prepare_input_files atomically replaces this empty
+        # manifest with verified descriptors later.
+        _write_json(
+            root / MANIFEST_FILENAME,
+            {"execution_id": execution_id, "files": []},
+            mode=0o600,
+        )
     except Exception as error:
         # The partial tree is never an authorization path and cleanup never
         # follows a symlink leaf.  Preserve the outcome for the caller so it
@@ -360,25 +372,41 @@ class _InputSizeExceeded(Exception):
 def _input_descriptor(value: object, expected_ordinal: int) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise InputPreparationError("input_artifact_not_ready")
-    try:
-        artifact_id = int(value["id"])
-        ordinal = int(value["ordinal"])
-        mount_name = str(value["mount_name"])
-        expected_size = int(value["size_bytes"])
-        expected_sha = str(value["sha256"])
-    except (KeyError, TypeError, ValueError) as error:
-        raise InputPreparationError("input_artifact_not_ready") from error
-    match = MOUNT_NAME_PATTERN.fullmatch(mount_name)
+    artifact_id = value.get("id")
+    ordinal = value.get("ordinal")
+    mount_name = value.get("mount_name")
+    original_filename = value.get("original_filename")
+    content_type = value.get("content_type")
+    expected_size = value.get("size_bytes")
+    expected_sha = value.get("sha256")
+    match = MOUNT_NAME_PATTERN.fullmatch(mount_name) if isinstance(mount_name, str) else None
     if (
-        artifact_id <= 0
+        not isinstance(artifact_id, int)
+        or isinstance(artifact_id, bool)
+        or artifact_id <= 0
+        or not isinstance(ordinal, int)
+        or isinstance(ordinal, bool)
         or ordinal != expected_ordinal
+        or not isinstance(mount_name, str)
         or match is None
         or int(match.group(1)) != expected_ordinal
+        or not isinstance(original_filename, str)
+        or not isinstance(content_type, str)
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
         or expected_size < 0
+        or not isinstance(expected_sha, str)
         or SHA256_PATTERN.fullmatch(expected_sha) is None
     ):
         raise InputPreparationError("input_artifact_not_ready")
     return dict(value)
+
+
+def validate_input_descriptors(value: object) -> list[dict[str, Any]]:
+    """Validate the complete v2 descriptor list without filesystem effects."""
+    if not isinstance(value, list) or len(value) > 8:
+        raise InputPreparationError("input_artifact_not_ready")
+    return [_input_descriptor(item, ordinal) for ordinal, item in enumerate(value)]
 
 
 def _open_input_destination(path: Path) -> BinaryIO:
@@ -396,11 +424,11 @@ def prepare_input_files(
     downloader: InputDownloader | None,
 ) -> None:
     """Stream, hash, and permission all Lease files before process start."""
-    if input_files and downloader is None:
+    descriptors = validate_input_descriptors(list(input_files))
+    if descriptors and downloader is None:
         raise InputPreparationError("input_artifact_not_ready")
     manifest_files: list[dict[str, Any]] = []
-    for expected_ordinal, raw_descriptor in enumerate(input_files):
-        descriptor = _input_descriptor(raw_descriptor, expected_ordinal)
+    for expected_ordinal, descriptor in enumerate(descriptors):
         target = layout.input / str(descriptor["mount_name"])
         stream: BinaryIO | None = None
         try:

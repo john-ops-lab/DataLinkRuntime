@@ -125,6 +125,8 @@ export function LogView(props: {
   onViewServerLog?: () => void;
   /** Stable filename stem for downloading a history snapshot. */
   downloadFileName?: string;
+  /** History details may be intentionally read-only with no download action. */
+  allowDownload?: boolean;
   /** 实时日志选区 → AI 上下文（只使用浏览器可见的已脱敏文本）。 */
   addContextLabel?: string;
   onAddContext?: (text: string, startLine: number, endLine: number) => void;
@@ -412,16 +414,18 @@ export function LogView(props: {
                   onClick={() => void copySavedContent()}
                 />
               </Tooltip>
-              <Tooltip title={t("logs.download")} trigger={["hover", "focus"]}>
-                <Button
-                  size="small"
-                  type="text"
-                  data-testid={props.testId ? `${props.testId}-download` : "log-download"}
-                  icon={<DownloadOutlined aria-hidden="true" />}
-                  aria-label={t("logs.download")}
-                  onClick={downloadSavedContent}
-                />
-              </Tooltip>
+              {props.allowDownload !== false && (
+                <Tooltip title={t("logs.download")} trigger={["hover", "focus"]}>
+                  <Button
+                    size="small"
+                    type="text"
+                    data-testid={props.testId ? `${props.testId}-download` : "log-download"}
+                    icon={<DownloadOutlined aria-hidden="true" />}
+                    aria-label={t("logs.download")}
+                    onClick={downloadSavedContent}
+                  />
+                </Tooltip>
+              )}
             </div>
           )}
           {followControls &&

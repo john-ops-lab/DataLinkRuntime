@@ -12,6 +12,7 @@ import { isTerminal, statusColor, statusLabel } from "../status";
 import type { ExecutionSummary } from "../types";
 import { unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
+import ExecutionInputSummary from "./ExecutionInputSummary";
 import { LogView, OutputView } from "./OutputView";
 
 const PAGE_SIZE = 50;
@@ -369,11 +370,7 @@ export default function ExecutionHistoryPanel(props: {
                 {
                   key: "input",
                   label: t("labels.input", { ns: "common" }),
-                  children: (
-                    <pre className="output-view" data-testid="detail-input">
-                      {JSON.stringify(visibleDetail.input, null, 2)}
-                    </pre>
-                  ),
+                  children: <ExecutionInputSummary execution={visibleDetail} />,
                 },
                 { key: "output", label: t("labels.output", { ns: "common" }), children: <OutputView execution={visibleDetail} /> },
                 {
@@ -385,9 +382,10 @@ export default function ExecutionHistoryPanel(props: {
                       testId="detail-log"
                       content={unifiedLogContent(visibleDetail.stdout, visibleDetail.stderr, visibleDetail.error)}
                       truncated={visibleDetail.stdout_truncated || visibleDetail.stderr_truncated}
+                      downloadFileName={`execution-${visibleDetail.id}`}
                       mode="history"
                       followControls={false}
-                      downloadFileName={`execution-${visibleDetail.id}`}
+                      allowDownload
                     />
                   ),
                 },

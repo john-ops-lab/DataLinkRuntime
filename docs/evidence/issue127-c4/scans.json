@@ -1,0 +1,24 @@
+{
+  "dispatch_id": "issue127-c4-gate-20260828-r1",
+  "status": "PASS",
+  "known_value_scan": {
+    "values": ["isolated admin token", "isolated worker token", "isolated PostgreSQL password"],
+    "selected_receipt_hits": 0,
+    "service_log_hits": 0,
+    "candidate_diff_hits": 0
+  },
+  "pattern_scan": {
+    "patterns": ["Authorization", "Bearer", "Cookie", "host user path"],
+    "selected_receipt_hits": 0,
+    "service_log_hits": 0,
+    "candidate_diff_hits": 0
+  },
+  "compose_smoke_sensitive_assertions": "PASS",
+  "archive_policy": {
+    "raw_request_or_response_bodies": false,
+    "request_or_response_headers": false,
+    "raw_service_logs": false,
+    "host_absolute_paths": false,
+    "real_secrets": false
+  }
+}

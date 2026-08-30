@@ -1,0 +1,167 @@
+{
+  "baseline": {
+    "config": {
+      "revision": 8,
+      "source_type": "managed_files",
+      "artifact_count": 1,
+      "artifacts": [
+        {
+          "id": 37,
+          "ordinal": 0,
+          "original_filename": "python-context.txt",
+          "status": "READY",
+          "sha256": "501ddf5bb0f4cab89e9250464b04092fb208ec810e93a60e859b79ecb5075412"
+        }
+      ],
+      "retention": {
+        "mode": "system_default",
+        "seconds": null
+      },
+      "valid_for_run": true
+    },
+    "executions": {
+      "count": 21,
+      "ids": [
+        37,
+        36,
+        33,
+        31,
+        30,
+        27,
+        26,
+        25,
+        22,
+        21,
+        20,
+        17,
+        16,
+        15,
+        11,
+        10,
+        9,
+        6,
+        5,
+        4,
+        1
+      ],
+      "statuses": [
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded"
+      ]
+    }
+  },
+  "disabled": {
+    "capability": {
+      "managed_files_enabled": false,
+      "ready": false
+    },
+    "api": {
+      "upload": {
+        "status": 422,
+        "code": "input_source_not_available"
+      },
+      "input_config_put": {
+        "status": 422,
+        "code": "input_source_not_available"
+      }
+    },
+    "browser": {
+      "managed_card_disabled": true
+    }
+  },
+  "reclosed": {
+    "config": {
+      "revision": 8,
+      "source_type": "managed_files",
+      "artifact_count": 1,
+      "artifacts": [
+        {
+          "id": 37,
+          "ordinal": 0,
+          "original_filename": "python-context.txt",
+          "status": "READY",
+          "sha256": "501ddf5bb0f4cab89e9250464b04092fb208ec810e93a60e859b79ecb5075412"
+        }
+      ],
+      "retention": {
+        "mode": "system_default",
+        "seconds": null
+      },
+      "valid_for_run": true
+    },
+    "executions": {
+      "count": 21,
+      "ids": [
+        37,
+        36,
+        33,
+        31,
+        30,
+        27,
+        26,
+        25,
+        22,
+        21,
+        20,
+        17,
+        16,
+        15,
+        11,
+        10,
+        9,
+        6,
+        5,
+        4,
+        1
+      ],
+      "statuses": [
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+        "succeeded"
+      ]
+    }
+  },
+  "checks": {
+    "wave_b_c_closed": true,
+    "blob_and_execution_history_preserved": true
+  },
+  "machine_gate": "PASS",
+  "human_acceptance": "待人工验收"
+}

@@ -65,6 +65,7 @@ def _v2_payload(*, code: str, input_files: list[dict[str, Any]] | None = None) -
         "input": None,
         "latest_version_id": 42,
         "execution_timeout_seconds": 30,
+        "secrets": {},
         "protocol_version": 2,
         "claim_token": "claim-token-for-test",
         "cleanup_token": "cleanup-token-for-test",
@@ -110,6 +111,7 @@ def test_c1_v2_credentials_are_sent_in_their_designated_headers(
     assert calls[0]["headers"] == {"X-DLR-Claim-Token": "claim-token"}
     assert calls[1]["headers"] == {"X-DLR-Claim-Token": "claim-token"}
     assert calls[2]["headers"] == {"X-DLR-Cleanup-Token": "cleanup-token"}
+    assert calls[2]["path"] == "/api/workers/executions/1/workspace-cleanup"
     assert calls[3]["headers"] == {}
     assert calls[4]["headers"] == {}
     for call in calls:
@@ -402,8 +404,11 @@ def test_c1_oversized_stream_stops_at_declared_size_and_never_starts_adapter(
     assert not started.exists()
 
 
+@pytest.mark.parametrize("protocol_version", [1, None, "missing"])
 def test_c1_v1_executor_report_keeps_legacy_cleanup_shape(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol_version: int | str | None,
 ) -> None:
     monkeypatch.setattr(
         venv_manager,
@@ -413,7 +418,10 @@ def test_c1_v1_executor_report_keeps_legacy_cleanup_shape(
     payload = _v2_payload(code="def handle(context, input):\n    return {}\n")
     payload.pop("claim_token")
     payload.pop("cleanup_token")
-    payload["protocol_version"] = 1
+    if protocol_version == "missing":
+        payload.pop("protocol_version")
+    else:
+        payload["protocol_version"] = protocol_version
     result = executor.run(payload, _runtime_settings(tmp_path, tmp_path / "journal"))
     assert result["status"] == "succeeded"
     assert "workspace_cleanup_status" not in result
@@ -554,7 +562,7 @@ def test_c1_cleanup_receipt_is_terminal_only_and_idempotent(
     assert claimed.status_code == 200, claimed.text
     execution_id = execution.json()["id"]
     cleanup_token = claimed.json()["cleanup_token"]
-    receipt_path = f"/api/workers/{worker['id']}/executions/{execution_id}/cleanup-receipt"
+    receipt_path = f"/api/workers/executions/{execution_id}/workspace-cleanup"
 
     before_terminal = api_client.post(
         receipt_path,
@@ -643,6 +651,172 @@ def test_c1_journal_failure_prevents_workspace_download_and_process(
     assert result["error_code"] == "workspace_cleanup_failed"
     assert not downloaded
     assert not started.exists()
+    assert not (tmp_path / "runtime" / "workspaces").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workspace_cleanup_attempt_timeout_seconds_snapshot", None),
+        ("workspace_cleanup_attempt_timeout_seconds_snapshot", 0),
+        ("workspace_cleanup_total_timeout_seconds_snapshot", "20"),
+        ("workspace_cleanup_total_timeout_seconds_snapshot", 61),
+        ("recovery_grace_seconds_snapshot", 20),
+    ],
+)
+def test_c1_invalid_v2_cleanup_snapshot_rejects_before_local_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    prepared = False
+
+    def prepare(*_args: object, **_kwargs: object) -> Path:
+        nonlocal prepared
+        prepared = True
+        return Path(sys.executable)
+
+    monkeypatch.setattr(venv_manager, "prepare_version_venv", prepare)
+    payload = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    payload[field] = value
+    result = executor.run(
+        payload,
+        _runtime_settings(tmp_path / "runtime", tmp_path / "journal"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "worker_protocol_payload_invalid"
+    assert result["workspace_cleanup_status"] == "completed"
+    assert prepared is False
+    assert not (tmp_path / "journal").exists()
+    assert not (tmp_path / "runtime" / "workspaces").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("execution_id", "__missing__"),
+        ("adapter_id", None),
+        ("version_id", 0),
+        ("claim_token", ""),
+        ("cleanup_token", None),
+        ("execution_timeout_seconds", None),
+        ("language", ""),
+        ("language", "   "),
+        ("code", ""),
+        ("code", " \n"),
+        ("requirements", None),
+        ("requirements", "__missing__"),
+        ("code", "__missing__"),
+        ("latest_version_id", "42"),
+        (
+            "input_files",
+            [
+                {
+                    "id": "9",
+                    "ordinal": 0,
+                    "mount_name": "input-00.xlsx",
+                    "original_filename": "customer.xlsx",
+                    "content_type": (
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    ),
+                    "size_bytes": 0,
+                    "sha256": hashlib.sha256(b"").hexdigest(),
+                }
+            ],
+        ),
+        (
+            "input_files",
+            [
+                {
+                    "id": 9,
+                    "ordinal": 0,
+                    "mount_name": "../customer.xlsx",
+                    "original_filename": "customer.xlsx",
+                    "content_type": (
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    ),
+                    "size_bytes": 0,
+                    "sha256": hashlib.sha256(b"").hexdigest(),
+                }
+            ],
+        ),
+    ],
+)
+def test_c1_invalid_v2_envelope_rejects_before_all_local_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    calls = {"dependency": 0, "journal": 0, "workspace": 0, "process": 0}
+
+    def count(name: str) -> Any:
+        def called(*_args: object, **_kwargs: object) -> Path:
+            calls[name] += 1
+            return Path(sys.executable)
+
+        return called
+
+    monkeypatch.setattr(venv_manager, "prepare_version_venv", count("dependency"))
+    monkeypatch.setattr(workspace_manager, "write_cleanup_journal", count("journal"))
+    monkeypatch.setattr(workspace_manager, "create_workspace", count("workspace"))
+    monkeypatch.setattr(executor.subprocess, "Popen", count("process"))
+    payload = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    if value == "__missing__":
+        payload.pop(field)
+    else:
+        payload[field] = value
+
+    result = executor.run(
+        payload,
+        _runtime_settings(tmp_path / "runtime", tmp_path / "journal"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "worker_protocol_payload_invalid"
+    assert result["workspace_cleanup_status"] == "completed"
+    assert calls == {"dependency": 0, "journal": 0, "workspace": 0, "process": 0}
+    assert not (tmp_path / "journal").exists()
+    assert not (tmp_path / "runtime" / "workspaces").exists()
+
+
+@pytest.mark.parametrize(
+    "protocol_version",
+    [0, 3, "1", "2", "not-a-version", 1.0, 1.5, 2.0, 2.9, True],
+)
+def test_c1_unknown_protocol_rejects_before_all_local_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol_version: object,
+) -> None:
+    calls = {"dependency": 0, "journal": 0, "workspace": 0, "process": 0}
+
+    def count(name: str) -> Any:
+        def called(*_args: object, **_kwargs: object) -> Path:
+            calls[name] += 1
+            return Path(sys.executable)
+
+        return called
+
+    monkeypatch.setattr(venv_manager, "prepare_version_venv", count("dependency"))
+    monkeypatch.setattr(workspace_manager, "write_cleanup_journal", count("journal"))
+    monkeypatch.setattr(workspace_manager, "create_workspace", count("workspace"))
+    monkeypatch.setattr(executor.subprocess, "Popen", count("process"))
+    payload = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    payload["protocol_version"] = protocol_version
+
+    result = executor.run(
+        payload,
+        _runtime_settings(tmp_path / "runtime", tmp_path / "journal"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "worker_protocol_payload_invalid"
+    assert result["workspace_cleanup_status"] == "completed"
+    assert calls == {"dependency": 0, "journal": 0, "workspace": 0, "process": 0}
+    assert not (tmp_path / "journal").exists()
     assert not (tmp_path / "runtime" / "workspaces").exists()
 
 
@@ -1087,6 +1261,9 @@ def test_c1_in_flight_execution_set_clears_on_exception_and_cancel(
         ) -> None:
             reports.append((execution_id, str(result["status"])))
             assert claim_token == "claim-token-for-test"
+            if execution_id == 101:
+                assert result["workspace_cleanup_status"] == "deferred"
+                assert result["workspace_cleanup_error_code"] == "workspace_cleanup_failed"
 
     monkeypatch.setattr(agent_module.venv_manager, "cleanup_stale_venvs", lambda *args: None)
     agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]

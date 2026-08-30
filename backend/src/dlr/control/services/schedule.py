@@ -58,7 +58,7 @@ from dlr.control.services.adapter import (
 from dlr.control.services.execution import (
     LEGACY_INPUT_COMPAT_METRICS,
     _create_execution_locked,
-    compact_json_bytes,
+    integrity_constraint_name,
 )
 
 logger = logging.getLogger("dlr.control.schedule")
@@ -193,19 +193,6 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
             "execution_input_override_not_supported",
             "Schedule input overrides are disabled; save the Adapter input first",
         )
-    # Same big-field contract as Execution input for a legacy non-null value;
-    # omitted/null legacy fields mirror the saved config and do not create a
-    # second JSON-null-vs-none ambiguity.
-    if (
-        data.input is not None
-        and len(compact_json_bytes(data.input)) > settings.execution_input_max_bytes
-    ):
-        raise domain_error(
-            413,
-            "execution_input_too_large",
-            f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
-            {"max_bytes": settings.execution_input_max_bytes},
-        )
     if data.enabled and adapter.latest_version_id is None:
         raise domain_error(
             409,
@@ -221,19 +208,6 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
     schedule = session.scalar(
         select(AdapterSchedule).where(AdapterSchedule.adapter_id == adapter_id).with_for_update()
     )
-    if adapter_runtime.adapter_runtime_locked(session, adapter):
-        disable_only = (
-            schedule is not None
-            and schedule.enabled
-            and not data.enabled
-            and cron == schedule.cron
-            and tz_name == schedule.timezone
-            # Omitted/explicit-null legacy input does not mutate the saved
-            # config; a changed non-null value is still an input write.
-            and (data.input is None or data.input == schedule.input)
-        )
-        if not disable_only:
-            adapter_runtime.require_runtime_unlocked(session, adapter)
     config = session.scalar(
         select(AdapterInputConfig)
         .where(AdapterInputConfig.adapter_id == adapter_id)
@@ -245,11 +219,29 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
             "input_config_not_initialized",
             "Adapter input configuration is not initialized",
         )
-    if "input" in data.model_fields_set and settings.legacy_input_compat_enabled:
-        if data.input is not None and (
-            config.source_type != "json" or config.json_value != data.input
-        ):
-            input_config_service._set_json_config(config, data.input)
+    legacy_input_present = "input" in data.model_fields_set
+    legacy_input_changed = legacy_input_present and (
+        config.source_type != "json" or config.json_value != data.input
+    )
+    if adapter_runtime.adapter_runtime_locked(session, adapter):
+        disable_only = (
+            schedule is not None
+            and schedule.enabled
+            and not data.enabled
+            and cron == schedule.cron
+            and tz_name == schedule.timezone
+            and not legacy_input_changed
+        )
+        if not disable_only:
+            adapter_runtime.require_runtime_unlocked(session, adapter)
+    if legacy_input_present and settings.legacy_input_compat_enabled:
+        if legacy_input_changed:
+            input_config_service.apply_legacy_schedule_input_locked(
+                session,
+                config,
+                schedule,
+                data.input,
+            )
         LEGACY_INPUT_COMPAT_METRICS["schedule_input"] += 1
         logger.info(
             "legacy_input_compat deprecated operation=schedule_input adapter_id=%s",
@@ -268,6 +260,7 @@ def upsert_schedule(session: Session, adapter_id: int, data: ScheduleUpsert) -> 
     schedule.enabled = data.enabled
     schedule.next_run_at = next_run_at
     schedule.last_blocked_reason = None
+    schedule.last_blocked_detail = None
     schedule.last_blocked_at = None
     schedule.last_processed_due_at = None
     session.commit()
@@ -350,11 +343,21 @@ def process_due_schedule(
         }:
             schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
             schedule.last_blocked_reason = "input_invalid"
+            params = detail.get("params")
+            blocked_detail = dict(params) if isinstance(params, dict) else {}
+            if code != "input_invalid":
+                blocked_detail = {"code": str(code), **blocked_detail}
+            schedule.last_blocked_detail = blocked_detail or None
             schedule.last_blocked_at = now
             schedule.last_processed_due_at = due_point
             return ScheduleTickResult.CONSUMED
         raise
-    except IntegrityError:
+    except IntegrityError as exc:
+        if integrity_constraint_name(exc) not in {
+            "uq_executions_active_adapter",
+            "uq_executions_schedule_point",
+        }:
+            raise
         # Lost a race (duplicate planned point or an active
         # Execution created concurrently): the savepoint rolled back, the
         # cursor advance still commits, so the point is never retried.
@@ -366,11 +369,13 @@ def process_due_schedule(
         schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
         schedule.last_processed_due_at = due_point
         schedule.last_blocked_reason = None
+        schedule.last_blocked_detail = None
         schedule.last_blocked_at = None
         return ScheduleTickResult.CONSUMED
     schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
     schedule.last_processed_due_at = due_point
     schedule.last_blocked_reason = None
+    schedule.last_blocked_detail = None
     schedule.last_blocked_at = None
     return ScheduleTickResult.CREATED
 

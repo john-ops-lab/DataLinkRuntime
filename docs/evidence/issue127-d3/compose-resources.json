@@ -1,0 +1,225 @@
+{
+  "project": "dlr-i127-d3-141",
+  "ao_session": "datalinkruntime-141-d3",
+  "ports": {
+    "web": 8923,
+    "account": 9023
+  },
+  "managed_files_enabled_during_reclose": true,
+  "containers": [
+    {
+      "name": "dlr-i127-d3-141-worker-1",
+      "image": "dlr-i127-d3-141-worker",
+      "image_id": "sha256:a8be176eddbd02e47222cfd2d2f626102aa82df3c19b1a4a7c60e11c62c79213",
+      "service": "worker",
+      "ao_session": "datalinkruntime-141-d3",
+      "compose_project": "dlr-i127-d3-141",
+      "status": "running",
+      "health": "healthy",
+      "ports": [],
+      "mounts": [
+        {
+          "type": "volume",
+          "destination_class": "worker_journal",
+          "read_only": false
+        },
+        {
+          "type": "bind",
+          "destination_class": "platform_logs",
+          "read_only": false
+        },
+        {
+          "type": "volume",
+          "destination_class": "worker_runtime",
+          "read_only": false
+        }
+      ]
+    },
+    {
+      "name": "dlr-i127-d3-141-control-1",
+      "image": "dlr-i127-d3-141-control",
+      "image_id": "sha256:2a56014436cfbec5335e2cedc34f9f0a3b3cc39f0018e255769c4637b8f05617",
+      "service": "control",
+      "ao_session": "datalinkruntime-141-d3",
+      "compose_project": "dlr-i127-d3-141",
+      "status": "running",
+      "health": "healthy",
+      "ports": [],
+      "mounts": [
+        {
+          "type": "volume",
+          "destination_class": "artifact_store",
+          "read_only": false
+        },
+        {
+          "type": "bind",
+          "destination_class": "platform_logs",
+          "read_only": false
+        }
+      ]
+    },
+    {
+      "name": "dlr-i127-d3-141-account-web-1",
+      "image": "dlr-i127-d3-141-account-web",
+      "image_id": "sha256:7d736caff2846df7f7e8067640e0da3821e22560ea5a029f49d49d8129718a5f",
+      "service": "account-web",
+      "ao_session": "datalinkruntime-141-d3",
+      "compose_project": "dlr-i127-d3-141",
+      "status": "running",
+      "health": "healthy",
+      "ports": [
+        "9023->container",
+        "9023->container"
+      ],
+      "mounts": [
+        {
+          "type": "bind",
+          "destination_class": "platform_logs",
+          "read_only": false
+        }
+      ]
+    },
+    {
+      "name": "dlr-i127-d3-141-web-1",
+      "image": "dlr-i127-d3-141-web",
+      "image_id": "sha256:66e97290a55ee80c577319587613eb185fb14d9ed1e09c0b44b39e1ce1d666dd",
+      "service": "web",
+      "ao_session": "datalinkruntime-141-d3",
+      "compose_project": "dlr-i127-d3-141",
+      "status": "running",
+      "health": "healthy",
+      "ports": [
+        "8923->container",
+        "8923->container"
+      ],
+      "mounts": [
+        {
+          "type": "bind",
+          "destination_class": "platform_logs",
+          "read_only": false
+        }
+      ]
+    },
+    {
+      "name": "dlr-i127-d3-141-postgres-1",
+      "image": "dlr-i127-d3-141-postgres",
+      "image_id": "sha256:cb6a0f6d22087e5bddcbd0e467103aabcb524dfdcc7a64e598579da7b573efe6",
+      "service": "postgres",
+      "ao_session": "datalinkruntime-141-d3",
+      "compose_project": "dlr-i127-d3-141",
+      "status": "running",
+      "health": "healthy",
+      "ports": [],
+      "mounts": [
+        {
+          "type": "volume",
+          "destination_class": "postgres_data",
+          "read_only": false
+        },
+        {
+          "type": "bind",
+          "destination_class": "platform_logs",
+          "read_only": false
+        }
+      ]
+    }
+  ],
+  "volumes": [
+    {
+      "name": "dlr-i127-d3-141_dlr_artifact_store",
+      "driver": "local",
+      "labels": {
+        "compose_project": "dlr-i127-d3-141",
+        "compose_volume": "dlr_artifact_store"
+      }
+    },
+    {
+      "name": "dlr-i127-d3-141_dlr_pg_data",
+      "driver": "local",
+      "labels": {
+        "compose_project": "dlr-i127-d3-141",
+        "compose_volume": "dlr_pg_data"
+      }
+    },
+    {
+      "name": "dlr-i127-d3-141_dlr_worker_journal",
+      "driver": "local",
+      "labels": {
+        "compose_project": "dlr-i127-d3-141",
+        "compose_volume": "dlr_worker_journal"
+      }
+    },
+    {
+      "name": "dlr-i127-d3-141_dlr_worker_runtime",
+      "driver": "local",
+      "labels": {
+        "compose_project": "dlr-i127-d3-141",
+        "compose_volume": "dlr_worker_runtime"
+      }
+    }
+  ],
+  "networks": [
+    {
+      "name": "dlr-i127-d3-141_default",
+      "driver": "bridge",
+      "labels": {
+        "compose_project": "dlr-i127-d3-141"
+      },
+      "attached_containers": 5
+    }
+  ],
+  "images": [
+    {
+      "repository": "dlr-i127-d3-141-web",
+      "tag": "latest",
+      "image_id": "66e97290a55e",
+      "size": "114MB"
+    },
+    {
+      "repository": "dlr-i127-d3-141-account-web",
+      "tag": "latest",
+      "image_id": "7d736caff284",
+      "size": "114MB"
+    },
+    {
+      "repository": "dlr-i127-d3-141-worker",
+      "tag": "latest",
+      "image_id": "a8be176eddbd",
+      "size": "1.21GB"
+    },
+    {
+      "repository": "dlr-i127-d3-141-control",
+      "tag": "latest",
+      "image_id": "2a56014436cf",
+      "size": "531MB"
+    },
+    {
+      "repository": "dlr-i127-d3-141-postgres",
+      "tag": "latest",
+      "image_id": "cb6a0f6d2208",
+      "size": "411MB"
+    }
+  ],
+  "cleanup_scope": {
+    "compose_command": "docker compose -p dlr-i127-d3-141 down --volumes --remove-orphans",
+    "image_references": [
+      "dlr-i127-d3-141-web:latest",
+      "dlr-i127-d3-141-account-web:latest",
+      "dlr-i127-d3-141-worker:latest",
+      "dlr-i127-d3-141-control:latest",
+      "dlr-i127-d3-141-postgres:latest"
+    ],
+    "host_log_directory": "omitted from receipt; exact D3-only path was session-owned"
+  },
+  "cleanup_result": {
+    "containers_remaining": 0,
+    "session_containers_remaining": 0,
+    "named_volumes_remaining": 0,
+    "networks_remaining": 0,
+    "project_image_tags_remaining": 0,
+    "unrelated_isl_i2_remaining": true,
+    "status": "PASS"
+  },
+  "unrelated_resources_touched": false,
+  "human_acceptance": "待人工验收"
+}

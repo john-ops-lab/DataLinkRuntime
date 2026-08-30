@@ -101,11 +101,66 @@
       "jsonHint": "Objects, arrays, strings, numbers, booleans and null are supported; changes apply to runs after saving.",
       "jsonPlaceholder": "e.g. {\"region\":\"cn-east\"}",
       "unsavedHint": "The Input Object has unsaved changes.",
+      "fileTypeNotAllowed": "This file type is not allowed.",
+      "managedFilesDisabled": "Managed file input is not enabled yet.",
+      "managedFilesLoading": "Checking Managed Input capability. Please wait.",
+      "capabilityLoadFailed": "Managed Input policy could not be loaded. Retention controls are disabled; refresh to retry.",
+      "stagedListLoadFailed": "The staged file list could not be loaded. Existing policy and draft values remain available; refresh the list to retry.",
+      "managedFilesTitle": "Managed files",
+      "managedFilesHint": "Uploads stay staged until saved; choose up to {{max}} files. Saved files are used for runs.",
+      "managedFilesEmpty": "No managed files selected.",
+      "stagedLeaveWarning": "Managed files are still staged and unsaved. Leave this page?",
+      "overflowStaged": "{{count}} staged file(s) exceed the {{max}}-file selection limit. They will not be saved in this revision, but you can still delete them.",
+      "fileCount": "{{count}}/{{max}} files",
+      "upload": "Upload file",
+      "uploadSupportedTypes": "Supported formats: {{extensions}}",
+      "refreshStaged": "Refresh staged files",
+      "replace": "Replace",
+      "delete": "Delete",
+      "fileMeta": "{{extension}} · {{size}} bytes",
+      "uploadedAt": "Uploaded: {{time}}",
+      "expiresNever": "Retained until deleted (still governed)",
+      "expiresAt": "Expires: {{time}}",
+      "retentionLabel": "Retention",
+      "seconds": "seconds",
+      "retentionHint": "The server calculates system and custom expiry; permanent retention remains governed by administrators.",
+      "retention": {
+        "systemDefault": "System default",
+        "custom": "Custom duration",
+        "manualDelete": "Retain until deleted"
+      },
+      "fileStatus": {
+        "ready": "Ready",
+        "staged": "Staged"
+      },
+      "cloneReuploadHint": "Cloning an Adapter does not copy its input files. Upload the files again for this Adapter.",
+      "examples": {
+        "title": "Read managed files",
+        "description": "This read-only example uses only the Runtime Context file API and does not change the Adapter.",
+        "codeLabel": "Read-only file example",
+        "copy": "Copy example",
+        "copied": "Example copied to the clipboard.",
+        "copyFailed": "Copy failed. Select the example and copy it manually.",
+        "saveFirst": "Save the managed-file Input Object before copying an example.",
+        "notReady": "Upload and save at least one managed file before copying an example.",
+        "disabledReason": "Managed file capability is not ready; copying is disabled.",
+        "languages": {
+          "python": "Python",
+          "javascript": "JavaScript",
+          "java": "Java"
+        }
+      },
+      "historySnapshot": "Input snapshot",
       "errors": {
         "revisionConflict": "The Input Object was updated by another page. Refresh and try again.",
         "sourceNotAvailable": "This Input Object source is not enabled yet.",
         "notInitialized": "The Input Object is not initialized. Refresh and try again.",
-        "managedFilesEmpty": "Managed files are empty. Prepare the files before running."
+        "managedFilesEmpty": "Managed files are empty. Prepare the files before running.",
+        "fileNameConflict": "The filenames collide after NFC and case folding; choose another name.",
+        "fileLimit": "Managed Input supports at most 8 files.",
+        "retentionOutOfRange": "The custom retention exceeds the administrator policy maximum of {{max}} seconds.",
+        "manualDeleteNotAllowed": "Permanent retention is disabled by the administrator; choose another policy.",
+        "uploadFailed": "The file upload did not complete. Try again."
       }
     }
   },
@@ -183,7 +238,22 @@
     "toolbarAria": "Execution history toolbar",
     "loadMore": "Load more",
     "connectionLost": "Log connection lost; status may be stale",
-    "connectionLostDescription": "The authoritative polling limit was reached without a terminal state. Refresh or open this execution again later."
+    "connectionLostDescription": "The authoritative polling limit was reached without a terminal state. Refresh or open this execution again later.",
+    "inputNone": "No input",
+    "inputJson": "JSON input (read-only)",
+    "inputManagedFiles": "Managed files snapshot (read-only)",
+    "inputRemoteFiles": "Remote files are not available for this execution.",
+    "inputSource": "Source",
+    "inputRevision": "Input revision",
+    "inputSourceNone": "None",
+    "inputSourceJson": "JSON",
+    "inputSourceManagedFiles": "Managed files",
+    "inputSourceRemoteFiles": "Remote files",
+    "inputFilesEmpty": "No file facts were retained in this snapshot.",
+    "inputFileName": "File name",
+    "inputFileType": "Content type",
+    "inputFileSize": "Size",
+    "inputFileSha256": "SHA-256"
   },
   "live": {
     "title": "Live logs",

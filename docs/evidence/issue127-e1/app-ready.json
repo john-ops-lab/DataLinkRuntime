@@ -1,0 +1,55 @@
+{
+  "schema": "issue127-e1-app-ready-v1",
+  "evidence_status": "SUPERSEDED",
+  "superseded_reason": "old stack and dirty-tree snapshot; not the current committed Candidate",
+  "project": "dlr-i127-e0-141",
+  "ao_session": "datalinkruntime-141-e0",
+  "browser": {
+    "engine": "Chromium",
+    "transport": "repository-local Playwright fallback",
+    "in_app_browser": "unavailable: runtime list=[]"
+  },
+  "endpoints": {
+    "web": {
+      "url": "http://127.0.0.1:8924",
+      "credential_configured": true
+    },
+    "account": {
+      "url": "http://127.0.0.1:9024",
+      "username": "admin",
+      "credential_configured": true
+    }
+  },
+  "web": {
+    "status": "PASS",
+    "url": "/",
+    "initial_http_status": 200,
+    "adapter_catalog_visible": true,
+    "adapter_count": 29,
+    "telemetry": {
+      "console_errors": [],
+      "page_errors": [],
+      "request_failures": []
+    }
+  },
+  "account": {
+    "status": "PASS",
+    "url": "/",
+    "initial_http_status": 200,
+    "account_catalog_visible": true,
+    "adapter_count": 29,
+    "telemetry": {
+      "console_errors": [
+        "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      ],
+      "page_errors": [],
+      "request_failures": []
+    }
+  },
+  "error": null,
+  "expected_console_messages": [
+    "account login page may probe the protected API before credentials and receive 401 Unauthorized"
+  ],
+  "status": "SUPERSEDED",
+  "human_acceptance": "NOT_APPLICABLE_TO_CURRENT_CANDIDATE"
+}

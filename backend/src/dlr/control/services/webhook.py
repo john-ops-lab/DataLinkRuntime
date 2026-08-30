@@ -54,7 +54,7 @@ from dlr.control.services.adapter import (
     _require_not_archived,
     domain_error,
 )
-from dlr.control.services.execution import compact_json_bytes
+from dlr.control.services.execution import compact_json_bytes, integrity_constraint_name
 from dlr.control.services.locale import get_system_locale
 from dlr.control.services.secrets import decrypt_fields
 
@@ -415,10 +415,12 @@ def receive_webhook(
     session.add(execution)
     try:
         session.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
         # Lost the race against a concurrently created active
         # Execution: the partial unique index is the final defense.
         session.rollback()
+        if integrity_constraint_name(exc) != "uq_executions_active_adapter":
+            raise
         raise domain_error(
             409, "adapter_busy", "The Adapter already has an active Execution"
         ) from None

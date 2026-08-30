@@ -2,15 +2,18 @@
 
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
 from dlr.control.models import Credential, Execution, Worker
 from dlr.control.services import secrets as secrets_service
+from dlr.control.services import webhook as webhook_service
 from dlr.control.services.retention import cleanup_execution_retention
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential
@@ -406,6 +409,26 @@ def test_unknown_disabled_and_busy_requests_create_no_extra_execution(
     assert busy.status_code == 409
     assert busy.json()["detail"]["code"] == "adapter_busy"
     assert len(executions_of(session_factory, adapter["id"])) == 1
+
+
+def test_webhook_reraises_unrelated_integrity_errors(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _adapter, _, _, _, webhook = setup_webhook(api_client, "webhook-integrity-boundary")
+
+    def fail_flush(*_args: object, **_kwargs: object) -> None:
+        raise IntegrityError(
+            "INSERT INTO executions ...",
+            {},
+            SimpleNamespace(
+                diag=SimpleNamespace(constraint_name="unrelated_data_integrity_constraint")
+            ),
+        )
+
+    monkeypatch.setattr(webhook_service.Session, "flush", fail_flush)
+    with pytest.raises(IntegrityError):
+        post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {})
 
 
 @pytest.mark.parametrize(

@@ -222,6 +222,7 @@ def create_app() -> FastAPI:
     app.include_router(adapters.router)
     app.include_router(input_configs.router)
     app.include_router(managed_input.router)
+    app.include_router(managed_input.capability_router)
     app.include_router(managed_input.upload_router)
     app.include_router(managed_input.adapter_router)
     app.include_router(ai.router)

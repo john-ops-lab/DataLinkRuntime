@@ -33,6 +33,10 @@ import type {
   KnowledgeBase,
   KnowledgeSource,
   KnowledgeSourceTestResult,
+  ManagedInputArtifact,
+  ManagedInputCapability,
+  ManagedInputSettings,
+  ManagedInputSettingsUpdate,
   PackageSource,
   PackageSourceDefaults,
   ReachabilityResult,
@@ -312,6 +316,40 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
+
+  /** Administrator-only Managed Input policy metadata; no deployment secrets. */
+  getManagedInputSettings: (): Promise<ManagedInputSettings> =>
+    request("/api/system/managed-input-settings"),
+
+  /** Replace the administrator-only Managed Input policy. */
+  updateManagedInputSettings: (
+    payload: ManagedInputSettingsUpdate,
+  ): Promise<ManagedInputSettings> =>
+    request("/api/system/managed-input-settings", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Business-user release facts; this response intentionally contains only booleans. */
+  getManagedInputCapability: (): Promise<ManagedInputCapability> =>
+    request("/api/system/managed-input-capability"),
+
+  /** List safe staged Artifact metadata for one Adapter. */
+  listInputArtifacts: (adapterId: number): Promise<ManagedInputArtifact[]> =>
+    request(`/api/adapters/${adapterId}/input-artifacts?status=staged`),
+
+  /** Idempotently delete one Adapter-owned staged Artifact. */
+  deleteInputArtifact: (
+    adapterId: number,
+    artifactId: number,
+    expectedRevision?: number,
+  ): Promise<void> =>
+    request(
+      `/api/adapters/${adapterId}/input-artifacts/${artifactId}${
+        expectedRevision === undefined ? "" : `?expected_revision=${expectedRevision}`
+      }`,
+      { method: "DELETE" },
+    ),
 
   // --- M5.3: Webhook Trigger --------------------------------------------------
 

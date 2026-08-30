@@ -95,7 +95,7 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 - [x] 6.1 用临时同/跨文件系统、symlink、`../`、伪 Content-Length、上传中断和并发最后配额构造最小复现；验证红灯精确覆盖原子 rename/路径/预留风险。
 - [x] 6.2 实现无第三方依赖的 LocalFileArtifactStore 窄接口、随机 storage key、同挂载 `.part→object` 原子 rename、幂等 delete/stat/quarantine；文件系统测试验证路径穿越和 symlink拒绝。
 - [x] 6.3 实现 multipart 流式 upload API：Adapter权限、白名单、大小/SHA-256、低水位、reservation创建/续租/扩容/核销与失败补偿；验证不信任 MIME/Content-Length且超限立即停止。
-- [x] 6.4 实现 staged list/delete API和 upload session恢复；验证刷新只看到同 Adapter STAGED元数据、跨 Adapter猜测不泄露存在性、STAGED删除不改 revision。
+- [x] 6.4 实现 staged list/delete API，以 STAGED list 作为刷新恢复的唯一公开合同；验证刷新只看到同 Adapter STAGED元数据、跨 Adapter猜测不泄露存在性、STAGED删除不改 revision，active upload session 不暴露伪恢复 API。
 - [x] 6.5 实现 reservation TTL与 writer竞争的条件状态更新；并发/故障注入验证 ACTIVE只能单向 terminal、reserved/actual bytes不重复释放或提前释放。
 - [x] 6.6 扫描 API/日志/审计响应，验证不出现 storage key、store root、`.part`路径、文件内容或认证凭据，并验证稳定错误码全集中的上传子集。
 - [x] 6.7 运行 B1 unit/integration/concurrency/fault tests及 Ruff/format/mypy；使用独立临时 store演练中断后无无主对象或由 audit可治理，PASS才形成 Candidate。
@@ -168,56 +168,56 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 
 ## 14. C4 — Wave C 协议、故障恢复与 Compose Gate
 
-- [ ] 14.1 在隔离Compose先以v1/v2 Control+v1 Worker运行none/json，再滚动v2 Worker；验证旧Worker可上报、v1 cleanup标记legacy_unverified、文件任务只给v2。
-- [ ] 14.2 真实运行Python/JavaScript/Java各一个多文件Execution，并在隔离 Compose 重放 GC 与 Execution 创建竞争；验证TaskPayload无Control路径、下载hash一致、Context可读、Workspace终态删除，且 pending/running 所需 Blob 由真实 Lease 保护。
-- [ ] 14.3 故障注入claim响应丢失、下载中断/hash篡改、Progress/Result Token错误、Cleanup Token互换、Worker崩溃/断网/晚到Result和清理挂起；验证stable终态、无重跑、journal恢复与日志脱敏。
-- [ ] 14.4 验证managed_files开放前门禁：目标Worker全v2、无v1 active、B/C Gate通过；条件不满足时flag/API/UI继续关闭。
-- [ ] 14.5 演练Worker/Control回滚顺序：先关flag并排空active，保持双协议Control和Blob/journal，再回滚Worker；验证不丢Lease/cleanup治理。
-- [ ] 14.6 运行Wave C完整backend/migration/Compose smoke、三语言与敏感值扫描，归档exact-SHA和故障证据；任何失败不进入D。
+- [x] 14.1 在隔离Compose先以v1/v2 Control+v1 Worker运行none/json，再滚动v2 Worker；验证旧Worker可上报、v1 cleanup标记legacy_unverified、文件任务只给v2。（证据：`docs/evidence/issue127-c4/rollout.json`）
+- [x] 14.2 真实运行Python/JavaScript/Java各一个多文件Execution，并在隔离 Compose 重放 GC 与 Execution 创建竞争；验证TaskPayload无Control路径、下载hash一致、Context可读、Workspace终态删除，且 pending/running 所需 Blob 由真实 Lease 保护。（证据：`docs/evidence/issue127-c4/multilang.json`）
+- [x] 14.3 故障注入claim响应丢失、下载中断/hash篡改、Progress/Result Token错误、Cleanup Token互换、Worker崩溃/断网/晚到Result和清理挂起；验证stable终态、无重跑、journal恢复与日志脱敏。（证据：`docs/evidence/issue127-c4/fault-injection.json`）
+- [x] 14.4 验证managed_files开放前门禁：目标Worker全v2、无v1 active、B/C Gate通过；条件不满足时flag/API/UI继续关闭。（证据：`docs/evidence/issue127-c4/rollout.json`）
+- [x] 14.5 演练Worker/Control回滚顺序：先关flag并排空active，保持双协议Control和Blob/journal，再回滚Worker；验证不丢Lease/cleanup治理。（证据：`docs/evidence/issue127-c4/rollout.json`）
+- [x] 14.6 运行Wave C完整backend/migration/Compose smoke、三语言与敏感值扫描，归档exact-SHA和故障证据；任何失败不进入D。（证据：`docs/evidence/issue127-c4/README.md`、`quality.json`、`scans.json`、`resources.json`）
 
 ## 15. D0 — Wave D Web 类型/API/i18n 公共合同
 
-- [ ] 15.1 固定Web最小红灯：文件flag开启后的类型/API缺失、multipart认证/CSRF、历史snapshot与clone空文件；验证focused Vitest在实现前准确失败。
-- [ ] 15.2 新增ManagedSettings/InputConfig/Artifact/Execution snapshot公共类型和JSON API方法，保持upload transport独立；TypeScript契约测试验证不暴露storage key/路径/Token。
-- [ ] 15.3 建立zh-CN/en输入/设置/历史/错误key与插值骨架，验证namespace leaf key、placeholder一致且machine code不本地化。
-- [ ] 15.4 运行D0 focused Vitest、ESLint、typecheck；公共合同PASS后才允许D1/D2并行。
+- [x] 15.1 固定Web最小红灯：文件flag开启后的类型/API缺失、multipart认证/CSRF、历史snapshot与clone空文件；验证focused Vitest在实现前准确失败。（证据：`docs/evidence/issue127-d0/README.md`）
+- [x] 15.2 新增ManagedSettings/InputConfig/Artifact/Execution snapshot公共类型和JSON API方法，保持upload transport独立；TypeScript契约测试验证不暴露storage key/路径/Token。
+- [x] 15.3 建立zh-CN/en输入/设置/历史/错误key与插值骨架，验证namespace leaf key、placeholder一致且machine code不本地化。
+- [x] 15.4 运行D0 focused Vitest、ESLint、typecheck；公共合同PASS后才允许D1/D2并行。
 
 ## 16. D1 — Wave D 文件输入、上传、retention 与系统设置 UI
 
-- [ ] 16.1 按antd 5.29.3固定CLI查询实际Card/Form/Upload/Progress/Tooltip组件API/demo；验证锁定版本不变且实现不猜API。
-- [ ] 16.2 实现文件卡片flag开放、独立multipart上传进度、STAGED刷新恢复/离开提示和0..8文件列表；Vitest验证Cookie/CSRF、长文件名、NFC/casefold冲突与第九文件门禁。
-- [ ] 16.3 实现显式替换/删除、READY/STAGED状态和expected_revision保存；并发UI测试验证409保留草稿、STAGED删除不改revision、服务端Runtime Lock权威。
-- [ ] 16.4 实现system_default/custom/“永久保留”选择及服务端expires_at展示；测试验证管理员范围/禁用manual_delete、over_quota和低水位错误。
-- [ ] 16.5 扩展系统设置Managed Input策略/用量/over_quota页面，验证非空边界、超额量、只减占用操作提示且不出现部署路径。
-- [ ] 16.6 运行D1 Vitest、lint/typecheck/build及独立浏览器zh-CN/en 1280/1920上传/保存/锁/错误 smoke，验证console/request/overflow后形成Candidate。
+- [x] 16.1 按antd 5.29.3固定CLI查询实际Card/Form/Upload/Progress/Tooltip组件API/demo；验证锁定版本不变且实现不猜API。（证据：`docs/evidence/issue127-d1/antd-cli.md`）
+- [x] 16.2 实现文件卡片flag开放、独立multipart上传进度、STAGED刷新恢复/离开提示和0..8文件列表；Vitest验证Cookie/CSRF、长文件名、NFC/casefold冲突与第九文件门禁。（证据：`web/src/components/TaskRunSettingsPanel.d1.test.tsx`）
+- [x] 16.3 实现显式替换/删除、READY/STAGED状态和expected_revision保存；并发UI测试验证409保留草稿、STAGED删除不改revision、服务端Runtime Lock权威。（证据：`web/src/components/TaskRunSettingsPanel.d1.test.tsx`）
+- [x] 16.4 实现system_default/custom/“永久保留”选择及服务端expires_at展示；测试验证管理员范围/禁用manual_delete、over_quota和低水位错误。（证据：`web/src/components/TaskRunSettingsPanel.d1.test.tsx`、`web/src/components/SystemSettingsDrawer.d1.test.tsx`）
+- [x] 16.5 扩展系统设置Managed Input策略/用量/over_quota页面，验证非空边界、超额量、只减占用操作提示且不出现部署路径。（证据：`web/src/components/SystemSettingsDrawer.d1.test.tsx`）
+- [x] 16.6 运行D1 Vitest、lint/typecheck/build及独立浏览器zh-CN/en 1280/1920上传/保存/锁/错误 smoke，验证console/request/overflow后形成Candidate。（证据：`docs/evidence/issue127-d3/browser-matrix.json`）
 
 ## 17. D2 — Wave D 历史摘要、示例复制与 Adapter 复制
 
-- [ ] 17.1 实现Python/JavaScript/Java只读示例生成与显式clipboard复制；测试验证只用Context API、不写Monaco、不创建AdapterVersion。
-- [ ] 17.2 扩展Execution详情按none/json/managed_files显示不可变摘要；测试验证无Artifact ID、下载/复用/恢复/再次运行入口且历史列表仍无大字段。
-- [ ] 17.3 完成managed_files clone后空集合、retention保留、Schedule disabled与重新上传提示；后端/Web测试验证源Blob/Artifact/Binding/Lease绝不复用。
-- [ ] 17.4 补齐D2双语文案、键盘/焦点/禁用原因；运行focused Vitest、backend clone tests、lint/typecheck/build后形成Candidate。
+- [x] 17.1 实现Python/JavaScript/Java只读示例生成与显式clipboard复制；测试验证只用Context API、不写Monaco、不创建AdapterVersion。（证据：`web/src/managed-input-examples.ts`、`web/src/components/ManagedInputExamples.tsx`、`web/src/components/TaskRunSettingsPanel.d2.test.tsx`）
+- [x] 17.2 扩展Execution详情按none/json/managed_files显示不可变摘要；测试验证无Artifact ID、下载/复用/恢复/再次运行入口且历史列表仍无大字段。（证据：`web/src/components/ExecutionInputSummary.tsx`、`web/src/components/ExecutionHistoryPanel.d2.test.tsx`）
+- [x] 17.3 完成managed_files clone后空集合、retention保留、Schedule disabled与重新上传提示；后端/Web测试验证源Blob/Artifact/Binding/Lease绝不复用。（证据：`backend/tests/test_issue127_d2_clone.py`、`web/src/components/TaskRunSettingsPanel.d2.test.tsx`）
+- [x] 17.4 补齐D2双语文案、键盘/焦点/禁用原因；运行focused Vitest、backend clone tests、lint/typecheck/build后形成Candidate。（证据：`web/src/i18n/locales/en/runtime.json`、`web/src/i18n/locales/zh-CN/runtime.json`、`web/src/i18n/i18n.test.ts`、`npm run lint`、`npm run typecheck`、`npm run build`）
 
 ## 18. D3 — Wave D 双语浏览器矩阵与完整业务 Gate
 
-- [ ] 18.1 串行集成D1再D2并完成`App.tsx`接线，解决公共i18n/API冲突；运行Web全量Vitest/lint/typecheck/build验证无回归。
-- [ ] 18.2 在独立Compose开启flag，浏览器验证manual、schedule run-now、上传/刷新/替换/删除/空文件/retention/历史/示例/clone完整路径与权威请求。
-- [ ] 18.3 执行zh-CN/en × 1280/1440/1680/1920矩阵，保存截图、console、request与横向overflow证据；验证键盘可达、长文件名可查看且关键操作无遮挡。
-- [ ] 18.4 验证Wave B/C未满足时flag/API/UI关闭，满足全部协议排空条件后才开放；演练再次关闭flag不破坏既有Blob/Execution历史。
-- [ ] 18.5 归档Wave D exact-SHA机器Gate并标记“待人工验收”，自动证据不得写用户PASS。
+- [x] 18.1 串行集成D1再D2并完成`App.tsx`接线，解决公共i18n/API冲突；运行Web全量Vitest/lint/typecheck/build验证无回归。（证据：`docs/evidence/issue127-d3/README.md`）
+- [x] 18.2 在独立Compose开启flag，浏览器验证manual、schedule run-now、上传/刷新/替换/删除/空文件/retention/历史/示例/clone完整路径与权威请求。（证据：`docs/evidence/issue127-d3/browser-matrix.json`）
+- [x] 18.3 执行zh-CN/en × 1280/1440/1680/1920矩阵，保存截图、console、request与横向overflow证据；验证键盘可达、长文件名可查看且关键操作无遮挡。（证据：`docs/evidence/issue127-d3/browser-matrix.json`、`screenshots/`）
+- [x] 18.4 验证Wave B/C未满足时flag/API/UI关闭，满足全部协议排空条件后才开放；演练再次关闭flag不破坏既有Blob/Execution历史。（证据：`docs/evidence/issue127-d3/flag-reclose.json`）
+- [ ] 18.5 归档Wave D exact-SHA机器Gate并标记“待人工验收”，自动证据不得写用户PASS；旧 dirty-tree 收据仅为 historical，当前 Candidate 尚未完成。（历史证据：`docs/evidence/issue127-d3/source-tree.json`、`README.md`）
 
 ## 19. E0 — 最终回归、迁移/回滚演练与 exact-SHA 证据
 
-- [ ] 19.1 对新鲜DB、固定基线、重复回填和冲突fixture运行完整Alembic验证，核对计数、历史input、旧列镜像与schema约束。
-- [ ] 19.2 运行backend全量`uv run --frozen --project backend ruff check .`、`ruff format --check .`、`mypy`、`pytest`，逐项记录PASS/FAIL。
-- [ ] 19.3 运行web全量`npm run lint`、`npm run typecheck`、`npm run test`、`npm run build`及目标Playwright矩阵，逐项记录PASS/FAIL。
-- [ ] 19.4 在全新隔离Compose运行三语言、Schedule/run-now、配额/到期/GC、真实 Lease 与 Execution 创建竞争、Worker崩溃/恢复、Adapter删除与敏感值扫描；验证单Control边界和所有任务资源归属。
-- [ ] 19.5 完成API变更、LocalFileArtifactStore单Control、迁移/兼容/回滚运维文档并演练非破坏回滚：关flag、禁新增、排空active、保持双协议与表/Blob/job/旧列；验证文档命令可执行且恢复新版后治理继续。
-- [ ] 19.6 对Candidate exact SHA运行OpenSpec strict/all strict、`git diff --check`、scope/密钥/绝对路径扫描并归档source_candidate；所有机器GatePASS才允许E1。
+- [x] 19.1 对新鲜DB、固定基线、重复回填和冲突fixture运行完整Alembic验证，核对计数、历史input、旧列镜像与schema约束。（证据：`docs/evidence/issue127-e0/migration.json`）
+- [x] 19.2 运行backend全量`uv run --frozen --project backend ruff check .`、`ruff format --check .`、`mypy`、`pytest`，逐项记录PASS/FAIL。（证据：`docs/evidence/issue127-e0/backend-gates.json`）
+- [x] 19.3 运行web全量`npm run lint`、`npm run typecheck`、`npm run test`、`npm run build`及目标Playwright矩阵，逐项记录PASS/FAIL。（证据：`docs/evidence/issue127-e0/web-gates.json`）
+- [x] 19.4 在全新隔离Compose运行三语言、Schedule/run-now、配额/到期/GC、真实 Lease 与 Execution 创建竞争、Worker崩溃/恢复、Adapter删除与敏感值扫描；验证单Control边界和所有任务资源归属。（证据：`docs/evidence/issue127-e0/compose-runtime.json`、`real-postgres-race.json`、`worker-crash-recovery.json`、`resources.json`）
+- [x] 19.5 完成API变更、LocalFileArtifactStore单Control、迁移/兼容/回滚运维文档并演练非破坏回滚：关flag、禁新增、排空active、保持双协议与表/Blob/job/旧列；验证文档命令可执行且恢复新版后治理继续。（证据：`docs/zh-CN/issue127-managed-input-operations.md`、`docs/en/issue127-managed-input-operations.md`、`docs/evidence/issue127-e0/rollback.json`）
+- [ ] 19.6 对Candidate exact SHA运行OpenSpec strict/all strict、`git diff --check`、scope/密钥/绝对路径扫描并归档source_candidate；旧 dirty-tree 收据已 superseded，当前 Candidate 完成前不得进入E1。（历史证据：`docs/evidence/issue127-e0/source-candidate/`、`scans.json`）
 
 ## 20. E1 — Retained-app 用户最终验收
 
-- [ ] 20.1 以匿名本地值保留E0 exact-SHA隔离app，回传token/account入口、测试账号、fixture和已知边界；验证服务/浏览器健康但仅标记`APP_READY`。
+- [ ] 20.1 以匿名本地值保留当前 E0 exact-SHA 隔离 app，回传 token/account 入口、测试账号、fixture 和已知边界；旧 `app-ready.json` 指向 superseded 栈，不代表当前 Candidate。（历史证据：`docs/evidence/issue127-e1/app-ready.json`、`README.md`）
 - [ ] 20.2 请用户按manual/schedule/run-now、上传/retention/历史/clone和双语视觉清单判定PASS/FAIL；未收到明确PASS不得勾选或宣称业务验收完成。
 - [ ] 20.3 用户PASS后单独记录human acceptance事实；若FAIL，生成新Candidate并只重跑受影响及最终Gate，旧SHA证据不得复用为新SHA通过。
 
@@ -281,3 +281,38 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 | AC-C07 | 历史无下载/复用/恢复/再次运行 | managed-input-web：Execution详情按source只读展示快照 | 17.2, 18.2 |
 | AC-C08 | LocalFileArtifactStore单Control边界有测试文档 | input-compatibility-rollout：Compose明确持久卷与单Control边界 | 9.1, 19.4-19.5 |
 | AC-C09 | Wave A-D顺序、同分支、最终单PR | input-compatibility-rollout：Wave A-D顺序交付且不得拆成多PR | 0批次DAG, 4.4, 9.5, 14.6, 18.5, 19.6 |
+
+## 22. Round 1 独立审计修复
+
+- [x] 22.1 抽取不自行 commit 的 InputConfig 领域写入 helper，让兼容期旧 Schedule PUT 与新 API 共享完整锁序；回归测试验证 `managed_files→json` 原子解绑/READY→PENDING_DELETE/旧列镜像/revision，以及显式 `input:null` 与省略 input 的不同语义。
+- [x] 22.2 在上传 writer 按 monotonic 周期续租 ACTIVE reservation，并删除或收敛无真实调用者的公开 renew 合同；冻结时钟/慢流/过期/取消/扩容/断连测试验证续租不中断正常上传且失败无 `.part`、Blob、reservation 或 capacity 泄漏。
+- [x] 22.3 保持 Schedule `last_blocked_reason=input_invalid`，新增结构化 detail 并覆盖空集合/到期/损坏原因；只把已知单活跃唯一约束的 `IntegrityError` 映射为业务冲突，其余错误重新抛出，真实 PostgreSQL 测试验证游标只消费一次。
+- [x] 22.4 对 Artifact 与 deletion job 对齐删除状态/尝试/开始时间，增加连续失败告警阈值和管理员显式 retry；READY 删除要求 `expected_revision` 并走完整锁序，fresh/fixed-baseline/repeat migration 与失败注入验证 charge 只释放一次。
+- [x] 22.5 将 Worker mount name 改为 ordinal+受控扩展名并同步三语言/harness 校验；测试覆盖非法/未知扩展名、重复展示名、路径攻击以及 Python/JavaScript/Java 真实读取 XLS/XLSX/CSV。
+- [x] 22.6 把 v2 payload 完整校验前置到 journal/Workspace/进程副作用之前，Workspace mkdir 时写最小 marker/manifest，统一 canonical `/workspace-cleanup` client/文档路径，并要求 deferred Result 携带稳定 cleanup error code；崩溃点和非法 payload 测试证明无不可收敛目录或 Adapter 启动。
+- [x] 22.7 扩展 Managed Input capability 响应并让 Web 使用 `allow_manual_delete`、`max_custom_retention_seconds` 与服务端锁状态；验证 Schedule enabled/active 时仍可上传 STAGED，但保存/替换/READY 删除保持权威 409。
+- [x] 22.8 修复 Web 草稿状态：保存后保留未选择 STAGED，选择与恢复合并均阻止第九个文件，SPA 路由与浏览器关闭均提示；加强 revision conflict/显式 JSON null 测试，验证失败草稿和剩余 STAGED 不丢失。
+- [x] 22.9 恢复既有 Execution 业务日志下载并维持输入文件历史不可下载，补齐 managed_files clone 重新上传提示和固定时间断言；focused Vitest 验证权限、文案、下载文件名与历史摘要边界。
+- [x] 22.10 修正 E0 race fixture：治理方从非过期 READY 当前绑定出发，增加无治理 control，并让两个分支都真实读取/哈希文件；重复 PostgreSQL/Compose 竞争验证只能出现 Lease 先保护或治理先使 Execution 失败/重试。
+- [x] 22.11 更新中英文运维/API 文档：`expires_at NULL` 仅表示 pending/手动删除语义、downgrade 仅测试、capability endpoint、Worker protocol/env、删除告警/retry 和历史日志/输入下载边界；命令与链接检查通过。
+- [x] 22.12 运行受影响 backend focused、migration、Ruff/format/mypy 与 Web focused/lint/typecheck/test/build；任何本次或继承失败必须修复或明确 BLOCKED，不得提前勾选、提交或复用旧 E0 PASS。
+- [ ] 22.13 在全新隔离 Compose 重跑三语言、慢上传续租、Schedule invalid、删除失败/retry、Worker 崩溃恢复和 race Gate；随后对包含伴随 change 的新 Candidate 运行两个 OpenSpec strict、diff/密钥/绝对路径扫描、exact-SHA 证据与独立复审，20.2/20.3 在用户明确 PASS 前保持未勾选。
+
+## 23. Round 2 独立审计修复
+
+- [x] 23.1 在任何副作用前完整校验 v2 Worker payload，并为缺失 ID/Token、null timeout snapshot、非法 mount 增加 journal/Workspace/process 零调用回归。
+- [x] 23.2 为新建 Task Execution 写入 cleanup `pending`，让 schema/migration 接受该状态，并为 Lease 增加 `created_at`；更新 fresh/fixed-baseline migration 与模型测试。
+- [x] 23.3 保持 Schedule 顶层 `input_invalid` 和结构化具体 detail，只映射 Webhook 的 active-Execution 唯一约束；删除未使用的 Worker ID cleanup 校验分支并覆盖回归。
+- [x] 23.4 将 upload writer 改为 monotonic 周期续租并验证续租失败完整补偿；删除无调用者的 active upload-session recovery API，保留 STAGED refresh 恢复合同。
+- [x] 23.5 将删除失败告警阈值改为部署配置，并让受控文件扩展名由单一后端来源生成上传、Worker mount 及三语言 harness 合同。
+- [x] 23.6 修复 Web retention 插值/capability 失败重试、所有 STAGED 合并八文件上限与溢出可见删除，并让 Execution 日志下载名包含 Execution ID。
+- [x] 23.7 构造声明大小与实际解压大小不一致的 XLSX fixture 验证安全边界；仅在稳定复现绕过时修改解析实现，并记录接受或不接受结论。
+- [ ] 23.8 运行受影响 backend/Web focused、迁移、Ruff/format/mypy、Ant Design 固定版本 lint 与两个 OpenSpec strict；在代码冻结后重跑 22.13，旧证据不得复用，20.2/20.3 继续等待用户明确 PASS。
+
+## 24. Round 3 独立审计修复
+
+- [x] 24.1 统一 Artifact/deletion job 连续失败阈值：业务删除不得绕过阈值态，管理员 retry 只接受 thresholded `DELETE_FAILED`；真实 PostgreSQL focused 回归验证 backoff、Blob、charge、attempt 与状态不被提前改写。
+- [x] 24.2 严格解析 Worker `protocol_version`，在任何本地副作用前拒绝 bool/float/数字字符串和空白 language/code；保留缺失/null v1 与空 requirements 合同并通过零副作用 focused 测试。
+- [x] 24.3 capability 下发 `allowed_extensions`，Web 从其派生 accept/预校验/双语提示；拆分 capability 与 STAGED list 失败状态，仅对 managed_files 保存 fail-close，并通过 focused Vitest/typecheck/lint 验证 none/json 不受连带阻断。
+- [x] 24.4 固定公开 Execution snapshot 顶层键、记录锁定期替换与空 requirements 的不接受裁决，更新中英文运维说明并将 D3/E0/E1 旧收据明确标为 historical/superseded；两个 change 与全量 OpenSpec strict 均通过。
+- [ ] 24.5 完成受影响 backend/Web/迁移/浏览器/OpenSpec/安全发布 Gate；冻结、提交并对精确 SHA 复核后创建单一 PR，22.13/23.8/20.1-20.3 在各自事实完成前保持未勾选。

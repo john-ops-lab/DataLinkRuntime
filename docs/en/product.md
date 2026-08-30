@@ -167,9 +167,15 @@ never rewritten by a language switch and no new Revision is created.
 ## 10. AI Assistant Boundaries
 
 The AI Assistant can read the current Working Copy and minimal non-sensitive context,
-return a complete Candidate and provide a Diff. Apply only updates the browser
-Working Copy; it does not save, run, or modify Credential true values or run state.
-Prompt, raw Provider responses, reasoning and conversations are never persisted.
+return a complete Candidate and provide a Diff. One-request attachments support PDF,
+DOCX, XLS, XLSX, text, code, and supported images. Spreadsheet extraction is bounded
+and in-memory; it never evaluates formulas, macros, or external links. Current Managed
+Input contributes only ordered safe labels and the three-language
+`context.input_files` / `context.inputFiles` contract: AI never reads its Blob and
+must not claim to know content that was not separately attached. Apply only updates
+the browser Working Copy; it does not save, run, or modify Credential true values or
+run state. Prompts, raw Provider responses, reasoning, attachment bodies, and
+conversations are never persisted.
 
 ## 11. Security Principles
 
@@ -186,8 +192,10 @@ Prompt, raw Provider responses, reasoning and conversations are never persisted.
 The “Language” entry in System Settings is a deployment-level system language,
 default `zh-CN`, switchable to `en`:
 
-- It is changed by an administrator and persisted as the authoritative value; it
-  takes effect immediately, and the login page and built-in Ant Design copy follow it;
+- It is changed by an administrator and persisted as the authenticated authority;
+  the Console and built-in Ant Design copy follow it. Unauthenticated login uses a
+  separate browser preference (first visit defaults to `zh-CN`) and restores the
+  system language immediately after authentication;
 - A new Execution captures the system language at creation time and keeps it fixed
   for its whole lifecycle, regardless of later switches;
 - Stable backend errors keep `error code + structured params` as the machine

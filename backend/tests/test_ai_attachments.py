@@ -1,6 +1,6 @@
 """M5.7 Wave B2 attachment backend contract tests (all provider traffic fake).
 
-Covers: accepted text/code/PDF/DOCX/image paths; provider-native capability
+Covers: accepted text/code/PDF/DOCX/XLS/XLSX/image paths; provider-native capability
 gating (true/false); bounded server-side fallback parsing; scanned-PDF
 actionable error; fake MIME / oversize / count / total / parse-length /
 timeout / corrupt-file rejections; archive-safety; filename injection;
@@ -38,6 +38,7 @@ from test_ai import (
     setting_payload,
     valid_output,
 )
+from test_xls_fixture import build_xls
 
 ATTACH_SENTINEL = "attachment-plaintext-sentinel-7f3a"
 CREDENTIAL_SENTINEL = "attachment-credential-plaintext-sentinel"
@@ -49,6 +50,9 @@ PNG_1PX_BASE64 = (
 PNG_1PX = base64.b64decode(PNG_1PX_BASE64)
 
 _WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_XLSX_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+XLS_MIME = "application/vnd.ms-excel"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def b64(data: bytes) -> str:
@@ -114,6 +118,34 @@ def build_docx(paragraphs: list[str]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("word/document.xml", xml)
+    return buffer.getvalue()
+
+
+def build_xlsx() -> bytes:
+    """Build a minimal XLSX with shared, inline and numeric cell values."""
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<workbook xmlns="{_XLSX_NS}"><sheets>'
+        '<sheet name="Sheet1" sheetId="1" r:id="rId1"/>'
+        "</sheets></workbook>"
+    )
+    shared_strings = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<sst xmlns="{_XLSX_NS}" count="1" uniqueCount="1">'
+        "<si><t>shared XLSX attachment sentinel</t></si></sst>"
+    )
+    worksheet = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<worksheet xmlns="{_XLSX_NS}"><sheetData>'
+        '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>42</v></c></row>'
+        '<row r="2"><c r="A2" t="inlineStr"><is><t>inline XLSX value</t></is></c></row>'
+        "</sheetData></worksheet>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/sharedStrings.xml", shared_strings)
+        archive.writestr("xl/worksheets/sheet1.xml", worksheet)
     return buffer.getvalue()
 
 
@@ -183,6 +215,8 @@ def test_attachment_capabilities_endpoint_exposes_stable_contract(
         "parse_timeout_seconds": attachments_module.PARSE_TIMEOUT_SECONDS,
     }
     assert body["supported_content_types"] == sorted(attachments_module.MIME_EXTENSIONS)
+    assert XLS_MIME in body["supported_content_types"]
+    assert XLSX_MIME in body["supported_content_types"]
     assert attachments_module.MAX_TOTAL_BYTES == (
         attachments_module.MAX_ATTACHMENTS * attachments_module.MAX_FILE_BYTES
     )
@@ -228,7 +262,7 @@ def test_attachment_capabilities_endpoint_exposes_stable_contract(
 
 
 # ---------------------------------------------------------------------------
-# Happy paths: text / code / PDF / DOCX fallback parsing
+# Happy paths: text / code / PDF / DOCX / XLS / XLSX fallback parsing
 # ---------------------------------------------------------------------------
 
 
@@ -310,6 +344,40 @@ def test_assist_docx_attachment_fallback_parse(
     assert "first docx paragraph" in prompt
     assert "second docx paragraph" in prompt
     assert '"category": "docx"' in prompt
+
+
+def test_assist_xlsx_attachment_fallback_parse(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = create_adapter(api_client, "attach-xlsx")
+    configure(api_client)
+    captured = captured_payload(monkeypatch)
+    body = assist_body()
+    body["attachments"] = [attachment("report.xlsx", XLSX_MIME, build_xlsx())]
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 200, response.text
+    prompt = system_prompt(captured)
+    assert "shared XLSX attachment sentinel" in prompt
+    assert "inline XLSX value" in prompt
+    assert "42" in prompt
+    assert '"category": "xlsx"' in prompt
+
+
+def test_assist_xls_attachment_fallback_parse(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = create_adapter(api_client, "attach-xls")
+    configure(api_client)
+    captured = captured_payload(monkeypatch)
+    body = assist_body()
+    body["attachments"] = [attachment("report.xls", XLS_MIME, build_xls())]
+    response = api_client.post(f"/api/adapters/{adapter['id']}/ai/assist", json=body)
+    assert response.status_code == 200, response.text
+    prompt = system_prompt(captured)
+    assert "Legacy XLS sentinel" in prompt
+    assert "Second row" in prompt
+    assert '"category": "xls"' in prompt
+    assert "Spreadsheet attachments (XLS and XLSX)" in prompt
 
 
 def test_assist_attachments_coexist_with_context_snippets(
@@ -498,7 +566,8 @@ def test_provider_image_error_never_leaks_image_bytes_or_echoes() -> None:
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             b"not a docx",
         ),
-        # Unknown / legacy types are rejected outright.
+        # Legacy Word remains unsupported; legacy Excel is covered by the
+        # positive XLS parser test above.
         ("old.doc", "application/msword", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"),
         ("blob.bin", "application/x-unknown-type", b"\x00" * 16),
     ],
@@ -767,6 +836,8 @@ def _docx_without_document_part() -> bytes:
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             _docx_without_document_part(),
         ),
+        # XLS magic is present but the OLE container is incomplete.
+        ("broken.xls", XLS_MIME, b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"),
     ],
 )
 def test_assist_rejects_corrupt_files_with_stable_parse_error(

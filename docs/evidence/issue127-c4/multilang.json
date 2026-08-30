@@ -1,0 +1,44 @@
+{
+  "dispatch_id": "issue127-c4-gate-20260828-r1",
+  "status": "PASS",
+  "isolated_compose_project": "dlr_i127_c4_recovery1",
+  "runtimes": {
+    "python": {
+      "version": "3.13.14",
+      "execution_status": "succeeded",
+      "receipt_sha256": "fa4caf00e32bc2321645d31cdb04dbd8084dbe7b9c507973dd56d813a48c3fde"
+    },
+    "javascript": {
+      "version": "22.23.2",
+      "execution_status": "succeeded",
+      "receipt_sha256": "b6caee0572ed5493bf0ab9755bbd3b2f6f5d664967072ef3588a55849ce24c5c"
+    },
+    "java": {
+      "version": "21.0.11",
+      "execution_status": "succeeded",
+      "receipt_sha256": "207bec535af14c8eeb4a58f661cf72fa0bb965774b5ed47c1d1e53c289e9c7fd"
+    }
+  },
+  "per_runtime_contract": {
+    "file_count": 2,
+    "real_path_read": true,
+    "size_recomputed": true,
+    "sha256_recomputed": true,
+    "ordinal_and_metadata_validated": true,
+    "control_path_exposed": false,
+    "storage_key_exposed": false,
+    "claim_or_cleanup_token_exposed": false,
+    "raw_token_persisted": false,
+    "cleanup_status": "completed",
+    "lease_count_after": 0,
+    "workspace_exists_after": false,
+    "journal_exists_after": false
+  },
+  "gc_execution_race": {
+    "database": "isolated PostgreSQL test database",
+    "lease_first_blocks_gc_without_blob_or_charge_change": "PASS",
+    "governance_first_rejects_creation_after_blob_delete": "PASS",
+    "result": "2 passed"
+  },
+  "raw_receipts_retained_in_repository": false
+}

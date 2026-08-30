@@ -209,7 +209,7 @@ class ControlClient:
         """Confirm local Workspace cleanup with the independent credential."""
         raw = self._expect(
             "POST",
-            f"/api/workers/{worker_id}/executions/{execution_id}/cleanup-receipt",
+            f"/api/workers/executions/{execution_id}/workspace-cleanup",
             {"status": "completed"},
             headers={"X-DLR-Cleanup-Token": cleanup_token},
         )

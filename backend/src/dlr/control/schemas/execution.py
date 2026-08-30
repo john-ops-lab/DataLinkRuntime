@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ExecutionCreate(BaseModel):
@@ -44,7 +44,7 @@ class ExecutionResponse(BaseModel):
     workspace_cleanup_total_timeout_seconds_snapshot: int | None = None
     claim_deadline_at: datetime | None = None
     execution_deadline_at: datetime | None = None
-    workspace_cleanup_status: Literal["completed", "deferred"] | None = None
+    workspace_cleanup_status: Literal["pending", "completed", "deferred"] | None = None
     workspace_cleanup_error_code: str | None = None
     output: Any = None
     output_size: int | None
@@ -83,6 +83,16 @@ class ExecutionResultReport(BaseModel):
     error_code: str | None = Field(default=None, max_length=64)
     workspace_cleanup_status: Literal["completed", "deferred"] | None = None
     workspace_cleanup_error_code: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_workspace_cleanup_result(self) -> "ExecutionResultReport":
+        """Keep cleanup state machine values stable and unambiguous."""
+        if self.workspace_cleanup_status == "deferred":
+            if self.workspace_cleanup_error_code != "workspace_cleanup_failed":
+                raise ValueError("deferred workspace cleanup requires workspace_cleanup_failed")
+        elif self.workspace_cleanup_error_code is not None:
+            raise ValueError("workspace cleanup error code requires deferred status")
+        return self
 
 
 class ProgressReport(BaseModel):

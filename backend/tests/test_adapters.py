@@ -546,6 +546,10 @@ def test_clone_copies_task_runtime_and_schedule_configuration_disabled(
         "timezone": "Asia/Shanghai",
         "input": {"kind": "sync"},
         "next_run_at": None,
+        "last_blocked_reason": None,
+        "last_blocked_detail": None,
+        "last_blocked_at": None,
+        "last_processed_due_at": None,
         "updated_at": schedule["updated_at"],
     }
 

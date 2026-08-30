@@ -93,6 +93,21 @@ export interface Execution {
   scheduled_for: string | null;
   status: ExecutionStatus;
   input: unknown;
+  /** Issue #127: immutable input source and configuration revision at creation. */
+  input_source_type?: InputSourceType;
+  input_config_revision?: number;
+  input_snapshot?: ExecutionInputSnapshot;
+  /** C0/C3 cleanup and deadline facts; all are read-only snapshots. */
+  cancel_requested?: boolean;
+  timeout_seconds_snapshot?: number | null;
+  recovery_grace_seconds_snapshot?: number | null;
+  workspace_cleanup_attempt_timeout_seconds_snapshot?: number | null;
+  workspace_cleanup_total_timeout_seconds_snapshot?: number | null;
+  claim_deadline_at?: string | null;
+  execution_deadline_at?: string | null;
+  workspace_cleanup_status?: WorkspaceCleanupStatus | null;
+  workspace_cleanup_error_code?: string | null;
+  error_code?: string | null;
   output: unknown;
   output_size: number | null;
   output_truncated: boolean;
@@ -117,6 +132,33 @@ export type ExecutionStatus =
   | "failed"
   | "timeout"
   | "cancelled";
+
+export type WorkspaceCleanupStatus = "pending" | "completed" | "deferred";
+
+/** Immutable, safe file facts retained in an Execution input snapshot. */
+export interface ExecutionInputArtifactSnapshot {
+  ordinal: number;
+  original_filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+/**
+ * The public Execution snapshot deliberately has no Artifact identity,
+ * storage reference, Worker path or credential/token field.
+ */
+export type ExecutionInputSnapshot =
+  | { source_type: "none" | "json"; revision: number }
+  | {
+      source_type: "managed_files";
+      revision: number;
+      artifacts: ExecutionInputArtifactSnapshot[];
+    }
+  | { source_type: "remote_files"; revision: number };
+
+/** Short alias used by history/detail consumers. */
+export type ExecutionSnapshot = ExecutionInputSnapshot;
 
 /** Lightweight history row; never carries input/output/stdout/stderr. */
 export interface ExecutionSummary {
@@ -169,6 +211,97 @@ export interface InputRetention {
   seconds: number | null;
 }
 
+export type ManagedInputArtifactStatus =
+  | "UPLOADING"
+  | "STAGED"
+  | "READY"
+  | "PENDING_DELETE"
+  | "DELETING"
+  | "DELETE_FAILED"
+  | "DELETED";
+
+/** Safe Artifact facts shared by current-input and staged-list responses. */
+export interface Artifact {
+  id: number;
+  /** Present only for current-input summaries; absent from staged responses. */
+  ordinal?: number;
+  original_filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string | null;
+  status: ManagedInputArtifactStatus;
+  /** Current-input summaries include the applied retention mode. */
+  retention_mode?: InputRetentionMode;
+  /** Staged-list responses include creation time. */
+  created_at?: string;
+  expires_at: string | null;
+}
+
+/** Safe metadata returned by the staged Artifact list and upload endpoint. */
+export interface ManagedInputArtifact extends Artifact {
+  status: "STAGED";
+  sha256: string;
+  created_at: string;
+}
+
+/** Safe current-input Artifact summary, ordered by ``ordinal``. */
+export interface InputArtifactSummary extends Artifact {
+  ordinal: number;
+  retention_mode: InputRetentionMode;
+}
+
+export interface ManagedInputAdapterUsage {
+  adapter_id: number;
+  actual_bytes: number;
+  reserved_bytes: number;
+  total_bytes: number;
+  quota_bytes: number;
+  over_quota: boolean;
+}
+
+export interface ManagedInputUsage {
+  platform_actual_bytes: number;
+  platform_reserved_bytes: number;
+  platform_total_bytes: number;
+  adapters: ManagedInputAdapterUsage[];
+}
+
+export interface ManagedInputSettingsUpdate {
+  default_retention_seconds: number;
+  max_file_bytes: number;
+  platform_quota_bytes: number;
+  adapter_quota_bytes: number;
+  allow_manual_delete: boolean;
+  max_custom_retention_seconds: number;
+  min_free_space_bytes: number;
+  staged_ttl_seconds: number;
+}
+
+/** Administrator-only policy response; deployment paths and credentials are absent. */
+export interface ManagedInputSettings extends ManagedInputSettingsUpdate {
+  id: number;
+  usage: ManagedInputUsage;
+  over_quota: boolean;
+  platform_over_quota: boolean;
+  adapter_over_quota: number[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Ordinary business-user release and retention-policy facts. */
+export interface ManagedInputCapability {
+  managed_files_enabled: boolean;
+  ready: boolean;
+  default_retention_seconds: number;
+  max_custom_retention_seconds: number;
+  allow_manual_delete: boolean;
+  allowed_extensions: string[];
+}
+
+/** Compatibility aliases for the public D0 vocabulary. */
+export type ManagedSettings = ManagedInputSettings;
+export type ManagedSettingsUpdate = ManagedInputSettingsUpdate;
+
 /** Safe current Input Object state; operational file identities are omitted. */
 export interface AdapterInputConfig {
   adapter_id: number;
@@ -176,7 +309,7 @@ export interface AdapterInputConfig {
   source_type: InputSourceType;
   json_value: unknown;
   retention: InputRetention;
-  artifacts: Record<string, unknown>[];
+  artifacts: InputArtifactSummary[];
   valid_for_run: boolean;
   invalid_reason: string | null;
 }
@@ -201,6 +334,9 @@ export type AdapterInputConfigDraft =
       expected_revision: number;
       source_type: "remote_files";
     };
+
+export type InputConfig = AdapterInputConfig;
+export type InputConfigDraft = AdapterInputConfigDraft;
 
 // --- M5.3: Webhook Trigger ---------------------------------------------------
 
@@ -231,6 +367,8 @@ export interface Worker {
   status: string;
   last_heartbeat: string;
   capabilities: string[];
+  /** Protocol negotiated by the Worker registration boundary. */
+  protocol_version?: number;
 }
 
 // --- M3.2/M3.3: Secret Store credentials and dependency sources -----------
@@ -485,8 +623,8 @@ export interface AiToolCallSummary {
 
 /** M5.7 Wave B2: one browser-uploaded attachment for this request only.
  * The file body travels as strict base64 inside the JSON assist request.
- * Attachments are validated, bounded and (for PDF/DOCX/text/code) parsed
- * server-side; they exist only for the current request and are never
+ * Attachments are validated, bounded and (for PDF/DOCX/XLS/XLSX/text/code)
+ * parsed server-side (including bounded spreadsheet-to-text extraction); they exist only for the current request and are never
  * persisted or logged. */
 export interface AiAttachment {
   filename: string;

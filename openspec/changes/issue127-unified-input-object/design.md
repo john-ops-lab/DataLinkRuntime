@@ -158,7 +158,7 @@ Execution 新字段分三类：
 - deadline：`timeout_seconds_snapshot/recovery_grace_seconds_snapshot/workspace_cleanup_*_snapshot/claim_deadline_at/execution_deadline_at`；
 - 协议与清理：`claim_token_hash/cleanup_receipt_token_hash/workspace_cleanup_status/workspace_cleanup_error_code`。
 
-`execution_input_artifact_leases` 仅含 execution/artifact/ordinal 和索引/约束，负责运行授权与 GC 保护；公开 snapshot 不含 Artifact ID。Execution 业务终态与 Lease 释放在同一事务，历史保留 snapshot 而不保留可操作 Lease。
+`execution_input_artifact_leases` 含 execution/artifact/ordinal、`created_at` 和索引/约束，负责运行授权、GC 保护与最小审计时间事实；公开 snapshot 不含 Artifact ID。Execution 业务终态与 Lease 释放在同一事务，历史保留 snapshot 而不保留可操作 Lease。
 
 Lease 表和数据库-backed 删除保护 provider 均属于 C0 公共 schema/API；Wave B 的 B3 不创建、引用或模拟这张表，只证明 GC 会正确遵守抽象保护判定。真实 Lease 保护、统一 Execution 创建原子性及两者与 GC 的竞争必须以 C0 及后续 Compose 风险 Gate 为准，不能复用 B3 hook 单测作为通过证据。
 
@@ -221,6 +221,48 @@ Control 定义单一 machine code registry，Pydantic/domain/Worker report复用
 - Worker/Execution终态 `error_code` 使用 Issue完整 code 集，不以自由文本作为控制流。
 
 安全相关响应不回显请求 filename/path/token；Control/Worker日志对 Header和payload做字段级排除，并用值扫描测试证明不泄露。
+
+### 17. Round 1 审计修复保持一个领域事务和服务器权威
+
+审计确认旧 Schedule PUT 不能继续调用只更新 JSON 列的通用 setter。兼容写入与新 InputConfig API 复用同一个“不提交事务”的领域 helper：由外层调用者负责 Adapter/Schedule/InputConfig/Binding/Artifact 锁和最终 commit。显式 `input:null` 与省略字段使用请求字段集合区分；切换 `managed_files→json` 时，Binding 释放、READY Artifact 进入 `PENDING_DELETE`、revision 与旧列镜像必须原子发生。不得从 Schedule service 调用会自行 commit 的公开 API。
+
+上传 reservation 的 TTL 是 writer 存活租约，不是配额扩容副作用。流式循环用 monotonic deadline 周期调用服务端内部 renew；对外公开 renew 路由若没有真实会话调用者则删除，避免出现不可使用的伪 API。续租失败与过期走同一上传中止/补偿路径。
+
+服务端 capability 是 Web retention 与编辑状态的唯一权威：`allow_manual_delete`、`max_custom_retention_seconds`、Runtime Lock、READY 删除 revision 均从响应/请求合同传递。Schedule enabled 只锁定当前输入写入，不禁止上传产生 STAGED；Web 必须保留未选择 STAGED 并在 SPA/浏览器离开时提示。
+
+### 18. 删除、Scheduler 和 Worker 失败事实必须可恢复且可观测
+
+Artifact 与 Adapter deletion job 统一使用大写状态与明确尝试字段，但仍是两个责任载体。连续删除失败达到部署阈值后停止热循环、产生管理员可见告警；显式 retry 只把符合条件的 `DELETE_FAILED` 重新排队，不清除容量 charge，不绕过 Lease。由于功能尚未发布，修正现有 Issue #127 migration 比叠加兼容错误字段的新 migration 更可控；仍必须重跑 fresh/fixed-baseline migration Gate。
+
+Schedule 继续以顶层 `input_invalid` 作为稳定机器分类，并增加结构化 detail 保存具体原因；不把具体原因替换顶层分类。数据库 `IntegrityError` 仅把已知 active-Execution 唯一约束映射为业务冲突，其他完整性错误必须重新抛出并由测试暴露。
+
+Worker mount name 保留 ordinal 并增加白名单扩展名，从而让 Adapter 常用解析库仍能识别文件类型；原始文件名永不参与路径。v2 payload 在任何 journal/Workspace/进程副作用前校验。journal 落盘后，Workspace mkdir 与最小 marker/manifest 建立构成一个可恢复步骤，关闭“目录已存在但三重匹配永远不成立”的崩溃窗口。Worker client 与文档只使用 canonical workspace-cleanup 路由，deferred Result 必须携带稳定 cleanup error code。
+
+### 19. 审计裁决与同 PR 伴随功能分界
+
+接受并实施会影响正确性、恢复性或已发布能力的 finding；对只指出证据过期的 finding，不把旧证据改名复用，而是在新 Candidate 上重跑。Lease `created_at` 属于 Issue 明确合同并保留；公开 Execution snapshot 仍不得扩展 Artifact ID、storage key 或其他可操作内部键。以下不作为代码缺陷实施：已由锁序排除的不可达死锁不新增防御分支；没有复现证据的 1280 overflow 不做猜测式布局改写；报告中已经诚实披露的 partial evidence 不改写为 PASS。
+
+AI XLS/XLSX/Managed Input prompt 与登录 locale 得到用户明确同 PR 授权，但不写入本 change 的验收矩阵；它们由 `issue127-co-delivered-ai-login-followups` 独立规定。最终 Candidate 同时跑两个 change 的 OpenSpec/Gate，Issue #127 的 retained-app 人工验收仍保持单独未完成。
+
+### 20. Round 2 审计修复收紧协议、权威来源与恢复上限
+
+所有新建 Task Execution 的 Workspace cleanup 初始状态为 `pending`；Control 在 stale pending、Result 或 cleanup receipt 路径将其收敛为 `completed/deferred`。v2 Worker payload 的 Execution/Adapter/Version ID、Cleanup Token、timeout snapshot 与全部 input descriptor/mount 必须在 journal、Workspace 和进程副作用前完整验证，null snapshot 不作为合法 v2 值。cleanup receipt 只保留 Cleanup Token canonical 路由，不恢复未使用的 Worker ID 授权分支。
+
+上传 writer 的 reservation 续租由 event-loop monotonic 周期驱动，续租失败进入既有补偿路径。浏览器恢复合同只列出服务器端 `STAGED` Artifact；不保留无真实会话调用者的 active upload-session recovery API。受控扩展名由后端公共模块单一生成，上传、Worker mount 与 Python/JavaScript/Java harness 不得各自维护白名单。
+
+删除连续失败告警阈值使用部署配置；Schedule 顶层原因固定为 `input_invalid` 并在 detail 保存具体 code/params；Webhook 只映射已知 active-Execution 唯一约束。Web 在 capability 不可用时禁用 retention 并提供重试，不以硬编码上限降级；所有 READY/STAGED 合并最多选择八个，溢出的 STAGED 仍可见且可删除；Execution 日志下载名包含 Execution ID。
+
+恶意 XLSX fixture 已稳定复现 central directory 的短声明大小与 CRC 可隐藏超大 deflate 流；因此在 XML 解析前对 stored/deflated member 的原始压缩流执行有界解压，并复核 CRC 与实际尺寸。所有旧 exact-SHA、迁移和 retained-app 证据在新代码冻结后视为过期，必须如实保留历史失败/partial 事实并生成新 Candidate 证据。
+
+### 21. Round 3 审计修复统一重试门禁、协议类型与 Web 能力状态
+
+Artifact 和 detached deletion job 的连续失败阈值是自动、业务与管理员入口共同遵守的领域门禁：未达阈值时只走有限 backoff，管理员不得提前释放；达到阈值后自动 claim 与普通业务删除都停止，只有管理员 retry 可把原状态机重新排队一次，尝试次数和容量 charge 不重置。业务端点可以跳过未达阈值的普通 backoff，但不能冒充管理员治理。
+
+TaskPayload `protocol_version` 只接受真实整数 `1/2`；缺失或显式 null 保持 v1 兼容，bool、float、数字字符串和未知整数在任何本地副作用前拒绝。v2 的 `language/code` 必须非空白；`requirements` 必须是字符串但允许空串表示无外部依赖。报告要求把空 requirements 一并拒绝与 Version/Runtime 既有合同冲突，不接受该部分建议。
+
+Managed Input capability 增加有序 `allowed_extensions`，Web 的 Upload accept、选择前校验和双语格式提示全部从该字段派生；服务端仍是权威校验。capability 与 STAGED list 使用分开的失败状态：列表瞬时失败不清空 capability、retention、已知 STAGED 或用户草稿；只有当前来源为 managed_files 且 capability 未知/失败/关闭时阻止保存，none/json 不被连带阻断。Schedule enabled/active 时“新增上传可形成 STAGED、保存/替换当前 Binding 仍锁定”是明确规格，因此不接受审计要求在锁定期开放替换入口。
+
+公开 Execution snapshot 顶层键固定为所有来源共有 `source_type/revision`，仅 managed_files 额外包含 `artifacts`，不得加入可操作标识。Round 1–3 期间产生的 D3/E0/E1 dirty-tree、旧栈和 partial 收据只保留为 historical/superseded，不得继续标记为当前 Candidate exact-SHA 或 APP_READY；冻结后的最终 Gate 与人工验收仍分别由 22.13、23.8、20.2/20.3 跟踪。
 
 ## Risks / Trade-offs
 

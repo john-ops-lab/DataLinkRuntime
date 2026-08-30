@@ -9,6 +9,12 @@ import {
   DEFAULT_SYSTEM_LOCALE,
   SYSTEM_LOCALE_STORAGE_KEY,
 } from "./i18n";
+import {
+  cacheLoginLocalePreference,
+  LOGIN_LOCALE_STORAGE_KEY,
+  preferredLoginLocale,
+  readLoginLocalePreference,
+} from "./login-locale";
 import LoginPage from "./components/LoginPage";
 import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
 
@@ -26,6 +32,7 @@ function mockSettingsPanelApis(): void {
 afterEach(async () => {
   await applySystemLocale(DEFAULT_SYSTEM_LOCALE);
   window.localStorage.removeItem(SYSTEM_LOCALE_STORAGE_KEY);
+  window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -47,6 +54,7 @@ it("switches the System Settings language control immediately", async () => {
 
 it("renders the login page in English and never exposes a missing key", async () => {
   await applySystemLocale("en");
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "en");
 
   render(<LoginPage notice={null} onSubmit={vi.fn()} />);
 
@@ -55,7 +63,37 @@ it("renders the login page in English and never exposes a missing key", async ()
   expect(document.body.textContent).not.toContain("auth.loginTitle");
 });
 
-it("lets backend locale override a stale browser cache on every app mount", async () => {
+it("defaults the login page to zh-CN and then respects an explicit saved choice", async () => {
+  await applySystemLocale("en");
+  window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
+
+  const first = render(<LoginPage notice={null} onSubmit={vi.fn()} />);
+  await waitFor(() => expect(screen.getByRole("heading", { name: "欢迎登录 DLR 控制台" })).toBeTruthy());
+  first.unmount();
+
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "en");
+  render(<LoginPage notice={null} onSubmit={vi.fn()} />);
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Welcome to the DLR Console" })).toBeTruthy());
+});
+
+it("ignores invalid or unavailable login-locale storage without blocking login", () => {
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "fr");
+  expect(readLoginLocalePreference()).toBeNull();
+  expect(preferredLoginLocale()).toBe(DEFAULT_SYSTEM_LOCALE);
+
+  const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    throw new DOMException("storage denied", "SecurityError");
+  });
+  const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new DOMException("storage denied", "SecurityError");
+  });
+  expect(readLoginLocalePreference()).toBeNull();
+  expect(() => cacheLoginLocalePreference("en")).not.toThrow();
+  getItem.mockRestore();
+  setItem.mockRestore();
+});
+
+it("keeps the login default independent from a changing deployment locale", async () => {
   await applySystemLocale("en");
   const localeResponse = { locale: "zh-CN" };
   vi.stubGlobal(
@@ -80,13 +118,16 @@ it("lets backend locale override a stale browser cache on every app mount", asyn
   localeResponse.locale = "en";
   window.localStorage.setItem(SYSTEM_LOCALE_STORAGE_KEY, "zh-CN");
   render(<App />);
-  await waitFor(() => expect(screen.getByRole("heading", { name: "Welcome to the DLR Console" })).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("heading", { name: "欢迎登录 DLR 控制台" })).toBeTruthy());
   expect(window.localStorage.getItem(SYSTEM_LOCALE_STORAGE_KEY)).toBe("en");
 });
 
 it("re-reads the backend locale after administrator login", async () => {
   await applySystemLocale(DEFAULT_SYSTEM_LOCALE);
   sessionStorage.clear();
+  // The login page may prefer Chinese, but the authenticated Console must
+  // still apply the server-owned English locale after verification.
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "zh-CN");
   let localeReads = 0;
   vi.stubGlobal(
     "fetch",
@@ -120,6 +161,39 @@ it("re-reads the backend locale after administrator login", async () => {
 
   await screen.findByTestId("control-status");
   expect(localeReads).toBe(2);
+  expect(currentSystemLocale()).toBe("en");
+});
+
+it("uses the cached system locale when its post-login refresh fails", async () => {
+  await applySystemLocale("en");
+  sessionStorage.clear();
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "zh-CN");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/locale") {
+        throw new TypeError("locale temporarily unavailable");
+      }
+      if (url === "/api/auth/admin/verify") {
+        return { ok: true, status: 200, json: async () => ({ status: "ok" }) };
+      }
+      if (url === "/api/health") {
+        return { ok: true, status: 200, json: async () => ({ status: "ok", database: true }) };
+      }
+      if (url === "/api/adapters" || url === "/api/workers") {
+        return { ok: true, status: 200, json: async () => [] };
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }),
+  );
+
+  render(<App />);
+  await screen.findByRole("heading", { name: "欢迎登录 DLR 控制台" });
+  fireEvent.change(screen.getByTestId("admin-token-input"), { target: { value: "admin" } });
+  fireEvent.click(screen.getByTestId("admin-token-submit"));
+
+  await screen.findByTestId("control-status");
   expect(currentSystemLocale()).toBe("en");
 });
 

@@ -1,13 +1,16 @@
-/** 系统设置抽屉：凭据管理 + 三语言依赖源（M3.3，全局平台配置）。 */
+/** 系统设置抽屉：凭据、依赖源与 Managed Input 策略（全局平台配置）。 */
 
 import { useCallback, useEffect, useState, type ChangeEvent } from "react";
 import {
+  Alert,
   Button,
+  Card,
   Checkbox,
   Dropdown,
   Empty,
   Form,
   Input,
+  InputNumber,
   Menu,
   Popover,
   Select,
@@ -53,10 +56,13 @@ import {
 } from "../i18n";
 import { packageSourceKindLabel, packageSourcePresetLabel } from "../package-source-catalog";
 import type {
+  Adapter,
   Credential,
   CredentialType,
   KnowledgeBase,
   KnowledgeSource,
+  ManagedInputSettings,
+  ManagedInputSettingsUpdate,
   PackageSource,
   PackageSourceDefaults,
   SystemLocale,
@@ -1445,6 +1451,12 @@ interface SystemSettingsDrawerProps {
   onClose: () => void;
   category?: SettingsCategory;
   onCategoryChange?: (category: SettingsCategory) => void;
+  /** App already gates the route; this optional flag keeps direct renders safe. */
+  canManageManagedInput?: boolean;
+  /** Reuse the already loaded Adapter catalog for safe usage navigation. */
+  adapters?: Adapter[];
+  /** Return false when the caller's own dirty/busy guard keeps navigation open. */
+  onSelectAdapter?: (adapterId: number) => boolean;
 }
 
 // Settings panels render their own persistent alert next to the failed action.
@@ -1505,14 +1517,581 @@ function SystemLocaleControl() {
   );
 }
 
+function formatBytes(value: number): string {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = value;
+  let unit = "B";
+  for (const nextUnit of units) {
+    amount /= 1024;
+    unit = nextUnit;
+    if (amount < 1024 || nextUnit === units[units.length - 1]) {
+      break;
+    }
+  }
+  return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${unit}`;
+}
+
+// Keep browser-side affordances aligned with the server schema bounds. The
+// API remains authoritative for cross-field validation and concurrent writes.
+const MANAGED_INPUT_POLICY_LIMITS = {
+  default_retention_seconds: { min: 3_600, max: 2_592_000 },
+  max_custom_retention_seconds: { min: 3_600, max: 31_536_000 },
+  max_file_bytes: { min: 1_048_576, max: 2_147_483_648 },
+  platform_quota_bytes: { min: 1_048_576, max: 10 * 1_099_511_627_776 },
+  adapter_quota_bytes: { min: 1_048_576, max: 10 * 1_099_511_627_776 },
+  min_free_space_bytes: { min: 67_108_864, max: 1_099_511_627_776 },
+  staged_ttl_seconds: { min: 300, max: 86_400 },
+} as const;
+
+type ManagedInputTimeUnit = "minutes" | "hours" | "days";
+type ManagedInputByteUnit = "KB" | "MB" | "GB" | "TB";
+type ManagedInputTimeKey =
+  | "default_retention_seconds"
+  | "max_custom_retention_seconds"
+  | "staged_ttl_seconds";
+type ManagedInputByteKey =
+  | "max_file_bytes"
+  | "platform_quota_bytes"
+  | "adapter_quota_bytes"
+  | "min_free_space_bytes";
+
+const MANAGED_INPUT_TIME_FACTORS: Record<ManagedInputTimeUnit, number> = {
+  minutes: 60,
+  hours: 60 * 60,
+  days: 24 * 60 * 60,
+};
+
+const MANAGED_INPUT_BYTE_FACTORS: Record<ManagedInputByteUnit, number> = {
+  KB: 1024,
+  MB: 1024 ** 2,
+  GB: 1024 ** 3,
+  TB: 1024 ** 4,
+};
+
+function preferredManagedInputTimeUnit(seconds: number): ManagedInputTimeUnit {
+  if (seconds % MANAGED_INPUT_TIME_FACTORS.days === 0) {
+    return "days";
+  }
+  if (seconds % MANAGED_INPUT_TIME_FACTORS.hours === 0) {
+    return "hours";
+  }
+  return "minutes";
+}
+
+function preferredManagedInputByteUnit(bytes: number): ManagedInputByteUnit {
+  for (const unit of ["TB", "GB", "MB", "KB"] as const) {
+    if (bytes % MANAGED_INPUT_BYTE_FACTORS[unit] === 0) {
+      return unit;
+    }
+  }
+  return "KB";
+}
+
+function managedInputDisplayValue(value: number, factor: number): number {
+  const scaled = value / factor;
+  return Number.isInteger(scaled) ? scaled : Number(scaled.toFixed(2));
+}
+
+function ManagedInputSettingsPanel(props: {
+  onError: (message: string) => void;
+  onSaved?: () => void;
+  adapters: Adapter[];
+  onSelectAdapter?: (adapterId: number) => boolean;
+}) {
+  const { t } = useTranslation(["settings", "common"]);
+  const { onError, onSaved } = props;
+  const [settings, setSettings] = useState<ManagedInputSettings | null>(null);
+  const [draft, setDraft] = useState<ManagedInputSettingsUpdate | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [timeUnits, setTimeUnits] = useState<Record<ManagedInputTimeKey, ManagedInputTimeUnit>>({
+    default_retention_seconds: "days",
+    max_custom_retention_seconds: "days",
+    staged_ttl_seconds: "hours",
+  });
+  const [byteUnits, setByteUnits] = useState<Record<ManagedInputByteKey, ManagedInputByteUnit>>({
+    max_file_bytes: "MB",
+    platform_quota_bytes: "GB",
+    adapter_quota_bytes: "GB",
+    min_free_space_bytes: "GB",
+  });
+
+  const fail = useCallback((value: unknown) => {
+    const message = errorMessage(value);
+    setError(message);
+    setNotice(null);
+    onError(message);
+  }, [onError]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const loaded = await api.getManagedInputSettings();
+      setSettings(loaded);
+      setDraft({
+        default_retention_seconds: loaded.default_retention_seconds,
+        max_file_bytes: loaded.max_file_bytes,
+        platform_quota_bytes: loaded.platform_quota_bytes,
+        adapter_quota_bytes: loaded.adapter_quota_bytes,
+        allow_manual_delete: loaded.allow_manual_delete,
+        max_custom_retention_seconds: loaded.max_custom_retention_seconds,
+        min_free_space_bytes: loaded.min_free_space_bytes,
+        staged_ttl_seconds: loaded.staged_ttl_seconds,
+      });
+      setTimeUnits({
+        default_retention_seconds: preferredManagedInputTimeUnit(loaded.default_retention_seconds),
+        max_custom_retention_seconds: preferredManagedInputTimeUnit(loaded.max_custom_retention_seconds),
+        staged_ttl_seconds: preferredManagedInputTimeUnit(loaded.staged_ttl_seconds),
+      });
+      setByteUnits({
+        max_file_bytes: preferredManagedInputByteUnit(loaded.max_file_bytes),
+        platform_quota_bytes: preferredManagedInputByteUnit(loaded.platform_quota_bytes),
+        adapter_quota_bytes: preferredManagedInputByteUnit(loaded.adapter_quota_bytes),
+        min_free_space_bytes: preferredManagedInputByteUnit(loaded.min_free_space_bytes),
+      });
+      setError(null);
+    } catch (value) {
+      fail(value);
+    } finally {
+      setLoading(false);
+    }
+  }, [fail]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 打开 Managed Input Tab 时有意加载管理员策略
+    void load();
+  }, [load]);
+
+  async function save(): Promise<void> {
+    if (saving || draft === null) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await api.updateManagedInputSettings(draft);
+      setSettings(updated);
+      setDraft({
+        default_retention_seconds: updated.default_retention_seconds,
+        max_file_bytes: updated.max_file_bytes,
+        platform_quota_bytes: updated.platform_quota_bytes,
+        adapter_quota_bytes: updated.adapter_quota_bytes,
+        allow_manual_delete: updated.allow_manual_delete,
+        max_custom_retention_seconds: updated.max_custom_retention_seconds,
+        min_free_space_bytes: updated.min_free_space_bytes,
+        staged_ttl_seconds: updated.staged_ttl_seconds,
+      });
+      setTimeUnits({
+        default_retention_seconds: preferredManagedInputTimeUnit(updated.default_retention_seconds),
+        max_custom_retention_seconds: preferredManagedInputTimeUnit(updated.max_custom_retention_seconds),
+        staged_ttl_seconds: preferredManagedInputTimeUnit(updated.staged_ttl_seconds),
+      });
+      setByteUnits({
+        max_file_bytes: preferredManagedInputByteUnit(updated.max_file_bytes),
+        platform_quota_bytes: preferredManagedInputByteUnit(updated.platform_quota_bytes),
+        adapter_quota_bytes: preferredManagedInputByteUnit(updated.adapter_quota_bytes),
+        min_free_space_bytes: preferredManagedInputByteUnit(updated.min_free_space_bytes),
+      });
+      setNotice(t("managedInput.saved"));
+      onSaved?.();
+    } catch (value) {
+      fail(value);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return <div className="settings-panel" data-testid="managed-input-settings-panel"><Spin /></div>;
+  }
+  if (settings === null || draft === null) {
+    return (
+      <div className="settings-panel" data-testid="managed-input-settings-panel">
+        {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
+        <Button data-testid="managed-input-settings-refresh" onClick={() => void load()}>{t("managedInput.refresh")}</Button>
+      </div>
+    );
+  }
+
+  const updateNumber = (key: keyof ManagedInputSettingsUpdate, value: number | null) => {
+    if (value !== null && Number.isFinite(value)) {
+      setDraft((current) => current === null ? current : { ...current, [key]: Math.trunc(value) });
+    }
+  };
+
+  const updateScaledNumber = (
+    key: keyof ManagedInputSettingsUpdate,
+    factor: number,
+    value: number | null,
+  ) => {
+    if (value !== null && Number.isFinite(value)) {
+      updateNumber(key, value * factor);
+    }
+  };
+
+  const timeUnitOptions = [
+    { value: "minutes" as const, label: t("managedInput.units.minutes") },
+    { value: "hours" as const, label: t("managedInput.units.hours") },
+    { value: "days" as const, label: t("managedInput.units.days") },
+  ];
+  const byteUnitOptions = [
+    { value: "KB" as const, label: "KB" },
+    { value: "MB" as const, label: "MB" },
+    { value: "GB" as const, label: "GB" },
+    { value: "TB" as const, label: "TB" },
+  ];
+
+  return (
+    <div className="settings-panel managed-input-settings-panel" data-testid="managed-input-settings-panel">
+      {(settings.over_quota || settings.platform_over_quota || settings.adapter_over_quota.length > 0) && (
+        <Alert
+          type="warning"
+          showIcon
+          data-testid="managed-input-over-quota"
+          message={t("managedInput.overQuota")}
+          description={t("managedInput.overQuotaDescription", {
+            platform: formatBytes(settings.usage.platform_total_bytes),
+            adapters: settings.adapter_over_quota.length,
+          })}
+        />
+      )}
+      <Card size="small" title={t("managedInput.policyTitle")} className="managed-input-policy-card">
+        <Form layout="vertical" className="managed-input-policy-form">
+          <Form.Item label={t("managedInput.defaultRetention")}>
+            <Space.Compact block className="managed-input-unit-compact">
+              <InputNumber
+                data-testid="managed-input-default-retention"
+                min={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.default_retention_seconds.min,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.default_retention_seconds],
+                )}
+                max={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.default_retention_seconds.max,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.default_retention_seconds],
+                )}
+                precision={2}
+                value={managedInputDisplayValue(
+                  draft.default_retention_seconds,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.default_retention_seconds],
+                )}
+                onChange={(value) => updateScaledNumber(
+                  "default_retention_seconds",
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.default_retention_seconds],
+                  value,
+                )}
+              />
+              <Select<ManagedInputTimeUnit>
+                className="managed-input-unit-select"
+                aria-label={t("managedInput.defaultRetentionUnit")}
+                data-testid="managed-input-default-retention-unit"
+                value={timeUnits.default_retention_seconds}
+                options={timeUnitOptions}
+                onChange={(value) => setTimeUnits((current) => ({
+                  ...current,
+                  default_retention_seconds: value,
+                }))}
+              />
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item label={t("managedInput.maxCustomRetention")}>
+            <Space.Compact block className="managed-input-unit-compact">
+              <InputNumber
+                data-testid="managed-input-max-custom-retention"
+                min={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.max_custom_retention_seconds.min,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.max_custom_retention_seconds],
+                )}
+                max={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.max_custom_retention_seconds.max,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.max_custom_retention_seconds],
+                )}
+                precision={2}
+                value={managedInputDisplayValue(
+                  draft.max_custom_retention_seconds,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.max_custom_retention_seconds],
+                )}
+                onChange={(value) => updateScaledNumber(
+                  "max_custom_retention_seconds",
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.max_custom_retention_seconds],
+                  value,
+                )}
+              />
+              <Select<ManagedInputTimeUnit>
+                className="managed-input-unit-select"
+                aria-label={t("managedInput.maxCustomRetentionUnit")}
+                data-testid="managed-input-max-custom-retention-unit"
+                value={timeUnits.max_custom_retention_seconds}
+                options={timeUnitOptions}
+                onChange={(value) => setTimeUnits((current) => ({
+                  ...current,
+                  max_custom_retention_seconds: value,
+                }))}
+              />
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item label={t("managedInput.maxFileBytes")}>
+            <Space.Compact block className="managed-input-unit-compact">
+              <InputNumber
+                data-testid="managed-input-max-file-bytes"
+                min={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.max_file_bytes.min,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.max_file_bytes],
+                )}
+                max={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.max_file_bytes.max,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.max_file_bytes],
+                )}
+                precision={2}
+                value={managedInputDisplayValue(
+                  draft.max_file_bytes,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.max_file_bytes],
+                )}
+                onChange={(value) => updateScaledNumber(
+                  "max_file_bytes",
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.max_file_bytes],
+                  value,
+                )}
+              />
+              <Select<ManagedInputByteUnit>
+                className="managed-input-unit-select"
+                aria-label={t("managedInput.maxFileBytesUnit")}
+                data-testid="managed-input-max-file-bytes-unit"
+                value={byteUnits.max_file_bytes}
+                options={byteUnitOptions}
+                onChange={(value) => setByteUnits((current) => ({ ...current, max_file_bytes: value }))}
+              />
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item label={t("managedInput.platformQuotaBytes")}>
+            <Space.Compact block className="managed-input-unit-compact">
+              <InputNumber
+                data-testid="managed-input-platform-quota"
+                min={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.platform_quota_bytes.min,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.platform_quota_bytes],
+                )}
+                max={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.platform_quota_bytes.max,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.platform_quota_bytes],
+                )}
+                precision={2}
+                value={managedInputDisplayValue(
+                  draft.platform_quota_bytes,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.platform_quota_bytes],
+                )}
+                onChange={(value) => updateScaledNumber(
+                  "platform_quota_bytes",
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.platform_quota_bytes],
+                  value,
+                )}
+              />
+              <Select<ManagedInputByteUnit>
+                className="managed-input-unit-select"
+                aria-label={t("managedInput.platformQuotaBytesUnit")}
+                data-testid="managed-input-platform-quota-unit"
+                value={byteUnits.platform_quota_bytes}
+                options={byteUnitOptions}
+                onChange={(value) => setByteUnits((current) => ({ ...current, platform_quota_bytes: value }))}
+              />
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item label={t("managedInput.adapterQuotaBytes")}>
+            <Space.Compact block className="managed-input-unit-compact">
+              <InputNumber
+                data-testid="managed-input-adapter-quota"
+                min={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.adapter_quota_bytes.min,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.adapter_quota_bytes],
+                )}
+                max={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.adapter_quota_bytes.max,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.adapter_quota_bytes],
+                )}
+                precision={2}
+                value={managedInputDisplayValue(
+                  draft.adapter_quota_bytes,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.adapter_quota_bytes],
+                )}
+                onChange={(value) => updateScaledNumber(
+                  "adapter_quota_bytes",
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.adapter_quota_bytes],
+                  value,
+                )}
+              />
+              <Select<ManagedInputByteUnit>
+                className="managed-input-unit-select"
+                aria-label={t("managedInput.adapterQuotaBytesUnit")}
+                data-testid="managed-input-adapter-quota-unit"
+                value={byteUnits.adapter_quota_bytes}
+                options={byteUnitOptions}
+                onChange={(value) => setByteUnits((current) => ({ ...current, adapter_quota_bytes: value }))}
+              />
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item label={t("managedInput.minFreeSpaceBytes")}>
+            <Space.Compact block className="managed-input-unit-compact">
+              <InputNumber
+                data-testid="managed-input-min-free-space"
+                min={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.min_free_space_bytes.min,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.min_free_space_bytes],
+                )}
+                max={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.min_free_space_bytes.max,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.min_free_space_bytes],
+                )}
+                precision={2}
+                value={managedInputDisplayValue(
+                  draft.min_free_space_bytes,
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.min_free_space_bytes],
+                )}
+                onChange={(value) => updateScaledNumber(
+                  "min_free_space_bytes",
+                  MANAGED_INPUT_BYTE_FACTORS[byteUnits.min_free_space_bytes],
+                  value,
+                )}
+              />
+              <Select<ManagedInputByteUnit>
+                className="managed-input-unit-select"
+                aria-label={t("managedInput.minFreeSpaceBytesUnit")}
+                data-testid="managed-input-min-free-space-unit"
+                value={byteUnits.min_free_space_bytes}
+                options={byteUnitOptions}
+                onChange={(value) => setByteUnits((current) => ({ ...current, min_free_space_bytes: value }))}
+              />
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item label={t("managedInput.stagedTtlSeconds")}>
+            <Space.Compact block className="managed-input-unit-compact">
+              <InputNumber
+                data-testid="managed-input-staged-ttl"
+                min={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.staged_ttl_seconds.min,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
+                )}
+                max={managedInputDisplayValue(
+                  MANAGED_INPUT_POLICY_LIMITS.staged_ttl_seconds.max,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
+                )}
+                precision={2}
+                value={managedInputDisplayValue(
+                  draft.staged_ttl_seconds,
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
+                )}
+                onChange={(value) => updateScaledNumber(
+                  "staged_ttl_seconds",
+                  MANAGED_INPUT_TIME_FACTORS[timeUnits.staged_ttl_seconds],
+                  value,
+                )}
+              />
+              <Select<ManagedInputTimeUnit>
+                className="managed-input-unit-select"
+                aria-label={t("managedInput.stagedTtlUnit")}
+                data-testid="managed-input-staged-ttl-unit"
+                value={timeUnits.staged_ttl_seconds}
+                options={timeUnitOptions}
+                onChange={(value) => setTimeUnits((current) => ({
+                  ...current,
+                  staged_ttl_seconds: value,
+                }))}
+              />
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item>
+            <Checkbox
+              data-testid="managed-input-allow-manual-delete"
+              checked={draft.allow_manual_delete}
+              onChange={(event) => setDraft((current) => current === null ? current : {
+                ...current,
+                allow_manual_delete: event.target.checked,
+              })}
+            >
+              {t("managedInput.allowManualDelete")}
+            </Checkbox>
+          </Form.Item>
+        </Form>
+        <Typography.Text type="secondary" className="settings-field-hint">
+          {t("managedInput.policyHint")}
+        </Typography.Text>
+        <Button
+          type="primary"
+          data-testid="managed-input-settings-save"
+          loading={saving}
+          onClick={() => void save()}
+        >
+          {t("managedInput.save")}
+        </Button>
+      </Card>
+
+      <Card size="small" title={t("managedInput.usageTitle")} className="managed-input-usage-card">
+        <div className="managed-input-usage-summary" data-testid="managed-input-usage-summary">
+          <Typography.Text>{t("managedInput.actualUsage", { value: formatBytes(settings.usage.platform_actual_bytes) })}</Typography.Text>
+          <Typography.Text>{t("managedInput.reservedUsage", { value: formatBytes(settings.usage.platform_reserved_bytes) })}</Typography.Text>
+          <Typography.Text>{t("managedInput.totalUsage", { value: formatBytes(settings.usage.platform_total_bytes) })}</Typography.Text>
+        </div>
+        <Typography.Text type="secondary" className="settings-field-hint">
+          {t("managedInput.quotaReductionHint")}
+        </Typography.Text>
+        <ProTable
+          rowKey="adapter_id"
+          className="managed-input-usage-table"
+          size="small"
+          search={false}
+          options={false}
+          pagination={false}
+          scroll={{ y: 280 }}
+          dataSource={settings.usage.adapters}
+          columns={[
+            {
+              title: t("managedInput.adapterColumn"),
+              dataIndex: "adapter_id",
+              render: (_value, row) => {
+                const adapter = props.adapters.find((item) => item.id === row.adapter_id);
+                const label = adapter?.name ?? t("managedInput.adapterFallback", { id: row.adapter_id });
+                return (
+                  <Button
+                    type="link"
+                    className="managed-input-adapter-link"
+                    data-testid={`managed-input-adapter-${row.adapter_id}`}
+                    onClick={() => props.onSelectAdapter?.(row.adapter_id)}
+                  >
+                    {label}
+                  </Button>
+                );
+              },
+            },
+            {
+              title: t("managedInput.usageColumn"),
+              render: (_value, row) => formatBytes(row.total_bytes),
+            },
+            {
+              title: t("managedInput.statusColumn"),
+              render: (_value, row) => row.over_quota ? <Tag color="warning">{t("managedInput.overQuotaShort")}</Tag> : <Tag color="green">{t("managedInput.withinQuota")}</Tag>,
+            },
+          ]}
+        />
+      </Card>
+      {error !== null && <p className="settings-panel-error" role="alert">{error}</p>}
+      {notice !== null && <p className="settings-panel-success" role="status">{notice}</p>}
+    </div>
+  );
+}
+
 export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
   const { t } = useTranslation("settings");
   const standalone = props.category === undefined;
+  const canManageManagedInput = props.canManageManagedInput !== false;
   const [localActiveCategory, setLocalActiveCategory] = useState<SettingsCategory>(props.category ?? "credentials");
   const [dirty, setDirty] = useState(false);
   const activeCategory = props.category ?? localActiveCategory;
 
-  if (!props.open) {
+  if (!props.open || !canManageManagedInput) {
     return null;
   }
 
@@ -1541,12 +2120,13 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
     }
   }
 
-  const categoryItems = [
+  const categoryItems: { key: SettingsCategory; label: string }[] = [
     { key: "general", label: t("categories.general") },
     { key: "credentials", label: t("categories.credentials") },
     { key: "package-sources", label: t("categories.packageSources") },
     { key: "ai-model", label: t("categories.aiModel") },
     { key: "knowledge-sources", label: t("categories.knowledgeSources") },
+    { key: "managed-input", label: t("categories.managedInput") },
   ];
   const categoryCopy: Record<SettingsCategory, { title: string; description: string }> = {
     general: { title: t("categories.general"), description: t("descriptions.general") },
@@ -1554,6 +2134,7 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
     "package-sources": { title: t("categories.packageSources"), description: t("descriptions.packageSources") },
     "ai-model": { title: t("categories.aiModel"), description: t("descriptions.aiModel") },
     "knowledge-sources": { title: t("categories.knowledgeSources"), description: t("descriptions.knowledgeSources") },
+    "managed-input": { title: t("categories.managedInput"), description: t("descriptions.managedInput") },
   };
   const copy = categoryCopy[activeCategory];
 
@@ -1624,6 +2205,23 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
             )}
             {activeCategory === "knowledge-sources" && (
               <KnowledgeSourcesPanel active onError={keepErrorInline} onSaved={() => setDirty(false)} />
+            )}
+            {activeCategory === "managed-input" && (
+              <ManagedInputSettingsPanel
+                adapters={props.adapters ?? []}
+                onSelectAdapter={(adapterId) => {
+                  if (!confirmLeave()) {
+                    return false;
+                  }
+                  const selected = props.onSelectAdapter?.(adapterId) ?? false;
+                  if (selected) {
+                    setDirty(false);
+                  }
+                  return selected;
+                }}
+                onError={keepErrorInline}
+                onSaved={() => setDirty(false)}
+              />
             )}
           </div>
         </section>

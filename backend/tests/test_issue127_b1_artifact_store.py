@@ -48,7 +48,6 @@ from dlr.control.services.artifact_store import (
     ArtifactStoreSecurityError,
     LocalFileArtifactStore,
 )
-from dlr.control.services.managed_input_upload import UploadSessionState
 
 
 def create_task(api_client: TestClient, name: str) -> dict[str, Any]:
@@ -324,8 +323,10 @@ def test_streaming_upload_offloads_blocking_work_and_batches_reservations(
 
     original_check = managed_input_upload.check_stream_low_watermark_bytes
     original_expand = managed_input_upload.expand_upload_reservation
+    original_renew = managed_input_upload.renew_upload_reservation
     original_run_in_session = managed_input_api._run_in_session
     expansion_calls = 0
+    renewal_calls = 0
     session_calls = 0
     active_sessions = 0
     max_active_sessions = 0
@@ -342,6 +343,12 @@ def test_streaming_upload_offloads_blocking_work_and_batches_reservations(
             expansion_calls += 1
         return original_expand(*args, **kwargs)
 
+    def counted_renew(*args: Any, **kwargs: Any) -> Any:
+        nonlocal renewal_calls
+        with lock:
+            renewal_calls += 1
+        return original_renew(*args, **kwargs)
+
     def tracked_session(operation: Any) -> Any:
         nonlocal session_calls, active_sessions, max_active_sessions
         with lock:
@@ -356,6 +363,8 @@ def test_streaming_upload_offloads_blocking_work_and_batches_reservations(
 
     monkeypatch.setattr(managed_input_upload, "check_stream_low_watermark_bytes", slow_check)
     monkeypatch.setattr(managed_input_upload, "expand_upload_reservation", counted_expand)
+    monkeypatch.setattr(managed_input_upload, "renew_upload_reservation", counted_renew)
+    monkeypatch.setattr(managed_input_api, "_renewal_delay_seconds", lambda _state: 0.005)
     monkeypatch.setattr(managed_input_api, "_run_in_session", tracked_session)
 
     async def run_upload() -> Any:
@@ -381,10 +390,105 @@ def test_streaming_upload_offloads_blocking_work_and_batches_reservations(
     result = asyncio.run(run_upload())
     assert result.size_bytes == len(payload)
     assert expansion_calls <= 4
+    assert renewal_calls >= 1
     assert session_calls >= 5
     assert active_sessions == 0
-    assert max_active_sessions == 1
+    assert max_active_sessions <= 2
     assert heartbeat_count >= 20
+
+
+def test_upload_renewal_interval_is_fixed_and_wall_clock_independent() -> None:
+    state_without_expiry = SimpleNamespace(expires_at=None)
+    state_with_expiry = SimpleNamespace(expires_at=datetime(2099, 1, 1, tzinfo=UTC))
+
+    assert managed_input_api._renewal_delay_seconds(state_without_expiry) == 30.0  # type: ignore[arg-type]
+    assert managed_input_api._renewal_delay_seconds(state_with_expiry) == 30.0  # type: ignore[arg-type]
+
+
+def test_upload_renewal_failure_returns_stable_error_and_compensates(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = create_task(api_client, "b1-renewal-failure")
+    store_root = tmp_path / "store"
+    monkeypatch.setattr(settings, "artifact_store_root", str(store_root))
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    boundary = "b1-renewal-failure"
+    frames = iter(
+        [
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="file"; filename="renew.txt"\r\n'
+                "Content-Type: text/plain\r\n\r\n"
+            ).encode(),
+            b"first",
+            b"second",
+            f"\r\n--{boundary}--\r\n".encode(),
+        ]
+    )
+    remaining = 4
+
+    async def receive_body() -> dict[str, object]:
+        nonlocal remaining
+        await asyncio.sleep(0.01)
+        try:
+            body = next(frames)
+        except StopIteration:
+            return {"type": "http.disconnect"}
+        remaining -= 1
+        return {"type": "http.request", "body": body, "more_body": remaining > 0}
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": f"/api/adapters/{adapter['id']}/input-artifacts",
+            "raw_path": f"/api/adapters/{adapter['id']}/input-artifacts".encode(),
+            "query_string": b"",
+            "headers": [(b"content-type", f"multipart/form-data; boundary={boundary}".encode())],
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 1),
+            "root_path": "",
+        },
+        receive_body,
+    )
+
+    def fail_renewal(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated renewal failure")
+
+    monkeypatch.setattr(managed_input_api, "_renewal_delay_seconds", lambda _state: 0.001)
+    monkeypatch.setattr(managed_input_upload, "renew_upload_reservation", fail_renewal)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            managed_input_api._stream_upload(
+                request,
+                adapter["id"],
+                Principal(kind="superadmin"),
+            )
+        )
+    assert caught.value.status_code == 503
+    assert caught.value.detail["code"] == "input_upload_failed"
+
+    with session_factory() as session:
+        reservation = session.scalar(
+            select(ManagedInputUploadReservation).where(
+                ManagedInputUploadReservation.adapter_id == adapter["id"]
+            )
+        )
+        assert reservation is not None
+        assert reservation.status == ManagedInputReservationStatus.CANCELLED
+        artifact = session.scalar(
+            select(ManagedInputArtifact).where(ManagedInputArtifact.adapter_id == adapter["id"])
+        )
+        assert artifact is not None and artifact.status == "DELETED"
+        capacity = session.get(ManagedInputCapacity, 1)
+        assert capacity is not None and capacity.reserved_bytes == 0
+    assert not list((store_root / "parts").rglob("*.part"))
+    assert not [path for path in (store_root / "objects").rglob("*") if path.is_file()]
 
 
 def test_interrupted_multipart_upload_is_terminal_and_compensated(
@@ -559,7 +663,7 @@ def test_low_watermark_rejects_before_any_upload_bytes_are_written(
         f"/api/adapters/{adapter['id']}/input-artifacts",
         files={"file": ("low.txt", b"blocked", "text/plain")},
     )
-    assert response.status_code == 507, response.text
+    assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "artifact_store_low_watermark"
     with session_factory() as session:
         capacity = session.get(ManagedInputCapacity, 1)
@@ -665,7 +769,7 @@ def test_stream_low_watermark_snapshot_refreshes_at_reservation_growth(
         managed_input_upload.check_stream_low_watermark_bytes(
             store, expanded.min_free_space_bytes, 1
         )
-    assert watermark_error.value.status_code == 507
+    assert watermark_error.value.status_code == 409
 
     with session_factory() as session:
         managed_input_upload.abort_upload(
@@ -714,47 +818,6 @@ def test_staged_artifact_routes_require_adapter_edit_acl(
     assert listed.json()["detail"]["code"] == "adapter_read_only"
     assert deleted.status_code == 403, deleted.text
     assert deleted.json()["detail"]["code"] == "adapter_read_only"
-
-
-def test_active_upload_session_recovers_progress_and_renews_safely(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = create_task(api_client, "b1-session-recovery")
-    monkeypatch.setattr(settings, "artifact_store_root", str(tmp_path / "store"))
-    monkeypatch.setattr(settings, "managed_files_enabled", True)
-    store = LocalFileArtifactStore(tmp_path / "store")
-    with session_factory() as session:
-        state = managed_input_upload.begin_upload(
-            session,
-            adapter["id"],
-            original_filename="recover.txt",
-            content_type="text/plain",
-            store=store,
-        )
-    with store.put_part(state.storage_key) as part:
-        part.write(b"partial")
-
-    recovered = api_client.get(
-        f"/api/adapters/{adapter['id']}/input-artifacts/sessions/{state.upload_session_id}"
-    )
-    assert recovered.status_code == 200, recovered.text
-    assert recovered.json()["artifact_id"] == state.artifact_id
-    assert recovered.json()["status"] == "UPLOADING"
-    assert recovered.json()["received_bytes"] == 7
-    assert "storage_key" not in recovered.text
-    renewed = api_client.post(
-        f"/api/adapters/{adapter['id']}/input-artifacts/sessions/{state.upload_session_id}/renew"
-    )
-    assert renewed.status_code == 200, renewed.text
-    assert renewed.json()["received_bytes"] == 7
-
-    with session_factory() as session:
-        managed_input_upload.abort_upload(
-            session, adapter["id"], state.upload_session_id, store=store
-        )
 
 
 def test_reservation_expansion_allows_only_one_writer_at_last_quota(
@@ -912,101 +975,6 @@ def test_expiry_reclaims_reservation_for_archived_adapter(
         capacity = session.get(ManagedInputCapacity, 1)
         assert capacity is not None
         assert capacity.reserved_bytes == 0
-
-
-def test_upload_session_progress_has_no_missing_part_side_effect(
-    tmp_path: Path,
-) -> None:
-    store = LocalFileArtifactStore(tmp_path / "store")
-    key = store.new_storage_key()
-    prefix = store.parts_root / key[:2]
-    state = UploadSessionState(
-        adapter_id=1,
-        artifact_id=1,
-        reservation_id=1,
-        upload_session_id="session",
-        storage_key=key,
-        reserved_bytes=64 * 1024,
-        expires_at=datetime.now(UTC) + timedelta(minutes=5),
-    )
-
-    response = managed_input_upload.upload_session_response(state, store)
-    assert response.received_bytes == 0
-    assert not prefix.exists()
-
-
-def test_upload_session_progress_tolerates_concurrent_part_delete(tmp_path: Path) -> None:
-    store = LocalFileArtifactStore(tmp_path / "store")
-    key = store.new_storage_key()
-    with store.put_part(key) as part:
-        part.write(b"partial")
-    state = UploadSessionState(
-        adapter_id=1,
-        artifact_id=1,
-        reservation_id=1,
-        upload_session_id="session",
-        storage_key=key,
-        reserved_bytes=64 * 1024,
-        expires_at=datetime.now(UTC) + timedelta(minutes=5),
-    )
-    observed = threading.Event()
-    deleted = threading.Event()
-    original_stat_part = store.stat_part
-
-    def stat_then_delete(storage_key: str) -> Any:
-        result = original_stat_part(storage_key)
-        observed.set()
-        assert deleted.wait(timeout=5)
-        return result
-
-    def delete_part() -> None:
-        assert observed.wait(timeout=5)
-        store.delete_part(key)
-        deleted.set()
-
-    deleter = threading.Thread(target=delete_part)
-    deleter.start()
-    store.stat_part = stat_then_delete  # type: ignore[method-assign]
-    response = managed_input_upload.upload_session_response(state, store)
-    deleter.join(timeout=5)
-    assert not deleter.is_alive()
-    assert response.received_bytes == 7
-    assert not store.stat_part(key)
-
-
-def test_recover_and_renew_map_store_failures_to_stable_code(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = create_task(api_client, "b1-session-store-failure")
-    monkeypatch.setattr(settings, "artifact_store_root", str(tmp_path / "store"))
-    monkeypatch.setattr(settings, "managed_files_enabled", True)
-    store = LocalFileArtifactStore(tmp_path / "store")
-    with session_factory() as session:
-        state = managed_input_upload.begin_upload(
-            session,
-            adapter["id"],
-            original_filename="recover.txt",
-            content_type="text/plain",
-            store=store,
-        )
-
-    def unavailable_store(_root: str) -> LocalFileArtifactStore:
-        raise OSError("simulated store outage")
-
-    monkeypatch.setattr(managed_input_api, "LocalFileArtifactStore", unavailable_store)
-    recovered = api_client.get(
-        f"/api/adapters/{adapter['id']}/input-artifacts/sessions/{state.upload_session_id}"
-    )
-    renewed = api_client.post(
-        f"/api/adapters/{adapter['id']}/input-artifacts/sessions/{state.upload_session_id}/renew"
-    )
-    assert recovered.status_code == 503
-    assert recovered.json()["detail"]["code"] == "artifact_store_unavailable"
-    assert renewed.status_code == 503
-    assert renewed.json()["detail"]["code"] == "artifact_store_unavailable"
 
 
 def test_orphan_audit_quarantines_only_old_random_objects(tmp_path: Path) -> None:

@@ -242,7 +242,7 @@ def test_c0_execution_snapshot_and_v2_claim_credentials_are_immutable(
     assert execution["workspace_cleanup_attempt_timeout_seconds_snapshot"] == 5
     assert execution["workspace_cleanup_total_timeout_seconds_snapshot"] == 20
     assert execution["claim_deadline_at"] is not None
-    assert execution["workspace_cleanup_status"] is None
+    assert execution["workspace_cleanup_status"] == "pending"
     assert "claim_token_hash" not in execution_response.text
     assert "cleanup_receipt_token_hash" not in execution_response.text
 
@@ -291,7 +291,7 @@ def test_c0_v2_managed_files_claim_exposes_ordered_input_file_metadata(
         {
             "id": second_id,
             "ordinal": 0,
-            "mount_name": "input-00",
+            "mount_name": "input-00.txt",
             "original_filename": "second.txt",
             "content_type": "text/plain",
             "size_bytes": 8,
@@ -300,13 +300,23 @@ def test_c0_v2_managed_files_claim_exposes_ordered_input_file_metadata(
         {
             "id": first_id,
             "ordinal": 1,
-            "mount_name": "input-01",
+            "mount_name": "input-01.txt",
             "original_filename": "first.txt",
             "content_type": "text/plain",
             "size_bytes": 8,
             "sha256": "a" * 64,
         },
     ]
+    with session_factory() as session:
+        leases = list(
+            session.scalars(
+                select(ExecutionInputArtifactLease)
+                .where(ExecutionInputArtifactLease.execution_id == execution.json()["id"])
+                .order_by(ExecutionInputArtifactLease.ordinal)
+            )
+        )
+        assert [lease.artifact_id for lease in leases] == [second_id, first_id]
+        assert all(lease.created_at is not None for lease in leases)
 
 
 def test_c0_task_payload_preserves_nullable_artifact_sha256(
@@ -538,7 +548,53 @@ def test_c0_result_error_code_length_is_validated_before_state_change(
         assert row.status == "running"
         assert row.ended_at is None
         assert row.error_code is None
-        assert row.workspace_cleanup_status is None
+        assert row.workspace_cleanup_status == "pending"
+        assert row.workspace_cleanup_error_code is None
+
+
+@pytest.mark.parametrize(
+    ("cleanup_status", "cleanup_code"),
+    [
+        ("deferred", None),
+        ("deferred", "workspace_cleanup_unknown"),
+        ("completed", "workspace_cleanup_failed"),
+    ],
+)
+def test_c0_result_rejects_ambiguous_cleanup_state_before_state_change(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    cleanup_status: str,
+    cleanup_code: str | None,
+) -> None:
+    worker = _register_worker(
+        api_client,
+        f"c0-result-cleanup-{cleanup_status}-{cleanup_code}",
+        protocol_version=2,
+    )
+    adapter = create_adapter(api_client, name=f"c0-result-cleanup-{cleanup_status}-{cleanup_code}")
+    save_version(api_client, adapter["id"])
+    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert execution.status_code == 202, execution.text
+    execution_id = execution.json()["id"]
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+
+    result = api_client.post(
+        f"/api/workers/{worker['id']}/executions/{execution_id}/result",
+        json={
+            "status": "succeeded",
+            "workspace_cleanup_status": cleanup_status,
+            "workspace_cleanup_error_code": cleanup_code,
+        },
+        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
+    )
+    assert result.status_code == 422, result.text
+
+    with session_factory() as session:
+        row = session.get(Execution, execution_id)
+        assert row is not None
+        assert row.status == "running"
+        assert row.workspace_cleanup_status == "pending"
         assert row.workspace_cleanup_error_code is None
 
 
@@ -888,11 +944,15 @@ def test_c0_cleanup_receipt_route_keeps_cleanup_token_separate(
     execution_id = execution.json()["id"]
     result = api_client.post(
         f"/api/workers/{worker['id']}/executions/{execution_id}/result",
-        json={"status": "succeeded", "workspace_cleanup_status": "deferred"},
+        json={
+            "status": "succeeded",
+            "workspace_cleanup_status": "deferred",
+            "workspace_cleanup_error_code": "workspace_cleanup_failed",
+        },
         headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
     )
     assert result.status_code == 200, result.text
-    receipt_path = f"/api/workers/{worker['id']}/executions/{execution_id}/cleanup-receipt"
+    receipt_path = f"/api/workers/executions/{execution_id}/workspace-cleanup"
     missing = api_client.post(receipt_path, json={"status": "completed"}, headers=WORKER_HEADERS)
     assert missing.status_code == 422
     assert missing.json()["detail"]["code"] == "execution_cleanup_token_invalid"

@@ -15,10 +15,11 @@ Contract summary (the Wave B3 UI and every future caller rely on it):
   content, filenames or base64 data.
 - Images are only accepted when the Provider capability table says the
   Provider natively supports them; DLR never OCRs an image to fake vision.
-- PDF / DOCX / text / code are parsed server-side into bounded UTF-8 text
+- PDF / DOCX / XLS / XLSX / text / code are parsed server-side into bounded UTF-8 text
   that joins the request context. DOCX uses only the stdlib (``zipfile`` +
-  ``xml.etree``); PDF uses the pinned, pure-Python ``pypdf`` (BSD-3-Clause,
-  no transitive deps, headless-container friendly).
+  ``xml.etree``); XLS uses the pinned, in-memory ``xlrd`` BIFF parser; PDF uses
+  the pinned, pure-Python ``pypdf`` (BSD-3-Clause, no transitive deps,
+  headless-container friendly).
 - Everything stays in memory: no temp files, no database rows, no Thread,
   no logs. Success, validation failure, parse failure and timeout all leave
   nothing behind.
@@ -30,10 +31,13 @@ import io
 import threading
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
+import xlrd
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
@@ -54,6 +58,15 @@ PARSE_TIMEOUT_SECONDS = 30.0
 MAX_DOCX_MEMBER_BYTES = 16 * 1024 * 1024
 MAX_DOCX_TOTAL_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_DOCX_INFLATION_RATIO = 50
+ZIP_LOCAL_FILE_HEADER_SIGNATURE = b"PK\x03\x04"
+ZIP_LOCAL_FILE_HEADER_SIZE = 30
+
+# xlrd parses the complete BIFF workbook in memory. These additional iteration
+# bounds keep a workbook with a very large declared sheet dimension from
+# spending the entire parser deadline walking empty rows/cells after the file
+# has already passed the 6 MiB decoded-size limit.
+MAX_XLS_ROWS = 100_000
+MAX_XLS_COLUMNS = 16_384
 
 TRUNCATION_MARKER = "\n...[attachment text truncated by DLR context bound]..."
 
@@ -83,8 +96,12 @@ ATTACHMENT_ERROR_STATUS: dict[str, int] = {
 IMAGE_CATEGORY = "image"
 PDF_CATEGORY = "pdf"
 DOCX_CATEGORY = "docx"
+XLS_CATEGORY = "xls"
+XLSX_CATEGORY = "xlsx"
 TEXT_CATEGORY = "text"
 CODE_CATEGORY = "code"
+XLS_MIME = "application/vnd.ms-excel"
+XLS_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 _TEXT_EXTENSIONS = frozenset(
     {
@@ -138,6 +155,8 @@ MIME_EXTENSIONS: dict[str, frozenset[str]] = {
     "image/webp": frozenset({"webp"}),
     "application/pdf": frozenset({"pdf"}),
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": frozenset({"docx"}),
+    XLS_MIME: frozenset({"xls"}),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": frozenset({"xlsx"}),
     "text/plain": _TEXT_EXTENSIONS | _CODE_EXTENSIONS,
     "text/markdown": frozenset({"md", "markdown"}),
     "text/csv": frozenset({"csv"}),
@@ -163,6 +182,8 @@ _MIME_CATEGORY: dict[str, str] = {
     "image/webp": IMAGE_CATEGORY,
     "application/pdf": PDF_CATEGORY,
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": DOCX_CATEGORY,
+    XLS_MIME: XLS_CATEGORY,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": XLSX_CATEGORY,
     "text/plain": TEXT_CATEGORY,
     "text/markdown": TEXT_CATEGORY,
     "text/csv": TEXT_CATEGORY,
@@ -292,6 +313,13 @@ def _sniff(content_type: str, data: bytes) -> None:
         and not data.startswith(b"PK\x03\x04")
     ):
         raise AttachmentError("ai_attachment_type_unsupported")
+    if (
+        content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        and not data.startswith(b"PK\x03\x04")
+    ):
+        raise AttachmentError("ai_attachment_type_unsupported")
+    if content_type == XLS_MIME and not data.startswith(XLS_MAGIC):
+        raise AttachmentError("ai_attachment_type_unsupported")
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +386,73 @@ def _parse_pdf(data: bytes, limit_chars: int) -> tuple[str, bool]:
     return _truncate(joined, limit_chars)
 
 
-def _check_archive_safety(archive: zipfile.ZipFile) -> None:
+def _actual_archive_member_size(data: bytes, info: zipfile.ZipInfo) -> int:
+    """Verify one ZIP member against its actual bounded decompression stream.
+
+    ``ZipInfo.file_size`` and CRC come from the attacker-controlled central
+    directory.  Python's ``ZipExtFile`` intentionally stops at that declared
+    size, so a forged short size/CRC can hide a much larger deflate stream.
+    Read the raw member stream with a bounded decompressor before any XML
+    parser is allowed to trust the archive metadata.
+    """
+    header_start = info.header_offset
+    header_end = header_start + ZIP_LOCAL_FILE_HEADER_SIZE
+    if header_start < 0 or header_end > len(data):
+        raise AttachmentError("ai_attachment_unsafe_archive")
+    header = data[header_start:header_end]
+    if header[:4] != ZIP_LOCAL_FILE_HEADER_SIGNATURE:
+        raise AttachmentError("ai_attachment_unsafe_archive")
+    compression_method = int.from_bytes(header[8:10], "little")
+    filename_length = int.from_bytes(header[26:28], "little")
+    extra_length = int.from_bytes(header[28:30], "little")
+    payload_start = header_end + filename_length + extra_length
+    payload_end = payload_start + info.compress_size
+    if (
+        info.flag_bits & 0x1
+        or compression_method != info.compress_type
+        or payload_start < header_end
+        or payload_end < payload_start
+        or payload_end > len(data)
+    ):
+        raise AttachmentError("ai_attachment_unsafe_archive")
+
+    compressed = data[payload_start:payload_end]
+    checksum = 0
+    if info.compress_type == zipfile.ZIP_STORED:
+        actual_size = len(compressed)
+        checksum = zlib.crc32(compressed)
+    elif info.compress_type == zipfile.ZIP_DEFLATED:
+        decompressor = zlib.decompressobj(-zlib.MAX_WBITS)
+        actual_size = 0
+        for offset in range(0, len(compressed), 64 * 1024):
+            pending = compressed[offset : offset + 64 * 1024]
+            while pending:
+                remaining = MAX_DOCX_MEMBER_BYTES + 1 - actual_size
+                try:
+                    output = decompressor.decompress(pending, remaining)
+                except zlib.error:
+                    raise AttachmentError("ai_attachment_parse_failed") from None
+                actual_size += len(output)
+                checksum = zlib.crc32(output, checksum)
+                if actual_size > MAX_DOCX_MEMBER_BYTES:
+                    raise AttachmentError("ai_attachment_unsafe_archive")
+                next_pending = decompressor.unconsumed_tail
+                if next_pending and not output and len(next_pending) == len(pending):
+                    raise AttachmentError("ai_attachment_parse_failed")
+                pending = next_pending
+        if not decompressor.eof or decompressor.unused_data:
+            raise AttachmentError("ai_attachment_parse_failed")
+    else:
+        # OOXML only needs stored/deflated members. Other methods cannot be
+        # independently size-verified here and are rejected before parsing.
+        raise AttachmentError("ai_attachment_unsafe_archive")
+
+    if actual_size != info.file_size or checksum & 0xFFFFFFFF != info.CRC:
+        raise AttachmentError("ai_attachment_unsafe_archive")
+    return actual_size
+
+
+def _check_archive_safety(archive: zipfile.ZipFile, data: bytes) -> None:
     infos = archive.infolist()
     uncompressed_total = 0
     compressed_total = 0
@@ -366,9 +460,8 @@ def _check_archive_safety(archive: zipfile.ZipFile) -> None:
         name = info.filename
         if not name or name.startswith("/") or "\\" in name or ".." in name:
             raise AttachmentError("ai_attachment_unsafe_archive")
-        if info.file_size > MAX_DOCX_MEMBER_BYTES:
-            raise AttachmentError("ai_attachment_unsafe_archive")
-        uncompressed_total += info.file_size
+        actual_size = _actual_archive_member_size(data, info)
+        uncompressed_total += actual_size
         compressed_total += info.compress_size
         if uncompressed_total > MAX_DOCX_TOTAL_UNCOMPRESSED_BYTES:
             raise AttachmentError("ai_attachment_unsafe_archive")
@@ -382,7 +475,7 @@ def _parse_docx(data: bytes, limit_chars: int) -> tuple[str, bool]:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except (zipfile.BadZipFile, OSError, ValueError):
         raise AttachmentError("ai_attachment_parse_failed") from None
-    _check_archive_safety(archive)
+    _check_archive_safety(archive, data)
     try:
         with archive.open("word/document.xml") as handle:
             xml_data = handle.read(MAX_DOCX_TOTAL_UNCOMPRESSED_BYTES + 1)
@@ -419,6 +512,206 @@ def _parse_docx(data: bytes, limit_chars: int) -> tuple[str, bool]:
         # no-text contract is consistent with the PDF and text paths.
         raise AttachmentError("ai_attachment_no_text")
     return _truncate(joined, limit_chars)
+
+
+def _xls_cell_text(cell: Any) -> str:
+    """Convert one xlrd cell to a safe display value without evaluating it."""
+    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+        return ""
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return "TRUE" if cell.value else "FALSE"
+    if cell.value is None:
+        return ""
+    return str(cell.value)
+
+
+def _parse_xls(data: bytes, limit_chars: int) -> tuple[str, bool]:
+    """Extract bounded cell values from a legacy BIFF workbook in memory."""
+    workbook: Any | None = None
+    try:
+        workbook = xlrd.open_workbook(
+            file_contents=data,
+            logfile=io.StringIO(),
+            verbosity=0,
+            use_mmap=False,
+            on_demand=True,
+            ragged_rows=True,
+        )
+        rows: list[str] = []
+        total_chars = 0
+        row_count = 0
+        dimension_truncated = False
+        for sheet_index in range(workbook.nsheets):
+            sheet = workbook.sheet_by_index(sheet_index)
+            for row in sheet.get_rows():
+                row_count += 1
+                if row_count > MAX_XLS_ROWS:
+                    dimension_truncated = True
+                    break
+                values: list[str] = []
+                for column_index, cell in enumerate(row):
+                    if column_index >= MAX_XLS_COLUMNS:
+                        dimension_truncated = True
+                        break
+                    values.append(_xls_cell_text(cell))
+                row_text = "\t".join(values)
+                if row_text.strip():
+                    rows.append(row_text)
+                    total_chars += len(row_text)
+                    if total_chars > limit_chars:
+                        break
+            if total_chars > limit_chars:
+                break
+        joined = "\n".join(rows)
+        if not joined.strip():
+            raise AttachmentError("ai_attachment_no_text")
+        if dimension_truncated:
+            joined = f"{joined}\n{TRUNCATION_MARKER}"
+            bounded, _ = _truncate(joined, limit_chars)
+            return bounded, True
+        return _truncate(joined, limit_chars)
+    except AttachmentError:
+        raise
+    except Exception:  # noqa: BLE001 - xlrd exceptions are intentionally sanitized
+        raise AttachmentError("ai_attachment_parse_failed") from None
+    finally:
+        if workbook is not None:
+            with suppress(Exception):  # noqa: BLE001 - cleanup must not leak parser details
+                workbook.release_resources()
+
+
+def _xlsx_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _xlsx_text(element: ET.Element) -> str:
+    return "".join(
+        child.text or ""
+        for child in element.iter()
+        if isinstance(child.tag, str) and _xlsx_local_name(child.tag) == "t"
+    )
+
+
+def _parse_xlsx(data: bytes, limit_chars: int) -> tuple[str, bool]:
+    """Extract worksheet cell values from an XLSX archive in memory.
+
+    XLSX is a ZIP of XML parts. The same archive member and inflation bounds
+    used by DOCX are applied before reading anything, and only shared strings
+    and worksheet cell values are retained. Legacy binary .xls is dispatched
+    to the separate xlrd parser and never reaches this parser.
+    """
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except (zipfile.BadZipFile, OSError, ValueError):
+        raise AttachmentError("ai_attachment_parse_failed") from None
+
+    try:
+        _check_archive_safety(archive, data)
+        names = set(archive.namelist())
+        if "xl/workbook.xml" not in names:
+            raise AttachmentError("ai_attachment_parse_failed")
+        worksheet_names = sorted(
+            name for name in names if name.startswith("xl/worksheets/") and name.endswith(".xml")
+        )
+        if not worksheet_names:
+            raise AttachmentError("ai_attachment_parse_failed")
+
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in names:
+            try:
+                with archive.open("xl/sharedStrings.xml") as handle:
+                    current_parts: list[str] | None = None
+                    shared_budget = limit_chars
+                    for event, element in ET.iterparse(handle, events=("start", "end")):
+                        local_name = (
+                            _xlsx_local_name(element.tag) if isinstance(element.tag, str) else ""
+                        )
+                        if event == "start" and local_name == "si":
+                            current_parts = []
+                        elif event == "end":
+                            if local_name == "t" and current_parts is not None:
+                                current_parts.append(element.text or "")
+                            elif local_name == "si":
+                                value = "".join(current_parts or [])
+                                kept = value[: max(shared_budget, 0)]
+                                shared_strings.append(kept)
+                                shared_budget -= len(kept)
+                                current_parts = None
+                            element.clear()
+            except (RuntimeError, zipfile.BadZipFile, OSError, ValueError, NotImplementedError):
+                raise AttachmentError("ai_attachment_parse_failed") from None
+
+        rows: list[str] = []
+        total_chars = 0
+        for worksheet_name in worksheet_names:
+            try:
+                with archive.open(worksheet_name) as handle:
+                    row_values: list[str] = []
+                    for _event, element in ET.iterparse(handle, events=("end",)):
+                        local_name = (
+                            _xlsx_local_name(element.tag) if isinstance(element.tag, str) else ""
+                        )
+                        if local_name == "c":
+                            cell_type = element.attrib.get("t", "")
+                            value_node = next(
+                                (
+                                    child
+                                    for child in element
+                                    if isinstance(child.tag, str)
+                                    and _xlsx_local_name(child.tag) == "v"
+                                ),
+                                None,
+                            )
+                            raw_value = "" if value_node is None else value_node.text or ""
+                            if cell_type == "s":
+                                try:
+                                    shared_index = int(raw_value)
+                                except (TypeError, ValueError):
+                                    cell_value = ""
+                                else:
+                                    cell_value = (
+                                        shared_strings[shared_index]
+                                        if 0 <= shared_index < len(shared_strings)
+                                        else ""
+                                    )
+                            elif cell_type == "inlineStr":
+                                cell_value = _xlsx_text(element)
+                            elif cell_type == "b":
+                                cell_value = (
+                                    "TRUE"
+                                    if raw_value == "1"
+                                    else "FALSE"
+                                    if raw_value == "0"
+                                    else raw_value
+                                )
+                            else:
+                                # Numeric values, formulas and error values all
+                                # expose their safe displayed value through v.
+                                cell_value = raw_value
+                            row_values.append(cell_value)
+                            element.clear()
+                        elif local_name == "row":
+                            row_text = "\t".join(row_values)
+                            if row_text.strip():
+                                rows.append(row_text)
+                                total_chars += len(row_text)
+                                if total_chars > limit_chars:
+                                    break
+                            row_values = []
+                            element.clear()
+            except (RuntimeError, zipfile.BadZipFile, OSError, ValueError, NotImplementedError):
+                raise AttachmentError("ai_attachment_parse_failed") from None
+            if total_chars > limit_chars:
+                break
+
+        joined = "\n".join(rows)
+        if not joined.strip():
+            raise AttachmentError("ai_attachment_no_text")
+        return _truncate(joined, limit_chars)
+    except ET.ParseError:
+        raise AttachmentError("ai_attachment_parse_failed") from None
+    finally:
+        archive.close()
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +809,14 @@ def process_attachment(
     elif category == DOCX_CATEGORY:
         text, truncated = _with_timeout(
             PARSE_TIMEOUT_SECONDS, lambda: _parse_docx(data, char_budget)
+        )
+    elif category == XLS_CATEGORY:
+        text, truncated = _with_timeout(
+            PARSE_TIMEOUT_SECONDS, lambda: _parse_xls(data, char_budget)
+        )
+    elif category == XLSX_CATEGORY:
+        text, truncated = _with_timeout(
+            PARSE_TIMEOUT_SECONDS, lambda: _parse_xlsx(data, char_budget)
         )
     else:
         text, truncated = _with_timeout(

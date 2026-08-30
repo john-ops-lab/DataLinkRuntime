@@ -149,7 +149,11 @@ def _resolve_config(
             runtime_input=override,
             source_type="json",
             revision=config.revision,
-            snapshot={"source_type": "json", "revision": config.revision},
+            snapshot={
+                "source_type": "json",
+                "revision": config.revision,
+                "legacy_override": True,
+            },
         )
     if config.source_type == "remote_files":
         raise domain_error(
@@ -262,15 +266,6 @@ def validate_saved_config(config: AdapterInputConfig, *, session: Session | None
     )
 
 
-def _set_json_config(config: AdapterInputConfig, value: object) -> None:
-    """Set a legacy-mirrored JSON value on a locked config and advance once."""
-    config.source_type = "json"
-    config.json_value = JSON.NULL if value is None else value
-    config.retention_mode = "system_default"
-    config.retention_seconds = None
-    config.revision += 1
-
-
 def _legacy_schedule_value(config: AdapterInputConfig) -> object:
     """Return the compatibility mirror value for the old Schedule column."""
     return config.json_value if config.source_type == "json" else None
@@ -312,7 +307,11 @@ def input_config_response(
     config: AdapterInputConfig, *, session: Session | None = None
 ) -> AdapterInputConfigResponse:
     """Build a public response without operational artifact material."""
-    current = _current_bindings(session, config.adapter_id) if session is not None else []
+    current = (
+        _current_bindings(session, config.adapter_id)
+        if session is not None and config.source_type == "managed_files"
+        else []
+    )
     current_artifacts = [artifact for _, artifact in current]
     now = (
         database_now(session)
@@ -546,6 +545,41 @@ def upsert_input_config(
         )
     _require_user_runtime_unlocked(session, adapter, schedule)
 
+    _apply_input_config_update_locked(session, config, schedule, data)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise domain_error(
+            422,
+            InputConfigErrorCode.INVALID.value,
+            "Input configuration is invalid",
+        ) from None
+    session.refresh(config)
+    return config
+
+
+def _apply_input_config_update_locked(
+    session: Session,
+    config: AdapterInputConfig,
+    schedule: AdapterSchedule | None,
+    data: AdapterInputConfigUpsert,
+) -> None:
+    """Apply one locked InputConfig transition without committing.
+
+    Public InputConfig writes and the legacy Schedule mirror both enter this
+    state transition after acquiring Adapter -> Schedule -> InputConfig. The
+    caller owns Runtime Lock policy and the final transaction boundary.
+    """
+    adapter_id = int(config.adapter_id)
+    if config.revision != data.expected_revision:
+        raise domain_error(
+            409,
+            InputConfigErrorCode.REVISION_CONFLICT.value,
+            "Adapter input configuration revision is stale",
+            {"expected_revision": data.expected_revision, "current_revision": config.revision},
+        )
+
     if data.source_type == "remote_files":
         raise domain_error(
             422,
@@ -649,17 +683,63 @@ def upsert_input_config(
     # Scheduler never reads this value; both writes are in this transaction.
     if schedule is not None:
         schedule.input = _legacy_schedule_value(config)
-    try:
-        session.commit()
-    except IntegrityError:
-        session.rollback()
+    session.flush()
+
+
+def apply_legacy_schedule_input_locked(
+    session: Session,
+    config: AdapterInputConfig,
+    schedule: AdapterSchedule | None,
+    value: object,
+) -> None:
+    """Mirror an explicit legacy Schedule JSON value through the domain path."""
+    _apply_input_config_update_locked(
+        session,
+        config,
+        schedule,
+        AdapterInputConfigUpsert(
+            expected_revision=config.revision,
+            source_type="json",
+            json_value=value,
+        ),
+    )
+
+
+def remove_ready_artifact(
+    session: Session,
+    adapter_id: int,
+    artifact_id: int,
+    *,
+    expected_revision: int,
+) -> AdapterInputConfig:
+    """Remove one current READY binding through the revisioned domain path."""
+    config = session.get(AdapterInputConfig, int(adapter_id))
+    if config is None or config.source_type != "managed_files":
         raise domain_error(
-            422,
-            InputConfigErrorCode.INVALID.value,
-            "Input configuration is invalid",
-        ) from None
-    session.refresh(config)
-    return config
+            409,
+            ManagedInputErrorCode.ARTIFACT_NOT_READY.value,
+            "Input Artifact is not in the current managed file selection",
+        )
+    artifact_ids = [int(artifact.id) for _, artifact in _current_bindings(session, int(adapter_id))]
+    if int(artifact_id) not in artifact_ids:
+        raise domain_error(
+            409,
+            ManagedInputErrorCode.ARTIFACT_NOT_READY.value,
+            "Input Artifact is not in the current managed file selection",
+        )
+    return upsert_input_config(
+        session,
+        int(adapter_id),
+        AdapterInputConfigUpsert(
+            expected_revision=expected_revision,
+            source_type="managed_files",
+            artifact_ids=[value for value in artifact_ids if value != int(artifact_id)],
+            retention=InputRetention(
+                mode=cast(InputRetentionMode, config.retention_mode),
+                seconds=config.retention_seconds,
+            ),
+        ),
+    )
 
 
 def reconcile_current_bindings(
@@ -700,9 +780,9 @@ def reconcile_current_bindings(
             "Current input binding is invalid",
             {"reason": ManagedInputErrorCode.ARTIFACT_NOT_FOUND.value},
         )
-    # Keep active Execution rows locked after Artifact rows. The Execution
-    # snapshot is immutable and there is no Lease table in this B2 baseline;
-    # leaving the active row and its snapshot untouched is the protection.
+    # Keep active Execution rows locked after Artifact rows so lifecycle
+    # reconciliation follows the published ordering. Immutable snapshots stay
+    # untouched; durable Artifact Leases independently protect Blob deletion.
     session.scalars(
         select(Execution)
         .where(

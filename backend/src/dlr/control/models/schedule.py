@@ -55,6 +55,7 @@ class AdapterSchedule(Base):
     # for repair; the legacy ``input`` column stays during the compatibility
     # window and is not the Scheduler's long-term source of truth.
     last_blocked_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_blocked_detail: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     last_blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_processed_due_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

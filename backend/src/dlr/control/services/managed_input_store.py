@@ -20,7 +20,6 @@ from dlr.control.services.managed_input_upload import (
     expand_upload_reservation,
     expire_upload_reservations,
     list_staged,
-    recover_upload_session,
     renew_upload_reservation,
 )
 
@@ -42,6 +41,5 @@ __all__ = [
     "expand_upload_reservation",
     "expire_upload_reservations",
     "list_staged",
-    "recover_upload_session",
     "renew_upload_reservation",
 ]

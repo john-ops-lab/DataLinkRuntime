@@ -30,7 +30,10 @@ from pathlib import Path
 from types import ModuleType
 
 _WORKSPACE_NAME_PATTERN = re.compile(r"dlr-exec-([1-9][0-9]*)\Z")
-_MOUNT_NAME_PATTERN = re.compile(r"input-([0-9]{2})\Z")
+# Control is the single allowlist authority. Runtime validates only the safe
+# opaque grammar it receives, so adding an allowed product suffix cannot make
+# the three harnesses diverge.
+_MOUNT_NAME_PATTERN = re.compile(r"input-([0-9]{2})(?:\.[a-z0-9]{1,10})?\Z")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _MANIFEST_FIELDS = frozenset(
     {

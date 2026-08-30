@@ -1,0 +1,317 @@
+{
+  "schema": "issue127-e0-compose-runtime-v1",
+  "project": "dlr-i127-e0-r2-141",
+  "ao_session": "datalinkruntime-141-e0-r2",
+  "base_url": "http://127.0.0.1:8925",
+  "managed_files_enabled": true,
+  "fixtures": [
+    {
+      "name": "language-python",
+      "adapter_id": 1,
+      "execution_id": 12,
+      "artifact_id": 11
+    },
+    {
+      "name": "language-javascript",
+      "adapter_id": 2,
+      "execution_id": 13,
+      "artifact_id": 12
+    },
+    {
+      "name": "language-java",
+      "adapter_id": 3,
+      "execution_id": 14,
+      "artifact_id": 13
+    },
+    {
+      "name": "browser-source",
+      "adapter_id": 1,
+      "purpose": "Playwright target adapter"
+    }
+  ],
+  "checks": [
+    {
+      "name": "capability",
+      "response_status": 200,
+      "managed_files_enabled": true,
+      "ready": true,
+      "status": "PASS"
+    },
+    {
+      "name": "safe-admin-settings",
+      "response_status": 200,
+      "has_usage": true,
+      "forbidden_fields": [],
+      "status": "PASS"
+    },
+    {
+      "name": "runtime-python",
+      "adapter_id": 1,
+      "execution_id": 12,
+      "execution_status": "succeeded",
+      "source_type": "managed_files",
+      "input_files": 1,
+      "status": "PASS"
+    },
+    {
+      "name": "runtime-javascript",
+      "adapter_id": 2,
+      "execution_id": 13,
+      "execution_status": "succeeded",
+      "source_type": "managed_files",
+      "input_files": 1,
+      "status": "PASS"
+    },
+    {
+      "name": "runtime-java",
+      "adapter_id": 3,
+      "execution_id": 14,
+      "execution_status": "succeeded",
+      "source_type": "managed_files",
+      "input_files": 1,
+      "status": "PASS"
+    },
+    {
+      "name": "schedule-run",
+      "execution_id": 15,
+      "execution_status": "succeeded",
+      "status": "PASS"
+    },
+    {
+      "name": "schedule-run-now",
+      "execution_id": 16,
+      "execution_status": "succeeded",
+      "status": "PASS"
+    },
+    {
+      "name": "quota-enforcement",
+      "adapter_id": 5,
+      "response_status": 409,
+      "error_code": "adapter_input_quota_exceeded",
+      "status": "PASS"
+    },
+    {
+      "name": "expiry-gc",
+      "adapter_id": 6,
+      "artifact_id": 17,
+      "artifact_status": "DELETED",
+      "capacity_actual_before": 74,
+      "capacity_actual_after": 74,
+      "capacity_reserved_bytes": 0,
+      "status": "PASS"
+    },
+    {
+      "name": "adapter-delete-gc",
+      "adapter_id": 7,
+      "delete_status": 204,
+      "deletion_jobs_completed": 1,
+      "deletion_jobs_total": 1,
+      "status": "PASS"
+    },
+    {
+      "name": "single-control-resource-ownership",
+      "container_count": 5,
+      "control_count": 1,
+      "control_artifact_mounts": 1,
+      "worker_artifact_mounts": 0,
+      "containers": [
+        {
+          "name": "dlr-i127-e0-r2-141-worker-1",
+          "service": "worker",
+          "ao_session": "datalinkruntime-141-e0-r2",
+          "status": "running",
+          "health": "healthy",
+          "mounts": [
+            {
+              "destination_class": "worker_runtime",
+              "read_only": false
+            },
+            {
+              "destination_class": "worker_journal",
+              "read_only": false
+            },
+            {
+              "destination_class": "platform_logs",
+              "read_only": false
+            }
+          ]
+        },
+        {
+          "name": "dlr-i127-e0-r2-141-account-web-1",
+          "service": "account-web",
+          "ao_session": "datalinkruntime-141-e0-r2",
+          "status": "running",
+          "health": "healthy",
+          "mounts": [
+            {
+              "destination_class": "platform_logs",
+              "read_only": false
+            }
+          ]
+        },
+        {
+          "name": "dlr-i127-e0-r2-141-web-1",
+          "service": "web",
+          "ao_session": "datalinkruntime-141-e0-r2",
+          "status": "running",
+          "health": "healthy",
+          "mounts": [
+            {
+              "destination_class": "platform_logs",
+              "read_only": false
+            }
+          ]
+        },
+        {
+          "name": "dlr-i127-e0-r2-141-control-1",
+          "service": "control",
+          "ao_session": "datalinkruntime-141-e0-r2",
+          "status": "running",
+          "health": "healthy",
+          "mounts": [
+            {
+              "destination_class": "artifact_store",
+              "read_only": false
+            },
+            {
+              "destination_class": "platform_logs",
+              "read_only": false
+            }
+          ]
+        },
+        {
+          "name": "dlr-i127-e0-r2-141-postgres-1",
+          "service": "postgres",
+          "ao_session": "datalinkruntime-141-e0-r2",
+          "status": "running",
+          "health": "healthy",
+          "mounts": [
+            {
+              "destination_class": "postgres_data",
+              "read_only": false
+            },
+            {
+              "destination_class": "postgres_data",
+              "read_only": false
+            }
+          ]
+        }
+      ],
+      "status": "PASS"
+    },
+    {
+      "name": "sensitive-value-scan",
+      "inspected_services": [
+        "control",
+        "worker",
+        "web",
+        "account-web"
+      ],
+      "matches": 0,
+      "scanned_line_count": 680,
+      "status": "PASS"
+    }
+  ],
+  "race": null,
+  "resource_ownership": {
+    "containers": [
+      {
+        "name": "dlr-i127-e0-r2-141-worker-1",
+        "service": "worker",
+        "ao_session": "datalinkruntime-141-e0-r2",
+        "status": "running",
+        "health": "healthy",
+        "mounts": [
+          {
+            "destination_class": "worker_runtime",
+            "read_only": false
+          },
+          {
+            "destination_class": "worker_journal",
+            "read_only": false
+          },
+          {
+            "destination_class": "platform_logs",
+            "read_only": false
+          }
+        ]
+      },
+      {
+        "name": "dlr-i127-e0-r2-141-account-web-1",
+        "service": "account-web",
+        "ao_session": "datalinkruntime-141-e0-r2",
+        "status": "running",
+        "health": "healthy",
+        "mounts": [
+          {
+            "destination_class": "platform_logs",
+            "read_only": false
+          }
+        ]
+      },
+      {
+        "name": "dlr-i127-e0-r2-141-web-1",
+        "service": "web",
+        "ao_session": "datalinkruntime-141-e0-r2",
+        "status": "running",
+        "health": "healthy",
+        "mounts": [
+          {
+            "destination_class": "platform_logs",
+            "read_only": false
+          }
+        ]
+      },
+      {
+        "name": "dlr-i127-e0-r2-141-control-1",
+        "service": "control",
+        "ao_session": "datalinkruntime-141-e0-r2",
+        "status": "running",
+        "health": "healthy",
+        "mounts": [
+          {
+            "destination_class": "artifact_store",
+            "read_only": false
+          },
+          {
+            "destination_class": "platform_logs",
+            "read_only": false
+          }
+        ]
+      },
+      {
+        "name": "dlr-i127-e0-r2-141-postgres-1",
+        "service": "postgres",
+        "ao_session": "datalinkruntime-141-e0-r2",
+        "status": "running",
+        "health": "healthy",
+        "mounts": [
+          {
+            "destination_class": "postgres_data",
+            "read_only": false
+          },
+          {
+            "destination_class": "postgres_data",
+            "read_only": false
+          }
+        ]
+      }
+    ],
+    "expected_session": "datalinkruntime-141-e0-r2",
+    "control_count": 1,
+    "control_artifact_mounts": 1,
+    "worker_artifact_mounts": 0
+  },
+  "sensitive_scan": {
+    "inspected_services": [
+      "control",
+      "worker",
+      "web",
+      "account-web"
+    ],
+    "matches": 0,
+    "scanned_line_count": 680
+  },
+  "machine_gate": "PASS",
+  "human_acceptance": "待人工验收"
+}
