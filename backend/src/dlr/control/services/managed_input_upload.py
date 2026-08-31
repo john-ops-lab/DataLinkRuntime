@@ -14,6 +14,7 @@ import secrets
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import NoReturn
 
 from fastapi import HTTPException
@@ -70,6 +71,23 @@ class UploadSessionState:
     # use this snapshot between bounded growth commits instead of querying the
     # policy database for every chunk.
     min_free_space_bytes: int = 0
+
+
+class AbortUploadOutcome(StrEnum):
+    """Database-authoritative disposition of one compensation attempt."""
+
+    CANCELLED = "cancelled"
+    CLEANUP_RETRY = "cleanup_retry"
+    FINALIZED = "finalized"
+    INCONSISTENT = "inconsistent"
+
+
+@dataclass(frozen=True)
+class AbortUploadResult:
+    """Tell callers whether terminal database state permits path cleanup."""
+
+    outcome: AbortUploadOutcome
+    cleanup_authorized: bool
 
 
 def utcnow() -> datetime:
@@ -632,7 +650,7 @@ def abort_upload(
     *,
     error_code: str = ManagedInputErrorCode.UPLOAD_FAILED.value,
     store: LocalFileArtifactStore | None = None,
-) -> None:
+) -> AbortUploadResult:
     """Cancel an active writer exactly once; repeated compensation is safe."""
     _lock_adapter(session, adapter_id)
     capacity = _lock_capacity(session)
@@ -640,27 +658,69 @@ def abort_upload(
     artifact = _artifact_for_session(session, adapter_id, upload_session_id)
     key = artifact.storage_key if artifact is not None else None
     now = utcnow()
-    if reservation.status == ManagedInputReservationStatus.ACTIVE:
+    artifact_status = artifact.status if artifact is not None else None
+    transitioned = False
+    cleanup_authorized = False
+    if reservation.status == ManagedInputReservationStatus.CONSUMED or artifact_status in {
+        ManagedInputArtifactStatus.STAGED,
+        ManagedInputArtifactStatus.READY,
+        ManagedInputArtifactStatus.PENDING_DELETE,
+        ManagedInputArtifactStatus.DELETING,
+        ManagedInputArtifactStatus.DELETE_FAILED,
+    }:
+        outcome = AbortUploadOutcome.FINALIZED
+    elif reservation.status == ManagedInputReservationStatus.ACTIVE and artifact_status in {
+        None,
+        ManagedInputArtifactStatus.UPLOADING,
+        ManagedInputArtifactStatus.DELETED,
+    }:
         _release_reserved(capacity, int(reservation.reserved_bytes))
         reservation.status = ManagedInputReservationStatus.CANCELLED
-        _mark_upload_deleted(artifact, now, error_code)
-    elif artifact is not None and artifact.status == ManagedInputArtifactStatus.UPLOADING:
-        _mark_upload_deleted(artifact, now, error_code)
+        if artifact_status == ManagedInputArtifactStatus.UPLOADING:
+            _mark_upload_deleted(artifact, now, error_code)
+        transitioned = True
+        cleanup_authorized = (
+            artifact is not None and artifact.status == ManagedInputArtifactStatus.DELETED
+        )
+        outcome = AbortUploadOutcome.CANCELLED
+    elif (
+        reservation.status
+        in {
+            ManagedInputReservationStatus.CANCELLED,
+            ManagedInputReservationStatus.EXPIRED,
+        }
+        and artifact_status == ManagedInputArtifactStatus.DELETED
+    ):
+        cleanup_authorized = True
+        outcome = AbortUploadOutcome.CLEANUP_RETRY
+    else:
+        outcome = AbortUploadOutcome.INCONSISTENT
     session.commit()
-    if key is not None and store is not None:
+    if cleanup_authorized and key is not None and store is not None:
         _cleanup_paths(store, key)
-    logger.info(
-        "managed input upload aborted adapter=%s artifact=%s code=%s",
-        adapter_id,
-        artifact.id if artifact is not None else None,
-        error_code,
-    )
-    record_audit_event(
-        "upload",
-        "failed",
-        adapter_id=adapter_id,
-        artifact_id=int(artifact.id) if artifact is not None else None,
-        code=error_code,
+    if transitioned:
+        logger.info(
+            "managed input upload aborted adapter=%s artifact=%s code=%s",
+            adapter_id,
+            artifact.id if artifact is not None else None,
+            error_code,
+        )
+        record_audit_event(
+            "upload",
+            "failed",
+            adapter_id=adapter_id,
+            artifact_id=int(artifact.id) if artifact is not None else None,
+            code=error_code,
+        )
+    elif outcome == AbortUploadOutcome.INCONSISTENT:
+        logger.warning(
+            "managed input upload compensation state mismatch adapter=%s artifact=%s",
+            adapter_id,
+            artifact.id if artifact is not None else None,
+        )
+    return AbortUploadResult(
+        outcome=outcome,
+        cleanup_authorized=cleanup_authorized,
     )
 
 
@@ -915,6 +975,8 @@ def audit_unowned_objects(
 
 __all__ = [
     "ALLOWED_FILE_EXTENSIONS",
+    "AbortUploadOutcome",
+    "AbortUploadResult",
     "INITIAL_RESERVATION_BYTES",
     "RESERVATION_GROWTH_BYTES",
     "UploadSessionState",

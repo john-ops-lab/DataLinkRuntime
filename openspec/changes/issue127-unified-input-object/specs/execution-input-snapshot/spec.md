@@ -5,7 +5,7 @@
 ## ADDED Requirements
 
 ### Requirement: Execution 固化完整输入快照
-每个 Task Execution SHALL 在创建事务中固化 `input_source_type`、`input_config_revision`、不可变 `input_snapshot`、Adapter timeout、claim/recovery/Workspace cleanup 超时快照和 `claim_deadline_at`；协议 v2 claim 时再固化 `execution_deadline_at` 和 Token 哈希。公开 `input_snapshot` 顶层对所有来源固定使用 `source_type` 与 `revision`；只有 `managed_files` 额外包含 `artifacts`，其他来源不得携带该键。
+每个新建且可由 Worker claim 的 Execution（包括 Task manual/Schedule/run-now 与 Webhook）SHALL 在创建事务中固化 `input_source_type`、`input_config_revision`、不可变 `input_snapshot`、Adapter timeout、claim/recovery/Workspace cleanup 超时快照和 `claim_deadline_at`；协议 v2 claim 时再固化 `execution_deadline_at` 和 Token 哈希。公开 `input_snapshot` 顶层对所有来源固定使用 `source_type` 与 `revision`；只有 `managed_files` 额外包含 `artifacts`，其他来源不得携带该键。
 
 #### Scenario: JSON 输入快照
 - **WHEN** 当前配置为 `json`
@@ -23,6 +23,10 @@
 - **WHEN** 序列化 none、json、managed_files 或 remote_files 的公开 Execution snapshot
 - **THEN** 顶层只出现合同允许的 `source_type`、`revision` 与 managed_files 专属 `artifacts`，不得增加 Artifact ID、Binding、Lease、路径或 Token 键
 
+#### Scenario: Webhook 创建 Execution
+- **WHEN** 合法 Webhook 请求创建 `trigger=webhook` Execution
+- **THEN** 系统保留完整 JSON body 的 Webhook ingress 语义，并与 Task 创建路径共享数据库时间、timeout/recovery/cleanup 快照、`workspace_cleanup_status=pending` 和 claim deadline 初始化；不得把 Webhook body 解释为 Task per-run override
+
 ### Requirement: 文件 Execution 使用运行期 Lease 固定具体集合
 managed_files Execution 创建时 SHALL 在持有 Artifact 锁的同一事务中创建带 `created_at` 的有序 Lease；Lease MUST 只授权该 Execution 的 Worker 下载并阻止 Blob 在 Execution 为 pending/running 时被删除。新建 Task Execution 的 Workspace cleanup 状态 SHALL 为 `pending`，并只可由终态、stale reconciler 或合法 cleanup receipt 收敛为 `completed/deferred`；迁移前历史行可保持 NULL。
 
@@ -33,6 +37,10 @@ managed_files Execution 创建时 SHALL 在持有 Artifact 锁的同一事务中
 #### Scenario: 终态释放 Lease
 - **WHEN** Execution 进入稳定终态
 - **THEN** 业务终态、cleanup 状态和 Lease 释放在同一 Control 受锁流程中提交，且 Lease 不以独立 TTL 猜测释放
+
+#### Scenario: Adapter 删除终止 pending Execution
+- **WHEN** Adapter 删除流程把持有文件 Lease 的 pending Execution 转为 cancelled
+- **THEN** 同一事务在删除 Artifact 元数据前释放该 Execution 的 Lease；running Execution 只记录取消请求并继续保留 Lease
 
 ### Requirement: 超时快照有范围与不变量
 Control SHALL 以数据库时间计算 deadline，并在 Execution 创建时固化部署值；配置与 TaskPayload MUST 满足 `cleanup_attempt <= cleanup_total < recovery_grace` 以及 Issue 指定范围，非法部署配置阻止相关服务启动，非法 TaskPayload 不启动 Adapter。
@@ -66,6 +74,21 @@ Scheduler SHALL 在锁定同一 Schedule 行的事务中记录 due point、顶�
 #### Scenario: Worker 永未领取
 - **WHEN** pending Execution 超过 claim deadline
 - **THEN** reconciler 原子写入 ended_at、业务错误、cleanup 状态和 Lease 释放，晚到 claim 不再成功
+
+### Requirement: Worker claim 严格遵守有效 claim deadline
+Worker claim SHALL 只选择在锁后数据库时间下有效 deadline 严格晚于当前时刻的 pending Execution。查询阶段 MUST 预筛 deadline，取得 Execution 行锁后 MUST 在写入 running、Worker 或 Token 前重新采样数据库时间并终检；显式 `claim_deadline_at` 为权威，迁移前 NULL 值使用 `created_at + 当前部署 execution_claim_timeout_seconds`，不得在 claim 时续期。过期候选 SHALL 保持 pending 并交由 reconciler 形成唯一终态，不得被归类为 Lease 不可用错误。
+
+#### Scenario: 显式 deadline 已过期或恰好等于数据库时间
+- **WHEN** Worker 尝试领取 `claim_deadline_at <= clock_timestamp()` 的 pending Execution
+- **THEN** claim 不返回该任务，不写入 Worker、started_at 或 Token，后续由 reconciler 收敛
+
+#### Scenario: 历史 NULL deadline
+- **WHEN** pending Execution 的 `claim_deadline_at` 为 NULL
+- **THEN** 系统以 `created_at + 当前 claim timeout` 判断；近期记录仍可领取，已过期记录不得因本次 claim 获得新的完整等待期
+
+#### Scenario: claim 与 reconciler 竞争
+- **WHEN** Worker claim 和 stale reconciler 并发处理同一到期 Execution
+- **THEN** 无论谁先获得行锁，该 Execution 都不得进入 running；reconciler 最终只收敛一次终态与 Lease 释放
 
 ### Requirement: stale running Execution 在 Control 侧收敛
 running Execution 超过 `execution_deadline_at + recovery_grace_seconds_snapshot` SHALL 根据 Worker 健康事实进入 `timeout` 或 `failed/worker_lost`，记录 cleanup `deferred/workspace_cleanup_unknown` 并释放 Lease；系统 MUST 不自动重跑。

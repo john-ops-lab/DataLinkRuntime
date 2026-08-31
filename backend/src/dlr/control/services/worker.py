@@ -9,8 +9,8 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import BinaryIO
+from datetime import UTC, datetime, timedelta
+from typing import Any, BinaryIO
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select, update
@@ -38,6 +38,7 @@ from dlr.control.schemas.worker import (
 )
 from dlr.control.services import package_source as package_source_service
 from dlr.control.services import secrets as secrets_service
+from dlr.control.services import worker_availability
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.artifact_store import ArtifactStoreError, LocalFileArtifactStore
 from dlr.control.services.worker_protocol import (
@@ -59,6 +60,47 @@ READABLE_ARTIFACT_STATUSES = frozenset(
 )
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize PostgreSQL and injected timestamps before deadline comparison."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _database_now(session: Session) -> datetime:
+    """Sample the authoritative decision time after the candidate row is locked."""
+    return _as_utc(worker_availability.current_time(session))
+
+
+def _claim_deadline_expression() -> Any:
+    """Return the explicit or legacy effective claim deadline SQL expression."""
+    legacy_deadline = Execution.created_at + func.make_interval(
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        settings.execution_claim_timeout_seconds,
+    )
+    return func.coalesce(Execution.claim_deadline_at, legacy_deadline)
+
+
+def _effective_claim_deadline(execution: Execution) -> datetime:
+    """Resolve a historical NULL deadline without rejuvenating the row."""
+    deadline = execution.claim_deadline_at
+    if deadline is None:
+        deadline = execution.created_at + timedelta(
+            seconds=settings.execution_claim_timeout_seconds
+        )
+    return _as_utc(deadline)
+
+
+def _claim_deadline_is_open(execution: Execution, *, now: datetime) -> bool:
+    """Only a deadline strictly after the post-lock DB time remains claimable."""
+    return _effective_claim_deadline(execution) > _as_utc(now)
 
 
 def _safe_content_type(value: object) -> str:
@@ -429,8 +471,10 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
         session.refresh(cleanup)
         return CleanupTaskPayload(cleanup_id=cleanup.id, adapter_id=cleanup.adapter_id)
 
-    rejected_execution_ids: set[int] = set()
+    lease_rejected_execution_ids: set[int] = set()
+    expired_execution_ids: set[int] = set()
     while True:
+        deadline_is_open = _claim_deadline_expression() > func.clock_timestamp()
         candidate_query = (
             select(Execution)
             .join(Adapter, Adapter.id == Execution.adapter_id)
@@ -442,14 +486,16 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
                     Execution.target_worker_id.is_(None),
                     Execution.target_worker_id == worker_id,
                 ),
+                deadline_is_open,
             )
         )
         if protocol_version < 2:
             candidate_query = candidate_query.where(
                 Execution.input_source_type.in_(("none", "json"))
             )
-        if rejected_execution_ids:
-            candidate_query = candidate_query.where(Execution.id.not_in(rejected_execution_ids))
+        excluded_execution_ids = lease_rejected_execution_ids | expired_execution_ids
+        if excluded_execution_ids:
+            candidate_query = candidate_query.where(Execution.id.not_in(excluded_execution_ids))
         candidate_query = (
             candidate_query.order_by(Execution.created_at.asc(), Execution.id.asc())
             .with_for_update(skip_locked=True)
@@ -457,7 +503,7 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
         )
         execution = session.scalar(candidate_query)
         if execution is None:
-            if rejected_execution_ids:
+            if lease_rejected_execution_ids:
                 session.rollback()
                 raise domain_error(
                     409,
@@ -477,6 +523,7 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
                             Execution.target_worker_id.is_(None),
                             Execution.target_worker_id == worker_id,
                         ),
+                        _claim_deadline_expression() > func.clock_timestamp(),
                     )
                     .order_by(Execution.created_at.asc(), Execution.id.asc())
                     .limit(1)
@@ -500,9 +547,15 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
                 "worker_protocol_incompatible",
                 "This Execution requires a newer Worker protocol",
             )
-        now = session.scalar(select(func.clock_timestamp()))
-        if now is None:  # pragma: no cover - PostgreSQL always returns a value
-            raise RuntimeError("Database clock did not return a timestamp")
+        now = _database_now(session)
+        if not _claim_deadline_is_open(execution, now=now):
+            # The SQL prefilter avoids locking work already known to be stale;
+            # this post-lock check closes the query-to-lock boundary.  Leave
+            # terminalization, cleanup facts and Lease release to the
+            # reconciler's single convergence path.
+            expired_execution_ids.add(int(execution.id))
+            session.rollback()
+            continue
         claim_token: str | None = None
         cleanup_token: str | None = None
         execution.status = "running"
@@ -541,7 +594,7 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
                 and isinstance(detail, dict)
                 and detail.get("code") == "execution_input_lease_unavailable"
             ):
-                rejected_execution_ids.add(int(execution.id))
+                lease_rejected_execution_ids.add(int(execution.id))
                 session.rollback()
                 continue
             session.rollback()

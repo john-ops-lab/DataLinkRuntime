@@ -10,11 +10,13 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from conftest import WORKER_TOKEN
 from dlr.common.config import settings
 from dlr.control.models import Credential, Execution, Worker
 from dlr.control.services import secrets as secrets_service
 from dlr.control.services import webhook as webhook_service
 from dlr.control.services.retention import cleanup_execution_retention
+from dlr.worker import executor
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential
 from test_workers import register_worker
@@ -335,6 +337,99 @@ def test_success_creates_execution_from_latest_revision_on_runtime_worker(
     assert execution.version_id == version["id"]
     assert execution.target_worker_id == worker["id"]
     assert execution.input == {"event": "created"}
+
+
+def test_webhook_v2_execution_captures_required_lifecycle_snapshots(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_recovery_seconds = settings.execution_recovery_grace_seconds
+    snapshot_cleanup_attempt_seconds = settings.workspace_cleanup_attempt_timeout_seconds
+    snapshot_cleanup_total_seconds = settings.workspace_cleanup_total_timeout_seconds
+    worker_response = api_client.post(
+        "/api/workers/register",
+        json={
+            "name": "webhook-v2-snapshot-worker",
+            "capabilities": ["python"],
+            "protocol_version": 2,
+        },
+        headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
+    )
+    assert worker_response.status_code == 200, worker_response.text
+    worker = worker_response.json()
+    adapter = create_adapter(
+        api_client,
+        name="webhook-v2-snapshot",
+        adapter_type="webhook",
+        timeout_seconds=17,
+    )
+    credential = create_credential(
+        api_client,
+        name="webhook-v2-snapshot-token",
+        type_="token",
+        fields={"token": WEBHOOK_TOKEN},
+    )
+    configured = put_webhook(api_client, adapter["id"], credential["id"], enabled=False)
+    assert configured.status_code == 200, configured.text
+    save_version(api_client, adapter["id"])
+    enabled = put_webhook(api_client, adapter["id"], credential["id"], enabled=True)
+    assert enabled.status_code == 200, enabled.text
+
+    accepted = post_hook(
+        api_client,
+        enabled.json()["public_id"],
+        WEBHOOK_TOKEN,
+        {"event": "v2"},
+    )
+    assert accepted.status_code == 202, accepted.text
+    execution_id = accepted.json()["execution_id"]
+    with session_factory() as session:
+        execution = session.get(Execution, execution_id)
+        assert execution is not None
+        assert execution.created_at is not None
+        assert execution.timeout_seconds_snapshot == 17
+        assert execution.recovery_grace_seconds_snapshot == snapshot_recovery_seconds
+        assert execution.workspace_cleanup_attempt_timeout_seconds_snapshot == (
+            snapshot_cleanup_attempt_seconds
+        )
+        assert execution.workspace_cleanup_total_timeout_seconds_snapshot == (
+            snapshot_cleanup_total_seconds
+        )
+        assert execution.workspace_cleanup_status == "pending"
+        assert execution.claim_deadline_at is not None
+        assert int((execution.claim_deadline_at - execution.created_at).total_seconds()) == (
+            settings.execution_claim_timeout_seconds
+        )
+
+    # A rolling deployment may change the process defaults after this row was
+    # created.  The v2 payload must still use the immutable per-Execution facts.
+    monkeypatch.setattr(settings, "workspace_cleanup_attempt_timeout_seconds", 6)
+    monkeypatch.setattr(settings, "workspace_cleanup_total_timeout_seconds", 21)
+    monkeypatch.setattr(settings, "execution_recovery_grace_seconds", 61)
+
+    claimed = api_client.post(
+        f"/api/workers/{worker['id']}/tasks/claim",
+        params={"wait_seconds": 0},
+        headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
+    )
+    assert claimed.status_code == 200, claimed.text
+    payload = claimed.json()
+    assert payload["execution_id"] == execution_id
+    assert payload["protocol_version"] == 2
+    assert payload["recovery_grace_seconds_snapshot"] == snapshot_recovery_seconds
+    assert payload["workspace_cleanup_attempt_timeout_seconds_snapshot"] == (
+        snapshot_cleanup_attempt_seconds
+    )
+    assert payload["workspace_cleanup_total_timeout_seconds_snapshot"] == (
+        snapshot_cleanup_total_seconds
+    )
+    validated = executor._validated_v2_payload(payload)
+    assert validated.execution_id == execution_id
+    assert validated.cleanup_budget == (
+        float(snapshot_cleanup_attempt_seconds),
+        float(snapshot_cleanup_total_seconds),
+    )
 
 
 def test_bearer_webhook_ingress_survives_account_entry_without_csrf(

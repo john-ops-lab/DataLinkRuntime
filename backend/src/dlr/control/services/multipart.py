@@ -12,6 +12,10 @@ class MultipartParseError(ValueError):
     """Raised for malformed multipart framing or untrusted part metadata."""
 
 
+class MultipartBodyTooLargeError(MultipartParseError):
+    """Raised when the application-level total request budget is exceeded."""
+
+
 @dataclass(frozen=True)
 class MultipartPart:
     """Safe metadata for the currently open multipart part."""
@@ -64,10 +68,25 @@ class MultipartReader:
     """Incrementally parse one request body without buffering file contents."""
 
     HEADER_LIMIT = 16 * 1024
+    FIELD_LIMIT = 64 * 1024
+    EPILOGUE_LIMIT = 8 * 1024
+    REQUEST_OVERHEAD_LIMIT = 256 * 1024
 
-    def __init__(self, stream: AsyncIterable[bytes], content_type: str | None) -> None:
+    def __init__(
+        self,
+        stream: AsyncIterable[bytes],
+        content_type: str | None,
+        *,
+        max_total_bytes: int,
+    ) -> None:
         if not content_type:
             raise MultipartParseError("multipart content type is missing")
+        if (
+            isinstance(max_total_bytes, bool)
+            or not isinstance(max_total_bytes, int)
+            or max_total_bytes <= 0
+        ):
+            raise MultipartParseError("multipart body limit is invalid")
         matched = _BOUNDARY_RE.search(content_type)
         if matched is None:
             raise MultipartParseError("multipart boundary is missing")
@@ -86,6 +105,8 @@ class MultipartReader:
         self._started = False
         self._finished = False
         self._boundary = boundary_bytes
+        self._max_total_bytes = max_total_bytes
+        self._received_bytes = 0
 
     async def _fill(self, minimum: int) -> None:
         while len(self._buffer) < minimum and not self._exhausted:
@@ -97,6 +118,10 @@ class MultipartReader:
             if not isinstance(chunk, bytes):
                 raise MultipartParseError("multipart body is invalid")
             if chunk:
+                received_bytes = self._received_bytes + len(chunk)
+                if received_bytes > self._max_total_bytes:
+                    raise MultipartBodyTooLargeError("multipart body is too large")
+                self._received_bytes = received_bytes
                 self._buffer.extend(chunk)
 
     async def _headers(self) -> MultipartPart | None:
@@ -104,10 +129,17 @@ class MultipartReader:
         while True:
             position = self._buffer.find(separator)
             if position >= 0:
+                if position > self.HEADER_LIMIT:
+                    raise MultipartParseError("multipart headers are too large")
                 raw_headers = bytes(self._buffer[:position])
                 del self._buffer[: position + len(separator)]
                 break
-            if len(self._buffer) > self.HEADER_LIMIT:
+            separator_prefix_bytes = 0
+            for prefix_bytes in range(len(separator) - 1, 0, -1):
+                if self._buffer.endswith(separator[:prefix_bytes]):
+                    separator_prefix_bytes = prefix_bytes
+                    break
+            if len(self._buffer) - separator_prefix_bytes > self.HEADER_LIMIT:
                 raise MultipartParseError("multipart headers are too large")
             if self._exhausted:
                 raise MultipartParseError("multipart headers are incomplete")
@@ -194,10 +226,24 @@ class MultipartReader:
         """Consume the epilogue and reject non-whitespace trailing bytes."""
         if not self._finished:
             raise MultipartParseError("multipart body is incomplete")
-        while not self._exhausted:
-            await self._fill(len(self._buffer) + 1)
-        if self._buffer.strip():
-            raise MultipartParseError("multipart epilogue is invalid")
+        epilogue_bytes = 0
+        while True:
+            if self._buffer:
+                epilogue_bytes += len(self._buffer)
+                invalid = bool(self._buffer.strip())
+                self._buffer.clear()
+                if epilogue_bytes > self.EPILOGUE_LIMIT:
+                    raise MultipartParseError("multipart epilogue is too large")
+                if invalid:
+                    raise MultipartParseError("multipart epilogue is invalid")
+            if self._exhausted:
+                return
+            await self._fill(1)
 
 
-__all__ = ["MultipartParseError", "MultipartPart", "MultipartReader"]
+__all__ = [
+    "MultipartBodyTooLargeError",
+    "MultipartParseError",
+    "MultipartPart",
+    "MultipartReader",
+]

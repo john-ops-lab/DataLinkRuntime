@@ -264,6 +264,18 @@ Managed Input capability 增加有序 `allowed_extensions`，Web 的 Upload acce
 
 公开 Execution snapshot 顶层键固定为所有来源共有 `source_type/revision`，仅 managed_files 额外包含 `artifacts`，不得加入可操作标识。Round 1–3 期间产生的 D3/E0/E1 dirty-tree、旧栈和 partial 收据只保留为 historical/superseded，不得继续标记为当前 Candidate exact-SHA 或 APP_READY；冻结后的最终 Gate 与人工验收仍分别由 22.13、23.8、20.2/20.3 跟踪。
 
+### 22. PR 评论修复封闭上传资源与 Execution 生命周期边界
+
+上传完成与请求取消共享 reservation/Artifact 锁定状态机，但文件删除权不能只由外层协程是否收到返回值决定。abort 返回显式 outcome：它可以为自己完成的 `ACTIVE/UPLOADING→CANCELLED/DELETED`，以及已经处于 `CANCELLED/EXPIRED + DELETED` 的幂等重试授权清理；观察到 `CONSUMED` 或 `STAGED/READY/删除治理状态` 时禁止删除正式对象。数据库补偿本身失败时最多清理 `.part`，正式随机对象留给 TTL/orphan audit，优先避免形成已计费 STAGED 元数据但 Blob 缺失。
+
+自实现 multipart reader 在应用层维护累计接收预算，并在把 chunk 追加到 buffer 前检查；Header 即使与结束分隔符同 chunk 也按实际位置限长。文件 body 继续使用数据库 `max_file_bytes` 与 reservation 作为权威，framing 总预算由该值加固定余量推导；普通字段和 epilogue 使用固定小预算，第二个文件在 Header 后立即拒绝。此次不增加动态设置或 wall-clock timeout，避免为安全修复扩大配置面并误伤合法慢速大文件。
+
+Adapter stop-delete 对 pending Execution 复用既有 Lease release helper，在同一删除事务中先完成取消与 Lease 释放，再准备 Artifact deletion job；running 分支仍只请求取消并保留 Lease。`ON DELETE RESTRICT` 不改为 CASCADE，因为它继续承担阻止误删活动输入的安全边界。
+
+Execution 创建抽取窄的生命周期初始化 helper，统一数据库 `created_at`、timeout/recovery/cleanup 快照、cleanup pending 与 claim deadline。Task 路径在 resolver 得到输入材料后使用 helper，Webhook 保留自己的鉴权、JSON body 和 source/revision 语义后使用同一 helper，不把 Webhook ingress 送入 Task 兼容解析。
+
+Worker claim 与 stale reconciler 使用相同 effective deadline：显式字段优先，历史 NULL 退化为 `created_at + 当前部署 claim timeout`。candidate SQL 先筛 `deadline > DB now`，行锁后重新读取 `clock_timestamp()` 并在任何 running/Worker/Token 写入前终检；过期候选仅跳过并交给 reconciler，不能混入 Lease rejection 的 409。两层门禁关闭查询与加锁之间的边界竞争。
+
 ## Risks / Trade-offs
 
 - [LocalFileArtifactStore 只有单 Control writer] → Compose/启动 Gate、健康与文档明确限制；未来多 Control 必须先实现共享一致性 store，不静默放宽。

@@ -241,25 +241,25 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 | AC-S04 | 降配额不删现有且over_quota可观测 | managed-input-lifecycle：Managed Input设置具有单一权威来源 | 5.3, 9.2, 16.5 |
 | AC-S05 | claim/grace/cleanup唯一来源与不变量 | execution-input-snapshot：超时快照有范围与不变量 | 5.4, 10.3, 11.5 |
 | AC-L01 | UPLOADING/STAGED/READY明确且无伪事务 | managed-input-lifecycle：Artifact与Binding具有可验证状态机 | 6.3-6.5, 9.2 |
-| AC-L02 | `.part`校验和rename后才STAGED | managed-input-lifecycle：ArtifactStore保证受控、原子且不可猜测的对象路径 | 6.2-6.3, 9.3 |
-| AC-L03 | 上传完成原子核销reservation/实际容量 | managed-input-lifecycle：并发上传使用原子容量预留 | 6.3, 6.5, 9.3 |
+| AC-L02 | `.part`校验和rename后才STAGED | managed-input-lifecycle：ArtifactStore保证受控、原子且不可猜测的对象路径 | 6.2-6.3, 9.3, 25.1 |
+| AC-L03 | 上传完成原子核销reservation/实际容量 | managed-input-lifecycle：并发上传使用原子容量预留 | 6.3, 6.5, 9.3, 25.1 |
 | AC-L04 | 刷新可恢复STAGED | managed-input-lifecycle：Artifact与Binding具有可验证状态机 | 6.4, 16.2, 18.2 |
 | AC-L05 | Binding/reservation/Lease/Artifact/job约束索引完整 | managed-input-lifecycle：Artifact与Binding具有可验证状态机 | 5.2, 10.2, 19.1 |
 | AC-L06 | Binding原子替换、retention具体化、旧文件待删 | managed-input-lifecycle：保存绑定原子具体化retention | 7.1-7.3, 9.2 |
-| AC-L07 | 未保存/中断/失败释放预留并TTL清理 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 6.5, 8.1, 9.3 |
-| AC-L08 | 白名单、8文件、同名与显式替换 | managed-input-lifecycle：文件类型、名称和大小由服务端权威校验 | 6.3, 7.1-7.3, 16.2-16.3 |
+| AC-L07 | 未保存/中断/失败释放预留并TTL清理 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 6.5, 8.1, 9.3, 25.1-25.2 |
+| AC-L08 | 白名单、8文件、同名与显式替换 | managed-input-lifecycle：文件类型、名称和大小由服务端权威校验 | 6.3, 7.1-7.3, 16.2-16.3, 25.2 |
 | AC-L09 | 文件/Adapter/平台配额与低水位并发有效 | managed-input-lifecycle：磁盘低水位与容量记账覆盖所有占用阶段 | 6.3, 6.5, 9.2-9.3 |
 | AC-L10 | GC仅删无active Lease且失败可重试 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 8.1-8.2（schema-independent hook）, 10.2-10.3（真实Lease/竞争）, 14.2, 19.4 |
 | AC-L11 | stale DELETING可安全重领 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 8.1, 9.3 |
-| AC-L12 | Adapter删除与上传按行锁串行 | managed-input-lifecycle：Adapter删除与上传创建串行化 | 8.4, 9.3 |
-| AC-L13 | Adapter删除移交job/charge且只释放一次 | managed-input-lifecycle：Adapter删除与上传创建串行化 | 8.4-8.5, 9.3 |
-| AC-E01 | Execution保存revision/error/超时/摘要 | execution-input-snapshot：Execution固化完整输入快照 | 10.2-10.3, 19.1 |
+| AC-L12 | Adapter删除与上传按行锁串行 | managed-input-lifecycle：Adapter删除与上传创建串行化 | 8.4, 9.3, 25.3 |
+| AC-L13 | Adapter删除移交job/charge且只释放一次 | managed-input-lifecycle：Adapter删除与上传创建串行化 | 8.4-8.5, 9.3, 25.3 |
+| AC-E01 | Execution保存revision/error/超时/摘要 | execution-input-snapshot：Execution固化完整输入快照 | 10.2-10.3, 19.1, 25.4 |
 | AC-E02 | 文件摘要无可操作引用/路径 | execution-input-snapshot：Execution历史只暴露不可操作输入摘要 | 10.3, 17.2 |
 | AC-E03 | Execution.input/handle保持原JSON | execution-input-snapshot：Execution固化完整输入快照 | 2.1, 12.1-12.4, 14.2 |
 | AC-E04 | invalid Schedule不建Execution且推进未来点 | execution-input-snapshot：Schedule输入失效必须消费计划点而不热循环 | 2.5, 4.3, 18.2 |
 | AC-E05 | 输入修复要求停用/保存/重启且不补跑 | execution-input-snapshot：Schedule输入失效必须消费计划点而不热循环 | 2.5, 18.2 |
-| AC-E06 | 替换/删除/GC不影响既有active Execution | execution-input-snapshot：文件Execution使用运行期Lease固定具体集合 | 8.2（hook合同）, 10.2-10.3（真实Lease/竞争）, 14.2, 19.4 |
-| AC-E07 | stale pending/running稳定终态并释放Lease | execution-input-snapshot：stale pending/running Execution在Control侧收敛 | 13.1-13.2, 14.3 |
+| AC-E06 | 替换/删除/GC不影响既有active Execution | execution-input-snapshot：文件Execution使用运行期Lease固定具体集合 | 8.2（hook合同）, 10.2-10.3（真实Lease/竞争）, 14.2, 19.4, 25.3 |
+| AC-E07 | stale pending/running稳定终态并释放Lease | execution-input-snapshot：stale pending/running Execution在Control侧收敛 | 13.1-13.2, 14.3, 25.5 |
 | AC-E08 | 晚到Result不覆盖终态或重跑 | execution-input-snapshot：终态与晚到报告幂等 | 13.3, 14.3 |
 | AC-W01 | 二进制不进PG、payload无Control路径 | worker-input-protocol：TaskPayload不暴露存储路径 | 6.2, 10.4, 14.2 |
 | AC-W02 | Lease+Claim Token下载并复核size/hash | worker-input-protocol：Worker下载由Execution、Lease与Claim Token联合授权 | 11.1-11.4, 14.2 |
@@ -316,3 +316,12 @@ D0 → ┬→ D1 ─┬→ D3 → E0 → E1
 - [x] 24.3 capability 下发 `allowed_extensions`，Web 从其派生 accept/预校验/双语提示；拆分 capability 与 STAGED list 失败状态，仅对 managed_files 保存 fail-close，并通过 focused Vitest/typecheck/lint 验证 none/json 不受连带阻断。
 - [x] 24.4 固定公开 Execution snapshot 顶层键、记录锁定期替换与空 requirements 的不接受裁决，更新中英文运维说明并将 D3/E0/E1 旧收据明确标为 historical/superseded；两个 change 与全量 OpenSpec strict 均通过。
 - [ ] 24.5 完成受影响 backend/Web/迁移/浏览器/OpenSpec/安全发布 Gate；冻结、提交并对精确 SHA 复核后创建单一 PR，22.13/23.8/20.1-20.3 在各自事实完成前保持未勾选。
+
+## 25. PR #131 评论修复
+
+- [x] 25.1 修复上传 finalize 与请求取消竞争：受锁 outcome 决定正式 Blob 删除权，数据库补偿不确定时 fail-safe 保留正式对象；真实 PostgreSQL barrier 测试覆盖 finalize 先赢、abort 先赢、幂等残留清理与 `STAGED + missing Blob` 不可达。
+- [x] 25.2 为 multipart reader 增加总接收、Header、普通字段与 epilogue 字节预算，第二文件 Header 后立即拒绝；测试覆盖单 chunk 超长 Header、跨 chunk 总预算、无界普通字段/epilogue、第二文件不 drain、缺结束 boundary 有限终止及合法客户端回归。
+- [x] 25.3 在 Adapter stop-delete 的 pending 终态事务中先释放 Managed Input Lease，再移交并删除 Artifact 元数据；真实 PostgreSQL HTTP 回归验证无 FK 500、running Lease 保持及 deletion job/charge 后续治理。
+- [x] 25.4 抽取 Task/Webhook 共用的窄 Execution 生命周期初始化，保留 Webhook JSON ingress；回归验证 Webhook 新行快照完整、v2 payload 校验通过且部署设置变化不改既有快照。
+- [x] 25.5 在 Worker claim 增加 effective deadline SQL 预筛与锁后数据库时间终检；测试覆盖显式过期/等值、历史 NULL old/recent、过期不误报 Lease 409及 claim/reconciler PostgreSQL 竞争。
+- [ ] 25.6 运行受影响 backend focused、真实 PostgreSQL 并发、Ruff/format/mypy、全量 backend、两个 OpenSpec strict、diff/密钥/绝对路径扫描与 Compose smoke；全部通过后冻结新 exact SHA、提交推送至 PR #131 并请求独立复审，旧 `62f1454e` 证据保持 historical，20.1-20.3 继续等待真实 retained-app 与用户验收。

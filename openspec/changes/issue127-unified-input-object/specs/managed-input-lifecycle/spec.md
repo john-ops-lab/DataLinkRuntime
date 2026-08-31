@@ -34,6 +34,21 @@
 - **WHEN** 实际写入字节超过单文件限制或预留无法原子扩容
 - **THEN** writer 立即停止并返回 `input_file_too_large` 或对应 quota code，不能先写满磁盘再补记账
 
+### Requirement: Multipart 解析在所有层级具有字节预算
+上传端点 SHALL 在应用层对 multipart 总接收字节、单个 Header、非文件字段和 epilogue 分别设置固定且有界的预算；总预算 MUST 由当前 `max_file_bytes` 加固定 framing 余量推导，不得依赖 `Content-Length` 或反向代理上限。系统 MUST 只接受一个文件 part，并在识别第二个文件的 Header 后立即拒绝而不继续读取其 body。
+
+#### Scenario: 单个网络块包含超长 Header
+- **WHEN** 一个 chunk 同时包含超过 Header 上限的内容和 Header 结束分隔符
+- **THEN** 解析器仍按分隔符位置拒绝请求，不得因一次读取已经找到分隔符而绕过上限
+
+#### Scenario: 无需保留的 part 消耗无界字节
+- **WHEN** 普通字段、第二个文件 body 或空白 epilogue 超过各自预算
+- **THEN** 系统在有限读取次数内返回稳定解析错误，且不继续 drain 无界请求流、不保留数据库预留或文件对象
+
+#### Scenario: 请求流缺少结束 boundary
+- **WHEN** 客户端持续发送数据但不提供合法结束 boundary 或 EOF
+- **THEN** 总接收预算在有限字节内终止解析，不能等待无限流自然结束
+
 ### Requirement: 并发上传使用原子容量预留
 每个 `UPLOADING` Artifact MUST 恰好关联一个同 Adapter、唯一、`ACTIVE` 的 reservation；平台占用计算 SHALL 同时计入实际 Blob、pending deletion charge 和有效 ACTIVE reservation，状态迁移不得重复释放容量。
 
@@ -49,6 +64,10 @@
 - **WHEN** Blob 校验并原子落盘完成
 - **THEN** 同一数据库事务以实际字节将 `ACTIVE→CONSUMED`、`UPLOADING→STAGED` 并把预留 charge 转为实际占用一次
 
+#### Scenario: 请求取消与完成核销竞争
+- **WHEN** Blob rename 后，上传请求取消与数据库完成核销并发
+- **THEN** 同一受锁状态机决定补偿方是否拥有文件清理权；核销先成为 `CONSUMED/STAGED` 时正式 Blob MUST 保留，取消先成为 `CANCELLED/DELETED` 时才可清理并释放预留，且不得出现 `STAGED` 但 Blob 缺失
+
 ### Requirement: ArtifactStore 保证受控、原子且不可猜测的对象路径
 LocalFileArtifactStore SHALL 使用随机不透明 `storage_key`，原始文件名不得参与真实路径；`.part` 与最终对象 MUST 位于同一支持原子 rename 的文件系统，并防御路径穿越与符号链接。
 
@@ -57,8 +76,12 @@ LocalFileArtifactStore SHALL 使用随机不透明 `storage_key`，原始文件�
 - **THEN** 系统先原子 rename `.part` 为最终随机对象，再允许数据库 Artifact 成为 `STAGED`
 
 #### Scenario: 数据库提交失败
-- **WHEN** Blob 已 rename 但 `STAGED` 事务失败
+- **WHEN** Blob 已 rename 且受锁状态明确证明 `STAGED` 事务未提交
 - **THEN** 补偿流程幂等删除该随机对象，低频审计只治理超过安全宽限且无 Artifact/删除任务记录的对象
+
+#### Scenario: 数据库提交结果不确定
+- **WHEN** Blob 已 rename 但补偿流程无法从数据库取得权威终态
+- **THEN** 补偿不得删除正式对象；可安全删除的 `.part` 与正式对象分开处理，遗留随机对象由后续 TTL/orphan audit 审计收敛
 
 #### Scenario: 原始文件名攻击
 - **WHEN** 文件名包含 `..`、路径分隔符、大小写混淆或 Unicode 等价序列
@@ -138,6 +161,10 @@ Artifact SHALL 使用 `UPLOADING → STAGED → READY → PENDING_DELETE → DEL
 #### Scenario: 删除与新上传竞争
 - **WHEN** Adapter 删除和上传会话创建并发
 - **THEN** 上传要么先建立 reservation 并阻止删除，要么在删除提交后因 Adapter 不存在被拒绝，不产生孤儿 writer
+
+#### Scenario: 停止并删除带文件 Lease 的 pending Execution
+- **WHEN** 用户以 stop 语义删除 Adapter，且其 pending Execution 已持有 Managed Input Lease
+- **THEN** 系统在同一删除事务中先把 Execution 变为终态并释放 Lease，再移交 Blob 删除责任和删除 Artifact 元数据；不得触发 FK 错误，也不得提前删除 running Execution 的 Lease
 
 #### Scenario: 删除任务释放容量
 - **WHEN** deletion job 确认 Blob 已删除或不存在

@@ -25,6 +25,7 @@ from dlr.common.config import settings, validate_deployment_configuration
 from dlr.control.models import (
     Adapter,
     AdapterInputArtifactBinding,
+    ArtifactDeletionJob,
     Execution,
     ExecutionInputArtifactLease,
     ManagedInputArtifact,
@@ -153,6 +154,154 @@ def test_c0_red_pending_file_lease_survives_configuration_replacement(
     with session_factory() as session:
         input_config_service.reconcile_current_bindings(session, adapter["id"], now=FIXED_NOW)
         assert managed_input_gc.has_active_artifact_lease(session, artifact_id) is True
+
+
+def test_c0_stop_delete_pending_managed_files_releases_lease_before_artifact_handoff(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    adapter = create_adapter(api_client, name="c0-stop-delete-pending-files")
+    save_version(api_client, adapter["id"])
+    artifact_id = _create_staged_artifact(session_factory, adapter["id"], "delete.txt")
+    _bind_artifact(api_client, adapter["id"], artifact_id)
+    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert execution.status_code == 202, execution.text
+    execution_id = execution.json()["id"]
+
+    with session_factory() as session:
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        lease = session.scalar(
+            select(ExecutionInputArtifactLease).where(
+                ExecutionInputArtifactLease.execution_id == execution_id,
+                ExecutionInputArtifactLease.artifact_id == artifact_id,
+            )
+        )
+        assert artifact is not None and artifact.status == ManagedInputArtifactStatus.READY
+        assert lease is not None
+        storage_key = artifact.storage_key
+
+    deleted = api_client.delete(f"/api/adapters/{adapter['id']}?stop=true")
+    assert deleted.status_code == 204, deleted.text
+
+    with session_factory() as session:
+        assert session.get(Adapter, adapter["id"]) is None
+        assert session.get(Execution, execution_id) is None
+        assert session.get(ManagedInputArtifact, artifact_id) is None
+        assert (
+            session.scalar(
+                select(ExecutionInputArtifactLease).where(
+                    ExecutionInputArtifactLease.execution_id == execution_id,
+                    ExecutionInputArtifactLease.artifact_id == artifact_id,
+                )
+            )
+            is None
+        )
+        deletion_job = session.scalar(
+            select(ArtifactDeletionJob).where(ArtifactDeletionJob.storage_key == storage_key)
+        )
+        assert deletion_job is not None
+        assert deletion_job.former_adapter_id == adapter["id"]
+        assert deletion_job.status == "PENDING"
+
+
+def test_c0_stop_delete_running_managed_files_keeps_lease_until_terminal_then_releases_charge(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    worker = _register_worker(
+        api_client,
+        "c0-stop-delete-running-files-worker",
+        protocol_version=2,
+    )
+    adapter = create_adapter(api_client, name="c0-stop-delete-running-files")
+    save_version(api_client, adapter["id"])
+    artifact_id = _create_staged_artifact(session_factory, adapter["id"], "running-delete.txt")
+    store = LocalFileArtifactStore(tmp_path / "running-delete-store")
+    storage_key = _materialize_blob(session_factory, artifact_id, store)
+    with session_factory.begin() as session:
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        capacity = session.get(ManagedInputCapacity, 1)
+        assert artifact is not None and capacity is not None
+        capacity.actual_bytes = artifact.size_bytes
+    _bind_artifact(api_client, adapter["id"], artifact_id)
+    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
+    assert execution.status_code == 202, execution.text
+    execution_id = execution.json()["id"]
+    claimed = _claim(api_client, worker["id"])
+    assert claimed.status_code == 200, claimed.text
+
+    waiting = api_client.delete(f"/api/adapters/{adapter['id']}?stop=true")
+    assert waiting.status_code == 202, waiting.text
+    assert waiting.json()["detail"]["code"] == "adapter_delete_waiting_for_worker"
+    with session_factory() as session:
+        running = session.get(Execution, execution_id)
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        lease = session.scalar(
+            select(ExecutionInputArtifactLease).where(
+                ExecutionInputArtifactLease.execution_id == execution_id,
+                ExecutionInputArtifactLease.artifact_id == artifact_id,
+            )
+        )
+        capacity = session.get(ManagedInputCapacity, 1)
+        jobs = session.scalars(select(ArtifactDeletionJob)).all()
+        assert running is not None and running.status == "running"
+        assert running.cancel_requested is True
+        assert artifact is not None and artifact.status == ManagedInputArtifactStatus.READY
+        assert lease is not None
+        assert capacity is not None and capacity.actual_bytes == artifact.size_bytes
+        assert jobs == []
+        assert store.stat(storage_key) is not None
+
+    cancelled = api_client.post(
+        f"/api/workers/{worker['id']}/executions/{execution_id}/result",
+        json={"status": "cancelled", "workspace_cleanup_status": "completed"},
+        headers={
+            **WORKER_HEADERS,
+            "X-DLR-Claim-Token": claimed.json()["claim_token"],
+        },
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    with session_factory() as session:
+        assert (
+            session.scalar(
+                select(ExecutionInputArtifactLease).where(
+                    ExecutionInputArtifactLease.execution_id == execution_id
+                )
+            )
+            is None
+        )
+
+    deleted = api_client.delete(f"/api/adapters/{adapter['id']}?stop=true")
+    assert deleted.status_code == 204, deleted.text
+    with session_factory() as session:
+        capacity = session.get(ManagedInputCapacity, 1)
+        deletion_job = session.scalar(
+            select(ArtifactDeletionJob).where(ArtifactDeletionJob.storage_key == storage_key)
+        )
+        assert session.get(Adapter, adapter["id"]) is None
+        assert session.get(Execution, execution_id) is None
+        assert session.get(ManagedInputArtifact, artifact_id) is None
+        assert capacity is not None and capacity.actual_bytes == 8
+        assert deletion_job is not None and deletion_job.status == "PENDING"
+        assert store.stat(storage_key) is not None
+
+    with session_factory() as session:
+        report = managed_input_gc.process_deletion_jobs(session, store=store, now=FIXED_NOW)
+    assert report.completed == 1
+    with session_factory() as session:
+        capacity = session.get(ManagedInputCapacity, 1)
+        deletion_job = session.scalar(
+            select(ArtifactDeletionJob).where(ArtifactDeletionJob.storage_key == storage_key)
+        )
+        assert capacity is not None and capacity.actual_bytes == 0
+        assert deletion_job is not None and deletion_job.status == "DELETED"
+        assert deletion_job.capacity_released_at is not None
+        assert store.stat(storage_key) is None
 
 
 def test_c0_red_v1_worker_cannot_claim_managed_files(

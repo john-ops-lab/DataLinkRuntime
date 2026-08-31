@@ -35,7 +35,11 @@ from dlr.control.services import input_config as input_config_service
 from dlr.control.services import managed_input as managed_input_service
 from dlr.control.services.artifact_store import ArtifactStoreError, LocalFileArtifactStore
 from dlr.control.services.managed_input_upload import UploadSessionState
-from dlr.control.services.multipart import MultipartParseError, MultipartReader
+from dlr.control.services.multipart import (
+    MultipartBodyTooLargeError,
+    MultipartParseError,
+    MultipartReader,
+)
 
 logger = logging.getLogger("dlr.control.managed_input")
 
@@ -124,6 +128,7 @@ def get_managed_input_capability(session: DbSession) -> ManagedInputCapabilityRe
 
 def _safe_upload_error(code: str, status_code: int) -> HTTPException:
     messages = {
+        "input_file_too_large": "Input file is too large",
         "input_upload_interrupted": "Input upload was interrupted",
         "input_upload_failed": "Input upload failed",
         "artifact_store_unavailable": "Artifact storage is unavailable",
@@ -153,10 +158,9 @@ def _new_store_or_error() -> LocalFileArtifactStore:
         raise _safe_upload_error("artifact_store_unavailable", 503) from None
 
 
-def _delete_upload_paths(store: LocalFileArtifactStore, storage_key: str) -> None:
-    """Best-effort filesystem cleanup used only after DB compensation fails."""
+def _delete_upload_part(store: LocalFileArtifactStore, storage_key: str) -> None:
+    """Remove only unpublished bytes when DB state cannot authorize object deletion."""
     store.delete_part(storage_key)
-    store.delete(storage_key)
 
 
 async def _compensate_upload(
@@ -181,7 +185,7 @@ async def _compensate_upload(
     except Exception:
         if store is not None:
             try:
-                await asyncio.to_thread(_delete_upload_paths, store, state.storage_key)
+                await asyncio.to_thread(_delete_upload_part, store, state.storage_key)
             except (ArtifactStoreError, OSError):
                 logger.warning("managed input upload compensation deferred")
 
@@ -256,7 +260,17 @@ async def _stream_upload(
     renewal_stop: asyncio.Event | None = None
     renewal_task: asyncio.Task[None] | None = None
     try:
-        reader = MultipartReader(request.stream(), request.headers.get("content-type"))
+        max_file_bytes = await _run_db(
+            lambda short_session: int(
+                managed_input_service.get_settings(short_session).max_file_bytes
+            )
+        )
+        reader = MultipartReader(
+            request.stream(),
+            request.headers.get("content-type"),
+            max_total_bytes=max_file_bytes + MultipartReader.REQUEST_OVERHEAD_LIMIT,
+        )
+        field_bytes = 0
         # The low-watermark snapshot is captured at reservation creation and
         # refreshed only by bounded reservation growth, never per chunk.
         while True:
@@ -264,12 +278,12 @@ async def _stream_upload(
             if part is None:
                 break
             if part.filename is None:
-                async for _ in reader.iter_part_body():
-                    pass
+                async for chunk in reader.iter_part_body():
+                    field_bytes += len(chunk)
+                    if field_bytes > MultipartReader.FIELD_LIMIT:
+                        raise _safe_upload_error("input_invalid", 422)
                 continue
             if file_seen:
-                async for _ in reader.iter_part_body():
-                    pass
                 raise _safe_upload_error("input_invalid", 422)
             file_seen = True
             filename = managed_input_upload.validate_original_filename(part.filename)
@@ -357,6 +371,8 @@ async def _stream_upload(
             candidate = exc.detail.get("code")
             if isinstance(candidate, str):
                 error_code = candidate
+        elif isinstance(exc, MultipartBodyTooLargeError):
+            error_code = "input_file_too_large"
         elif isinstance(exc, MultipartParseError):
             error_code = "input_upload_interrupted"
         elif isinstance(exc, (ArtifactStoreError, OSError)):
@@ -367,6 +383,8 @@ async def _stream_upload(
             raise
         if isinstance(exc, asyncio.CancelledError):
             raise
+        if isinstance(exc, MultipartBodyTooLargeError):
+            raise _safe_upload_error("input_file_too_large", 413) from None
         if isinstance(exc, MultipartParseError):
             raise _safe_upload_error("input_upload_interrupted", 422) from None
         if isinstance(exc, (ArtifactStoreError, OSError)):

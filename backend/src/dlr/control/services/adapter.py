@@ -424,6 +424,9 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
         if stop:
             _disable_trigger_for_delete(session, adapter)
             request_cancellation(active)
+            from dlr.control.services.execution import release_execution_leases
+
+            release_execution_leases(session, active.id)
         else:
             adapter_runtime.require_runtime_unlocked(session, adapter)
     elif stop:
