@@ -5,7 +5,7 @@ import { Button, Card, Input } from "antd";
 import { ProForm } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
-import { resolveSystemLocale } from "../i18n";
+import { useLoginLocale } from "../login-locale";
 import { userErrorMessage } from "../user-message";
 import LoginShell from "./LoginShell";
 
@@ -19,7 +19,9 @@ interface LoginValues {
 }
 
 export default function LoginPage(props: LoginPageProps) {
-  const { i18n, t } = useTranslation("common");
+  const [locale] = useLoginLocale();
+  const { i18n } = useTranslation("common");
+  const t = i18n.getFixedT(locale, "common");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -37,7 +39,7 @@ export default function LoginPage(props: LoginPageProps) {
         userErrorMessage(
           err,
           t("auth.loginFailed"),
-          resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language),
+          locale,
         ),
       );
       return false;

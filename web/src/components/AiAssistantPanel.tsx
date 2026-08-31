@@ -643,18 +643,20 @@ function ComposerAttachmentArea(props: {
             <span>{t("assistant.knowledgeSearch.label")}</span>
           </span>
         </Tooltip>
-        <Button
-          size="small"
-          className="ai-attachment-add"
-          data-testid="ai-attachment-add"
-          icon={<PaperClipOutlined aria-hidden="true" />}
-          disabled={props.disabled}
-          aria-label={t("assistant.attachments.addAria")}
-          title={t("assistant.attachments.addAria")}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          {t("assistant.attachments.add")}
-        </Button>
+        <Tooltip title={t("assistant.attachments.addTooltip")} trigger={["hover", "focus"]}>
+          <Button
+            size="small"
+            className="ai-attachment-add"
+            data-testid="ai-attachment-add"
+            icon={<PaperClipOutlined aria-hidden="true" />}
+            disabled={props.disabled}
+            aria-label={t("assistant.attachments.addAria")}
+            title={t("assistant.attachments.addTooltip")}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {t("assistant.attachments.add")}
+          </Button>
+        </Tooltip>
         <input
           ref={fileInputRef}
           type="file"

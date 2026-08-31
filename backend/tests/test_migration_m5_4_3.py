@@ -17,7 +17,7 @@ from dlr.control.services.webhook import upsert_webhook
 
 MIGRATION_DATABASE = "dlr_test_migration_m5_4_3"
 LEGACY_REVISION = "0010_m5_4_2_task_run_mode"
-FINAL_REVISION = "0022_m5_9_wave_c_adapter_acl"
+FINAL_REVISION = "0029_issue127_c0_exec_lease"
 LEGACY_PUBLIC_ID = "Legacy_Path_ABC123"
 
 
@@ -121,6 +121,25 @@ def test_legacy_path_survives_upgrade_and_remains_stoppable_and_restartable(
         )
 
     _upgrade(_alembic_config(_base_url().set(database=MIGRATION_DATABASE)), FINAL_REVISION)
+
+    with legacy_webhook_engine.connect() as connection:
+        lease_created_at = connection.execute(
+            text(
+                "SELECT is_nullable, column_default FROM information_schema.columns "
+                "WHERE table_schema = 'public' "
+                "AND table_name = 'execution_input_artifact_leases' "
+                "AND column_name = 'created_at'"
+            )
+        ).one()
+        cleanup_status_check = connection.scalar(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'ck_executions_workspace_cleanup_status'"
+            )
+        )
+    assert lease_created_at[0] == "NO"
+    assert lease_created_at[1] is not None and "now()" in lease_created_at[1]
+    assert cleanup_status_check is not None and "pending" in cleanup_status_check
 
     with Session(legacy_webhook_engine) as session:
         stopped = upsert_webhook(

@@ -1,0 +1,27 @@
+{
+  "schema": "issue127-e0-backend-gates-v1",
+  "working_directory": "backend",
+  "commands": [
+    {
+      "command": "uv run --frozen ruff check .",
+      "result": "PASS"
+    },
+    {
+      "command": "uv run --frozen ruff format --check .",
+      "result": "PASS",
+      "summary": "195 files already formatted"
+    },
+    {
+      "command": "uv run --frozen mypy",
+      "result": "PASS",
+      "summary": "Success: no issues found in 103 source files"
+    },
+    {
+      "command": "DATABASE_URL=postgresql+psycopg://<anonymous>@localhost:<isolated-port>/postgres uv run --frozen --project . pytest -q",
+      "result": "PASS",
+      "summary": "1040 passed, 8 warnings in 203.69s"
+    }
+  ],
+  "invocation_note": "The authoritative full backend gate was run from backend/ against the locked backend project after the Round 1 audit repairs.",
+  "human_acceptance": "待人工验收"
+}

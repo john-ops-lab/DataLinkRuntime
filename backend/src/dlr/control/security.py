@@ -141,18 +141,9 @@ def require_account_session(
     return matched
 
 
-def require_principal(
-    request: Request,
-    session: DbSession,
-    authorization: AuthorizationHeader = None,
-) -> Principal:
-    """Authenticate the unified superadmin/account Principal for app APIs."""
-    if entry_mode(request) == TOKEN_ENTRY_MODE:
-        _require_token(authorization, settings.admin_token)
-        return SUPERADMIN_PRINCIPAL
-
-    if entry_mode(request) != ACCOUNT_ENTRY_MODE:
-        raise _entry_error(ACCOUNT_ENTRY_MODE)
+def _require_account_principal(request: Request, session: Session) -> Principal:
+    """Authenticate one account session for both regular and upload APIs."""
+    require_entry(request, ACCOUNT_ENTRY_MODE)
     matched = find_session(session, request.cookies.get("dlr_account_session"))
     if matched is None:
         raise HTTPException(
@@ -168,6 +159,32 @@ def require_principal(
             },
         )
     return _account_principal(matched)
+
+
+def require_principal(
+    request: Request,
+    session: DbSession,
+    authorization: AuthorizationHeader = None,
+) -> Principal:
+    """Authenticate the unified superadmin/account Principal for app APIs."""
+    if entry_mode(request) == TOKEN_ENTRY_MODE:
+        _require_token(authorization, settings.admin_token)
+        return SUPERADMIN_PRINCIPAL
+
+    return _require_account_principal(request, session)
+
+
+def require_upload_principal(
+    request: Request,
+    authorization: AuthorizationHeader = None,
+) -> Principal:
+    """Authenticate an upload before streaming, without a request-held Session."""
+    if entry_mode(request) == TOKEN_ENTRY_MODE:
+        _require_token(authorization, settings.admin_token)
+        return SUPERADMIN_PRINCIPAL
+
+    with db.SessionLocal() as session:
+        return _require_account_principal(request, session)
 
 
 def require_admin_principal(

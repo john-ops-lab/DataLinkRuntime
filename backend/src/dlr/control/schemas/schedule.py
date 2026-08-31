@@ -11,8 +11,9 @@ class ScheduleUpsert(BaseModel):
 
     PUT is create-or-full-replace: every field is mandatory and the saved
     Schedule becomes exactly the submitted configuration. ``input`` follows
-    the Execution input contract: any JSON value, including JSON null
-    (omitted).
+    the Execution input contract: any JSON value, including JSON null. During
+    the compatibility window an omitted ``input`` preserves the saved Adapter
+    input, while an explicit JSON null replaces it with JSON null.
     """
 
     enabled: bool
@@ -36,4 +37,8 @@ class ScheduleResponse(BaseModel):
     timezone: str
     input: Any
     next_run_at: datetime | None
+    last_blocked_reason: str | None
+    last_blocked_detail: dict[str, Any] | None
+    last_blocked_at: datetime | None
+    last_processed_due_at: datetime | None
     updated_at: datetime

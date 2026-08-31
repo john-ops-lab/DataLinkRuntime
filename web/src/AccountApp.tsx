@@ -5,9 +5,15 @@ import { Drawer, Skeleton } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api, onUnauthorized, setAuthToken } from "./api";
-import { cacheSystemLocale, isSystemLocale, resolveSystemLocale } from "./i18n";
+import {
+  applyUiLocale,
+  cacheSystemLocale,
+  isSystemLocale,
+  readCachedSystemLocale,
+  resolveSystemLocale,
+} from "./i18n";
 import { applyLoginLocalePreference } from "./login-locale";
-import type { AccountPrincipal } from "./types";
+import type { AccountPrincipal, SystemLocale } from "./types";
 import { userErrorMessage } from "./user-message";
 import { AdapterConsole } from "./App";
 import AccountLoginPage from "./components/AccountLoginPage";
@@ -23,16 +29,17 @@ export default function AccountApp() {
   const [notice, setNotice] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
-  const refreshSystemLocale = useCallback(async () => {
+  const refreshSystemLocale = useCallback(async (): Promise<SystemLocale | null> => {
     try {
       const response = await api.getSystemLocale();
       if (isSystemLocale(response.locale)) {
         cacheSystemLocale(response.locale);
-        await applyLoginLocalePreference(response.locale);
+        return response.locale;
       }
     } catch {
       // Keep the cached locale when the public bootstrap read is unavailable.
     }
+    return null;
   }, []);
 
   const showPrincipal = useCallback((next: AccountPrincipal) => {
@@ -56,17 +63,22 @@ export default function AccountApp() {
   useEffect(() => {
     setAuthToken(null);
     onUnauthorized(() => returnToLogin(i18n.t("auth.accountSessionRejected")));
-    void refreshSystemLocale();
+    const systemLocalePromise = refreshSystemLocale();
 
     let cancelled = false;
     async function bootstrapAccountSession() {
       try {
         await api.getAccountCsrf();
         const response = await api.getAccountPrincipal();
+        const serverLocale = await systemLocalePromise;
         if (!cancelled) {
-          showPrincipal(response.principal);
+          await applyUiLocale(serverLocale ?? readCachedSystemLocale());
+          if (!cancelled) {
+            showPrincipal(response.principal);
+          }
         }
       } catch (error) {
+        const serverLocale = await systemLocalePromise;
         if (!cancelled && (!(error instanceof ApiError) || error.status !== 401)) {
           setNotice(
             userErrorMessage(
@@ -77,6 +89,7 @@ export default function AccountApp() {
           );
         }
         if (!cancelled) {
+          await applyLoginLocalePreference(serverLocale ?? undefined);
           setScreen("login");
         }
       }
@@ -90,6 +103,8 @@ export default function AccountApp() {
   async function handleLogin(username: string, password: string) {
     await api.getAccountCsrf();
     const response = await api.loginAccount({ username, password });
+    const serverLocale = await refreshSystemLocale();
+    await applyUiLocale(serverLocale ?? readCachedSystemLocale());
     showPrincipal(response.principal);
   }
 

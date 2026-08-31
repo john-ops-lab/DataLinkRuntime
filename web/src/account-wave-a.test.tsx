@@ -4,11 +4,13 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App from "./App";
 import { setAuthToken } from "./api";
 import { applySystemLocale } from "./i18n";
+import { LOGIN_LOCALE_STORAGE_KEY } from "./login-locale";
 
 interface RouteState {
   loggedIn: boolean;
   mustChange: boolean;
   locale: "zh-CN" | "en";
+  localeUnavailable?: boolean;
 }
 
 const principal = (mustChange: boolean) => ({
@@ -33,6 +35,9 @@ function installAccountFetch(state: RouteState) {
     const url = String(input);
     requests.push({ url, init });
     if (url === "/api/locale") {
+      if (state.localeUnavailable) {
+        throw new TypeError("locale temporarily unavailable");
+      }
       return jsonResponse({ locale: state.locale });
     }
     if (url === "/api/auth/account/csrf") {
@@ -79,6 +84,7 @@ beforeEach(() => {
   document.cookie = "dlr_account_csrf=; Max-Age=0; path=/";
   document.cookie = "dlr_account_session=; Max-Age=0; path=/";
   sessionStorage.clear();
+  window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
   setAuthToken(null);
 });
 
@@ -86,6 +92,7 @@ afterEach(async () => {
   window.__DLR_ENTRY_MODE__ = "token";
   document.cookie = "dlr_account_csrf=; Max-Age=0; path=/";
   document.cookie = "dlr_account_session=; Max-Age=0; path=/";
+  window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
   setAuthToken(null);
   vi.unstubAllGlobals();
   await applySystemLocale("zh-CN");
@@ -97,7 +104,11 @@ it("keeps the account entry bilingual and gates the first login behind password 
   render(<App />);
 
   await screen.findByTestId("account-username-input");
-  expect(screen.getByText("Account login")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "账号登录" })).toBeTruthy();
+  const loginLocale = screen.getByTestId("login-locale-select");
+  fireEvent.mouseDown(loginLocale.querySelector(".ant-select-selector") ?? loginLocale);
+  fireEvent.click(await screen.findByText("English"));
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Account login" })).toBeTruthy());
   fireEvent.change(screen.getByTestId("account-username-input"), { target: { value: "admin" } });
   fireEvent.change(screen.getByTestId("account-password-input"), { target: { value: "admin123" } });
   fireEvent.click(screen.getByTestId("account-login-submit"));
@@ -124,6 +135,46 @@ it("keeps the account entry bilingual and gates the first login behind password 
 
   await screen.findByTestId("account-username-input");
   expect(screen.getByTestId("account-auth-notice").textContent).toContain("Password changed");
+});
+
+it("keeps the forced password-change page on the backend locale", async () => {
+  const state: RouteState = { loggedIn: false, mustChange: true, locale: "en" };
+  installAccountFetch(state);
+  // The unauthenticated page may be explicitly Chinese, but the authenticated
+  // forced-change surface must follow the backend locale after login.
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "zh-CN");
+  render(<App />);
+
+  await screen.findByTestId("account-username-input");
+  expect(screen.getByRole("heading", { name: "账号登录" })).toBeTruthy();
+  fireEvent.change(screen.getByTestId("account-username-input"), { target: { value: "admin" } });
+  fireEvent.change(screen.getByTestId("account-password-input"), { target: { value: "admin123" } });
+  fireEvent.click(screen.getByTestId("account-login-submit"));
+
+  await screen.findByTestId("account-current-password-input");
+  expect(screen.getByRole("heading", { name: "Change your password" })).toBeTruthy();
+  expect(screen.getByTestId("login-locale-select").className).toContain("ant-select-disabled");
+});
+
+it("uses the cached system locale after account login when locale refresh fails", async () => {
+  const state: RouteState = {
+    loggedIn: false,
+    mustChange: true,
+    locale: "en",
+    localeUnavailable: true,
+  };
+  installAccountFetch(state);
+  await applySystemLocale("en");
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "zh-CN");
+  render(<App />);
+
+  await screen.findByRole("heading", { name: "账号登录" });
+  fireEvent.change(screen.getByTestId("account-username-input"), { target: { value: "admin" } });
+  fireEvent.change(screen.getByTestId("account-password-input"), { target: { value: "admin123" } });
+  fireEvent.click(screen.getByTestId("account-login-submit"));
+
+  await screen.findByTestId("account-current-password-input");
+  expect(screen.getByRole("heading", { name: "Change your password" })).toBeTruthy();
 });
 
 it("shows the current Principal on the protected account console and logs out", async () => {

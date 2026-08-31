@@ -1,0 +1,28 @@
+{
+  "dispatch_id": "issue127-b4-gate-20260827-r1",
+  "status": "PASS",
+  "service_log_scan": {
+    "services": ["control", "worker", "web", "account-web"],
+    "compose_logs_command_exit": 0,
+    "forbidden_sensitive_value_hits": 0,
+    "authorization_cookie_header_hits": 0,
+    "raw_logs_retained": false
+  },
+  "evidence_scan": {
+    "absolute_host_path_hits": 0,
+    "authorization_cookie_header_hits": 0,
+    "raw_http_body_markers": 0,
+    "secret_key_pattern_hits": 0
+  },
+  "tracked_change_scan": {
+    "secret_key_pattern_hits": 0,
+    "credential_policy": "anonymous placeholders only"
+  },
+  "archive_policy": {
+    "request_bodies": false,
+    "response_bodies": false,
+    "request_response_headers": false,
+    "host_absolute_paths": false,
+    "real_secrets": false
+  }
+}

@@ -1,9 +1,11 @@
 """Worker-internal endpoints of the Control Node (Worker Token protected)."""
 
-from typing import Annotated
+from collections.abc import Iterator
+from typing import Annotated, BinaryIO
 
-from fastapi import APIRouter, Depends, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from dlr.control import db
@@ -12,12 +14,18 @@ from dlr.control.schemas.execution import (
     ExecutionResultReport,
     ProgressAck,
     ProgressReport,
+    WorkspaceCleanupReceipt,
 )
 from dlr.control.schemas.worker import CleanupResult, WorkerRegister, WorkerResponse
 from dlr.control.security import require_business_principal, require_worker_token
 from dlr.control.services import execution as execution_service
 from dlr.control.services import worker as worker_service
 from dlr.control.services import worker_availability
+from dlr.control.services.adapter import domain_error
+from dlr.control.services.worker_protocol import (
+    CLAIM_TOKEN_HEADER,
+    CLEANUP_TOKEN_HEADER,
+)
 
 router = APIRouter(dependencies=[Depends(require_worker_token)])
 # M5.9 Wave D: Worker metadata is required by the Adapter runtime editor for
@@ -26,6 +34,36 @@ router = APIRouter(dependencies=[Depends(require_worker_token)])
 admin_router = APIRouter(dependencies=[Depends(require_business_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
+ClaimHeader = Annotated[str | None, Header(alias=CLAIM_TOKEN_HEADER)]
+CleanupHeader = Annotated[str | None, Header(alias=CLEANUP_TOKEN_HEADER)]
+
+
+def _reject_query_tokens(request: Request, *, error_code: str) -> None:
+    """Keep credentials out of URLs, including on not-yet-ready routes."""
+    if "claim_token" in request.query_params or "cleanup_token" in request.query_params:
+        raise domain_error(422, error_code, "Tokens must be sent in their designated Header")
+
+
+def _reject_swapped_cleanup_header(cleanup_token: str | None) -> None:
+    if cleanup_token is not None:
+        raise domain_error(
+            422,
+            "execution_claim_token_invalid",
+            "The Cleanup Token cannot authorize this operation",
+        )
+
+
+def _task_payload_content(payload: BaseModel) -> dict[str, object]:
+    """Keep legacy v1 payload shape free of token fields without dropping nulls."""
+    # Both task payload variants currently expose model_dump; keeping this
+    # helper local avoids an ``exclude_none`` pass that would remove the
+    # existing ``index_url: null`` compatibility field.
+    body = payload.model_dump(mode="json")
+    if body.get("claim_token") is None:
+        body.pop("claim_token", None)
+    if body.get("cleanup_token") is None:
+        body.pop("cleanup_token", None)
+    return body
 
 
 @router.post("/api/workers/register", response_model=WorkerResponse)
@@ -53,7 +91,7 @@ def claim_task(worker_id: int, session: DbSession, wait_seconds: int = 20) -> Re
     payload = worker_service.claim_task(session, worker_id, wait_seconds)
     if payload is None:
         return Response(status_code=204)
-    return JSONResponse(content=payload.model_dump(mode="json"))
+    return JSONResponse(content=_task_payload_content(payload))
 
 
 @router.post(
@@ -61,11 +99,25 @@ def claim_task(worker_id: int, session: DbSession, wait_seconds: int = 20) -> Re
     response_model=ExecutionResponse,
 )
 def report_result(
-    worker_id: int, execution_id: int, payload: ExecutionResultReport, session: DbSession
+    request: Request,
+    worker_id: int,
+    execution_id: int,
+    payload: ExecutionResultReport,
+    session: DbSession,
+    claim_token: ClaimHeader = None,
+    cleanup_token: CleanupHeader = None,
 ) -> ExecutionResponse:
     """Persist a terminal result; idempotent for terminal Executions."""
+    _reject_query_tokens(request, error_code="execution_claim_token_invalid")
+    _reject_swapped_cleanup_header(cleanup_token)
     return ExecutionResponse.model_validate(
-        execution_service.apply_result(session, worker_id, execution_id, payload)
+        execution_service.apply_result(
+            session,
+            worker_id,
+            execution_id,
+            payload,
+            claim_token=claim_token,
+        )
     )
 
 
@@ -74,7 +126,13 @@ def report_result(
     response_model=ProgressAck,
 )
 def report_progress(
-    worker_id: int, execution_id: int, payload: ProgressReport, session: DbSession
+    request: Request,
+    worker_id: int,
+    execution_id: int,
+    payload: ProgressReport,
+    session: DbSession,
+    claim_token: ClaimHeader = None,
+    cleanup_token: CleanupHeader = None,
 ) -> ProgressAck:
     """Append best-effort stdout/stderr chunks while the Execution runs.
 
@@ -83,8 +141,86 @@ def report_progress(
     reached a terminal state the chunks are dropped but the flag is still
     answered; non-owning Workers still get 409.
     """
-    cancel_requested = execution_service.apply_progress(session, worker_id, execution_id, payload)
+    _reject_query_tokens(request, error_code="execution_claim_token_invalid")
+    _reject_swapped_cleanup_header(cleanup_token)
+    cancel_requested = execution_service.apply_progress(
+        session,
+        worker_id,
+        execution_id,
+        payload,
+        claim_token=claim_token,
+    )
     return ProgressAck(cancel_requested=cancel_requested)
+
+
+@router.get(
+    "/api/workers/{worker_id}/executions/{execution_id}/input-artifacts/{artifact_id}/content"
+)
+def download_input_artifact(
+    request: Request,
+    worker_id: int,
+    execution_id: int,
+    artifact_id: int,
+    session: DbSession,
+    claim_token: ClaimHeader = None,
+    cleanup_token: CleanupHeader = None,
+) -> StreamingResponse:
+    """Stream one active-Lease Artifact after full metadata verification."""
+    _reject_query_tokens(request, error_code="execution_claim_token_invalid")
+    _reject_swapped_cleanup_header(cleanup_token)
+    download = worker_service.open_input_artifact_for_download(
+        session,
+        worker_id,
+        execution_id,
+        artifact_id,
+        claim_token,
+    )
+
+    def chunks(stream: BinaryIO) -> Iterator[bytes]:
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            stream.close()
+
+    return StreamingResponse(
+        chunks(download.stream),
+        media_type=download.content_type,
+        headers={"Content-Length": str(download.size_bytes)},
+    )
+
+
+@router.post(
+    "/api/workers/executions/{execution_id}/workspace-cleanup",
+    response_model=ExecutionResponse,
+)
+def report_cleanup_receipt(
+    request: Request,
+    execution_id: int,
+    payload: WorkspaceCleanupReceipt,
+    session: DbSession,
+    claim_token: ClaimHeader = None,
+    cleanup_token: CleanupHeader = None,
+) -> ExecutionResponse:
+    """Confirm local Workspace cleanup without changing business state."""
+    _reject_query_tokens(request, error_code="execution_cleanup_token_invalid")
+    if claim_token is not None:
+        raise domain_error(
+            422,
+            "execution_cleanup_token_invalid",
+            "The Claim Token cannot authorize cleanup",
+        )
+    _ = payload
+    return ExecutionResponse.model_validate(
+        worker_service.apply_cleanup_receipt(
+            session,
+            execution_id,
+            cleanup_token,
+        )
+    )
 
 
 @router.post("/api/workers/{worker_id}/cleanups/{cleanup_id}/result", status_code=204)

@@ -1,0 +1,43 @@
+{
+  "dispatch_id": "issue127-b4-gate-20260827-r1",
+  "isolated_compose_project": "dlr127-b4-20260827-135",
+  "status": "PASS",
+  "assertion_count": 68,
+  "scenarios": {
+    "allowed_uploads": "PASS",
+    "blocked_extension": {"status": 422, "code": "input_file_type_not_allowed"},
+    "actual_oversize_upload": {"status": 413, "code": "input_file_too_large"},
+    "refresh_recovery": {"refresh_status": 200, "renew_status": 200, "compensation": "PASS"},
+    "save_zero": {"status": 200, "valid_for_run": false},
+    "save_eight": {"status": 200, "valid_for_run": true},
+    "save_nine": {"status": 422, "reason": "managed_files_limit"},
+    "replace": "PASS",
+    "expiry": "PASS",
+    "explicit_delete": {"first_status": 204, "repeat_status": 204},
+    "quota_lower": {"state_status": 200, "upload_status": 409, "code": "adapter_input_quota_exceeded"},
+    "quota_recover": {"upload_status": 201},
+    "low_watermark_lower": {"upload_status": 507, "code": "artifact_store_low_watermark"},
+    "low_watermark_recover": {"upload_status": 200}
+  },
+  "final_consistency": {
+    "database_artifact_rows": 18,
+    "database_reservation_rows": 18,
+    "database_binding_rows": 7,
+    "database_deletion_job_rows": 1,
+    "active_reserved_bytes": 0,
+    "artifact_store_actual_bytes": 1100059,
+    "artifact_store_objects": 8,
+    "partial_upload_parts": 0,
+    "quarantine_entries": 0,
+    "current_ready_bindings": 7,
+    "deletion_jobs_completed": 1,
+    "deletion_jobs_capacity_released": 1,
+    "terminal_reservations": 18
+  },
+  "retained_material": {
+    "request_bodies": false,
+    "response_bodies": false,
+    "request_response_headers": false,
+    "raw_service_logs": false
+  }
+}

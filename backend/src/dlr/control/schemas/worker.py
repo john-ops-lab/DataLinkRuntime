@@ -27,6 +27,8 @@ class WorkerRegister(BaseModel):
     name: str
     # Defaults to Python for compatibility with M2 Worker clients.
     capabilities: list[str] = Field(default_factory=lambda: ["python"])
+    # Missing protocol_version is the rolling-deployment v1 contract.
+    protocol_version: int = Field(default=1, ge=1, le=2)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -55,6 +57,22 @@ class WorkerResponse(BaseModel):
     status: str
     last_heartbeat: datetime
     capabilities: list[str]
+    protocol_version: int
+
+
+class TaskInputFile(BaseModel):
+    """Public Worker metadata for one leased input file.
+
+    The storage key and Control-side path intentionally have no schema field.
+    """
+
+    id: int
+    ordinal: int
+    mount_name: str
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str | None
 
 
 class TaskPayload(BaseModel):
@@ -84,6 +102,16 @@ class TaskPayload(BaseModel):
     index_url: str | None = None
     # Captured at Execution creation; never read again from deployment state.
     locale: str = "zh-CN"
+    protocol_version: int = 1
+    claim_deadline_at: datetime | None = None
+    execution_deadline_at: datetime | None = None
+    recovery_grace_seconds_snapshot: int | None = None
+    workspace_cleanup_attempt_timeout_seconds_snapshot: int | None = None
+    workspace_cleanup_total_timeout_seconds_snapshot: int | None = None
+    input_files: list[TaskInputFile] = Field(default_factory=list)
+    # Raw values exist only in the in-memory v2 claim response.
+    claim_token: str | None = None
+    cleanup_token: str | None = None
 
 
 class CleanupTaskPayload(BaseModel):

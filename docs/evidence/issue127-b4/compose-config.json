@@ -1,0 +1,33 @@
+{
+  "dispatch_id": "issue127-b4-gate-20260827-r1",
+  "fixed_base_sha": "1d91452fdb4dc2b6b302555d3ff7983940a31137",
+  "default": {
+    "config_q": "PASS",
+    "artifact_store_volume": "dlr_artifact_store",
+    "artifact_store_container_path": "/var/lib/dlr/artifacts",
+    "managed_files_enabled": false,
+    "artifact_gc_interval_seconds": 300,
+    "artifact_audit_interval_seconds": 3600,
+    "artifact_mount_services": ["control"],
+    "artifact_writer_services": ["control"]
+  },
+  "override": {
+    "config_q": "PASS",
+    "artifact_store_container_path": "/var/lib/dlr/b4-override/artifacts",
+    "managed_files_enabled": true,
+    "artifact_gc_interval_seconds": 17,
+    "artifact_audit_interval_seconds": 19,
+    "artifact_mount_services": ["control"],
+    "artifact_writer_services": ["control"]
+  },
+  "dns_override_config_q": "PASS",
+  "red_before_edit": {
+    "status": "EXPECTED_FAIL",
+    "missing_assertions": [
+      "Control ArtifactStore persistent volume",
+      "explicit managed-files flag",
+      "explicit artifact GC interval"
+    ]
+  },
+  "green_after_edit": "PASS"
+}

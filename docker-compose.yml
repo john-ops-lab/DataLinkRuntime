@@ -70,6 +70,22 @@ services:
       # Empty by default: credential APIs stay disabled (503) until the
       # operator explicitly configures a deployment-specific key.
       DLR_MASTER_KEY: ${DLR_MASTER_KEY:-}
+      # Issue #127 B4: the ArtifactStore is a Control-owned persistent volume.
+      # Keep the application root and named-volume target on the same
+      # interpolation so an explicit deployment override cannot drift into a
+      # different storage authority.
+      DLR_ARTIFACT_STORE_ROOT: ${DLR_ARTIFACT_STORE_ROOT:-/var/lib/dlr/artifacts}
+      DLR_MANAGED_FILES_ENABLED: ${DLR_MANAGED_FILES_ENABLED:-false}
+      DLR_ARTIFACT_DELETE_ALERT_THRESHOLD: ${DLR_ARTIFACT_DELETE_ALERT_THRESHOLD:-5}
+      DLR_ARTIFACT_GC_INTERVAL_SECONDS: ${DLR_ARTIFACT_GC_INTERVAL_SECONDS:-300}
+      DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS: ${DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS:-3600}
+      # Issue #127 Wave C: bounded protocol/recovery settings. These values
+      # are snapshotted into new Executions by Control.
+      DLR_MIN_WORKER_PROTOCOL_VERSION: ${DLR_MIN_WORKER_PROTOCOL_VERSION:-1}
+      DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS: ${DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS:-300}
+      DLR_EXECUTION_RECOVERY_GRACE_SECONDS: ${DLR_EXECUTION_RECOVERY_GRACE_SECONDS:-60}
+      DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS: ${DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS:-5}
+      DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS: ${DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS:-20}
       # M4 non-streaming Provider request deadline; Settings enforces 10..600s.
       DLR_AI_PROVIDER_TIMEOUT_SECONDS: ${DLR_AI_PROVIDER_TIMEOUT_SECONDS:-180}
       # M5.2 Schedule Trigger: Control scheduler polling interval (0.5..300s).
@@ -100,6 +116,7 @@ services:
       DLR_IMA_ALLOW_HTTP: ${DLR_IMA_ALLOW_HTTP:-false}
       DLR_IMA_TIMEOUT_SECONDS: ${DLR_IMA_TIMEOUT_SECONDS:-8}
     volumes:
+      - dlr_artifact_store:${DLR_ARTIFACT_STORE_ROOT:-/var/lib/dlr/artifacts}
       - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/control:/var/lib/dlr/platform-logs/control
     depends_on:
       postgres:
@@ -142,8 +159,10 @@ services:
       DLR_CONTROL_URL: http://control:8000
       DLR_WORKER_TOKEN: ${DLR_WORKER_TOKEN:?set DLR_WORKER_TOKEN (see .env.example)}
       DLR_WORKER_NAME: ${DLR_WORKER_NAME:-worker-1}
+      DLR_WORKER_PROTOCOL_VERSION: ${DLR_WORKER_PROTOCOL_VERSION:-1}
       DLR_WORKER_HEARTBEAT_SECONDS: ${DLR_WORKER_HEARTBEAT_SECONDS:-10}
       DLR_RUNTIME_ROOT: /var/lib/dlr/runtime
+      DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT: /var/lib/dlr/journal
       DLR_PLATFORM_LOG_ROOT: /var/lib/dlr/platform-logs
       # Optional compatibility fallbacks. Platform-managed default dependency
       # sources take precedence and are selected by Adapter language.
@@ -155,6 +174,7 @@ services:
       DLR_SECRET_SMOKE: ${DLR_SECRET_SMOKE:-local-dev-secret}
     volumes:
       - dlr_worker_runtime:/var/lib/dlr/runtime
+      - dlr_worker_journal:/var/lib/dlr/journal
       - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/worker:/var/lib/dlr/platform-logs/worker
     depends_on:
       control:
@@ -218,5 +238,9 @@ services:
       retries: 12
 
 volumes:
+  # Issue #127 B4: LocalFileArtifactStore is deliberately single-Writer;
+  # only the Control service mounts this volume.
+  dlr_artifact_store:
   dlr_pg_data:
   dlr_worker_runtime:
+  dlr_worker_journal:

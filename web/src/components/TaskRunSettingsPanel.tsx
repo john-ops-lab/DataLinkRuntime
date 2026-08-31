@@ -1,20 +1,32 @@
-/** Task 运行设置：单页动态表单（M5.5.11）。
+/** Task 运行设置：运行参数与唯一 Input Object 配置（M5.5.11 / Issue #127 A2）。
  *
- * 本页只负责配置，不承担“运行一次”操作（“运行一次”仅在右上角全局操作区，
- * 并受 #55 的未保存门禁约束）。固定结构为“运行节点 + 运行方式”，切换
- * “手动运行 / 定时运行”后立即呈现对应字段；单次执行超时是 Adapter 级配置，
- * 手动与定时共用（默认 300 秒，1/5/10/30/60 分钟预设 + 自定义，最大 24 小时，
- * 不提供“无限制”），页面底部统一保存运行配置。
+ * 运行方式只决定 Task 的触发配置；输入对象是一个独立的 Adapter 资源。
+ * manual、schedule 与 schedule 的“立即运行一次”都读取同一个已保存
+ * InputConfig，页面不再维护两套 JSON 编辑器，也不向 Execution API 传入 input。
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Alert, Button, Input, InputNumber, Radio, Select, Space, Spin, Tag, Typography } from "antd";
+import { Alert, Button, Card, Form, Input, InputNumber, Progress, Radio, Select, Space, Spin, Tag, Tooltip, Typography, Upload } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ApiError, api } from "../api";
+import { uploadManagedInputArtifact } from "../managed-input-client";
 import { isTerminal } from "../status";
-import type { Adapter, AdapterSchedule, Execution, TaskRunMode, Worker } from "../types";
+import type {
+  Adapter,
+  AdapterInputConfig,
+  AdapterSchedule,
+  Execution,
+  InputArtifactSummary,
+  InputRetention,
+  InputSourceType,
+  ManagedInputArtifact,
+  ManagedInputCapability,
+  TaskRunMode,
+  Worker,
+} from "../types";
 import { userErrorMessage } from "../user-message";
+import ManagedInputExamples from "./ManagedInputExamples";
 
 export interface TaskRuntimeState {
   scheduleEnabled: boolean;
@@ -22,12 +34,15 @@ export interface TaskRuntimeState {
   activeExecution: boolean;
   canRun: boolean;
   scheduleEnableBlockedReason: string | null;
+  /** Optional for callers that construct the state outside this component. */
+  runBlockedReason?: string | null;
 }
 
 export interface TaskRunSettingsHandle {
   runOnce: () => void;
   stopExecution: () => void;
   toggleSchedule: () => void;
+  confirmLeave: () => boolean;
 }
 
 interface TaskRunSettingsPanelProps {
@@ -54,12 +69,142 @@ function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
 
-function parseInput(text: string): { ok: true; value: unknown } | { ok: false } {
+function formatJson(value: unknown): string {
+  return JSON.stringify(value, null, 2) ?? "null";
+}
+
+function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
+  if (text.trim() === "") {
+    return { ok: false };
+  }
   try {
-    return { ok: true, value: text.trim() === "" ? null : JSON.parse(text) };
+    return { ok: true, value: JSON.parse(text) };
   } catch {
     return { ok: false };
   }
+}
+
+type InputErrorTranslationKey = "revisionConflict" | "sourceNotAvailable" | "notInitialized" | "managedFilesEmpty";
+
+type ManagedFileErrorTranslationKey =
+  | InputErrorTranslationKey
+  | "fileNameConflict"
+  | "fileLimit"
+  | "retentionOutOfRange"
+  | "manualDeleteNotAllowed"
+  | "uploadFailed";
+
+type ManagedFileDraft = ManagedInputArtifact | InputArtifactSummary;
+
+const MANAGED_FILE_LIMIT = 8;
+
+function canonicalFilename(filename: string): string {
+  const basename = filename.replaceAll("\\", "/").split("/").pop() ?? filename;
+  return basename.normalize("NFC").toLocaleLowerCase("en-US");
+}
+
+function displayFilename(filename: string): string {
+  return filename.replaceAll("\\", "/").split("/").pop() ?? filename;
+}
+
+function fileExtension(filename: string): string {
+  const name = displayFilename(filename).toLocaleLowerCase("en-US");
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot) : "";
+}
+
+function managedArtifactIds(files: readonly ManagedFileDraft[]): number[] {
+  return files.map((file) => file.id);
+}
+
+function mergeManagedFileDrafts(
+  ...groups: readonly (readonly ManagedFileDraft[])[]
+): ManagedFileDraft[] {
+  const merged: ManagedFileDraft[] = [];
+  const seen = new Set<number>();
+  for (const group of groups) {
+    for (const artifact of group) {
+      if (seen.has(artifact.id)) {
+        continue;
+      }
+      seen.add(artifact.id);
+      if (merged.length < MANAGED_FILE_LIMIT) {
+        merged.push(artifact);
+      }
+    }
+  }
+  return merged;
+}
+
+function sameIds(left: readonly number[], right: readonly number[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function hasManagedFilenameConflict(files: readonly ManagedFileDraft[]): boolean {
+  const canonicalNames = new Set<string>();
+  for (const file of files) {
+    const canonical = canonicalFilename(file.original_filename);
+    if (canonicalNames.has(canonical)) {
+      return true;
+    }
+    canonicalNames.add(canonical);
+  }
+  return false;
+}
+
+function isStagedArtifact(artifact: ManagedFileDraft | undefined): artifact is ManagedInputArtifact {
+  return artifact?.status === "STAGED" && artifact.ordinal === undefined;
+}
+
+function localizedInputReason(
+  codeOrReason: string | null,
+  reason: unknown,
+  translate: (key: InputErrorTranslationKey) => string,
+): string | null {
+  const key = codeOrReason === "input_config_revision_conflict"
+    ? "revisionConflict"
+    : codeOrReason === "input_source_not_available"
+      ? "sourceNotAvailable"
+      : codeOrReason === "input_config_not_initialized"
+        ? "notInitialized"
+        : codeOrReason === "managed_files_empty" || (codeOrReason === "input_invalid" && reason === "managed_files_empty")
+          ? "managedFilesEmpty"
+          : null;
+  return key === null ? null : translate(key);
+}
+
+function localizedManagedInputReason(
+  error: ApiError,
+  translate: (key: ManagedFileErrorTranslationKey, options?: Record<string, unknown>) => string,
+): string | null {
+  const reason = typeof error.params.reason === "string" ? error.params.reason : null;
+  const key = error.code === "input_config_revision_conflict"
+    ? "revisionConflict"
+    : error.code === "input_source_not_available"
+      ? "sourceNotAvailable"
+      : error.code === "input_config_not_initialized"
+        ? "notInitialized"
+        : error.code === "input_invalid" && reason === "managed_files_empty"
+          ? "managedFilesEmpty"
+          : reason === "artifact_name_conflict"
+            ? "fileNameConflict"
+            : reason === "managed_files_limit"
+              ? "fileLimit"
+              : reason === "retention_out_of_range"
+                ? "retentionOutOfRange"
+                : reason === "manual_delete_not_allowed"
+                  ? "manualDeleteNotAllowed"
+                  : error.code === "input_upload_failed" || error.code === "input_upload_interrupted"
+                    ? "uploadFailed"
+                    : null;
+  if (key === null) {
+    return null;
+  }
+  if (key === "retentionOutOfRange") {
+    const max = error.params.max_seconds;
+    return translate(key, { max: typeof max === "number" ? max : "—" });
+  }
+  return translate(key);
 }
 
 function formatTime(value: string | null, locale: "zh-CN" | "en"): string {
@@ -73,7 +218,7 @@ function presetMinutesFor(seconds: number): number | undefined {
 }
 
 const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPanelProps>(function TaskRunSettingsPanel(props, ref) {
-  const { i18n, t } = useTranslation(["runtime", "common"]);
+  const { i18n, t } = useTranslation(["runtime", "common", "adapter"]);
   const locale = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
   const adapterId = props.adapter.id;
   const readOnly = props.readOnly === true;
@@ -85,13 +230,11 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
   const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
-  const [manualInput, setManualInput] = useState("{}");
   const [schedule, setSchedule] = useState<AdapterSchedule | null>(null);
   const [cron, setCron] = useState("*/5 * * * *");
   const [timezone, setTimezone] = useState("Asia/Shanghai");
-  const [scheduleInput, setScheduleInput] = useState("{}");
   const [loadingSchedule, setLoadingSchedule] = useState(props.adapter.run_mode === "schedule");
-  // 用户是否实际修改过定时字段（cron/timezone/input）。未修改时统一保存
+  // 用户是否实际修改过定时字段（cron/timezone）。未修改时统一保存
   // 不得用表单值整体 PUT，避免把线上真实 Schedule 冲掉。
   const [scheduleTouched, setScheduleTouched] = useState(false);
   // 初始 Schedule GET 非 404 失败时置位：此时表单仍是默认值，禁止 PUT。
@@ -100,9 +243,39 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+
+  // Input Object is one resource with one saved revision and one draft. These
+  // states intentionally do not depend on runMode, so changing manual/schedule
+  // cannot reset an unsaved JSON draft.
+  const [inputConfig, setInputConfig] = useState<AdapterInputConfig | null>(null);
+  const [inputSourceDraft, setInputSourceDraft] = useState<InputSourceType>("none");
+  const [inputJsonDraft, setInputJsonDraft] = useState("null");
+  const [loadingInput, setLoadingInput] = useState(true);
+  const [inputLoadFailed, setInputLoadFailed] = useState(false);
+  const [savingInput, setSavingInput] = useState(false);
+  const [inputValidationError, setInputValidationError] = useState<string | null>(null);
+  const [managedCapability, setManagedCapability] = useState<ManagedInputCapability | null>(null);
+  const [loadingManagedCapability, setLoadingManagedCapability] = useState(true);
+  const [managedCapabilityLoadFailed, setManagedCapabilityLoadFailed] = useState(false);
+  const [loadingStagedArtifacts, setLoadingStagedArtifacts] = useState(false);
+  const [stagedArtifactsLoadFailed, setStagedArtifactsLoadFailed] = useState(false);
+  const [stagedArtifacts, setStagedArtifacts] = useState<ManagedInputArtifact[]>([]);
+  const [managedFilesDraft, setManagedFilesDraft] = useState<ManagedFileDraft[]>([]);
+  const [retentionDraft, setRetentionDraft] = useState<InputRetention>({
+    mode: "system_default",
+    seconds: null,
+  });
+  const [uploadProgress, setUploadProgress] = useState<{
+    key: string;
+    filename: string;
+    percent: number;
+  }[]>([]);
+  const [deletingArtifactId, setDeletingArtifactId] = useState<number | null>(null);
+
   // 保存流程（PATCH + PUT）完成后递增，使保存前发出的 Schedule GET 响应
   // 成为陈旧信号，不能覆盖刚保存成功的表单值。
   const scheduleLoadEpoch = useRef(0);
+  const inputLoadEpoch = useRef(0);
   const runMode = runModeOverride ?? props.adapter.run_mode;
 
   const refreshAdapter = useCallback(async () => {
@@ -114,6 +287,98 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     setTimeoutCustomMode(false);
   }, [adapterId, onAdapterChange]);
 
+  const loadInputConfig = useCallback(async () => {
+    const epoch = inputLoadEpoch.current + 1;
+    inputLoadEpoch.current = epoch;
+    setLoadingInput(true);
+    setInputLoadFailed(false);
+    try {
+      const loaded = await api.getInputConfig(adapterId);
+      if (inputLoadEpoch.current !== epoch) {
+        return;
+      }
+      setInputConfig(loaded);
+      setInputSourceDraft(loaded.source_type);
+      setInputJsonDraft(loaded.source_type === "json" ? formatJson(loaded.json_value) : "null");
+      setRetentionDraft(loaded.retention);
+      setManagedFilesDraft((current) => {
+        const staged = current.filter((artifact) => artifact.status === "STAGED");
+        return mergeManagedFileDrafts(loaded.artifacts, staged);
+      });
+      setInputValidationError(null);
+    } catch (error) {
+      if (inputLoadEpoch.current === epoch) {
+        setInputLoadFailed(true);
+        onError(errorMessage(error));
+      }
+    } finally {
+      if (inputLoadEpoch.current === epoch) {
+        setLoadingInput(false);
+      }
+    }
+  }, [adapterId, onError]);
+
+  useEffect(() => {
+    void loadInputConfig();
+    return () => {
+      inputLoadEpoch.current += 1;
+    };
+  }, [loadInputConfig]);
+
+  const loadStagedArtifacts = useCallback(async () => {
+    setLoadingStagedArtifacts(true);
+    setStagedArtifactsLoadFailed(false);
+    try {
+      const staged = await api.listInputArtifacts(adapterId);
+      setStagedArtifacts(staged);
+      setManagedFilesDraft((current) => mergeManagedFileDrafts(current, staged));
+    } catch {
+      // A staged-list outage does not invalidate already loaded capability,
+      // retention policy, or the user's current draft.
+      setStagedArtifactsLoadFailed(true);
+    } finally {
+      setLoadingStagedArtifacts(false);
+    }
+  }, [adapterId]);
+
+  const loadManagedInput = useCallback(async () => {
+    setLoadingManagedCapability(true);
+    setManagedCapabilityLoadFailed(false);
+    setStagedArtifactsLoadFailed(false);
+    try {
+      const capability = await api.getManagedInputCapability();
+      setManagedCapability(capability);
+      if (capability.managed_files_enabled && capability.ready) {
+        await loadStagedArtifacts();
+      } else {
+        setStagedArtifacts([]);
+      }
+    } catch {
+      // Capability is the sole policy authority. Fail closed and make the
+      // retry explicit instead of inventing client-side retention limits.
+      setManagedCapability(null);
+      setManagedCapabilityLoadFailed(true);
+    } finally {
+      setLoadingManagedCapability(false);
+    }
+  }, [loadStagedArtifacts]);
+
+  useEffect(() => {
+    void loadManagedInput();
+  }, [loadManagedInput]);
+
+  useEffect(() => {
+    if (stagedArtifacts.length === 0) {
+      return;
+    }
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = t("task.input.stagedLeaveWarning");
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [stagedArtifacts.length, t]);
+
   const loadSchedule = useCallback(async () => {
     setLoadingSchedule(true);
     try {
@@ -121,7 +386,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setSchedule(loaded);
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
-      setScheduleInput(JSON.stringify(loaded.input, null, 2));
       setScheduleLoadFailed(false);
       setScheduleTouched(false);
     } catch (error) {
@@ -149,7 +413,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setSchedule(loaded);
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
-      setScheduleInput(JSON.stringify(loaded.input, null, 2));
       setScheduleLoadFailed(false);
       setScheduleTouched(false);
     }).catch((error) => {
@@ -188,6 +451,234 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     return effectiveTimeoutSeconds;
   }
 
+  function localizedInputError(error: unknown): string {
+    if (error instanceof ApiError) {
+      const localizedReason = localizedManagedInputReason(
+        error,
+        (key, options) => t(`task.input.errors.${key}`, options),
+      ) ?? localizedInputReason(
+        error.code,
+        error.params.reason,
+        (key) => t(`task.input.errors.${key}`),
+      );
+      if (localizedReason !== null) {
+        return userErrorMessage(error, localizedReason);
+      }
+    }
+    return errorMessage(error);
+  }
+
+  const managedFileExtensions = managedCapability?.allowed_extensions ?? [];
+  const managedFileExtensionSet = new Set(managedFileExtensions);
+  const managedFileAccept = managedFileExtensions.join(",");
+  const managedFileTypesLabel = managedFileExtensions.join(locale === "en" ? ", " : "、");
+  const managedFilesEnabled =
+    managedCapability?.managed_files_enabled === true
+    && managedCapability.ready === true
+    && managedFileExtensions.length > 0;
+  const managedFilesSaveBlocked = inputSourceDraft === "managed_files" && !managedFilesEnabled;
+
+  function setManagedInputError(message: string): void {
+    setInputValidationError(message);
+    onError(message);
+  }
+
+  function stagedOrDraftArtifact(artifactId: number): ManagedFileDraft | undefined {
+    return managedFilesDraft.find((artifact) => artifact.id === artifactId)
+      ?? stagedArtifacts.find((artifact) => artifact.id === artifactId);
+  }
+
+  function validateManagedFileSelection(
+    file: File,
+    replacementId: number | null,
+  ): string | null {
+    if (!managedFileExtensionSet.has(fileExtension(file.name))) {
+      return t("task.input.fileTypeNotAllowed");
+    }
+    const selectedWithoutReplacement = managedFilesDraft.filter(
+      (artifact) => artifact.id !== replacementId,
+    );
+    if (replacementId === null && selectedWithoutReplacement.length >= MANAGED_FILE_LIMIT) {
+      return t("task.input.errors.fileLimit");
+    }
+    const canonical = canonicalFilename(file.name);
+    if (selectedWithoutReplacement.some((artifact) => canonicalFilename(artifact.original_filename) === canonical)) {
+      return t("task.input.errors.fileNameConflict");
+    }
+    return null;
+  }
+
+  async function uploadManagedFile(file: File, replacementId: number | null): Promise<void> {
+    if (!managedFilesEnabled || readOnly) {
+      return;
+    }
+    const validationError = validateManagedFileSelection(file, replacementId);
+    if (validationError !== null) {
+      setManagedInputError(validationError);
+      return;
+    }
+
+    const progressKey = `${file.name}:${file.size}:${Date.now()}`;
+    setInputValidationError(null);
+    onError(null);
+    setUploadProgress((current) => [...current, { key: progressKey, filename: file.name, percent: 0 }]);
+    try {
+      const uploaded = await uploadManagedInputArtifact(adapterId, file, {
+        onProgress: ({ loaded, total }) => {
+          const percent = total === null || total <= 0
+            ? 0
+            : Math.min(100, Math.round((loaded / total) * 100));
+          setUploadProgress((current) => current.map((entry) =>
+            entry.key === progressKey ? { ...entry, percent } : entry,
+          ));
+        },
+      });
+      const previous = replacementId === null ? undefined : stagedOrDraftArtifact(replacementId);
+      setManagedFilesDraft((current) => mergeManagedFileDrafts(
+        current.filter((artifact) => artifact.id !== replacementId),
+        [uploaded],
+      ));
+      setStagedArtifacts((current) => [
+        ...current.filter((artifact) => artifact.id !== replacementId && artifact.id !== uploaded.id),
+        uploaded,
+      ]);
+      if (!inputEditingLocked) {
+        setInputSourceDraft("managed_files");
+      }
+      if (isStagedArtifact(previous) && previous.id !== uploaded.id) {
+        try {
+          await api.deleteInputArtifact(adapterId, previous.id);
+          setStagedArtifacts((current) => current.filter((artifact) => artifact.id !== previous.id));
+        } catch (error) {
+          // The replacement remains a valid staged draft; leave the old
+          // staged item visible so a later explicit delete can recover it.
+          setManagedFilesDraft((current) => current.some((item) => item.id === previous.id)
+            ? current
+            : mergeManagedFileDrafts(current, [previous]));
+          setStagedArtifacts((current) => current.some((item) => item.id === previous.id)
+            ? current
+            : [...current, previous]);
+          setManagedInputError(localizedInputError(error));
+        }
+      }
+    } catch (error) {
+      setManagedInputError(localizedInputError(error));
+    } finally {
+      setUploadProgress((current) => current.filter((entry) => entry.key !== progressKey));
+    }
+  }
+
+  async function deleteManagedFile(artifact: ManagedFileDraft): Promise<void> {
+    if (readOnly || deletingArtifactId !== null) {
+      return;
+    }
+    if (artifact.status === "STAGED") {
+      setDeletingArtifactId(artifact.id);
+      setInputValidationError(null);
+      onError(null);
+      try {
+        await api.deleteInputArtifact(adapterId, artifact.id);
+        setManagedFilesDraft((current) => current.filter((item) => item.id !== artifact.id));
+        setStagedArtifacts((current) => current.filter((item) => item.id !== artifact.id));
+      } catch (error) {
+        setManagedInputError(localizedInputError(error));
+      } finally {
+        setDeletingArtifactId(null);
+      }
+      return;
+    }
+    // READY/current files are removed from the draft only. The server marks
+    // them PENDING_DELETE during the next revisioned save.
+    setManagedFilesDraft((current) => current.filter((item) => item.id !== artifact.id));
+  }
+
+  async function saveInputObject() {
+    if (
+      readOnly ||
+      savingInput ||
+      loadingInput ||
+      inputConfig === null ||
+      inputSourceDraft === "remote_files" ||
+      managedFilesSaveBlocked ||
+      props.adapter.runtime_locked === true ||
+      schedule?.enabled === true
+    ) {
+      return;
+    }
+
+    const payload = inputSourceDraft === "none"
+      ? { expected_revision: inputConfig.revision, source_type: "none" as const }
+      : inputSourceDraft === "managed_files"
+        ? {
+            expected_revision: inputConfig.revision,
+            source_type: "managed_files" as const,
+            artifact_ids: managedArtifactIds(managedFilesDraft),
+            retention: retentionDraft,
+          }
+        : (() => {
+            const parsed = parseJson(inputJsonDraft);
+            if (!parsed.ok) {
+              return null;
+            }
+            return {
+              expected_revision: inputConfig.revision,
+              source_type: "json" as const,
+              json_value: parsed.value,
+            };
+          })();
+    if (payload === null) {
+      const message = t("task.input.invalidJson");
+      setInputValidationError(message);
+      onError(message);
+      return;
+    }
+    if (inputSourceDraft === "managed_files" && hasManagedFilenameConflict(managedFilesDraft)) {
+      const message = t("task.input.errors.fileNameConflict");
+      setInputValidationError(message);
+      onError(message);
+      return;
+    }
+    if (
+      inputSourceDraft === "managed_files"
+      && managedArtifactIds(managedFilesDraft).length > MANAGED_FILE_LIMIT
+    ) {
+      const message = t("task.input.errors.fileLimit");
+      setInputValidationError(message);
+      onError(message);
+      return;
+    }
+
+    setSavingInput(true);
+    setInputValidationError(null);
+    onError(null);
+    try {
+      const saved = await api.putInputConfig(adapterId, payload);
+      setInputConfig(saved);
+      setInputSourceDraft(saved.source_type);
+      setInputJsonDraft(saved.source_type === "json" ? formatJson(saved.json_value) : "null");
+      setRetentionDraft(saved.retention);
+      const remainingStaged = stagedArtifacts.filter(
+        (artifact) => !saved.artifacts.some((item) => item.id === artifact.id),
+      );
+      setManagedFilesDraft(mergeManagedFileDrafts(saved.artifacts, remainingStaged));
+      setStagedArtifacts(remainingStaged);
+      setInputValidationError(null);
+    } catch (error) {
+      // Keep both the last valid server resource and the user's draft intact.
+      // In particular, a 409 must not silently replace the stale page's text.
+      const message = localizedInputError(error);
+      setInputValidationError(message);
+      onError(message);
+      if (error instanceof ApiError && error.code === "adapter_runtime_locked") {
+        // Re-read the Adapter lock without replacing the user's Input Object
+        // draft. The server remains authoritative for the next save attempt.
+        void refreshAdapter().catch(() => undefined);
+      }
+    } finally {
+      setSavingInput(false);
+    }
+  }
+
   async function saveRunConfig() {
     if (readOnly || savingRuntime || props.adapter.runtime_locked) {
       return;
@@ -198,14 +689,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     }
     const timeoutSeconds = resolveTimeoutSeconds();
     if (timeoutSeconds === null) {
-      return;
-    }
-    const scheduleDraft =
-      runMode === "schedule"
-        ? parseInput(scheduleInput)
-        : null;
-    if (scheduleDraft !== null && !scheduleDraft.ok) {
-      onError(t("task.settings.invalidScheduleInput"));
       return;
     }
     setSavingRuntime(true);
@@ -233,14 +716,12 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             enabled: schedule?.enabled === true,
             cron,
             timezone,
-            input: scheduleDraft?.ok === true ? scheduleDraft.value : null,
           });
           // 保存成功后的值立即落回表单，并作废任何在途的 Schedule GET。
           scheduleLoadEpoch.current += 1;
           setSchedule(saved);
           setCron(saved.cron);
           setTimezone(saved.timezone);
-          setScheduleInput(JSON.stringify(saved.input, null, 2));
           setScheduleTouched(false);
         } else if (scheduleUnknown) {
           onError(t("task.settings.savedScheduleNotLoaded"));
@@ -265,21 +746,18 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       onError(scheduleEnableBlockedReason);
       return;
     }
-    const parsed = parseInput(scheduleInput);
-    if (!parsed.ok) {
-      onError(t("task.settings.invalidScheduleInput"));
-      return;
-    }
     setSavingSchedule(true);
     onError(null);
     try {
+      // InputConfig is the only input editor. Schedule PUT keeps the legacy
+      // mirror server-owned by omitting its old input field entirely.
       const saved = await api.putSchedule(adapterId, {
         enabled,
         cron,
         timezone,
-        input: parsed.value,
       });
       setSchedule(saved);
+      setScheduleTouched(false);
       await refreshAdapter();
     } catch (error) {
       onError(errorMessage(error));
@@ -289,24 +767,16 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   async function runOnce() {
-    if (readOnly) {
-      return;
-    }
-    // M5.5.9：未保存修改时不得启动运行，先保存。
-    if (props.dirty) {
-      onError(t("task.reasons.dirtyRun"));
-      return;
-    }
-    const text = props.adapter.run_mode === "schedule" ? scheduleInput : manualInput;
-    const parsed = parseInput(text);
-    if (!parsed.ok) {
-      onError(t("task.settings.invalidInput"));
+    if (!canRun) {
+      onError(runBlockedReason ?? t("task.reasons.unavailable"));
       return;
     }
     setSubmitting(true);
     onError(null);
     try {
-      const execution = await api.createExecution(adapterId, { input: parsed.value });
+      // Control resolves the saved InputConfig. The new Web never sends an
+      // input override, including for schedule-mode run-now.
+      const execution = await api.createExecution(adapterId);
       props.onExecutionStarted(execution);
       await refreshAdapter();
     } catch (error) {
@@ -359,9 +829,65 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     workerId !== (props.adapter.runtime_worker_id ?? null) ||
     effectiveTimeoutSeconds !== (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) ||
     scheduleTouched;
+
+  const inputDirty = inputConfig !== null && (
+    inputSourceDraft !== inputConfig.source_type ||
+    (inputSourceDraft === "json" && inputJsonDraft !== formatJson(inputConfig.json_value)) ||
+    (inputSourceDraft === "managed_files" && (
+      !sameIds(managedArtifactIds(managedFilesDraft), inputConfig.artifacts.map((artifact) => artifact.id)) ||
+      retentionDraft.mode !== inputConfig.retention.mode ||
+      retentionDraft.seconds !== inputConfig.retention.seconds
+    ))
+  );
+  const managedFilenameConflict = inputSourceDraft === "managed_files" && hasManagedFilenameConflict(managedFilesDraft);
+  const managedDraftIds = new Set(managedFilesDraft.map((artifact) => artifact.id));
+  const overflowStagedArtifacts = stagedArtifacts.filter(
+    (artifact) => !managedDraftIds.has(artifact.id),
+  );
+  const savedManagedInput = inputConfig?.source_type === "managed_files";
+  const managedInputExampleReady =
+    savedManagedInput &&
+    inputSourceDraft === "managed_files" &&
+    inputConfig?.valid_for_run === true &&
+    managedFilesDraft.length > 0 &&
+    !inputDirty &&
+    managedFilesEnabled;
+  const managedInputExampleDisabledReason = inputDirty
+    ? t("task.input.examples.saveFirst")
+    : !managedFilesEnabled
+      ? t("task.input.examples.disabledReason")
+      : t("task.input.examples.notReady");
+  const inputInvalidReason = inputConfig?.invalid_reason ?? null;
+  const inputInvalidMessage = localizedInputReason(
+    inputInvalidReason,
+    undefined,
+    (key) => t(`task.input.errors.${key}`),
+  );
+  const inputBlockedReason = (() => {
+    if (loadingInput) return t("task.input.loading");
+    if (inputLoadFailed || inputConfig === null) return t("task.input.loadFailed");
+    if (inputDirty) return t("task.input.saveBeforeRun");
+    if (managedFilenameConflict) return t("task.input.errors.fileNameConflict");
+    if (!inputConfig.valid_for_run) {
+      if (inputInvalidMessage !== null) return inputInvalidMessage;
+      return t("task.input.invalidConfig");
+    }
+    if (inputSourceDraft === "managed_files" && loadingManagedCapability) {
+      return t("task.input.managedFilesLoading");
+    }
+    if (inputSourceDraft === "managed_files" && managedCapabilityLoadFailed) {
+      return t("task.input.capabilityLoadFailed");
+    }
+    if (inputSourceDraft === "managed_files" && !managedFilesEnabled) {
+      return t("task.input.managedFilesDisabled");
+    }
+    return null;
+  })();
+
   const scheduleEnableBlockedReason = (() => {
     if (loadingSchedule) return t("task.reasons.loadingSchedule");
     if (scheduleLoadFailed) return t("task.reasons.scheduleLoadFailed");
+    if (inputBlockedReason !== null) return inputBlockedReason;
     if (props.adapter.latest_version_id === null) return t("task.reasons.saveVersionFirst");
     if (props.adapter.runtime_worker_id == null) return t("task.reasons.saveWorkerFirst");
     if (props.dirty) return t("task.reasons.saveChangesFirst");
@@ -369,32 +895,114 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     if (scheduleConfigMissing) return t("task.reasons.saveRuntimeFirst");
     return null;
   })();
+
   const compatibleWorkers = props.workers.filter((worker) =>
     worker.capabilities.includes(props.adapter.language),
   );
   const canRun =
     !readOnly &&
     !props.dirty &&
+    inputBlockedReason === null &&
     !props.adapter.archived_at &&
     props.adapter.latest_version_id !== null &&
     props.adapter.runtime_worker_id != null &&
     !activeExecution &&
     !submitting;
+  const runBlockedReason = (() => {
+    if (readOnly) return t("task.reasons.readOnly");
+    if (props.dirty) return t("task.reasons.dirtyRun");
+    if (props.adapter.archived_at) return t("task.reasons.deleted");
+    if (inputBlockedReason !== null) return inputBlockedReason;
+    if (props.adapter.latest_version_id === null) return t("task.reasons.noVersion");
+    if (props.adapter.runtime_worker_id == null) return t("task.reasons.noWorker");
+    if (activeExecution) return t("task.reasons.activeRun");
+    if (submitting) return t("task.reasons.processing");
+    // 防御性兜底：未来若新增 canRun 条件但遗漏对应文案，命令式入口仍保持阻断。
+    return canRun ? null : t("task.reasons.unavailable");
+  })();
+
+  const inputEditingLocked =
+    readOnly || runtimeLocked || scheduleEnabled || savingInput || loadingInput || inputLoadFailed || inputConfig === null;
+  const sourceCards: {
+    sourceType: InputSourceType;
+    title: string;
+    description: string;
+    status: string;
+    disabledReason: string | null;
+  }[] = [
+    {
+      sourceType: "none",
+      title: t("input.sources.none.title", { ns: "adapter" }),
+      description: t("input.sources.none.description", { ns: "adapter" }),
+      status: t("input.sources.none.status", { ns: "adapter" }),
+      disabledReason: inputEditingLocked ? t("task.input.locked") : null,
+    },
+    {
+      sourceType: "json",
+      title: t("input.sources.json.title", { ns: "adapter" }),
+      description: t("input.sources.json.description", { ns: "adapter" }),
+      status: t("input.sources.json.status", { ns: "adapter" }),
+      disabledReason: inputEditingLocked ? t("task.input.locked") : null,
+    },
+    {
+      sourceType: "managed_files",
+      title: t("input.sources.managedFiles.title", { ns: "adapter" }),
+      description: t("input.sources.managedFiles.description", { ns: "adapter" }),
+      status: managedFilesEnabled
+        ? t("input.sources.managedFiles.status", { ns: "adapter" })
+        : t("input.sources.managedFiles.disabled", { ns: "adapter" }),
+      disabledReason: inputEditingLocked
+        ? t("task.input.locked")
+        : loadingManagedCapability
+          ? t("task.input.managedFilesLoading")
+          : managedCapabilityLoadFailed
+            ? t("task.input.capabilityLoadFailed")
+          : managedFilesEnabled
+            ? null
+            : t("input.sources.managedFiles.disabled", { ns: "adapter" }),
+    },
+    {
+      sourceType: "remote_files",
+      title: t("input.sources.remoteFiles.title", { ns: "adapter" }),
+      description: t("input.sources.remoteFiles.description", { ns: "adapter" }),
+      status: t("input.sources.remoteFiles.disabled", { ns: "adapter" }),
+      disabledReason: t("input.sources.remoteFiles.disabled", { ns: "adapter" }),
+    },
+  ];
+
+  function selectInputSource(sourceType: InputSourceType, disabledReason: string | null): void {
+    if (disabledReason !== null) {
+      return;
+    }
+    setInputSourceDraft(sourceType);
+    if (sourceType === "managed_files") {
+      setManagedFilesDraft((current) => mergeManagedFileDrafts(current, stagedArtifacts));
+      setRetentionDraft(inputConfig?.source_type === "managed_files"
+        ? inputConfig.retention
+        : { mode: "system_default", seconds: null });
+    }
+    setInputValidationError(null);
+    onError(null);
+  }
 
   useEffect(() => {
     onRuntimeStateChange({
       scheduleEnabled,
-      loading: loadingSchedule || savingRuntime || savingSchedule || submitting || cancelling,
+      loading: loadingInput || loadingSchedule || savingRuntime || savingInput || savingSchedule || submitting || cancelling,
       activeExecution,
       canRun,
       scheduleEnableBlockedReason,
+      runBlockedReason,
     });
   }, [
     activeExecution,
     canRun,
     cancelling,
+    loadingInput,
     loadingSchedule,
     onRuntimeStateChange,
+    runBlockedReason,
+    savingInput,
     savingRuntime,
     savingSchedule,
     scheduleEnableBlockedReason,
@@ -406,6 +1014,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     runOnce: () => void runOnce(),
     stopExecution: () => void stopExecution(),
     toggleSchedule: () => void saveSchedule(!scheduleEnabled),
+    confirmLeave: () => stagedArtifacts.length === 0 || window.confirm(t("task.input.stagedLeaveWarning")),
   }));
 
   const scheduleVisible = runMode === "schedule";
@@ -477,7 +1086,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                   {t("units.minutes", { value: minutes })}
                 </Radio>
               ))}
-                <Radio value="custom">{t("task.settings.custom")}</Radio>
+              <Radio value="custom">{t("task.settings.custom")}</Radio>
             </Radio.Group>
             {effectiveCustom && (
               <InputNumber
@@ -486,7 +1095,7 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 max={MAX_TIMEOUT_SECONDS}
                 precision={0}
                 value={effectiveTimeoutSeconds}
-                addonAfter={t("task.settings.seconds")}
+                suffix={t("task.settings.seconds")}
                 disabled={readOnly || runtimeLocked || savingRuntime}
                 onChange={(value) => setTimeoutOverride(value ?? null)}
               />
@@ -520,10 +1129,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 <span className="settings-field-label">{t("task.settings.timezone")}</span>
                 <Input data-testid="task-schedule-timezone" value={timezone} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setTimezone(event.target.value); setScheduleTouched(true); }} />
               </label>
-              <label className="settings-field">
-                <span className="settings-field-label">{t("task.settings.input")}</span>
-                <Input.TextArea data-testid="task-schedule-input" rows={4} value={scheduleInput} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setScheduleInput(event.target.value); setScheduleTouched(true); }} />
-              </label>
               <div className="settings-field">
                 <span className="settings-field-label">{t("task.settings.scheduleStatus")}</span>
                 <Space>
@@ -537,15 +1142,393 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         </section>
       )}
 
-      {runMode === "manual" && (
-        <section className="task-manual-config">
-          <Typography.Title level={5}>{t("task.settings.manualTitle")}</Typography.Title>
-          <label className="settings-field">
-            <span className="settings-field-label">{t("task.settings.input")}</span>
-            <Input.TextArea data-testid="task-manual-input" rows={4} value={manualInput} disabled={readOnly || activeExecution} onChange={(event) => setManualInput(event.target.value)} />
-          </label>
-        </section>
-      )}
+      <section className="task-input-config" data-testid="task-input-config">
+        <div className="task-input-heading">
+          <div>
+            <Typography.Title level={5}>{t("input.objectTitle", { ns: "adapter" })}</Typography.Title>
+            <Typography.Text type="secondary">{t("task.input.description")}</Typography.Text>
+          </div>
+          <div className="task-input-state" data-testid="task-input-state" aria-live="polite">
+            <Tag color={inputDirty ? "gold" : "green"}>
+              {inputDirty ? t("task.input.draft") : t("task.input.saved")}
+            </Tag>
+          </div>
+        </div>
+
+        <div className="task-input-source-grid" role="radiogroup" aria-label={t("task.input.sourceGroup")}>
+          {sourceCards.map((card) => {
+            const selected = inputSourceDraft === card.sourceType;
+            const cardContent = (
+              <Card
+                key={card.sourceType}
+                size="small"
+                className={`task-input-source-card${selected ? " is-selected" : ""}${card.disabledReason !== null ? " is-disabled" : ""}`}
+                data-testid={`task-input-source-${card.sourceType}`}
+                role="radio"
+                aria-checked={selected}
+                aria-disabled={card.disabledReason !== null}
+                aria-label={`${card.title}: ${card.status}`}
+                tabIndex={0}
+                hoverable={card.disabledReason === null}
+                onClick={() => selectInputSource(card.sourceType, card.disabledReason)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    selectInputSource(card.sourceType, card.disabledReason);
+                  }
+                }}
+              >
+                <div className="task-input-source-card-title">{card.title}</div>
+                <Typography.Text type="secondary">{card.description}</Typography.Text>
+                <Tag color={selected ? "blue" : card.disabledReason === null ? "default" : "gold"}>
+                  {card.status}
+                </Tag>
+              </Card>
+            );
+            return card.disabledReason === null ? cardContent : (
+              <Tooltip key={card.sourceType} title={card.disabledReason} trigger={["hover", "focus"]}>
+                {cardContent}
+              </Tooltip>
+            );
+          })}
+        </div>
+
+        <Form layout="vertical" className="task-input-form">
+          {inputSourceDraft === "json" && (
+            <Form.Item
+              label={t("task.input.jsonLabel")}
+              validateStatus={inputValidationError !== null ? "error" : undefined}
+              help={inputValidationError ?? t("task.input.jsonHint")}
+            >
+              <Input.TextArea
+                data-testid="task-input-json"
+                aria-label={t("task.input.jsonLabel")}
+                aria-invalid={inputValidationError !== null}
+                rows={8}
+                value={inputJsonDraft}
+                disabled={inputEditingLocked}
+                placeholder={t("task.input.jsonPlaceholder")}
+                onChange={(event) => {
+                  setInputJsonDraft(event.target.value);
+                  setInputValidationError(null);
+                }}
+              />
+            </Form.Item>
+          )}
+          {(inputSourceDraft === "managed_files" || stagedArtifacts.length > 0 || inputConfig?.source_type === "managed_files") && (
+            <div className="managed-input-editor" data-testid="managed-input-editor">
+              {managedCapabilityLoadFailed && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  data-testid="managed-input-capability-error"
+                  message={t("task.input.capabilityLoadFailed")}
+                  action={(
+                    <Button
+                      size="small"
+                      loading={loadingManagedCapability}
+                      data-testid="managed-input-capability-retry"
+                      onClick={() => void loadManagedInput()}
+                    >
+                      {t("actions.refresh", { ns: "common" })}
+                    </Button>
+                  )}
+                />
+              )}
+              {stagedArtifactsLoadFailed && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  data-testid="managed-input-staged-list-error"
+                  message={t("task.input.stagedListLoadFailed")}
+                  action={(
+                    <Button
+                      size="small"
+                      loading={loadingStagedArtifacts}
+                      data-testid="managed-input-staged-list-retry"
+                      onClick={() => void loadStagedArtifacts()}
+                    >
+                      {t("actions.refresh", { ns: "common" })}
+                    </Button>
+                  )}
+                />
+              )}
+              <div className="managed-input-editor-header">
+                <div>
+                  <Typography.Text strong>{t("task.input.managedFilesTitle")}</Typography.Text>
+                  <Typography.Text type="secondary" className="settings-field-hint">
+                    {t("task.input.managedFilesHint", { max: MANAGED_FILE_LIMIT })}
+                  </Typography.Text>
+                </div>
+                <Tag color={managedFilesDraft.length === 0 ? "gold" : "blue"} data-testid="managed-input-count">
+                  {t("task.input.fileCount", { count: managedFilesDraft.length, max: MANAGED_FILE_LIMIT })}
+                </Tag>
+              </div>
+
+              {managedFilesEnabled && !readOnly && !savingInput && (
+                <Space wrap>
+                  <Upload
+                    accept={managedFileAccept}
+                    fileList={[]}
+                    multiple={false}
+                    showUploadList={false}
+                    onChange={() => undefined}
+                    beforeUpload={(file) => {
+                      void uploadManagedFile(file, null);
+                      return Upload.LIST_IGNORE;
+                    }}
+                  >
+                    <Tooltip
+                      title={t("task.input.uploadSupportedTypes", { extensions: managedFileTypesLabel })}
+                      trigger={["hover", "focus"]}
+                    >
+                      <Button data-testid="managed-input-upload">{t("task.input.upload")}</Button>
+                    </Tooltip>
+                  </Upload>
+                  <Button
+                    data-testid="managed-input-refresh"
+                    loading={loadingManagedCapability || loadingStagedArtifacts}
+                    onClick={() => void loadManagedInput()}
+                  >
+                    {t("task.input.refreshStaged")}
+                  </Button>
+                </Space>
+              )}
+
+              {uploadProgress.length > 0 && (
+                <div className="managed-input-progress" data-testid="managed-input-upload-progress" aria-live="polite">
+                  {uploadProgress.map((progress) => (
+                    <div className="managed-input-progress-row" key={progress.key}>
+                      <Typography.Text className="managed-input-filename" title={progress.filename}>
+                        {displayFilename(progress.filename)}
+                      </Typography.Text>
+                      <Progress percent={progress.percent} size="small" />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {managedFilesDraft.length === 0 ? (
+                <Typography.Text type="secondary" data-testid="managed-input-empty">
+                  {t("task.input.managedFilesEmpty")}
+                </Typography.Text>
+              ) : (
+                <div className="managed-input-file-list" data-testid="managed-input-file-list">
+                  {managedFilesDraft.map((artifact) => {
+                    const statusLabel = artifact.status === "READY"
+                      ? t("task.input.fileStatus.ready")
+                      : t("task.input.fileStatus.staged");
+                    const isStaged = artifact.status === "STAGED";
+                    return (
+                      <Card key={artifact.id} size="small" className="managed-input-file-card">
+                        <div className="managed-input-file-main">
+                          <Tooltip title={artifact.original_filename}>
+                            <Typography.Text
+                              className="managed-input-filename"
+                              data-testid={`managed-input-filename-${artifact.id}`}
+                              title={artifact.original_filename}
+                            >
+                              {displayFilename(artifact.original_filename)}
+                            </Typography.Text>
+                          </Tooltip>
+                          <Typography.Text type="secondary">
+                            {t("task.input.fileMeta", {
+                              extension: fileExtension(artifact.original_filename),
+                              size: artifact.size_bytes,
+                            })}
+                          </Typography.Text>
+                          <Typography.Text
+                            type="secondary"
+                            data-testid={`managed-input-created-${artifact.id}`}
+                          >
+                            {t("task.input.uploadedAt", {
+                              time: formatTime(artifact.created_at ?? null, locale),
+                            })}
+                          </Typography.Text>
+                          <Tag color={isStaged ? "gold" : "green"} data-testid={`managed-input-status-${artifact.id}`}>
+                            {statusLabel}
+                          </Tag>
+                          <Typography.Text type="secondary" data-testid={`managed-input-expires-${artifact.id}`}>
+                            {artifact.expires_at === null
+                              ? t("task.input.expiresNever")
+                              : t("task.input.expiresAt", { time: formatTime(artifact.expires_at, locale) })}
+                          </Typography.Text>
+                        </div>
+                        <Space className="managed-input-file-actions">
+                          {managedFilesEnabled && !readOnly && !inputEditingLocked && (
+                            <Upload
+                              accept={managedFileAccept}
+                              fileList={[]}
+                              multiple={false}
+                              showUploadList={false}
+                              onChange={() => undefined}
+                              beforeUpload={(file) => {
+                                void uploadManagedFile(file, artifact.id);
+                                return Upload.LIST_IGNORE;
+                              }}
+                            >
+                              <Tooltip
+                                title={t("task.input.uploadSupportedTypes", { extensions: managedFileTypesLabel })}
+                                trigger={["hover", "focus"]}
+                              >
+                                <Button size="small" data-testid={`replace-managed-file-${artifact.id}`}>
+                                  {t("task.input.replace")}
+                                </Button>
+                              </Tooltip>
+                            </Upload>
+                          )}
+                          <Button
+                            size="small"
+                            danger={!isStaged}
+                            loading={deletingArtifactId === artifact.id}
+                            disabled={readOnly || deletingArtifactId !== null || (!isStaged && inputEditingLocked)}
+                            data-testid={`delete-managed-file-${artifact.id}`}
+                            onClick={() => void deleteManagedFile(artifact)}
+                          >
+                            {t("task.input.delete")}
+                          </Button>
+                        </Space>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+
+              {overflowStagedArtifacts.length > 0 && (
+                <div data-testid="managed-input-overflow-staged">
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={t("task.input.overflowStaged", {
+                      count: overflowStagedArtifacts.length,
+                      max: MANAGED_FILE_LIMIT,
+                    })}
+                  />
+                  <div className="managed-input-file-list">
+                    {overflowStagedArtifacts.map((artifact) => (
+                      <Card key={artifact.id} size="small" className="managed-input-file-card">
+                        <div className="managed-input-file-main">
+                          <Typography.Text className="managed-input-filename">
+                            {displayFilename(artifact.original_filename)}
+                          </Typography.Text>
+                          <Tag color="gold">{t("task.input.fileStatus.staged")}</Tag>
+                        </div>
+                        <Button
+                          size="small"
+                          loading={deletingArtifactId === artifact.id}
+                          disabled={readOnly || deletingArtifactId !== null}
+                          data-testid={`delete-overflow-staged-${artifact.id}`}
+                          onClick={() => void deleteManagedFile(artifact)}
+                        >
+                          {t("task.input.delete")}
+                        </Button>
+                      </Card>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {managedFilenameConflict && (
+                <Alert
+                  type="error"
+                  showIcon
+                  data-testid="managed-input-name-conflict"
+                  message={t("task.input.errors.fileNameConflict")}
+                />
+              )}
+              {inputValidationError !== null && !managedFilenameConflict && (
+                <Alert
+                  type="error"
+                  showIcon
+                  data-testid="managed-input-error"
+                  message={inputValidationError}
+                />
+              )}
+
+              <Form.Item label={t("task.input.retentionLabel")} className="managed-input-retention-item">
+                <Space wrap>
+                  <Select
+                    data-testid="managed-input-retention-mode"
+                    value={retentionDraft.mode}
+                    disabled={inputEditingLocked || !managedFilesEnabled}
+                    options={[
+                      { value: "system_default", label: t("task.input.retention.systemDefault") },
+                      { value: "custom", label: t("task.input.retention.custom") },
+                      {
+                        value: "manual_delete",
+                        label: t("task.input.retention.manualDelete"),
+                        disabled: managedCapability?.allow_manual_delete !== true,
+                      },
+                    ]}
+                    onChange={(value: InputRetention["mode"]) => {
+                      setRetentionDraft(value === "custom"
+                        ? {
+                            mode: "custom",
+                            seconds: retentionDraft.seconds
+                              ?? managedCapability?.default_retention_seconds
+                              ?? null,
+                          }
+                        : { mode: value, seconds: null });
+                      setInputValidationError(null);
+                    }}
+                  />
+                  {retentionDraft.mode === "custom" && (
+                    <InputNumber
+                      data-testid="managed-input-retention-seconds"
+                      min={3_600}
+                      max={managedCapability?.max_custom_retention_seconds}
+                      precision={0}
+                      value={retentionDraft.seconds ?? undefined}
+                      suffix={t("task.input.seconds")}
+                      disabled={inputEditingLocked || !managedFilesEnabled}
+                      onChange={(value) => setRetentionDraft({ mode: "custom", seconds: value ?? null })}
+                    />
+                  )}
+                </Space>
+                <Typography.Text type="secondary" className="settings-field-hint">
+                  {t("task.input.retentionHint")}
+                </Typography.Text>
+              </Form.Item>
+              {savedManagedInput && inputSourceDraft === "managed_files" && managedFilesDraft.length === 0 && (
+                <Alert
+                  type="info"
+                  showIcon
+                  data-testid="managed-input-clone-notice"
+                  message={t("task.input.cloneReuploadHint")}
+                />
+              )}
+              {savedManagedInput && (
+                <ManagedInputExamples
+                  language={props.adapter.language}
+                  ready={managedInputExampleReady}
+                  disabledReason={managedInputExampleDisabledReason}
+                />
+              )}
+            </div>
+          )}
+          {inputConfig !== null && !inputConfig.valid_for_run && inputSourceDraft === inputConfig.source_type && !inputDirty && (
+            <Alert
+              type="warning"
+              showIcon
+              data-testid="task-input-invalid"
+              message={inputInvalidMessage ?? t("task.input.invalidConfig")}
+            />
+          )}
+          <div className="task-input-actions">
+            <Button
+              type="primary"
+              htmlType="button"
+              data-testid="save-task-input"
+              loading={savingInput}
+              disabled={inputEditingLocked || inputConfig === null || managedFilesSaveBlocked}
+              onClick={() => void saveInputObject()}
+            >
+              {t("task.input.save")}
+            </Button>
+            {inputDirty && <Typography.Text type="warning">{t("task.input.unsavedHint")}</Typography.Text>}
+          </div>
+        </Form>
+      </section>
 
       <Button
         type="primary"

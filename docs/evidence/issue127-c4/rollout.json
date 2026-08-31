@@ -1,0 +1,51 @@
+{
+  "dispatch_id": "issue127-c4-gate-20260828-r1",
+  "status": "PASS",
+  "fixed_base_sha": "7aa7d5904946a2145601a43ac79145a791adf80c",
+  "protocol_rollout": {
+    "v1_none": {
+      "execution_status": "succeeded",
+      "input_source_type": "none",
+      "cleanup_status": "deferred",
+      "cleanup_error_code": "workspace_cleanup_legacy_unverified"
+    },
+    "v1_json_null": {
+      "execution_status": "succeeded",
+      "input_source_type": "json",
+      "cleanup_status": "deferred",
+      "cleanup_error_code": "workspace_cleanup_legacy_unverified"
+    },
+    "managed_files_with_v1_only": {
+      "execution_status": "pending",
+      "worker_id": null,
+      "target_worker_protocol": 1,
+      "lease_count": 2
+    },
+    "same_execution_after_worker_v2": {
+      "execution_status": "succeeded",
+      "cleanup_status": "completed",
+      "lease_count": 0,
+      "workspace_exists": false,
+      "journal_exists": false
+    }
+  },
+  "pre_open_gate": {
+    "managed_files_flag_after_gate": false,
+    "minimum_worker_protocol": 1,
+    "live_worker_protocol_after_rollback": 2,
+    "active_executions": 0,
+    "leases": 0,
+    "flag_off_upload_test": "PASS"
+  },
+  "rollback_preservation": {
+    "schema_downgrade": "NOT_RUN",
+    "artifact_rows_before": 10,
+    "artifact_rows_after": 10,
+    "actual_bytes_before": 170,
+    "actual_bytes_after": 170,
+    "reserved_bytes_after": 0,
+    "active_executions_after": 0,
+    "leases_after": 0,
+    "historical_executions_retained": true
+  }
+}

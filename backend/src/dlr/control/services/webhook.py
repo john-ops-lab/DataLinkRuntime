@@ -54,8 +54,11 @@ from dlr.control.services.adapter import (
     _require_not_archived,
     domain_error,
 )
-from dlr.control.services.execution import compact_json_bytes
-from dlr.control.services.locale import get_system_locale
+from dlr.control.services.execution import (
+    _create_pending_execution_locked,
+    compact_json_bytes,
+    integrity_constraint_name,
+)
 from dlr.control.services.secrets import decrypt_fields
 
 logger = logging.getLogger("dlr.control.webhook")
@@ -397,25 +400,26 @@ def receive_webhook(
             {"max_bytes": settings.execution_input_max_bytes},
         )
 
-    execution = Execution(
-        adapter_id=adapter.id,
-        version_id=adapter.latest_version_id,
-        trigger="webhook",
-        status="pending",
-        target_worker_id=adapter.runtime_worker_id,
-        input=payload,
-        locale=get_system_locale(session),
-    )
     # Retention is a unified periodic service, not an inline side effect of
     # accepting a request.  This keeps receipt latency bounded and lets a
     # failed cleanup retry in small batches without touching active work.
-    session.add(execution)
     try:
-        session.flush()
-    except IntegrityError:
+        execution = _create_pending_execution_locked(
+            session,
+            adapter,
+            trigger="webhook",
+            runtime_input=payload,
+            input_source_type="json",
+            input_config_revision=1,
+            input_snapshot={"source_type": "json", "revision": 1},
+            target_worker_id=worker.id,
+        )
+    except IntegrityError as exc:
         # Lost the race against a concurrently created active
         # Execution: the partial unique index is the final defense.
         session.rollback()
+        if integrity_constraint_name(exc) != "uq_executions_active_adapter":
+            raise
         raise domain_error(
             409, "adapter_busy", "The Adapter already has an active Execution"
         ) from None

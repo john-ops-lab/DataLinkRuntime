@@ -5,7 +5,7 @@ import { Button, Card, Input } from "antd";
 import { ProForm } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
-import { resolveSystemLocale } from "../i18n";
+import { useLoginLocale } from "../login-locale";
 import { userErrorMessage } from "../user-message";
 import LoginShell from "./LoginShell";
 
@@ -26,7 +26,9 @@ export default function AccountPasswordPage({
   onSubmit,
   onLogout,
 }: AccountPasswordPageProps) {
-  const { i18n, t } = useTranslation("common");
+  const [locale] = useLoginLocale(false);
+  const { i18n } = useTranslation("common");
+  const t = i18n.getFixedT(locale, "common");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -48,7 +50,7 @@ export default function AccountPasswordPage({
         userErrorMessage(
           err,
           t("auth.passwordChangeFailed"),
-          resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language),
+          locale,
         ),
       );
       return false;
@@ -58,7 +60,7 @@ export default function AccountPasswordPage({
   }
 
   return (
-    <LoginShell testId="account-password-page">
+    <LoginShell testId="account-password-page" loginSurface={false}>
       <Card className="auth-card">
         <div className="login-card-inner">
           <h1 className="login-card-title">{t("auth.forcePasswordTitle")}</h1>

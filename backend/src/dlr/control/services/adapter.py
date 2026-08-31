@@ -6,12 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import JSON, delete, func, null, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.control.models import (
     Adapter,
+    AdapterInputConfig,
     AdapterPermission,
     AdapterSchedule,
     AdapterVersion,
@@ -166,6 +167,10 @@ def create_adapter(
     session.add(adapter)
     try:
         session.flush()
+        if adapter.adapter_type == "task":
+            # A new Task starts with one explicit Adapter-level input object;
+            # the later migration handles historical rows.
+            session.add(AdapterInputConfig(adapter_id=adapter.id))
         if adapter.adapter_type == "webhook":
             session.add(
                 AdapterWebhook(
@@ -385,6 +390,13 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
     if adapter is None or adapter.archived_at is not None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
 
+    # Upload creation and permanent deletion both serialize on the Adapter
+    # row.  Check the writer state before any runtime stop/cancellation work so
+    # a concurrent upload is never converted into an orphaned reservation.
+    from dlr.control.services import managed_input_gc
+
+    managed_input_gc.ensure_no_active_upload(session, adapter.id)
+
     active = lock_active_execution(session, adapter.id)
     if active is not None:
         if not stop:
@@ -412,6 +424,9 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
         if stop:
             _disable_trigger_for_delete(session, adapter)
             request_cancellation(active)
+            from dlr.control.services.execution import release_execution_leases
+
+            release_execution_leases(session, active.id)
         else:
             adapter_runtime.require_runtime_unlocked(session, adapter)
     elif stop:
@@ -420,6 +435,12 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
         adapter_runtime.require_runtime_unlocked(session, adapter)
 
     cleanup_worker_ids = _require_cleanup_workers(session, adapter)
+
+    # Move charged Blob responsibility to rows that do not reference the
+    # Adapter before removing any managed-input metadata.  The detached jobs
+    # keep platform actual_bytes charged until their own worker confirms the
+    # object is gone.
+    deletion_job_ids = managed_input_gc.prepare_adapter_deletion(session, adapter.id)
 
     # Child rows are deleted explicitly so the permanent-delete contract is
     # visible in the transaction and remains correct if a future FK changes
@@ -443,6 +464,12 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
         if cleanup_request_id is None:
             cleanup_request_id = cleanup.id
     session.commit()
+    managed_input_gc.record_audit_event(
+        "adapter_delete",
+        "success",
+        adapter_id=adapter.id,
+        deletion_job_id=deletion_job_ids[0] if deletion_job_ids else None,
+    )
     return AdapterDeleteResult(cleanup_request_id=cleanup_request_id)
 
 
@@ -512,6 +539,17 @@ def clone_adapter(
     if source is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     _require_not_archived(source)
+    source_input_config = None
+    source_schedule = None
+    if source.adapter_type == "task":
+        source_schedule = session.scalar(
+            select(AdapterSchedule).where(AdapterSchedule.adapter_id == source.id).with_for_update()
+        )
+        source_input_config = session.scalar(
+            select(AdapterInputConfig)
+            .where(AdapterInputConfig.adapter_id == source.id)
+            .with_for_update()
+        )
     if _active_name_conflict(session, data.name):
         raise domain_error(
             409,
@@ -542,6 +580,34 @@ def clone_adapter(
             {"name": data.name},
         ) from None
 
+    if clone.adapter_type == "task":
+        # Copy the current source/revision-independent input selection, but
+        # never copy operational file identity.  A managed_files clone keeps
+        # its retention/source contract with an empty selection.
+        clone_json_value: object | None = None
+        if source_input_config is None:
+            clone_input_config = AdapterInputConfig(adapter_id=clone.id)
+        else:
+            if source_input_config.source_type == "json":
+                # JSONB result processing represents a saved JSON null as
+                # Python None; keep it a JSON null when none_as_null=True.
+                clone_json_value = (
+                    JSON.NULL
+                    if source_input_config.json_value is None
+                    else source_input_config.json_value
+                )
+            clone_input_config = AdapterInputConfig(
+                adapter_id=clone.id,
+                source_type=source_input_config.source_type,
+                json_value=(
+                    clone_json_value if source_input_config.source_type == "json" else null()
+                ),
+                retention_mode=source_input_config.retention_mode,
+                retention_seconds=source_input_config.retention_seconds,
+                revision=1,
+            )
+        session.add(clone_input_config)
+
     if source.latest_version_id is not None:
         source_version = session.get(AdapterVersion, source.latest_version_id)
         if source_version is None:
@@ -570,18 +636,18 @@ def clone_adapter(
             )
         )
     if source.adapter_type == "task":
-        source_schedule = session.scalar(
-            select(AdapterSchedule)
-            .where(AdapterSchedule.adapter_id == adapter_id)
-            .with_for_update()
-        )
         if source_schedule is not None:
             session.add(
                 AdapterSchedule(
                     adapter_id=clone.id,
                     cron=source_schedule.cron,
                     timezone=source_schedule.timezone,
-                    input=source_schedule.input,
+                    input=(
+                        clone_json_value
+                        if source_input_config is not None
+                        and source_input_config.source_type == "json"
+                        else None
+                    ),
                     enabled=False,
                     next_run_at=None,
                 )

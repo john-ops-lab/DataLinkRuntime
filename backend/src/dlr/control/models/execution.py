@@ -35,8 +35,11 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    Integer,
+    SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -51,7 +54,11 @@ class Worker(Base):
     the existing row instead of creating a new one."""
 
     __tablename__ = "workers"
-    __table_args__ = (CheckConstraint("status IN ('online', 'offline')", name="ck_workers_status"),)
+    __table_args__ = (
+        CheckConstraint("status IN ('online', 'offline')", name="ck_workers_status"),
+        CheckConstraint("protocol_version BETWEEN 1 AND 2", name="ck_workers_protocol_version"),
+        Index("ix_workers_protocol_version", "protocol_version"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
@@ -61,6 +68,10 @@ class Worker(Base):
     )
     # Runtime names detected by the Worker at registration time.
     capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    # Missing protocol_version on the wire is the v1 compatibility contract.
+    protocol_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default=text("1")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -102,6 +113,54 @@ class Execution(Base):
             unique=True,
             postgresql_where=text("trigger = 'schedule'"),
         ),
+        CheckConstraint(
+            "timeout_seconds_snapshot IS NULL OR timeout_seconds_snapshot BETWEEN 1 AND 86400",
+            name="ck_executions_timeout_seconds_snapshot",
+        ),
+        CheckConstraint(
+            "recovery_grace_seconds_snapshot IS NULL OR "
+            "recovery_grace_seconds_snapshot BETWEEN 10 AND 3600",
+            name="ck_executions_recovery_grace_seconds_snapshot",
+        ),
+        CheckConstraint(
+            "workspace_cleanup_attempt_timeout_seconds_snapshot IS NULL OR "
+            "workspace_cleanup_attempt_timeout_seconds_snapshot BETWEEN 1 AND 60",
+            name="ck_executions_cleanup_attempt_timeout_snapshot",
+        ),
+        CheckConstraint(
+            "workspace_cleanup_total_timeout_seconds_snapshot IS NULL OR "
+            "workspace_cleanup_total_timeout_seconds_snapshot BETWEEN 5 AND 300",
+            name="ck_executions_cleanup_total_timeout_snapshot",
+        ),
+        CheckConstraint(
+            "workspace_cleanup_attempt_timeout_seconds_snapshot IS NULL OR "
+            "workspace_cleanup_total_timeout_seconds_snapshot IS NULL OR "
+            "workspace_cleanup_attempt_timeout_seconds_snapshot <= "
+            "workspace_cleanup_total_timeout_seconds_snapshot",
+            name="ck_executions_cleanup_attempt_le_total",
+        ),
+        CheckConstraint(
+            "workspace_cleanup_total_timeout_seconds_snapshot IS NULL OR "
+            "recovery_grace_seconds_snapshot IS NULL OR "
+            "workspace_cleanup_total_timeout_seconds_snapshot < "
+            "recovery_grace_seconds_snapshot",
+            name="ck_executions_cleanup_total_lt_recovery_grace",
+        ),
+        CheckConstraint(
+            "workspace_cleanup_status IS NULL OR "
+            "workspace_cleanup_status IN ('pending', 'completed', 'deferred')",
+            name="ck_executions_workspace_cleanup_status",
+        ),
+        CheckConstraint(
+            "claim_token_hash IS NULL OR claim_token_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_executions_claim_token_hash_sha256",
+        ),
+        CheckConstraint(
+            "cleanup_receipt_token_hash IS NULL OR cleanup_receipt_token_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_executions_cleanup_receipt_token_hash_sha256",
+        ),
+        Index("ix_executions_claim_deadline_at", "status", "claim_deadline_at"),
+        Index("ix_executions_execution_deadline_at", "status", "execution_deadline_at"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -145,6 +204,36 @@ class Execution(Base):
     )
     # Any JSON value is valid input, including JSON null.
     input: Mapped[object] = mapped_column(JSONB, nullable=False)
+    # A1: immutable Adapter input facts captured in the same transaction as
+    # the raw runtime input.  The snapshot is deliberately public metadata;
+    # later waves may add file summaries without exposing operational IDs.
+    input_source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="json")
+    input_config_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    input_snapshot: Mapped[dict[str, object]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=lambda: {"source_type": "json", "revision": 1},
+    )
+    # C0 immutable deployment facts. Historical rows remain nullable after
+    # the additive migration; newly created rows fill these fields.
+    timeout_seconds_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recovery_grace_seconds_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    workspace_cleanup_attempt_timeout_seconds_snapshot: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    workspace_cleanup_total_timeout_seconds_snapshot: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    claim_deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    execution_deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cleanup_receipt_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    workspace_cleanup_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    workspace_cleanup_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Full output, only stored when it fits the big-field limit.
     output: Mapped[object | None] = mapped_column(JSONB, nullable=True)
     # UTF-8 byte size of the complete JSON output.
@@ -164,6 +253,7 @@ class Execution(Base):
     )
     # Failure/timeout summary.
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Locale captured when the Execution was created. Worker platform messages
     # must not change when the deployment locale changes mid-run.
     locale: Mapped[str] = mapped_column(
@@ -175,3 +265,36 @@ class Execution(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class ExecutionInputArtifactLease(Base):
+    """One immutable file authorization held for an active Execution."""
+
+    __tablename__ = "execution_input_artifact_leases"
+    __table_args__ = (
+        CheckConstraint(
+            "ordinal BETWEEN 0 AND 7",
+            name="ck_execution_input_artifact_leases_ordinal",
+        ),
+        UniqueConstraint(
+            "execution_id",
+            "ordinal",
+            name="uq_execution_input_artifact_leases_execution_ordinal",
+        ),
+        Index("ix_execution_input_artifact_leases_artifact_id", "artifact_id"),
+    )
+
+    execution_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("executions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    artifact_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("managed_input_artifacts.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

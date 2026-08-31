@@ -22,7 +22,7 @@ from dlr.control import db
 from dlr.control.app import create_app
 from dlr.control.services import events as events_service
 
-TEST_DATABASE = "dlr_test"
+TEST_DATABASE = os.environ.get("DLR_TEST_DATABASE", "dlr_test")
 
 # M2: fixed test tokens. conftest configures them on the settings singleton
 # so every protected endpoint is exercised with real authentication in place.
@@ -84,8 +84,13 @@ def _truncate(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE adapters, adapter_versions, adapter_schedules, adapter_webhooks, "
-                "workers, executions, adapter_permissions, worker_cleanup_requests, "
+                "TRUNCATE TABLE adapters, adapter_versions, adapter_schedules, "
+                "adapter_input_configs, adapter_webhooks, "
+                "adapter_input_artifact_bindings, managed_input_artifacts, "
+                "managed_input_upload_reservations, artifact_deletion_jobs, "
+                "managed_input_capacity, managed_input_settings, "
+                "workers, executions, execution_input_artifact_leases, "
+                "adapter_permissions, worker_cleanup_requests, "
                 "knowledge_source_settings, credentials, adapter_credential_bindings, "
                 "package_sources, ai_custom_providers, ai_model_settings, "
                 "system_settings, user_sessions, users "
@@ -93,6 +98,22 @@ def _truncate(engine: Engine) -> None:
             )
         )
         conn.execute(text("INSERT INTO system_settings (id, locale) VALUES (1, 'zh-CN')"))
+        conn.execute(
+            text(
+                "INSERT INTO managed_input_settings ("
+                "id, default_retention_seconds, max_file_bytes, platform_quota_bytes, "
+                "adapter_quota_bytes, allow_manual_delete, max_custom_retention_seconds, "
+                "min_free_space_bytes, staged_ttl_seconds"
+                ") VALUES (1, 86400, 104857600, 10737418240, 1073741824, true, 2592000, "
+                "1073741824, 3600)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO managed_input_capacity (id, actual_bytes, reserved_bytes) "
+                "VALUES (1, 0, 0)"
+            )
+        )
 
 
 @pytest.fixture(scope="session")

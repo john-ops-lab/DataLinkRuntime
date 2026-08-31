@@ -3,6 +3,7 @@
 
 SOURCE = r"""
 import java.nio.charset.StandardCharsets;
+import java.nio.file.LinkOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -20,11 +21,49 @@ class Logger {
     public void error(Object message) { System.err.println("[ERROR] " + message); }
 }
 
+final class InputFile {
+    public final int ordinal;
+    public final Path path;
+    public final String originalName;
+    public final String contentType;
+    public final long sizeBytes;
+    public final String sha256;
+
+    InputFile(
+        int ordinal,
+        Path path,
+        String originalName,
+        String contentType,
+        long sizeBytes,
+        String sha256
+    ) {
+        this.ordinal = ordinal;
+        this.path = path;
+        this.originalName = originalName;
+        this.contentType = contentType;
+        this.sizeBytes = sizeBytes;
+        this.sha256 = sha256;
+    }
+}
+
 class Context {
     public final Map<String, Object> config;
+    public final List<InputFile> inputFiles;
     public final Secrets secrets = new Secrets();
     public final Logger logger = new Logger();
-    Context(Map<String, Object> config) { this.config = config; }
+    Context(Map<String, Object> config) { this(config, List.of()); }
+    Context(Map<String, Object> config, List<InputFile> inputFiles) {
+        this.config = config;
+        this.inputFiles = List.copyOf(inputFiles);
+    }
+}
+
+final class InputManifestException extends Exception {
+    final String code;
+    InputManifestException(String code) {
+        super(code);
+        this.code = code;
+    }
 }
 
 public class DlrRuntime {
@@ -37,10 +76,130 @@ public class DlrRuntime {
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> config = (Map<String, Object>) rawConfig;
-        Object output = new Adapter().handle(new Context(config), input);
+        List<InputFile> inputFiles;
+        try {
+            inputFiles = readInputFiles(workspace);
+        } catch (InputManifestException error) {
+            // Diagnostic only. The Worker preflight owns the structured error code.
+            System.err.println("DLR_INPUT_ERROR:" + error.code);
+            System.exit(1);
+            return;
+        }
+        Object output = new Adapter().handle(new Context(config, inputFiles), input);
         Files.writeString(
             workspace.resolve("output.json"), Json.stringify(output), StandardCharsets.UTF_8
         );
+    }
+
+    private static List<InputFile> readInputFiles(Path workspace) throws InputManifestException {
+        if (!workspace.isAbsolute() || !workspace.getFileName().toString().matches("dlr-exec-[1-9][0-9]*")) {
+            throw new InputManifestException("input_artifact_not_ready");
+        }
+        long executionId;
+        try {
+            executionId = Long.parseLong(workspace.getFileName().toString().substring(9));
+        } catch (NumberFormatException error) {
+            throw new InputManifestException("input_artifact_not_ready");
+        }
+        Path inputDirectory = workspace.resolve("input");
+        Path manifestPath = workspace.resolve("input_manifest.json");
+        Object manifestValue;
+        try {
+            if (Files.isSymbolicLink(inputDirectory)
+                || !Files.isDirectory(inputDirectory, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(manifestPath)
+                || !Files.isRegularFile(manifestPath, LinkOption.NOFOLLOW_LINKS)) {
+                throw new InputManifestException("input_artifact_not_ready");
+            }
+            manifestValue = Json.parse(Files.readString(manifestPath));
+        } catch (InputManifestException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new InputManifestException("input_artifact_not_ready");
+        }
+        if (!(manifestValue instanceof Map<?, ?> rawManifest)
+            || rawManifest.size() != 2
+            || !rawManifest.containsKey("execution_id")
+            || !rawManifest.containsKey("files")
+            || !(rawManifest.get("files") instanceof List<?> rawFiles)
+            || rawFiles.size() > 8) {
+            throw new InputManifestException("input_artifact_not_ready");
+        }
+        Long manifestExecutionId = integerValue(rawManifest.get("execution_id"));
+        if (manifestExecutionId == null || manifestExecutionId != executionId) {
+            throw new InputManifestException("input_artifact_not_ready");
+        }
+        List<InputFile> result = new ArrayList<>();
+        for (int expectedOrdinal = 0; expectedOrdinal < rawFiles.size(); expectedOrdinal++) {
+            Object rawValue = rawFiles.get(expectedOrdinal);
+            if (!(rawValue instanceof Map<?, ?> rawFile)
+                || rawFile.size() != 7
+                || !rawFile.keySet().containsAll(List.of(
+                    "artifact_id", "ordinal", "mount_name", "original_filename",
+                    "content_type", "size_bytes", "sha256"))) {
+                throw new InputManifestException("input_artifact_not_ready");
+            }
+            Object artifactIdValue = rawFile.get("artifact_id");
+            Object ordinalValue = rawFile.get("ordinal");
+            Object mountValue = rawFile.get("mount_name");
+            Object originalNameValue = rawFile.get("original_filename");
+            Object contentTypeValue = rawFile.get("content_type");
+            Object sizeValue = rawFile.get("size_bytes");
+            Object shaValue = rawFile.get("sha256");
+            Long artifactId = integerValue(artifactIdValue);
+            Long ordinal = integerValue(ordinalValue);
+            Long sizeBytes = integerValue(sizeValue);
+            if (artifactId == null || artifactId <= 0
+                || ordinal == null || ordinal != expectedOrdinal
+                || ordinal < 0 || ordinal > 7
+                || !(mountValue instanceof String mountName)
+                || !mountName.matches("input-[0-9]{2}(\\.[a-z0-9]{1,10})?")
+                || Integer.parseInt(mountName.substring(6, 8)) != expectedOrdinal
+                || !(originalNameValue instanceof String originalName)
+                || !(contentTypeValue instanceof String contentType)
+                || sizeBytes == null || sizeBytes < 0
+                || !(shaValue instanceof String sha256) || !sha256.matches("[0-9a-f]{64}")) {
+                throw new InputManifestException("input_artifact_not_ready");
+            }
+            Path target = inputDirectory.resolve(mountName).normalize();
+            if (!target.isAbsolute() || !target.getParent().equals(inputDirectory)) {
+                throw new InputManifestException("input_artifact_not_ready");
+            }
+            validateInputFile(target);
+            result.add(new InputFile(
+                expectedOrdinal, target, originalName, contentType, sizeBytes, sha256
+            ));
+        }
+        return List.copyOf(result);
+    }
+
+    private static Long integerValue(Object value) {
+        if (!(value instanceof Number number)) return null;
+        double decimal = number.doubleValue();
+        if (!Double.isFinite(decimal) || decimal != Math.rint(decimal)
+            || decimal < Long.MIN_VALUE || decimal > Long.MAX_VALUE) {
+            return null;
+        }
+        long integer = number.longValue();
+        return (double) integer == decimal ? integer : null;
+    }
+
+    private static void validateInputFile(Path target)
+        throws InputManifestException {
+        try {
+            if (Files.isSymbolicLink(target)
+                || !Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS)) {
+                throw new InputManifestException("input_artifact_not_ready");
+            }
+            // Openability only: do not read or hash here; Worker owns size/SHA verification.
+            var stream = Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS);
+            // A successful open proves the controlled file is readable.
+            stream.close();
+        } catch (InputManifestException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new InputManifestException("input_artifact_not_ready");
+        }
     }
 }
 

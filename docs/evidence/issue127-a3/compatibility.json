@@ -1,0 +1,50 @@
+{
+  "schema": "issue127-a3-compatibility-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "runner": "fixed dev-deps test-runner on migration named network",
+  "no_silent_fork": true,
+  "legacy_enabled": {
+    "manual_object": {
+      "status": 202
+    },
+    "schedule_object": {
+      "status": 200
+    },
+    "schedule_explicit_null": {
+      "status": 200
+    },
+    "new_manual_omitted": {
+      "status": 202
+    },
+    "revision_unchanged_for_one_shot": true
+  },
+  "legacy_disabled": {
+    "manual_explicit_null": {
+      "status": 422,
+      "code": "execution_input_override_not_supported"
+    },
+    "schedule_explicit_null": {
+      "status": 422,
+      "code": "execution_input_override_not_supported"
+    },
+    "manual_omitted": {
+      "status": 202
+    },
+    "schedule_omitted": {
+      "status": 200
+    },
+    "new_input_config": {
+      "status": 200
+    }
+  },
+  "legacy_restored": {
+    "manual_object": {
+      "status": 202
+    },
+    "schedule_object": {
+      "status": 200
+    },
+    "switch_on_off_on": true
+  },
+  "db_cleanup": "compatibility harness database dropped in finally"
+}

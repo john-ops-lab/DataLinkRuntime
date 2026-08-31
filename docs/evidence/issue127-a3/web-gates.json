@@ -1,0 +1,27 @@
+{
+  "schema": "issue127-a3-web-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "package_lock_sha256_worker_and_canonical": "05de7aeb5b2b150d2621e1e73907f9f79eb532d93a70193bbbe1d529f7d61688",
+  "toolchain": "temporary local dependency-link farm to canonical locked node_modules; removed after capture",
+  "gates": {
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "vitest": {
+      "status": "PASS",
+      "files": 32,
+      "tests": 376
+    },
+    "build": "PASS",
+    "playwright": {
+      "status": "PASS",
+      "cases": 4,
+      "matrix": "zh-CN/en x 1280/1920"
+    }
+  },
+  "screenshots": [
+    "screenshots/input-object-zh-CN-1280.png",
+    "screenshots/input-object-zh-CN-1920.png",
+    "screenshots/input-object-en-1280.png",
+    "screenshots/input-object-en-1920.png"
+  ]
+}

@@ -1,6 +1,8 @@
 """Platform settings loaded from environment variables."""
 
-from pydantic import Field
+from os.path import isabs
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -38,6 +40,13 @@ class Settings(BaseSettings):
     # Big-field limits in UTF-8 bytes; see docs/specs/m2-execution-loop.md §5.
     execution_input_max_bytes: int = Field(
         default=512 * 1024, validation_alias="DLR_EXECUTION_INPUT_MAX_BYTES"
+    )
+    # Issue #127 A1: keep old per-run input and Schedule input accepted only
+    # during the bounded compatibility window.  The default preserves the
+    # rolling-deploy contract; callers still distinguish an omitted field from
+    # an explicit JSON null before consulting this setting.
+    legacy_input_compat_enabled: bool = Field(
+        default=True, validation_alias="DLR_LEGACY_INPUT_COMPAT_ENABLED"
     )
     execution_output_max_bytes: int = Field(
         default=512 * 1024, validation_alias="DLR_EXECUTION_OUTPUT_MAX_BYTES"
@@ -106,6 +115,68 @@ class Settings(BaseSettings):
     # Timeout sent to the Worker in every task payload.
     execution_timeout_seconds: int = Field(
         default=300, validation_alias="DLR_EXECUTION_TIMEOUT_SECONDS"
+    )
+
+    # Issue #127 C0: these values are copied into every new Execution.  The
+    # cleanup budgets must remain shorter than the recovery grace period so a
+    # Worker has a bounded chance to report before Control reconciles it.
+    execution_claim_timeout_seconds: int = Field(
+        default=300,
+        ge=30,
+        le=86_400,
+        validation_alias="DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS",
+    )
+    execution_recovery_grace_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=3_600,
+        validation_alias="DLR_EXECUTION_RECOVERY_GRACE_SECONDS",
+    )
+    workspace_cleanup_attempt_timeout_seconds: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        validation_alias="DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS",
+    )
+    workspace_cleanup_total_timeout_seconds: int = Field(
+        default=20,
+        ge=5,
+        le=300,
+        validation_alias="DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS",
+    )
+    min_worker_protocol_version: int = Field(
+        default=1,
+        ge=1,
+        le=2,
+        validation_alias="DLR_MIN_WORKER_PROTOCOL_VERSION",
+    )
+
+    # Issue #127 B0: physical ArtifactStore placement and lifecycle loops are
+    # deployment concerns.  The managed-files flag remains disabled until the
+    # later storage/Worker waves pass their release gates.
+    artifact_store_root: str = Field(
+        default="/var/lib/dlr/artifacts", validation_alias="DLR_ARTIFACT_STORE_ROOT"
+    )
+    managed_files_enabled: bool = Field(default=False, validation_alias="DLR_MANAGED_FILES_ENABLED")
+    artifact_gc_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        le=86_400.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_ARTIFACT_GC_INTERVAL_SECONDS",
+    )
+    artifact_audit_interval_seconds: float = Field(
+        default=3_600.0,
+        gt=0,
+        le=604_800.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS",
+    )
+    artifact_delete_alert_threshold: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        validation_alias="DLR_ARTIFACT_DELETE_ALERT_THRESHOLD",
     )
 
     # M3 SSE: the simplest possible PostgreSQL polling implementation; see
@@ -188,6 +259,43 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
         validation_alias="DLR_IMA_TIMEOUT_SECONDS",
     )
+
+    @model_validator(mode="after")
+    def validate_deployment_configuration(self) -> "Settings":
+        """Reject invalid B0 deployment values before the app can start.
+
+        Pydantic validates values loaded from the environment.  The explicit
+        method is also called by ``create_app`` so tests and embedders that
+        mutate the settings singleton cannot bypass the startup gate.
+        """
+        return validate_deployment_configuration(self)
+
+
+def validate_deployment_configuration(value: Settings) -> Settings:
+    """Run the deployment gate for both Pydantic and app-factory callers."""
+    root = value.artifact_store_root
+    if not isinstance(root, str) or not root.strip() or "\x00" in root or not isabs(root):
+        raise ValueError("DLR_ARTIFACT_STORE_ROOT must be a non-empty absolute path")
+    if not 0 < value.artifact_gc_interval_seconds <= 86_400:
+        raise ValueError("DLR_ARTIFACT_GC_INTERVAL_SECONDS must be between 0 and 86400")
+    if not 0 < value.artifact_audit_interval_seconds <= 604_800:
+        raise ValueError("DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS must be between 0 and 604800")
+    if (
+        value.workspace_cleanup_attempt_timeout_seconds
+        > value.workspace_cleanup_total_timeout_seconds
+    ):
+        raise ValueError(
+            "DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS must not exceed "
+            "DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS"
+        )
+    if value.workspace_cleanup_total_timeout_seconds >= value.execution_recovery_grace_seconds:
+        raise ValueError(
+            "DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS must be less than "
+            "DLR_EXECUTION_RECOVERY_GRACE_SECONDS"
+        )
+    if value.min_worker_protocol_version not in {1, 2}:
+        raise ValueError("DLR_MIN_WORKER_PROTOCOL_VERSION must be 1 or 2")
+    return value
 
 
 settings = Settings()

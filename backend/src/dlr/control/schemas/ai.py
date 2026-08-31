@@ -274,8 +274,8 @@ class AiAttachment(_StrictSchema):
     """M5.7 Wave B2: one browser-uploaded attachment for this request only.
 
     The file body travels as strict base64 inside the existing JSON assist
-    request. Attachments are validated, bounded and (for PDF / DOCX / text /
-    code) parsed server-side; they exist only for the current request and are
+    request. Attachments are validated, bounded and (for PDF / DOCX / XLS / XLSX /
+    text / code) parsed server-side; they exist only for the current request and are
     never persisted, never written to temp files and never logged. The
     filename is display metadata only and is sanitized before it can join the
     Provider context. Structural checks below keep the stable error contract;

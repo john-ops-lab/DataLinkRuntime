@@ -29,7 +29,14 @@ import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import UserManagementDrawer from "./components/UserManagementDrawer";
 import ApplicationShell from "./components/ApplicationShell";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
-import { cacheSystemLocale, currentSystemLocale, i18n, isSystemLocale } from "./i18n";
+import {
+  applyUiLocale,
+  cacheSystemLocale,
+  currentSystemLocale,
+  i18n,
+  isSystemLocale,
+  readCachedSystemLocale,
+} from "./i18n";
 import { currentEntryMode } from "./entry-mode";
 import DlrDesignSystemProvider from "./design-system";
 import { applyLoginLocalePreference } from "./login-locale";
@@ -783,6 +790,14 @@ export function AdapterConsole({
     return window.confirm(t("confirm.discardChanges"));
   }
 
+  function confirmWorkspaceLeave(): boolean {
+    if (!confirmDiscard()) {
+      return false;
+    }
+    return selected?.adapter_type !== "task"
+      || taskRuntimeRef.current?.confirmLeave() !== false;
+  }
+
   function openSystemSettings(): void {
     if (settingsCategory !== null) {
       return;
@@ -821,9 +836,32 @@ export function AdapterConsole({
     pushBrowserLocation("/adapters");
   }
 
+  function handleSettingsSelectAdapter(adapterId: number): boolean {
+    if (busy) {
+      return false;
+    }
+    const adapter = adapters.find((item) => item.id === adapterId);
+    if (
+      adapter === undefined
+      || (selected?.id !== adapter.id && !confirmWorkspaceLeave())
+    ) {
+      return false;
+    }
+    if (selected?.id !== adapter.id) {
+      // Settings usage links open the Runtime tab after the new Adapter has
+      // finished loading. Normal catalog selection keeps the editor default.
+      void loadAdapterContent(adapter, undefined, "runtime");
+    } else {
+      setActiveTabKey("runtime");
+    }
+    closeSystemSettings();
+    return true;
+  }
+
   async function loadAdapterContent(
     adapter: Adapter,
     starterLocaleOverride?: ReturnType<typeof currentSystemLocale>,
+    targetTab: WorkbenchTabKey = "edit",
   ) {
     const generation = ++requestGeneration.current;
     // Reset content state synchronously so the previous adapter's snapshot can never
@@ -836,7 +874,7 @@ export function AdapterConsole({
     setSelectedVersionId(null);
     setContentReady(false);
     setSettingsOpen(false);
-    setActiveTabKey("edit");
+    setActiveTabKey(targetTab);
     setHistoryExecutionId(null);
     setEditorMaximized(false);
     editorLayoutSnapshotRef.current = null;
@@ -900,7 +938,7 @@ export function AdapterConsole({
     if (selected?.id === adapter.id) {
       return;
     }
-    if (!confirmDiscard()) {
+    if (!confirmWorkspaceLeave()) {
       return;
     }
     void loadAdapterContent(adapter);
@@ -915,7 +953,7 @@ export function AdapterConsole({
     if (busy) {
       return false;
     }
-    if (!confirmDiscard()) {
+    if (!confirmWorkspaceLeave()) {
       return false;
     }
     // M5.5.9：前端预检同名（活跃）适配器，给出明确中文提示。
@@ -1075,7 +1113,7 @@ export function AdapterConsole({
       setSettingsOpen(true);
       return;
     }
-    if (!confirmDiscard()) {
+    if (!confirmWorkspaceLeave()) {
       return;
     }
     void loadAdapterContent(adapter);
@@ -1089,6 +1127,9 @@ export function AdapterConsole({
       !canEditAdapter(adapterAccessLevel(cloneSource, accountPrincipal)) ||
       busy
     ) {
+      return;
+    }
+    if (selected?.id === cloneSource.id && !confirmWorkspaceLeave()) {
       return;
     }
     const source = cloneSource;
@@ -1383,6 +1424,9 @@ export function AdapterConsole({
         <SystemSettingsDrawer
           open
           category={settingsCategory}
+          canManageManagedInput={canManageUsers}
+          adapters={adapters}
+          onSelectAdapter={handleSettingsSelectAdapter}
           onCategoryChange={changeSystemSettingsCategory}
           onClose={closeSystemSettings}
         />
@@ -1819,6 +1863,7 @@ export function AdapterConsole({
         <div className="clone-confirm">
           <p>{t("clone.description", { ns: "adapter" })}</p>
           <p>{t("clone.historyNote", { ns: "adapter" })}</p>
+          <p data-testid="clone-input-note">{t("clone.inputNote", { ns: "adapter" })}</p>
           <label className="settings-field">
             <span className="settings-field-label">{t("clone.name", { ns: "adapter" })}</span>
             <Input
@@ -1894,23 +1939,37 @@ function TokenApp() {
     }
     return false;
   });
+  // The initial auth state determines which side of the locale boundary this
+  // mount represents. Later login is handled explicitly after verification.
+  const initiallyAuthed = useRef(authed);
   const [noticeKey, setNoticeKey] = useState<"auth.sessionRejected" | "auth.logoutNotice" | null>(null);
 
-  const refreshSystemLocale = useCallback(async () => {
+  const refreshSystemLocale = useCallback(async (authenticated: boolean) => {
     try {
       const response = await api.getSystemLocale();
       if (isSystemLocale(response.locale)) {
         cacheSystemLocale(response.locale);
-        await applyLoginLocalePreference(response.locale);
+        if (authenticated) {
+          // The authenticated Console always follows the backend authority;
+          // the login preference is scoped to the unauthenticated surface.
+          await applyUiLocale(response.locale);
+        } else {
+          await applyLoginLocalePreference(response.locale);
+        }
+        return response.locale;
       }
     } catch {
       // The cached locale is only a first-paint fallback; keep it when the
       // public bootstrap read is temporarily unavailable.
     }
+    if (authenticated) {
+      await applyUiLocale(readCachedSystemLocale());
+    }
+    return null;
   }, []);
 
   useEffect(() => {
-    void refreshSystemLocale();
+    void refreshSystemLocale(initiallyAuthed.current);
   }, [refreshSystemLocale]);
 
   useEffect(() => {
@@ -1930,7 +1989,9 @@ function TokenApp() {
       setAuthToken(null);
       throw err;
     }
-    await refreshSystemLocale();
+    // Once the token is accepted, refresh and apply the backend locale. The
+    // login preference must not leak into the authenticated Console.
+    await refreshSystemLocale(true);
     sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
     setNoticeKey(null);
     setAuthed(true);

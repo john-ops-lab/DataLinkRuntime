@@ -30,6 +30,7 @@ import {
   i18n,
   resources,
 } from "./i18n";
+import { LOGIN_LOCALE_STORAGE_KEY } from "./login-locale";
 import { statusLabel } from "./status";
 import type { Adapter, AiAssistResponse, VersionDetail } from "./types";
 import { userErrorMessage } from "./user-message";
@@ -120,6 +121,17 @@ function stubFetch(routes: Route[]) {
           ? candidate.match === url
           : candidate.match.test(url)),
     );
+    // TaskRunSettingsPanel now probes the public Managed Input release gate
+    // on every runtime-settings mount. Keep older Wave 2 fixtures explicit
+    // about the new safe boolean-only resource without treating it as an
+    // unexpected request.
+    if (!route && method === "GET" && url === "/api/system/managed-input-capability") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ managed_files_enabled: false, ready: false, default_retention_seconds: 86_400, max_custom_retention_seconds: 2_592_000, allow_manual_delete: true, allowed_extensions: [".xlsx", ".xls", ".csv", ".log", ".txt", ".json"] }),
+      };
+    }
     if (!route) {
       console.error(`UNEXPECTED REQUEST: ${method} ${url}`);
       throw new Error(`Unexpected request: ${method} ${url}`);
@@ -174,6 +186,25 @@ function makeVersion(overrides: Partial<VersionDetail> = {}): VersionDetail {
   };
 }
 
+function inputConfigRoute(): Route {
+  return {
+    method: "GET",
+    match: "/api/adapters/1/input-config",
+    respond: () => ({
+      body: {
+        adapter_id: 1,
+        revision: 1,
+        source_type: "none",
+        json_value: null,
+        retention: { mode: "system_default", seconds: null },
+        artifacts: [],
+        valid_for_run: true,
+        invalid_reason: null,
+      },
+    }),
+  };
+}
+
 /** Authenticated console with one Task Adapter that has a saved Revision. */
 function taskConsoleRoutes(adapter: Adapter, version: VersionDetail) {
   return [
@@ -183,6 +214,7 @@ function taskConsoleRoutes(adapter: Adapter, version: VersionDetail) {
     { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
     { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [{ id: 10, seq: 1 }] }) },
     { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: version }) },
+    inputConfigRoute(),
     { method: "GET", match: /^\/api\/adapters\/1\/schedule$/, respond: () => ({ status: 404, body: { code: "schedule_not_configured" } }) },
     { method: "GET", match: /^\/api\/adapters\/1\/bindings$/, respond: () => ({ body: [] }) },
   ];
@@ -542,6 +574,7 @@ it("keeps zh-CN/en key sets identical and renders the English console at 1280–
     { method: "GET", match: "/api/workers", respond: () => ({ body: [] }) },
     { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [{ id: 10, seq: 1 }] }) },
     { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: version }) },
+    inputConfigRoute(),
   ]);
   for (const width of [1280, 1440, 1680, 1920]) {
     Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
@@ -572,6 +605,9 @@ it("reflects the backend locale across refresh without mutating anything", async
 
   // A stale zh-CN browser cache must never override the backend authority.
   window.localStorage.setItem("dlr-system-locale", "zh-CN");
+  // Nor may the unauthenticated login preference leak into an existing
+  // authenticated Console session.
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "zh-CN");
   const first = render(<App />);
   await screen.findByTestId("control-status");
   expect(screen.getByTestId("control-status").textContent).toBe("Control service healthy");

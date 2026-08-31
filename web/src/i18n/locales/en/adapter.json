@@ -1,5 +1,31 @@
 {
   "namespace": "Adapter",
+  "input": {
+    "objectTitle": "Input Object",
+    "sources": {
+      "none": {
+        "title": "No input",
+        "description": "Passes no additional data to the Task.",
+        "status": "Default"
+      },
+      "json": {
+        "title": "JSON",
+        "description": "Save any JSON top-level value: object, array, string, number, boolean or null.",
+        "status": "Configurable"
+      },
+      "managedFiles": {
+        "title": "Managed files",
+        "description": "File input managed by the platform lifecycle.",
+        "status": "Available",
+        "disabled": "Not enabled yet"
+      },
+      "remoteFiles": {
+        "title": "Remote files",
+        "description": "File input from a remote source.",
+        "disabled": "In development"
+      }
+    }
+  },
   "types": {
     "task": "Task",
     "webhook": "Webhook",
@@ -133,6 +159,7 @@
     "ok": "Clone",
     "description": "The current code, dependencies, runtime configuration (including the per-execution timeout), Credential references and Runtime Worker will be copied.",
     "historyNote": "Execution history is not copied; the new Adapter remains stopped and will not run automatically.",
+    "inputNote": "Input configuration is copied, but managed file bytes are not. Upload and save them again in the new Adapter.",
     "name": "New Adapter name"
   },
   "save": {

@@ -57,8 +57,22 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
                 "AND column_name = 'locale'"
             )
         )
+        lease_created_at = connection.execute(
+            text(
+                "SELECT is_nullable, column_default FROM information_schema.columns "
+                "WHERE table_schema = 'public' "
+                "AND table_name = 'execution_input_artifact_leases' "
+                "AND column_name = 'created_at'"
+            )
+        ).one()
+        cleanup_status_check = connection.scalar(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'ck_executions_workspace_cleanup_status'"
+            )
+        )
 
-    assert revision == "0025_default_ai_tools_enabled"
+    assert revision == "0029_issue127_c0_exec_lease"
     assert {
         "adapter_type",
         "run_mode",
@@ -84,3 +98,6 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
     assert webhook_credential_nullable == "YES"
     assert timeout_nullable == "NO"
     assert execution_locale_nullable == "NO"
+    assert lease_created_at[0] == "NO"
+    assert lease_created_at[1] is not None and "now()" in lease_created_at[1]
+    assert cleanup_status_check is not None and "pending" in cleanup_status_check

@@ -28,10 +28,8 @@ process group is killed and the final report uses status ``cancelled``.
 import json
 import logging
 import os
-import shutil
 import signal
 import subprocess
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -45,6 +43,7 @@ from dlr.runtime import harness
 from dlr.runtime.node_harness import SOURCE as NODE_HARNESS_SOURCE
 from dlr.worker import i18n, javaenv, nodeenv
 from dlr.worker import venv as venv_manager
+from dlr.worker import workspace as workspace_manager
 
 logger = logging.getLogger("dlr.worker.executor")
 
@@ -89,6 +88,7 @@ class RuntimeSettings:
     pypi_index_url: str | None = None
     npm_registry_url: str | None = None
     maven_repository_url: str | None = None
+    workspace_cleanup_journal_root: Path | None = None
 
 
 def child_env(secrets: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -365,7 +365,10 @@ class _ProgressUploader:
                 if self._callback(stdout_chunk, stderr_chunk):
                     self._cancel.set()
             except Exception:  # noqa: BLE001 - progress never fails a run
-                logger.warning("progress upload failed; continuing execution", exc_info=True)
+                # The callback may contain a transport exception whose body
+                # came from an untrusted peer.  Keep the log stable and never
+                # risk copying a delegated credential into it.
+                logger.warning("progress upload failed; continuing execution")
             with self._lock:
                 if self._pending == ("", ""):
                     self._in_flight = False
@@ -495,10 +498,146 @@ def _wait_with_progress(
         tailer.close()
 
 
+def _cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
+    """Read immutable cleanup snapshots, with legacy-safe defaults."""
+    try:
+        attempt = float(payload.get("workspace_cleanup_attempt_timeout_seconds_snapshot") or 5)
+        total = float(payload.get("workspace_cleanup_total_timeout_seconds_snapshot") or 20)
+    except (TypeError, ValueError):
+        return 5.0, 20.0
+    if attempt <= 0 or total <= 0 or attempt > total:
+        return 5.0, 20.0
+    return attempt, total
+
+
+def _v2_cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
+    """Validate immutable v2 cleanup snapshots before any local side effect."""
+    names = (
+        "workspace_cleanup_attempt_timeout_seconds_snapshot",
+        "workspace_cleanup_total_timeout_seconds_snapshot",
+        "recovery_grace_seconds_snapshot",
+    )
+    values = [payload.get(name) for name in names]
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+        raise ValueError("v2 cleanup snapshots are required integers")
+    attempt, total, grace = values
+    assert isinstance(attempt, int) and isinstance(total, int) and isinstance(grace, int)
+    if not (1 <= attempt <= 60 and 5 <= total <= 300 and 10 <= grace <= 3600):
+        raise ValueError("v2 cleanup snapshots are out of range")
+    if not (attempt <= total < grace):
+        raise ValueError("v2 cleanup snapshot ordering is invalid")
+    return float(attempt), float(total)
+
+
+@dataclass(frozen=True)
+class _ValidatedV2Payload:
+    execution_id: int
+    adapter_id: int
+    version_id: int
+    timeout_seconds: int
+    cleanup_token: str
+    input_files: list[dict[str, Any]]
+    cleanup_budget: tuple[float, float]
+
+
+def _required_v2_integer(
+    payload: Mapping[str, Any], name: str, *, minimum: int = 1, maximum: int | None = None
+) -> int:
+    value = payload.get(name)
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise ValueError(f"v2 {name} is invalid")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"v2 {name} is invalid")
+    return value
+
+
+def _validated_v2_payload(payload: Mapping[str, Any]) -> _ValidatedV2Payload:
+    """Validate the complete protocol-v2 envelope before local side effects."""
+    execution_id = _required_v2_integer(payload, "execution_id")
+    adapter_id = _required_v2_integer(payload, "adapter_id")
+    version_id = _required_v2_integer(payload, "version_id")
+    timeout_seconds = _required_v2_integer(payload, "execution_timeout_seconds", maximum=86_400)
+    for name in ("language", "code", "requirements", "claim_token", "cleanup_token"):
+        value = payload.get(name)
+        if not isinstance(value, str):
+            raise ValueError(f"v2 {name} is invalid")
+        if name in {"language", "code"} and not value.strip():
+            raise ValueError(f"v2 {name} is invalid")
+        if name.endswith("token") and not value:
+            raise ValueError(f"v2 {name} is invalid")
+    if "input" not in payload or "latest_version_id" not in payload:
+        raise ValueError("v2 required field is missing")
+    latest_version_id = payload["latest_version_id"]
+    if latest_version_id is not None and (
+        not isinstance(latest_version_id, int)
+        or isinstance(latest_version_id, bool)
+        or latest_version_id <= 0
+    ):
+        raise ValueError("v2 latest_version_id is invalid")
+    runtime_config = payload.get("runtime_config")
+    secrets = payload.get("secrets")
+    if not isinstance(runtime_config, Mapping) or not isinstance(secrets, Mapping):
+        raise ValueError("v2 object field is invalid")
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in secrets.items()):
+        raise ValueError("v2 secrets are invalid")
+    try:
+        input_files = workspace_manager.validate_input_descriptors(payload.get("input_files"))
+    except workspace_manager.InputPreparationError as error:
+        raise ValueError("v2 input descriptors are invalid") from error
+    cleanup_token = payload["cleanup_token"]
+    assert isinstance(cleanup_token, str)
+    return _ValidatedV2Payload(
+        execution_id=execution_id,
+        adapter_id=adapter_id,
+        version_id=version_id,
+        timeout_seconds=timeout_seconds,
+        cleanup_token=cleanup_token,
+        input_files=input_files,
+        cleanup_budget=_v2_cleanup_budget(payload),
+    )
+
+
+def _workspace_failure(
+    locale: i18n.WorkerLocale,
+    error_code: str,
+    *,
+    protocol_version: int,
+) -> dict[str, Any]:
+    """Build a stable, secret-free failure for pre-process errors."""
+    result: dict[str, Any] = {
+        "status": "failed",
+        "error": i18n.text(locale, "runtime.worker_internal_error"),
+        "error_code": error_code,
+        "stdout": "",
+        "stdout_truncated": False,
+        "stderr": "",
+        "stderr_truncated": False,
+    }
+    if protocol_version >= 2:
+        result.update(
+            {
+                "workspace_cleanup_status": "completed",
+                "workspace_cleanup_error_code": None,
+            }
+        )
+    return result
+
+
+def _write_workspace_text(path: Path, value: str) -> None:
+    """Write task material as a private file; user code only reads it."""
+    try:
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+    except OSError as error:
+        raise workspace_manager.WorkspaceError("workspace_cleanup_failed") from error
+
+
 def run(
     payload: dict[str, Any],
     config: RuntimeSettings,
     progress_callback: ProgressCallback | None = None,
+    *,
+    input_downloader: workspace_manager.InputDownloader | None = None,
 ) -> dict[str, Any]:
     """Run one task payload to completion; always returns a report dict.
 
@@ -507,15 +646,94 @@ def run(
     flag; a cancel request kills the subprocess and yields a ``cancelled``
     report. It never influences any other part of the final report.
     """
-    execution_id = int(payload["execution_id"])
-    adapter_id = int(payload["adapter_id"])
-    version_id = int(payload["version_id"])
     language = str(payload.get("language") or "python")
-    timeout = int(payload.get("execution_timeout_seconds") or config.execution_timeout_seconds)
     locale = i18n.resolve_locale(payload.get("locale"))
     # Payloads created before M5.6 have no locale. Keep their terminal error
     # text compatible; Control-created payloads always carry the field.
     legacy_terminal_text = "locale" not in payload
+    raw_protocol_version = payload.get("protocol_version", 1)
+    if raw_protocol_version is None:
+        # Payloads written before protocol negotiation had no version; an
+        # explicit null followed the same legacy-v1 compatibility path.
+        raw_protocol_version = 1
+    if not isinstance(raw_protocol_version, int) or isinstance(raw_protocol_version, bool):
+        return _workspace_failure(
+            locale,
+            "worker_protocol_payload_invalid",
+            protocol_version=2,
+        )
+    protocol_version = raw_protocol_version
+    if protocol_version not in {1, 2}:
+        return _workspace_failure(
+            locale,
+            "worker_protocol_payload_invalid",
+            protocol_version=2,
+        )
+    if protocol_version == 2:
+        try:
+            validated_v2 = _validated_v2_payload(payload)
+        except (TypeError, ValueError):
+            return _workspace_failure(
+                locale,
+                "worker_protocol_payload_invalid",
+                protocol_version=protocol_version,
+            )
+        execution_id = validated_v2.execution_id
+        adapter_id = validated_v2.adapter_id
+        version_id = validated_v2.version_id
+        timeout = validated_v2.timeout_seconds
+        input_files: list[dict[str, Any]] = validated_v2.input_files
+        input_files_valid = True
+        cleanup_budget = validated_v2.cleanup_budget
+    else:
+        execution_id = int(payload["execution_id"])
+        adapter_id = int(payload["adapter_id"])
+        version_id = int(payload["version_id"])
+        timeout = int(payload.get("execution_timeout_seconds") or config.execution_timeout_seconds)
+        raw_input_files = payload.get("input_files") or []
+        input_files_valid = isinstance(raw_input_files, list)
+        input_files = raw_input_files if input_files_valid else []
+        cleanup_budget = _cleanup_budget(payload)
+
+    if protocol_version >= 2 and language not in LANGUAGE_LABELS:
+        return {
+            **_workspace_failure(
+                locale,
+                "unsupported_language",
+                protocol_version=protocol_version,
+            ),
+            "error": i18n.text(locale, "runtime.unsupported_language", language=language),
+        }
+
+    # The Cleanup Token is needed after a Worker crash, so the journal is
+    # durable before dependency preparation, Workspace creation, or input
+    # download.  It is deliberately never copied into the result dict.
+    planned_workspace: Path | None = None
+    cleanup_journal_root = config.workspace_cleanup_journal_root or (
+        config.runtime_root / "cleanup-journal"
+    )
+    if protocol_version >= 2:
+        try:
+            planned_workspace = workspace_manager.workspace_path(config.runtime_root, execution_id)
+            workspace_manager.write_cleanup_journal(
+                cleanup_journal_root,
+                execution_id,
+                planned_workspace,
+                validated_v2.cleanup_token,
+                protocol_version=protocol_version,
+            )
+        except (workspace_manager.WorkspaceError, OSError, ValueError) as error:
+            logger.warning("cleanup journal unavailable for execution %s", execution_id)
+            error_code = (
+                error.code
+                if isinstance(error, workspace_manager.WorkspaceError)
+                else "workspace_cleanup_failed"
+            )
+            return _workspace_failure(
+                locale,
+                error_code,
+                protocol_version=protocol_version,
+            )
 
     # M3.2: bound credentials from the TaskPayload, injected as DLR_SECRET_*
     # and added to the redaction set alongside the platform DLR_SECRET_*.
@@ -593,12 +811,23 @@ def run(
                     dependency_log=emit_dependency_log,
                 )
             else:
-                return {
+                result = {
                     "status": "failed",
                     "error": i18n.text(locale, "runtime.unsupported_language", language=language),
+                    "error_code": "unsupported_language",
                     "stdout": "",
+                    "stdout_truncated": False,
                     "stderr": "",
+                    "stderr_truncated": False,
                 }
+                if protocol_version >= 2:
+                    result.update(
+                        {
+                            "workspace_cleanup_status": "completed",
+                            "workspace_cleanup_error_code": None,
+                        }
+                    )
+                return result
         except venv_manager.DependencyPreparationError as error:
             preparation_error = error
             if error.dependency is not None:
@@ -679,43 +908,100 @@ def run(
         return {
             "status": "failed",
             "error": redact_secrets(result_error, dependency_secret_values),
+            "error_code": "dependency_preparation_failed",
             "stdout": stdout,
             "stdout_truncated": stdout_truncated,
             "stderr": "",
             "stderr_truncated": False,
+            **(
+                {
+                    "workspace_cleanup_status": "completed",
+                    "workspace_cleanup_error_code": None,
+                }
+                if protocol_version >= 2
+                else {}
+            ),
         }
 
     assert runtime_path is not None
     dependency_log_text = "".join(dependency_log)
-    workspace = Path(tempfile.mkdtemp(prefix=f"dlr-exec-{execution_id}-"))
+    attempt_timeout, total_timeout = cleanup_budget
+    try:
+        if planned_workspace is None:
+            planned_workspace = workspace_manager.workspace_path(config.runtime_root, execution_id)
+        layout = workspace_manager.create_workspace(
+            config.runtime_root,
+            execution_id,
+            attempt_timeout_seconds=attempt_timeout,
+            total_timeout_seconds=total_timeout,
+        )
+    except workspace_manager.WorkspaceError as error:
+        logger.warning("controlled workspace unavailable for execution %s", execution_id)
+        result = _workspace_failure(
+            locale,
+            error.code,
+            protocol_version=protocol_version,
+        )
+        if protocol_version >= 2:
+            cleanup_outcome = error.cleanup_outcome or workspace_manager.CleanupOutcome("completed")
+            result["workspace_cleanup_status"] = cleanup_outcome.status
+            result["workspace_cleanup_error_code"] = cleanup_outcome.error_code
+        return result
+    workspace = layout.root
     output_raw: bytes | None = None
     timed_out = False
     cancelled = False
     returncode = 0
+    cleanup_outcome = workspace_manager.CleanupOutcome("deferred", "workspace_cleanup_failed")
+    cleanup_attempted = False
     try:
-        if language == "python":
-            (workspace / "adapter.py").write_text(str(payload["code"]), encoding="utf-8")
-            command = [str(runtime_path), str(HARNESS_PATH), str(workspace)]
-        elif language == "javascript":
-            (workspace / "harness.mjs").write_text(NODE_HARNESS_SOURCE, encoding="utf-8")
-            (workspace / "node_modules").symlink_to(runtime_path / "node_modules")
-            command = [
-                "node",
-                str(workspace / "harness.mjs"),
-                str(workspace),
-                str(runtime_path / "adapter.mjs"),
-            ]
-        else:
-            classpath = os.pathsep.join(
-                [str(runtime_path / "classes"), str(runtime_path / "deps" / "*")]
+        try:
+            if language == "python":
+                _write_workspace_text(workspace / "adapter.py", str(payload["code"]))
+                command = [str(runtime_path), str(HARNESS_PATH), str(workspace)]
+            elif language == "javascript":
+                _write_workspace_text(workspace / "harness.mjs", NODE_HARNESS_SOURCE)
+                (workspace / "node_modules").symlink_to(runtime_path / "node_modules")
+                command = [
+                    "node",
+                    str(workspace / "harness.mjs"),
+                    str(workspace),
+                    str(runtime_path / "adapter.mjs"),
+                ]
+            else:
+                classpath = os.pathsep.join(
+                    [str(runtime_path / "classes"), str(runtime_path / "deps" / "*")]
+                )
+                command = ["java", "-cp", classpath, "DlrRuntime", str(workspace)]
+            _write_workspace_text(
+                workspace / "input.json",
+                json.dumps(payload.get("input"), ensure_ascii=False),
             )
-            command = ["java", "-cp", classpath, "DlrRuntime", str(workspace)]
-        (workspace / "input.json").write_text(
-            json.dumps(payload.get("input"), ensure_ascii=False), encoding="utf-8"
-        )
-        (workspace / "runtime_config.json").write_text(
-            json.dumps(payload.get("runtime_config") or {}), encoding="utf-8"
-        )
+            _write_workspace_text(
+                workspace / "runtime_config.json",
+                json.dumps(payload.get("runtime_config") or {}),
+            )
+            if not input_files_valid:
+                raise workspace_manager.InputPreparationError("input_artifact_not_ready")
+            workspace_manager.prepare_input_files(layout, input_files, input_downloader)
+            workspace_manager.validate_input_manifest(layout)
+        except (workspace_manager.InputPreparationError, workspace_manager.WorkspaceError) as error:
+            logger.warning("input preparation failed for execution %s", execution_id)
+            cleanup_attempted = True
+            cleanup_outcome = workspace_manager.cleanup_workspace(
+                workspace,
+                attempt_timeout_seconds=attempt_timeout,
+                total_timeout_seconds=total_timeout,
+            )
+            result = _workspace_failure(
+                locale,
+                error.code,
+                protocol_version=protocol_version,
+            )
+            if protocol_version >= 2:
+                result["workspace_cleanup_status"] = cleanup_outcome.status
+                result["workspace_cleanup_error_code"] = cleanup_outcome.error_code
+            return result
 
         stdout_path = workspace / ".log"
         with stdout_path.open("wb") as out_file:
@@ -739,7 +1025,17 @@ def run(
             output_file = workspace / "output.json"
             output_raw = output_file.read_bytes() if output_file.exists() else None
     finally:
-        shutil.rmtree(workspace, ignore_errors=True)
+        if not cleanup_attempted:
+            cleanup_outcome = workspace_manager.cleanup_workspace(
+                workspace,
+                attempt_timeout_seconds=attempt_timeout,
+                total_timeout_seconds=total_timeout,
+            )
+
+    cleanup_fields = {
+        "workspace_cleanup_status": cleanup_outcome.status,
+        "workspace_cleanup_error_code": cleanup_outcome.error_code,
+    }
 
     # M5.5.10: terminal platform messages are appended to the unified stream
     # (redacted, timestamped) so the log alone explains the outcome.
@@ -797,6 +1093,8 @@ def run(
         "stderr": "",
         "stderr_truncated": False,
     }
+    if protocol_version >= 2:
+        base.update(cleanup_fields)
 
     if cancelled:
         return base | {"status": "cancelled", "error": "execution cancelled"}
@@ -806,12 +1104,13 @@ def run(
             "error": redact_secrets(f"execution timed out after {timeout}s", secret_values),
         }
     if returncode != 0:
-        return base | {
+        failure_result: dict[str, Any] = {
             "status": "failed",
             "error": redact_secrets(
                 f"adapter process exited with code {returncode}", secret_values
             ),
         }
+        return base | failure_result
     if output_raw is None:
         return base | {"status": "failed", "error": "adapter produced no output.json"}
 

@@ -1,0 +1,55 @@
+{
+  "dispatch_id": "issue127-c4-gate-20260828-r1",
+  "status": "PASS",
+  "fixed_base_sha": "7aa7d5904946a2145601a43ac79145a791adf80c",
+  "candidate_file_sha256": {
+    ".env.example": "8c7df1fd2b8bf182b2f396f8a56e40f31c06d4b60706bfb13ea17c1ed84e2a37",
+    "docker-compose.yml": "5827ddc5e430c1979ea48b3bb83ffd04324e50a75e8d4a1d1cde8ba935bcae5f",
+    "backend/src/dlr/worker/agent.py": "8799532d5062ce5076615935cf58dcf6867f413d76e2d74d4ec1a1ea1833bb23",
+    "backend/tests/test_issue127_c4.py": "444af3e9df39b34a66bc6d81dc466771018cdae8fd5a68b24f09daf52ea734da",
+    "backend/tests/test_issue127_b3_gc.py": "3656f0660a7c73f9cfee7d0a66eeb2fdcef1fa341723368ba5a7c25fa8bcb960",
+    "backend/tests/test_migration_m5_4_1.py": "e18ab4310562158f265ebd93519678a5fcb256189a81f526eb1b2a4c5c55f59e",
+    "backend/tests/test_migration_m5_4_3.py": "6f0b7373c64fce52fc6474d274043ffbb05acd956243a61308c0925fceca9e28",
+    "backend/tests/test_migration_m5_5_9.py": "65b159178d608993af672b034ff64c6eb9a8c7278baffa03b5974d8e75a84bdd"
+  },
+  "tests": {
+    "c4_config_and_registration": "24 passed",
+    "postgres_gc_execution_race": "2 passed",
+    "c0_c1_c3_recovery_faults": "59 passed",
+    "flag_off_upload": "1 passed",
+    "managed_input_ui_closed_state": "15 passed",
+    "migration_regression_repair": "4 passed",
+    "full_backend": "1000 passed, 8 warnings"
+  },
+  "static": {
+    "ruff_check": "PASS: All checks passed",
+    "ruff_format_check": "PASS: 190 files already formatted",
+    "mypy": "PASS: no issues found in 103 source files",
+    "openspec_change_strict": "PASS",
+    "openspec_all_strict": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "compose_smoke": {
+    "project": "dlr-i127-c4-final-smoke",
+    "exit_code": 0,
+    "status": "PASS",
+    "fresh_alembic_head": "0029_issue127_c0_exec_lease",
+    "web_production_build": "PASS",
+    "five_service_health": "PASS",
+    "m5_4_4_regression_chain": "PASS",
+    "sensitive_log_assertions": "PASS"
+  },
+  "non_product_setup_failure": {
+    "first_project": "dlr_i127_c4_final_smoke",
+    "error_code": "ks_config_invalid",
+    "cause": "underscore-containing fake IMA hostname rejected by existing DNS hostname validator",
+    "product_change_required": false,
+    "rerun_with_dns_valid_project": "PASS"
+  },
+  "web_vitest": {
+    "status": "PASS",
+    "result": "1 test file, 15 tests passed",
+    "environment": "isolated Web build image",
+    "repository_local_dependency_install": false
+  }
+}

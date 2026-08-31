@@ -6,14 +6,25 @@ appends and the cursor-paged execution history.
 """
 
 import json
+import logging
+from collections import Counter
+from collections.abc import Sequence
+from datetime import timedelta
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.bigfields import truncate_utf8
 from dlr.common.config import settings
-from dlr.control.models import Adapter, AdapterVersion, Execution, Worker
+from dlr.control.models import (
+    Adapter,
+    AdapterVersion,
+    Execution,
+    ExecutionInputArtifactLease,
+    Worker,
+)
 from dlr.control.schemas.execution import (
     ExecutionCreate,
     ExecutionResultReport,
@@ -24,6 +35,9 @@ from dlr.control.services import adapter_runtime, worker_availability
 from dlr.control.services.adapter import domain_error, resolve_runtime_worker
 from dlr.control.services.execution_cancellation import lock_execution, request_cancellation
 from dlr.control.services.locale import get_system_locale
+from dlr.control.services.worker_protocol import require_claim_token
+
+logger = logging.getLogger("dlr.control.execution")
 
 # Statuses after which an Execution never changes again.
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
@@ -33,50 +47,188 @@ DEFAULT_HISTORY_LIMIT = 50
 MAX_HISTORY_LIMIT = 100
 
 
+class _NoInputOverride:
+    """Sentinel distinguishing an omitted request field from JSON null."""
+
+
+NO_INPUT_OVERRIDE = _NoInputOverride()
+
+# This is intentionally a small in-process metric until the platform metrics
+# sink is introduced.  The stable key is useful to tests and operators, while
+# the log never includes the legacy value itself.
+LEGACY_INPUT_COMPAT_METRICS: Counter[str] = Counter()
+
+
+def integrity_constraint_name(error: IntegrityError) -> str | None:
+    """Return a PostgreSQL constraint name without parsing driver messages."""
+    diagnostic = getattr(getattr(error, "orig", None), "diag", None)
+    value = getattr(diagnostic, "constraint_name", None)
+    return str(value) if value else None
+
+
 def compact_json_bytes(value: object) -> bytes:
     """Compact JSON serialization as UTF-8 bytes (the big-field unit)."""
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -> Execution:
-    """Create one Manual Execution pinned to the latest immutable Revision."""
-    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+def release_execution_leases(session: Session, execution_id: int) -> None:
+    """Release all file Leases for one locked Execution."""
+    session.execute(
+        delete(ExecutionInputArtifactLease).where(
+            ExecutionInputArtifactLease.execution_id == int(execution_id)
+        )
+    )
+
+
+def _create_pending_execution_locked(
+    session: Session,
+    adapter: Adapter,
+    *,
+    trigger: str,
+    runtime_input: object,
+    input_source_type: str,
+    input_config_revision: int,
+    input_snapshot: dict[str, Any],
+    target_worker_id: int,
+    scheduled_for: Any = None,
+    artifact_ids: Sequence[int] = (),
+) -> Execution:
+    """Create a fully initialized pending Execution under the Adapter lock.
+
+    Trigger-specific callers own authentication, runtime/input validation and
+    input resolution.  This narrow helper owns the lifecycle facts every new
+    Worker-claimable Execution must freeze in its creation transaction.
+    """
+    from dlr.control.services.input_config import database_now
+
+    version_id = adapter.latest_version_id
+    if version_id is None:  # pragma: no cover - every caller validates readiness
+        raise RuntimeError("cannot create an Execution without a saved Adapter version")
+    created_at = database_now(session)
+    execution = Execution(
+        adapter_id=adapter.id,
+        version_id=version_id,
+        trigger=trigger,
+        status="pending",
+        input=runtime_input,
+        input_source_type=input_source_type,
+        input_config_revision=input_config_revision,
+        input_snapshot=input_snapshot,
+        timeout_seconds_snapshot=adapter.timeout_seconds,
+        recovery_grace_seconds_snapshot=settings.execution_recovery_grace_seconds,
+        workspace_cleanup_attempt_timeout_seconds_snapshot=(
+            settings.workspace_cleanup_attempt_timeout_seconds
+        ),
+        workspace_cleanup_total_timeout_seconds_snapshot=(
+            settings.workspace_cleanup_total_timeout_seconds
+        ),
+        workspace_cleanup_status="pending",
+        claim_deadline_at=created_at + timedelta(seconds=settings.execution_claim_timeout_seconds),
+        target_worker_id=target_worker_id,
+        scheduled_for=scheduled_for,
+        locale=get_system_locale(session),
+        created_at=created_at,
+    )
+    session.add(execution)
+    session.flush()
+    if artifact_ids:
+        session.add_all(
+            ExecutionInputArtifactLease(
+                execution_id=execution.id,
+                artifact_id=artifact_id,
+                ordinal=ordinal,
+            )
+            for ordinal, artifact_id in enumerate(artifact_ids)
+        )
+        session.flush()
+    return execution
+
+
+def _create_execution_locked(
+    session: Session,
+    adapter: Adapter | None,
+    *,
+    trigger: str,
+    scheduled_for: Any = None,
+    input_override: object = NO_INPUT_OVERRIDE,
+    schedule: Any = None,
+) -> Execution:
+    """Create one Execution while the caller owns the Adapter transaction lock."""
+    from dlr.control.services.input_config import resolve_for_execution
+
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     if adapter.archived_at is not None:
         raise domain_error(409, "adapter_deleted", "Adapter is deleted")
-    # Oversized input is rejected before anything is persisted; it is never
-    # truncated and executed.
-    if len(compact_json_bytes(data.input)) > settings.execution_input_max_bytes:
-        raise domain_error(
-            413,
-            "execution_input_too_large",
-            f"Input exceeds the {settings.execution_input_max_bytes} byte limit",
-            {"max_bytes": settings.execution_input_max_bytes},
-        )
     if adapter.latest_version_id is None:
         raise domain_error(409, "adapter_has_no_version", "Adapter has no saved Revision yet")
-    if adapter_runtime.active_execution(session, adapter_id) is not None:
+    if adapter_runtime.active_execution(session, adapter.id) is not None:
         raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
+
+    # A Schedule run-now must take the same Schedule lock as the Scheduler,
+    # but it never mutates the row or its cursor.
+    if schedule is None and adapter.run_mode == "schedule":
+        from dlr.control.models import AdapterSchedule
+
+        schedule = session.scalar(
+            select(AdapterSchedule)
+            .where(AdapterSchedule.adapter_id == adapter.id)
+            .with_for_update()
+        )
+
+    if input_override is NO_INPUT_OVERRIDE:
+        resolved = resolve_for_execution(session, adapter.id)
+    else:
+        resolved = resolve_for_execution(session, adapter.id, override=input_override)
+        LEGACY_INPUT_COMPAT_METRICS["execution_override"] += 1
+        logger.info(
+            "legacy_input_compat deprecated operation=execution_override adapter_id=%s",
+            adapter.id,
+        )
+
     worker = resolve_runtime_worker(
         session,
         adapter,
         now=worker_availability.current_time(session),
     )
-    execution = Execution(
-        adapter_id=adapter_id,
-        version_id=adapter.latest_version_id,
-        trigger="manual",
-        status="pending",
-        input=data.input,
+    return _create_pending_execution_locked(
+        session,
+        adapter,
+        trigger=trigger,
+        runtime_input=resolved.runtime_input,
+        input_source_type=resolved.source_type,
+        input_config_revision=resolved.revision,
+        input_snapshot=resolved.snapshot,
         target_worker_id=worker.id,
-        locale=get_system_locale(session),
+        scheduled_for=scheduled_for,
+        artifact_ids=resolved.artifact_ids,
     )
-    session.add(execution)
+
+
+def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -> Execution:
+    """Create one Manual or schedule run-now Execution from saved input."""
+    input_is_present = "input" in data.model_fields_set
+    if input_is_present and not settings.legacy_input_compat_enabled:
+        raise domain_error(
+            422,
+            "execution_input_override_not_supported",
+            "Per-run input overrides are disabled; save the Adapter input first",
+        )
+
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    input_override = data.input if input_is_present else NO_INPUT_OVERRIDE
     try:
+        execution = _create_execution_locked(
+            session,
+            adapter,
+            trigger="manual",
+            input_override=input_override,
+        )
         session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         session.rollback()
+        if integrity_constraint_name(exc) != "uq_executions_active_adapter":
+            raise
         raise domain_error(
             409, "adapter_busy", "The Adapter already has an active Execution"
         ) from None
@@ -143,7 +295,12 @@ def _cap_stream(value: str) -> tuple[str, bool]:
 
 
 def apply_result(
-    session: Session, worker_id: int, execution_id: int, report: ExecutionResultReport
+    session: Session,
+    worker_id: int,
+    execution_id: int,
+    report: ExecutionResultReport,
+    *,
+    claim_token: str | None = None,
 ) -> Execution:
     """Persist a terminal result reported by the owning Worker.
 
@@ -166,6 +323,8 @@ def apply_result(
     # Execution has already reached a terminal state.
     if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
+    if execution.claim_token_hash is not None:
+        require_claim_token(claim_token, execution.claim_token_hash)
     if execution.status != "running":
         # Already terminal: idempotent return. The row lock above guarantees a
         # concurrent second report from the same Worker observes the same
@@ -191,6 +350,19 @@ def apply_result(
     execution.stderr = stderr
     execution.stderr_truncated = stderr_truncated
     execution.error = report.error
+    execution.error_code = report.error_code
+    if execution.claim_token_hash is None:
+        execution.workspace_cleanup_status = "deferred"
+        execution.workspace_cleanup_error_code = "workspace_cleanup_legacy_unverified"
+    elif report.workspace_cleanup_status is None:
+        execution.workspace_cleanup_status = "deferred"
+        execution.workspace_cleanup_error_code = "workspace_cleanup_unknown"
+    else:
+        execution.workspace_cleanup_status = report.workspace_cleanup_status
+        execution.workspace_cleanup_error_code = report.workspace_cleanup_error_code
+        if report.workspace_cleanup_status == "completed":
+            execution.workspace_cleanup_error_code = None
+    release_execution_leases(session, execution.id)
     # Both timestamps come from the database clock, so duration_ms never
     # mixes client and server clocks. The numeric expression is assignment-
     # cast to the BIGINT column by PostgreSQL.
@@ -220,7 +392,12 @@ def _append_stream(existing: str, already_truncated: bool, chunk: str) -> tuple[
 
 
 def apply_progress(
-    session: Session, worker_id: int, execution_id: int, report: ProgressReport
+    session: Session,
+    worker_id: int,
+    execution_id: int,
+    report: ProgressReport,
+    *,
+    claim_token: str | None = None,
 ) -> bool:
     """Append best-effort stdout/stderr chunks from the owning Worker.
 
@@ -244,6 +421,8 @@ def apply_progress(
         raise domain_error(404, "execution_not_found", "Execution not found")
     if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
+    if execution.claim_token_hash is not None:
+        require_claim_token(claim_token, execution.claim_token_hash)
     if execution.status != "running":
         # Terminal: drop the chunks, still answer the cancel flag.
         return execution.cancel_requested
@@ -275,6 +454,8 @@ def cancel_execution(session: Session, execution_id: int) -> Execution:
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
     request_cancellation(execution)
+    if execution.status == "cancelled":
+        release_execution_leases(session, execution.id)
     # Terminal states are never rewritten.
     session.commit()
     session.refresh(execution)

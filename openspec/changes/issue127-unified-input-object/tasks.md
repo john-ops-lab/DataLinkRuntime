@@ -1,0 +1,327 @@
+# Issue #127 实施批次合同
+
+## 0. 批次 DAG、资源与集成纪律
+
+```text
+A0 → A1 → A2 → A3
+                ↓
+B0 → B1 → ┬→ B2 ─┬→ B4
+          └→ B3 ─┘
+                    ↓
+C0 → ┬→ C1 → C2 ─┬→ C4
+     └→ C3 ──────┘
+                    ↓
+D0 → ┬→ D1 ─┬→ D3 → E0 → E1
+     └→ D2 ─┘
+```
+
+- `depends_on` 是硬门禁；前序批次未形成已验证 Candidate 时不得开始后序。
+- 允许并行的只有 `B2/B3`、`C1/C3`、`D1/D2`，且必须使用独立 worktree、独立 PostgreSQL database、独立 Compose project/volume、唯一 host ports、独立浏览器 profile 与匿名 fixture；本地 `main` 集成始终串行。
+- 公共 schema/API/protocol/migration 仅由 A0、B0、C0、D0 定义；并行批次不得各自改写公共合同。每个 Wave 的集成顺序固定为编号升序，失败即停止、不勾选、不进入下一 Wave。
+- B3 基线尚无 Lease 表：B3 只交付不依赖具体 Lease schema 的 GC 删除保护 hook 及其 protected/unprotected 行为验证，不得把 stub/fake hook 测试写成真实 Lease 或 GC 与 Execution 创建竞争已通过；Lease schema、数据库实现与真实竞争验证由 C0 10.2/10.3 串行完成，且长期 active Lease 保护 MUST 不变。
+- PostgreSQL database 命名 `dlr_i127_<batch>_<session>`；Compose project 命名 `dlr-i127-<batch>-<session>`；容器必须带 `ao.session=$AO_SESSION_ID`；临时 ArtifactStore/journal/fixture 使用 `/private/tmp/dlr-i127-<batch>-<session>/`，只清理经本批次证明拥有的资源。
+- 浏览器批次分配独立 token/account ports，默认从 `8920/9020` 起按批次递增；不得占用当前 retained app。所有测试数据、文件名、Token 与用户均使用明显匿名值。
+
+| 批次 | Wave | depends_on | 主要冲突域 | 共享资源与隔离 | 串并行与本地集成顺序 |
+|---|---|---|---|---|---|
+| A0 | A | 固定基线 | Alembic head、models/schemas `__init__`、InputConfig API | 独立 migration DB，无 Compose/浏览器 | 必须首行串行，先公共 schema/migration |
+| A1 | A | A0 | execution/schedule/adapter-runtime services 与 API | 独立 DB、冻结时钟/Worker fixtures | 串行；统一 resolver 先于 Web |
+| A2 | A | A1 | `TaskRunSettingsPanel`、`api.ts/types.ts`、adapter/runtime i18n | 独立 Vitest 与浏览器 profile/ports | 串行；不得提前启用 managed_files |
+| A3 | A | A2 | Wave A 全栈、Compose smoke | 独立 Compose project/volumes/ports | 串行 Gate；通过后才可进入 B |
+| B0 | B | A3 | Alembic head、managed models/settings/config/app routers | 独立 migration DB | 串行公共存储 schema/API |
+| B1 | B | B0 | ArtifactStore、upload API/service、capacity/reservation | 独立 store root 与 DB | 串行；先建立上传不变量 |
+| B2 | B | B1 | InputConfig binding/retention/runtime lock | 独立 DB/fixture；不改 GC modules | 可与 B3 并行；本地先集成 B2 |
+| B3 | B | B1 | TTL/GC/audit/Adapter deletion/background loops、schema-independent 删除保护 hook | 独立 DB/store；不改 binding API，不新增/引用 Lease schema | 可与 B2 并行；本地后集成 B3 |
+| B4 | B | B2,B3 | Wave B Compose volumes 与全生命周期 | 独立 Compose/store/ports | 串行 Gate；通过后才可进入 C |
+| C0 | C | B4 | Alembic head、Execution/Worker protocol/Lease schema/API、GC 保护 hook 的数据库实现 | 独立 migration DB | 串行公共协议先行；完成真实 GC/Execution 创建竞争 |
+| C1 | C | C0 | Worker agent/client/executor、download/journal/cleanup | 独立 Worker root/journal/store | 可与 C3 并行；本地先集成 C1 |
+| C2 | C | C1 | Python/Node/Java harness 与 manifest | 独立 runtime roots，固定 toolchains | 串行跟随 C1 manifest 合同 |
+| C3 | C | C0 | Control stale reconciler/result/receipt/Lease release | 独立 DB/冻结时钟/fake Worker | 可与 C1 并行；本地在 C2 后集成 C3 |
+| C4 | C | C2,C3 | v1/v2、三语言、崩溃/断网全栈 | 独立 Compose/store/journal/ports | 串行 Gate；通过后才可打开文件能力 |
+| D0 | D | C4 | Web public types/API/i18n key skeleton/capability | 独立 Vitest，无页面接线 | 串行 Web 公共合同先行 |
+| D1 | D | D0 | 输入对象/上传/retention/系统设置组件 | 独立浏览器 profile/ports；不改历史组件 | 可与 D2 并行；本地先集成 D1 |
+| D2 | D | D0 | 历史/示例/复制组件及 clone service | 独立浏览器/DB；不改输入组件 | 可与 D1 并行；本地后集成 D2 |
+| D3 | D | D1,D2 | `App.tsx` 接线、完整 i18n 与 Playwright | 独立 Compose/browser/ports | 串行 Wave D 视觉与业务 Gate |
+| E0 | Final | D3 | 全仓回归、迁移/回滚/文档/smoke | 新鲜 DB + 独立 Compose + exact-SHA evidence | 串行最终机器 Gate |
+| E1 | Final | E0 | retained app 人工验收 | 保留隔离 app，不清理其资源 | 只做人工交接；用户 PASS 不由机器代替 |
+
+## 1. A0 — Wave A 公共 schema、迁移与 InputConfig API
+
+- [x] 1.1 用现有 API 测试固定最小复现：manual Execution 接受 per-run input，省略 manual per-run `input` 时 `Execution.input` 按固定基线持久化为 JSON `null`，Schedule 独立保存 input；历史无 Schedule 的 manual Task Adapter 迁移回填仍保持 1.3 的 `json/{}` 合同。保存基线事实与红灯结果，验证测试在实现前准确失败于“唯一 InputConfig/revision”预期；A0 仅记录现状，不改动属于 A1 的 Execution 创建语义。
+- [x] 1.2 新增 AdapterInputConfig 模型、枚举/check/index、GET/PUT schema 与路由，覆盖 none/json/managed_files 空集合/remote_files 拒绝和类型专属字段；验证 API 单元测试检查 200/409/422 与响应 `valid_for_run/invalid_reason`。
+- [x] 1.3 编写 expand Alembic migration：回填 Schedule JSON、manual `json/{}`、revision=1，新建 Task 默认 none，增加 Schedule blocked 字段并保留旧 input 列；验证 fresh head、从 `896f715` 对应 schema 升级、重复回填计数一致。
+- [x] 1.4 对重复/孤儿 Schedule、既有 InputConfig 冲突和非法 source 构造迁移 fixture；验证 migration fail-fast 输出 Adapter ID、source 计数与冲突数且不静默选择。
+- [x] 1.5 集中定义 InputConfig 与兼容期稳定错误 code/API 响应，验证 schema 快照不包含 Artifact storage key、路径、Token 或文件内容。
+- [x] 1.6 运行 A0 Gate：`uv run --frozen --project backend pytest <A0 migration/input-config tests> -q`、`uv run --frozen --project backend ruff check <changed backend files>`、`ruff format --check`、`mypy` 相关模块；全部 PASS 才形成 A0 Candidate。
+
+## 2. A1 — Wave A 统一 resolver、Manual/Schedule/run-now 与兼容门禁
+
+- [x] 2.1 实现受锁统一 resolver 与 Execution 创建事务，保持 `Execution.input` 原始 JSON/null 并固定 source/revision/snapshot；验证 manual 与 scheduler 针对 none、object/array/scalar/null 产出相同快照合同。
+- [x] 2.2 将 `POST /api/adapters/{id}/executions` 改为读取已保存配置并支持 schedule run-now `trigger=manual`；验证 run-now 不改变 enabled/Cron/timezone/next_run_at/last_processed_due_at。
+- [x] 2.3 实现 `legacy_input_compat_enabled`：开启时旧 per-run input 仅作用本次 Execution且记录弃用指标，关闭时任何 `input` 字段（含 null）返回 `execution_input_override_not_supported`；验证两种开关与输入大小门禁。
+- [x] 2.4 让旧 Schedule PUT 与新 JSON InputConfig 在兼容期同事务双向镜像，Scheduler 只读统一 resolver；验证并发 revision conflict 不产生双写分叉。
+- [x] 2.5 实现 Schedule input_invalid 持久阻塞与 future cursor 推进；用冻结数据库时钟、多 scheduler、Cron/timezone/DST fixture 验证不创建 Execution、不热循环、不补跑。
+- [x] 2.6 将启用 Schedule、manual/run-now、保存输入接入现有 Adapter Runtime Lock和 active unique index；验证 stale 页面、enabled Schedule、pending/running 竞争均返回权威 409且失败不改 revision。
+- [x] 2.7 扩展 Adapter clone：复制 source/json/retention，managed_files 副本为空且 Schedule disabled；验证不复制任何 Artifact/Binding/Lease 标识。
+- [x] 2.8 运行 A1 Gate：统一 resolver、schedule、execution、clone、锁竞争和兼容开关测试，以及相关 Ruff/format/mypy；执行兼容开关 on→off→on 回滚 smoke，全部 PASS 才形成 A1 Candidate。
+
+## 3. A2 — Wave A none/json Web 与四卡片占位
+
+- [x] 3.1 按 antd 5.29.3 固定 CLI 查询实际使用的 Card/Form/Tooltip API/demo并记录结果；验证未更改 `package.json` 与 antd/pro-components 锁定版本。
+- [x] 3.2 在 Task 运行设置建立独立 Input Object 草稿/revision/save 状态，移除 manual/Schedule 两套 JSON 编辑路径；Vitest 验证切换 run_mode 不丢草稿且保存失败保留最近有效配置。
+- [x] 3.3 实现 none/json 四种顶层 JSON 保存和语法校验，Execution/run-now 只发送空 body；验证 object/array/scalar/null、dirty草稿提示和 `input` 字段永不由新 Web 发出。
+- [x] 3.4 展示四张可聚焦卡片：remote_files 永久“开发中”，managed_files 在 flag 关闭时“尚未启用”；验证禁用状态不调用上传/文件 API且后端绕过请求仍稳定拒绝。
+- [x] 3.5 补齐 zh-CN/en adapter/runtime key、错误映射与插值一致性；运行 i18n key/placeholder Vitest，验证无 raw key和非本地化 machine code。
+- [x] 3.6 运行 A2 Gate：`npm run test -- <focused files>`、`npm run lint`、`npm run typecheck`、`npm run build`；在独立浏览器以 zh-CN/en、1280/1920 验证 none/json、revision conflict、run-now、console/request/overflow。
+
+## 4. A3 — Wave A 迁移、回滚与集成 Gate
+
+- [x] 4.1 在新鲜 DB 与固定基线 DB分别演练 Alembic head，核对 Adapter 总数/source 分布/冲突数、历史 Execution input 未改；验证重复 upgrade/check 无副作用。
+- [x] 4.2 用旧 Web 风格 manual/Schedule 请求和新 Web请求执行兼容矩阵；验证开关开启无静默分叉、关闭后两类旧字段均明确拒绝、重新开启可回滚。
+- [x] 4.3 在独立 Compose 执行 manual、Schedule、schedule run-now，验证单活跃门禁、invalid cursor推进、服务日志脱敏与四卡片 flag off。
+- [x] 4.4 运行 Wave A 完整 backend/web 相关回归与 `git diff --check`，归档 exact-SHA、命令、PASS/FAIL、迁移计数、浏览器截图/console/request证据；任何失败不勾选、不进入 B。
+
+## 5. B0 — Wave B Managed Settings、容量与 Artifact 公共 schema
+
+- [x] 5.1 固定配额超卖、低水位、retention 追溯重算和 null/无限设置的最小红灯 fixture；验证实现前无法满足 settings/usage 合同。
+- [x] 5.2 新增 ManagedInputSettings、platform capacity、reservation、Artifact、Binding、deletion job 模型及全部 PK/FK/复合 FK/unique/check/index；用 PostgreSQL catalog 测试验证约束和 GC/TTL 查询索引。
+- [x] 5.3 新增管理员 GET/PUT settings API、初始值/范围/跨字段不变量与 usage/over_quota 响应；验证普通用户拒绝、降配额不删现有文件且减少占用操作仍允许。
+- [x] 5.4 新增 `DLR_ARTIFACT_STORE_ROOT`、feature flag、GC/audit intervals 与有界启动校验；验证数据库设置不返回/覆盖部署路径，非法环境配置阻止启动。
+- [x] 5.5 编写 B0 migration与 fresh/upgrade schema测试，验证种子单例、capacity 计数初始一致、回滚只作为测试清理而不定义生产破坏性 downgrade。
+- [x] 5.6 运行 B0 targeted pytest、Ruff/format/mypy和 migration catalog Gate；全部 PASS 才允许 B1。
+
+## 6. B1 — Wave B LocalFileArtifactStore、上传与 reservation
+
+- [x] 6.1 用临时同/跨文件系统、symlink、`../`、伪 Content-Length、上传中断和并发最后配额构造最小复现；验证红灯精确覆盖原子 rename/路径/预留风险。
+- [x] 6.2 实现无第三方依赖的 LocalFileArtifactStore 窄接口、随机 storage key、同挂载 `.part→object` 原子 rename、幂等 delete/stat/quarantine；文件系统测试验证路径穿越和 symlink拒绝。
+- [x] 6.3 实现 multipart 流式 upload API：Adapter权限、白名单、大小/SHA-256、低水位、reservation创建/续租/扩容/核销与失败补偿；验证不信任 MIME/Content-Length且超限立即停止。
+- [x] 6.4 实现 staged list/delete API，以 STAGED list 作为刷新恢复的唯一公开合同；验证刷新只看到同 Adapter STAGED元数据、跨 Adapter猜测不泄露存在性、STAGED删除不改 revision，active upload session 不暴露伪恢复 API。
+- [x] 6.5 实现 reservation TTL与 writer竞争的条件状态更新；并发/故障注入验证 ACTIVE只能单向 terminal、reserved/actual bytes不重复释放或提前释放。
+- [x] 6.6 扫描 API/日志/审计响应，验证不出现 storage key、store root、`.part`路径、文件内容或认证凭据，并验证稳定错误码全集中的上传子集。
+- [x] 6.7 运行 B1 unit/integration/concurrency/fault tests及 Ruff/format/mypy；使用独立临时 store演练中断后无无主对象或由 audit可治理，PASS才形成 Candidate。
+
+## 7. B2 — Wave B Binding、retention 与系统生命周期事务
+
+- [x] 7.1 实现 managed_files 0..8 原子保存：锁序、expected_revision、所有权/READY-STAGED/ordinal/同名NFC casefold校验、Binding全替换、revision+1；并发测试验证旧 revision零副作用。
+- [x] 7.2 在保存事务中具体化 system_default/custom/manual_delete retention，并重算当前集合而不追溯已移除文件；冻结数据库时钟验证服务端 `expires_at` 权威和管理员默认变更不回写。
+- [x] 7.3 实现显式替换和 source切换：新 STAGED→READY、旧 READY→PENDING_DELETE，保存失败保留 STAGED；验证绝不原地覆盖 Blob。
+- [x] 7.4 接入用户 Runtime Lock与系统 lifecycle专用路径；锁竞争测试验证 enabled/active拒绝用户写入，而到期/损坏治理可在完整锁序下解绑、revision+1且保留 active Lease。
+- [x] 7.5 验证 managed_files 空集合保存成功但 run/schedule enable返回 `input_invalid/managed_files_empty`，1..8 READY未过期可运行，过期/非READY返回结构化 reason。
+- [x] 7.6 运行 B2 binding/retention/lock/expiry targeted tests及静态 Gate；生成锁序并发证据后才形成 Candidate。
+
+## 8. B3 — Wave B TTL、GC、删除任务、Adapter 删除与审计
+
+- [x] 8.1 实现 UPLOADING/STAGED TTL领取与 Artifact `PENDING_DELETE/DELETE_FAILED→DELETING→DELETED` 删除租约、有限退避和告警；冻结时间/崩溃测试验证 stale DELETING可重领且对象不存在算成功。
+- [x] 8.2 在 GC 领取/删除路径实现不依赖具体 Lease 表或 ORM 的删除保护 hook，并保持实际容量只释放一次；以可控 fake/stub 分别验证 protected 时不迁移状态、不删 Blob、不释放 charge，unprotected 时才可继续幂等删除。本批次尚无 Lease schema，不声称完成真实 active Lease 查询或 GC 与 Execution 创建竞争验证。
+- [x] 8.3 实现当前 Binding到期的系统生命周期转换与低频 orphan audit；验证 audit只隔离合法随机、超过宽限、无Artifact/job记录对象，不碰未知目录。
+- [x] 8.4 扩展 Adapter delete：与上传创建都先锁 Adapter，UPLOADING/ACTIVE时409；原子把已计费 Blob和charge转入独立 deletion jobs，再删除元数据。
+- [x] 8.5 对 deletion job重复消费、对象缺失、删除失败/重启注入故障；验证 `capacity_released_at`只写一次、平台charge不在Adapter事务中丢失。
+- [x] 8.6 审计上传/绑定/替换/删除/管理员治理和GC失败，验证主体/Adapter/Artifact/stable code可观测且文件内容、Token、storage key、宿主路径脱敏。
+- [x] 8.7 运行 B3 TTL/GC/adapter-delete/audit并发与故障测试、删除保护 hook 合同测试及静态 Gate；证据明确标注真实 Lease provider/竞争尚待 C0，证明只清理本批次临时 store 后形成 Candidate。
+
+## 9. B4 — Wave B 全生命周期与 Compose Gate
+
+- [x] 9.1 更新 Compose为Control ArtifactStore持久卷和全部B阶段环境变量，保持 managed_files flag off；`docker compose config -q`验证默认/覆盖值与单Control边界。（证据：`docs/evidence/issue127-b4/compose-config.json`）
+- [x] 9.2 在隔离 Compose 上传 allowed/blocked/oversize 文件、刷新恢复、保存0/8、替换、到期、删除、配额下降/恢复和低水位；验证DB/Blob/charge状态逐步一致。（证据：`docs/evidence/issue127-b4/lifecycle.json`）
+- [x] 9.3 故障注入上传中断、rename后DB失败、reservation TTL竞争、GC崩溃、delete失败与Adapter删除竞争；重启Control后验证最终收敛且无静默残留。（证据：`docs/evidence/issue127-b4/fault-injection.json`）
+- [x] 9.4 执行B阶段 rollback演练：flag保持关闭、停止后台loop后再启、保留表/Blob/job并恢复治理；验证不做schema downgrade或自动删数据。（证据：`docs/evidence/issue127-b4/rollback.json`）
+- [x] 9.5 运行 Wave B backend、fresh/upgrade migration、Compose smoke和日志敏感值扫描，归档 exact-SHA/资源清单/证据；任何失败不进入 C。（证据：`docs/evidence/issue127-b4/README.md`、`migration.json`、`quality.json`、`scans.json`、`resources.json`）
+
+## 10. C0 — Wave C Execution/Lease 与 Worker v1/v2 公共协议
+
+- [x] 10.1 固定最小红灯：配置替换影响pending文件、v1领取文件、无Token下载/Result、stale Execution永久Lease；验证测试在C0前精确失败。（A=FIXED_BASE实际4-fail；stale exact-base隔离2-fail；C0新增回归通过）
+- [x] 10.2 新增 Execution snapshot/deadline/token-hash/cleanup字段、Worker protocol_version与Lease表约束/索引，并以数据库 active Lease 查询实现 B3 的删除保护 hook；migration/集成测试验证fresh/upgrade、nullable v1兼容、历史Execution不被改写，以及 protected 判定阻止 GC 状态迁移、Blob 删除和 charge 释放。
+- [x] 10.3 扩展统一Execution创建事务以固定timeout/claim/recovery/cleanup快照和文件Lease；在真实 PostgreSQL 锁序下并发验证 GC与Execution创建竞争时要么先建Lease并阻止治理，要么先治理并使创建失败/重试，绝不删除 pending/running 所需 Blob；同时验证 attempt<=total<grace、数据库时钟deadline和后续配置不改变既有运行。
+- [x] 10.4 扩展Worker register/claim/TaskPayload与最低协议门禁：缺失=1、v1仅none/json、v2文件任务；验证mixed pool不让旧Worker领取不可完成任务。
+- [x] 10.5 在v2 claim行锁事务生成32-byte Claim/Cleanup Token、只存hash并定义Header校验依赖；constant-time/hash/API schema测试验证两类Token不可互换且不进入公开响应。
+- [x] 10.6 新增Worker内部下载和cleanup receipt协议schema/路由骨架，锁定stable code与HTTP合同；契约测试验证非Worker入口和非法Header拒绝。
+- [x] 10.7 运行C0 migration/protocol/lease/contract、数据库 Lease provider及真实 GC/Execution 创建竞争 targeted tests与Ruff/format/mypy；公共协议通过后才允许C1/C3并行。
+
+## 11. C1 — Wave C Worker 下载、journal 与同步/延迟清理
+
+- [x] 11.1 实现Control内部下载授权：Worker ownership、running状态、Claim Token、active Lease、Artifact可读与metadata/content一致；越权/猜测/终态测试验证不泄露对象存在性。
+- [x] 11.2 扩展Worker client对download/progress/result携带Claim Header、cleanup receipt携带Cleanup Header；单元测试验证Token不进URL/body/log且v1请求保持旧合同。
+- [x] 11.3 将Workspace改为受控确定路径，在创建前以0700目录/0600文件、fsync+atomic rename写外部journal；故障注入journal失败验证不创建目录、不下载、不启动Adapter。
+- [x] 11.4 下载全部输入到受控mount name，流式复核size/SHA-256并写marker/manifest、0444/0555；验证任一下载/校验失败不启动子进程且进入清理。
+- [x] 11.5 实现同步清理attempt/total硬预算、有限退避/存在确认与Result cleanup字段；挂起删除注入验证总时长有界、业务成功不被cleanup失败覆盖。
+- [x] 11.6 实现journal启动/周期扫描与幂等receipt：只删名称+marker+manifest三重匹配Workspace，不删version依赖/未知目录；重启/响应丢失测试验证completed→completed后才删journal。
+- [x] 11.7 对Worker/Control日志和journal做敏感值扫描，验证Claim Token从不落盘、Cleanup Token仅在私有journal，用户文件名/input/Secret/output不入journal。
+- [x] 11.8 运行C1 Worker unit/integration/fault/timeout tests与静态Gate，在独立runtime/journal根证明可恢复清理后形成Candidate。（证据：`repair2-c1-full.txt` 25 passed；focused/long-concurrency-cancel-timeout/fault/timeout 分别 9/5/6/4 passed；`repair2-worker-control-regression.txt` 174 passed；Ruff/format/mypy/OpenSpec strict/git diff --check 全部通过。）
+
+## 12. C2 — Wave C Python/JavaScript/Java Context 文件 API
+
+- [x] 12.1 固定三语言manifest/InputFile相同fixture，验证现有Context缺少文件API的红灯且JSON `handle(context,input)`行为作为retained assertion。
+- [x] 12.2 Python harness实现`context.input_files`与InputFile元数据，验证ordinal/path/original_name/content_type/size_bytes/sha256和managed_files时input=null。
+- [x] 12.3 Node harness实现等价`context.inputFiles`/camelCase字段，验证读取文件内容、顺序与JSON输入不包装。
+- [x] 12.4 Java Runtime实现等价`context.inputFiles`不可变列表/字段，使用Java 21真实编译运行验证文件和JSON合同。
+- [x] 12.5 为非法manifest、mount路径越界、文件缺失/篡改加入三语言拒绝测试；验证Adapter未启动或稳定失败且Control路径不暴露。
+- [x] 12.6 运行`backend/tests/test_multilang_runtime.py`相关完整三语言测试、Ruff/format/mypy；文档测试验证0444/0555仅称best-effort防误写。
+
+## 13. C3 — Wave C stale Execution、晚到 Result 与 cleanup receipt
+
+- [x] 13.1 实现分批`SKIP LOCKED` stale reconciler：pending超claim deadline→failed/worker_unavailable+cleanup completed+Lease释放；冻结时钟/多Control测试验证单次收敛。
+- [x] 13.2 实现running超deadline+grace按Worker健康进入timeout或failed/worker_lost，cleanup deferred/unknown并释放Lease；验证不自动重跑。
+- [x] 13.3 扩展Result/progress终态幂等与ownership-first校验；竞态测试验证晚到succeeded不能覆盖stale终态、非owner即使终态也拒绝。
+- [x] 13.4 实现cleanup receipt仅terminal deferred→completed和completed→completed；验证不改业务status/output/error/ended_at，非法转换返回`workspace_cleanup_transition_invalid`。
+- [x] 13.5 验证业务终态、cleanup字段、ended_at/error_code与Lease释放同一事务；DB故障注入证明不会出现终态已写但Lease遗留的部分提交。
+- [x] 13.6 运行C3 stale/late-result/receipt/concurrency tests、Ruff/format/mypy与loop启动/取消测试；PASS后形成Candidate。
+
+## 14. C4 — Wave C 协议、故障恢复与 Compose Gate
+
+- [x] 14.1 在隔离Compose先以v1/v2 Control+v1 Worker运行none/json，再滚动v2 Worker；验证旧Worker可上报、v1 cleanup标记legacy_unverified、文件任务只给v2。（证据：`docs/evidence/issue127-c4/rollout.json`）
+- [x] 14.2 真实运行Python/JavaScript/Java各一个多文件Execution，并在隔离 Compose 重放 GC 与 Execution 创建竞争；验证TaskPayload无Control路径、下载hash一致、Context可读、Workspace终态删除，且 pending/running 所需 Blob 由真实 Lease 保护。（证据：`docs/evidence/issue127-c4/multilang.json`）
+- [x] 14.3 故障注入claim响应丢失、下载中断/hash篡改、Progress/Result Token错误、Cleanup Token互换、Worker崩溃/断网/晚到Result和清理挂起；验证stable终态、无重跑、journal恢复与日志脱敏。（证据：`docs/evidence/issue127-c4/fault-injection.json`）
+- [x] 14.4 验证managed_files开放前门禁：目标Worker全v2、无v1 active、B/C Gate通过；条件不满足时flag/API/UI继续关闭。（证据：`docs/evidence/issue127-c4/rollout.json`）
+- [x] 14.5 演练Worker/Control回滚顺序：先关flag并排空active，保持双协议Control和Blob/journal，再回滚Worker；验证不丢Lease/cleanup治理。（证据：`docs/evidence/issue127-c4/rollout.json`）
+- [x] 14.6 运行Wave C完整backend/migration/Compose smoke、三语言与敏感值扫描，归档exact-SHA和故障证据；任何失败不进入D。（证据：`docs/evidence/issue127-c4/README.md`、`quality.json`、`scans.json`、`resources.json`）
+
+## 15. D0 — Wave D Web 类型/API/i18n 公共合同
+
+- [x] 15.1 固定Web最小红灯：文件flag开启后的类型/API缺失、multipart认证/CSRF、历史snapshot与clone空文件；验证focused Vitest在实现前准确失败。（证据：`docs/evidence/issue127-d0/README.md`）
+- [x] 15.2 新增ManagedSettings/InputConfig/Artifact/Execution snapshot公共类型和JSON API方法，保持upload transport独立；TypeScript契约测试验证不暴露storage key/路径/Token。
+- [x] 15.3 建立zh-CN/en输入/设置/历史/错误key与插值骨架，验证namespace leaf key、placeholder一致且machine code不本地化。
+- [x] 15.4 运行D0 focused Vitest、ESLint、typecheck；公共合同PASS后才允许D1/D2并行。
+
+## 16. D1 — Wave D 文件输入、上传、retention 与系统设置 UI
+
+- [x] 16.1 按antd 5.29.3固定CLI查询实际Card/Form/Upload/Progress/Tooltip组件API/demo；验证锁定版本不变且实现不猜API。（证据：`docs/evidence/issue127-d1/antd-cli.md`）
+- [x] 16.2 实现文件卡片flag开放、独立multipart上传进度、STAGED刷新恢复/离开提示和0..8文件列表；Vitest验证Cookie/CSRF、长文件名、NFC/casefold冲突与第九文件门禁。（证据：`web/src/components/TaskRunSettingsPanel.d1.test.tsx`）
+- [x] 16.3 实现显式替换/删除、READY/STAGED状态和expected_revision保存；并发UI测试验证409保留草稿、STAGED删除不改revision、服务端Runtime Lock权威。（证据：`web/src/components/TaskRunSettingsPanel.d1.test.tsx`）
+- [x] 16.4 实现system_default/custom/“永久保留”选择及服务端expires_at展示；测试验证管理员范围/禁用manual_delete、over_quota和低水位错误。（证据：`web/src/components/TaskRunSettingsPanel.d1.test.tsx`、`web/src/components/SystemSettingsDrawer.d1.test.tsx`）
+- [x] 16.5 扩展系统设置Managed Input策略/用量/over_quota页面，验证非空边界、超额量、只减占用操作提示且不出现部署路径。（证据：`web/src/components/SystemSettingsDrawer.d1.test.tsx`）
+- [x] 16.6 运行D1 Vitest、lint/typecheck/build及独立浏览器zh-CN/en 1280/1920上传/保存/锁/错误 smoke，验证console/request/overflow后形成Candidate。（证据：`docs/evidence/issue127-d3/browser-matrix.json`）
+
+## 17. D2 — Wave D 历史摘要、示例复制与 Adapter 复制
+
+- [x] 17.1 实现Python/JavaScript/Java只读示例生成与显式clipboard复制；测试验证只用Context API、不写Monaco、不创建AdapterVersion。（证据：`web/src/managed-input-examples.ts`、`web/src/components/ManagedInputExamples.tsx`、`web/src/components/TaskRunSettingsPanel.d2.test.tsx`）
+- [x] 17.2 扩展Execution详情按none/json/managed_files显示不可变摘要；测试验证无Artifact ID、下载/复用/恢复/再次运行入口且历史列表仍无大字段。（证据：`web/src/components/ExecutionInputSummary.tsx`、`web/src/components/ExecutionHistoryPanel.d2.test.tsx`）
+- [x] 17.3 完成managed_files clone后空集合、retention保留、Schedule disabled与重新上传提示；后端/Web测试验证源Blob/Artifact/Binding/Lease绝不复用。（证据：`backend/tests/test_issue127_d2_clone.py`、`web/src/components/TaskRunSettingsPanel.d2.test.tsx`）
+- [x] 17.4 补齐D2双语文案、键盘/焦点/禁用原因；运行focused Vitest、backend clone tests、lint/typecheck/build后形成Candidate。（证据：`web/src/i18n/locales/en/runtime.json`、`web/src/i18n/locales/zh-CN/runtime.json`、`web/src/i18n/i18n.test.ts`、`npm run lint`、`npm run typecheck`、`npm run build`）
+
+## 18. D3 — Wave D 双语浏览器矩阵与完整业务 Gate
+
+- [x] 18.1 串行集成D1再D2并完成`App.tsx`接线，解决公共i18n/API冲突；运行Web全量Vitest/lint/typecheck/build验证无回归。（证据：`docs/evidence/issue127-d3/README.md`）
+- [x] 18.2 在独立Compose开启flag，浏览器验证manual、schedule run-now、上传/刷新/替换/删除/空文件/retention/历史/示例/clone完整路径与权威请求。（证据：`docs/evidence/issue127-d3/browser-matrix.json`）
+- [x] 18.3 执行zh-CN/en × 1280/1440/1680/1920矩阵，保存截图、console、request与横向overflow证据；验证键盘可达、长文件名可查看且关键操作无遮挡。（证据：`docs/evidence/issue127-d3/browser-matrix.json`、`screenshots/`）
+- [x] 18.4 验证Wave B/C未满足时flag/API/UI关闭，满足全部协议排空条件后才开放；演练再次关闭flag不破坏既有Blob/Execution历史。（证据：`docs/evidence/issue127-d3/flag-reclose.json`）
+- [ ] 18.5 归档Wave D exact-SHA机器Gate并标记“待人工验收”，自动证据不得写用户PASS；旧 dirty-tree 收据仅为 historical，当前 Candidate 尚未完成。（历史证据：`docs/evidence/issue127-d3/source-tree.json`、`README.md`）
+
+## 19. E0 — 最终回归、迁移/回滚演练与 exact-SHA 证据
+
+- [x] 19.1 对新鲜DB、固定基线、重复回填和冲突fixture运行完整Alembic验证，核对计数、历史input、旧列镜像与schema约束。（证据：`docs/evidence/issue127-e0/migration.json`）
+- [x] 19.2 运行backend全量`uv run --frozen --project backend ruff check .`、`ruff format --check .`、`mypy`、`pytest`，逐项记录PASS/FAIL。（证据：`docs/evidence/issue127-e0/backend-gates.json`）
+- [x] 19.3 运行web全量`npm run lint`、`npm run typecheck`、`npm run test`、`npm run build`及目标Playwright矩阵，逐项记录PASS/FAIL。（证据：`docs/evidence/issue127-e0/web-gates.json`）
+- [x] 19.4 在全新隔离Compose运行三语言、Schedule/run-now、配额/到期/GC、真实 Lease 与 Execution 创建竞争、Worker崩溃/恢复、Adapter删除与敏感值扫描；验证单Control边界和所有任务资源归属。（证据：`docs/evidence/issue127-e0/compose-runtime.json`、`real-postgres-race.json`、`worker-crash-recovery.json`、`resources.json`）
+- [x] 19.5 完成API变更、LocalFileArtifactStore单Control、迁移/兼容/回滚运维文档并演练非破坏回滚：关flag、禁新增、排空active、保持双协议与表/Blob/job/旧列；验证文档命令可执行且恢复新版后治理继续。（证据：`docs/zh-CN/issue127-managed-input-operations.md`、`docs/en/issue127-managed-input-operations.md`、`docs/evidence/issue127-e0/rollback.json`）
+- [ ] 19.6 对Candidate exact SHA运行OpenSpec strict/all strict、`git diff --check`、scope/密钥/绝对路径扫描并归档source_candidate；旧 dirty-tree 收据已 superseded，当前 Candidate 完成前不得进入E1。（历史证据：`docs/evidence/issue127-e0/source-candidate/`、`scans.json`）
+
+## 20. E1 — Retained-app 用户最终验收
+
+- [ ] 20.1 以匿名本地值保留当前 E0 exact-SHA 隔离 app，回传 token/account 入口、测试账号、fixture 和已知边界；旧 `app-ready.json` 指向 superseded 栈，不代表当前 Candidate。（历史证据：`docs/evidence/issue127-e1/app-ready.json`、`README.md`）
+- [ ] 20.2 请用户按manual/schedule/run-now、上传/retention/历史/clone和双语视觉清单判定PASS/FAIL；未收到明确PASS不得勾选或宣称业务验收完成。
+- [ ] 20.3 用户PASS后单独记录human acceptance事实；若FAIL，生成新Candidate并只重跑受影响及最终Gate，旧SHA证据不得复用为新SHA通过。
+
+## 21. Issue 验收项追溯矩阵
+
+| 验收 ID | Issue 验收事实 | 规格 Requirement | 实施/Gate 任务 |
+|---|---|---|---|
+| AC-U01 | Task Adapter只有一套配置和单调revision | adapter-input-config：每个Task Adapter只有一套当前输入配置 | 1.2-1.4, 2.1, 7.1 |
+| AC-U02 | manual/schedule/run-now共用解析、校验、快照、下发 | adapter-input-config：所有Task运行入口复用同一输入解析合同 | 2.1-2.2, 10.3, 14.2 |
+| AC-U03 | schedule run-now为manual trigger且不改cursor | adapter-input-config：所有Task运行入口复用同一输入解析合同 | 2.2, 3.3, 18.2 |
+| AC-U04 | 新建none默认且JSON顶层合同不变 | adapter-input-config：输入来源具有封闭类型合同 | 1.2-1.3, 3.3, 12.1-12.4 |
+| AC-U05 | 四卡完整且remote前后端不可用 | managed-input-web：四类输入卡片遵守能力门禁 | 3.4, 18.2-18.4 |
+| AC-U06 | Wave B/C前不暴露managed_files | input-compatibility-rollout：Managed Files feature flag按完整能力门禁开放 | 3.4, 14.4, 18.4 |
+| AC-U07 | managed_files可存0..8、仅1..8有效可运行 | adapter-input-config：Managed Files保存态与运行态分离 | 7.1, 7.5, 16.2 |
+| AC-U08 | 旧revision为409且失败不覆盖 | adapter-input-config：输入配置使用乐观并发控制 | 1.2, 7.1, 16.3 |
+| AC-U09 | enabled或active时用户不可改输入 | adapter-input-config：用户输入写入遵守Runtime Lock | 2.6, 7.4, 16.3 |
+| AC-U10 | 系统生命周期可按锁序失效输入 | adapter-input-config：系统生命周期转换使用完整锁序 | 7.4, 8.3, 9.2 |
+| AC-S01 | 动态策略由DB单例/管理员API管理 | managed-input-lifecycle：Managed Input设置具有单一权威来源 | 5.2-5.3, 16.5 |
+| AC-S02 | store root/flag/loops仅部署环境变量 | managed-input-lifecycle：Managed Input设置具有单一权威来源 | 5.4, 9.1, 19.4 |
+| AC-S03 | 容量/期限设置明确非空有界 | managed-input-lifecycle：Managed Input设置具有单一权威来源 | 5.3-5.4, 16.5 |
+| AC-S04 | 降配额不删现有且over_quota可观测 | managed-input-lifecycle：Managed Input设置具有单一权威来源 | 5.3, 9.2, 16.5 |
+| AC-S05 | claim/grace/cleanup唯一来源与不变量 | execution-input-snapshot：超时快照有范围与不变量 | 5.4, 10.3, 11.5 |
+| AC-L01 | UPLOADING/STAGED/READY明确且无伪事务 | managed-input-lifecycle：Artifact与Binding具有可验证状态机 | 6.3-6.5, 9.2 |
+| AC-L02 | `.part`校验和rename后才STAGED | managed-input-lifecycle：ArtifactStore保证受控、原子且不可猜测的对象路径 | 6.2-6.3, 9.3, 25.1 |
+| AC-L03 | 上传完成原子核销reservation/实际容量 | managed-input-lifecycle：并发上传使用原子容量预留 | 6.3, 6.5, 9.3, 25.1 |
+| AC-L04 | 刷新可恢复STAGED | managed-input-lifecycle：Artifact与Binding具有可验证状态机 | 6.4, 16.2, 18.2 |
+| AC-L05 | Binding/reservation/Lease/Artifact/job约束索引完整 | managed-input-lifecycle：Artifact与Binding具有可验证状态机 | 5.2, 10.2, 19.1 |
+| AC-L06 | Binding原子替换、retention具体化、旧文件待删 | managed-input-lifecycle：保存绑定原子具体化retention | 7.1-7.3, 9.2 |
+| AC-L07 | 未保存/中断/失败释放预留并TTL清理 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 6.5, 8.1, 9.3, 25.1-25.2 |
+| AC-L08 | 白名单、8文件、同名与显式替换 | managed-input-lifecycle：文件类型、名称和大小由服务端权威校验 | 6.3, 7.1-7.3, 16.2-16.3, 25.2 |
+| AC-L09 | 文件/Adapter/平台配额与低水位并发有效 | managed-input-lifecycle：磁盘低水位与容量记账覆盖所有占用阶段 | 6.3, 6.5, 9.2-9.3 |
+| AC-L10 | GC仅删无active Lease且失败可重试 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 8.1-8.2（schema-independent hook）, 10.2-10.3（真实Lease/竞争）, 14.2, 19.4 |
+| AC-L11 | stale DELETING可安全重领 | managed-input-lifecycle：TTL与GC必须幂等且可重领 | 8.1, 9.3 |
+| AC-L12 | Adapter删除与上传按行锁串行 | managed-input-lifecycle：Adapter删除与上传创建串行化 | 8.4, 9.3, 25.3 |
+| AC-L13 | Adapter删除移交job/charge且只释放一次 | managed-input-lifecycle：Adapter删除与上传创建串行化 | 8.4-8.5, 9.3, 25.3 |
+| AC-E01 | Execution保存revision/error/超时/摘要 | execution-input-snapshot：Execution固化完整输入快照 | 10.2-10.3, 19.1, 25.4 |
+| AC-E02 | 文件摘要无可操作引用/路径 | execution-input-snapshot：Execution历史只暴露不可操作输入摘要 | 10.3, 17.2 |
+| AC-E03 | Execution.input/handle保持原JSON | execution-input-snapshot：Execution固化完整输入快照 | 2.1, 12.1-12.4, 14.2 |
+| AC-E04 | invalid Schedule不建Execution且推进未来点 | execution-input-snapshot：Schedule输入失效必须消费计划点而不热循环 | 2.5, 4.3, 18.2 |
+| AC-E05 | 输入修复要求停用/保存/重启且不补跑 | execution-input-snapshot：Schedule输入失效必须消费计划点而不热循环 | 2.5, 18.2 |
+| AC-E06 | 替换/删除/GC不影响既有active Execution | execution-input-snapshot：文件Execution使用运行期Lease固定具体集合 | 8.2（hook合同）, 10.2-10.3（真实Lease/竞争）, 14.2, 19.4, 25.3 |
+| AC-E07 | stale pending/running稳定终态并释放Lease | execution-input-snapshot：stale pending/running Execution在Control侧收敛 | 13.1-13.2, 14.3, 25.5 |
+| AC-E08 | 晚到Result不覆盖终态或重跑 | execution-input-snapshot：终态与晚到报告幂等 | 13.3, 14.3 |
+| AC-W01 | 二进制不进PG、payload无Control路径 | worker-input-protocol：TaskPayload不暴露存储路径 | 6.2, 10.4, 14.2 |
+| AC-W02 | Lease+Claim Token下载并复核size/hash | worker-input-protocol：Worker下载由Execution、Lease与Claim Token联合授权 | 11.1-11.4, 14.2 |
+| AC-W03 | v2 progress/result/download与cleanup分权Token | worker-input-protocol：v2 Claim签发分权Token | 10.5-10.6, 11.2, 14.3 |
+| AC-W04 | cleanup receipt deferred/completed幂等 | worker-input-protocol：Cleanup Receipt独立且幂等 | 11.6, 13.4, 14.3 |
+| AC-W05 | Workspace前原子私有journal并可恢复 | worker-input-protocol：Workspace创建前持久化私有清理日志 | 11.3, 11.6, 14.3 |
+| AC-W06 | 下载失败不启动Adapter并稳定错误 | worker-input-protocol：Worker在启动Adapter前完整准备输入 | 11.4, 14.3 |
+| AC-W07 | Python/JavaScript/Java Context可读文件 | worker-input-protocol：三语言Context提供稳定文件API | 12.2-12.4, 14.2 |
+| AC-W08 | 0444/0555仅best-effort防误写 | worker-input-protocol：Worker在启动Adapter前完整准备输入 | 11.4, 12.5-12.6 |
+| AC-W09 | 所有业务终态尝试清理且失败保留业务结果 | worker-input-protocol：同步Workspace清理具有硬预算 | 11.5, 14.3 |
+| AC-W10 | 独立receipt不修改业务结果 | execution-input-snapshot：业务结果与Workspace清理结果独立 | 13.4-13.5, 14.3 |
+| AC-W11 | 启动/周期孤儿清理不删依赖缓存 | worker-input-protocol：Worker重启与周期扫描安全治理孤儿Workspace | 11.6, 14.3 |
+| AC-C01 | Schedule/manual默认按规则迁移且冲突失败 | input-compatibility-rollout：基线数据迁移确定且可审计 | 1.3-1.4, 4.1, 19.1 |
+| AC-C02 | manual/Schedule旧输入兼容并在关闭后拒绝 | input-compatibility-rollout：旧manual输入兼容窗口/旧Schedule双向镜像 | 2.3-2.4, 4.2 |
+| AC-C03 | Worker v1/v2滚动且文件只给v2 | input-compatibility-rollout：Worker v1/v2滚动升级独立于文件flag | 10.4-10.5, 14.1, 14.4 |
+| AC-C04 | per-run override拒绝且发布说明含迁移 | adapter-input-config：所有Task运行入口复用同一输入解析合同 | 2.3, 4.2, 19.5 |
+| AC-C05 | Clone复制类型/JSON/retention不复制文件事实 | adapter-input-config：Adapter复制不共享文件资产 | 2.7, 17.3 |
+| AC-C06 | managed_files副本为空且需重传 | managed-input-web：Adapter复制页面说明文件不复制 | 17.3, 18.2 |
+| AC-C07 | 历史无下载/复用/恢复/再次运行 | managed-input-web：Execution详情按source只读展示快照 | 17.2, 18.2 |
+| AC-C08 | LocalFileArtifactStore单Control边界有测试文档 | input-compatibility-rollout：Compose明确持久卷与单Control边界 | 9.1, 19.4-19.5 |
+| AC-C09 | Wave A-D顺序、同分支、最终单PR | input-compatibility-rollout：Wave A-D顺序交付且不得拆成多PR | 0批次DAG, 4.4, 9.5, 14.6, 18.5, 19.6 |
+
+## 22. Round 1 独立审计修复
+
+- [x] 22.1 抽取不自行 commit 的 InputConfig 领域写入 helper，让兼容期旧 Schedule PUT 与新 API 共享完整锁序；回归测试验证 `managed_files→json` 原子解绑/READY→PENDING_DELETE/旧列镜像/revision，以及显式 `input:null` 与省略 input 的不同语义。
+- [x] 22.2 在上传 writer 按 monotonic 周期续租 ACTIVE reservation，并删除或收敛无真实调用者的公开 renew 合同；冻结时钟/慢流/过期/取消/扩容/断连测试验证续租不中断正常上传且失败无 `.part`、Blob、reservation 或 capacity 泄漏。
+- [x] 22.3 保持 Schedule `last_blocked_reason=input_invalid`，新增结构化 detail 并覆盖空集合/到期/损坏原因；只把已知单活跃唯一约束的 `IntegrityError` 映射为业务冲突，其余错误重新抛出，真实 PostgreSQL 测试验证游标只消费一次。
+- [x] 22.4 对 Artifact 与 deletion job 对齐删除状态/尝试/开始时间，增加连续失败告警阈值和管理员显式 retry；READY 删除要求 `expected_revision` 并走完整锁序，fresh/fixed-baseline/repeat migration 与失败注入验证 charge 只释放一次。
+- [x] 22.5 将 Worker mount name 改为 ordinal+受控扩展名并同步三语言/harness 校验；测试覆盖非法/未知扩展名、重复展示名、路径攻击以及 Python/JavaScript/Java 真实读取 XLS/XLSX/CSV。
+- [x] 22.6 把 v2 payload 完整校验前置到 journal/Workspace/进程副作用之前，Workspace mkdir 时写最小 marker/manifest，统一 canonical `/workspace-cleanup` client/文档路径，并要求 deferred Result 携带稳定 cleanup error code；崩溃点和非法 payload 测试证明无不可收敛目录或 Adapter 启动。
+- [x] 22.7 扩展 Managed Input capability 响应并让 Web 使用 `allow_manual_delete`、`max_custom_retention_seconds` 与服务端锁状态；验证 Schedule enabled/active 时仍可上传 STAGED，但保存/替换/READY 删除保持权威 409。
+- [x] 22.8 修复 Web 草稿状态：保存后保留未选择 STAGED，选择与恢复合并均阻止第九个文件，SPA 路由与浏览器关闭均提示；加强 revision conflict/显式 JSON null 测试，验证失败草稿和剩余 STAGED 不丢失。
+- [x] 22.9 恢复既有 Execution 业务日志下载并维持输入文件历史不可下载，补齐 managed_files clone 重新上传提示和固定时间断言；focused Vitest 验证权限、文案、下载文件名与历史摘要边界。
+- [x] 22.10 修正 E0 race fixture：治理方从非过期 READY 当前绑定出发，增加无治理 control，并让两个分支都真实读取/哈希文件；重复 PostgreSQL/Compose 竞争验证只能出现 Lease 先保护或治理先使 Execution 失败/重试。
+- [x] 22.11 更新中英文运维/API 文档：`expires_at NULL` 仅表示 pending/手动删除语义、downgrade 仅测试、capability endpoint、Worker protocol/env、删除告警/retry 和历史日志/输入下载边界；命令与链接检查通过。
+- [x] 22.12 运行受影响 backend focused、migration、Ruff/format/mypy 与 Web focused/lint/typecheck/test/build；任何本次或继承失败必须修复或明确 BLOCKED，不得提前勾选、提交或复用旧 E0 PASS。
+- [ ] 22.13 在全新隔离 Compose 重跑三语言、慢上传续租、Schedule invalid、删除失败/retry、Worker 崩溃恢复和 race Gate；随后对包含伴随 change 的新 Candidate 运行两个 OpenSpec strict、diff/密钥/绝对路径扫描、exact-SHA 证据与独立复审，20.2/20.3 在用户明确 PASS 前保持未勾选。
+
+## 23. Round 2 独立审计修复
+
+- [x] 23.1 在任何副作用前完整校验 v2 Worker payload，并为缺失 ID/Token、null timeout snapshot、非法 mount 增加 journal/Workspace/process 零调用回归。
+- [x] 23.2 为新建 Task Execution 写入 cleanup `pending`，让 schema/migration 接受该状态，并为 Lease 增加 `created_at`；更新 fresh/fixed-baseline migration 与模型测试。
+- [x] 23.3 保持 Schedule 顶层 `input_invalid` 和结构化具体 detail，只映射 Webhook 的 active-Execution 唯一约束；删除未使用的 Worker ID cleanup 校验分支并覆盖回归。
+- [x] 23.4 将 upload writer 改为 monotonic 周期续租并验证续租失败完整补偿；删除无调用者的 active upload-session recovery API，保留 STAGED refresh 恢复合同。
+- [x] 23.5 将删除失败告警阈值改为部署配置，并让受控文件扩展名由单一后端来源生成上传、Worker mount 及三语言 harness 合同。
+- [x] 23.6 修复 Web retention 插值/capability 失败重试、所有 STAGED 合并八文件上限与溢出可见删除，并让 Execution 日志下载名包含 Execution ID。
+- [x] 23.7 构造声明大小与实际解压大小不一致的 XLSX fixture 验证安全边界；仅在稳定复现绕过时修改解析实现，并记录接受或不接受结论。
+- [ ] 23.8 运行受影响 backend/Web focused、迁移、Ruff/format/mypy、Ant Design 固定版本 lint 与两个 OpenSpec strict；在代码冻结后重跑 22.13，旧证据不得复用，20.2/20.3 继续等待用户明确 PASS。
+
+## 24. Round 3 独立审计修复
+
+- [x] 24.1 统一 Artifact/deletion job 连续失败阈值：业务删除不得绕过阈值态，管理员 retry 只接受 thresholded `DELETE_FAILED`；真实 PostgreSQL focused 回归验证 backoff、Blob、charge、attempt 与状态不被提前改写。
+- [x] 24.2 严格解析 Worker `protocol_version`，在任何本地副作用前拒绝 bool/float/数字字符串和空白 language/code；保留缺失/null v1 与空 requirements 合同并通过零副作用 focused 测试。
+- [x] 24.3 capability 下发 `allowed_extensions`，Web 从其派生 accept/预校验/双语提示；拆分 capability 与 STAGED list 失败状态，仅对 managed_files 保存 fail-close，并通过 focused Vitest/typecheck/lint 验证 none/json 不受连带阻断。
+- [x] 24.4 固定公开 Execution snapshot 顶层键、记录锁定期替换与空 requirements 的不接受裁决，更新中英文运维说明并将 D3/E0/E1 旧收据明确标为 historical/superseded；两个 change 与全量 OpenSpec strict 均通过。
+- [ ] 24.5 完成受影响 backend/Web/迁移/浏览器/OpenSpec/安全发布 Gate；冻结、提交并对精确 SHA 复核后创建单一 PR，22.13/23.8/20.1-20.3 在各自事实完成前保持未勾选。
+
+## 25. PR #131 评论修复
+
+- [x] 25.1 修复上传 finalize 与请求取消竞争：受锁 outcome 决定正式 Blob 删除权，数据库补偿不确定时 fail-safe 保留正式对象；真实 PostgreSQL barrier 测试覆盖 finalize 先赢、abort 先赢、幂等残留清理与 `STAGED + missing Blob` 不可达。
+- [x] 25.2 为 multipart reader 增加总接收、Header、普通字段与 epilogue 字节预算，第二文件 Header 后立即拒绝；测试覆盖单 chunk 超长 Header、跨 chunk 总预算、无界普通字段/epilogue、第二文件不 drain、缺结束 boundary 有限终止及合法客户端回归。
+- [x] 25.3 在 Adapter stop-delete 的 pending 终态事务中先释放 Managed Input Lease，再移交并删除 Artifact 元数据；真实 PostgreSQL HTTP 回归验证无 FK 500、running Lease 保持及 deletion job/charge 后续治理。
+- [x] 25.4 抽取 Task/Webhook 共用的窄 Execution 生命周期初始化，保留 Webhook JSON ingress；回归验证 Webhook 新行快照完整、v2 payload 校验通过且部署设置变化不改既有快照。
+- [x] 25.5 在 Worker claim 增加 effective deadline SQL 预筛与锁后数据库时间终检；测试覆盖显式过期/等值、历史 NULL old/recent、过期不误报 Lease 409及 claim/reconciler PostgreSQL 竞争。
+- [ ] 25.6 运行受影响 backend focused、真实 PostgreSQL 并发、Ruff/format/mypy、全量 backend、两个 OpenSpec strict、diff/密钥/绝对路径扫描与 Compose smoke；全部通过后冻结新 exact SHA、提交推送至 PR #131 并请求独立复审，旧 `62f1454e` 证据保持 historical，20.1-20.3 继续等待真实 retained-app 与用户验收。

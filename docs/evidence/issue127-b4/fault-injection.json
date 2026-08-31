@@ -1,0 +1,19 @@
+{
+  "dispatch_id": "issue127-b4-gate-20260827-r1",
+  "status": "PASS",
+  "faults": {
+    "interrupted_upload": {"recovery": "PASS", "renew": "PASS", "abort_compensation": "PASS", "parts_after": 0, "reserved_after": 0},
+    "rename_then_db_failure": {"injected_commit_failure": true, "abort_compensation": "PASS", "parts_after": 0, "reserved_after": 0},
+    "reservation_ttl_race": {"race": "PASS", "terminal_state_consistent": true, "reserved_after": 0},
+    "gc_crash_after_claim": {"reclaim": "PASS", "deleted_once": true, "released_once": true},
+    "delete_failure": {"injected_store_failure": true, "retry": "PASS", "deleted_after_retry": true, "released_once": true},
+    "adapter_delete_competition": {"active_upload_delete_status": 409, "detach_status": 204, "job_processing": "PASS", "released_once": true}
+  },
+  "control_restart_after_faults": {
+    "stop_observed": "exited",
+    "restart_with_flag_on": {"health": "ok", "database": true, "managed_files_enabled": true},
+    "rollback_restart_with_flag_off": {"health": "ok", "database": true, "managed_files_enabled": false},
+    "status": "PASS"
+  },
+  "leak_checks": {"partial_parts": 0, "reserved_bytes": 0, "quarantine_entries": 0}
+}

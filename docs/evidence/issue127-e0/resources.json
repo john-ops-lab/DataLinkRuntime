@@ -1,0 +1,79 @@
+{
+  "schema": "issue127-e0-resources-v1",
+  "project": "dlr-i127-e0-r2-141",
+  "ao_session": "datalinkruntime-141-e0-r2",
+  "ports": {
+    "web": 8925,
+    "account": 9025
+  },
+  "containers": [
+    {
+      "name": "dlr-i127-e0-r2-141-control-1",
+      "service": "control",
+      "image": "dlr-i127-e0-r2-141-control:latest",
+      "image_id": "fd5e3dac7595",
+      "status": "running",
+      "health": "healthy",
+      "ao_session": "datalinkruntime-141-e0-r2"
+    },
+    {
+      "name": "dlr-i127-e0-r2-141-worker-1",
+      "service": "worker",
+      "image": "dlr-i127-e0-r2-141-worker:latest",
+      "image_id": "9770559ed749",
+      "status": "running",
+      "health": "healthy",
+      "ao_session": "datalinkruntime-141-e0-r2"
+    },
+    {
+      "name": "dlr-i127-e0-r2-141-web-1",
+      "service": "web",
+      "image": "dlr-i127-e0-r2-141-web:latest",
+      "image_id": "8eb2270373ad",
+      "status": "running",
+      "health": "healthy",
+      "ao_session": "datalinkruntime-141-e0-r2"
+    },
+    {
+      "name": "dlr-i127-e0-r2-141-account-web-1",
+      "service": "account-web",
+      "image": "dlr-i127-e0-r2-141-account-web:latest",
+      "image_id": "8eb2270373ad",
+      "status": "running",
+      "health": "healthy",
+      "ao_session": "datalinkruntime-141-e0-r2"
+    },
+    {
+      "name": "dlr-i127-e0-r2-141-postgres-1",
+      "service": "postgres",
+      "image": "dlr-i127-e0-r2-141-postgres:latest",
+      "image_id": "cb6a0f6d2208",
+      "status": "running",
+      "health": "healthy",
+      "ao_session": "datalinkruntime-141-e0-r2"
+    }
+  ],
+  "volumes": [
+    "dlr-i127-e0-r2-141_dlr_artifact_store",
+    "dlr-i127-e0-r2-141_dlr_pg_data",
+    "dlr-i127-e0-r2-141_dlr_worker_journal",
+    "dlr-i127-e0-r2-141_dlr_worker_runtime"
+  ],
+  "networks": [
+    "dlr-i127-e0-r2-141_default"
+  ],
+  "images": [
+    "dlr-i127-e0-r2-141-control:latest",
+    "dlr-i127-e0-r2-141-worker:latest",
+    "dlr-i127-e0-r2-141-web:latest",
+    "dlr-i127-e0-r2-141-account-web:latest",
+    "dlr-i127-e0-r2-141-postgres:latest"
+  ],
+  "artifact_store_writer": "control only",
+  "cleanup": {
+    "intermediate_owned_resources_removed": true,
+    "retained_project_and_resources": true,
+    "unrelated_projects_touched": false
+  },
+  "human_acceptance": "待人工验收"
+}

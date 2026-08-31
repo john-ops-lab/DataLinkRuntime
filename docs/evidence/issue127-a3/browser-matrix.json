@@ -1,0 +1,785 @@
+{
+  "schema": "issue127-a3-browser-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "acceptance_mode": "Playwright/Chromium auxiliary; AO Browser login interaction excluded",
+  "toolchain": {
+    "package_lock_sha256_worker_and_canonical": "05de7aeb5b2b150d2621e1e73907f9f79eb532d93a70193bbbe1d529f7d61688",
+    "playwright": "@playwright/test 1.62.1",
+    "browser": "chromium",
+    "browser_version": "151.0.7922.34"
+  },
+  "cases": [
+    {
+      "locale": "zh-CN",
+      "width": 1280,
+      "height": 720,
+      "screenshot": "screenshots/input-object-zh-CN-1280.png",
+      "json_top_level_values": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
+      "revisions_seen": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "draft_preserved_after_mode_switch": true,
+      "revision_conflict": {
+        "status": 409,
+        "draft_preserved": true,
+        "revision_preserved": true
+      },
+      "run_now": {
+        "status": 202,
+        "body_shape": "empty_json_object",
+        "input_field_present": false
+      },
+      "source_cards": {
+        "count": 4,
+        "all_focusable": true,
+        "managed_files_disabled": true,
+        "remote_files_disabled": true
+      },
+      "diagnostics": {
+        "console_errors": 0,
+        "expected_console_errors": 1,
+        "page_errors": 0,
+        "unexpected_http_errors": 0,
+        "unknown_requests": 0,
+        "file_requests": 0
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "request_metadata": [
+        {
+          "method": "GET",
+          "path": "/api/locale",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/admin/verify",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/locale",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/health",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/workers",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-config",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions/10",
+          "status": 200
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule",
+          "status": 200
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 409,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/1/executions",
+          "status": 202,
+          "body_shape": "empty_json_object"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/31/events",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/31",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1",
+          "status": 200
+        }
+      ],
+      "raw_translation_key_visible": false
+    },
+    {
+      "locale": "zh-CN",
+      "width": 1920,
+      "height": 1080,
+      "screenshot": "screenshots/input-object-zh-CN-1920.png",
+      "json_top_level_values": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
+      "revisions_seen": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "draft_preserved_after_mode_switch": true,
+      "revision_conflict": {
+        "status": 409,
+        "draft_preserved": true,
+        "revision_preserved": true
+      },
+      "run_now": {
+        "status": 202,
+        "body_shape": "empty_json_object",
+        "input_field_present": false
+      },
+      "source_cards": {
+        "count": 4,
+        "all_focusable": true,
+        "managed_files_disabled": true,
+        "remote_files_disabled": true
+      },
+      "diagnostics": {
+        "console_errors": 0,
+        "expected_console_errors": 1,
+        "page_errors": 0,
+        "unexpected_http_errors": 0,
+        "unknown_requests": 0,
+        "file_requests": 0
+      },
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "request_metadata": [
+        {
+          "method": "GET",
+          "path": "/api/locale",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/admin/verify",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/locale",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/health",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/workers",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-config",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions/10",
+          "status": 200
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule",
+          "status": 200
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 409,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/1/executions",
+          "status": 202,
+          "body_shape": "empty_json_object"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/31/events",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/31",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1",
+          "status": 200
+        }
+      ],
+      "raw_translation_key_visible": false
+    },
+    {
+      "locale": "en",
+      "width": 1280,
+      "height": 720,
+      "screenshot": "screenshots/input-object-en-1280.png",
+      "json_top_level_values": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
+      "revisions_seen": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "draft_preserved_after_mode_switch": true,
+      "revision_conflict": {
+        "status": 409,
+        "draft_preserved": true,
+        "revision_preserved": true
+      },
+      "run_now": {
+        "status": 202,
+        "body_shape": "empty_json_object",
+        "input_field_present": false
+      },
+      "source_cards": {
+        "count": 4,
+        "all_focusable": true,
+        "managed_files_disabled": true,
+        "remote_files_disabled": true
+      },
+      "diagnostics": {
+        "console_errors": 0,
+        "expected_console_errors": 1,
+        "page_errors": 0,
+        "unexpected_http_errors": 0,
+        "unknown_requests": 0,
+        "file_requests": 0
+      },
+      "overflow": {
+        "inner_width": 1280,
+        "document_scroll_width": 1280,
+        "body_scroll_width": 1280
+      },
+      "request_metadata": [
+        {
+          "method": "GET",
+          "path": "/api/locale",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/admin/verify",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/locale",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/health",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/workers",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-config",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions/10",
+          "status": 200
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule",
+          "status": 200
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 409,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/1/executions",
+          "status": 202,
+          "body_shape": "empty_json_object"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/31/events",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/31",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1",
+          "status": 200
+        }
+      ],
+      "raw_translation_key_visible": false
+    },
+    {
+      "locale": "en",
+      "width": 1920,
+      "height": 1080,
+      "screenshot": "screenshots/input-object-en-1920.png",
+      "json_top_level_values": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
+      "revisions_seen": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "draft_preserved_after_mode_switch": true,
+      "revision_conflict": {
+        "status": 409,
+        "draft_preserved": true,
+        "revision_preserved": true
+      },
+      "run_now": {
+        "status": 202,
+        "body_shape": "empty_json_object",
+        "input_field_present": false
+      },
+      "source_cards": {
+        "count": 4,
+        "all_focusable": true,
+        "managed_files_disabled": true,
+        "remote_files_disabled": true
+      },
+      "diagnostics": {
+        "console_errors": 0,
+        "expected_console_errors": 1,
+        "page_errors": 0,
+        "unexpected_http_errors": 0,
+        "unknown_requests": 0,
+        "file_requests": 0
+      },
+      "overflow": {
+        "inner_width": 1920,
+        "document_scroll_width": 1920,
+        "body_scroll_width": 1920
+      },
+      "request_metadata": [
+        {
+          "method": "GET",
+          "path": "/api/locale",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/auth/admin/verify",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/locale",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/health",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/workers",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/input-config",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/versions/10",
+          "status": 200
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1/schedule",
+          "status": 200
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 409,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "PUT",
+          "path": "/api/adapters/1/input-config",
+          "status": 200,
+          "body_shape": "input_config_payload"
+        },
+        {
+          "method": "POST",
+          "path": "/api/adapters/1/executions",
+          "status": 202,
+          "body_shape": "empty_json_object"
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/31/events",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/executions/31",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/adapters/1",
+          "status": 200
+        }
+      ],
+      "raw_translation_key_visible": false
+    }
+  ]
+}

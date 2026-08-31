@@ -1,0 +1,30 @@
+{
+  "dispatch_id": "issue127-b4-gate-20260827-r1",
+  "status": "PASS",
+  "related_issue127_tests": "84 passed, 1 warning",
+  "full_backend_tests": {
+    "result": "878 passed, 1 deselected, 8 warnings",
+    "deselected": "test_repeated_upgrade_and_test_only_downgrade",
+    "status": "PASS_WITH_PROHIBITED_TEST_EXCLUDED"
+  },
+  "static": {
+    "ruff_check": "PASS: All checks passed!",
+    "ruff_format_check": "PASS: 153 files already formatted",
+    "mypy": "PASS: Success: no issues found in 100 source files",
+    "compileall": "PASS",
+    "openspec_change_strict": "PASS",
+    "openspec_all_strict": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "compose_smoke": {
+    "command": "scripts/compose-smoke.sh",
+    "status": "PASS",
+    "exit_code": 0,
+    "fresh_alembic_head": "PASS",
+    "default_and_dns_config": "PASS",
+    "service_health": "PASS",
+    "authentication_boundaries": "PASS",
+    "fake_provider_and_ima": "PASS",
+    "sensitive_log_assertions": "PASS"
+  }
+}

@@ -4,6 +4,7 @@ export const SETTINGS_CATEGORIES = [
   "package-sources",
   "ai-model",
   "knowledge-sources",
+  "managed-input",
 ] as const;
 
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];

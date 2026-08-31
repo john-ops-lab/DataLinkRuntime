@@ -1,5 +1,31 @@
 {
   "namespace": "适配器",
+  "input": {
+    "objectTitle": "输入对象",
+    "sources": {
+      "none": {
+        "title": "无输入",
+        "description": "不向任务传入额外数据。",
+        "status": "默认"
+      },
+      "json": {
+        "title": "JSON",
+        "description": "保存一个 JSON 顶层值：对象、数组、字符串、数字、布尔值或 null。",
+        "status": "可配置"
+      },
+      "managedFiles": {
+        "title": "托管文件",
+        "description": "由平台生命周期管理的文件输入。",
+        "status": "可用",
+        "disabled": "尚未启用"
+      },
+      "remoteFiles": {
+        "title": "远端文件",
+        "description": "来自远端来源的文件输入。",
+        "disabled": "开发中"
+      }
+    }
+  },
   "types": {
     "task": "任务",
     "webhook": "Webhook",
@@ -133,6 +159,7 @@
     "ok": "复制",
     "description": "将复制当前代码、依赖、运行配置（含单次执行超时）、凭据引用和运行节点。",
     "historyNote": "执行历史不会复制；新适配器创建后保持停止，不会自动运行。",
+    "inputNote": "输入配置会复制，但托管文件本体不会复制；请在新适配器中重新上传并保存。",
     "name": "新适配器名称"
   },
   "save": {

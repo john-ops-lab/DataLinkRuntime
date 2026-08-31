@@ -1,0 +1,20 @@
+{
+  "schema": "issue127-a3-ao-browser-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "acceptance_mode": "observation only; not product pass/fail",
+  "login_page_remained_visible_after_click": true,
+  "known_interaction_limitation": true,
+  "network_capture": {
+    "metadata_only": true,
+    "stopped": true,
+    "cleared": true,
+    "request_count": 0
+  },
+  "errors": [],
+  "console": {
+    "error_count": 0,
+    "info_count": 1,
+    "info_kind": "i18next"
+  },
+  "raw_headers_bodies_archived": false
+}

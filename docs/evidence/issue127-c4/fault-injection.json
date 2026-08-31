@@ -1,0 +1,44 @@
+{
+  "dispatch_id": "issue127-c4-gate-20260828-r1",
+  "status": "PASS",
+  "fresh_test_suite": {
+    "scope": "Issue #127 C0, C1 and C3 recovery/fault tests",
+    "result": "59 passed",
+    "covered": [
+      "claim response replay and stale convergence",
+      "download interruption and SHA-256 tamper",
+      "progress/result claim-token authority",
+      "cleanup-token authority and idempotent receipt",
+      "cleanup attempt/total hard budgets",
+      "journal recovery and orphan cleanup",
+      "late progress/result stability"
+    ]
+  },
+  "late_report_probe": {
+    "status": "PROBE_COMPLETE",
+    "business_sha_unchanged": true,
+    "swapped_progress": "422 execution_claim_token_invalid",
+    "swapped_result": "422 execution_claim_token_invalid",
+    "swapped_cleanup": "422 execution_cleanup_token_invalid",
+    "cleanup_repeat": "completed",
+    "receipt_sha256": "2530d997466aee96ea05faf9be89e2907fcdc42fac35f6d4dccaaf710c4ca3a5"
+  },
+  "worker_crash_probe": {
+    "status": "PROBE_COMPLETE",
+    "same_container_new_process": true,
+    "adapter_start_delta": 1,
+    "business_status": "timeout",
+    "cleanup_initially_observed": "deferred",
+    "cleanup_after_bounded_poll": "completed",
+    "lease_count_after": 0,
+    "workspace_exists_after": false,
+    "journal_exists_after": false,
+    "interim_raw_receipt_sha256": "8c038a48268d9a87a1e3611c8969b43286eb6b92319c2237acde140f4a9f14ff"
+  },
+  "archive_policy": {
+    "interim_raw_receipt_copied": false,
+    "reason": "it contained host/runtime paths and an interim pre-convergence snapshot",
+    "tokens_copied": false,
+    "raw_logs_copied": false
+  }
+}

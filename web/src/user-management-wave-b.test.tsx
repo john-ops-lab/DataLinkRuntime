@@ -5,6 +5,7 @@ import App from "./App";
 import { setAuthToken } from "./api";
 import { applySystemLocale } from "./i18n";
 import UserManagementDrawer from "./components/UserManagementDrawer";
+import { LOGIN_LOCALE_STORAGE_KEY } from "./login-locale";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -38,6 +39,7 @@ const users = [
 beforeEach(() => {
   window.__DLR_ENTRY_MODE__ = "token";
   document.cookie = "dlr_account_csrf=csrf-test-token; path=/";
+  window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
   setAuthToken("test-superadmin-token");
   vi.stubGlobal("confirm", vi.fn(() => true));
 });
@@ -45,6 +47,7 @@ beforeEach(() => {
 afterEach(async () => {
   window.__DLR_ENTRY_MODE__ = "token";
   document.cookie = "dlr_account_csrf=; Max-Age=0; path=/";
+  window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
   setAuthToken(null);
   vi.unstubAllGlobals();
   await applySystemLocale("zh-CN");
@@ -95,6 +98,9 @@ it("renders bilingual user management and never displays a submitted password", 
 
 it("shows the ACL-scoped business console while keeping system management hidden", async () => {
   const requests: string[] = [];
+  // A saved Chinese login preference must not override the authenticated
+  // account Console's backend-owned English locale.
+  window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "zh-CN");
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     requests.push(url);
@@ -123,6 +129,7 @@ it("shows the ACL-scoped business console while keeping system management hidden
   window.__DLR_ENTRY_MODE__ = "account";
   render(<App />);
   await screen.findByTestId("account-principal");
+  await waitFor(() => expect(screen.getByTestId("control-status").textContent).toContain("Control service healthy"));
   expect(screen.queryByTestId("account-profile")).toBeNull();
   expect(screen.queryByTestId("user-management")).toBeNull();
   expect(screen.queryByTestId("system-settings")).toBeNull();

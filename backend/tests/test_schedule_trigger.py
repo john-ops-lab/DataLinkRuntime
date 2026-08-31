@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
 from dlr.control.models import AdapterSchedule, Execution, Worker
+from dlr.control.services import worker_availability
 from dlr.control.services.schedule import latest_due_point, next_run_after, scheduler_tick
 from test_adapters import create_adapter, save_version
 from test_workers import register_worker
@@ -331,6 +332,7 @@ def test_active_schedule_execution_rejects_manual_run_once(
 def test_offline_worker_holds_due_point_then_recovers_once(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter, _, worker = setup_task(api_client, "schedule-offline")
     assert put_schedule(api_client, adapter["id"]).status_code == 200
@@ -344,11 +346,13 @@ def test_offline_worker_holds_due_point_then_recovers_once(
         )
     with session_factory() as session:
         assert scheduler_tick(session, now=BASE) == 0
+    monkeypatch.setattr(worker_availability, "current_time", lambda _session: BASE)
+    recovered_at = BASE
     with session_factory.begin() as session:
         session.execute(
             update(Worker)
             .where(Worker.id == worker["id"])
-            .values(last_heartbeat=BASE, status="online")
+            .values(last_heartbeat=recovered_at, status="online")
         )
     with session_factory() as session:
         assert scheduler_tick(session, now=BASE) == 1

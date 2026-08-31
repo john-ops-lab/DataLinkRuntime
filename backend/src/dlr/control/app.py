@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from dlr.common.config import settings, validate_deployment_configuration
 from dlr.common.platform_logging import configure_platform_logging
 from dlr.control import db
 from dlr.control.ai.tool_audit import configure_ai_tool_audit_logging
@@ -23,8 +24,10 @@ from dlr.control.api import (
     events,
     executions,
     health,
+    input_configs,
     knowledge_sources,
     locale,
+    managed_input,
     package_sources,
     schedules,
     users,
@@ -33,6 +36,8 @@ from dlr.control.api import (
 )
 from dlr.control.security import require_csrf
 from dlr.control.services import accounts as account_service
+from dlr.control.services.execution_reconciler import stale_execution_reconciler_loop
+from dlr.control.services.managed_input_gc import artifact_gc_loop, orphan_audit_loop
 from dlr.control.services.retention import retention_loop
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
@@ -67,30 +72,43 @@ async def _demo_bootstrap_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run the M5.2 lightweight Schedule polling loop while the app serves.
+    """Run lightweight Schedule, retention, GC and stale Execution loops.
 
-    PostgreSQL is the only scheduling state source; the loop is a plain
-    background task and no external scheduler framework is introduced.
+    PostgreSQL is the only Control-plane state source; these loops are plain
+    background tasks and no external scheduler framework is introduced.
     """
     bootstrap_task = asyncio.create_task(_demo_bootstrap_loop())
     task = asyncio.create_task(scheduler_loop())
     retention_task = asyncio.create_task(retention_loop())
+    artifact_gc_task = asyncio.create_task(artifact_gc_loop())
+    orphan_audit_task = asyncio.create_task(orphan_audit_loop())
+    stale_execution_task = asyncio.create_task(stale_execution_reconciler_loop())
     try:
         yield
     finally:
         task.cancel()
         bootstrap_task.cancel()
         retention_task.cancel()
+        artifact_gc_task.cancel()
+        orphan_audit_task.cancel()
+        stale_execution_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         with contextlib.suppress(asyncio.CancelledError):
             await bootstrap_task
         with contextlib.suppress(asyncio.CancelledError):
             await retention_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await artifact_gc_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await orphan_audit_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await stale_execution_task
 
 
 def create_app() -> FastAPI:
     """Create the Control Node FastAPI application."""
+    validate_deployment_configuration(settings)
     configure_platform_logging("control")
     configure_ai_tool_audit_logging()
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
@@ -159,6 +177,29 @@ def create_app() -> FastAPI:
                     }
                 },
             )
+        if request.url.path.startswith("/api/adapters/") and request.url.path.endswith(
+            "/input-config"
+        ):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "input_invalid",
+                        "message": "Input configuration request is invalid",
+                        "params": {"reason": "request_validation"},
+                    }
+                },
+            )
+        if request.url.path == "/api/system/managed-input-settings":
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "managed_input_settings_invalid",
+                        "message": "Managed Input settings are invalid",
+                    }
+                },
+            )
         if request.url.path.startswith("/api/auth/account/") or request.url.path.startswith(
             "/api/users"
         ):
@@ -179,6 +220,11 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(adapters.router)
+    app.include_router(input_configs.router)
+    app.include_router(managed_input.router)
+    app.include_router(managed_input.capability_router)
+    app.include_router(managed_input.upload_router)
+    app.include_router(managed_input.adapter_router)
     app.include_router(ai.router)
     app.include_router(ai.adapter_router)
     app.include_router(credentials.router)

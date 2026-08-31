@@ -1,0 +1,17 @@
+{
+  "schema": "issue127-e0-worker-crash-recovery-v1",
+  "project": "dlr-i127-e0-r2-141",
+  "adapter_id": 8,
+  "execution_id": 17,
+  "worker_id": 1,
+  "worker_name": "worker-1",
+  "crash_signal": "SIGKILL",
+  "running_before_crash": true,
+  "reconciled_status": "failed",
+  "reconciled_error_code": "worker_lost",
+  "worker_healthy_after_restart": true,
+  "worker_online_after_restart": true,
+  "active_execution_after_recovery": false,
+  "machine_gate": "PASS",
+  "human_acceptance": "待人工验收"
+}

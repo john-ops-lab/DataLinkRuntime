@@ -1,0 +1,42 @@
+{
+  "schema": "issue127-e0-migration-v1",
+  "database_engine": "PostgreSQL 16",
+  "temporary_runner": {
+    "container": "dlr-i127-e0-141-pg-migration-final",
+    "session_label": "datalinkruntime-141-e0",
+    "pg_isready": "PASS"
+  },
+  "focused_command": "cd backend && DATABASE_URL=postgresql+psycopg://<anonymous>@localhost:15433/postgres uv run --frozen --project . pytest -q tests/test_migration_issue127_a0.py tests/test_migration_issue127_b0.py",
+  "focused_result": "11 passed, 1 warning in 3.87s",
+  "fresh_full_alembic_command": "cd backend && DATABASE_URL=postgresql+psycopg://<anonymous>@localhost:15433/dlr_i127_e0_141_full uv run --frozen --project . alembic upgrade head",
+  "fresh_full_alembic_result": "PASS; all revisions 0001 through 0029 applied",
+  "fresh_schema_facts": {
+    "alembic_head": "0029_issue127_c0_exec_lease",
+    "adapter_input_configs": 0,
+    "managed_input_settings": 1,
+    "managed_input_capacity": 1,
+    "legacy_adapter_schedules_input_column": true,
+    "managed_input_check_constraints_count": 19
+  },
+  "fixed_base_backfill": {
+    "baseline": "0025_default_ai_tools_enabled",
+    "fixtures": {"manual_task": true, "scheduled_task": true, "webhook": true},
+    "backfilled_task_adapters": 2,
+    "source_type_counts": {"json": 2},
+    "manual_input_default": {},
+    "scheduled_input_mirror_unchanged": true,
+    "webhook_input_config_absent": true,
+    "legacy_schedule_input_column_retained": true,
+    "revision": 1
+  },
+  "repeat_and_conflict": {
+    "repeat_backfill_count_stable": true,
+    "repeat_inserted_count": 0,
+    "duplicate_schedule_fixture": "PASS/fail-fast",
+    "orphan_schedule_fixture": "PASS/fail-fast",
+    "invalid_source_fixture": "PASS/fail-fast",
+    "existing_input_config_conflict_fixture": "PASS/fail-fast"
+  },
+  "machine_gate": "PASS",
+  "human_acceptance": "待人工验收"
+}

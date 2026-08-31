@@ -1,0 +1,150 @@
+{
+  "schema": "issue127-a3-backend-evidence-v1",
+  "source_candidate": "a910b832dbea6ff330f9440c7a0ce412ffb99dbe",
+  "reviewed_candidate": "718b79d6fa00c661c27bd5c7e970e98e238fc028",
+  "full_container_diagnostic": {
+    "passed": 792,
+    "failed": 15,
+    "warnings": 8,
+    "verdict": "FAIL diagnostic only; not reported as green",
+    "product_code_changed_during_run": false,
+    "classification_summary": {
+      "repo_not_mounted_for_REPO_ROOT": 5,
+      "node_or_java_missing_from_fixed_python_runner": 5,
+      "fixture_current_head_or_legacy_schema_mismatch": 3,
+      "fixture_clock_mismatch": 1,
+      "unrelated_existing_log_assertion_mismatch": 1
+    }
+  },
+  "failures": [
+    {
+      "test": "tests/test_ai_tools.py::test_tool_logs_contain_only_safe_metadata",
+      "class": "unrelated_existing_log_assertion_mismatch",
+      "reason": "caplog also collected the JSON audit record; the test requires duration_ms= text while that record carries JSON duration_ms metadata; no A3 code change."
+    },
+    {
+      "test": "tests/test_m5_6_wave2_c.py::test_all_three_runtimes_localize_platform_dependency_lines_without_translating_user_logs",
+      "class": "fixed_runner_runtime_missing",
+      "reason": "the Python-only fixed test-runner image has no node executable for the JavaScript runtime case and no Java runtime for the Java case."
+    },
+    {
+      "test": "tests/test_m5_6_wave3_d_docs.py::test_required_bilingual_docs_exist_in_pairs",
+      "class": "fixed_runner_repo_not_mounted",
+      "reason": "tests were mounted at /app/tests, so REPO_ROOT resolved to the container root and repository README files were absent."
+    },
+    {
+      "test": "tests/test_m5_6_wave3_d_docs.py::test_readme_mutual_language_links_are_prominent",
+      "class": "fixed_runner_repo_not_mounted",
+      "reason": "same missing repository-root mount; README lookup resolved outside the worktree."
+    },
+    {
+      "test": "tests/test_m5_6_wave3_d_docs.py::test_legacy_readme_zh_cn_redirects_to_current_readmes",
+      "class": "fixed_runner_repo_not_mounted",
+      "reason": "same missing repository-root mount; README.zh-CN.md lookup resolved outside the worktree."
+    },
+    {
+      "test": "tests/test_m5_6_wave3_d_docs.py::test_doc_pair_heading_structure_is_aligned",
+      "class": "fixed_runner_repo_not_mounted",
+      "reason": "same missing repository-root mount prevented paired documentation reads."
+    },
+    {
+      "test": "tests/test_m5_6_wave3_d_docs.py::test_relative_markdown_links_resolve",
+      "class": "fixed_runner_repo_not_mounted",
+      "reason": "same missing repository-root mount prevented relative-link resolution from the worktree."
+    },
+    {
+      "test": "tests/test_migration_m5_4_1.py::test_fresh_schema_has_task_run_mode_and_active_execution_contract",
+      "class": "fixture_current_head_mismatch",
+      "reason": "shared test_engine upgrades to current head 0027, while this older assertion still requires revision 0025; the A3 migration test passed separately."
+    },
+    {
+      "test": "tests/test_migration_m5_4_3.py::test_legacy_path_survives_upgrade_and_remains_stoppable_and_restartable",
+      "class": "fixture_legacy_schema_mismatch",
+      "reason": "fixture stops at legacy revision 0022 while the current ORM selects A1 execution columns, producing UndefinedColumn executions.input_source_type; not introduced by A3."
+    },
+    {
+      "test": "tests/test_migration_m5_5_9.py::test_fresh_schema_has_active_only_name_uniqueness",
+      "class": "fixture_current_head_mismatch",
+      "reason": "shared test_engine reports current head 0027 while this older assertion still requires revision 0025."
+    },
+    {
+      "test": "tests/test_multilang_runtime.py::test_javascript_sync_async_config_secret_logs_and_output",
+      "class": "fixed_runner_runtime_missing",
+      "reason": "fixed Python runner has no node executable; host toolchain rerun passed."
+    },
+    {
+      "test": "tests/test_multilang_runtime.py::test_javascript_exception_invalid_output_timeout_and_cancel",
+      "class": "fixed_runner_runtime_missing",
+      "reason": "fixed Python runner has no node executable; host toolchain rerun passed."
+    },
+    {
+      "test": "tests/test_multilang_runtime.py::test_java_compile_run_context_secret_logs_and_output",
+      "class": "fixed_runner_runtime_missing",
+      "reason": "fixed Python runner has no Java runtime; host toolchain rerun passed."
+    },
+    {
+      "test": "tests/test_multilang_runtime.py::test_java_compile_error_runtime_error_timeout_and_cancel",
+      "class": "fixed_runner_runtime_missing",
+      "reason": "fixed Python runner has no Java runtime; host toolchain rerun passed."
+    },
+    {
+      "test": "tests/test_schedule_trigger.py::test_offline_worker_holds_due_point_then_recovers_once",
+      "class": "fixture_clock_mismatch",
+      "reason": "the test freezes BASE to the prior date while the container database clock is current, so the restored heartbeat remains offline; host schedule rerun passed."
+    }
+  ],
+  "replacement_green": [
+    {
+      "scope": "A0/A1/migration",
+      "result": "47 passed, 1 warning",
+      "toolchain": "host locked uv, backend cwd, session PostgreSQL"
+    },
+    {
+      "scope": "schedule/execution/cancel/multilang",
+      "result": "56 passed, 1 warning",
+      "toolchain": "host locked uv with Node 23 and Java 21"
+    },
+    {
+      "scope": "Ruff/format/mypy",
+      "result": "Ruff pass; 138 files formatted; mypy 90 source files pass",
+      "toolchain": "fixed dev-deps runner"
+    },
+    {
+      "scope": "complete backend pytest after repair",
+      "result": "807 passed, 8 warnings",
+      "toolchain": "host locked uv, backend cwd, session PostgreSQL"
+    }
+  ],
+  "repair": {
+    "review_run_id": "5ade9c4e-d374-4e1e-be60-c920b967cd81",
+    "parent_candidate": "718b79d6fa00c661c27bd5c7e970e98e238fc028",
+    "minimal_test_fixes": [
+      "tests/test_migration_m5_4_1.py: fresh-schema head assertion now expects 0027_issue127_a1_execution_input",
+      "tests/test_migration_m5_4_3.py: legacy Webhook fixture upgrades to current head 0027 before ORM assertions",
+      "tests/test_migration_m5_5_9.py: fresh-schema head assertion now expects 0027_issue127_a1_execution_input",
+      "tests/test_schedule_trigger.py: recovery heartbeat uses a fresh UTC timestamp in the long full-suite fixture",
+      "tests/test_ai_tools.py: caplog assertion selects ordinary dlr.ai.tools lines; JSON audit records remain covered by test_ai_tool_audit.py"
+    ],
+    "pre_final_host_regression": {
+      "passed": 806,
+      "failed": 1,
+      "warnings": 8,
+      "failure": "tests/test_ai_tools.py::test_tool_logs_contain_only_safe_metadata; existing text-log assertion also captured the JSON audit logger record"
+    },
+    "full_host_pytest": {
+      "command": "cd backend && DLR_PLATFORM_LOG_ROOT=<scoped local root> DATABASE_URL=<anonymous local PostgreSQL> uv run --frozen --project . pytest -q",
+      "passed": 807,
+      "failed": 0,
+      "warnings": 8,
+      "duration": "163.85s",
+      "result": "PASS"
+    },
+    "product_code_changed": false,
+    "product_failure": false
+  },
+  "diff_check": {
+    "command": "git diff --check",
+    "result": "PASS"
+  },
+  "a3_product_failure": false
+}

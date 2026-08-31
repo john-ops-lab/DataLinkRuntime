@@ -1,0 +1,26 @@
+{
+  "dispatch_id": "issue127-c4-gate-20260828-r1",
+  "status": "PASS",
+  "projects": [
+    "dlr_i127_c4_recovery1",
+    "dlr_i127_c4_final_smoke",
+    "dlr-i127-c4-final-smoke"
+  ],
+  "cleanup": {
+    "application_containers_remaining": 0,
+    "named_test_volumes_remaining": 0,
+    "test_networks_remaining": 0,
+    "project_image_tags_remaining": 0,
+    "status": "PASS"
+  },
+  "ownership_basis": [
+    "recovery containers carried ao.session=datalinkruntime-141",
+    "final-smoke resources used a dedicated C4 smoke session",
+    "cleanup targeted only the three exact Compose project names",
+    "only exact C4 final-smoke and temporary Web-test image tags were removed"
+  ],
+  "retained_for_human_traceability": [
+    "temporary sanitized and raw C4 receipts under the session-owned /tmp evidence root"
+  ],
+  "shared_or_unrelated_resources_touched": false
+}

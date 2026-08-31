@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ExecutionCreate(BaseModel):
@@ -35,6 +35,17 @@ class ExecutionResponse(BaseModel):
     status: str
     cancel_requested: bool
     input: Any
+    input_source_type: str
+    input_config_revision: int
+    input_snapshot: dict[str, Any]
+    timeout_seconds_snapshot: int | None = None
+    recovery_grace_seconds_snapshot: int | None = None
+    workspace_cleanup_attempt_timeout_seconds_snapshot: int | None = None
+    workspace_cleanup_total_timeout_seconds_snapshot: int | None = None
+    claim_deadline_at: datetime | None = None
+    execution_deadline_at: datetime | None = None
+    workspace_cleanup_status: Literal["pending", "completed", "deferred"] | None = None
+    workspace_cleanup_error_code: str | None = None
     output: Any = None
     output_size: int | None
     output_truncated: bool
@@ -44,6 +55,7 @@ class ExecutionResponse(BaseModel):
     stderr: str
     stderr_truncated: bool
     error: str | None
+    error_code: str | None
     locale: str
     created_at: datetime
     started_at: datetime | None
@@ -68,6 +80,19 @@ class ExecutionResultReport(BaseModel):
     stderr: str = ""
     stderr_truncated: bool = False
     error: str | None = None
+    error_code: str | None = Field(default=None, max_length=64)
+    workspace_cleanup_status: Literal["completed", "deferred"] | None = None
+    workspace_cleanup_error_code: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_workspace_cleanup_result(self) -> "ExecutionResultReport":
+        """Keep cleanup state machine values stable and unambiguous."""
+        if self.workspace_cleanup_status == "deferred":
+            if self.workspace_cleanup_error_code != "workspace_cleanup_failed":
+                raise ValueError("deferred workspace cleanup requires workspace_cleanup_failed")
+        elif self.workspace_cleanup_error_code is not None:
+            raise ValueError("workspace cleanup error code requires deferred status")
+        return self
 
 
 class ProgressReport(BaseModel):
@@ -79,6 +104,14 @@ class ProgressReport(BaseModel):
 
     stdout_chunk: str = ""
     stderr_chunk: str = ""
+
+
+class WorkspaceCleanupReceipt(BaseModel):
+    """C0 wire shape for the later deferred-cleanup acknowledgement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["completed"] = "completed"
 
 
 class ProgressAck(BaseModel):
