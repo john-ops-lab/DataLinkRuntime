@@ -30,7 +30,6 @@ import signal
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from collections.abc import Mapping
@@ -274,6 +273,23 @@ def validate_resource_profile(
     ):
         raise SandboxError("resource_profile_invalid")
     profile = ResourceLimits.from_mapping(value)
+
+    # Classify malformed profiles by their own invariant failure before
+    # comparing them with the Worker ceiling.  A profile that is both
+    # intrinsically invalid and too large must not leak a misleading
+    # capability-classification error to Control.
+    if (
+        profile.memory_bytes < 16 * 1024 * 1024
+        or profile.pids < 16
+        or profile.tmp_bytes < 1 * 1024 * 1024
+        or profile.nofile < 64
+        or profile.claim_timeout_seconds < 1
+        or profile.recovery_grace_seconds < 1
+        or profile.cleanup_attempt_seconds > profile.cleanup_total_seconds
+        or profile.cleanup_total_seconds >= profile.recovery_grace_seconds
+        or profile.output_preview_max_bytes > profile.output_max_bytes
+    ):
+        raise SandboxError("resource_profile_invalid")
     if (
         profile.cpu_cores > config.cpu_cores
         or profile.memory_bytes > config.memory_bytes
@@ -290,18 +306,6 @@ def validate_resource_profile(
         or profile.output_preview_max_bytes > config.output_preview_max_bytes
     ):
         raise SandboxError("resource_profile_exceeds_worker_capability")
-    if (
-        profile.memory_bytes < 16 * 1024 * 1024
-        or profile.pids < 16
-        or profile.tmp_bytes < 1 * 1024 * 1024
-        or profile.nofile < 64
-        or profile.claim_timeout_seconds < 1
-        or profile.recovery_grace_seconds < 1
-        or profile.cleanup_attempt_seconds > profile.cleanup_total_seconds
-        or profile.cleanup_total_seconds >= profile.recovery_grace_seconds
-        or profile.output_preview_max_bytes > profile.output_max_bytes
-    ):
-        raise SandboxError("resource_profile_invalid")
     return profile
 
 
@@ -778,7 +782,7 @@ class AttemptSandbox:
         self.attempt_id = attempt_id
         self.cgroup = _mkdir_child(self.parent, self.cgroup_name)
         self.workspace = workspace
-        self.mount_root = workspace.parent / ".dlr-sandbox-mount"
+        self.mount_root = (workspace.parent / ".dlr-sandbox-mount").resolve()
         self.recovery_root = recovery_root
         try:
             self._limits_readback = _configure_child(self.cgroup, limits)
@@ -804,6 +808,7 @@ class AttemptSandbox:
         workspace: Path,
         recovery_root: Path,
         tmp_bytes: int = 1 << 20,
+        cgroup_name: str | None = None,
     ) -> AttemptSandbox:
         limits = ResourceLimits(
             cpu_cores=min(config.cpu_cores, 1.0),
@@ -820,7 +825,7 @@ class AttemptSandbox:
             attempt_id=1,
             workspace=workspace,
             recovery_root=recovery_root,
-            cgroup_name=f"dlr-preflight-{uuid.uuid4().hex}",
+            cgroup_name=cgroup_name or f"dlr-preflight-{uuid.uuid4().hex}",
         )
 
     @property
@@ -1084,7 +1089,9 @@ def run_preflight(
     # parent, which is their task-owned temporary root.
     preflight_root = (runtime_root or recovery_root.parent).resolve()
     preflight_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temp_root = Path(tempfile.mkdtemp(prefix="dlr-sandbox-preflight-", dir=str(preflight_root)))
+    preflight_name = f"dlr-preflight-{uuid.uuid4().hex}"
+    temp_root = preflight_root / preflight_name
+    temp_root.mkdir(mode=0o700)
     workspace = temp_root / "dlr-preflight-workspace"
     workspace.mkdir(mode=0o700)
     output_log = workspace / ".probe.log"
@@ -1133,7 +1140,11 @@ def run_preflight(
     try:
         limits = _profile_from_preflight(config)
         attempt = AttemptSandbox.for_preflight(
-            config, workspace=workspace, recovery_root=recovery_root, tmp_bytes=limits.tmp_bytes
+            config,
+            workspace=workspace,
+            recovery_root=recovery_root,
+            tmp_bytes=limits.tmp_bytes,
+            cgroup_name=preflight_name,
         )
         details["limits_readback"] = attempt.limits_readback
         capabilities["cpu_hard_limit"] = attempt.limits_readback["cpu.max"] == "100000 100000"
@@ -1237,8 +1248,27 @@ def run_preflight(
     return {"capabilities": capabilities, "details": details}
 
 
-def _validated_recovery_mount(mount_path: str, runtime_root: Path) -> Path:
-    """Return a marker mount path only when it stays inside the Worker root."""
+def _derived_recovery_mount(runtime_root: Path, name: str, execution_id: int) -> Path:
+    """Derive the only mount path a task-owned recovery marker may name."""
+
+    try:
+        root = runtime_root.resolve(strict=True)
+    except OSError as error:
+        raise ValueError from error
+    if not root.is_dir():
+        raise ValueError
+    if name.startswith("attempt-"):
+        parts = name.split("-", 2)
+        if len(parts) != 3 or int(parts[1]) != execution_id:
+            raise ValueError
+        return root / "workspaces" / f"attempt-{int(parts[2])}" / ".dlr-sandbox-mount"
+    if name.startswith("dlr-preflight-") and execution_id == 1:
+        return root / name / ".dlr-sandbox-mount"
+    raise ValueError
+
+
+def _validated_recovery_mount(mount_path: str, runtime_root: Path, expected_mount: Path) -> Path:
+    """Return a marker mount path only when it equals the derived task path."""
 
     if not os.path.isabs(mount_path):
         raise ValueError
@@ -1249,6 +1279,8 @@ def _validated_recovery_mount(mount_path: str, runtime_root: Path) -> Path:
     except OSError as error:
         raise ValueError from error
     if not root.is_dir() or not resolved_mount.is_relative_to(root):
+        raise ValueError
+    if mount != expected_mount:
         raise ValueError
     if mount.name != ".dlr-sandbox-mount":
         raise ValueError
@@ -1320,12 +1352,16 @@ def recover(config: SandboxConfig, recovery_root: Path, *, runtime_root: Path) -
                 or not isinstance(mount_path, str)
             ):
                 raise ValueError
-            mount = _validated_recovery_mount(mount_path, runtime_root)
+            expected_mount = _derived_recovery_mount(runtime_root, name, execution_id)
+            mount = _validated_recovery_mount(mount_path, runtime_root, expected_mount)
             parent = validate_delegated_parent(config)
             child = parent / name
             if child.parent != parent:
                 raise ValueError
             if child.exists():
+                child_info = child.lstat()
+                if not stat.S_ISDIR(child_info.st_mode):
+                    raise ValueError
                 if not _is_empty(child / "cgroup.procs"):
                     _write(child / "cgroup.kill", "1\n")
                     for _ in range(20):

@@ -139,6 +139,16 @@ def test_resource_profile_is_complete_immutable_and_bounded() -> None:
     assert error.value.code == "resource_profile_exceeds_worker_capability"
 
     with pytest.raises(sandbox.SandboxError) as error:
+        sandbox.validate_resource_profile(
+            _profile(
+                memory_bytes=513 * MiB,
+                workspace_cleanup_attempt_timeout_seconds=21,
+            ),
+            config,
+        )
+    assert error.value.code == "resource_profile_invalid"
+
+    with pytest.raises(sandbox.SandboxError) as error:
         sandbox.validate_resource_profile(_profile(schema_version=True), config)
     assert error.value.code == "resource_profile_invalid"
 
@@ -197,7 +207,7 @@ def test_adapter_environment_keeps_platform_credentials_outside_the_payload(
     assert environment["DLR_SECRET_TASK_API_TOKEN"] == "task-secret"
 
 
-def test_recovery_marker_cannot_authorize_a_mount_outside_runtime_root(
+def test_recovery_marker_cannot_authorize_an_unrelated_mount(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
@@ -211,11 +221,14 @@ def test_recovery_marker_cannot_authorize_a_mount_outside_runtime_root(
     runtime_root.mkdir(mode=0o700)
     recovery_root = runtime_root / "sandbox-recovery"
     recovery_root.mkdir(mode=0o700)
-    outside_mount = tmp_path / "outside" / ".dlr-sandbox-mount"
+    unrelated_mount = runtime_root / "unrelated" / ".dlr-sandbox-mount"
+    unrelated_mount.mkdir(mode=0o700, parents=True)
+    sentinel = unrelated_mount / "must-survive"
+    sentinel.write_text("keep", encoding="ascii")
     marker = recovery_root / "sandbox-attempt-7001-8001.json"
     marker.write_text(
         '{"cgroup_name":"attempt-7001-8001","execution_id":7001,'
-        f'"mount_name":".dlr-sandbox-mount","mount_path":"{outside_mount}"}}\n',
+        f'"mount_name":".dlr-sandbox-mount","mount_path":"{unrelated_mount}"}}\n',
         encoding="ascii",
     )
     marker.chmod(0o600)
@@ -226,7 +239,8 @@ def test_recovery_marker_cannot_authorize_a_mount_outside_runtime_root(
     )
     assert result == {"inspected": 1, "completed": 0, "retained": 1}
     assert marker.exists()
-    assert not outside_mount.exists()
+    assert sentinel.read_text(encoding="ascii") == "keep"
+    assert unrelated_mount.is_dir()
 
 
 def test_preflight_without_linux_delegation_fails_closed_without_side_effects(

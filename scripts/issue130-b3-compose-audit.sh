@@ -7,6 +7,7 @@ cd "$(dirname "$0")/.."
 example_parent=/system.slice/dlr-worker-sandbox-example.service
 example_path=/sys/fs/cgroup${example_parent}
 runbook=docs/zh-CN/issue130-sandbox-deployment.md
+sandbox_source=backend/src/dlr/worker/sandbox.py
 
 docker_cgroup_driver=$(docker info --format '{{.CgroupDriver}}')
 docker_cgroup_version=$(docker info --format '{{.CgroupVersion}}')
@@ -120,6 +121,19 @@ require_runbook_literal 'test -w "$PARENT/attempt/$interface"'
 require_runbook_literal 'NO_NEW_PRIVS=$(awk '\''$1 == "NoNewPrivs:" { print $2; exit }'\'' /proc/self/status)'
 require_runbook_literal 'test "$NO_NEW_PRIVS" = 1'
 require_runbook_literal 'docker info --format '\''CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'\'''
+
+require_source_literal() {
+  local literal=$1
+  if ! grep -Fq -- "$literal" "$sandbox_source"; then
+    echo "missing recovery authorization guard: $literal" >&2
+    exit 1
+  fi
+}
+
+require_source_literal 'def _derived_recovery_mount(runtime_root: Path, name: str, execution_id: int) -> Path:'
+require_source_literal 'return root / "workspaces" / f"attempt-{int(parts[2])}" / ".dlr-sandbox-mount"'
+require_source_literal 'if mount != expected_mount:'
+require_source_literal 'expected_mount = _derived_recovery_mount(runtime_root, name, execution_id)'
 
 if grep -Eq 'agent/keeper|KEEPER=' "$runbook"; then
   echo "runbook must not create a second keeper cgroup" >&2

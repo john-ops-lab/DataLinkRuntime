@@ -215,7 +215,11 @@ Adapter Workspace 在 private mount/PID namespace 的 size-bounded tmpfs 中运�
 credential mount。Worker 通过 bounded ready pipe 启动 helper；cancel、wall timeout 或
 crash 使用 child `cgroup.kill`，随后确认进程为空、卸载 tmpfs、删除 child 和 workspace。
 无法立即完成时只写入精确 task-owned recovery marker，startup scanner 只接受严格命名、
-0600、字段闭合的 marker。
+0600、字段闭合的 marker。`mount_path` 本身不是删除授权：scanner 根据 marker 的
+`cgroup_name`、`execution_id` 和 `runtime_root` 派生唯一的 task-owned
+`.dlr-sandbox-mount`（Attempt 为 `runtime_root/workspaces/attempt-<attempt>/`，
+preflight 为其专属 token 目录），只有路径与派生值完全一致才会删除；伪造的 0600
+marker 指向 runtime root 内的其他目录时必须保留 marker 和该目录。
 
 v1/v2 legacy 与普通流量保持原有路径；minimum protocol 仍不是 3，RabbitMQ/v3 只有在
 完整 preflight matrix 通过后才可由 Control 视为可用。更广的 dependency/cache、log/spool
