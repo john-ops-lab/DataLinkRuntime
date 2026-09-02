@@ -228,7 +228,7 @@ Docker 的 `cap_add` 对显式非 root container 不会形成可用的 effective
 override 不设置 `user`，只让 Worker supervisor 以默认 root 身份持有这三个 capability。
 它们只属于 trusted supervisor，不是 Adapter workload：helper 在 Adapter 第一行前固定执行
 `setgroups([])`、`setgid(1000)`/`setuid(501)`、`NoNewPrivileges=1` 和全 capability drop，
-并验证 `CapPrm=0`、`CapEff=0`、`CapAmb=0`；`CapBnd` 必须为零或仅保留这三个 capability
+并验证 `CapPrm=0`、`CapEff=0`、`CapInh=0`、`CapAmb=0`；`CapBnd` 必须为零或仅保留这三个 capability
 的精确 mask（不含任何其他 bit）。Adapter 本身始终是非 root、无 effective/permitted/
 ambient capability。若部署不能接受该 supervisor 例外，应保持 v3 gate 关闭。
 
@@ -239,7 +239,7 @@ ambient capability。若部署不能接受该 supervisor 例外，应保持 v3 g
 payload identity drop；`privileged:false`、`NoNewPrivileges=1`、无 Docker socket、exact
 delegated bind 与 Worker-only `apparmor=unconfined` 保持不变。不得添加
 `CAP_DAC_OVERRIDE`、`CAP_SETPCAP` 或任何其他 capability。真实 payload receipt 必须保留
-`uid=501,gid=1000`、`CapPrm=0`、`CapEff=0`、`CapAmb=0`，并证明 cgroup control-plane
+`uid=501,gid=1000`、`CapPrm=0`、`CapEff=0`、`CapInh=0`、`CapAmb=0`，并证明 cgroup control-plane
 write 与 mount 仍失败；`CapBnd` 若内核无法在不授予 `CAP_SETPCAP` 的情况下清零，只能
 保留上述三能力的精确边界，不能出现其他 bit。
 

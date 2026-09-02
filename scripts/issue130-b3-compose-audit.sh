@@ -202,9 +202,11 @@ require_source_literal 'CAP_SETUID = 7'
 require_source_literal 'CAP_SYS_ADMIN = 21'
 require_source_literal 'SUPERVISOR_CAPABILITY_MASK'
 require_source_literal "cap_prm=int(field('CapPrm') or '0',16)"
+require_source_literal "cap_inh=int(field('CapInh') or '0',16)"
 require_source_literal "cap_bnd=int(field('CapBnd') or '0',16)"
 require_source_literal "cap_amb=int(field('CapAmb') or '0',16)"
 require_source_literal 'assert cap_bnd & ~allowed_caps == 0'
+require_source_literal 'assert cap_inh==0'
 require_source_literal 'def _filesystem_identity(uid: int, gid: int) -> Iterator[None]:'
 require_source_literal 'setfsuid = getattr(libc, "setfsuid", None)'
 require_source_literal 'setfsgid = getattr(libc, "setfsgid", None)'

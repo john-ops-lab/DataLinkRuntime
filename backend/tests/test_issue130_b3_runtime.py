@@ -588,6 +588,7 @@ def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
         "gid": 1000,
         "CapPrm": "0000000000000000",
         "CapEff": "0000000000000000",
+        "CapInh": "0000000000000000",
         "CapBnd": f"{sandbox.SUPERVISOR_CAPABILITY_MASK:016x}",
         "CapAmb": "0000000000000000",
         "NoNewPrivs": "1",
