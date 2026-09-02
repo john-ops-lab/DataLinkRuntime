@@ -2,57 +2,57 @@
 
 - [x] 1.1 在开始产品代码前记录 `origin/main`、当前分支、HEAD、工作区状态、活动 worktree、open PR 与 Issue #130/OpenSpec 路径；验证：证据明确保留既有 `.agents/ao/*-rules.md` 改动且没有来源不明变化
 - [x] 1.2 读取适用 `AGENTS.md`、AO orchestrator/worker rules 与本 change 全部 artifacts，形成 B1→B2→B3 串行执行回执；验证：回执明确一个分支、一个最终 PR、LOCAL_FAST 无官方 Review
-- [ ] 1.3 对 Pika、RFC 8785 实现与 RabbitMQ 4.3.5 做 Python 3.13/API/许可证最小兼容实验；验证：锁定版本能完成 Confirm、mandatory return、consumer、JCS 官方向量，否则报告 `BLOCKED_DEPENDENCY_GATE` 且不写依赖产品代码
-- [ ] 1.4 解析 RabbitMQ 4.3.5 精确镜像 digest 与必需 feature flags；验证：发布证据使用 immutable digest、无 `latest`，并记录单节点 Quorum 非 HA 边界
+- [x] 1.3 对 Pika、RFC 8785 实现与 RabbitMQ 4.3.5 做 Python 3.13/API/许可证最小兼容实验；验证：锁定版本能完成 Confirm、mandatory return、consumer、JCS 官方向量，否则报告 `BLOCKED_DEPENDENCY_GATE` 且不写依赖产品代码
+- [x] 1.4 解析 RabbitMQ 4.3.5 精确镜像 digest 与必需 feature flags；验证：发布证据使用 immutable digest、无 `latest`，并记录单节点 Quorum 非 HA 边界
 
 ## 2. Batch 1 — Additive Schema 与配置
 
-- [ ] 2.1 扩展 Control/Worker 配置为 RabbitMQ、Admission、Outbox、Attempt Lease、Idempotency/Hold 与 Resource Profile 的有界字段；验证：默认值、非法边界和交叉不变量单元测试通过，错误输出不含 RabbitMQ URL userinfo
-- [ ] 2.2 新增 additive Alembic migration，扩展 Execution 状态并加入 `dispatch_backend/generation/queue/retry/resource/admission/replay` 字段；验证：current-main upgrade 后全部历史行确定 backfill 为 legacy，重复 inventory 计数一致
-- [ ] 2.3 新增 Idempotency、Adapter/Global Admission 与 Outbox schema/constraints/index；验证：唯一 key/generation、非负 counter、pending lease查询与 FK/retention 约束数据库测试通过
-- [ ] 2.4 新增 ExecutionAttempt 与 Adapter Slot 0 schema/constraints/index，但保持未启用；验证：一个 Execution 最多一个 active Attempt、一个 Adapter Slot 最多一个 active Attempt 的并发数据库测试通过
-- [ ] 2.5 新增 Schedule policy/outcome、Infrastructure Incident 与 Artifact Hold schema；验证：旧 Schedule 幂等回填 `coalesce_latest/100/86400`，聚合 outcome/Hold 约束测试通过
-- [ ] 2.6 扩展 Worker protocol DB CheckConstraint、请求 schema 与配置允许 v3，同时保持当前 minimum 为 1/2；验证：v1/v2 原注册测试通过、v3 可保存、minimum 未被设置为 3
-- [ ] 2.7 在 fresh PostgreSQL 与 current-main schema snapshot 分别执行 `alembic upgrade head`；验证：两条路径均成功且 downgrade/旧二进制边界在迁移文档中明确 fail closed
+- [x] 2.1 扩展 Control/Worker 配置为 RabbitMQ、Admission、Outbox、Attempt Lease、Idempotency/Hold 与 Resource Profile 的有界字段；验证：默认值、非法边界和交叉不变量单元测试通过，错误输出不含 RabbitMQ URL userinfo
+- [x] 2.2 新增 additive Alembic migration，扩展 Execution 状态并加入 `dispatch_backend/generation/queue/retry/resource/admission/replay` 字段；验证：current-main upgrade 后全部历史行确定 backfill 为 legacy，重复 inventory 计数一致
+- [x] 2.3 新增 Idempotency、Adapter/Global Admission 与 Outbox schema/constraints/index；验证：唯一 key/generation、非负 counter、pending lease查询与 FK/retention 约束数据库测试通过
+- [x] 2.4 新增 ExecutionAttempt 与 Adapter Slot 0 schema/constraints/index，但保持未启用；验证：一个 Execution 最多一个 active Attempt、一个 Adapter Slot 最多一个 active Attempt 的并发数据库测试通过
+- [x] 2.5 新增 Schedule policy/outcome、Infrastructure Incident 与 Artifact Hold schema；验证：旧 Schedule 幂等回填 `coalesce_latest/100/86400`，聚合 outcome/Hold 约束测试通过
+- [x] 2.6 扩展 Worker protocol DB CheckConstraint、请求 schema 与配置允许 v3，同时保持当前 minimum 为 1/2；验证：v1/v2 原注册测试通过、v3 可保存、minimum 未被设置为 3
+- [x] 2.7 在 fresh PostgreSQL 与 current-main schema snapshot 分别执行 `alembic upgrade head`；验证：两条路径均成功且 downgrade/旧二进制边界在迁移文档中明确 fail closed
 
 ## 3. Batch 1 — RabbitMQ Topology 与 Transactional Outbox
 
-- [ ] 3.1 增加 RabbitMQ 4.3.5 Compose service、持久卷、非 guest Credential、healthcheck 与仅本地可选 management profile；验证：`docker compose config` 不泄露真实凭据，Broker 重启后 durable Queue/Message 保留
-- [ ] 3.2 实现幂等 topology bootstrap 与漂移检查，声明 direct exchange、每 Worker Quorum Queue、Infrastructure DLX/DLQ、reject-publish/length/bytes/delivery-limit/at-least-once策略并保留 Relay/运维 headroom；验证：重复 bootstrap 无变化，不兼容既有 Queue使health fail而不删除消息，且 max-length/max-length-bytes 被记录为允许 bounded in-flight overshoot 的近似最终拒绝保护而非精确业务硬上限
-- [ ] 3.3 实现最小 dispatch message schema/serializer 与安全扫描；验证：persistent message 只含允许字段，Code/Input/Secret/Token/storage key/path 均不存在
-- [ ] 3.4 实现 Outbox 创建、due lease领取、bounded backoff 与 owner条件更新；验证：`FOR UPDATE SKIP LOCKED` 并发测试无重复 lease，数据库锁不跨网络 publish，任何失败重试都不删除旧 pending 消息
-- [ ] 3.5 实现 Pika Relay 的 mandatory Publisher Confirm 与 timeout/return/nack处理，以及有限 publisher channel 数、并发 publish 数和 confirm 在途窗口；验证：正常 publish 标记 published，unroutable/nack/timeout/connection loss保持 pending并按 capped backoff 重试，无 unbounded publish buffer
-- [ ] 3.6 注入 Confirm ack 后 DB mark 前崩溃；验证：lease到期会重复publish但同 `(execution,generation)` 事实不丢失，Relay重启可继续
-- [ ] 3.7 实现 Outbox pending count/bytes/oldest精确保护与 Relay/Broker health/metrics/alerts；验证：任一 DB 阈值触发 `outbox_backlog_full`，`messages_ready` 不参与业务判断，既有 pending仍恢复且普通 retention不删除，queue reject/overshoot/headroom 可观测
+- [x] 3.1 增加 RabbitMQ 4.3.5 Compose service、持久卷、非 guest Credential、healthcheck 与仅本地可选 management profile；验证：`docker compose config` 不泄露真实凭据，Broker 重启后 durable Queue/Message 保留
+- [x] 3.2 实现幂等 topology bootstrap 与漂移检查，声明 direct exchange、每 Worker Quorum Queue、Infrastructure DLX/DLQ、reject-publish/length/bytes/delivery-limit/at-least-once策略并保留 Relay/运维 headroom；验证：重复 bootstrap 无变化，不兼容既有 Queue使health fail而不删除消息，且 max-length/max-length-bytes 被记录为允许 bounded in-flight overshoot 的近似最终拒绝保护而非精确业务硬上限
+- [x] 3.3 实现最小 dispatch message schema/serializer 与安全扫描；验证：persistent message 只含允许字段，Code/Input/Secret/Token/storage key/path 均不存在
+- [x] 3.4 实现 Outbox 创建、due lease领取、bounded backoff 与 owner条件更新；验证：`FOR UPDATE SKIP LOCKED` 并发测试无重复 lease，数据库锁不跨网络 publish，任何失败重试都不删除旧 pending 消息
+- [x] 3.5 实现 Pika Relay 的 mandatory Publisher Confirm 与 timeout/return/nack处理，以及有限 publisher channel 数、并发 publish 数和 confirm 在途窗口；验证：正常 publish 标记 published，unroutable/nack/timeout/connection loss保持 pending并按 capped backoff 重试，无 unbounded publish buffer
+- [x] 3.6 注入 Confirm ack 后 DB mark 前崩溃；验证：lease到期会重复publish但同 `(execution,generation)` 事实不丢失，Relay重启可继续
+- [x] 3.7 实现 Outbox pending count/bytes/oldest精确保护与 Relay/Broker health/metrics/alerts；验证：任一 DB 阈值触发 `outbox_backlog_full`，`messages_ready` 不参与业务判断，既有 pending仍恢复且普通 retention不删除，queue reject/overshoot/headroom 可观测
 
 ## 4. Batch 1 — 可靠 Ingress、Admission、Idempotency 与 Schedule
 
-- [ ] 4.1 提取统一 `accept_execution` 事务路径并复用 #127 InputConfig/Lease/snapshot；验证：Manual、run-now、Schedule、Webhook 的成功事务都包含 Execution+Admission+Outbox，任一故障全回滚
-- [ ] 4.2 实现 Adapter/Global count+logical-bytes Admission 与 `admission_released_at` 条件释放；验证：并发竞争最后名额最多一个成功，重复终态/cancel/reconciler不负数或双释放
-- [ ] 4.3 实现 Admission Reconciler 与审计指标；验证：人工构造 counter漂移后可幂等修正且不修改Execution业务状态
-- [ ] 4.4 实现 Idempotency-Key校验、raw-key SHA-256、JCS payload hash、同Key返回与conflict；验证：RFC向量、键顺序/Unicode/数字、同Key同/异payload、配置在重试间变化测试通过且日志无原Key
-- [ ] 4.5 实现 Idempotency 24小时/非终态延长与 Execution retention协调；验证：有效记录阻止关联Execution先删，终态过期后cleanup可重跑
-- [ ] 4.6 调整固定 Worker门禁为“存在且capability兼容即可排队”，保留缺失/删除/不兼容409且不reroute；验证：offline返回202 queued，invalid target无Execution/Lease/Outbox副作用
-- [ ] 4.7 实现 legacy/rabbitmq backend 的服务层状态转换与 retention筛选；验证：历史 failed/timeout可读，新RabbitMQ失败只进入retry_wait/dead_letter，所有非终态均不被清理
-- [ ] 4.8 实现 Schedule policy字段、旧请求省略保持、三种策略与数据库时间cursor；验证：coalesce/queue-every/skip、Admission满、DST与多Scheduler并发测试通过
-- [ ] 4.9 实现有界 Schedule outcome聚合与重建验证器；验证：大量missed points记录有界且按冻结Cron/timezone重建count/first/last完全一致
-- [ ] 4.10 更新 Manual/Webhook/Run-now API返回、429/503/409稳定code与 `Retry-After`；验证：OpenAPI/schema与入口集成测试覆盖事务提交前失败、提交后响应丢失和Broker outage
+- [x] 4.1 提取统一 `accept_execution` 事务路径并复用 #127 InputConfig/Lease/snapshot；验证：Manual、run-now、Schedule、Webhook 的成功事务都包含 Execution+Admission+Outbox，任一故障全回滚
+- [x] 4.2 实现 Adapter/Global count+logical-bytes Admission 与 `admission_released_at` 条件释放；验证：并发竞争最后名额最多一个成功，重复终态/cancel/reconciler不负数或双释放
+- [x] 4.3 实现 Admission Reconciler 与审计指标；验证：人工构造 counter漂移后可幂等修正且不修改Execution业务状态
+- [x] 4.4 实现 Idempotency-Key校验、raw-key SHA-256、JCS payload hash、同Key返回与conflict；验证：RFC向量、键顺序/Unicode/数字、同Key同/异payload、配置在重试间变化测试通过且日志无原Key
+- [x] 4.5 实现 Idempotency 24小时/非终态延长与 Execution retention协调；验证：有效记录阻止关联Execution先删，终态过期后cleanup可重跑
+- [x] 4.6 调整固定 Worker门禁为“存在且capability兼容即可排队”，保留缺失/删除/不兼容409且不reroute；验证：offline返回202 queued，invalid target无Execution/Lease/Outbox副作用
+- [x] 4.7 实现 legacy/rabbitmq backend 的服务层状态转换与 retention筛选；验证：历史 failed/timeout可读，新RabbitMQ失败只进入retry_wait/dead_letter，所有非终态均不被清理
+- [x] 4.8 实现 Schedule policy字段、旧请求省略保持、三种策略与数据库时间cursor；验证：coalesce/queue-every/skip、Admission满、DST与多Scheduler并发测试通过
+- [x] 4.9 实现有界 Schedule outcome聚合与重建验证器；验证：大量missed points记录有界且按冻结Cron/timezone重建count/first/last完全一致
+- [x] 4.10 更新 Manual/Webhook/Run-now API返回、429/503/409稳定code与 `Retry-After`；验证：OpenAPI/schema与入口集成测试覆盖事务提交前失败、提交后响应丢失和Broker outage
 
 ## 5. Batch 1 — Web、国际化与运行状态
 
-- [ ] 5.1 在修改 Ant Design UI前读取 `.agents/skills/antd/SKILL.md` 并查询5.29.3精确API/demo/token/semantic snapshot；验证：实施记录包含实际CLI输出且manifest版本仍为React19/antd5.29.3/ProComponents2.8.10
-- [ ] 5.2 扩展Web状态类型、颜色/标签、Header/list/detail/watcher以兼容legacy与queued/retry_wait/dead_letter/expired；验证：类型检查与Vitest覆盖offline queued、retry countdown、legacy timeout
-- [ ] 5.3 实现Schedule三策略与catch-up表单、服务端权威保存和outcome展示；验证：旧字段省略不重置、409/422保留草稿、zh-CN/en字段/插值一致
-- [ ] 5.4 实现429/503/worker-invalid的队列反馈，不把offline/busy误报失败；验证：组件测试覆盖Retry-After、等待Worker与服务端状态刷新
-- [ ] 5.5 添加Queue/Attempt/Incident/Replay占位详情的轻量加载边界；验证：列表不携带大input/output/log，detail不暴露routing key/Token/storage key/path
-- [ ] 5.6 运行Web `npm run lint && npm run typecheck && npm run test && npm run build`；验证：全部退出0且无新增raw i18n key/版本漂移
+- [x] 5.1 在修改 Ant Design UI前读取 `.agents/skills/antd/SKILL.md` 并查询5.29.3精确API/demo/token/semantic snapshot；验证：实施记录包含实际CLI输出且manifest版本仍为React19/antd5.29.3/ProComponents2.8.10
+- [x] 5.2 扩展Web状态类型、颜色/标签、Header/list/detail/watcher以兼容legacy与queued/retry_wait/dead_letter/expired；验证：类型检查与Vitest覆盖offline queued、retry countdown、legacy timeout
+- [x] 5.3 实现Schedule三策略与catch-up表单、服务端权威保存和outcome展示；验证：旧字段省略不重置、409/422保留草稿、zh-CN/en字段/插值一致
+- [x] 5.4 实现429/503/worker-invalid的队列反馈，不把offline/busy误报失败；验证：组件测试覆盖Retry-After、等待Worker与服务端状态刷新
+- [x] 5.5 添加Queue/Attempt/Incident/Replay占位详情的轻量加载边界；验证：列表不携带大input/output/log，detail不暴露routing key/Token/storage key/path
+- [x] 5.6 运行Web `npm run lint && npm run typecheck && npm run test && npm run build`；验证：全部退出0且无新增raw i18n key/版本漂移
 
 ## 6. Batch 1 — Candidate Gate
 
-- [ ] 6.1 运行Batch1相关Backend Ruff/format/Mypy/pytest、fresh+upgrade migration和PostgreSQL并发测试；验证：全部失败均修复或标记 `BLOCKED_B1_GATE`，未全绿不勾选本项
-- [ ] 6.2 在隔离Compose运行RabbitMQ启动/重启/outage/overflow/unroutable/Confirm ambiguity与Outbox recovery矩阵；验证：已接受Execution不丢、DB Admission/Outbox保护线准确、Broker bounded overshoot/reject 与 Relay headroom 可观测、无drop-head/孤儿Outbox
-- [ ] 6.3 证明Batch1禁止项仍成立：minimum≠3、`uq_executions_active_adapter`存在、legacy Claim启用、RabbitMQ ingress默认off；验证：自动断言全部PASS
-- [ ] 6.4 形成Batch1 checkpoint commit与Candidate SHA，清点差异只属于Issue #130及受保护AO规则；验证：工作区状态、diff、测试证据绑定同一SHA
+- [x] 6.1 运行Batch1相关Backend Ruff/format/Mypy/pytest、fresh+upgrade migration和PostgreSQL并发测试；验证：全部失败均修复或标记 `BLOCKED_B1_GATE`，未全绿不勾选本项
+- [x] 6.2 在隔离Compose运行RabbitMQ启动/重启/outage/overflow/unroutable/Confirm ambiguity与Outbox recovery矩阵；验证：已接受Execution不丢、DB Admission/Outbox保护线准确、Broker bounded overshoot/reject 与 Relay headroom 可观测、无drop-head/孤儿Outbox
+- [x] 6.3 证明Batch1禁止项仍成立：minimum≠3、`uq_executions_active_adapter`存在、legacy Claim启用、RabbitMQ ingress默认off；验证：自动断言全部PASS
+- [x] 6.4 形成Batch1 checkpoint commit与Candidate SHA，清点差异只属于Issue #130及受保护AO规则；验证：工作区状态、diff、测试证据绑定同一SHA
 - [ ] 6.5 由当前主代理Sol对Batch1 exact SHA做只读架构/并发/安全审计并修复所有finding；验证：最终审计PASS绑定最新SHA，且不声称AO官方Review、不创建PR
 
 ## 7. Batch 2 — Worker v3 Consumer 与 Attempt Claim

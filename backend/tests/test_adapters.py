@@ -550,6 +550,10 @@ def test_clone_copies_task_runtime_and_schedule_configuration_disabled(
         "last_blocked_detail": None,
         "last_blocked_at": None,
         "last_processed_due_at": None,
+        "misfire_policy": "coalesce_latest",
+        "max_catchup_count": 100,
+        "max_catchup_age_seconds": 86400,
+        "recent_outcomes": [],
         "updated_at": schedule["updated_at"],
     }
 

@@ -1,9 +1,10 @@
 """Platform settings loaded from environment variables."""
 
 from os.path import isabs
+from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -13,6 +14,11 @@ class Settings(BaseSettings):
     ``database_url`` is set via ``DATABASE_URL``. Fields with an explicit
     ``validation_alias`` are set via their ``DLR_*`` variable name.
     """
+
+    # RabbitMQ URLs may contain credentials.  Keep Pydantic's validation
+    # errors from echoing the complete settings input when a startup gate
+    # rejects an invalid deployment.
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
 
     database_url: str = "postgresql+psycopg://dlr:dlr@localhost:5432/dlr"
 
@@ -117,6 +123,45 @@ class Settings(BaseSettings):
         default=300, validation_alias="DLR_EXECUTION_TIMEOUT_SECONDS"
     )
 
+    # Issue #130 B1: these bounded values are copied into each RabbitMQ
+    # Execution's closed Retry Policy snapshot.  Attempt transition/retry
+    # dispatch remains a later Batch; this config only defines the immutable
+    # policy fact created with an accepted Execution.
+    execution_retry_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        validation_alias="DLR_EXECUTION_RETRY_MAX_ATTEMPTS",
+    )
+    execution_retry_initial_backoff_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+        validation_alias="DLR_EXECUTION_RETRY_INITIAL_BACKOFF_SECONDS",
+    )
+    execution_retry_multiplier: float = Field(
+        default=2.0,
+        ge=1.0,
+        le=10.0,
+        allow_inf_nan=False,
+        validation_alias="DLR_EXECUTION_RETRY_MULTIPLIER",
+    )
+    execution_retry_max_backoff_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        le=3_600,
+        allow_inf_nan=False,
+        validation_alias="DLR_EXECUTION_RETRY_MAX_BACKOFF_SECONDS",
+    )
+    execution_retry_jitter_ratio: float = Field(
+        default=0.2,
+        ge=0,
+        le=0.2,
+        allow_inf_nan=False,
+        validation_alias="DLR_EXECUTION_RETRY_JITTER_RATIO",
+    )
+
     # Issue #127 C0: these values are copied into every new Execution.  The
     # cleanup budgets must remain shorter than the recovery grace period so a
     # Worker has a bounded chance to report before Control reconciles it.
@@ -149,6 +194,226 @@ class Settings(BaseSettings):
         ge=1,
         le=2,
         validation_alias="DLR_MIN_WORKER_PROTOCOL_VERSION",
+    )
+
+    # Issue #130 B1: RabbitMQ ingress stays disabled until the later dark
+    # launch/cutover gates.  Control may still read and repair additive
+    # RabbitMQ rows while this flag is false.
+    rabbitmq_execution_enabled: bool = Field(
+        default=False, validation_alias="DLR_RABBITMQ_EXECUTION_ENABLED"
+    )
+    rabbitmq_url: str | None = Field(default=None, validation_alias="DLR_RABBITMQ_URL")
+    # Compose keeps the broker vhost as one raw value and the AMQP client
+    # encodes it at connection construction time.  This avoids maintaining a
+    # second, independently editable URL-path setting.
+    rabbitmq_vhost: str | None = Field(default=None, validation_alias="DLR_RABBITMQ_VHOST")
+    rabbitmq_management_url: str | None = Field(
+        default=None, validation_alias="DLR_RABBITMQ_MANAGEMENT_URL"
+    )
+    rabbitmq_management_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=30,
+        allow_inf_nan=False,
+        validation_alias="DLR_RABBITMQ_MANAGEMENT_TIMEOUT_SECONDS",
+    )
+    rabbitmq_capability_cache_seconds: int = Field(
+        default=3_600,
+        ge=60,
+        le=604_800,
+        validation_alias="DLR_RABBITMQ_CAPABILITY_CACHE_SECONDS",
+    )
+    rabbitmq_consumer_timeout_ms: int = Field(
+        default=300_000,
+        ge=1_000,
+        le=900_000,
+        validation_alias="DLR_RABBITMQ_CONSUMER_TIMEOUT_MS",
+    )
+    rabbitmq_queue_max_length: int = Field(
+        default=2_000,
+        ge=1,
+        le=1_000_000,
+        validation_alias="DLR_RABBITMQ_QUEUE_MAX_LENGTH",
+    )
+    rabbitmq_queue_max_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1_024,
+        le=10 * 1024 * 1024 * 1024,
+        validation_alias="DLR_RABBITMQ_QUEUE_MAX_BYTES",
+    )
+    rabbitmq_delivery_limit: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        validation_alias="DLR_RABBITMQ_DELIVERY_LIMIT",
+    )
+    rabbitmq_dispatch_message_max_bytes: int = Field(
+        default=16 * 1024,
+        ge=256,
+        le=1 * 1024 * 1024,
+        validation_alias="DLR_RABBITMQ_DISPATCH_MESSAGE_MAX_BYTES",
+    )
+    rabbitmq_publish_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=120,
+        allow_inf_nan=False,
+        validation_alias="DLR_RABBITMQ_PUBLISH_TIMEOUT_SECONDS",
+    )
+    rabbitmq_stack_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        le=120,
+        allow_inf_nan=False,
+        validation_alias="DLR_RABBITMQ_STACK_TIMEOUT_SECONDS",
+    )
+    rabbitmq_claim_handshake_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+        validation_alias="DLR_RABBITMQ_CLAIM_HANDSHAKE_TIMEOUT_SECONDS",
+    )
+    rabbitmq_outbox_lease_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        le=3_600,
+        allow_inf_nan=False,
+        validation_alias="DLR_RABBITMQ_OUTBOX_LEASE_SECONDS",
+    )
+    rabbitmq_retry_base_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+        validation_alias="DLR_RABBITMQ_RETRY_BASE_SECONDS",
+    )
+    rabbitmq_retry_max_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        le=3_600,
+        allow_inf_nan=False,
+        validation_alias="DLR_RABBITMQ_RETRY_MAX_SECONDS",
+    )
+    # Relay publication is deliberately bounded even when several Relay
+    # invocations overlap.  The defaults leave a small, explicit window for
+    # the single-node Quorum Queue while keeping every publisher resource
+    # finite and observable.
+    rabbitmq_publisher_channel_count: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        validation_alias="DLR_RABBITMQ_PUBLISHER_CHANNEL_COUNT",
+    )
+    rabbitmq_publisher_max_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        validation_alias="DLR_RABBITMQ_PUBLISHER_MAX_CONCURRENCY",
+    )
+    rabbitmq_publisher_max_confirm_inflight: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        validation_alias="DLR_RABBITMQ_PUBLISHER_MAX_CONFIRM_INFLIGHT",
+    )
+    rabbitmq_broker_headroom_messages: int = Field(
+        default=16,
+        ge=1,
+        le=1_000_000,
+        validation_alias="DLR_RABBITMQ_BROKER_HEADROOM_MESSAGES",
+    )
+    rabbitmq_broker_headroom_bytes: int = Field(
+        default=256 * 1024,
+        ge=1_024,
+        le=10 * 1024 * 1024 * 1024,
+        validation_alias="DLR_RABBITMQ_BROKER_HEADROOM_BYTES",
+    )
+
+    # Business outstanding counters are charged once per non-terminal
+    # RabbitMQ Execution.  The global limits intentionally exceed the
+    # per-Adapter defaults so one busy Adapter cannot consume all capacity.
+    admission_adapter_max_count: int = Field(
+        default=100, ge=1, le=1_000_000, validation_alias="DLR_ADMISSION_ADAPTER_MAX_COUNT"
+    )
+    admission_adapter_max_bytes: int = Field(
+        default=1 * 1024 * 1024 * 1024,
+        ge=1,
+        le=1 * 1024 * 1024 * 1024 * 1024,
+        validation_alias="DLR_ADMISSION_ADAPTER_MAX_BYTES",
+    )
+    admission_global_max_count: int = Field(
+        default=1_000, ge=1, le=10_000_000, validation_alias="DLR_ADMISSION_GLOBAL_MAX_COUNT"
+    )
+    admission_global_max_bytes: int = Field(
+        default=10 * 1024 * 1024 * 1024,
+        ge=1,
+        le=10 * 1024 * 1024 * 1024 * 1024,
+        validation_alias="DLR_ADMISSION_GLOBAL_MAX_BYTES",
+    )
+    admission_reconcile_batch_size: int = Field(
+        default=100,
+        ge=1,
+        le=1_000,
+        validation_alias="DLR_ADMISSION_RECONCILE_BATCH_SIZE",
+    )
+    outbox_max_pending_count: int = Field(
+        default=2_000, ge=1, le=10_000_000, validation_alias="DLR_OUTBOX_MAX_PENDING_COUNT"
+    )
+    outbox_max_pending_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1,
+        le=10 * 1024 * 1024 * 1024,
+        validation_alias="DLR_OUTBOX_MAX_PENDING_BYTES",
+    )
+    outbox_max_oldest_seconds: int = Field(
+        default=900, ge=1, le=604_800, validation_alias="DLR_OUTBOX_MAX_OLDEST_SECONDS"
+    )
+
+    attempt_lease_seconds: int = Field(
+        default=60, ge=15, le=86_400, validation_alias="DLR_ATTEMPT_LEASE_SECONDS"
+    )
+    attempt_renew_seconds: int = Field(
+        default=15, ge=1, le=28_800, validation_alias="DLR_ATTEMPT_RENEW_SECONDS"
+    )
+    idempotency_retention_seconds: int = Field(
+        default=86_400,
+        ge=86_400,
+        le=31_536_000,
+        validation_alias="DLR_IDEMPOTENCY_RETENTION_SECONDS",
+    )
+    dead_letter_hold_seconds: int = Field(
+        default=604_800,
+        ge=60,
+        le=31_536_000,
+        validation_alias="DLR_DEAD_LETTER_HOLD_SECONDS",
+    )
+
+    # The resource profile is only snapshotted in B1.  Real cgroup/namespace
+    # enforcement remains a later Batch 3 capability gate.
+    sandbox_backend: str = Field(default="cgroup_v2", validation_alias="DLR_SANDBOX_BACKEND")
+    sandbox_cpu_cores: float = Field(
+        default=1.0,
+        gt=0,
+        le=128,
+        allow_inf_nan=False,
+        validation_alias="DLR_SANDBOX_CPU_CORES",
+    )
+    sandbox_memory_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        ge=16 * 1024 * 1024,
+        le=1 * 1024 * 1024 * 1024 * 1024,
+        validation_alias="DLR_SANDBOX_MEMORY_BYTES",
+    )
+    sandbox_pids: int = Field(default=128, ge=16, le=1_000_000, validation_alias="DLR_SANDBOX_PIDS")
+    sandbox_tmp_bytes: int = Field(
+        default=1 * 1024 * 1024 * 1024,
+        ge=1 * 1024 * 1024,
+        le=1 * 1024 * 1024 * 1024 * 1024,
+        validation_alias="DLR_SANDBOX_TMP_BYTES",
+    )
+    sandbox_nofile: int = Field(
+        default=1_024, ge=64, le=1_048_576, validation_alias="DLR_SANDBOX_NOFILE"
     )
 
     # Issue #127 B0: physical ArtifactStore placement and lifecycle loops are
@@ -295,6 +560,118 @@ def validate_deployment_configuration(value: Settings) -> Settings:
         )
     if value.min_worker_protocol_version not in {1, 2}:
         raise ValueError("DLR_MIN_WORKER_PROTOCOL_VERSION must be 1 or 2")
+    if value.rabbitmq_retry_base_seconds > value.rabbitmq_retry_max_seconds:
+        raise ValueError(
+            "DLR_RABBITMQ_RETRY_BASE_SECONDS must not exceed DLR_RABBITMQ_RETRY_MAX_SECONDS"
+        )
+    if not 1 <= value.execution_retry_max_attempts <= 100:
+        raise ValueError("DLR_EXECUTION_RETRY_MAX_ATTEMPTS must be between 1 and 100")
+    if not 0 < value.execution_retry_initial_backoff_seconds <= 300:
+        raise ValueError("DLR_EXECUTION_RETRY_INITIAL_BACKOFF_SECONDS must be between 0 and 300")
+    if not 1 <= value.execution_retry_multiplier <= 10:
+        raise ValueError("DLR_EXECUTION_RETRY_MULTIPLIER must be between 1 and 10")
+    if not 0 < value.execution_retry_max_backoff_seconds <= 3_600:
+        raise ValueError("DLR_EXECUTION_RETRY_MAX_BACKOFF_SECONDS must be between 0 and 3600")
+    if not 0 <= value.execution_retry_jitter_ratio <= 0.2:
+        raise ValueError("DLR_EXECUTION_RETRY_JITTER_RATIO must be between 0 and 0.2")
+    if value.execution_retry_initial_backoff_seconds > value.execution_retry_max_backoff_seconds:
+        raise ValueError(
+            "DLR_EXECUTION_RETRY_INITIAL_BACKOFF_SECONDS must not exceed "
+            "DLR_EXECUTION_RETRY_MAX_BACKOFF_SECONDS"
+        )
+    if value.rabbitmq_claim_handshake_timeout_seconds * 1000 >= value.rabbitmq_consumer_timeout_ms:
+        raise ValueError("DLR_RABBITMQ_CONSUMER_TIMEOUT_MS must exceed the Claim handshake budget")
+    if value.rabbitmq_dispatch_message_max_bytes > value.rabbitmq_queue_max_bytes:
+        raise ValueError(
+            "DLR_RABBITMQ_DISPATCH_MESSAGE_MAX_BYTES must not exceed DLR_RABBITMQ_QUEUE_MAX_BYTES"
+        )
+    if value.rabbitmq_publisher_max_concurrency > value.rabbitmq_publisher_channel_count:
+        raise ValueError(
+            "DLR_RABBITMQ_PUBLISHER_MAX_CONCURRENCY must not exceed "
+            "DLR_RABBITMQ_PUBLISHER_CHANNEL_COUNT"
+        )
+    if value.rabbitmq_publisher_max_confirm_inflight > value.rabbitmq_publisher_max_concurrency:
+        raise ValueError(
+            "DLR_RABBITMQ_PUBLISHER_MAX_CONFIRM_INFLIGHT must not exceed "
+            "DLR_RABBITMQ_PUBLISHER_MAX_CONCURRENCY"
+        )
+    if (
+        value.rabbitmq_queue_max_length
+        < value.rabbitmq_publisher_max_confirm_inflight + value.rabbitmq_broker_headroom_messages
+    ):
+        raise ValueError(
+            "DLR_RABBITMQ_QUEUE_MAX_LENGTH must leave room for publisher confirms and "
+            "DLR_RABBITMQ_BROKER_HEADROOM_MESSAGES"
+        )
+    if (
+        value.rabbitmq_queue_max_bytes
+        < value.rabbitmq_publisher_max_confirm_inflight * value.rabbitmq_dispatch_message_max_bytes
+        + value.rabbitmq_broker_headroom_bytes
+    ):
+        raise ValueError(
+            "DLR_RABBITMQ_QUEUE_MAX_BYTES must leave room for publisher confirms and "
+            "DLR_RABBITMQ_BROKER_HEADROOM_BYTES"
+        )
+    if value.outbox_max_pending_bytes < value.rabbitmq_dispatch_message_max_bytes:
+        raise ValueError(
+            "DLR_OUTBOX_MAX_PENDING_BYTES must be at least DLR_RABBITMQ_DISPATCH_MESSAGE_MAX_BYTES"
+        )
+    if value.admission_adapter_max_count > value.admission_global_max_count:
+        raise ValueError(
+            "DLR_ADMISSION_ADAPTER_MAX_COUNT must not exceed DLR_ADMISSION_GLOBAL_MAX_COUNT"
+        )
+    if value.admission_adapter_max_bytes > value.admission_global_max_bytes:
+        raise ValueError(
+            "DLR_ADMISSION_ADAPTER_MAX_BYTES must not exceed DLR_ADMISSION_GLOBAL_MAX_BYTES"
+        )
+    if value.attempt_renew_seconds * 3 >= value.attempt_lease_seconds:
+        raise ValueError(
+            "DLR_ATTEMPT_RENEW_SECONDS must be less than one third of DLR_ATTEMPT_LEASE_SECONDS"
+        )
+    if value.sandbox_backend != "cgroup_v2":
+        raise ValueError("DLR_SANDBOX_BACKEND must be cgroup_v2")
+    if value.rabbitmq_url:
+        parsed = urlsplit(value.rabbitmq_url)
+        if parsed.scheme not in {"amqp", "amqps"} or not parsed.hostname:
+            raise ValueError("DLR_RABBITMQ_URL must be an amqp or amqps URL")
+        if value.rabbitmq_vhost is not None and parsed.path not in {"", "/"}:
+            raise ValueError(
+                "DLR_RABBITMQ_URL must omit its vhost path when DLR_RABBITMQ_VHOST is configured"
+            )
+        username = unquote(parsed.username or "")
+        if not username or username.casefold() == "guest":
+            raise ValueError("DLR_RABBITMQ_URL must use a non-guest user")
+        password = unquote(parsed.password or "")
+        if not password:
+            raise ValueError("DLR_RABBITMQ_URL must include a non-empty password")
+    if value.rabbitmq_vhost is not None:
+        try:
+            vhost_bytes = value.rabbitmq_vhost.encode("utf-8")
+        except (AttributeError, UnicodeEncodeError):
+            raise ValueError("DLR_RABBITMQ_VHOST must be valid UTF-8 text") from None
+        if (
+            not value.rabbitmq_vhost
+            or len(vhost_bytes) > 255
+            or any(
+                ord(character) < 0x20 or ord(character) == 0x7F
+                for character in value.rabbitmq_vhost
+            )
+        ):
+            raise ValueError(
+                "DLR_RABBITMQ_VHOST must be 1-255 UTF-8 bytes without control characters"
+            )
+    if value.rabbitmq_execution_enabled and not value.rabbitmq_url:
+        raise ValueError("DLR_RABBITMQ_URL is required when RabbitMQ execution is enabled")
+    if value.rabbitmq_url and not value.rabbitmq_management_url:
+        raise ValueError(
+            "DLR_RABBITMQ_MANAGEMENT_URL is required when DLR_RABBITMQ_URL is configured"
+        )
+    if value.rabbitmq_management_url:
+        management = urlsplit(value.rabbitmq_management_url)
+        if management.scheme not in {"http", "https"} or not management.hostname:
+            raise ValueError("DLR_RABBITMQ_MANAGEMENT_URL must be an http or https URL")
+        if management.username is not None or management.password is not None:
+            raise ValueError("DLR_RABBITMQ_MANAGEMENT_URL must not contain credentials")
     return value
 
 

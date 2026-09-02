@@ -549,9 +549,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                    status: worker.status === "online"
                      ? t("worker.online", { ns: "common" })
                      : t("worker.offline", { ns: "common" }),
-                 }),
+                }),
                 value: worker.id,
-                disabled: worker.status !== "online",
               }))}
               onChange={(value) => { setWorkerId(value); setNotice(null); }}
             />

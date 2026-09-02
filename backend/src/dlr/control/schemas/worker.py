@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 MAX_WORKER_NAME_LENGTH = 128
 SUPPORTED_CAPABILITIES = frozenset({"python", "javascript", "java"})
@@ -28,7 +28,7 @@ class WorkerRegister(BaseModel):
     # Defaults to Python for compatibility with M2 Worker clients.
     capabilities: list[str] = Field(default_factory=lambda: ["python"])
     # Missing protocol_version is the rolling-deployment v1 contract.
-    protocol_version: int = Field(default=1, ge=1, le=2)
+    protocol_version: StrictInt = Field(default=1, ge=1, le=3)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -57,7 +57,7 @@ class WorkerResponse(BaseModel):
     status: str
     last_heartbeat: datetime
     capabilities: list[str]
-    protocol_version: int
+    protocol_version: StrictInt = Field(ge=1, le=3)
 
 
 class TaskInputFile(BaseModel):
@@ -102,7 +102,7 @@ class TaskPayload(BaseModel):
     index_url: str | None = None
     # Captured at Execution creation; never read again from deployment state.
     locale: str = "zh-CN"
-    protocol_version: int = 1
+    protocol_version: StrictInt = Field(default=1, ge=1, le=3)
     claim_deadline_at: datetime | None = None
     execution_deadline_at: datetime | None = None
     recovery_grace_seconds_snapshot: int | None = None

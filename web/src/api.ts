@@ -123,6 +123,12 @@ async function parseError(response: Response): Promise<ApiError> {
       code = "ai_gateway_timeout";
     }
   }
+  // Keep compatibility with the lightweight response stubs used by the UI
+  // tests while preserving the real Response header path in production.
+  const retryAfter = response.headers?.get?.("Retry-After") ?? null;
+  if (retryAfter !== null && /^\d+$/.test(retryAfter.trim())) {
+    params = { ...params, retry_after: Number(retryAfter.trim()) };
+  }
   return new ApiError(response.status, code, message, params);
 }
 

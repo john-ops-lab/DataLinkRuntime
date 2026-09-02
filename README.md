@@ -293,11 +293,25 @@ docker compose up -d postgres
 docker compose run --rm control alembic upgrade head
 ```
 
+Issue #130 的 fresh/current-main migration、非破坏回滚和旧二进制 fail-closed
+边界见 [Reliable Runtime 迁移说明](docs/zh-CN/issue130-reliable-runtime-migrations.md)。
+
 ### 4. 启动完整平台
 
 ```bash
 docker compose up -d --build
 ```
+
+RabbitMQ 的 management listener 默认只在 Compose 服务网络内可用，不发布到宿主机。
+隔离开发需要查看 management API 时，显式启用仅绑定 localhost 的 profile：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.management.yml \
+  --profile management up -d rabbitmq
+```
+
+`DLR_RABBITMQ_VHOST` 是 Broker、Control 和 Worker 共用的唯一原始 vhost 配置；
+Control/Worker 在建立 AMQP 连接时负责安全 URL 编码，不能另行维护 URL path。
 
 检查状态：
 

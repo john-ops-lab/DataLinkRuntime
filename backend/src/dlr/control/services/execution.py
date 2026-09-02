@@ -22,6 +22,7 @@ from dlr.control.models import (
     Adapter,
     AdapterVersion,
     Execution,
+    ExecutionCredentialBindingSnapshot,
     ExecutionInputArtifactLease,
     Worker,
 )
@@ -33,14 +34,22 @@ from dlr.control.schemas.execution import (
 )
 from dlr.control.services import adapter_runtime, worker_availability
 from dlr.control.services.adapter import domain_error, resolve_runtime_worker
-from dlr.control.services.execution_cancellation import lock_execution, request_cancellation
+from dlr.control.services.execution_cancellation import (
+    lock_execution_in_admission_order,
+    request_cancellation,
+)
 from dlr.control.services.locale import get_system_locale
 from dlr.control.services.worker_protocol import require_claim_token
 
 logger = logging.getLogger("dlr.control.execution")
 
-# Statuses after which an Execution never changes again.
-TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
+# Statuses after which an Execution never changes again.  The two backend
+# sets remain explicit so legacy result/reconciler paths cannot accidentally
+# write RabbitMQ-only terminal states, while readers/retention can use the
+# complete union.
+LEGACY_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
+RABBITMQ_TERMINAL_STATUSES = frozenset({"succeeded", "dead_letter", "cancelled", "expired"})
+TERMINAL_STATUSES = LEGACY_TERMINAL_STATUSES | RABBITMQ_TERMINAL_STATUSES
 
 # Execution history pagination contract (M3 spec §5).
 DEFAULT_HISTORY_LIMIT = 50
@@ -80,6 +89,48 @@ def release_execution_leases(session: Session, execution_id: int) -> None:
     )
 
 
+def _persist_credential_binding_snapshots(
+    session: Session,
+    execution: Execution,
+    snapshots: Sequence[dict[str, object]],
+) -> None:
+    """Persist the closed credential reference set beside the JSON snapshot."""
+    rows: list[ExecutionCredentialBindingSnapshot] = []
+    required_keys = {"binding_id", "credential_id", "env_key", "field"}
+    for snapshot in snapshots:
+        if set(snapshot) != required_keys:
+            raise RuntimeError("invalid credential binding snapshot")
+        binding_id = snapshot["binding_id"]
+        credential_id = snapshot["credential_id"]
+        env_key = snapshot["env_key"]
+        field = snapshot["field"]
+        if (
+            isinstance(binding_id, bool)
+            or not isinstance(binding_id, int)
+            or binding_id <= 0
+            or isinstance(credential_id, bool)
+            or not isinstance(credential_id, int)
+            or credential_id <= 0
+            or not isinstance(env_key, str)
+            or not env_key
+            or not isinstance(field, str)
+            or not field
+        ):
+            raise RuntimeError("invalid credential binding snapshot")
+        rows.append(
+            ExecutionCredentialBindingSnapshot(
+                execution_id=execution.id,
+                binding_id=binding_id,
+                credential_id=credential_id,
+                env_key=env_key,
+                field=field,
+            )
+        )
+    if rows:
+        session.add_all(rows)
+        session.flush()
+
+
 def _create_pending_execution_locked(
     session: Session,
     adapter: Adapter,
@@ -92,6 +143,15 @@ def _create_pending_execution_locked(
     target_worker_id: int,
     scheduled_for: Any = None,
     artifact_ids: Sequence[int] = (),
+    dispatch_backend: str = "legacy",
+    dispatch_generation: int = 0,
+    logical_input_bytes: int = 0,
+    max_attempts_snapshot: int = 1,
+    retry_policy_snapshot: dict[str, object] | None = None,
+    resource_profile_snapshot: dict[str, object] | None = None,
+    credential_bindings_snapshot: list[dict[str, object]] | None = None,
+    schedule_policy_snapshot: dict[str, object] | None = None,
+    resource_class: str | None = "legacy",
 ) -> Execution:
     """Create a fully initialized pending Execution under the Adapter lock.
 
@@ -105,11 +165,24 @@ def _create_pending_execution_locked(
     if version_id is None:  # pragma: no cover - every caller validates readiness
         raise RuntimeError("cannot create an Execution without a saved Adapter version")
     created_at = database_now(session)
+    is_rabbitmq = dispatch_backend == "rabbitmq"
     execution = Execution(
         adapter_id=adapter.id,
         version_id=version_id,
         trigger=trigger,
-        status="pending",
+        status="queued" if is_rabbitmq else "pending",
+        dispatch_backend=dispatch_backend,
+        dispatch_generation=dispatch_generation,
+        queued_at=created_at if is_rabbitmq else None,
+        attempt_count=0,
+        max_attempts_snapshot=max_attempts_snapshot,
+        retry_policy_snapshot=retry_policy_snapshot or {},
+        resource_profile_snapshot=resource_profile_snapshot or {},
+        credential_bindings_snapshot=credential_bindings_snapshot or [],
+        schedule_policy_snapshot=schedule_policy_snapshot,
+        resource_class=resource_class,
+        target_worker_id_snapshot=target_worker_id,
+        logical_input_bytes=logical_input_bytes,
         input=runtime_input,
         input_source_type=input_source_type,
         input_config_revision=input_config_revision,
@@ -123,6 +196,9 @@ def _create_pending_execution_locked(
             settings.workspace_cleanup_total_timeout_seconds
         ),
         workspace_cleanup_status="pending",
+        # RabbitMQ queued rows do not use this field for the legacy stale-
+        # pending transition, but they still freeze the bounded Claim
+        # handshake deadline required by the immutable Execution snapshot.
         claim_deadline_at=created_at + timedelta(seconds=settings.execution_claim_timeout_seconds),
         target_worker_id=target_worker_id,
         scheduled_for=scheduled_for,
@@ -141,6 +217,8 @@ def _create_pending_execution_locked(
             for ordinal, artifact_id in enumerate(artifact_ids)
         )
         session.flush()
+    if dispatch_backend == "rabbitmq" and credential_bindings_snapshot:
+        _persist_credential_binding_snapshots(session, execution, credential_bindings_snapshot)
     return execution
 
 
@@ -152,6 +230,9 @@ def _create_execution_locked(
     scheduled_for: Any = None,
     input_override: object = NO_INPUT_OVERRIDE,
     schedule: Any = None,
+    idempotency_key: str | None = None,
+    idempotency_body: Any = None,
+    idempotency_lookup: Any = None,
 ) -> Execution:
     """Create one Execution while the caller owns the Adapter transaction lock."""
     from dlr.control.services.input_config import resolve_for_execution
@@ -162,8 +243,32 @@ def _create_execution_locked(
         raise domain_error(409, "adapter_deleted", "Adapter is deleted")
     if adapter.latest_version_id is None:
         raise domain_error(409, "adapter_has_no_version", "Adapter has no saved Revision yet")
-    if adapter_runtime.active_execution(session, adapter.id) is not None:
+    if (
+        not settings.rabbitmq_execution_enabled
+        and adapter_runtime.active_execution(session, adapter.id) is not None
+    ):
         raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
+
+    if settings.rabbitmq_execution_enabled:
+        from dlr.control.services import idempotency as idempotency_service
+        from dlr.control.services.reliable_execution import accept_execution
+
+        lookup = idempotency_lookup or idempotency_service.lookup(
+            session,
+            adapter.id,
+            trigger,
+            idempotency_body,
+            idempotency_key,
+        )
+        if lookup.record is not None:
+            existing = session.get(Execution, lookup.record.execution_id)
+            if existing is None:
+                raise domain_error(
+                    409,
+                    "idempotency_record_invalid",
+                    "Idempotency record is unavailable",
+                )
+            return existing
 
     # A Schedule run-now must take the same Schedule lock as the Scheduler,
     # but it never mutates the row or its cursor.
@@ -186,11 +291,31 @@ def _create_execution_locked(
             adapter.id,
         )
 
-    worker = resolve_runtime_worker(
-        session,
-        adapter,
-        now=worker_availability.current_time(session),
-    )
+    if settings.rabbitmq_execution_enabled:
+        return accept_execution(
+            session,
+            adapter,
+            trigger=trigger,
+            runtime_input=resolved.runtime_input,
+            input_source_type=resolved.source_type,
+            input_config_revision=resolved.revision,
+            input_snapshot=resolved.snapshot,
+            artifact_ids=resolved.artifact_ids,
+            scheduled_for=scheduled_for,
+            schedule_policy_snapshot=(
+                {
+                    "misfire_policy": schedule.misfire_policy,
+                    "max_catchup_count": schedule.max_catchup_count,
+                    "max_catchup_age_seconds": schedule.max_catchup_age_seconds,
+                }
+                if trigger == "schedule" and schedule is not None
+                else None
+            ),
+            idempotency_key=idempotency_key,
+            idempotency_body=idempotency_body,
+            idempotency_lookup=lookup,
+        )
+    worker = resolve_runtime_worker(session, adapter, now=worker_availability.current_time(session))
     return _create_pending_execution_locked(
         session,
         adapter,
@@ -202,12 +327,54 @@ def _create_execution_locked(
         target_worker_id=worker.id,
         scheduled_for=scheduled_for,
         artifact_ids=resolved.artifact_ids,
+        schedule_policy_snapshot=(
+            {
+                "misfire_policy": schedule.misfire_policy,
+                "max_catchup_count": schedule.max_catchup_count,
+                "max_catchup_age_seconds": schedule.max_catchup_age_seconds,
+            }
+            if trigger == "schedule" and schedule is not None
+            else None
+        ),
     )
 
 
-def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -> Execution:
+def create_execution(
+    session: Session,
+    adapter_id: int,
+    data: ExecutionCreate,
+    *,
+    idempotency_key: str | None = None,
+    idempotency_body: object = None,
+) -> Execution:
     """Create one Manual or schedule run-now Execution from saved input."""
     input_is_present = "input" in data.model_fields_set
+    rabbit_idempotency_lookup = None
+    if settings.rabbitmq_execution_enabled:
+        from dlr.control.services import idempotency as idempotency_service
+
+        adapter = session.get(Adapter, adapter_id, with_for_update=True)
+        if adapter is None:
+            raise domain_error(404, "adapter_not_found", "Adapter not found")
+        request_body = idempotency_body
+        rabbit_idempotency_lookup = idempotency_service.lookup(
+            session,
+            adapter_id,
+            "manual",
+            request_body,
+            idempotency_key,
+        )
+        if rabbit_idempotency_lookup.record is not None:
+            existing = session.get(Execution, rabbit_idempotency_lookup.record.execution_id)
+            if existing is None:
+                raise domain_error(
+                    409,
+                    "idempotency_record_invalid",
+                    "Idempotency record is unavailable",
+                )
+            session.commit()
+            session.refresh(existing)
+            return existing
     if input_is_present and not settings.legacy_input_compat_enabled:
         raise domain_error(
             422,
@@ -223,6 +390,9 @@ def create_execution(session: Session, adapter_id: int, data: ExecutionCreate) -
             adapter,
             trigger="manual",
             input_override=input_override,
+            idempotency_body=idempotency_body,
+            idempotency_key=idempotency_key,
+            idempotency_lookup=rabbit_idempotency_lookup,
         )
         session.commit()
     except IntegrityError as exc:
@@ -323,6 +493,12 @@ def apply_result(
     # Execution has already reached a terminal state.
     if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
+    if execution.dispatch_backend != "legacy":
+        raise domain_error(
+            409,
+            "worker_protocol_incompatible",
+            "RabbitMQ Executions require the v3 Consumer protocol",
+        )
     if execution.claim_token_hash is not None:
         require_claim_token(claim_token, execution.claim_token_hash)
     if execution.status != "running":
@@ -421,6 +597,12 @@ def apply_progress(
         raise domain_error(404, "execution_not_found", "Execution not found")
     if execution.worker_id != worker_id:
         raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
+    if execution.dispatch_backend != "legacy":
+        raise domain_error(
+            409,
+            "worker_protocol_incompatible",
+            "RabbitMQ Executions require the v3 Consumer protocol",
+        )
     if execution.claim_token_hash is not None:
         require_claim_token(claim_token, execution.claim_token_hash)
     if execution.status != "running":
@@ -450,12 +632,17 @@ def cancel_execution(session: Session, execution_id: int) -> Execution:
     trip and reports ``cancelled``, and terminal Executions are returned
     unchanged.
     """
-    execution = lock_execution(session, execution_id)
+    execution = lock_execution_in_admission_order(session, execution_id)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
     request_cancellation(execution)
     if execution.status == "cancelled":
         release_execution_leases(session, execution.id)
+        if execution.dispatch_backend == "rabbitmq":
+            from dlr.control.services import admission, outbox
+
+            admission.release_admission_once(session, execution)
+            outbox.settle_cancelled_outbox(session, execution.id)
     # Terminal states are never rewritten.
     session.commit()
     session.refresh(execution)

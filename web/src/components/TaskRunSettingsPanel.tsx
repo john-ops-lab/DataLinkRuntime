@@ -22,6 +22,8 @@ import type {
   InputSourceType,
   ManagedInputArtifact,
   ManagedInputCapability,
+  ScheduleMisfirePolicy,
+  ScheduleOutcome,
   TaskRunMode,
   Worker,
 } from "../types";
@@ -64,6 +66,16 @@ interface TaskRunSettingsPanelProps {
 const DEFAULT_TIMEOUT_SECONDS = 300;
 const MAX_TIMEOUT_SECONDS = 24 * 60 * 60; // 24 小时
 const TIMEOUT_PRESET_MINUTES = [1, 5, 10, 30, 60] as const;
+const DEFAULT_SCHEDULE_MISFIRE_POLICY: ScheduleMisfirePolicy = "coalesce_latest";
+const DEFAULT_SCHEDULE_CATCHUP_COUNT = 100;
+const DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS = 86_400;
+
+const SCHEDULE_OUTCOME_LABEL_KEYS: Record<ScheduleOutcome, string> = {
+  enqueued: "task.settings.outcomeEnqueued",
+  coalesced: "task.settings.outcomeCoalesced",
+  skipped: "task.settings.outcomeSkipped",
+  expired: "task.settings.outcomeExpired",
+};
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
@@ -233,10 +245,14 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   const [schedule, setSchedule] = useState<AdapterSchedule | null>(null);
   const [cron, setCron] = useState("*/5 * * * *");
   const [timezone, setTimezone] = useState("Asia/Shanghai");
+  const [misfirePolicy, setMisfirePolicy] = useState<ScheduleMisfirePolicy>(DEFAULT_SCHEDULE_MISFIRE_POLICY);
+  const [maxCatchupCount, setMaxCatchupCount] = useState(DEFAULT_SCHEDULE_CATCHUP_COUNT);
+  const [maxCatchupAgeSeconds, setMaxCatchupAgeSeconds] = useState(DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
   const [loadingSchedule, setLoadingSchedule] = useState(props.adapter.run_mode === "schedule");
   // 用户是否实际修改过定时字段（cron/timezone）。未修改时统一保存
   // 不得用表单值整体 PUT，避免把线上真实 Schedule 冲掉。
   const [scheduleTouched, setScheduleTouched] = useState(false);
+  const [schedulePolicyTouched, setSchedulePolicyTouched] = useState(false);
   // 初始 Schedule GET 非 404 失败时置位：此时表单仍是默认值，禁止 PUT。
   const [scheduleLoadFailed, setScheduleLoadFailed] = useState(false);
   const [savingRuntime, setSavingRuntime] = useState(false);
@@ -386,12 +402,21 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setSchedule(loaded);
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
+      setMisfirePolicy(loaded.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
+      setMaxCatchupCount(loaded.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
+      setMaxCatchupAgeSeconds(loaded.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
       setScheduleLoadFailed(false);
       setScheduleTouched(false);
+      setSchedulePolicyTouched(false);
     } catch (error) {
       if (error instanceof ApiError && error.status === 404 && error.code === "schedule_not_configured") {
         setSchedule(null);
+        setMisfirePolicy(DEFAULT_SCHEDULE_MISFIRE_POLICY);
+        setMaxCatchupCount(DEFAULT_SCHEDULE_CATCHUP_COUNT);
+        setMaxCatchupAgeSeconds(DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
         setScheduleLoadFailed(false);
+        setScheduleTouched(false);
+        setSchedulePolicyTouched(false);
       } else {
         // 加载失败时表单仍是默认值：标记后统一保存会跳过 Schedule PUT。
         setScheduleLoadFailed(true);
@@ -413,8 +438,12 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       setSchedule(loaded);
       setCron(loaded.cron);
       setTimezone(loaded.timezone);
+      setMisfirePolicy(loaded.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
+      setMaxCatchupCount(loaded.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
+      setMaxCatchupAgeSeconds(loaded.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
       setScheduleLoadFailed(false);
       setScheduleTouched(false);
+      setSchedulePolicyTouched(false);
     }).catch((error) => {
       // 404 = Schedule 尚未配置：保持空状态即可。保存流程里 PATCH 先于 PUT，
       // 迟到的 404 响应是陈旧信号，必须忽略，不能覆盖刚保存成功的 Schedule。
@@ -716,13 +745,24 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
             enabled: schedule?.enabled === true,
             cron,
             timezone,
+            ...(schedulePolicyTouched
+              ? {
+                  misfire_policy: misfirePolicy,
+                  max_catchup_count: maxCatchupCount,
+                  max_catchup_age_seconds: maxCatchupAgeSeconds,
+                }
+              : {}),
           });
           // 保存成功后的值立即落回表单，并作废任何在途的 Schedule GET。
           scheduleLoadEpoch.current += 1;
           setSchedule(saved);
           setCron(saved.cron);
           setTimezone(saved.timezone);
+          setMisfirePolicy(saved.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
+          setMaxCatchupCount(saved.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
+          setMaxCatchupAgeSeconds(saved.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
           setScheduleTouched(false);
+          setSchedulePolicyTouched(false);
         } else if (scheduleUnknown) {
           onError(t("task.settings.savedScheduleNotLoaded"));
         }
@@ -755,9 +795,22 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         enabled,
         cron,
         timezone,
+        ...(schedulePolicyTouched
+          ? {
+              misfire_policy: misfirePolicy,
+              max_catchup_count: maxCatchupCount,
+              max_catchup_age_seconds: maxCatchupAgeSeconds,
+            }
+          : {}),
       });
       setSchedule(saved);
+      setCron(saved.cron);
+      setTimezone(saved.timezone);
+      setMisfirePolicy(saved.misfire_policy ?? DEFAULT_SCHEDULE_MISFIRE_POLICY);
+      setMaxCatchupCount(saved.max_catchup_count ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
+      setMaxCatchupAgeSeconds(saved.max_catchup_age_seconds ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
       setScheduleTouched(false);
+      setSchedulePolicyTouched(false);
       await refreshAdapter();
     } catch (error) {
       onError(errorMessage(error));
@@ -1042,7 +1095,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                     ? t("worker.online", { ns: "common" })
                     : t("worker.offline", { ns: "common" }),
                 }),
-                disabled: worker.status !== "online",
               }))}
             />
           </label>
@@ -1129,6 +1181,82 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                 <span className="settings-field-label">{t("task.settings.timezone")}</span>
                 <Input data-testid="task-schedule-timezone" value={timezone} disabled={readOnly || scheduleFieldsLocked} onChange={(event) => { setTimezone(event.target.value); setScheduleTouched(true); }} />
               </label>
+              <label className="settings-field">
+                <span className="settings-field-label">{t("task.settings.misfirePolicy")}</span>
+                <Select
+                  data-testid="task-schedule-misfire-policy"
+                  value={misfirePolicy}
+                  disabled={readOnly || scheduleFieldsLocked}
+                  onChange={(value: ScheduleMisfirePolicy) => {
+                    setMisfirePolicy(value);
+                    setScheduleTouched(true);
+                    setSchedulePolicyTouched(true);
+                  }}
+                  options={[
+                    {
+                      value: "coalesce_latest",
+                      label: (
+                        <span title={t("task.settings.coalesceLatestHint")}>
+                          {t("task.settings.coalesceLatest")}
+                        </span>
+                      ),
+                    },
+                    {
+                      value: "queue_every_occurrence",
+                      label: (
+                        <span title={t("task.settings.queueEveryOccurrenceHint")}>
+                          {t("task.settings.queueEveryOccurrence")}
+                        </span>
+                      ),
+                    },
+                    {
+                      value: "skip_while_busy",
+                      label: (
+                        <span title={t("task.settings.skipWhileBusyHint")}>
+                          {t("task.settings.skipWhileBusy")}
+                        </span>
+                      ),
+                    },
+                  ]}
+                />
+              </label>
+              <div className="settings-field schedule-catchup-fields">
+                <label>
+                  <span className="settings-field-label">{t("task.settings.catchupCount")}</span>
+                  <InputNumber
+                    data-testid="task-schedule-max-catchup-count"
+                    min={1}
+                    max={1000}
+                    precision={0}
+                    value={maxCatchupCount}
+                    disabled={readOnly || scheduleFieldsLocked}
+                    onChange={(value) => {
+                      setMaxCatchupCount(value ?? DEFAULT_SCHEDULE_CATCHUP_COUNT);
+                      setScheduleTouched(true);
+                      setSchedulePolicyTouched(true);
+                    }}
+                  />
+                </label>
+                <label>
+                  <span className="settings-field-label">{t("task.settings.catchupAge")}</span>
+                  <InputNumber
+                    data-testid="task-schedule-max-catchup-age"
+                    min={60}
+                    max={604800}
+                    precision={0}
+                    value={maxCatchupAgeSeconds}
+                    disabled={readOnly || scheduleFieldsLocked}
+                    onChange={(value) => {
+                      setMaxCatchupAgeSeconds(value ?? DEFAULT_SCHEDULE_CATCHUP_AGE_SECONDS);
+                      setScheduleTouched(true);
+                      setSchedulePolicyTouched(true);
+                    }}
+                  />
+                </label>
+              </div>
+              <Typography.Text type="secondary" className="settings-field-hint">
+                {t("task.settings.policyHint")}
+              </Typography.Text>
               <div className="settings-field">
                 <span className="settings-field-label">{t("task.settings.scheduleStatus")}</span>
                 <Space>
@@ -1136,6 +1264,30 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
                   <span data-testid="task-schedule-next-run">{t("task.settings.nextRun", { time: formatTime(schedule?.next_run_at ?? null, locale) })}</span>
                   <Button size="small" onClick={() => void loadSchedule()}>{t("actions.refresh", { ns: "common" })}</Button>
                 </Space>
+              </div>
+              <div className="settings-field" data-testid="task-schedule-outcomes">
+                <span className="settings-field-label">{t("task.settings.recentOutcomes")}</span>
+                {schedule?.recent_outcomes && schedule.recent_outcomes.length > 0 ? (
+                  <Space direction="vertical" size="small">
+                    {schedule.recent_outcomes.slice(0, 5).map((outcome) => (
+                      <Space key={outcome.id} wrap>
+                        <Tag color={outcome.outcome === "enqueued" ? "green" : outcome.outcome === "expired" ? "warning" : "default"}>
+                          {t(SCHEDULE_OUTCOME_LABEL_KEYS[outcome.outcome])}
+                        </Tag>
+                        <Typography.Text type="secondary">
+                          {formatTime(outcome.first_scheduled_for, locale)}
+                          {outcome.last_scheduled_for !== outcome.first_scheduled_for
+                            ? ` – ${formatTime(outcome.last_scheduled_for, locale)}`
+                            : ""}
+                          {` · ${outcome.occurrence_count}`}
+                          {outcome.reason ? ` · ${outcome.reason}` : ""}
+                        </Typography.Text>
+                      </Space>
+                    ))}
+                  </Space>
+                ) : (
+                  <Typography.Text type="secondary">{t("task.settings.noRecentOutcomes")}</Typography.Text>
+                )}
               </div>
             </Space>
           )}

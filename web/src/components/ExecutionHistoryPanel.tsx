@@ -58,6 +58,29 @@ function formatDuration(
     : translate("units.milliseconds", { value: durationMs });
 }
 
+function RetryCountdown(props: {
+  nextAttemptAt: string;
+  translate: (key: string, options?: Record<string, unknown>) => string;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [props.nextAttemptAt]);
+
+  const target = Date.parse(props.nextAttemptAt);
+  if (Number.isNaN(target)) {
+    return null;
+  }
+  const seconds = Math.max(0, Math.ceil((target - now) / 1000));
+  return (
+    <span data-testid="execution-retry-countdown">
+      {props.translate("history.retryCountdown", { seconds })}
+    </span>
+  );
+}
+
 export default function ExecutionHistoryPanel(props: {
   adapterId: number;
   /** Server-side filter; Webhook call history excludes legacy manual runs. */
@@ -327,11 +350,40 @@ export default function ExecutionHistoryPanel(props: {
                 description={t("history.connectionLostDescription")}
               />
             )}
+            {visibleDetail.status === "queued" && (
+              <Alert
+                type="info"
+                showIcon
+                data-testid="execution-queued-notice"
+                message={t("history.waitingForWorker")}
+              />
+            )}
+            {visibleDetail.status === "retry_wait" && visibleDetail.next_attempt_at !== null && visibleDetail.next_attempt_at !== undefined && (
+              <Alert
+                type="warning"
+                showIcon
+                data-testid="execution-retry-notice"
+                message={t("history.retryAt", { time: formatTime(visibleDetail.next_attempt_at, locale) })}
+                description={(
+                  <RetryCountdown
+                    nextAttemptAt={visibleDetail.next_attempt_at}
+                    translate={(key, options) => t(key, options)}
+                  />
+                )}
+              />
+            )}
             <Descriptions
               size="small"
               column={{ xs: 1, sm: 2 }}
               items={[
                 { key: "status", label: t("labels.status", { ns: "common" }), children: <Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag> },
+                {
+                  key: "backend",
+                  label: t("history.backend"),
+                  children: visibleDetail.dispatch_backend === "rabbitmq"
+                    ? t("history.backendRabbitmq")
+                    : t("history.backendLegacy"),
+                },
                 {
                   key: "worker",
                   label: t("labels.runtimeWorker", { ns: "common" }),
@@ -354,11 +406,54 @@ export default function ExecutionHistoryPanel(props: {
                     ]
                   : []),
                 { key: "created", label: t("labels.createdTime", { ns: "common" }), children: formatTime(visibleDetail.created_at, locale) },
+                ...(visibleDetail.queued_at
+                  ? [{ key: "queued-at", label: t("history.queuedAt"), children: formatTime(visibleDetail.queued_at, locale) }]
+                  : []),
+                ...(visibleDetail.status === "retry_wait" && visibleDetail.next_attempt_at
+                  ? [{ key: "next-attempt", label: t("history.retryAt", { time: "" }), children: formatTime(visibleDetail.next_attempt_at, locale) }]
+                  : []),
+                ...(visibleDetail.status === "retry_wait" && visibleDetail.attempt_count !== undefined
+                  ? [{
+                      key: "attempts",
+                      label: t("history.attempts", {
+                        current: visibleDetail.attempt_count,
+                        max: visibleDetail.max_attempts_snapshot ?? "—",
+                      }),
+                      children: "",
+                    }]
+                  : []),
+                ...((visibleDetail.last_error_code ?? visibleDetail.error_code)
+                  ? [{
+                      key: "stable-error",
+                      label: t("history.stableError", { code: visibleDetail.last_error_code ?? visibleDetail.error_code }),
+                      children: "",
+                    }]
+                  : []),
                 { key: "started", label: t("labels.startTime", { ns: "common" }), children: formatTime(visibleDetail.started_at, locale) },
                 { key: "ended", label: t("labels.endTime", { ns: "common" }), children: formatTime(visibleDetail.ended_at, locale) },
                 { key: "duration", label: t("labels.duration", { ns: "common" }), children: formatDuration(visibleDetail.duration_ms, (key, options) => t(key, options)) },
               ]}
             />
+            <Space direction="vertical" size="small" className="execution-detail-runtime-facts">
+              <Alert
+                type="info"
+                showIcon
+                data-testid="execution-attempt-timeline-placeholder"
+                message={t("history.runtimeFacts")}
+                description={t("history.attemptTimeline")}
+              />
+              <Alert
+                type="info"
+                showIcon
+                data-testid="execution-incident-placeholder"
+                message={t("history.incidentPlaceholder")}
+              />
+              {visibleDetail.status === "dead_letter" && (
+                visibleDetail.replay_available === false && visibleDetail.replay_unavailable_reason === "dead_letter_input_expired"
+                  ? <Alert type="warning" showIcon data-testid="execution-replay-expired" message={t("history.replayExpired")} />
+                  : <Button disabled data-testid="execution-replay-placeholder">{t("history.replayUnavailable")}</Button>
+              )}
+            </Space>
             {/* M5.5.10：内部 Execution ID 只作为次级技术信息展示（易理解名称“运行 ID”）。 */}
             <div className="execution-version-debug" data-testid="execution-run-id">
               {t("history.runId", { id: visibleDetail.id })}

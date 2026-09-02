@@ -1080,11 +1080,11 @@ export function AdapterConsole({
       void persistVersion();
       return;
     }
-    const compatibleOnlineWorkers = workers.filter(
-      (worker) => worker.status === "online" && worker.capabilities.includes(selected.language),
+    const compatibleWorkers = workers.filter(
+      (worker) => worker.capabilities.includes(selected.language),
     );
-    if (compatibleOnlineWorkers.length === 1) {
-      void persistVersion(compatibleOnlineWorkers[0].id);
+    if (compatibleWorkers.length === 1) {
+      void persistVersion(compatibleWorkers[0].id);
       return;
     }
     setSaveWorkerId(null);
@@ -1907,15 +1907,22 @@ export function AdapterConsole({
               options={workers
                 .filter((worker) =>
                   selected !== null &&
-                  worker.status === "online" &&
                   worker.capabilities.includes(selected.language),
                 )
-                .map((worker) => ({ value: worker.id, label: worker.name }))}
+                .map((worker) => ({
+                  value: worker.id,
+                  label: t("worker.option", {
+                    ns: "common",
+                    name: worker.name,
+                    status: worker.status === "online"
+                      ? t("worker.online", { ns: "common" })
+                      : t("worker.offline", { ns: "common" }),
+                  }),
+                }))}
             />
           </label>
           {workers.filter((worker) =>
             selected !== null &&
-            worker.status === "online" &&
             worker.capabilities.includes(selected.language),
           ).length === 0 && (
             <p className="settings-danger-hint" role="alert">{t("save.noWorker", { ns: "adapter" })}</p>

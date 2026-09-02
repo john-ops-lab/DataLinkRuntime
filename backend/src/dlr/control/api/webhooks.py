@@ -22,7 +22,7 @@ commits never block the Control event loop. No async ORM is introduced.
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
@@ -97,7 +97,12 @@ async def _read_capped_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
-def _receive_hook_sync(public_id: str, authorization: str | None, body: bytes) -> int:
+def _receive_hook_sync(
+    public_id: str,
+    authorization: str | None,
+    body: bytes,
+    idempotency_key: str | None = None,
+) -> int:
     """The blocking DB transaction of one Webhook receipt.
 
     Runs on a worker thread via ``asyncio.to_thread`` (same pattern as the
@@ -110,7 +115,13 @@ def _receive_hook_sync(public_id: str, authorization: str | None, body: bytes) -
 
     session = SessionLocal()
     try:
-        execution = webhook_service.receive_webhook(session, public_id, authorization, body)
+        execution = webhook_service.receive_webhook(
+            session,
+            public_id,
+            authorization,
+            body,
+            idempotency_key=idempotency_key,
+        )
         return execution.id
     finally:
         session.close()
@@ -121,6 +132,7 @@ async def receive_hook(
     public_id: str,
     request: Request,
     authorization: AuthorizationHeader = None,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, object]:
     """External Webhook ingress: validate, create a pending Execution, 202.
 
@@ -132,5 +144,7 @@ async def receive_hook(
     400 (invalid/non-standard JSON) and 413 (compact JSON over the cap).
     """
     body = await _read_capped_body(request)
-    execution_id = await asyncio.to_thread(_receive_hook_sync, public_id, authorization, body)
+    execution_id = await asyncio.to_thread(
+        _receive_hook_sync, public_id, authorization, body, idempotency_key
+    )
     return {"execution_id": execution_id, "status": "accepted"}

@@ -21,7 +21,7 @@ def test_fresh_schema_has_active_only_name_uniqueness(test_engine: Engine) -> No
             )
         )
 
-    assert revision == "0029_issue127_c0_exec_lease"
+    assert revision == "0030_issue130_reliable_runtime"
     assert index_definition is not None
     assert "UNIQUE" in index_definition
     assert "archived_at IS NULL" in index_definition

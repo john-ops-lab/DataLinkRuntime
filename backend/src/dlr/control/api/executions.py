@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from sqlalchemy.orm import Session
 
 from dlr.control import db
@@ -19,6 +19,7 @@ router = APIRouter(dependencies=[Depends(require_business_principal)])
 
 DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
+IdempotencyHeader = Annotated[str | None, Header(alias="Idempotency-Key")]
 
 
 @router.post(
@@ -31,11 +32,24 @@ def create_execution(
     payload: ExecutionCreate,
     principal: CurrentPrincipal,
     session: DbSession,
+    idempotency_key: IdempotencyHeader = None,
 ) -> ExecutionResponse:
     """Create a Manual Execution pinned to one immutable version."""
     adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
+    # Use FastAPI's already validated model rather than Starlette's private
+    # body cache or a second JSON parse.  ``exclude_unset`` preserves the
+    # distinction between an omitted ``input`` field and an explicit JSON
+    # null, while the service's JCS layer removes insignificant whitespace and
+    # key-order differences.
+    idempotency_body = payload.model_dump(mode="json", exclude_unset=True)
     return ExecutionResponse.model_validate(
-        execution_service.create_execution(session, adapter_id, payload)
+        execution_service.create_execution(
+            session,
+            adapter_id,
+            payload,
+            idempotency_key=idempotency_key,
+            idempotency_body=idempotency_body,
+        )
     )
 
 

@@ -12,12 +12,15 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models import (
     Adapter,
+    AdapterExecutionSlot,
     AdapterInputConfig,
     AdapterPermission,
     AdapterSchedule,
     AdapterVersion,
     AdapterWebhook,
     Execution,
+    ExecutionIdempotencyRecord,
+    ExecutionOutbox,
     Worker,
     WorkerCleanupRequest,
 )
@@ -30,7 +33,10 @@ from dlr.control.schemas.adapter import (
     VersionCreate,
 )
 from dlr.control.services import adapter_runtime, worker_availability
-from dlr.control.services.execution_cancellation import lock_active_execution, request_cancellation
+from dlr.control.services.execution_cancellation import (
+    lock_nonterminal_executions,
+    request_cancellation,
+)
 
 
 @dataclass(frozen=True)
@@ -57,7 +63,11 @@ def domain_error(
     detail: dict[str, object] = {"code": code, "message": message}
     if params:
         detail["params"] = dict(params)
-    return HTTPException(status_code=status_code, detail=detail)
+    headers: dict[str, str] | None = None
+    retry_after = params.get("retry_after") if params is not None else None
+    if status_code in {429, 503} and isinstance(retry_after, (int, float)):
+        headers = {"Retry-After": str(max(1, int(retry_after)))}
+    return HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
 def list_adapters(session: Session) -> list[Adapter]:
@@ -167,6 +177,10 @@ def create_adapter(
     session.add(adapter)
     try:
         session.flush()
+        # The additive B1 schema has one explicit Slot 0 per Adapter.  It is
+        # a future Claim authority only; legacy HTTP Claim continues to use
+        # the existing execution index until Batch 2.
+        session.add(AdapterExecutionSlot(adapter_id=adapter.id, slot_no=0))
         if adapter.adapter_type == "task":
             # A new Task starts with one explicit Adapter-level input object;
             # the later migration handles historical rows.
@@ -377,14 +391,101 @@ def _require_cleanup_workers(session: Session, adapter: Adapter) -> list[int]:
     return sorted(worker_ids)
 
 
+def _require_running_execution_workers_online(
+    session: Session, executions: list[Execution]
+) -> None:
+    """Prove every running responsibility can still converge before stopping."""
+    for execution in executions:
+        worker_id = (
+            execution.worker_id or execution.target_worker_id_snapshot or execution.target_worker_id
+        )
+        worker = session.get(Worker, worker_id) if worker_id is not None else None
+        if worker is None or not worker_availability.is_effectively_online(
+            worker, now=worker_availability.current_time(session)
+        ):
+            raise domain_error(
+                409,
+                "worker_offline",
+                "The Worker running this Execution is offline; deletion is safely blocked",
+                {"active_execution_id": execution.id},
+            )
+
+
+def _cancel_queued_execution_for_delete(session: Session, execution: Execution) -> None:
+    """Cancel one locked non-running responsibility and release every charge."""
+    request_cancellation(execution)
+    from dlr.control.services.execution import release_execution_leases
+
+    release_execution_leases(session, execution.id)
+    if execution.dispatch_backend == "rabbitmq":
+        from dlr.control.services import admission, outbox
+
+        admission.release_admission_once(session, execution)
+        outbox.settle_cancelled_outbox(session, execution.id)
+
+
+def _settle_terminal_rabbitmq_responsibilities(session: Session, adapter_id: int) -> None:
+    """Close terminal RabbitMQ responsibility before deleting its parent rows."""
+    from dlr.control.services import admission, outbox
+
+    terminal_rows = list(
+        session.scalars(
+            select(Execution)
+            .where(
+                Execution.adapter_id == adapter_id,
+                Execution.dispatch_backend == "rabbitmq",
+                Execution.status.in_(("succeeded", "dead_letter", "cancelled", "expired")),
+            )
+            .order_by(Execution.id.asc())
+            .with_for_update()
+        ).all()
+    )
+    for execution in terminal_rows:
+        if execution.admission_released_at is None:
+            admission.release_admission_once(session, execution)
+        outbox.settle_pending_outbox(
+            session,
+            execution.id,
+            disposition="execution_deleted",
+        )
+
+    unreleased_id = session.scalar(
+        select(Execution.id)
+        .where(
+            Execution.adapter_id == adapter_id,
+            Execution.dispatch_backend == "rabbitmq",
+            Execution.status.in_(("succeeded", "dead_letter", "cancelled", "expired")),
+            Execution.admission_released_at.is_(None),
+        )
+        .order_by(Execution.id.asc())
+        .limit(1)
+    )
+    pending_id = session.scalar(
+        select(ExecutionOutbox.execution_id)
+        .join(Execution, Execution.id == ExecutionOutbox.execution_id)
+        .where(
+            Execution.adapter_id == adapter_id,
+            Execution.dispatch_backend == "rabbitmq",
+            ExecutionOutbox.status == "pending",
+        )
+        .order_by(ExecutionOutbox.execution_id.asc())
+        .limit(1)
+    )
+    if unreleased_id is not None or pending_id is not None:
+        raise RuntimeError("RabbitMQ responsibility did not settle before Adapter deletion")
+
+
 def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> AdapterDeleteResult:
     """Permanently delete one Adapter after safe runtime quiescence.
 
-    A pending Execution is cancelled inside this transaction. A running
-    Execution is only marked for cancellation and the request returns a
-    waiting result; the caller must retry after the Worker reports the
-    terminal ``cancelled`` state. No Control-side fallback can remove a live
-    Worker's private environment.
+    Every non-terminal Execution is locked before the decision. RabbitMQ rows
+    are not covered by the legacy one-active-row index: several queued or
+    retry-wait rows may exist for one Adapter. Stop-cancelled RabbitMQ rows
+    release Admission, settle their pending Outbox generations and release
+    input Leases before permanent deletion. A running Execution is only
+    marked for cancellation and the request returns a waiting result; the
+    caller must retry after the Worker reports terminal ``cancelled``. No
+    Control-side fallback can remove a live Worker's private environment.
     """
     adapter = session.get(Adapter, adapter_id, with_for_update=True)
     if adapter is None or adapter.archived_at is not None:
@@ -397,44 +498,44 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
 
     managed_input_gc.ensure_no_active_upload(session, adapter.id)
 
-    active = lock_active_execution(session, adapter.id)
-    if active is not None:
-        if not stop:
-            adapter_runtime.require_runtime_unlocked(session, adapter)
-        if active.status == "running":
-            worker = session.get(Worker, active.worker_id) if active.worker_id is not None else None
-            if worker is None or not worker_availability.is_effectively_online(
-                worker, now=worker_availability.current_time(session)
-            ):
-                raise domain_error(
-                    409,
-                    "worker_offline",
-                    "The Worker running this Execution is offline; deletion is safely blocked",
-                    {"active_execution_id": active.id},
-                )
-            if stop:
-                _disable_trigger_for_delete(session, adapter)
-                request_cancellation(active)
-                session.commit()
-                return AdapterDeleteResult(
-                    waiting_for_worker=True,
-                    active_execution_id=active.id,
-                )
-            raise AssertionError("running execution must block deletion")
-        if stop:
-            _disable_trigger_for_delete(session, adapter)
-            request_cancellation(active)
-            from dlr.control.services.execution import release_execution_leases
+    # Acquire the RabbitMQ Admission scope before locking any Execution.  The
+    # scope is harmless for a legacy-only Adapter and makes stop/delete follow
+    # the same Adapter -> AdapterAdmission -> Global -> Execution/Outbox order
+    # as ingress, cancellation and reconciliation.
+    from dlr.control.services import admission
 
-            release_execution_leases(session, active.id)
-        else:
-            adapter_runtime.require_runtime_unlocked(session, adapter)
-    elif stop:
-        _disable_trigger_for_delete(session, adapter)
-    else:
+    if admission.lock_admission_scope(session, adapter.id) is None:  # pragma: no cover
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    nonterminal = lock_nonterminal_executions(session, adapter.id)
+    if not stop:
+        if nonterminal:
+            raise domain_error(
+                409,
+                "adapter_runtime_locked",
+                "Stop the Adapter and wait for all non-terminal Executions to finish "
+                "before deleting",
+            )
         adapter_runtime.require_runtime_unlocked(session, adapter)
+    else:
+        running = [execution for execution in nonterminal if execution.status == "running"]
+        # Validate every running Worker before changing any queued responsibility;
+        # this keeps a failed stop request free of partial cancellation effects.
+        _require_running_execution_workers_online(session, running)
+        _disable_trigger_for_delete(session, adapter)
+        for execution in nonterminal:
+            if execution.status == "running":
+                request_cancellation(execution)
+            else:
+                _cancel_queued_execution_for_delete(session, execution)
+        if running:
+            session.commit()
+            return AdapterDeleteResult(
+                waiting_for_worker=True,
+                active_execution_id=running[0].id,
+            )
 
     cleanup_worker_ids = _require_cleanup_workers(session, adapter)
+    _settle_terminal_rabbitmq_responsibilities(session, adapter.id)
 
     # Move charged Blob responsibility to rows that do not reference the
     # Adapter before removing any managed-input metadata.  The detached jobs
@@ -442,6 +543,15 @@ def delete_adapter(session: Session, adapter_id: int, *, stop: bool = False) -> 
     # object is gone.
     deletion_job_ids = managed_input_gc.prepare_adapter_deletion(session, adapter.id)
 
+    # The idempotency record points back to Execution with ON DELETE RESTRICT;
+    # explicit Adapter deletion is the one retention exception and removes
+    # only this Adapter's records before its Execution rows. Other Adapters'
+    # records remain untouched.
+    session.execute(
+        delete(ExecutionIdempotencyRecord).where(
+            ExecutionIdempotencyRecord.adapter_id == adapter.id
+        )
+    )
     # Child rows are deleted explicitly so the permanent-delete contract is
     # visible in the transaction and remains correct if a future FK changes
     # from CASCADE to RESTRICT. Credential rows are intentionally untouched.
@@ -570,6 +680,8 @@ def clone_adapter(
     )
     session.add(clone)
     try:
+        session.flush()
+        session.add(AdapterExecutionSlot(adapter_id=clone.id, slot_no=0))
         session.flush()
     except IntegrityError:
         session.rollback()

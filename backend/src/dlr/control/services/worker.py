@@ -479,6 +479,10 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
             select(Execution)
             .join(Adapter, Adapter.id == Execution.adapter_id)
             .where(
+                # Batch 1 deliberately keeps the HTTP long-poll Claim path
+                # legacy-only.  RabbitMQ dispatch rows wait for the later v3
+                # Consumer/Claim batch and must never be silently downgraded.
+                Execution.dispatch_backend == "legacy",
                 Execution.status == "pending",
                 Execution.cancel_requested.is_(False),
                 Adapter.language.in_(worker.capabilities),
@@ -516,6 +520,7 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
                     .join(Adapter, Adapter.id == Execution.adapter_id)
                     .where(
                         Execution.status == "pending",
+                        Execution.dispatch_backend == "legacy",
                         Execution.cancel_requested.is_(False),
                         Execution.input_source_type.not_in(("none", "json")),
                         Adapter.language.in_(worker.capabilities),
@@ -534,6 +539,29 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
                         409,
                         "worker_protocol_incompatible",
                         "This Execution requires a newer Worker protocol",
+                    )
+                rabbitmq_exists = session.scalar(
+                    select(Execution.id)
+                    .join(Adapter, Adapter.id == Execution.adapter_id)
+                    .where(
+                        Execution.dispatch_backend == "rabbitmq",
+                        Execution.status == "queued",
+                        Execution.cancel_requested.is_(False),
+                        Adapter.language.in_(worker.capabilities),
+                        or_(
+                            Execution.target_worker_id.is_(None),
+                            Execution.target_worker_id == worker_id,
+                        ),
+                    )
+                    .order_by(Execution.created_at.asc(), Execution.id.asc())
+                    .limit(1)
+                )
+                if rabbitmq_exists is not None:
+                    session.rollback()
+                    raise domain_error(
+                        409,
+                        "worker_protocol_incompatible",
+                        "RabbitMQ Executions require the v3 Consumer protocol",
                     )
             # Release any snapshot state before the next poll iteration.
             session.rollback()

@@ -13,15 +13,17 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
 from dlr.common.config import settings
-from dlr.control.models import Execution
-from dlr.control.services.execution import TERMINAL_STATUSES
+from dlr.control.models import Execution, ExecutionIdempotencyRecord, ExecutionOutbox
+from dlr.control.services.execution import LEGACY_TERMINAL_STATUSES, RABBITMQ_TERMINAL_STATUSES
+from dlr.control.services.idempotency import cleanup_expired_records
 
 logger = logging.getLogger("dlr.control.retention")
 
@@ -67,7 +69,23 @@ def _terminal_query(policy: RetentionPolicy, adapter_id: int) -> Select[tuple[in
     return select(Execution.id).where(
         Execution.adapter_id == adapter_id,
         Execution.trigger == policy.trigger,
-        Execution.status.in_(TERMINAL_STATUSES),
+        ((Execution.dispatch_backend == "legacy") & Execution.status.in_(LEGACY_TERMINAL_STATUSES))
+        | (
+            (Execution.dispatch_backend == "rabbitmq")
+            & Execution.status.in_(RABBITMQ_TERMINAL_STATUSES)
+        ),
+        ((Execution.dispatch_backend == "legacy") | Execution.admission_released_at.is_not(None)),
+        ~exists(
+            select(1).where(
+                ExecutionIdempotencyRecord.execution_id == Execution.id,
+            )
+        ),
+        ~exists(
+            select(1).where(
+                ExecutionOutbox.execution_id == Execution.id,
+                ExecutionOutbox.status == "pending",
+            )
+        ),
     )
 
 
@@ -77,7 +95,14 @@ def _adapter_ids(session: Session, policy: RetentionPolicy) -> list[int]:
             select(Execution.adapter_id)
             .where(
                 Execution.trigger == policy.trigger,
-                Execution.status.in_(TERMINAL_STATUSES),
+                (
+                    (Execution.dispatch_backend == "legacy")
+                    & Execution.status.in_(LEGACY_TERMINAL_STATUSES)
+                )
+                | (
+                    (Execution.dispatch_backend == "rabbitmq")
+                    & Execution.status.in_(RABBITMQ_TERMINAL_STATUSES)
+                ),
             )
             .distinct()
         )
@@ -87,14 +112,40 @@ def _adapter_ids(session: Session, policy: RetentionPolicy) -> list[int]:
 def _delete_batch(session: Session, ids: list[int]) -> int:
     if not ids:
         return 0
-    session.execute(
-        delete(Execution).where(
-            Execution.id.in_(ids),
-            Execution.status.in_(TERMINAL_STATUSES),
-        )
+    result = cast(
+        Any,
+        session.execute(
+            delete(Execution).where(
+                Execution.id.in_(ids),
+                (
+                    (Execution.dispatch_backend == "legacy")
+                    & Execution.status.in_(LEGACY_TERMINAL_STATUSES)
+                )
+                | (
+                    (Execution.dispatch_backend == "rabbitmq")
+                    & Execution.status.in_(RABBITMQ_TERMINAL_STATUSES)
+                ),
+                (
+                    (Execution.dispatch_backend == "legacy")
+                    | Execution.admission_released_at.is_not(None)
+                ),
+                ~exists(
+                    select(1).where(
+                        ExecutionIdempotencyRecord.execution_id == Execution.id,
+                    )
+                ),
+                ~exists(
+                    select(1).where(
+                        ExecutionOutbox.execution_id == Execution.id,
+                        ExecutionOutbox.status == "pending",
+                    )
+                ),
+            )
+        ),
     )
+    deleted = int(result.rowcount or 0)
     session.commit()
-    return len(ids)
+    return deleted
 
 
 def _cleanup_policy(
@@ -174,7 +225,16 @@ def cleanup_execution_retention(
     """
 
     started = time.monotonic()
-    effective_now = now or datetime.now(UTC)
+    if now is None:
+        from dlr.control.services.input_config import database_now
+
+        effective_now = database_now(session)
+    else:
+        effective_now = now
+    # Expired records are removed first, but only when their Execution is
+    # already terminal.  Remaining records keep their FK and therefore keep
+    # the associated Execution inside the promised replay window.
+    cleanup_expired_records(session, now=effective_now)
     total_deleted = 0
     total_batches = 0
     total_failures = 0

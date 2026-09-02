@@ -34,6 +34,19 @@ from dlr.control.models.platform import (
     Credential,
     PackageSource,
 )
+from dlr.control.models.reliable_execution import (
+    AdapterExecutionAdmission,
+    AdapterExecutionSlot,
+    ExecutionArtifactHold,
+    ExecutionAttempt,
+    ExecutionCredentialBindingSnapshot,
+    ExecutionIdempotencyRecord,
+    ExecutionInfrastructureIncident,
+    ExecutionOutbox,
+    GlobalExecutionAdmission,
+    RabbitMQRuntimeCapability,
+    ScheduleDispatchOutcome,
+)
 from dlr.control.models.schedule import AdapterSchedule
 from dlr.control.models.system import SystemSetting
 from dlr.control.models.webhook import AdapterWebhook
@@ -75,6 +88,17 @@ __all__ = [
     "SystemSetting",
     "Worker",
     "WorkerCleanupRequest",
+    "AdapterExecutionAdmission",
+    "AdapterExecutionSlot",
+    "ExecutionCredentialBindingSnapshot",
+    "ExecutionArtifactHold",
+    "ExecutionAttempt",
+    "ExecutionIdempotencyRecord",
+    "ExecutionInfrastructureIncident",
+    "ExecutionOutbox",
+    "GlobalExecutionAdmission",
+    "RabbitMQRuntimeCapability",
+    "ScheduleDispatchOutcome",
     "User",
     "UserSession",
 ]

@@ -1258,7 +1258,7 @@ it("creates an adapter and selects it", async () => {
 
   // Created adapter becomes selected; metadata moved to the settings drawer.
   await screen.findByRole("heading", { name: "cmdb-sync" });
-  expect(screen.queryByTestId("new-adapter-name")).toBeNull();
+  await waitFor(() => expect(screen.queryByTestId("new-adapter-name")).toBeNull());
   fireEvent.click(screen.getByTestId("adapter-settings"));
   await screen.findByTestId("adapter-name");
   expect(valueOf("adapter-name")).toBe("cmdb-sync");
@@ -1509,7 +1509,7 @@ it("asks for a compatible Worker on first Save when several are available", asyn
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByText("第一次保存需要确定运行节点。后续可在“运行设置”中查看或修改。")).toBeTruthy();
   fireEvent.mouseDown(within(dialog).getByRole("combobox"));
-  fireEvent.click(await screen.findByText("worker-b"));
+  fireEvent.click(await screen.findByText("worker-b（在线）"));
   fireEvent.click(within(dialog).getByRole("button", { name: /保\s*存/ }));
 
   await screen.findByText("适配器已保存");
@@ -1524,7 +1524,7 @@ it("asks for a compatible Worker on first Save when several are available", asyn
   ).toBe(true);
 });
 
-it("automatically selects the only compatible online Worker on first Save", async () => {
+it("automatically selects the only compatible Worker on first Save even when offline", async () => {
   let adapter = makeAdapter({ runtime_worker_id: null });
   const versions: VersionSummary[] = [];
   const fetchMock = stubFetch([
@@ -1535,8 +1535,8 @@ it("automatically selects the only compatible online Worker on first Save", asyn
       match: "/api/workers",
       respond: () => ({
         body: [
-          { id: 4, name: "only-python", status: "online", last_heartbeat: "", capabilities: ["python"] },
-          { id: 5, name: "offline-python", status: "offline", last_heartbeat: "", capabilities: ["python"] },
+          { id: 4, name: "offline-python", status: "offline", last_heartbeat: "", capabilities: ["python"] },
+          { id: 5, name: "online-javascript", status: "online", last_heartbeat: "", capabilities: ["javascript"] },
         ],
       }),
     },
@@ -4531,16 +4531,24 @@ function makeWebhook(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function webhookConsoleRoutes(adapter: Adapter, webhook = makeWebhook()): Route[] {
+function webhookConsoleRoutes(
+  adapter: Adapter,
+  webhook = makeWebhook(),
+  workers = [{
+    id: 3,
+    name: "hook-worker",
+    status: "online",
+    last_heartbeat: "",
+    capabilities: [adapter.language],
+  }],
+): Route[] {
   return [
     healthRoute({ status: "ok", database: true }),
     { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
     {
       method: "GET",
       match: "/api/workers",
-      respond: () => ({
-        body: [{ id: 3, name: "hook-worker", status: "online", last_heartbeat: "", capabilities: [adapter.language] }],
-      }),
+      respond: () => ({ body: workers }),
     },
     { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
     { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
@@ -4562,6 +4570,35 @@ it("shows the Webhook starter and only 编辑 / 运行设置 / 调用记录 / �
   expect(screen.getByRole("tab", { name: "调用记录" })).toBeDefined();
   expect(screen.getByRole("tab", { name: "实时日志" })).toBeDefined();
   expect(document.body.textContent).not.toMatch(/Publish|Published|Production|测试运行|触发器|Cron|Timezone/);
+});
+
+it("keeps an offline compatible Webhook Worker selectable and shows its status", async () => {
+  const adapter = makeAdapter({ adapter_type: "webhook", runtime_worker_id: 3 });
+  stubFetch(webhookConsoleRoutes(adapter, makeWebhook(), [{
+    id: 3,
+    name: "hook-worker",
+    status: "offline",
+    last_heartbeat: "",
+    capabilities: ["python"],
+  }]));
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+
+  const select = screen.getByTestId("webhook-runtime-worker");
+  fireEvent.mouseDown(select.querySelector(".ant-select-selector") ?? select);
+  const optionContent = (await screen.findAllByText("hook-worker（离线）"))
+    .find((element) => element.classList.contains("ant-select-item-option-content"));
+  expect(optionContent).not.toBeUndefined();
+  if (optionContent === undefined) {
+    throw new Error("offline compatible Webhook Worker option was not rendered");
+  }
+  const option = optionContent.closest(".ant-select-item-option");
+  expect(option?.classList.contains("ant-select-item-option-disabled")).toBe(false);
+  fireEvent.click(option ?? optionContent);
+  expect(select.textContent).toContain("hook-worker（离线）");
 });
 
 it("requests Webhook call history with a server-side trigger filter", async () => {
