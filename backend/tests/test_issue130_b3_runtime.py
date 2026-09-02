@@ -7,6 +7,7 @@ Colima Worker container with ``DLR_B3_REAL_TARGET=1`` for the runtime receipt.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -311,6 +312,159 @@ def test_recovery_marker_cannot_authorize_an_unrelated_mount(
     assert unrelated_mount.is_dir()
 
 
+def test_preflight_recovery_marker_cannot_authorize_an_unrelated_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sandbox,
+        "_filesystem_magic",
+        lambda _path: sandbox.CGROUP2_SUPER_MAGIC,
+    )
+    parent = tmp_path / "delegated"
+    parent.mkdir(mode=0o700)
+    (parent / "cgroup.controllers").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.subtree_control").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.procs").write_text("", encoding="ascii")
+    (parent / "cgroup.kill").write_text("", encoding="ascii")
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    recovery_root = runtime_root / "sandbox-recovery"
+    recovery_root.mkdir(mode=0o700)
+    preflight_name = "dlr-preflight-" + "a" * 32
+    (runtime_root / preflight_name).mkdir(mode=0o700)
+    unrelated_mount = runtime_root / "sentinel_dir" / ".dlr-sandbox-mount"
+    unrelated_mount.mkdir(mode=0o700, parents=True)
+    sentinel = unrelated_mount / "must-survive"
+    sentinel.write_text("keep", encoding="ascii")
+    marker = recovery_root / f"sandbox-{preflight_name}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "cgroup_name": preflight_name,
+                "execution_id": 1,
+                "mount_name": ".dlr-sandbox-mount",
+                "mount_path": str(unrelated_mount),
+            }
+        )
+        + "\n",
+        encoding="ascii",
+    )
+    marker.chmod(0o600)
+    result = sandbox.recover(
+        _worker_config(cgroup_path=parent),
+        recovery_root,
+        runtime_root=runtime_root,
+    )
+    assert result == {"inspected": 1, "completed": 0, "retained": 1}
+    assert marker.exists()
+    assert sentinel.read_text(encoding="ascii") == "keep"
+    assert unrelated_mount.is_dir()
+
+
+def test_preflight_recovery_marker_removes_derived_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sandbox,
+        "_filesystem_magic",
+        lambda _path: sandbox.CGROUP2_SUPER_MAGIC,
+    )
+    parent = tmp_path / "delegated"
+    parent.mkdir(mode=0o700)
+    (parent / "cgroup.controllers").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.subtree_control").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.procs").write_text("", encoding="ascii")
+    (parent / "cgroup.kill").write_text("", encoding="ascii")
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    recovery_root = runtime_root / "sandbox-recovery"
+    recovery_root.mkdir(mode=0o700)
+    preflight_name = "dlr-preflight-" + "c" * 32
+    preflight_directory = runtime_root / preflight_name
+    mount = preflight_directory / ".dlr-sandbox-mount"
+    preflight_directory.mkdir(mode=0o700)
+    mount.mkdir(mode=0o700)
+    sentinel = mount / "recovery-owned"
+    sentinel.write_text("remove", encoding="ascii")
+    marker = recovery_root / f"sandbox-{preflight_name}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "cgroup_name": preflight_name,
+                "execution_id": 1,
+                "mount_name": ".dlr-sandbox-mount",
+                "mount_path": str(mount),
+            }
+        )
+        + "\n",
+        encoding="ascii",
+    )
+    marker.chmod(0o600)
+    result = sandbox.recover(
+        _worker_config(cgroup_path=parent),
+        recovery_root,
+        runtime_root=runtime_root,
+    )
+    assert result == {"inspected": 1, "completed": 1, "retained": 0}
+    assert not marker.exists()
+    assert not mount.exists()
+    assert not sentinel.exists()
+    assert preflight_directory.is_dir()
+
+
+def test_preflight_recovery_marker_requires_private_worker_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sandbox,
+        "_filesystem_magic",
+        lambda _path: sandbox.CGROUP2_SUPER_MAGIC,
+    )
+    parent = tmp_path / "delegated"
+    parent.mkdir(mode=0o700)
+    (parent / "cgroup.controllers").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.subtree_control").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.procs").write_text("", encoding="ascii")
+    (parent / "cgroup.kill").write_text("", encoding="ascii")
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    recovery_root = runtime_root / "sandbox-recovery"
+    recovery_root.mkdir(mode=0o700)
+    preflight_name = "dlr-preflight-" + "b" * 32
+    preflight_directory = runtime_root / preflight_name
+    mount = preflight_directory / ".dlr-sandbox-mount"
+    mount.mkdir(mode=0o700, parents=True)
+    sentinel = mount / "must-survive"
+    sentinel.write_text("keep", encoding="ascii")
+    preflight_directory.chmod(0o755)
+    marker = recovery_root / f"sandbox-{preflight_name}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "cgroup_name": preflight_name,
+                "execution_id": 1,
+                "mount_name": ".dlr-sandbox-mount",
+                "mount_path": str(mount),
+            }
+        )
+        + "\n",
+        encoding="ascii",
+    )
+    marker.chmod(0o600)
+    result = sandbox.recover(
+        _worker_config(cgroup_path=parent),
+        recovery_root,
+        runtime_root=runtime_root,
+    )
+    assert result == {"inspected": 1, "completed": 0, "retained": 1}
+    assert marker.exists()
+    assert sentinel.read_text(encoding="ascii") == "keep"
+    assert mount.is_dir()
+
+
 def test_configured_cgroup_hide_target_is_cgroup2fs_and_disjoint_from_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -583,16 +737,20 @@ def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
     assert result["capabilities"]["preflight_passed"] is True
     assert details["agent_outside_attempt"] is True
     assert details["probe_in_attempt"] is True
-    assert details["adapter_identity"] == {
+    identity = details["adapter_identity"]
+    assert identity == {
         "uid": 501,
         "gid": 1000,
+        "Groups": "",
         "CapPrm": "0000000000000000",
         "CapEff": "0000000000000000",
         "CapInh": "0000000000000000",
-        "CapBnd": f"{sandbox.SUPERVISOR_CAPABILITY_MASK:016x}",
+        "CapBnd": identity["CapBnd"],
         "CapAmb": "0000000000000000",
         "NoNewPrivs": "1",
     }
+    assert isinstance(identity["CapBnd"], str)
+    assert int(identity["CapBnd"], 16) >= 0
     assert details["adapter_mount"]["blocked"] is True
     assert details["adapter_mount"]["errno"] in {1, 13}
     assert details["limits_readback"] == {

@@ -173,6 +173,16 @@ require_runbook_literal 'task-owned `/tmp/.dlr-sandbox-*`'
 require_runbook_literal 'fork 出来的 payload PID'
 require_runbook_literal 'helper 也始终留在 Worker'
 require_runbook_literal 'cgroup.kill` 只终止 Attempt payload'
+require_runbook_literal 'normpath'
+require_runbook_literal 'runtime_root/workspaces/attempt-<attempt_id>/.dlr-sandbox-mount'
+require_runbook_literal 'runtime_root/dlr-preflight-<nonce>/.dlr-sandbox-mount'
+require_runbook_literal 'mode 为 `0700`'
+require_runbook_literal 'PARENT="$CONTROL_GROUP"'
+
+if grep -Fq 'PARENT=/sys/fs/cgroup$CONTROL_GROUP' "$runbook"; then
+  echo "runbook must not prepend cgroupfs to an already absolute ControlGroup" >&2
+  exit 1
+fi
 
 require_source_literal() {
   local literal=$1
@@ -183,9 +193,26 @@ require_source_literal() {
 }
 
 require_source_literal 'def _derived_recovery_mount(runtime_root: Path, name: str, execution_id: int) -> Path:'
-require_source_literal 'return root / "workspaces" / f"attempt-{int(parts[2])}" / ".dlr-sandbox-mount"'
-require_source_literal 'if mount != expected_mount:'
+require_source_literal 'ATTEMPT_CGROUP_NAME_PATTERN = re.compile('
+require_source_literal 'PREFLIGHT_CGROUP_NAME_PATTERN = re.compile('
+require_source_literal 'attempt_match = ATTEMPT_CGROUP_NAME_PATTERN.fullmatch(name)'
+require_source_literal 'attempt_id = int(attempt_match.group("attempt_id"))'
+require_source_literal 'return root / "workspaces" / f"attempt-{attempt_id}" / ".dlr-sandbox-mount"'
+require_source_literal 'def _validate_preflight_recovery_parent('
+require_source_literal 'preflight_directory = root / name'
+require_source_literal 'stat.S_IMODE(info.st_mode) != 0o700'
+require_source_literal 'def _validated_recovery_mount('
+require_source_literal 'normalized_mount = Path(os.path.normpath(mount_path))'
+require_source_literal 'normalized_expected = Path(os.path.normpath(os.fspath(expected_mount)))'
+require_source_literal 'or normalized_mount != normalized_expected'
+require_source_literal 'resolved_mount != normalized_expected'
 require_source_literal 'expected_mount = _derived_recovery_mount(runtime_root, name, execution_id)'
+require_source_literal 'name=name,'
+require_source_literal 'execution_id=execution_id,'
+require_source_literal 'def _new_preflight_identity() -> str:'
+require_source_literal 'preflight_name = _new_preflight_identity()'
+require_source_literal 'preflight_identity = cgroup_name or workspace.parent.name'
+require_source_literal 'PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(preflight_identity)'
 require_source_literal 'CGROUP2_SUPER_MAGIC'
 require_source_literal 'def _filesystem_magic(path: Path) -> int:'
 require_source_literal 'def _validated_hidden_cgroup_path('
@@ -208,9 +235,9 @@ require_source_literal 'CAP_SYS_ADMIN = 21'
 require_source_literal 'SUPERVISOR_CAPABILITY_MASK'
 require_source_literal "cap_prm=int(field('CapPrm') or '0',16)"
 require_source_literal "cap_inh=int(field('CapInh') or '0',16)"
-require_source_literal "cap_bnd=int(field('CapBnd') or '0',16)"
+require_source_literal "cap_bnd=field('CapBnd')"
 require_source_literal "cap_amb=int(field('CapAmb') or '0',16)"
-require_source_literal 'assert cap_bnd & ~allowed_caps == 0'
+require_source_literal "assert field('Groups') == ''"
 require_source_literal 'assert cap_inh==0'
 require_source_literal 'def _filesystem_identity(uid: int, gid: int) -> Iterator[None]:'
 require_source_literal 'setfsuid = getattr(libc, "setfsuid", None)'
@@ -263,9 +290,16 @@ require_runtime_literal 'cap_prm_zero'
 require_runtime_literal 'cap_eff_zero'
 require_runtime_literal 'cap_inh_zero'
 require_runtime_literal 'cap_amb_zero'
+require_runtime_literal 'groups_empty'
 require_runtime_literal 'expected_payload_uid = int(os.environ.get("DLR_SANDBOX_PAYLOAD_UID", "501"))'
 require_runtime_literal 'expected_payload_gid = int(os.environ.get("DLR_SANDBOX_PAYLOAD_GID", "1000"))'
 require_runtime_literal 'assert output["hidden_cgroup"] == {'
+require_runtime_literal 'runtime_root_removed'
+require_runtime_literal 'supervisor_identity'
+require_runtime_literal 'SUPERVISOR_CAPABILITY_MASK'
+require_runtime_literal 'adapter_identity'
+require_runtime_literal 'adapter_hidden_cgroup_paths'
+require_runtime_literal 'adapter_mount'
 
 if grep -Fq 'if exact_cgroup_mount.is_dir()' "$sandbox_source"; then
   echo "exact configured cgroup hide must not silently skip a missing target" >&2
@@ -289,6 +323,9 @@ fi
 if ! grep -Fq 'test_helper_diagnostic_keeps_syscall_phase_and_errno_path_free' "$runtime_tests" \
   || ! grep -Fq 'test_supervisor_capability_mask_is_exactly_the_approved_three' "$runtime_tests" \
   || ! grep -Fq 'test_recovery_marker_cannot_authorize_an_unrelated_mount' "$runtime_tests" \
+  || ! grep -Fq 'test_preflight_recovery_marker_cannot_authorize_an_unrelated_mount' "$runtime_tests" \
+  || ! grep -Fq 'test_preflight_recovery_marker_removes_derived_mount' "$runtime_tests" \
+  || ! grep -Fq 'test_preflight_recovery_marker_requires_private_worker_directory' "$runtime_tests" \
   || ! grep -Fq 'test_consumer_reports_intrinsic_profile_error_before_ceiling_or_model_validation' "$runtime_tests" \
   || ! grep -Fq 'test_copied_tmpfs_workspace_allows_payload_output_but_not_managed_input' "$runtime_tests"; then
   echo "runtime tests must cover helper diagnostics, forged-marker recovery, profile ordering, and workspace ownership" >&2
@@ -307,6 +344,11 @@ fi
 
 if grep -Eq '^[[:space:]]+/bin/sleep infinity$' "$runbook"; then
   echo "runbook must not leave the keeper directly in the unit parent" >&2
+  exit 1
+fi
+
+if grep -Fq 'assert cap_bnd & ~allowed_caps == 0' "$sandbox_source"; then
+  echo "Adapter CapBnd must be recorded but not narrowed without CAP_SETPCAP" >&2
   exit 1
 fi
 

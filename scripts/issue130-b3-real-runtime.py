@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -85,6 +86,15 @@ def payload(
     }
 
 
+def proc_status() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+        key, separator, value = line.partition(":")
+        if separator:
+            values[key.strip()] = value.strip().split()[0] if value.strip() else ""
+    return values
+
+
 PYTHON_ADAPTER = """
 from pathlib import Path
 import os
@@ -124,6 +134,7 @@ def handle(context, input):
         },
         'hidden_secrets': not secret_dir.exists() or (secret_dir.is_dir() and not any(secret_dir.iterdir())),
         'no_new_privileges': STATUS.get('NoNewPrivs') == '1',
+        'groups_empty': STATUS.get('Groups', '') == '',
         'cap_prm_zero': int(STATUS.get('CapPrm', '0'), 16) == 0,
         'cap_eff_zero': int(STATUS.get('CapEff', '0'), 16) == 0,
         'cap_inh_zero': int(STATUS.get('CapInh', '0'), 16) == 0,
@@ -178,6 +189,7 @@ export function handle(context, input) {
       ['/run/dlr-cgroup', '/sys/fs/cgroup'].map((root) => [root, cgroupProbe(root)])
     ),
     hidden_secrets: hiddenSecrets, no_new_privileges: field('NoNewPrivs') === '1',
+    groups_empty: field('Groups') === '',
     cap_prm_zero: Number.parseInt(field('CapPrm') || '0', 16) === 0,
     cap_eff_zero: Number.parseInt(field('CapEff') || '0', 16) === 0,
     cap_inh_zero: Number.parseInt(field('CapInh') || '0', 16) === 0,
@@ -239,6 +251,7 @@ public class Adapter {
     result.put("hidden_cgroup", hidden);
     result.put("hidden_secrets", emptyDirectory(Path.of("/run/secrets")));
     result.put("no_new_privileges", "1".equals(field("NoNewPrivs")));
+    result.put("groups_empty", field("Groups").isEmpty());
     result.put("cap_prm_zero", Long.parseLong(field("CapPrm"), 16) == 0L);
     result.put("cap_eff_zero", Long.parseLong(field("CapEff"), 16) == 0L);
     result.put("cap_inh_zero", Long.parseLong(field("CapInh"), 16) == 0L);
@@ -312,11 +325,28 @@ def main() -> int:
     # Docker cannot make CAP_SYS_ADMIN effective for a non-root process while
     # also enforcing NNP. The supervisor is therefore root with only this
     # capability; the Adapter assertions below prove the 501:1000 payload.
-    expected_supervisor_uid = int(os.environ.get("DLR_B3_SUPERVISOR_UID", str(os.getuid())))
-    expected_supervisor_gid = int(os.environ.get("DLR_B3_SUPERVISOR_GID", str(os.getgid())))
+    expected_supervisor_uid = int(
+        os.environ.get("DLR_B3_SUPERVISOR_UID", str(os.getuid()))
+    )
+    expected_supervisor_gid = int(
+        os.environ.get("DLR_B3_SUPERVISOR_GID", str(os.getgid()))
+    )
     expected_payload_uid = int(os.environ.get("DLR_SANDBOX_PAYLOAD_UID", "501"))
     expected_payload_gid = int(os.environ.get("DLR_SANDBOX_PAYLOAD_GID", "1000"))
-    assert (os.getuid(), os.getgid()) == (expected_supervisor_uid, expected_supervisor_gid)
+    assert (os.getuid(), os.getgid()) == (
+        expected_supervisor_uid,
+        expected_supervisor_gid,
+    )
+    supervisor_status = proc_status()
+    supervisor_cap_eff = int(supervisor_status.get("CapEff", "0"), 16)
+    supervisor_cap_prm = int(supervisor_status.get("CapPrm", "0"), 16)
+    supervisor_cap_bnd = int(supervisor_status.get("CapBnd", "0"), 16)
+    assert supervisor_cap_eff == sandbox.SUPERVISOR_CAPABILITY_MASK
+    assert supervisor_cap_prm == sandbox.SUPERVISOR_CAPABILITY_MASK
+    assert supervisor_cap_bnd == sandbox.SUPERVISOR_CAPABILITY_MASK
+    assert supervisor_status.get("CapInh", "0") == "0000000000000000"
+    assert supervisor_status.get("CapAmb", "0") == "0000000000000000"
+    assert supervisor_status.get("NoNewPrivs") == "1"
     parent = config.cgroup_path
     assert parent is not None
     assert parent.is_dir()
@@ -364,6 +394,7 @@ def main() -> int:
                 "private_mount",
                 "hidden_secrets",
                 "no_new_privileges",
+                "groups_empty",
                 "cap_prm_zero",
                 "cap_eff_zero",
                 "cap_inh_zero",
@@ -418,6 +449,8 @@ def main() -> int:
     assert parent.joinpath("cgroup.procs").read_text() == ""
     assert not any(root.glob("**/.dlr-sandbox-mount"))
     assert not any(root.glob("**/sandbox-*.json"))
+    shutil.rmtree(root)
+    assert not root.exists()
     print(
         json.dumps(
             {
@@ -429,6 +462,15 @@ def main() -> int:
                     .strip(),
                     "supervisor_uid": os.getuid(),
                     "supervisor_gid": os.getgid(),
+                    "supervisor_identity": {
+                        "Groups": supervisor_status.get("Groups", ""),
+                        "CapPrm": supervisor_status.get("CapPrm", ""),
+                        "CapEff": supervisor_status.get("CapEff", ""),
+                        "CapInh": supervisor_status.get("CapInh", ""),
+                        "CapBnd": supervisor_status.get("CapBnd", ""),
+                        "CapAmb": supervisor_status.get("CapAmb", ""),
+                        "NoNewPrivs": supervisor_status.get("NoNewPrivs", ""),
+                    },
                     "caller_cgroup": next(
                         (
                             line[3:]
@@ -447,6 +489,11 @@ def main() -> int:
                     "limits_readback": details["limits_readback"],
                     "agent_outside_attempt": details["agent_outside_attempt"],
                     "probe_in_attempt": details["probe_in_attempt"],
+                    "adapter_identity": details.get("adapter_identity"),
+                    "adapter_hidden_cgroup_paths": details.get(
+                        "adapter_hidden_cgroup_paths"
+                    ),
+                    "adapter_mount": details.get("adapter_mount"),
                     "cleanup": details["cleanup"],
                     "workspace_residue": details["workspace_residue"],
                 },
@@ -460,6 +507,7 @@ def main() -> int:
                     "parent_procs_empty": True,
                     "recovery_markers": 0,
                     "mount_roots": 0,
+                    "runtime_root_removed": True,
                 },
             },
             sort_keys=True,

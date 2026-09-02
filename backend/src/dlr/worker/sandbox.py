@@ -46,6 +46,10 @@ LIMIT_FILES = ("cpu.max", "memory.max", "memory.swap.max", "pids.max")
 ATTEMPT_NAME_PATTERN = re.compile(
     r"(?:attempt-[1-9][0-9]*-[1-9][0-9]*|dlr-preflight-[0-9a-f]{16,64})\Z"
 )
+ATTEMPT_CGROUP_NAME_PATTERN = re.compile(
+    r"attempt-(?P<execution_id>[1-9][0-9]*)-(?P<attempt_id>[1-9][0-9]*)\Z"
+)
+PREFLIGHT_CGROUP_NAME_PATTERN = re.compile(r"dlr-preflight-(?P<nonce>[0-9a-f]{16,64})\Z")
 RECOVERY_NAME_PATTERN = re.compile(
     r"sandbox-(attempt-[1-9][0-9]*-[1-9][0-9]*|dlr-preflight-[0-9a-f]{16,64})\.json\Z"
 )
@@ -714,6 +718,8 @@ def _drop_identity(uid: int, gid: int) -> None:
         raise OSError(errno.EPERM, "payload identity does not match Worker contract")
     if os.getuid() == 0 or os.getgid() == 0:
         raise OSError(errno.EPERM, "root payload is forbidden")
+    if os.getgroups():
+        raise OSError(errno.EPERM, "supplementary groups were not cleared")
 
 
 def _parse_nnp() -> bool:
@@ -1354,6 +1360,9 @@ class AttemptSandbox:
         tmp_bytes: int = 1 << 20,
         cgroup_name: str | None = None,
     ) -> AttemptSandbox:
+        preflight_identity = cgroup_name or workspace.parent.name
+        if PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(preflight_identity) is None:
+            raise SandboxError("sandbox_preflight_invalid")
         limits = ResourceLimits(
             cpu_cores=min(config.cpu_cores, 1.0),
             memory_bytes=min(config.memory_bytes, 64 * 1024 * 1024),
@@ -1369,7 +1378,7 @@ class AttemptSandbox:
             attempt_id=1,
             workspace=workspace,
             recovery_root=recovery_root,
-            cgroup_name=cgroup_name or f"dlr-preflight-{uuid.uuid4().hex}",
+            cgroup_name=preflight_identity,
         )
 
     @property
@@ -1651,6 +1660,15 @@ def _profile_from_preflight(config: SandboxConfig) -> ResourceLimits:
     )
 
 
+def _new_preflight_identity() -> str:
+    """Create one validated identity shared by the preflight directory and cgroup."""
+
+    name = f"dlr-preflight-{uuid.uuid4().hex}"
+    if PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(name) is None:
+        raise SandboxError("sandbox_preflight_invalid")
+    return name
+
+
 def run_preflight(
     config: SandboxConfig, *, recovery_root: Path, runtime_root: Path | None = None
 ) -> dict[str, Any]:
@@ -1690,7 +1708,7 @@ def run_preflight(
     # parent, which is their task-owned temporary root.
     preflight_root = (runtime_root or recovery_root.parent).resolve()
     preflight_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    preflight_name = f"dlr-preflight-{uuid.uuid4().hex}"
+    preflight_name = _new_preflight_identity()
     temp_root = preflight_root / preflight_name
     temp_root.mkdir(mode=0o700)
     workspace = temp_root / "dlr-preflight-workspace"
@@ -1762,17 +1780,16 @@ def run_preflight(
         "cap_prm=int(field('CapPrm') or '0',16)\n"
         "cap_eff=int(field('CapEff') or '0',16)\n"
         "cap_inh=int(field('CapInh') or '0',16)\n"
-        "cap_bnd=int(field('CapBnd') or '0',16)\n"
+        "cap_bnd=field('CapBnd')\n"
         "cap_amb=int(field('CapAmb') or '0',16)\n"
-        f"allowed_caps={SUPERVISOR_CAPABILITY_MASK}\n"
         "assert cap_prm==0\n"
         "assert cap_eff==0\n"
         "assert cap_inh==0\n"
         "assert cap_amb==0\n"
-        "assert cap_bnd & ~allowed_caps == 0\n"
+        "assert field('Groups') == ''\n"
         "adapter_mount=mount_blocked()\n"
         "hidden_paths={'/sys/fs/cgroup':inaccessible(pathlib.Path('/sys/fs/cgroup')),str(hidden_target):inaccessible(hidden_target)}\n"
-        "pathlib.Path('output.json').write_text(json.dumps({'ok':True,'identity':{'uid':os.getuid(),'gid':os.getgid(),'CapPrm':field('CapPrm'),'CapEff':field('CapEff'),'CapInh':field('CapInh'),'CapBnd':field('CapBnd'),'CapAmb':field('CapAmb'),'NoNewPrivs':field('NoNewPrivs')},'adapter_mount':adapter_mount,'hidden_cgroup_paths':hidden_paths}))\n"
+        "pathlib.Path('output.json').write_text(json.dumps({'ok':True,'identity':{'uid':os.getuid(),'gid':os.getgid(),'Groups':field('Groups'),'CapPrm':field('CapPrm'),'CapEff':field('CapEff'),'CapInh':field('CapInh'),'CapBnd':cap_bnd,'CapAmb':field('CapAmb'),'NoNewPrivs':field('NoNewPrivs')},'adapter_mount':adapter_mount,'hidden_cgroup_paths':hidden_paths}))\n"
         "saw=False\n"
         "for index in range(1,5):\n"
         "    try:\n"
@@ -1957,38 +1974,74 @@ def _derived_recovery_mount(runtime_root: Path, name: str, execution_id: int) ->
         raise ValueError from error
     if not root.is_dir():
         raise ValueError
-    if name.startswith("attempt-"):
-        parts = name.split("-", 2)
-        if len(parts) != 3 or int(parts[1]) != execution_id:
+    attempt_match = ATTEMPT_CGROUP_NAME_PATTERN.fullmatch(name)
+    if attempt_match is not None:
+        if int(attempt_match.group("execution_id")) != execution_id:
             raise ValueError
-        return root / "workspaces" / f"attempt-{int(parts[2])}" / ".dlr-sandbox-mount"
-    if name.startswith("dlr-preflight-") and execution_id == 1:
+        attempt_id = int(attempt_match.group("attempt_id"))
+        return root / "workspaces" / f"attempt-{attempt_id}" / ".dlr-sandbox-mount"
+    if PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(name) is not None and execution_id == 1:
         return root / name / ".dlr-sandbox-mount"
     raise ValueError
 
 
-def _validated_recovery_mount(mount_path: str, runtime_root: Path, expected_mount: Path) -> Path:
-    """Return a marker mount path only when it equals the derived task path."""
+def _validate_preflight_recovery_parent(
+    runtime_root: Path, name: str, expected_mount: Path
+) -> None:
+    """Require the Worker-created preflight directory before deleting below it."""
+
+    if PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(name) is None:
+        return
+    try:
+        root = runtime_root.resolve(strict=True)
+        preflight_directory = root / name
+        normalized_expected = Path(os.path.normpath(os.fspath(expected_mount)))
+        info = preflight_directory.lstat()
+    except OSError as error:
+        raise ValueError from error
+    if (
+        normalized_expected.parent != preflight_directory
+        or preflight_directory.parent != root
+        or not stat.S_ISDIR(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o700
+        or info.st_uid != os.geteuid()
+    ):
+        raise ValueError
+
+
+def _validated_recovery_mount(
+    mount_path: str,
+    runtime_root: Path,
+    *,
+    name: str,
+    execution_id: int,
+) -> Path:
+    """Return only the normalized mount path derived from cgroup identity."""
 
     if not os.path.isabs(mount_path):
         raise ValueError
     try:
         root = runtime_root.resolve(strict=True)
-        mount = Path(mount_path)
-        resolved_mount = mount.resolve(strict=False)
+        expected_mount = _derived_recovery_mount(runtime_root, name, execution_id)
+        normalized_mount = Path(os.path.normpath(mount_path))
+        normalized_expected = Path(os.path.normpath(os.fspath(expected_mount)))
+        resolved_mount = normalized_mount.resolve(strict=False)
     except OSError as error:
         raise ValueError from error
-    if not root.is_dir() or not resolved_mount.is_relative_to(root):
+    if (
+        not root.is_dir()
+        or not normalized_expected.is_relative_to(root)
+        or normalized_mount != normalized_expected
+        or resolved_mount != normalized_expected
+    ):
         raise ValueError
-    if mount != expected_mount:
+    if normalized_mount.name != ".dlr-sandbox-mount":
         raise ValueError
-    if mount.name != ".dlr-sandbox-mount":
-        raise ValueError
-    if mount.exists():
-        info = mount.lstat()
+    if normalized_mount.exists():
+        info = normalized_mount.lstat()
         if not stat.S_ISDIR(info.st_mode):
             raise ValueError
-    return mount
+    return normalized_mount
 
 
 def recover(config: SandboxConfig, recovery_root: Path, *, runtime_root: Path) -> dict[str, int]:
@@ -2053,7 +2106,13 @@ def recover(config: SandboxConfig, recovery_root: Path, *, runtime_root: Path) -
             ):
                 raise ValueError
             expected_mount = _derived_recovery_mount(runtime_root, name, execution_id)
-            mount = _validated_recovery_mount(mount_path, runtime_root, expected_mount)
+            _validate_preflight_recovery_parent(runtime_root, name, expected_mount)
+            mount = _validated_recovery_mount(
+                mount_path,
+                runtime_root,
+                name=name,
+                execution_id=execution_id,
+            )
             parent = validate_delegated_parent(config)
             child = parent / name
             if child.parent != parent:

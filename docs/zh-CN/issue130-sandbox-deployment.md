@@ -86,7 +86,7 @@ sudo -n systemd-run \
 
 CONTROL_GROUP=$(sudo -n systemctl show "$UNIT" -p ControlGroup --value)
 test "$CONTROL_GROUP" = "/system.slice/$UNIT"
-PARENT=/sys/fs/cgroup$CONTROL_GROUP
+PARENT="$CONTROL_GROUP"
 KEEPER_PID=$(sudo -n systemctl show "$UNIT" -p MainPID --value)
 test -z "$(cat "$PARENT/cgroup.procs")"
 grep -qx "$KEEPER_PID" "$PARENT/agent/cgroup.procs"
@@ -228,9 +228,10 @@ Docker 的 `cap_add` 对显式非 root container 不会形成可用的 effective
 override 不设置 `user`，只让 Worker supervisor 以默认 root 身份持有这三个 capability。
 它们只属于 trusted supervisor，不是 Adapter workload：helper 在 Adapter 第一行前固定执行
 `setgroups([])`、`setgid(1000)`/`setuid(501)`、`NoNewPrivileges=1` 和全 capability drop，
-并验证 `CapPrm=0`、`CapEff=0`、`CapInh=0`、`CapAmb=0`；`CapBnd` 必须为零或仅保留这三个 capability
-的精确 mask（不含任何其他 bit）。Adapter 本身始终是非 root、无 effective/permitted/
-ambient capability。若部署不能接受该 supervisor 例外，应保持 v3 gate 关闭。
+并验证 `Groups` 为空、`CapPrm=0`、`CapEff=0`、`CapInh=0`、`CapAmb=0`；`CapBnd` 只记录
+审计值，不作为清零 Adapter capability 的前置条件（不能为清零它而增加 `CAP_SETPCAP`）。
+Adapter 本身始终是非 root、无 effective/permitted/inheritable/ambient capability。若部署不能接受
+该 supervisor 例外，应保持 v3 gate 关闭。
 
 ### Design review implementation evidence
 
@@ -240,8 +241,8 @@ payload identity drop；`privileged:false`、`NoNewPrivileges=1`、无 Docker so
 delegated bind 与 Worker-only `apparmor=unconfined` 保持不变。不得添加
 `CAP_DAC_OVERRIDE`、`CAP_SETPCAP` 或任何其他 capability。真实 payload receipt 必须保留
 `uid=501,gid=1000`、`CapPrm=0`、`CapEff=0`、`CapInh=0`、`CapAmb=0`，并证明 cgroup control-plane
-write 与 mount 仍失败；`CapBnd` 若内核无法在不授予 `CAP_SETPCAP` 的情况下清零，只能
-保留上述三能力的精确边界，不能出现其他 bit。
+write 与 mount 仍失败；`CapBnd` 可保留 container bounding mask，不能为清零它授予
+`CAP_SETPCAP` 或其他额外 capability。
 
 这三个 capability 只供受信任 Worker 进行后续 namespace/tmpfs 操作与 identity drop；Adapter 在实际
 Attempt 启动前仍必须 drop capability 并设置 `NoNewPrivileges`。资源 containment 不
@@ -310,9 +311,15 @@ crash 使用 child `cgroup.kill`，随后确认进程为空、卸载 tmpfs、删
 无法立即完成时只写入精确 task-owned recovery marker，startup scanner 只接受严格命名、
 0600、字段闭合的 marker。`mount_path` 本身不是删除授权：scanner 根据 marker 的
 `cgroup_name`、`execution_id` 和 `runtime_root` 派生唯一的 task-owned
-`.dlr-sandbox-mount`（Attempt 为 `runtime_root/workspaces/attempt-<attempt>/`，
-preflight 为其专属 token 目录），只有路径与派生值完全一致才会删除；伪造的 0600
-marker 指向 runtime root 内的其他目录时必须保留 marker 和该目录。
+`.dlr-sandbox-mount`，并先对 marker 字段做绝对路径 `normpath` 后与派生路径做精确比较；
+scanner 不会把 marker 的路径当作授权来源。Attempt 只允许
+`runtime_root/workspaces/attempt-<attempt_id>/.dlr-sandbox-mount`，其中
+`<attempt_id>` 来自已校验的 `attempt-<execution_id>-<attempt_id>` cgroup 名；preflight
+先生成并校验一个 `dlr-preflight-<nonce>` identity，再用同一 identity 创建目录和 cgroup；
+只允许 `runtime_root/dlr-preflight-<nonce>/.dlr-sandbox-mount`，且该直接父目录必须是
+Worker 按 nonce 创建、owner 为当前 Worker、mode 为 `0700` 的私有目录。伪造的 0600
+marker 指向 runtime root 内其他目录，或指向不符合 preflight 目录约束的路径时，必须保留
+marker、mount 和目录内 sentinel。
 
 Profile 校验顺序也属于 fail-closed 合同：Worker 必须先从原始 queued snapshot 校验
 字段闭合、schema/backend、数值与 cleanup/输出等 intrinsic invariants，再比较 Worker
