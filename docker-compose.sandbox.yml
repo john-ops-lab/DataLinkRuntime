@@ -1,0 +1,22 @@
+# Linux-only opt-in override for the Batch 3 Worker resource contract.
+#
+# DLR_SANDBOX_CGROUP_PARENT and DLR_SANDBOX_CGROUP_PATH must both be derived
+# from the same fresh system-manager transient unit ControlGroup.  The source
+# is one delegated subtree, never the cgroup filesystem root.
+services:
+  worker:
+    privileged: false
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    cgroup_parent: "${DLR_SANDBOX_CGROUP_PARENT:?set the exact systemd ControlGroup}"
+    volumes:
+      - type: bind
+        source: "${DLR_SANDBOX_CGROUP_PATH:?set the exact systemd ControlGroup path}"
+        target: /sys/fs/cgroup/dlr
+        read_only: false
+        bind:
+          create_host_path: false
