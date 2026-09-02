@@ -1037,6 +1037,7 @@ def run(
     sandbox_attempt: sandbox.AttemptSandbox | None = None
     sandbox_cleanup: sandbox.CleanupResult | None = None
     sandbox_error_code: str | None = None
+    sandbox_diagnostic: sandbox.HelperDiagnostic | None = None
     unified_log = dependency_log_text
     try:
         try:
@@ -1141,7 +1142,12 @@ def run(
         returncode = 125
     finally:
         if sandbox_attempt is not None:
+            sandbox_diagnostic = sandbox_attempt.read_helper_diagnostic()
             sandbox_cleanup = sandbox_attempt.cleanup()
+            if sandbox_diagnostic is None:
+                sandbox_diagnostic = sandbox_attempt.read_helper_diagnostic()
+            if sandbox_diagnostic is not None:
+                sandbox_error_code = sandbox_diagnostic.error_code
             if sandbox_cleanup.status != "completed":
                 cleanup_outcome = workspace_manager.CleanupOutcome(
                     "deferred", "workspace_cleanup_failed"
@@ -1167,6 +1173,8 @@ def run(
             "residue": sandbox_cleanup.residue,
             "limits": sandbox_attempt.limits_readback if sandbox_attempt is not None else {},
         }
+        if sandbox_diagnostic is not None:
+            sandbox_summary["helper_diagnostic"] = sandbox_diagnostic.as_dict()
 
     cleanup_fields = {
         "workspace_cleanup_status": cleanup_outcome.status,
@@ -1192,11 +1200,21 @@ def run(
             secret_values,
         )
     elif returncode != 0:
+        if sandbox_diagnostic is not None:
+            message = (
+                "sandbox helper failed during "
+                f"phase={sandbox_diagnostic.phase} "
+                f"kind={sandbox_diagnostic.kind} errno={sandbox_diagnostic.errno}"
+            )
+        else:
+            message = (
+                f"adapter process exited with code {returncode}"
+                if legacy_terminal_text
+                else i18n.text(locale, "execution.process_exited", returncode=returncode)
+            )
         unified_log += _platform_message(
             "ERROR",
-            f"adapter process exited with code {returncode}"
-            if legacy_terminal_text
-            else i18n.text(locale, "execution.process_exited", returncode=returncode),
+            message,
             secret_values,
         )
     elif output_raw is None:

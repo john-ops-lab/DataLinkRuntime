@@ -67,6 +67,7 @@ ISOLATION_PASS = {
     "no_new_privileges": True,
     "cgroup_kill": True,
     "adapter_control_plane_hidden": True,
+    "adapter_mount_blocked": True,
     "sandbox_cleanup": True,
 }
 WORKER_HEADERS = {"Authorization": "Bearer test-worker-token"}

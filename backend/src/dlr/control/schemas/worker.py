@@ -23,6 +23,7 @@ REQUIRED_ISOLATION_CAPABILITIES = frozenset(
         "no_new_privileges",
         "cgroup_kill",
         "adapter_control_plane_hidden",
+        "adapter_mount_blocked",
         "sandbox_cleanup",
     }
 )

@@ -8,7 +8,9 @@ Colima Worker container with ``DLR_B3_REAL_TARGET=1`` for the runtime receipt.
 from __future__ import annotations
 
 import os
+import stat
 import sys
+from contextlib import nullcontext
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -163,6 +165,67 @@ def test_resource_profile_is_complete_immutable_and_bounded() -> None:
     assert error.value.code == "resource_profile_invalid"
 
 
+def test_helper_diagnostic_keeps_syscall_phase_and_errno_path_free() -> None:
+    diagnostic = sandbox._parse_helper_diagnostic(
+        "DLR_SANDBOX_HELPER_DIAGNOSTIC phase=payload_setup kind=os_error errno=1"
+    )
+    assert diagnostic is not None
+    assert diagnostic.as_dict() == {
+        "phase": "payload_setup",
+        "kind": "os_error",
+        "errno": 1,
+        "error_code": "sandbox_payload_setup_failed",
+    }
+    assert (
+        sandbox._parse_helper_diagnostic(
+            "DLR_SANDBOX_HELPER_DIAGNOSTIC phase=payload_setup kind=os_error errno=0"
+        )
+        is None
+    )
+    assert (
+        sandbox._parse_helper_diagnostic(
+            "DLR_SANDBOX_HELPER_DIAGNOSTIC phase=payload_setup kind=exception errno=1"
+        )
+        is None
+    )
+
+
+def test_workspace_command_rewrites_descendants_without_prefix_collisions(tmp_path: Path) -> None:
+    source = tmp_path / "dlr-exec-1"
+    target = Path("/proc/self/fd/7/dlr-exec-1")
+    command = [
+        "node",
+        str(source / "harness.mjs"),
+        str(source),
+        str(tmp_path / "dlr-exec-10"),
+        "--workspace",
+    ]
+    assert sandbox._replace_workspace(command, source, target) == [
+        "node",
+        "/proc/self/fd/7/dlr-exec-1/harness.mjs",
+        "/proc/self/fd/7/dlr-exec-1",
+        str(tmp_path / "dlr-exec-10"),
+        "--workspace",
+    ]
+    assert (
+        sandbox._parse_helper_diagnostic(
+            "DLR_SANDBOX_HELPER_DIAGNOSTIC phase=payload_setup kind=os_error errno=1 /host/secret"
+        )
+        is None
+    )
+
+
+def test_supervisor_capability_mask_is_exactly_the_approved_three() -> None:
+    assert sandbox.SUPERVISOR_CAPABILITY_MASK == 0x2000C0
+    assert (
+        sum(
+            1 << capability
+            for capability in (sandbox.CAP_SYS_ADMIN, sandbox.CAP_SETUID, sandbox.CAP_SETGID)
+        )
+        == sandbox.SUPERVISOR_CAPABILITY_MASK
+    )
+
+
 def test_v3_payload_snapshots_are_required_to_match_the_queued_profile() -> None:
     config = _worker_config()
     profile = _profile()
@@ -211,6 +274,11 @@ def test_recovery_marker_cannot_authorize_an_unrelated_mount(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sandbox,
+        "_filesystem_magic",
+        lambda _path: sandbox.CGROUP2_SUPER_MAGIC,
+    )
     parent = tmp_path / "delegated"
     parent.mkdir(mode=0o700)
     (parent / "cgroup.controllers").write_text("cpu memory pids\n", encoding="ascii")
@@ -243,6 +311,68 @@ def test_recovery_marker_cannot_authorize_an_unrelated_mount(
     assert unrelated_mount.is_dir()
 
 
+def test_configured_cgroup_hide_target_is_cgroup2fs_and_disjoint_from_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    target = tmp_path / "delegated"
+    target.mkdir(mode=0o700)
+    workspace = tmp_path / "runtime" / "workspaces" / "dlr-exec-1"
+    workspace.mkdir(mode=0o700, parents=True)
+    mount_root = workspace.parent / ".dlr-sandbox-mount"
+
+    monkeypatch.setattr(sandbox, "_filesystem_magic", lambda _path: 0)
+    with pytest.raises(OSError, match="not cgroup2fs"):
+        sandbox._validated_hidden_cgroup_path(str(target), mount_root, workspace)
+
+    monkeypatch.setattr(sandbox, "_filesystem_magic", lambda _path: sandbox.CGROUP2_SUPER_MAGIC)
+    assert sandbox._validated_hidden_cgroup_path(str(target), mount_root, workspace) == target
+    with pytest.raises(OSError, match="overlaps workspace"):
+        sandbox._validated_hidden_cgroup_path(str(workspace), mount_root, workspace)
+
+
+def test_copied_tmpfs_workspace_allows_payload_output_but_not_managed_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Creation-time ownership enables payload writes without relaxing input modes."""
+
+    if os.name != "posix" or os.getuid() == 0:
+        pytest.skip("requires a non-root POSIX payload identity")
+
+    source = tmp_path / "staging"
+    source.mkdir(mode=0o700)
+    managed_input = source / "input" / "input-00.bin"
+    managed_input.parent.mkdir(mode=0o700)
+    managed_input.write_bytes(b"managed")
+    managed_input.chmod(0o444)
+    managed_input.parent.chmod(0o555)
+    (source / "temp").mkdir(mode=0o700)
+    (source / "output").mkdir(mode=0o700)
+    (source / "adapter.py").write_text("print('ok')\n", encoding="utf-8")
+    (source / "adapter.py").chmod(0o600)
+    (source / "input-link").symlink_to(managed_input)
+
+    copied = tmp_path / "tmpfs" / source.name
+    copied.mkdir(mode=0o700, parents=True)
+    # The real Linux path uses setfsuid/setfsgid.  Keep this unit test portable
+    # while exercising the same no-follow copy topology on the macOS checkout.
+    monkeypatch.setattr(sandbox, "_filesystem_identity", lambda _uid, _gid: nullcontext())
+    sandbox._copy_tree_as_owner(source, copied, os.getuid(), os.getgid())
+
+    copied_input = copied / "input" / managed_input.name
+    assert copied.stat().st_uid == os.getuid()
+    assert copied_input.stat().st_uid == os.getuid()
+    assert stat.S_IMODE((copied / "input").stat().st_mode) == 0o555
+    assert stat.S_IMODE(copied_input.stat().st_mode) == 0o444
+    assert (copied / "input-link").is_symlink()
+    assert os.readlink(copied / "input-link") == os.readlink(source / "input-link")
+
+    (copied / "output.json").write_text('{"ok":true}\n', encoding="utf-8")
+    (copied / "temp" / "fill-1").write_bytes(b"x" * (1024 * 1024))
+    with pytest.raises(PermissionError):
+        copied_input.write_bytes(b"must remain read-only")
+
+
 def test_preflight_without_linux_delegation_fails_closed_without_side_effects(
     tmp_path: Path,
 ) -> None:
@@ -255,6 +385,7 @@ def test_preflight_without_linux_delegation_fails_closed_without_side_effects(
 
 
 def test_control_requires_the_complete_b3_capability_matrix() -> None:
+    assert "adapter_mount_blocked" in REQUIRED_ISOLATION_CAPABILITIES
     matrix = {key: True for key in REQUIRED_ISOLATION_CAPABILITIES}
     assert isolation_capabilities_ready(matrix)
     for key in REQUIRED_ISOLATION_CAPABILITIES:
@@ -355,6 +486,50 @@ def test_consumer_rejects_profile_before_attempt_journal(tmp_path: Path) -> None
     assert not (tmp_path / "runtime").exists()
 
 
+def test_consumer_reports_intrinsic_profile_error_before_ceiling_or_model_validation(
+    tmp_path: Path,
+) -> None:
+    client = _PrepareFailureClient()
+    consumer = V3Consumer(
+        ConsumerConfig(
+            worker_id=42,
+            queue="dlr.worker.42.q",
+            execution_slots=1,
+            runtime_root=tmp_path / "runtime",
+            attempt_journal_root=tmp_path / "journal",
+        ),
+        client,  # type: ignore[arg-type]
+        connection_factory=lambda: object(),  # type: ignore[return-value]
+        runtime_settings=SimpleNamespace(
+            sandbox_config=_worker_config(memory_bytes=64 * MiB),
+        ),
+    )
+    raw_payload = _v3_payload(
+        "python",
+        "def handle(context, input): return {}",
+        profile=_profile(
+            memory_bytes=128 * MiB,
+            workspace_cleanup_attempt_timeout_seconds=21,
+        ),
+    )
+    channel = _AckChannel()
+    try:
+        accepted = consumer._prepare_execute(
+            _ImmediateConnection(),  # type: ignore[arg-type]
+            channel,
+            19,
+            {"payload": raw_payload},
+        )
+    finally:
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+    assert accepted is False
+    assert channel.acks == [19]
+    assert client.body is not None
+    assert client.body["error_code"] == "resource_profile_invalid"
+    assert not (tmp_path / "journal").exists()
+    assert not (tmp_path / "runtime").exists()
+
+
 def test_consumer_rejects_stale_profile_snapshot_before_attempt_journal(tmp_path: Path) -> None:
     client = _PrepareFailureClient()
     consumer = V3Consumer(
@@ -408,6 +583,17 @@ def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
     assert result["capabilities"]["preflight_passed"] is True
     assert details["agent_outside_attempt"] is True
     assert details["probe_in_attempt"] is True
+    assert details["adapter_identity"] == {
+        "uid": 501,
+        "gid": 1000,
+        "CapPrm": "0000000000000000",
+        "CapEff": "0000000000000000",
+        "CapBnd": f"{sandbox.SUPERVISOR_CAPABILITY_MASK:016x}",
+        "CapAmb": "0000000000000000",
+        "NoNewPrivs": "1",
+    }
+    assert details["adapter_mount"]["blocked"] is True
+    assert details["adapter_mount"]["errno"] in {1, 13}
     assert details["limits_readback"] == {
         "cpu.max": "100000 100000",
         "memory.max": "67108864",
@@ -425,23 +611,79 @@ def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
     [
         (
             "python",
+            "from pathlib import Path\n"
+            "def probe(root):\n"
+            "    result = {'read_blocked': False, 'write_blocked': False}\n"
+            "    try:\n"
+            "        (root / 'cgroup.controllers').read_text()\n"
+            "    except OSError:\n"
+            "        result['read_blocked'] = True\n"
+            "    try:\n"
+            "        (root / 'dlr-write-probe').write_text('x')\n"
+            "    except OSError:\n"
+            "        result['write_blocked'] = True\n"
+            "    if not all(result.values()):\n"
+            "        raise RuntimeError('cgroup control plane visible')\n"
+            "    return result\n"
             "def handle(context, input):\n"
-            "    from pathlib import Path\n"
-            "    hidden = not Path('/sys/fs/cgroup/cgroup.controllers').exists()\n"
-            "    return {'language': 'python', 'hidden_cgroup': hidden}\n",
+            "    paths = ['/run/dlr-cgroup', '/sys/fs/cgroup']\n"
+            "    return {'language': 'python', 'hidden_cgroup': {\n"
+            "        path: probe(Path(path)) for path in paths\n"
+            "    }}\n",
         ),
         (
             "javascript",
-            "export function handle(context, input) { return {language: 'javascript'}; }",
+            "import fs from 'node:fs';\n"
+            "import path from 'node:path';\n"
+            "function probe(root) {\n"
+            "  let readBlocked = false;\n"
+            "  try { fs.readFileSync(path.join(root, 'cgroup.controllers'), 'utf8'); }\n"
+            "  catch { readBlocked = true; }\n"
+            "  let writeBlocked = false;\n"
+            "  try { fs.writeFileSync(path.join(root, 'dlr-write-probe'), 'x'); }\n"
+            "  catch { writeBlocked = true; }\n"
+            "  if (!readBlocked || !writeBlocked)\n"
+            "    throw new Error('cgroup control plane visible');\n"
+            "  return {read_blocked: readBlocked, write_blocked: writeBlocked};\n"
+            "}\n"
+            "export function handle(context, input) {\n"
+            "  const hidden = {};\n"
+            "  for (const root of ['/run/dlr-cgroup', '/sys/fs/cgroup']) {\n"
+            "    hidden[root] = probe(root);\n"
+            "  }\n"
+            "  return {language: 'javascript', hidden_cgroup: hidden};\n"
+            "}\n",
         ),
         (
             "java",
             "import java.util.LinkedHashMap;\n"
             "import java.util.Map;\n"
+            "import java.nio.file.Files;\n"
+            "import java.nio.file.Path;\n"
             "public class Adapter {\n"
+            "  private static Map<String, Boolean> probe(Path root) throws Exception {\n"
+            "    boolean readBlocked = false;\n"
+            '    try { Files.readString(root.resolve("cgroup.controllers")); }\n'
+            "    catch (Exception error) { readBlocked = true; }\n"
+            "    boolean writeBlocked = false;\n"
+            '    try { Files.writeString(root.resolve("dlr-write-probe"), "x"); }\n'
+            "    catch (Exception error) { writeBlocked = true; }\n"
+            "    if (!readBlocked || !writeBlocked)\n"
+            '      throw new Exception("cgroup control plane visible");\n'
+            "    Map<String, Boolean> result = new LinkedHashMap<>();\n"
+            '    result.put("read_blocked", readBlocked);\n'
+            '    result.put("write_blocked", writeBlocked);\n'
+            "    return result;\n"
+            "  }\n"
             "  public Object handle(Context context, Object input) {\n"
             "    Map<String, Object> result = new LinkedHashMap<>();\n"
+            "    Map<String, Object> hidden = new LinkedHashMap<>();\n"
+            "    try {\n"
+            '      hidden.put("/run/dlr-cgroup", probe(Path.of("/run/dlr-cgroup")));\n'
+            '      hidden.put("/sys/fs/cgroup", probe(Path.of("/sys/fs/cgroup")));\n'
+            "    } catch (Exception error) { throw new RuntimeException(error); }\n"
             '    result.put("language", "java");\n'
+            '    result.put("hidden_cgroup", hidden);\n'
             "    return result;\n"
             "  }\n"
             "}\n",
@@ -468,8 +710,10 @@ def test_real_linux_three_languages_are_sandboxed(tmp_path: Path, language: str,
     assert result["cleanup_summary"]["sandbox"]["status"] == "completed"
     assert result["cleanup_summary"]["sandbox"]["residue"] is False
     assert result["workspace_cleanup_status"] == "completed"
-    if language == "python":
-        assert result["output"]["hidden_cgroup"] is True
+    assert result["output"]["hidden_cgroup"] == {
+        "/run/dlr-cgroup": {"read_blocked": True, "write_blocked": True},
+        "/sys/fs/cgroup": {"read_blocked": True, "write_blocked": True},
+    }
     assert not list((tmp_path / language / "workspaces").glob("**/.dlr-sandbox-mount"))
 
 

@@ -195,6 +195,32 @@ class V3Consumer:
         decision: Mapping[str, Any],
     ) -> bool:
         raw_payload = decision.get("payload")
+        sandbox_config = getattr(self._runtime_settings, "sandbox_config", None)
+        prevalidated_profile: sandbox.ResourceLimits | None = None
+        # Validate the raw frozen profile before Pydantic's model validators.
+        # A profile can violate an intrinsic sandbox invariant and exceed the
+        # Worker ceiling at the same time; the former must win, and no journal
+        # or workspace side effect may happen before either result is known.
+        if (
+            sandbox_config is not None
+            and isinstance(raw_payload, Mapping)
+            and raw_payload.get("protocol_version", 3) == 3
+        ):
+            try:
+                prevalidated_profile = sandbox.validate_resource_profile(
+                    raw_payload.get("resource_profile"), sandbox_config
+                )
+                sandbox.validate_v3_payload_snapshots(raw_payload, prevalidated_profile)
+            except sandbox.SandboxError as error:
+                if self._report_prepare_failure(
+                    decision,
+                    error_code=error.code,
+                    error_class="platform_transient",
+                ):
+                    self._ack(connection, channel, delivery_tag)
+                else:
+                    self._request_pause(connection, channel)
+                return False
         try:
             payload = V3TaskPayload.model_validate(raw_payload)
         except Exception:
@@ -207,13 +233,15 @@ class V3Consumer:
                 # the Claim instead of losing the dispatch.
                 self._request_pause(connection, channel)
             return False
-        sandbox_config = getattr(self._runtime_settings, "sandbox_config", None)
         if sandbox_config is not None:
             try:
-                profile = sandbox.validate_resource_profile(
+                profile = prevalidated_profile or sandbox.validate_resource_profile(
                     payload.resource_profile, sandbox_config
                 )
-                sandbox.validate_v3_payload_snapshots(cast(Mapping[str, Any], raw_payload), profile)
+                if prevalidated_profile is None:
+                    sandbox.validate_v3_payload_snapshots(
+                        cast(Mapping[str, Any], raw_payload), profile
+                    )
             except sandbox.SandboxError as error:
                 if self._report_prepare_failure(
                     decision,

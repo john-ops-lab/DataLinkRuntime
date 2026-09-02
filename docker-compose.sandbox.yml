@@ -1,27 +1,33 @@
 # Linux-only opt-in override for the Batch 3 Worker resource contract.
 #
-# DLR_SANDBOX_CGROUP_PARENT and DLR_SANDBOX_CGROUP_PATH must both be derived
+# DLR_SANDBOX_CGROUP_PARENT and DLR_SANDBOX_CGROUP_SOURCE must both be derived
 # from the same fresh system-manager transient unit ControlGroup.  The source
-# is one delegated subtree, never the cgroup filesystem root.
+# is one delegated subtree, never the cgroup filesystem root; the container
+# path is fixed to the ordinary /run/dlr-cgroup mount below.
 services:
   worker:
     privileged: false
-    # Docker's private cgroup namespace maps the exact bind to namespace root
-    # and makes cgroup.procs PID writes fail with ENOENT.  The Worker needs the
-    # host cgroup namespace to manage only the already-delegated bind subtree;
-    # the Adapter later hides cgroupfs in its private mount namespace.
-    cgroup: host
-    # The Worker supervisor needs the single approved CAP_SYS_ADMIN to create
-    # namespaces and manage its delegated child. It drops identity and all
-    # capabilities before starting each Adapter payload (uid/gid 501:1000).
-    group_add:
-      - "1000"
+    # Keep Docker's cgroup namespace private.  The Worker receives only the
+    # already-delegated host subtree through the exact bind below; the Adapter
+    # later hides cgroupfs in its own private mount namespace.
+    cgroup: private
+    # The Worker supervisor runs as the default container root so it matches
+    # the root-owned exact systemd delegated subtree. The trusted supervisor
+    # receives exactly the three capabilities needed for namespace/cgroup work
+    # and the irreversible payload identity drop, then drops all capabilities
+    # before starting each Adapter payload (uid/gid 501:1000).
     cap_drop:
       - ALL
     cap_add:
       - SYS_ADMIN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
+      # Colima's docker-default AppArmor profile denies the mount propagation
+      # and tmpfs syscalls required by the Worker helper. This opt-in applies
+      # only to the sandbox Worker; seccomp remains Docker's default profile.
+      - apparmor=unconfined
     environment:
       # /sys/fs/cgroup is Docker's own read-only cgroup mount.  Bind the exact
       # delegated subtree at an existing ordinary mountpoint instead of
@@ -32,7 +38,7 @@ services:
     cgroup_parent: "${DLR_SANDBOX_CGROUP_PARENT:?set the exact systemd ControlGroup}"
     volumes:
       - type: bind
-        source: "${DLR_SANDBOX_CGROUP_PATH:?set the exact systemd ControlGroup path}"
+        source: "${DLR_SANDBOX_CGROUP_SOURCE:?set the exact systemd ControlGroup path}"
         target: /run/dlr-cgroup
         read_only: false
         bind:

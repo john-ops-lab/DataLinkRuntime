@@ -8,10 +8,11 @@ delegated parent and the Worker only reads the parent contract and manages its
 own children.
 
 The small helper process in this file is executed with the Worker's already
-approved ``CAP_SYS_ADMIN``.  It creates a private mount/PID namespace, mounts
-the bounded tmpfs, copies only the controlled staging workspace, and drops all
-capabilities plus ``NoNewPrivileges`` before execing the Adapter harness.  The
-parent cgroup is never written; only the task-owned Attempt child is changed.
+approved ``CAP_SYS_ADMIN``, ``CAP_SETUID``, and ``CAP_SETGID``.  It creates a
+private mount/PID namespace, mounts the bounded tmpfs, copies only the
+controlled staging workspace, and drops all capabilities plus
+``NoNewPrivileges`` before execing the Adapter harness.  The parent cgroup is
+never written; only the task-owned Attempt child is changed.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Mapping
-from contextlib import suppress
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -73,17 +74,49 @@ RESOURCE_PROFILE_FIELDS = frozenset(
 # Linux values are kept local so importing the Worker on macOS remains safe.
 CLONE_NEWNS = 0x0002_0000
 CLONE_NEWPID = 0x2000_0000
+MS_RDONLY = 1
 MS_NOSUID = 2
 MS_NODEV = 4
 MS_NOEXEC = 8
 MS_REC = 16_384
 MS_PRIVATE = 1 << 18
+MS_BIND = 4096
 MNT_DETACH = 2
 PR_SET_NO_NEW_PRIVS = 38
 PR_GET_NO_NEW_PRIVS = 39
 PR_CAP_AMBIENT = 47
 PR_CAP_AMBIENT_CLEAR_ALL = 4
 CAPSET_VERSION = 0x2008_0522
+CGROUP2_SUPER_MAGIC = 0x6367_7270
+CAP_SETGID = 6
+CAP_SETUID = 7
+CAP_SYS_ADMIN = 21
+SUPERVISOR_CAPABILITY_MASK = (1 << CAP_SETGID) | (1 << CAP_SETUID) | (1 << CAP_SYS_ADMIN)
+
+HELPER_PHASE_ERROR_CODES = {
+    "helper_parse": "sandbox_helper_parse_failed",
+    "ready_gate": "sandbox_helper_ready_failed",
+    "validate_cgroup_hide_target": "sandbox_cgroup_hide_target_invalid",
+    "mount_namespace_unshare": "sandbox_mount_namespace_failed",
+    "mount_namespace_private": "sandbox_mount_namespace_failed",
+    "workspace_tmpfs_mount": "sandbox_tmpfs_mount_failed",
+    "workspace_copy": "sandbox_workspace_copy_failed",
+    "workspace_ownership": "sandbox_workspace_ownership_failed",
+    "cgroup_root_hide": "sandbox_cgroup_hide_failed",
+    "exact_cgroup_hide": "sandbox_cgroup_hide_failed",
+    "secrets_hide": "sandbox_secrets_mount_failed",
+    "pid_namespace": "sandbox_pid_namespace_failed",
+    "payload_setup": "sandbox_payload_setup_failed",
+    "attempt_membership": "sandbox_process_membership_failed",
+    "payload_wait": "sandbox_payload_wait_failed",
+    "output_copy": "sandbox_output_copy_failed",
+}
+HELPER_DIAGNOSTIC_PATTERN = re.compile(
+    r"\ADLR_SANDBOX_HELPER_DIAGNOSTIC "
+    r"phase=(?P<phase>[a-z_]+) "
+    r"kind=(?P<kind>os_error|exception) "
+    r"errno=(?P<errno>[0-9]+)\Z"
+)
 
 
 class SandboxError(Exception):
@@ -92,6 +125,74 @@ class SandboxError(Exception):
     def __init__(self, code: str, message: str = "Sandbox operation failed") -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True)
+class HelperDiagnostic:
+    """Path-free syscall evidence emitted on a private helper FD."""
+
+    phase: str
+    kind: str
+    errno: int
+    error_code: str
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "phase": self.phase,
+            "kind": self.kind,
+            "errno": self.errno,
+            "error_code": self.error_code,
+        }
+
+
+def _parse_helper_diagnostic(value: bytes | str) -> HelperDiagnostic | None:
+    """Parse one strict, path-free helper diagnostic line."""
+
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    match = HELPER_DIAGNOSTIC_PATTERN.fullmatch(value.strip())
+    if match is None:
+        return None
+    phase = match.group("phase")
+    error_code = HELPER_PHASE_ERROR_CODES.get(phase)
+    if error_code is None:
+        return None
+    try:
+        error_number = int(match.group("errno"), 10)
+    except ValueError:
+        return None
+    if not 0 <= error_number <= 4095:
+        return None
+    kind = match.group("kind")
+    if kind == "os_error" and error_number == 0:
+        return None
+    if kind == "exception" and error_number != 0:
+        return None
+    return HelperDiagnostic(phase, kind, error_number, error_code)
+
+
+def _write_helper_diagnostic(
+    diagnostic_fd: int | None,
+    phase: str,
+    *,
+    kind: str,
+    error_number: int,
+) -> None:
+    """Write only fixed phase/kind/errno data; never include a host path."""
+
+    if diagnostic_fd is None or phase not in HELPER_PHASE_ERROR_CODES:
+        return
+    if kind not in {"os_error", "exception"}:
+        return
+    error_number = error_number or errno.EIO if kind == "os_error" else 0
+    line = f"DLR_SANDBOX_HELPER_DIAGNOSTIC phase={phase} kind={kind} errno={error_number}\n".encode(
+        "ascii"
+    )
+    with suppress(OSError):
+        os.write(diagnostic_fd, line)
 
 
 @dataclass(frozen=True)
@@ -362,8 +463,18 @@ def validate_delegated_parent(config: SandboxConfig) -> Path:
         resolved = parent.resolve(strict=True)
     except OSError as error:
         raise SandboxError("sandbox_cgroup_unavailable") from error
-    if resolved == Path("/sys/fs/cgroup") or "app.slice" in resolved.parts:
+    if (
+        resolved != parent
+        or not resolved.is_dir()
+        or resolved == Path("/sys/fs/cgroup")
+        or "app.slice" in resolved.parts
+    ):
         raise SandboxError("sandbox_cgroup_parent_invalid")
+    try:
+        if _filesystem_magic(resolved) != CGROUP2_SUPER_MAGIC:
+            raise SandboxError("sandbox_cgroup_parent_invalid")
+    except OSError as error:
+        raise SandboxError("sandbox_cgroup_unavailable") from error
     required_files = (
         "cgroup.controllers",
         "cgroup.subtree_control",
@@ -462,6 +573,56 @@ def _pid_cgroup(pid: int) -> str:
 
 def _libc() -> ctypes.CDLL:
     return ctypes.CDLL(None, use_errno=True)
+
+
+def _filesystem_magic(path: Path) -> int:
+    """Read the Linux filesystem magic without shelling out to ``stat``."""
+
+    if sys.platform != "linux":
+        raise OSError(errno.ENOSYS, "Linux statfs is required")
+    # Linux struct statfs is smaller than this buffer on the supported
+    # architectures; the first long is f_type on both x86_64 and aarch64.
+    result = (ctypes.c_long * 16)()
+    statfs = getattr(_libc(), "statfs", None)
+    if statfs is None:
+        raise OSError(errno.ENOSYS, "statfs is unavailable")
+    statfs.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
+    statfs.restype = ctypes.c_int
+    if statfs(os.fsencode(str(path)), ctypes.byref(result)) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return int(result[0])
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left.is_relative_to(right) or right.is_relative_to(left)
+
+
+def _validated_hidden_cgroup_path(
+    hidden_cgroup_path: str | None,
+    mount_root: Path,
+    host_workspace: Path,
+) -> Path:
+    """Validate the exact cgroup bind before any private overmount."""
+
+    if not hidden_cgroup_path:
+        raise OSError(errno.EINVAL, "configured cgroup path is required")
+    target = Path(hidden_cgroup_path)
+    if not target.is_absolute():
+        raise OSError(errno.EINVAL, "configured cgroup path must be absolute")
+    try:
+        resolved_target = target.resolve(strict=True)
+        resolved_mount_root = mount_root.resolve(strict=False)
+        resolved_workspace = host_workspace.resolve(strict=True)
+    except OSError as error:
+        raise OSError(error.errno or errno.ENOENT, "configured cgroup path unavailable") from error
+    if resolved_target != target or not target.is_dir():
+        raise OSError(errno.EINVAL, "configured cgroup path must not be a symlink")
+    if _filesystem_magic(target) != CGROUP2_SUPER_MAGIC:
+        raise OSError(errno.EINVAL, "configured cgroup path is not cgroup2fs")
+    if _paths_overlap(target, resolved_mount_root) or _paths_overlap(target, resolved_workspace):
+        raise OSError(errno.EINVAL, "configured cgroup path overlaps workspace")
+    return target
 
 
 def _unshare(flags: int) -> None:
@@ -578,9 +739,139 @@ def _copy_tree(source: Path, target: Path) -> None:
             raise OSError(errno.ELOOP, "unsupported workspace entry")
 
 
+@contextmanager
+def _filesystem_identity(uid: int, gid: int) -> Iterator[None]:
+    """Temporarily set filesystem ownership without adding ``CAP_CHOWN``.
+
+    The helper remains an effective-root supervisor with exactly the approved
+    three capabilities, but the tmpfs workspace is mounted for the payload
+    uid/gid.  Linux uses fsuid/fsgid for path permission checks and ownership
+    of newly-created nodes, allowing the supervisor to copy already-opened
+    source files into that mount without a post-copy ``chown`` capability.
+    """
+
+    if sys.platform != "linux":
+        raise OSError(errno.ENOSYS, "Linux filesystem identity is required")
+    libc = _libc()
+    setfsuid = getattr(libc, "setfsuid", None)
+    setfsgid = getattr(libc, "setfsgid", None)
+    if setfsuid is None or setfsgid is None:
+        raise OSError(errno.ENOSYS, "filesystem identity syscalls are unavailable")
+    for function in (setfsuid, setfsgid):
+        function.argtypes = [ctypes.c_uint]
+        function.restype = ctypes.c_int
+    query = ctypes.c_uint(-1).value
+    previous_uid = int(setfsuid(query))
+    previous_gid = int(setfsgid(query))
+    setfsgid(gid)
+    setfsuid(uid)
+    if int(setfsuid(query)) != uid or int(setfsgid(query)) != gid:
+        setfsgid(previous_gid)
+        setfsuid(previous_uid)
+        raise OSError(errno.EPERM, "filesystem identity setup failed")
+    try:
+        yield
+    finally:
+        setfsgid(previous_gid)
+        setfsuid(previous_uid)
+        if int(setfsuid(query)) != previous_uid or int(setfsgid(query)) != previous_gid:
+            raise OSError(errno.EPERM, "filesystem identity restore failed")
+
+
+def _copy_tree_as_owner(source: Path, target: Path, uid: int, gid: int) -> None:
+    """Copy the staging tree as payload-owned nodes without following links.
+
+    Source descriptors are opened while the supervisor still has filesystem
+    identity ``0``.  The destination is an already-mounted tmpfs owned by the
+    payload; each destination node is created under the payload fsuid/fsgid,
+    preserving its managed mode bits and never following a staged symlink.
+    """
+
+    with _filesystem_identity(uid, gid):
+        target_info = os.stat(target, follow_symlinks=False)
+    if not stat.S_ISDIR(target_info.st_mode) or (target_info.st_uid, target_info.st_gid) != (
+        uid,
+        gid,
+    ):
+        raise OSError(errno.EPERM, "payload workspace ownership readback failed")
+
+    def copy_directory(source_dir: Path, target_dir: Path) -> None:
+        with os.scandir(source_dir) as entries:
+            for entry in entries:
+                if entry.name == ".dlr-sandbox-mount":
+                    continue
+                source_path = Path(entry.path)
+                target_path = target_dir / entry.name
+                source_info = entry.stat(follow_symlinks=False)
+                mode = stat.S_IMODE(source_info.st_mode)
+                if stat.S_ISLNK(source_info.st_mode):
+                    link = os.readlink(source_path)
+                    with _filesystem_identity(uid, gid):
+                        os.symlink(link, target_path)
+                elif stat.S_ISDIR(source_info.st_mode):
+                    creation_mode = mode | stat.S_IWUSR | stat.S_IXUSR
+                    with _filesystem_identity(uid, gid):
+                        target_path.mkdir(mode=creation_mode)
+                        os.chmod(target_path, creation_mode, follow_symlinks=False)
+                    copy_directory(source_path, target_path)
+                    with _filesystem_identity(uid, gid):
+                        os.chmod(target_path, mode, follow_symlinks=False)
+                elif stat.S_ISREG(source_info.st_mode):
+                    source_fd = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    destination_fd = -1
+                    try:
+                        with _filesystem_identity(uid, gid):
+                            destination_fd = os.open(
+                                target_path,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                                mode,
+                            )
+                            os.fchmod(destination_fd, mode)
+                            if (
+                                os.fstat(destination_fd).st_uid != uid
+                                or os.fstat(destination_fd).st_gid != gid
+                            ):
+                                raise OSError(
+                                    errno.EPERM, "payload workspace file ownership readback failed"
+                                )
+                            with (
+                                os.fdopen(source_fd, "rb", closefd=False) as source_stream,
+                                os.fdopen(
+                                    destination_fd, "wb", closefd=False
+                                ) as destination_stream,
+                            ):
+                                shutil.copyfileobj(source_stream, destination_stream)
+                    finally:
+                        os.close(source_fd)
+                        if destination_fd >= 0:
+                            os.close(destination_fd)
+                else:
+                    raise OSError(errno.ELOOP, "unsupported workspace entry")
+
+    copy_directory(source, target)
+
+
 def _replace_workspace(command: list[str], source: Path, target: Path) -> list[str]:
+    """Rewrite the workspace root and every command argument below it."""
+
     source_text = str(source)
-    return [target.as_posix() if item == source_text else item for item in command]
+    source_path = source.resolve(strict=False) if source.is_absolute() else source
+    replaced: list[str] = []
+    for item in command:
+        if item == source_text:
+            replaced.append(target.as_posix())
+            continue
+        item_path = Path(item)
+        if item_path.is_absolute():
+            try:
+                relative = item_path.relative_to(source_path)
+            except ValueError:
+                pass
+            else:
+                replaced.append((target / relative).as_posix())
+                continue
+        replaced.append(item)
+    return replaced
 
 
 def _helper_child(
@@ -592,83 +883,145 @@ def _helper_child(
     payload_uid: int,
     payload_gid: int,
     hidden_cgroup_path: str | None,
+    attempt_cgroup: Path,
     ready_fd: int,
+    diagnostic_fd: int,
 ) -> int:
-    """Run in a standalone helper; errors are intentionally path-free."""
+    """Run in a standalone helper and report fixed syscall evidence."""
 
+    stage = "ready_gate"
     try:
-        if os.read(ready_fd, 1) != b"1":
+        try:
+            if os.read(ready_fd, 1) != b"1":
+                _write_helper_diagnostic(
+                    diagnostic_fd,
+                    stage,
+                    kind="exception",
+                    error_number=0,
+                )
+                return 125
+        except OSError as error:
+            _write_helper_diagnostic(
+                diagnostic_fd,
+                stage,
+                kind="os_error",
+                error_number=error.errno or errno.EIO,
+            )
             return 125
     finally:
         os.close(ready_fd)
 
     mounted_tmpfs = False
-    stage = "ready"
+    mounted_workspace_tmpfs = False
+    outer_fd: int | None = None
+    inner_fd: int | None = None
+    mount_parent_fd: int | None = None
+    payload_parent_fd: int | None = None
+    original_cwd_fd: int | None = None
+    payload_outer_fd: int | None = None
+    workspace_mount_relative: Path | None = None
+    workspace_relative: Path | None = None
+    payload_workspace: Path | None = None
+    payload_root: Path | None = None
+    created_payload_root = False
+    mounted_payload_bind = False
+    hidden_mounts: list[str] = []
+    stage = "ready_gate"
     try:
-        stage = "mount_namespace"
+        original_cwd_fd = os.open(".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        mount_parent_fd = os.open(
+            mount_root.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        stage = "validate_cgroup_hide_target"
+        exact_cgroup_mount = _validated_hidden_cgroup_path(
+            hidden_cgroup_path,
+            mount_root,
+            host_workspace,
+        )
+        stage = "mount_namespace_unshare"
         _unshare(CLONE_NEWNS)
+        stage = "mount_namespace_private"
         _mount(None, "/", None, MS_REC | MS_PRIVATE, None)
         mount_root.mkdir(mode=0o700, exist_ok=True)
-        stage = "workspace_tmpfs"
+        stage = "workspace_tmpfs_mount"
         _mount(
             "tmpfs",
             str(mount_root),
             "tmpfs",
             MS_NOSUID | MS_NODEV | MS_NOEXEC,
-            f"size={tmp_bytes},mode=0700",
+            # The supervisor retains ownership of the mount root.  The
+            # non-root payload reaches its payload-owned workspace leaf through
+            # the inherited directory fd.
+            f"size={tmp_bytes},mode=0711",
         )
         mounted_tmpfs = True
-        tmpfs_workspace = mount_root / host_workspace.name
-        _copy_tree(host_workspace, tmpfs_workspace)
-
-        # The Adapter inherits no cgroup control plane, even though the
-        # private namespace starts from the Worker mount namespace.
-        cgroup_mount = Path("/sys/fs/cgroup")
-        if cgroup_mount.is_dir():
-            stage = "cgroup_root_hide"
-            _mount(
-                "tmpfs",
-                str(cgroup_mount),
-                "tmpfs",
-                MS_NOSUID | MS_NODEV | MS_NOEXEC,
-                "size=4m,mode=0555",
+        outer_fd = os.open(mount_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        payload_root = Path("/tmp") / f".dlr-sandbox-{mount_root.parent.name}"
+        payload_parent_fd = os.open(
+            payload_root.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        payload_root.mkdir(mode=0o711)
+        created_payload_root = True
+        _mount(str(mount_root), str(payload_root), None, MS_BIND | MS_REC, None)
+        mounted_payload_bind = True
+        payload_outer_fd = os.open(
+            payload_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        os.fchdir(payload_outer_fd)
+        workspace_mount_relative = Path(host_workspace.name)
+        workspace_mount_relative.mkdir(mode=0o711)
+        stage = "workspace_tmpfs_workspace_mount"
+        _mount(
+            "tmpfs",
+            str(workspace_mount_relative),
+            "tmpfs",
+            MS_NOSUID | MS_NODEV | MS_NOEXEC,
+            f"size={tmp_bytes},uid={payload_uid},gid={payload_gid},mode=0700",
+        )
+        mounted_workspace_tmpfs = True
+        workspace_relative = Path(host_workspace.name)
+        with _filesystem_identity(payload_uid, payload_gid):
+            inner_fd = os.open(
+                workspace_mount_relative,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
             )
-        if hidden_cgroup_path:
-            exact_cgroup_mount = Path(hidden_cgroup_path)
-            if exact_cgroup_mount.is_dir() and exact_cgroup_mount != cgroup_mount:
-                stage = "exact_cgroup_hide"
-                _mount(
-                    "tmpfs",
-                    str(exact_cgroup_mount),
-                    "tmpfs",
-                    MS_NOSUID | MS_NODEV | MS_NOEXEC,
-                    "size=4m,mode=0555",
-                )
-        secrets_mount = Path("/run/secrets")
-        if secrets_mount.is_dir():
-            stage = "secrets_hide"
-            _mount(
-                "tmpfs",
-                str(secrets_mount),
-                "tmpfs",
-                MS_NOSUID | MS_NODEV | MS_NOEXEC,
-                "size=1m,mode=0555",
-            )
+            os.set_inheritable(inner_fd, True)
+            os.fchdir(inner_fd)
+            workspace_relative.mkdir(mode=0o700)
+            os.chmod(workspace_relative, 0o700, follow_symlinks=False)
+        payload_workspace = Path(f"/proc/self/fd/{inner_fd}/{host_workspace.name}")
+        stage = "workspace_ownership"
+        _copy_tree_as_owner(host_workspace, workspace_relative, payload_uid, payload_gid)
 
         # PID namespaces only affect children, so fork after unshare.  The
-        # child becomes PID 1 in the private namespace and inherits the
-        # already-configured cgroup membership.
+        # helper stays outside the Attempt child; only the payload PID is
+        # moved into the task-owned cgroup before identity is dropped.  This
+        # lets cgroup.kill terminate the payload while the helper remains
+        # available to copy output and unmount the private filesystems.
         stage = "pid_namespace"
         _unshare(CLONE_NEWPID)
+        payload_gate_read, payload_gate_write = os.pipe()
         child_pid = os.fork()
         if child_pid == 0:
+            os.close(payload_gate_write)
             try:
+                if os.read(payload_gate_read, 1) != b"1":
+                    raise OSError(errno.ECANCELED, "payload cgroup gate was not released")
+                os.close(payload_gate_read)
                 stage = "payload_setup"
-                os.chdir(tmpfs_workspace)
                 resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
                 _drop_identity(payload_uid, payload_gid)
                 _set_no_new_privileges()
                 _drop_capabilities()
+                assert payload_workspace is not None
+                os.chdir(payload_workspace)
+                # The diagnostic channel belongs to the helper, not the
+                # Adapter.  CLOEXEC keeps the payload from discovering or
+                # writing the supervisor's private control channel.
+                os.set_inheritable(diagnostic_fd, False)
                 adapter_environment = {
                     key: value
                     for key, value in os.environ.items()
@@ -685,11 +1038,90 @@ def _helper_child(
                 )
                 os.execvpe(
                     command[0],
-                    _replace_workspace(command, host_workspace, tmpfs_workspace),
+                    _replace_workspace(command, host_workspace, payload_workspace),
                     adapter_environment,
                 )
-            except BaseException:
+            except OSError as error:
+                _write_helper_diagnostic(
+                    diagnostic_fd,
+                    stage,
+                    kind="os_error",
+                    error_number=error.errno or errno.EIO,
+                )
                 os._exit(126)
+            except BaseException:
+                _write_helper_diagnostic(
+                    diagnostic_fd,
+                    stage,
+                    kind="exception",
+                    error_number=0,
+                )
+                os._exit(126)
+        os.close(payload_gate_read)
+        try:
+            stage = "attempt_membership"
+            if not (attempt_cgroup / "cgroup.procs").is_file():
+                raise OSError(errno.ENOENT, "Attempt cgroup is unavailable")
+            _write(attempt_cgroup / "cgroup.procs", f"{child_pid}\n")
+            if not _pid_is_in_child(child_pid, attempt_cgroup):
+                raise OSError(errno.EPERM, "payload cgroup membership readback failed")
+
+            # The Adapter inherits no cgroup control plane, even though the
+            # private namespace starts from the Worker mount namespace. The
+            # configured bind target is validated above and must be
+            # overmounted only after the payload has entered Attempt; hiding
+            # it earlier would also hide the cgroup.procs needed for that
+            # migration. The payload is still blocked on the gate, so it
+            # cannot execute before both overmounts are complete.
+            cgroup_mount = Path("/sys/fs/cgroup")
+            if not cgroup_mount.is_dir():
+                raise OSError(errno.ENOENT, "canonical cgroup mount is unavailable")
+            stage = "cgroup_root_hide"
+            _mount(
+                "tmpfs",
+                str(cgroup_mount),
+                "tmpfs",
+                MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC,
+                "size=4m,mode=0555",
+            )
+            hidden_mounts.append(str(cgroup_mount))
+            # A target below the canonical mount is already hidden by the
+            # root overmount. The normal Compose target (/run/dlr-cgroup) is
+            # separate and must receive its own exact overmount.
+            if exact_cgroup_mount != cgroup_mount and not exact_cgroup_mount.is_relative_to(
+                cgroup_mount
+            ):
+                stage = "exact_cgroup_hide"
+                _mount(
+                    "tmpfs",
+                    str(exact_cgroup_mount),
+                    "tmpfs",
+                    MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC,
+                    "size=4m,mode=0555",
+                )
+                hidden_mounts.append(str(exact_cgroup_mount))
+            secrets_mount = Path("/run/secrets")
+            if secrets_mount.is_dir():
+                stage = "secrets_hide"
+                _mount(
+                    "tmpfs",
+                    str(secrets_mount),
+                    "tmpfs",
+                    MS_NOSUID | MS_NODEV | MS_NOEXEC,
+                    "size=1m,mode=0555",
+                )
+                hidden_mounts.append(str(secrets_mount))
+            os.write(payload_gate_write, b"1")
+        except BaseException:
+            with suppress(OSError):
+                os.kill(child_pid, signal.SIGKILL)
+            with suppress(OSError):
+                os.waitpid(child_pid, 0)
+            raise
+        finally:
+            with suppress(OSError):
+                os.close(payload_gate_write)
+        stage = "payload_wait"
         _, status = os.waitpid(child_pid, 0)
         if os.WIFEXITED(status):
             exit_code = os.WEXITSTATUS(status)
@@ -697,27 +1129,98 @@ def _helper_child(
             exit_code = 128 + os.WTERMSIG(status)
         else:
             exit_code = 125
-        output = tmpfs_workspace / "output.json"
-        if output.is_file() and not output.is_symlink():
+        stage = "output_copy"
+        assert workspace_relative is not None
+        output = workspace_relative / "output.json"
+        output_fd = -1
+        try:
+            with _filesystem_identity(payload_uid, payload_gid):
+                output_info = os.lstat(output)
+                if stat.S_ISREG(output_info.st_mode):
+                    output_fd = os.open(output, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            output_fd = -1
+        if output_fd >= 0:
             staged_output = host_workspace / "output.json"
             temporary = host_workspace / ".output.json.sandbox.tmp"
-            shutil.copyfile(output, temporary)
-            os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR)
-            os.replace(temporary, staged_output)
+            try:
+                with (
+                    os.fdopen(output_fd, "rb") as source_stream,
+                    temporary.open("wb") as destination_stream,
+                ):
+                    output_fd = -1
+                    shutil.copyfileobj(source_stream, destination_stream)
+                os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR)
+                os.replace(temporary, staged_output)
+            finally:
+                if output_fd >= 0:
+                    os.close(output_fd)
         return exit_code
     except OSError as error:
+        _write_helper_diagnostic(
+            diagnostic_fd,
+            stage,
+            kind="os_error",
+            error_number=error.errno or errno.EIO,
+        )
         print(
             f"DLR_SANDBOX_HELPER_ERROR:{stage}:errno={error.errno or errno.EIO}",
             flush=True,
         )
         return 125
     except BaseException:
+        _write_helper_diagnostic(
+            diagnostic_fd,
+            stage,
+            kind="exception",
+            error_number=0,
+        )
         print(f"DLR_SANDBOX_HELPER_ERROR:{stage}:exception", flush=True)
         return 125
     finally:
+        for target in reversed(hidden_mounts):
+            with suppress(OSError):
+                _unmount(target)
+        if mounted_workspace_tmpfs and workspace_mount_relative is not None:
+            with suppress(OSError):
+                if payload_outer_fd is not None:
+                    os.fchdir(payload_outer_fd)
+                _unmount(workspace_mount_relative.name)
+        if inner_fd is not None:
+            with suppress(OSError):
+                os.close(inner_fd)
+        if payload_outer_fd is not None:
+            with suppress(OSError):
+                os.close(payload_outer_fd)
+        if mounted_payload_bind and payload_root is not None:
+            with suppress(OSError):
+                if payload_parent_fd is not None:
+                    os.fchdir(payload_parent_fd)
+                _unmount(payload_root.name)
+        if created_payload_root and payload_root is not None:
+            with suppress(OSError):
+                payload_root.rmdir()
         if mounted_tmpfs:
             with suppress(OSError):
-                _unmount(str(mount_root))
+                if mount_parent_fd is not None:
+                    os.fchdir(mount_parent_fd)
+                _unmount(mount_root.name)
+        if outer_fd is not None:
+            with suppress(OSError):
+                os.close(outer_fd)
+        if mount_parent_fd is not None:
+            with suppress(OSError):
+                os.close(mount_parent_fd)
+        if payload_parent_fd is not None:
+            with suppress(OSError):
+                os.close(payload_parent_fd)
+        if original_cwd_fd is not None:
+            with suppress(OSError):
+                os.fchdir(original_cwd_fd)
+            with suppress(OSError):
+                os.close(original_cwd_fd)
+        with suppress(OSError):
+            os.close(diagnostic_fd)
 
 
 def _helper_main(argv: list[str]) -> int:
@@ -733,7 +1236,9 @@ def _helper_main(argv: list[str]) -> int:
     parser.add_argument("--payload-uid", required=True, type=int)
     parser.add_argument("--payload-gid", required=True, type=int)
     parser.add_argument("--hidden-cgroup-path", default="")
+    parser.add_argument("--attempt-cgroup", required=True)
     parser.add_argument("--ready-fd", required=True, type=int)
+    parser.add_argument("--diagnostic-fd", required=True, type=int)
     args = parser.parse_args(argv)
     if not args.sandbox_child:
         return 125
@@ -744,6 +1249,12 @@ def _helper_main(argv: list[str]) -> int:
             or not command
             or not all(isinstance(item, str) for item in command)
         ):
+            _write_helper_diagnostic(
+                args.diagnostic_fd,
+                "helper_parse",
+                kind="exception",
+                error_number=0,
+            )
             return 125
         return _helper_child(
             command,
@@ -754,9 +1265,25 @@ def _helper_main(argv: list[str]) -> int:
             args.payload_uid,
             args.payload_gid,
             args.hidden_cgroup_path or None,
+            Path(args.attempt_cgroup),
             args.ready_fd,
+            args.diagnostic_fd,
         )
+    except OSError as error:
+        _write_helper_diagnostic(
+            args.diagnostic_fd,
+            "helper_parse",
+            kind="os_error",
+            error_number=error.errno or errno.EIO,
+        )
+        return 125
     except BaseException:
+        _write_helper_diagnostic(
+            args.diagnostic_fd,
+            "helper_parse",
+            kind="exception",
+            error_number=0,
+        )
         return 125
 
 
@@ -797,6 +1324,8 @@ class AttemptSandbox:
                 self._write_recovery_marker()
             raise
         self._process: subprocess.Popen[bytes] | None = None
+        self._payload_pid: int | None = None
+        self._diagnostic_read_fd: int | None = None
         self._killed = False
         self._unmounted = False
 
@@ -832,6 +1361,41 @@ class AttemptSandbox:
     def limits_readback(self) -> dict[str, str]:
         return dict(self._limits_readback)
 
+    @property
+    def payload_pid(self) -> int | None:
+        """Host PID of the payload child while it remains in Attempt."""
+
+        return self._payload_pid
+
+    def read_helper_diagnostic(self) -> HelperDiagnostic | None:
+        """Read the helper's private diagnostic after its process exits."""
+
+        if self._diagnostic_read_fd is None:
+            return None
+        if self._process is not None and self._process.poll() is None:
+            return None
+        read_fd = self._diagnostic_read_fd
+        self._diagnostic_read_fd = None
+        chunks: list[bytes] = []
+        try:
+            os.set_blocking(read_fd, False)
+            while True:
+                try:
+                    chunk = os.read(read_fd, 4096)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except OSError:
+            return None
+        finally:
+            with suppress(OSError):
+                os.close(read_fd)
+        if not chunks:
+            return None
+        return _parse_helper_diagnostic(b"".join(chunks))
+
     def start(
         self,
         command: list[str],
@@ -846,7 +1410,9 @@ class AttemptSandbox:
         except OSError as error:
             raise SandboxError("sandbox_mount_prepare_failed") from error
         read_fd, write_fd = os.pipe()
+        diagnostic_read_fd, diagnostic_write_fd = os.pipe()
         os.set_inheritable(read_fd, True)
+        os.set_inheritable(diagnostic_write_fd, True)
         encoded_command = base64.urlsafe_b64encode(
             json.dumps(command, separators=(",", ":")).encode()
         ).decode()
@@ -883,27 +1449,33 @@ class AttemptSandbox:
                     "--payload-gid",
                     str(self.config.payload_gid),
                     "--hidden-cgroup-path",
-                    str(self.config.cgroup_path or ""),
+                    str(self.parent),
+                    "--attempt-cgroup",
+                    str(self.cgroup),
                     "--ready-fd",
                     str(read_fd),
+                    "--diagnostic-fd",
+                    str(diagnostic_write_fd),
                 ],
                 stdout=stdout,
                 stderr=subprocess.STDOUT,
                 cwd=str(self.workspace),
                 env=helper_environment,
-                pass_fds=(read_fd,),
+                pass_fds=(read_fd, diagnostic_write_fd),
                 start_new_session=True,
             )
         except OSError as error:
-            os.close(write_fd)
+            for descriptor in (write_fd, diagnostic_read_fd, diagnostic_write_fd):
+                with suppress(OSError):
+                    os.close(descriptor)
             raise SandboxError("sandbox_process_start_failed") from error
         finally:
             os.close(read_fd)
+            with suppress(OSError):
+                os.close(diagnostic_write_fd)
+        self._diagnostic_read_fd = diagnostic_read_fd
         self._process = process
         try:
-            _write(self.cgroup / "cgroup.procs", f"{process.pid}\n")
-            if not _pid_is_in_child(process.pid, self.cgroup):
-                raise SandboxError("sandbox_process_membership_failed")
             os.write(write_fd, b"1")
         except (OSError, SandboxError) as error:
             with suppress(OSError):
@@ -913,6 +1485,19 @@ class AttemptSandbox:
                 raise
             raise SandboxError("sandbox_process_membership_failed") from error
         os.close(write_fd)
+        # The helper remains in the Worker cgroup.  The child moves itself
+        # into the Attempt; preflight uses this best-effort readback while
+        # short-lived production payloads may already have exited.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and process.poll() is None:
+            try:
+                pids = [int(value) for value in _read(self.cgroup / "cgroup.procs").split()]
+            except (SandboxError, ValueError):
+                pids = []
+            if pids:
+                self._payload_pid = pids[0]
+                break
+            time.sleep(0.01)
         return process
 
     def kill(self, process: subprocess.Popen[bytes] | None = None) -> None:
@@ -1071,6 +1656,7 @@ def run_preflight(
         "no_new_privileges": False,
         "cgroup_kill": False,
         "adapter_control_plane_hidden": False,
+        "adapter_mount_blocked": False,
         "sandbox_cleanup": False,
     }
     try:
@@ -1097,15 +1683,22 @@ def run_preflight(
     output_log = workspace / ".probe.log"
     attempt: AttemptSandbox | None = None
     process: subprocess.Popen[bytes] | None = None
+    helper_diagnostic: HelperDiagnostic | None = None
     details: dict[str, Any] = {
+        "configured_cgroup_path": str(parent),
         "parent_basename": parent.name,
         "agent_pid": os.getpid(),
         "agent_cgroup": _pid_cgroup(os.getpid()),
         "limits": _profile_from_preflight(config).as_dict(),
+        "worker_cgroup_management": {
+            "parent_controllers_read": True,
+            "child_limit_write_read": False,
+        },
+        "helper_diagnostic": None,
         "workspace_residue": False,
     }
     probe = (
-        "import errno,json,os,pathlib,resource,time\n"
+        "import ctypes,errno,json,os,pathlib,resource,time\n"
         "def field(name):\n"
         "    values={}\n"
         "    for line in pathlib.Path('/proc/self/status').read_text().splitlines():\n"
@@ -1114,17 +1707,55 @@ def run_preflight(
         "    return values.get(name,'')\n"
         "expected=os.environ['DLR_PREFLIGHT_ATTEMPT_NAME']\n"
         "hidden_target=pathlib.Path(os.environ['DLR_PREFLIGHT_CGROUP_PATH'])\n"
+        "def inaccessible(root):\n"
+        "    result={'read_blocked':False,'write_blocked':False}\n"
+        "    try: (root/'cgroup.controllers').read_text()\n"
+        "    except OSError: result['read_blocked']=True\n"
+        "    else: raise AssertionError('cgroup control read visible')\n"
+        "    try: (root/'dlr-write-probe').write_text('x')\n"
+        "    except OSError: result['write_blocked']=True\n"
+        "    else: raise AssertionError('cgroup control write visible')\n"
+        "    return result\n"
+        "def mount_blocked():\n"
+        "    target=pathlib.Path('adapter-mount-probe')\n"
+        "    target.mkdir()\n"
+        "    libc=ctypes.CDLL(None,use_errno=True)\n"
+        "    mount=libc.mount\n"
+        "    mount.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,"
+        "ctypes.c_ulong,ctypes.c_char_p]\n"
+        "    mount.restype=ctypes.c_int\n"
+        "    unmount=libc.umount2\n"
+        "    unmount.argtypes=[ctypes.c_char_p,ctypes.c_int]\n"
+        "    unmount.restype=ctypes.c_int\n"
+        "    target_bytes=os.fsencode(str(target))\n"
+        "    result=mount(b'tmpfs',target_bytes,b'tmpfs',0,b'size=1m')\n"
+        "    mount_errno=ctypes.get_errno()\n"
+        "    if result==0:\n"
+        "        unmount(target_bytes,2)\n"
+        "        raise AssertionError('Adapter mount unexpectedly succeeded')\n"
+        "    assert mount_errno in (errno.EPERM,errno.EACCES)\n"
+        "    return {'blocked':True,'errno':mount_errno}\n"
         "cg=pathlib.Path('/proc/self/cgroup').read_text()\n"
         "assert expected in cg\n"
         "assert os.getpid()==1\n"
+        "assert os.getuid()==int(os.environ['DLR_PREFLIGHT_PAYLOAD_UID'])\n"
+        "assert os.getgid()==int(os.environ['DLR_PREFLIGHT_PAYLOAD_GID'])\n"
         "assert os.readlink('/proc/self/ns/mnt') != os.environ['DLR_PREFLIGHT_PARENT_MNT']\n"
         "assert os.readlink('/proc/self/ns/pid') != os.environ['DLR_PREFLIGHT_PARENT_PID']\n"
         "assert resource.getrlimit(resource.RLIMIT_NOFILE)==(64,64)\n"
         "assert field('NoNewPrivs')=='1'\n"
-        "assert int(field('CapEff') or '0',16)==0\n"
-        "assert not pathlib.Path('/sys/fs/cgroup/cgroup.controllers').exists()\n"
-        "assert not (hidden_target/'cgroup.controllers').exists()\n"
-        "pathlib.Path('output.json').write_text(json.dumps({'ok':True}))\n"
+        "cap_prm=int(field('CapPrm') or '0',16)\n"
+        "cap_eff=int(field('CapEff') or '0',16)\n"
+        "cap_bnd=int(field('CapBnd') or '0',16)\n"
+        "cap_amb=int(field('CapAmb') or '0',16)\n"
+        f"allowed_caps={SUPERVISOR_CAPABILITY_MASK}\n"
+        "assert cap_prm==0\n"
+        "assert cap_eff==0\n"
+        "assert cap_amb==0\n"
+        "assert cap_bnd & ~allowed_caps == 0\n"
+        "adapter_mount=mount_blocked()\n"
+        "hidden_paths={'/sys/fs/cgroup':inaccessible(pathlib.Path('/sys/fs/cgroup')),str(hidden_target):inaccessible(hidden_target)}\n"
+        "pathlib.Path('output.json').write_text(json.dumps({'ok':True,'identity':{'uid':os.getuid(),'gid':os.getgid(),'CapPrm':field('CapPrm'),'CapEff':field('CapEff'),'CapBnd':field('CapBnd'),'CapAmb':field('CapAmb'),'NoNewPrivs':field('NoNewPrivs')},'adapter_mount':adapter_mount,'hidden_cgroup_paths':hidden_paths}))\n"
         "saw=False\n"
         "for index in range(1,5):\n"
         "    try:\n"
@@ -1147,6 +1778,12 @@ def run_preflight(
             cgroup_name=preflight_name,
         )
         details["limits_readback"] = attempt.limits_readback
+        details["worker_cgroup_management"]["child_limit_write_read"] = attempt.limits_readback == {
+            "cpu.max": "100000 100000",
+            "memory.max": "67108864",
+            "memory.swap.max": "0",
+            "pids.max": "64",
+        }
         capabilities["cpu_hard_limit"] = attempt.limits_readback["cpu.max"] == "100000 100000"
         capabilities["memory_hard_limit"] = attempt.limits_readback["memory.max"] == str(
             limits.memory_bytes
@@ -1160,11 +1797,15 @@ def run_preflight(
             "DLR_PREFLIGHT_PARENT_MNT": parent_mnt,
             "DLR_PREFLIGHT_PARENT_PID": parent_pid,
             "DLR_PREFLIGHT_CGROUP_PATH": str(config.cgroup_path or ""),
+            "DLR_PREFLIGHT_PAYLOAD_UID": str(config.payload_uid),
+            "DLR_PREFLIGHT_PAYLOAD_GID": str(config.payload_gid),
         }
         with output_log.open("wb") as stream:
             process = attempt.start([sys.executable, "-c", probe], stdout=stream, environment=env)
             details["cgroup_name"] = attempt.cgroup_name
-            details["process_pid"] = process.pid
+            details["helper_pid"] = process.pid
+            details["helper_outside_attempt"] = not _pid_is_in_child(process.pid, attempt.cgroup)
+            details["process_pid"] = attempt.payload_pid
             deadline = time.monotonic() + 10
             ready = False
             while time.monotonic() < deadline:
@@ -1176,16 +1817,26 @@ def run_preflight(
                     break
                 time.sleep(0.05)
             if not ready:
+                helper_diagnostic = attempt.read_helper_diagnostic()
+                if helper_diagnostic is not None:
+                    details["helper_diagnostic"] = helper_diagnostic.as_dict()
+                    raise SandboxError(helper_diagnostic.error_code)
                 raise SandboxError("sandbox_preflight_probe_failed")
         capabilities["mount_namespace"] = True
         capabilities["pid_namespace"] = True
         capabilities["tmpfs_hard_limit"] = True
         capabilities["nofile_hard_limit"] = True
         capabilities["no_new_privileges"] = True
-        capabilities["adapter_control_plane_hidden"] = True
         details["agent_outside_attempt"] = not _pid_is_in_child(os.getpid(), attempt.cgroup)
-        details["probe_in_attempt"] = _pid_is_in_child(process.pid, attempt.cgroup)
-        if not details["agent_outside_attempt"] or not details["probe_in_attempt"]:
+        details["process_pid"] = attempt.payload_pid
+        details["probe_in_attempt"] = attempt.payload_pid is not None and _pid_is_in_child(
+            attempt.payload_pid, attempt.cgroup
+        )
+        if (
+            not details["agent_outside_attempt"]
+            or not details.get("helper_outside_attempt", False)
+            or not details["probe_in_attempt"]
+        ):
             raise SandboxError("sandbox_process_membership_failed")
         attempt.kill(process)
         for _ in range(20):
@@ -1204,6 +1855,9 @@ def run_preflight(
     finally:
         if attempt is not None:
             cleanup = attempt.cleanup()
+            helper_diagnostic = attempt.read_helper_diagnostic()
+            if helper_diagnostic is not None:
+                details["helper_diagnostic"] = helper_diagnostic.as_dict()
             details["cleanup"] = {
                 "status": cleanup.status,
                 "error_code": cleanup.error_code,
@@ -1212,6 +1866,33 @@ def run_preflight(
                 "residue": cleanup.residue,
             }
             capabilities["sandbox_cleanup"] = cleanup.status == "completed" and not cleanup.residue
+            try:
+                receipt = json.loads((workspace / "output.json").read_text(encoding="ascii"))
+            except (OSError, UnicodeError, TypeError, ValueError):
+                receipt = None
+            if isinstance(receipt, dict):
+                details["adapter_identity"] = receipt.get("identity")
+                hidden_paths = receipt.get("hidden_cgroup_paths")
+                details["adapter_hidden_cgroup_paths"] = hidden_paths
+                capabilities["adapter_control_plane_hidden"] = (
+                    isinstance(hidden_paths, dict)
+                    and set(hidden_paths) == {"/sys/fs/cgroup", str(config.cgroup_path)}
+                    and all(
+                        isinstance(value, dict)
+                        and value.get("read_blocked") is True
+                        and value.get("write_blocked") is True
+                        for value in hidden_paths.values()
+                    )
+                )
+                adapter_mount = receipt.get("adapter_mount")
+                details["adapter_mount"] = adapter_mount
+                capabilities["adapter_mount_blocked"] = (
+                    isinstance(adapter_mount, dict)
+                    and adapter_mount.get("blocked") is True
+                    and adapter_mount.get("errno") in {errno.EPERM, errno.EACCES}
+                )
+            if helper_diagnostic is not None and details.get("status") != "passed":
+                details["error_code"] = helper_diagnostic.error_code
         try:
             shutil.rmtree(temp_root)
         except OSError:
@@ -1236,11 +1917,13 @@ def run_preflight(
         "no_new_privileges",
         "cgroup_kill",
         "adapter_control_plane_hidden",
+        "adapter_mount_blocked",
         "sandbox_cleanup",
     )
     capabilities["preflight_passed"] = (
         all(capabilities[key] for key in required if key != "preflight_passed")
         and details.get("agent_outside_attempt") is True
+        and details.get("helper_outside_attempt") is True
         and details.get("probe_in_attempt") is True
     )
     details["capabilities"] = dict(capabilities)
