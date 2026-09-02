@@ -108,9 +108,9 @@ export DLR_SANDBOX_CGROUP_PATH="/sys/fs/cgroup$CONTROL_GROUP"
 `ControlGroup`，不能手写成 `/sys/fs/cgroup`，也不能指向 `app.slice`。上面的
 `keeper` 只创建单层 `agent` 并把自身直接移入其中；只有确认 parent 的
 `cgroup.procs` 为空后，才在 parent 写入并读回 `+cpu +memory +pids`。随后确认
-parent 的 `subtree_control` 已委派三控制器；四个限额文件必须只在单层 `agent`
-child 的 sibling `attempt` 上写入并读回，不能写 `agent` 或 systemd 管理的 unit
-parent。这样遵守 cgroup v2
+parent 的 `subtree_control` 已委派三控制器；四个限额文件只允许在与 `agent`
+平级的 sibling `attempt` child 上写入并读回，绝不能写 `agent` 或 systemd 管理的
+unit parent。这样遵守 cgroup v2
 no-internal-process 约束，同时保留 ControlGroup 作为 Compose `cgroup_parent` 与精确
 bind source；本 provisioning smoke 创建与 `agent` 平级的 `attempt` sibling，把
 workload 放入其中并将四个限额写/read 于 `/attempt`。keeper/MainPID 只驻留
