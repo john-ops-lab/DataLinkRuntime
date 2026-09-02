@@ -36,7 +36,7 @@ sudo -n systemd-run \
     # Move the shell out of the unit parent before enabling domain controllers.
     printf "%s\\n" "$$" > "$KEEPER/cgroup.procs"
     test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"
-    test "$(cat "$KEEPER/cgroup.procs")" = "$$"
+    grep -qx "$$" "$KEEPER/cgroup.procs"
 
     printf "+cpu +memory +pids\\n" > "$CONTROL_GROUP/cgroup.subtree_control"
     SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_control")
@@ -59,7 +59,7 @@ test "$CONTROL_GROUP" = "/system.slice/$UNIT"
 PARENT=/sys/fs/cgroup$CONTROL_GROUP
 KEEPER_PID=$(sudo -n systemctl show "$UNIT" -p MainPID --value)
 test -z "$(cat "$PARENT/cgroup.procs")"
-test "$(cat "$PARENT/agent/keeper/cgroup.procs")" = "$KEEPER_PID"
+grep -qx "$KEEPER_PID" "$PARENT/agent/keeper/cgroup.procs"
 SUBTREE_CONTROL=$(cat "$PARENT/cgroup.subtree_control")
 for controller in cpu memory pids; do
   case " $SUBTREE_CONTROL " in
