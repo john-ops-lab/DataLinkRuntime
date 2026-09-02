@@ -17,12 +17,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pika
 
 from dlr.control.schemas.reliable_runtime import V3TaskPayload
-from dlr.worker import executor, workspace
+from dlr.worker import executor, sandbox, workspace
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
 
 logger = logging.getLogger("dlr.worker.consumer")
@@ -207,6 +207,23 @@ class V3Consumer:
                 # the Claim instead of losing the dispatch.
                 self._request_pause(connection, channel)
             return False
+        sandbox_config = getattr(self._runtime_settings, "sandbox_config", None)
+        if sandbox_config is not None:
+            try:
+                profile = sandbox.validate_resource_profile(
+                    payload.resource_profile, sandbox_config
+                )
+                sandbox.validate_v3_payload_snapshots(cast(Mapping[str, Any], raw_payload), profile)
+            except sandbox.SandboxError as error:
+                if self._report_prepare_failure(
+                    decision,
+                    error_code=error.code,
+                    error_class="platform_transient",
+                ):
+                    self._ack(connection, channel, delivery_tag)
+                else:
+                    self._request_pause(connection, channel)
+                return False
         try:
             planned_workspace = workspace.workspace_path(
                 self._config.runtime_root,
@@ -241,7 +258,13 @@ class V3Consumer:
         self._ack(connection, channel, delivery_tag)
         return True
 
-    def _report_prepare_failure(self, decision: Mapping[str, Any]) -> bool:
+    def _report_prepare_failure(
+        self,
+        decision: Mapping[str, Any],
+        *,
+        error_code: str = "attempt_prepare_failed",
+        error_class: str = "platform_transient",
+    ) -> bool:
         payload = decision.get("payload")
         if not isinstance(payload, Mapping):
             return False
@@ -251,8 +274,8 @@ class V3Consumer:
                 "attempt_id": attempt_id,
                 "fencing_token": int(payload["fencing_token"]),
                 "claim_token": str(payload["claim_token"]),
-                "error_code": "attempt_prepare_failed",
-                "error_class": "platform_transient",
+                "error_code": error_code,
+                "error_class": error_class,
             }
             self._client.prepare_failed_attempt(self._config.worker_id, attempt_id, body)
             return True

@@ -29,6 +29,10 @@ if ! grep -Eq '^[[:space:]]+privileged:[[:space:]]+false$' docker-compose.sandbo
   echo "missing explicit privileged=false in the Sandbox override" >&2
   exit 1
 fi
+if grep -Eq '^[[:space:]]+user:' docker-compose.sandbox.yml; then
+  echo "Worker user override would remove effective CAP_SYS_ADMIN under Docker" >&2
+  exit 1
+fi
 
 require_literal() {
   local literal=$1
@@ -41,9 +45,16 @@ require_literal() {
 require_literal "      - SYS_ADMIN"
 require_literal "      - ALL"
 require_literal "      - no-new-privileges:true"
+require_literal "    group_add:"
+if ! grep -Eq "^      - (\\\"1000\\\"|'1000'|1000)$" <<<"$rendered"; then
+  echo "missing Compose contract: group_add gid 1000" >&2
+  exit 1
+fi
+require_literal "    cgroup: host"
+require_literal "      DLR_SANDBOX_CGROUP_PATH: /run/dlr-cgroup"
 require_literal "    cgroup_parent: ${example_parent}"
 require_literal "        source: ${example_path}"
-require_literal "        target: /sys/fs/cgroup/dlr"
+require_literal "        target: /run/dlr-cgroup"
 
 if ! grep -Eq '^[[:space:]]+read_only:[[:space:]]+false$' docker-compose.sandbox.yml; then
   echo "missing explicit writable exact cgroup bind" >&2
@@ -81,6 +92,7 @@ require_runbook_literal 'mkdir -p "$AGENT"'
 require_runbook_literal 'printf "%s\\n" "$$" > "$AGENT/cgroup.procs"'
 require_runbook_literal 'test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"'
 require_runbook_literal 'grep -qx "$$" "$AGENT/cgroup.procs"'
+require_runbook_literal 'chmod 0770 "$CONTROL_GROUP"'
 require_runbook_literal 'printf "+cpu +memory +pids\\n" > "$CONTROL_GROUP/cgroup.subtree_control"'
 require_runbook_literal 'SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_control")'
 require_runbook_literal 'for controller in cpu memory pids; do'

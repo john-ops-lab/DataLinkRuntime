@@ -61,6 +61,13 @@ ISOLATION_PASS = {
     "tmpfs_hard_limit": True,
     "bounded_output": True,
     "preflight_passed": True,
+    "cpu_hard_limit": True,
+    "swap_hard_limit": True,
+    "nofile_hard_limit": True,
+    "no_new_privileges": True,
+    "cgroup_kill": True,
+    "adapter_control_plane_hidden": True,
+    "sandbox_cleanup": True,
 }
 WORKER_HEADERS = {"Authorization": "Bearer test-worker-token"}
 

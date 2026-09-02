@@ -6,17 +6,34 @@
 services:
   worker:
     privileged: false
+    # Docker's private cgroup namespace maps the exact bind to namespace root
+    # and makes cgroup.procs PID writes fail with ENOENT.  The Worker needs the
+    # host cgroup namespace to manage only the already-delegated bind subtree;
+    # the Adapter later hides cgroupfs in its private mount namespace.
+    cgroup: host
+    # The Worker supervisor needs the single approved CAP_SYS_ADMIN to create
+    # namespaces and manage its delegated child. It drops identity and all
+    # capabilities before starting each Adapter payload (uid/gid 501:1000).
+    group_add:
+      - "1000"
     cap_drop:
       - ALL
     cap_add:
       - SYS_ADMIN
     security_opt:
       - no-new-privileges:true
+    environment:
+      # /sys/fs/cgroup is Docker's own read-only cgroup mount.  Bind the exact
+      # delegated subtree at an existing ordinary mountpoint instead of
+      # asking OCI to create a child below that read-only mount.
+      DLR_SANDBOX_CGROUP_PATH: /run/dlr-cgroup
+      DLR_SANDBOX_PAYLOAD_UID: "${DLR_SANDBOX_PAYLOAD_UID:-501}"
+      DLR_SANDBOX_PAYLOAD_GID: "${DLR_SANDBOX_PAYLOAD_GID:-1000}"
     cgroup_parent: "${DLR_SANDBOX_CGROUP_PARENT:?set the exact systemd ControlGroup}"
     volumes:
       - type: bind
         source: "${DLR_SANDBOX_CGROUP_PATH:?set the exact systemd ControlGroup path}"
-        target: /sys/fs/cgroup/dlr
+        target: /run/dlr-cgroup
         read_only: false
         bind:
           create_host_path: false

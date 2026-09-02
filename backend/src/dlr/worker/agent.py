@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from dlr.common.platform_logging import configure_platform_logging
-from dlr.worker import executor, i18n
+from dlr.worker import executor, i18n, sandbox
 from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
@@ -50,6 +50,13 @@ ISOLATION_CAPABILITY_KEYS = (
     "tmpfs_hard_limit",
     "bounded_output",
     "preflight_passed",
+    "cpu_hard_limit",
+    "swap_hard_limit",
+    "nofile_hard_limit",
+    "no_new_privileges",
+    "cgroup_kill",
+    "adapter_control_plane_hidden",
+    "sandbox_cleanup",
 )
 
 
@@ -129,7 +136,9 @@ class WorkerConfig:
         self.attempt_journal_root = Path(
             os.environ.get("DLR_ATTEMPT_JOURNAL_ROOT", str(self.runtime_root / "attempt-journal"))
         )
+        self.sandbox_config = sandbox.SandboxConfig.from_environment()
         self.isolation_capabilities = self._read_isolation_capabilities()
+        self._preflight_completed = False
 
     def _read_isolation_capabilities(self) -> dict[str, bool]:
         """Report observed capabilities; Batch 2 never infers sandbox PASS."""
@@ -164,7 +173,42 @@ class WorkerConfig:
             npm_registry_url=self.npm_registry_url,
             maven_repository_url=self.maven_repository_url,
             workspace_cleanup_journal_root=self.workspace_cleanup_journal_root,
+            sandbox_config=self.sandbox_config,
         )
+
+    def run_preflight(self) -> None:
+        """Run the real v3 probe once before registration is attempted."""
+        if self._preflight_completed or self.protocol_version < 3:
+            return
+        self._preflight_completed = True
+        # Do not retain environment-provided or stale capability claims while
+        # the real probe is running.  An absent/malformed receipt is a failed
+        # startup gate, never an invitation to register v3 as ready.
+        self.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
+        try:
+            result = sandbox.run_preflight(
+                self.sandbox_config,
+                recovery_root=self.workspace_cleanup_journal_root / "sandbox-recovery",
+                runtime_root=self.runtime_root,
+            )
+            capabilities = result.get("capabilities")
+            details = result.get("details")
+            if (
+                isinstance(capabilities, dict)
+                and isinstance(details, Mapping)
+                and details.get("status") == "passed"
+            ):
+                self.isolation_capabilities = {
+                    key: capabilities.get(key) is True for key in ISOLATION_CAPABILITY_KEYS
+                }
+            logger.info(
+                "v3 sandbox preflight %s; rabbitmq execution gate=%s",
+                result.get("details", {}).get("status", "failed"),
+                self.isolation_capabilities.get("preflight_passed", False),
+            )
+        except Exception:  # noqa: BLE001 - startup gate must fail closed
+            self.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
+            logger.warning("v3 sandbox preflight failed; RabbitMQ execution remains disabled")
 
 
 class Agent:
@@ -230,6 +274,7 @@ class Agent:
             logger.info("worker agent stopped")
 
     def _register(self) -> int | None:
+        self._config.run_preflight()
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -339,6 +384,11 @@ class Agent:
         # thread that has not yet established its journal waits here, while
         # already-running tasks remain protected for the whole scan.
         with self._state_lock:
+            sandbox.recover(
+                self._config.sandbox_config,
+                self._config.workspace_cleanup_journal_root / "sandbox-recovery",
+                runtime_root=self._config.runtime_root,
+            )
             counts = workspace_manager.recover_cleanup_journals(
                 self._config.workspace_cleanup_journal_root,
                 self._config.runtime_root,

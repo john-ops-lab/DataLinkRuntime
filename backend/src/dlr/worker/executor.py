@@ -41,7 +41,7 @@ from dlr.common.bigfields import truncate_utf8
 from dlr.common.config import settings
 from dlr.runtime import harness
 from dlr.runtime.node_harness import SOURCE as NODE_HARNESS_SOURCE
-from dlr.worker import i18n, javaenv, nodeenv
+from dlr.worker import i18n, javaenv, nodeenv, sandbox
 from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
 
@@ -89,6 +89,10 @@ class RuntimeSettings:
     npm_registry_url: str | None = None
     maven_repository_url: str | None = None
     workspace_cleanup_journal_root: Path | None = None
+    # ``None`` is retained for the legacy/unit-test seam.  The production v3
+    # Agent always supplies a real SandboxConfig after its startup preflight;
+    # v3 execution never reaches the ordinary subprocess path there.
+    sandbox_config: sandbox.SandboxConfig | None = None
 
 
 def child_env(secrets: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -288,8 +292,9 @@ def _redact_json_value(value: Any, secret_values: Iterable[str]) -> Any:
     return value
 
 
-def _cap_stream(raw: bytes) -> tuple[str, bool]:
-    capped, truncated = truncate_utf8(raw, settings.execution_stream_max_bytes)
+def _cap_stream(raw: bytes, max_bytes: int | None = None) -> tuple[str, bool]:
+    limit = settings.execution_stream_max_bytes if max_bytes is None else max_bytes
+    capped, truncated = truncate_utf8(raw, limit)
     return capped.decode("utf-8", errors="replace"), truncated
 
 
@@ -420,6 +425,7 @@ def _wait_with_progress(
     timeout: int,
     progress_callback: ProgressCallback | None,
     secret_values: Iterable[str] = (),
+    kill_callback: Callable[[], None] | None = None,
 ) -> tuple[int, bool, bool, str]:
     """Wait for the adapter subprocess, uploading unified live-log chunks.
 
@@ -435,6 +441,18 @@ def _wait_with_progress(
     progress never fails the Execution. When the callback reports a cancel
     request the process group is killed at the next poll slice.
     """
+
+    def terminate() -> None:
+        if kill_callback is None:
+            _kill_process_group(process)
+            return
+        try:
+            kill_callback()
+        except Exception:  # noqa: BLE001 - process-group fallback is bounded
+            logger.warning("sandbox kill request failed; terminating its process group")
+        if process.poll() is None:
+            _kill_process_group(process)
+
     if progress_callback is None:
         try:
             returncode = process.wait(timeout=timeout)
@@ -445,7 +463,7 @@ def _wait_with_progress(
                 _finalize_stream(stream_path, secret_values),
             )
         except subprocess.TimeoutExpired:
-            _kill_process_group(process)
+            terminate()
             return -1, True, False, ""
 
     deadline = time.monotonic() + timeout
@@ -474,7 +492,7 @@ def _wait_with_progress(
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _kill_process_group(process)
+                terminate()
                 emit(final=True)
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
                 return -1, True, False, final_text
@@ -490,7 +508,7 @@ def _wait_with_progress(
                 pass
             emit()
             if uploader.cancel_requested:
-                _kill_process_group(process)
+                terminate()
                 emit(final=True)
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
                 return -1, False, True, final_text
@@ -678,6 +696,20 @@ def run(
             "worker_protocol_payload_invalid",
             protocol_version=2,
         )
+    # A production v3 Agent supplies a SandboxConfig only after the real
+    # startup preflight.  Validate the immutable Resource Profile before the
+    # Attempt journal, Workspace, dependency preparation, or Adapter side
+    # effects.  Older direct executor callers keep the v1/v2 compatibility
+    # seam; the Agent/Consumer integration never uses that seam for v3.
+    sandbox_limits: sandbox.ResourceLimits | None = None
+    if protocol_version == 3 and config.sandbox_config is not None:
+        try:
+            sandbox_limits = sandbox.validate_resource_profile(
+                payload.get("resource_profile"), config.sandbox_config
+            )
+            sandbox.validate_v3_payload_snapshots(payload, sandbox_limits)
+        except sandbox.SandboxError as error:
+            return _workspace_failure(locale, error.code, protocol_version=3)
     if protocol_version >= 2:
         try:
             validated_v2 = _validated_v2_payload(payload)
@@ -700,6 +732,23 @@ def run(
                 locale,
                 "worker_protocol_payload_invalid",
                 protocol_version=protocol_version,
+            )
+        if protocol_version == 3 and sandbox_limits is not None:
+            if timeout != sandbox_limits.execution_timeout_seconds:
+                return _workspace_failure(
+                    locale, "resource_profile_invalid", protocol_version=protocol_version
+                )
+            if validated_v2.cleanup_budget != (
+                float(sandbox_limits.cleanup_attempt_seconds),
+                float(sandbox_limits.cleanup_total_seconds),
+            ):
+                return _workspace_failure(
+                    locale, "resource_profile_invalid", protocol_version=protocol_version
+                )
+            timeout = sandbox_limits.execution_timeout_seconds
+            cleanup_budget = (
+                float(sandbox_limits.cleanup_attempt_seconds),
+                float(sandbox_limits.cleanup_total_seconds),
             )
     else:
         attempt_id = None
@@ -927,7 +976,10 @@ def run(
             i18n.text(locale, "dependency.script_not_started"),
             dependency_secret_values,
         )
-        stdout, stdout_truncated = _cap_stream(unified_log.encode())
+        stdout, stdout_truncated = _cap_stream(
+            unified_log.encode(),
+            sandbox_limits.stream_max_bytes if sandbox_limits is not None else None,
+        )
         return {
             "status": "failed",
             "error": redact_secrets(result_error, dependency_secret_values),
@@ -982,6 +1034,10 @@ def run(
     returncode = 0
     cleanup_outcome = workspace_manager.CleanupOutcome("deferred", "workspace_cleanup_failed")
     cleanup_attempted = False
+    sandbox_attempt: sandbox.AttemptSandbox | None = None
+    sandbox_cleanup: sandbox.CleanupResult | None = None
+    sandbox_error_code: str | None = None
+    unified_log = dependency_log_text
     try:
         try:
             if language == "python":
@@ -1036,29 +1092,81 @@ def run(
             # M5.5.10 unified stream: stderr merges into the same file at the
             # OS level, so the captured text keeps the actual byte order of
             # stdout, stderr, logger and traceback output.
-            process = subprocess.Popen(  # noqa: S603 - fixed harness command
-                command,
-                stdout=out_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env=child_env(payload_secrets),
-                cwd=str(workspace),
-            )
-            returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
-                process, stdout_path, timeout, progress_callback, secret_values
-            )
+            if protocol_version == 3 and config.sandbox_config is not None:
+                assert sandbox_limits is not None and attempt_id is not None
+                sandbox_attempt = sandbox.AttemptSandbox(
+                    config.sandbox_config,
+                    sandbox_limits,
+                    execution_id=execution_id,
+                    attempt_id=attempt_id,
+                    workspace=workspace,
+                    recovery_root=cleanup_journal_root / "sandbox-recovery",
+                )
+                process = sandbox_attempt.start(
+                    command,
+                    stdout=out_file,
+                    environment=child_env(payload_secrets),
+                )
+                returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
+                    process,
+                    stdout_path,
+                    timeout,
+                    progress_callback,
+                    secret_values,
+                    kill_callback=lambda: sandbox_attempt.kill(process),
+                )
+            else:
+                process = subprocess.Popen(  # noqa: S603 - fixed harness command
+                    command,
+                    stdout=out_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    env=child_env(payload_secrets),
+                    cwd=str(workspace),
+                )
+                returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
+                    process, stdout_path, timeout, progress_callback, secret_values
+                )
             unified_log = dependency_log_text + runtime_log
-
-        if not timed_out and not cancelled and returncode == 0:
+        if sandbox_attempt is not None:
+            sandbox_error_code = sandbox_attempt.resource_error_code()
+        if not timed_out and not cancelled and sandbox_error_code is None and returncode == 0:
             output_file = workspace / "output.json"
             output_raw = output_file.read_bytes() if output_file.exists() else None
+    except sandbox.SandboxError as error:
+        # The staging Workspace is still cleaned by the outer finally.  The
+        # Adapter was never execed when this boundary is reached.
+        sandbox_error_code = error.code
+        unified_log += _platform_message("ERROR", "sandbox preparation failed", secret_values)
+        returncode = 125
     finally:
+        if sandbox_attempt is not None:
+            sandbox_cleanup = sandbox_attempt.cleanup()
+            if sandbox_cleanup.status != "completed":
+                cleanup_outcome = workspace_manager.CleanupOutcome(
+                    "deferred", "workspace_cleanup_failed"
+                )
         if not cleanup_attempted:
-            cleanup_outcome = workspace_manager.cleanup_workspace(
+            workspace_outcome = workspace_manager.cleanup_workspace(
                 workspace,
                 attempt_timeout_seconds=attempt_timeout,
                 total_timeout_seconds=total_timeout,
             )
+            if sandbox_cleanup is None or sandbox_cleanup.status == "completed":
+                cleanup_outcome = workspace_outcome
+
+    sandbox_summary: dict[str, Any] | None = None
+    if sandbox_cleanup is not None:
+        sandbox_summary = {
+            "status": sandbox_cleanup.status,
+            "error_code": sandbox_cleanup.error_code,
+            "cgroup": sandbox_cleanup.cgroup_name,
+            "mount": sandbox_cleanup.mount_name,
+            "killed": sandbox_cleanup.killed,
+            "unmounted": sandbox_cleanup.unmounted,
+            "residue": sandbox_cleanup.residue,
+            "limits": sandbox_attempt.limits_readback if sandbox_attempt is not None else {},
+        }
 
     cleanup_fields = {
         "workspace_cleanup_status": cleanup_outcome.status,
@@ -1111,7 +1219,10 @@ def run(
                 secret_values,
             )
 
-    stdout, stdout_truncated = _cap_stream(unified_log.encode())
+    stdout, stdout_truncated = _cap_stream(
+        unified_log.encode(),
+        sandbox_limits.stream_max_bytes if sandbox_limits is not None else None,
+    )
     base: dict[str, Any] = {
         "stdout": stdout,
         "stdout_truncated": stdout_truncated,
@@ -1123,6 +1234,8 @@ def run(
     }
     if protocol_version >= 2:
         base.update(cleanup_fields)
+    if sandbox_summary is not None:
+        base["cleanup_summary"] = {"sandbox": sandbox_summary}
 
     if cancelled:
         return base | {"status": "cancelled", "error": "execution cancelled"}
@@ -1130,6 +1243,12 @@ def run(
         return base | {
             "status": "timeout",
             "error": redact_secrets(f"execution timed out after {timeout}s", secret_values),
+        }
+    if sandbox_error_code is not None:
+        return base | {
+            "status": "failed",
+            "error": "Sandbox preparation failed",
+            "error_code": sandbox_error_code,
         }
     if returncode != 0:
         failure_result: dict[str, Any] = {
@@ -1155,16 +1274,24 @@ def run(
     output_value = _redact_json_value(output_value, secret_values)
 
     serialized = json.dumps(output_value, separators=(",", ":"), ensure_ascii=False).encode()
-    if len(serialized) <= settings.execution_output_max_bytes:
+    output_max_bytes = (
+        sandbox_limits.output_max_bytes
+        if sandbox_limits is not None
+        else settings.execution_output_max_bytes
+    )
+    if len(serialized) <= output_max_bytes:
         return base | {
             "status": "succeeded",
             "output": output_value,
             "output_size": len(serialized),
         }
     # Oversized output is still a successful run; only the stored form changes.
-    preview = serialized[: settings.execution_output_preview_max_bytes].decode(
-        "utf-8", errors="ignore"
+    preview_max_bytes = (
+        sandbox_limits.output_preview_max_bytes
+        if sandbox_limits is not None
+        else settings.execution_output_preview_max_bytes
     )
+    preview = serialized[:preview_max_bytes].decode("utf-8", errors="ignore")
     return base | {
         "status": "succeeded",
         "output_truncated": True,
