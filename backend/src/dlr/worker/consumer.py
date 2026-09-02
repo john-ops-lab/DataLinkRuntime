@@ -28,6 +28,17 @@ from dlr.worker.client import ClientError, ControlClient, ControlUnavailableErro
 logger = logging.getLogger("dlr.worker.consumer")
 
 
+def _is_successful_attempt_action(response: object, *, attempt_id: int, reason: str) -> bool:
+    """Accept only the exact Control acknowledgement for one action."""
+    return (
+        isinstance(response, Mapping)
+        and response.get("decision") == "ACK_NOOP"
+        and response.get("reason") == reason
+        and response.get("attempt_id") == attempt_id
+        and response.get("cancel_requested") is False
+    )
+
+
 @dataclass(frozen=True)
 class ConsumerConfig:
     """Small immutable subset of WorkerConfig needed by the v3 Consumer."""
@@ -287,8 +298,13 @@ class V3Consumer:
                                 "claim_token": payload.claim_token,
                             },
                         )
-                        if response.get("cancel_requested"):
+                        if not _is_successful_attempt_action(
+                            response,
+                            attempt_id=payload.attempt_id,
+                            reason="renewed",
+                        ):
                             ownership_lost.set()
+                            return
                     except (ControlUnavailableError, ClientError):
                         ownership_lost.set()
                         return
@@ -311,10 +327,14 @@ class V3Consumer:
                             "stderr_chunk": stderr_chunk,
                         },
                     )
-                    cancel_requested = bool(result.get("cancel_requested"))
-                    if cancel_requested:
+                    if not _is_successful_attempt_action(
+                        result,
+                        attempt_id=payload.attempt_id,
+                        reason="progressed",
+                    ):
                         ownership_lost.set()
-                    return cancel_requested
+                        return True
+                    return False
                 except (ControlUnavailableError, ClientError):
                     ownership_lost.set()
                     return True

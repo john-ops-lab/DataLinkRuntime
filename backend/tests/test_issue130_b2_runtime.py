@@ -874,6 +874,132 @@ def test_v3_start_boundary_fails_closed_after_cancel_or_recovery(
             assert attempt.status == "worker_lost"
 
 
+@pytest.mark.parametrize("lost_via", ["renew", "progress"])
+def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
+    tmp_path: Path,
+    lost_via: str,
+) -> None:
+    """A terminal Control response stops the local runner before Result."""
+
+    payload_data = _valid_consumer_payload()
+    payload_data.update({"lease_seconds": 10, "renew_seconds": 1})
+    payload = V3TaskPayload.model_validate(payload_data)
+    runner_started = threading.Event()
+    runner_stopped = threading.Event()
+    terminal_response = {
+        "decision": "ACK_NOOP",
+        "reason": "already_terminal",
+        "attempt_id": payload.attempt_id,
+        "cancel_requested": False,
+    }
+    renewed_response = {
+        "decision": "ACK_NOOP",
+        "reason": "renewed",
+        "attempt_id": payload.attempt_id,
+        "cancel_requested": False,
+    }
+    progressed_response = {
+        "decision": "ACK_NOOP",
+        "reason": "progressed",
+        "attempt_id": payload.attempt_id,
+        "cancel_requested": False,
+    }
+
+    class AuthorityClient:
+        def __init__(self) -> None:
+            self.renew_calls = 0
+            self.progress_calls = 0
+            self.result_calls = 0
+
+        def start_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            _body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            return {
+                "decision": "ACK_NOOP",
+                "reason": "started",
+                "attempt_id": payload.attempt_id,
+                "cancel_requested": False,
+            }
+
+        def renew_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            _body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            self.renew_calls += 1
+            return terminal_response if lost_via == "renew" else renewed_response
+
+        def progress_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            _body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            self.progress_calls += 1
+            return terminal_response if lost_via == "progress" else progressed_response
+
+        def result_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            _body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            self.result_calls += 1
+            return {"decision": "ACK_NOOP", "reason": "already_terminal"}
+
+    client = AuthorityClient()
+
+    def runner(
+        _payload: Mapping[str, Any],
+        _settings: Any,
+        *,
+        progress_callback: Any,
+        input_downloader: Any,
+    ) -> dict[str, Any]:
+        del input_downloader
+        runner_started.set()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if progress_callback("", ""):
+                runner_stopped.set()
+                return {"status": "succeeded"}
+            time.sleep(0.01)
+        pytest.fail("runner did not observe lost Control authority")
+
+    consumer = V3Consumer(
+        ConsumerConfig(
+            worker_id=7,
+            queue="dlr.worker.7.q",
+            execution_slots=1,
+            runtime_root=tmp_path / "runtime",
+            attempt_journal_root=tmp_path / "journal",
+        ),
+        client,  # type: ignore[arg-type]
+        connection_factory=lambda: object(),  # type: ignore[return-value]
+        runtime_settings=SimpleNamespace(),
+        runner=runner,
+    )
+    try:
+        assert consumer._slots.acquire(blocking=False)
+        consumer._run_attempt(payload)
+    finally:
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+    assert runner_started.is_set()
+    assert runner_stopped.is_set()
+    assert client.result_calls == 0
+    if lost_via == "renew":
+        assert client.renew_calls >= 1
+        assert client.progress_calls >= 1
+    else:
+        assert client.renew_calls == 0
+        assert client.progress_calls == 1
+
+
 @pytest.mark.parametrize(
     ("control_available", "expected_ack", "expected_pause"),
     [(True, 1, False), (False, 0, True)],
