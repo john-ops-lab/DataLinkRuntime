@@ -53,7 +53,7 @@
 - [x] 6.2 在隔离Compose运行RabbitMQ启动/重启/outage/overflow/unroutable/Confirm ambiguity与Outbox recovery矩阵；验证：已接受Execution不丢、DB Admission/Outbox保护线准确、Broker bounded overshoot/reject 与 Relay headroom 可观测、无drop-head/孤儿Outbox
 - [x] 6.3 证明Batch1禁止项仍成立：minimum≠3、`uq_executions_active_adapter`存在、legacy Claim启用、RabbitMQ ingress默认off；验证：自动断言全部PASS
 - [x] 6.4 形成Batch1 checkpoint commit与Candidate SHA，清点差异只属于Issue #130及受保护AO规则；验证：工作区状态、diff、测试证据绑定同一SHA
-- [ ] 6.5 由当前主代理Sol对Batch1 exact SHA做只读架构/并发/安全审计并修复所有finding；验证：最终审计PASS绑定最新SHA，且不声称AO官方Review、不创建PR
+- [x] 6.5 由当前主代理Sol对Batch1 exact SHA做只读架构/并发/安全审计并修复所有finding；验证：最终审计PASS绑定最新SHA，且不声称AO官方Review、不创建PR
 
 ## 7. Batch 2 — Worker v3 Consumer 与 Attempt Claim
 
