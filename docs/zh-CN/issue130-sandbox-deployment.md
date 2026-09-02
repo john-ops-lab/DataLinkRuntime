@@ -8,7 +8,8 @@ Supervisor，也不改变默认的 legacy Compose 路径。真实 Sandbox Gate �
 
 host 必须由 system manager 创建一个新的 transient service。不得使用 `--user` manager，
 不得使用已有 `app.slice` 或其他非 delegated 路径。unit creator 可以是 root，但实际
-unit payload 使用非 root Worker 用户；下面的 `king`/`501` 仅为部署示例：
+unit payload 使用非 root Worker 用户；下面的 `king` 仅为部署示例，实际 gid
+必须从 `Group=king` 与目标上的 `id -g king` 读取，不固定为 `501`：
 
 ```sh
 UNIT=dlr-worker-sandbox-$(hostname -s)-$(date +%s).service
@@ -23,6 +24,7 @@ sudo -n systemd-run \
   --property=CapabilityBoundingSet=CAP_SYS_ADMIN \
   --property=AmbientCapabilities=CAP_SYS_ADMIN \
   --property=NoNewPrivileges=yes \
+  --expand-environment=no \
   --service-type=exec \
   --remain-after-exit \
   /bin/bash -c '
@@ -30,13 +32,12 @@ sudo -n systemd-run \
     CGROUP_REL=$(awk -F: '\''$1 == "0" { print $3; exit }'\'' /proc/self/cgroup)
     CONTROL_GROUP=/sys/fs/cgroup$CGROUP_REL
     AGENT="$CONTROL_GROUP/agent"
-    KEEPER="$AGENT/keeper"
-    mkdir -p "$KEEPER"
+    mkdir -p "$AGENT"
 
     # Move the shell out of the unit parent before enabling domain controllers.
-    printf "%s\\n" "$$" > "$KEEPER/cgroup.procs"
+    printf "%s\\n" "$$" > "$AGENT/cgroup.procs"
     test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"
-    grep -qx "$$" "$KEEPER/cgroup.procs"
+    grep -qx "$$" "$AGENT/cgroup.procs"
 
     printf "+cpu +memory +pids\\n" > "$CONTROL_GROUP/cgroup.subtree_control"
     SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_control")
@@ -47,9 +48,17 @@ sudo -n systemd-run \
       esac
     done
     for interface in cpu.max memory.max memory.swap.max pids.max; do
-      test -r "$CONTROL_GROUP/$interface"
-      test -w "$CONTROL_GROUP/$interface"
+      test -r "$AGENT/$interface"
+      test -w "$AGENT/$interface"
     done
+    printf "100000 100000\\n" > "$AGENT/cpu.max"
+    printf "67108864\\n" > "$AGENT/memory.max"
+    printf "0\\n" > "$AGENT/memory.swap.max"
+    printf "64\\n" > "$AGENT/pids.max"
+    test "$(cat "$AGENT/cpu.max")" = "100000 100000"
+    test "$(cat "$AGENT/memory.max")" = "67108864"
+    test "$(cat "$AGENT/memory.swap.max")" = "0"
+    test "$(cat "$AGENT/pids.max")" = "64"
 
     exec /bin/sleep infinity
   '
@@ -59,7 +68,7 @@ test "$CONTROL_GROUP" = "/system.slice/$UNIT"
 PARENT=/sys/fs/cgroup$CONTROL_GROUP
 KEEPER_PID=$(sudo -n systemctl show "$UNIT" -p MainPID --value)
 test -z "$(cat "$PARENT/cgroup.procs")"
-grep -qx "$KEEPER_PID" "$PARENT/agent/keeper/cgroup.procs"
+grep -qx "$KEEPER_PID" "$PARENT/agent/cgroup.procs"
 SUBTREE_CONTROL=$(cat "$PARENT/cgroup.subtree_control")
 for controller in cpu memory pids; do
   case " $SUBTREE_CONTROL " in
@@ -68,8 +77,8 @@ for controller in cpu memory pids; do
   esac
 done
 for interface in cpu.max memory.max memory.swap.max pids.max; do
-  test -r "$PARENT/$interface"
-  test -w "$PARENT/$interface"
+  test -r "$PARENT/agent/$interface"
+  test -w "$PARENT/agent/$interface"
 done
 export DLR_SANDBOX_CGROUP_PARENT="$CONTROL_GROUP"
 export DLR_SANDBOX_CGROUP_PATH="/sys/fs/cgroup$CONTROL_GROUP"
@@ -77,13 +86,15 @@ export DLR_SANDBOX_CGROUP_PATH="/sys/fs/cgroup$CONTROL_GROUP"
 
 `DLR_SANDBOX_CGROUP_PARENT` 与 `DLR_SANDBOX_CGROUP_PATH` 必须来自同一个
 `ControlGroup`，不能手写成 `/sys/fs/cgroup`，也不能指向 `app.slice`。上面的
-`keeper` 先创建 `agent/keeper` 并把自身移入其中；只有确认 parent 的
-`cgroup.procs` 为空后，才在 parent 写入并读回 `+cpu +memory +pids`。随后以
-`cpu.max`、`memory.max`、`memory.swap.max`、`pids.max` 的可读写性证明 delegated
-parent 的四项接口可用。这样遵守 cgroup v2 no-internal-process 约束，同时保留
-ControlGroup 作为 Compose `cgroup_parent` 与精确 bind source；后续 Attempt child
-只能由 Worker 在该 subtree 内创建。`Delegate=yes` 是让该 unit ControlGroup 成为
-Worker 可管理 subtree 的必要条件。
+`keeper` 只创建单层 `agent` 并把自身直接移入其中；只有确认 parent 的
+`cgroup.procs` 为空后，才在 parent 写入并读回 `+cpu +memory +pids`。随后确认
+parent 的 `subtree_control` 已委派三控制器；四个限额文件必须只在单层 `agent`
+child 上写入并读回，不能写 systemd 管理的 unit parent。这样遵守 cgroup v2
+no-internal-process 约束，同时保留 ControlGroup 作为 Compose `cgroup_parent` 与精确
+bind source；后续
+Attempt child 只能由 Worker 在该 subtree 内创建，并且是 unit parent 下与 `agent`
+平级的 `attempt-*` child，Agent 不进入 Attempt。`Delegate=yes` 是让该 unit
+ControlGroup 成为 Worker 可管理 subtree 的必要条件。
 
 ## Docker cgroup driver 与路径检查
 

@@ -75,20 +75,39 @@ require_runbook_literal '--property=User=king'
 require_runbook_literal '--property=Group=king'
 require_runbook_literal '--property=Delegate=yes'
 require_runbook_literal '--property=TasksMax=infinity'
+require_runbook_literal '--expand-environment=no'
 require_runbook_literal 'AGENT="$CONTROL_GROUP/agent"'
-require_runbook_literal 'KEEPER="$AGENT/keeper"'
-require_runbook_literal 'mkdir -p "$KEEPER"'
-require_runbook_literal 'printf "%s\\n" "$$" > "$KEEPER/cgroup.procs"'
+require_runbook_literal 'mkdir -p "$AGENT"'
+require_runbook_literal 'printf "%s\\n" "$$" > "$AGENT/cgroup.procs"'
 require_runbook_literal 'test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"'
-require_runbook_literal 'grep -qx "$$" "$KEEPER/cgroup.procs"'
+require_runbook_literal 'grep -qx "$$" "$AGENT/cgroup.procs"'
 require_runbook_literal 'printf "+cpu +memory +pids\\n" > "$CONTROL_GROUP/cgroup.subtree_control"'
 require_runbook_literal 'SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_control")'
 require_runbook_literal 'for controller in cpu memory pids; do'
 require_runbook_literal 'for interface in cpu.max memory.max memory.swap.max pids.max; do'
-require_runbook_literal 'test -w "$CONTROL_GROUP/$interface"'
+require_runbook_literal 'test -w "$AGENT/$interface"'
+require_runbook_literal 'printf "100000 100000\\n" > "$AGENT/cpu.max"'
+require_runbook_literal 'printf "67108864\\n" > "$AGENT/memory.max"'
+require_runbook_literal 'printf "0\\n" > "$AGENT/memory.swap.max"'
+require_runbook_literal 'printf "64\\n" > "$AGENT/pids.max"'
+require_runbook_literal 'test "$(cat "$AGENT/cpu.max")" = "100000 100000"'
+require_runbook_literal 'test "$(cat "$AGENT/memory.max")" = "67108864"'
+require_runbook_literal 'test "$(cat "$AGENT/memory.swap.max")" = "0"'
+require_runbook_literal 'test "$(cat "$AGENT/pids.max")" = "64"'
 require_runbook_literal 'test -z "$(cat "$PARENT/cgroup.procs")"'
-require_runbook_literal 'grep -qx "$KEEPER_PID" "$PARENT/agent/keeper/cgroup.procs"'
+require_runbook_literal 'grep -qx "$KEEPER_PID" "$PARENT/agent/cgroup.procs"'
+require_runbook_literal 'test -w "$PARENT/agent/$interface"'
 require_runbook_literal 'docker info --format '\''CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'\'''
+
+if grep -Eq 'agent/keeper|KEEPER=' "$runbook"; then
+  echo "runbook must not create a second keeper cgroup" >&2
+  exit 1
+fi
+
+if grep -Eq '\$CONTROL_GROUP/(cpu\.max|memory\.max|memory\.swap\.max|pids\.max)' "$runbook"; then
+  echo "runbook must not write controller limits in the systemd unit parent" >&2
+  exit 1
+fi
 
 if grep -Eq '^[[:space:]]+/bin/sleep infinity$' "$runbook"; then
   echo "runbook must not leave the keeper directly in the unit parent" >&2

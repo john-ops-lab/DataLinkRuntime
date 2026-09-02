@@ -99,7 +99,7 @@
 ## 11. Batch 3 — Linux Resource Sandbox
 
 - [x] 11.1 在目标Linux环境先实现并运行disposable cgroup v2/tmpfs最小probe；验证：真实创建/limit/kill/unmount/cleanup全PASS，否则报告 `BLOCKED_SANDBOX_RUNTIME` 并禁止Cutover
-- [ ] 11.2 实现/文档化精确delegated cgroup subtree与Compose host provisioning，保持Worker `privileged:false`且不挂Docker socket；验证：配置审计只含批准的最小capability/mount
+- [x] 11.2 实现/文档化精确delegated cgroup subtree与Compose host provisioning，保持Worker `privileged:false`且不挂Docker socket；验证：配置审计只含批准的最小capability/mount
 - [ ] 11.3 实现Sandbox startup preflight与Worker capability registration；验证：静态文件存在不算PASS、任一probe失败使 `rabbitmq_execution_v3=false`
 - [ ] 11.4 实现per-Attempt cgroup CPU/Memory/swap/PID配置与进程归属确认；验证：Adapter第一行代码前全部limit已生效且Agent在cgroup外
 - [ ] 11.5 实现受控Workspace bounded tmpfs、mount/PID namespace与open-files/no-new-privileges；验证：多文件总量硬限、Adapter看不到cgroup控制面/platform credential
