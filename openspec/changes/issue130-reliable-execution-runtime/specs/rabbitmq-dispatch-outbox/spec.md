@@ -1,6 +1,6 @@
 ## Purpose
 
-定义 RabbitMQ 4.3.5 固定 Worker 派发拓扑、Transactional Outbox、Publisher Confirm、队列边界、延迟重投与 Infrastructure DLQ 合同，使 Broker 故障、Confirm 歧义和重复投递都不会让 PostgreSQL 业务事实静默丢失或产生并行业务 Attempt。
+定义 RabbitMQ 4.3.5 固定 Worker 派发拓扑、Transactional Outbox、Publisher Confirm、近似队列边界、延迟重投与 Infrastructure DLQ 合同，使 Broker 故障、Confirm 歧义和重复投递都不会让 PostgreSQL 业务事实静默丢失或产生并行业务 Attempt。
 
 ## ADDED Requirements
 
@@ -16,15 +16,15 @@
 - **THEN** RabbitMQ ingress gate 保持关闭且 health 返回稳定配置错误
 
 ### Requirement: 固定 Worker 使用 durable bounded topology
-系统 SHALL 使用 durable direct dispatch exchange、每个固定 Worker 一条 durable non-auto-delete Quorum Queue、独立 infrastructure DLX 与 durable Quorum DLQ。Queue MUST 配置 `reject-publish`、显式 length/bytes、有限 delivery limit、at-least-once dead lettering 与 consumer timeout；禁止 `drop-head`。
+系统 SHALL 使用 durable direct dispatch exchange、每个固定 Worker 一条 durable non-auto-delete Quorum Queue、独立 infrastructure DLX 与 durable Quorum DLQ。Queue MUST 配置 `reject-publish`、显式 length/bytes、有限 delivery limit、at-least-once dead lettering 与 consumer timeout；禁止 `drop-head`。`max-length`/`max-length-bytes` 与 `reject-publish` 是允许 bounded in-flight overshoot 的近似、最终拒绝第二道保护，不得被描述为精确业务硬上限；Broker bounds 必须为 Relay 在途窗口和运维处置保留 headroom。
 
 #### Scenario: Worker 暂时没有 Consumer
 - **WHEN** 固定 Worker 离线但其 Queue 已 bootstrap
 - **THEN** 已确认的 persistent dispatch 保留在 durable Queue，不自动删除或 reroute
 
-#### Scenario: Queue 达到硬上限
-- **WHEN** publish 会超过 length 或 bytes 上限
-- **THEN** Broker 拒绝 publish，Relay 保持 Outbox pending 并触发 backpressure/告警，不丢弃旧消息
+#### Scenario: Queue 近似保护线触发最终拒绝
+- **WHEN** publish 使 Quorum Queue 接近或超过 length/bytes 近似保护线，或 Broker 在 bounded in-flight overshoot 后拒绝 publish
+- **THEN** Relay 将对应 Outbox 保持 `pending`，按有界退避重试并触发 backpressure/告警；不得 drop-head、删除旧消息或把拒绝解释为业务终态
 
 #### Scenario: Topology 漂移
 - **WHEN** 已存在 Queue 的类型、overflow、DLX、delivery limit 或 bounds 与冻结配置不同
@@ -52,16 +52,23 @@ Dispatch Message SHALL 只携带 schema version、message ID、execution ID、di
 - **WHEN** retry_wait 到期且 Dispatcher 成功重派
 - **THEN** Execution generation 单调加一并创建新的 pending Outbox，旧 generation 保持审计不可变
 
+### Requirement: PostgreSQL backlog 是精确业务保护线
+Adapter/Global Admission 与 Outbox backlog 的 count、payload bytes、oldest age MUST 从 PostgreSQL 权威行和数据库时间精确计算，并分别承担业务接收与 `outbox_backlog_full` 保护责任。RabbitMQ `messages_ready`、`messages_unacknowledged`、延迟消息或 queue bound 估算 MUST NOT 替代这些保护线，也 MUST NOT 作为已接受 Execution 是否有责任、是否丢失或是否可进入终态的依据。
+
+#### Scenario: Broker ready 统计不能替代 DB backlog
+- **WHEN** RabbitMQ `messages_ready` 因发布、消费或 bounded in-flight overshoot 与 PostgreSQL Outbox pending 统计不一致
+- **THEN** Ingress/Relay 仍以 PostgreSQL 精确 count/bytes/oldest age 和 Outbox 状态作准；Broker ready 只进入运维指标与告警，不改变业务正确性判断
+
 ### Requirement: Relay 不持数据库行锁等待 Broker
-Relay SHALL 在短事务中以数据库时间领取 due pending 或过期 publish lease，提交后在事务外使用 `mandatory` 与 Publisher Confirm 发布，再在短事务中标记 published 或释放 lease/记录 bounded backoff。任何网络等待 MUST 有时限，且 PostgreSQL row lock 不得跨 publish/confirm 持有。
+Relay SHALL 在短事务中以数据库时间领取 due pending 或过期 publish lease，提交后在事务外通过有限 publisher channel 数、有限并发 publish 数和有限 confirm 在途窗口使用 `mandatory` 与 Publisher Confirm 发布，再在短事务中标记 published 或释放 lease/记录 bounded backoff。任何网络等待 MUST 有时限，且 PostgreSQL row lock 不得跨 publish/confirm 持有；不得用无界任务队列或无界 channel buffer 绕过 Broker headroom。
 
 #### Scenario: Broker Confirm 正常成功
 - **WHEN** mandatory publish 未 return 且收到 confirm ack
 - **THEN** Relay 仅在仍拥有 publish lease 时把 Outbox 标记 published 并记录 published_at
 
-#### Scenario: Unroutable mandatory return
-- **WHEN** Broker return 消息或 confirm nack
-- **THEN** Outbox 保持 pending、记录稳定错误并按有界退避重试，Execution 不被误标终态
+#### Scenario: Publisher 失败保持 pending
+- **WHEN** Broker return 消息、publisher confirm nack、confirm timeout 或 connection loss
+- **THEN** Outbox 保持 `pending`，记录稳定错误并按有界退避重试；旧消息不丢失，Execution 不被误标终态
 
 #### Scenario: Relay 在 Confirm 后崩溃
 - **WHEN** Broker 已持久确认但 Relay 在 DB published mark 前崩溃
@@ -70,6 +77,17 @@ Relay SHALL 在短事务中以数据库时间领取 due pending 或过期 publis
 #### Scenario: Relay 卡在网络等待
 - **WHEN** Broker publish/confirm 超过配置时限
 - **THEN** Relay 释放资源并让 lease 后续可重领，不长期占用数据库连接或行锁
+
+### Requirement: Relay publisher 资源与在途窗口有界
+Relay SHALL 使用启动时校验的有限 publisher channel 数、有限最大并发 publish 数和有限最大 confirm 在途数；每次 publish MUST 先取得在途窗口，收到 confirm、return 或 timeout 后释放。任何单个 Worker Queue 的 Broker bounds 与拒绝阈值 MUST 为该窗口及运维处置保留 headroom。系统 MUST 暴露 channel 使用量、并发 publish、在途 confirm、headroom、reject/return/nack/timeout、pending oldest age 的低基数指标，并在接近或越过阈值时告警。
+
+#### Scenario: Confirm 在途窗口耗尽
+- **WHEN** Relay 已达到配置的 publisher channel、并发 publish 或 confirm 在途上限
+- **THEN** Relay 暂停领取更多 Outbox 或等待窗口释放，不创建无界 publish 工作；现有 pending 责任保持可重领且 Broker/DB headroom 指标可见
+
+#### Scenario: Broker 拒绝不触发 drop-head
+- **WHEN** Broker 因近似 queue bounds/reject-publish 拒绝一条待发布消息
+- **THEN** 该 Outbox 仍为 `pending` 并按 capped backoff 重试，旧 Queue 消息不被 drop-head 替换，相关 reject/headroom/oldest 指标与告警保留
 
 ### Requirement: Consumer timeout 只覆盖 Claim/ACK 握手
 Worker Queue consumer timeout SHALL 默认为 300000 ms，并 MUST 大于 delivery、Control Claim、Worker 私有 journal 与 ACK 的最大合法总预算；业务 Execution 运行时间不得计入 Unacked 窗口，Consumer timeout 不需要大于最长 Execution timeout。

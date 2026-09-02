@@ -38,6 +38,13 @@ Manual、API、MCP 与 Webhook ingress SHALL 仅在同一 PostgreSQL 事务提�
 - **WHEN** 审计发现 counter 与非终态 Execution 权威集合不一致
 - **THEN** Reconciler 记录漂移量并以幂等受锁更新恢复一致，不删除或改变业务 Execution
 
+### Requirement: Outbox backlog 保护线精确且独立于 Broker
+系统 SHALL 以 PostgreSQL Outbox 的 pending count、payload bytes 与 oldest age 作为精确、权威的接收保护线；任一保护线触发时新外部 ingress MUST 返回 `503 outbox_backlog_full` 与 `Retry-After`，既有 pending 责任继续保留并由 Relay 恢复。RabbitMQ `messages_ready`、`messages_unacknowledged`、Quorum Queue 近似 bounds 或 bounded in-flight overshoot MUST NOT 取代 Outbox backlog 判断，也 MUST NOT 被用作业务正确性依据。
+
+#### Scenario: Broker ready 与 DB backlog 不一致
+- **WHEN** RabbitMQ `messages_ready` 因消费、发布确认或近似 queue bounds 与 PostgreSQL Outbox pending count/bytes/oldest age 不一致
+- **THEN** Ingress 仍按 PostgreSQL 精确保护线决定是否返回 `202` 或 `503`；Broker ready 只记录运维指标/告警，不能改变已接受 Execution 的责任
+
 ### Requirement: 逻辑输入字节使用统一算法
 Admission `logical_input_bytes` SHALL 对 `none` 取 0、对 JSON/Webhook 取规范化 JSON 的 UTF-8 字节数、对 `managed_files` 取不可变快照内 Artifact `size_bytes` 之和；计算 MUST 在 Execution 创建前完成并固化，后续配置或 Artifact 治理不得追溯改变该数值。
 

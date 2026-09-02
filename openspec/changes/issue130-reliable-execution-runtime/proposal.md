@@ -4,8 +4,8 @@ DLR 现有 PostgreSQL 长轮询与“每个 Adapter 最多一个 `pending/runnin
 
 ## What Changes
 
-- 新增 PostgreSQL 权威的统一逻辑 Execution 队列：202 前同事务提交 Execution、Idempotency、Admission 与 Transactional Outbox；RabbitMQ 只负责持久派发与短时缓冲。
-- 新增 RabbitMQ 4.3.5 Quorum Queue、Publisher Confirm、Persistent Message、Manual ACK、delayed retry、Infrastructure DLQ 与有界 topology；ACK 改为 Control durable Claim 与 Worker journal 落盘后确认，不等待业务终态。
+- 新增 PostgreSQL 权威的统一逻辑 Execution 队列：202 前同事务提交 Execution、Idempotency、Admission 与 Transactional Outbox；Adapter/Global Admission 与 Outbox backlog 的 count/bytes/age 是精确业务保护线，RabbitMQ 只负责持久派发与短时缓冲，`messages_ready` 仅作运维指标。
+- 新增 RabbitMQ 4.3.5 Quorum Queue、Publisher Confirm、Persistent Message、Manual ACK、delayed retry、Infrastructure DLQ 与有界 topology；`max-length`/`max-length-bytes` + `reject-publish` 只作为允许 bounded in-flight overshoot 的近似、最终拒绝第二道保护，不宣称精确硬上限；ACK 改为 Control durable Claim 与 Worker journal 落盘后确认，不等待业务终态。
 - 新增 ExecutionAttempt、Adapter Slot、Lease、Fencing、有限 Retry、Business Dead Letter 与 Replay；同一 Adapter 在 #130 固定一个 active Attempt，但允许多个 `queued/retry_wait`。
 - 新增显式 Schedule misfire policy、bounded catch-up 与逐点或可验证聚合的审计结果。
 - 新增 Linux cgroup v2 + namespace + bounded tmpfs 的 Resource Sandbox，并把 log/output/workspace/dependency preparation 变为运行期有界；能力不足时 fail closed。

@@ -30,7 +30,7 @@ v3 Worker SHALL 主动消费分配给自身的 durable Queue，使用 `prefetch=
 
 #### Scenario: Local Slots 已满
 - **WHEN** 所有本地 execution slots 已占用
-- **THEN** Worker 不继续无界拉取 message，Broker ready 保持背压且其他内部线程可续租/取消
+- **THEN** Worker 不继续无界拉取 message；Broker ready 只作为运维背压信号，不能替代 PostgreSQL Admission/Outbox 的业务正确性判断，其他内部线程仍可续租/取消
 
 #### Scenario: Target Worker 不匹配
 - **WHEN** message routing queue 与 body target_worker_id 不等于当前 Worker

@@ -15,7 +15,7 @@
 
 **Goals:**
 
-- 让 202 精确表示 PostgreSQL 已承担执行、重试或可见终态责任，并让所有缓存层有明确硬边界。
+- 让 202 精确表示 PostgreSQL 已承担执行、重试或可见终态责任；Adapter/Global Admission 与 Outbox backlog 的 count/bytes/age 保持精确，RabbitMQ queue bounds 作为有运维余量的近似第二道保护。
 - 用一套 DB 状态机吸收响应丢失、Confirm 歧义、duplicate dispatch、ACK loss、Worker crash 与 Lease expiry。
 - 让同一 Adapter 只运行一个 Attempt但可以可靠排队多个 Execution，不阻塞不同 Adapter 使用 Worker slots。
 - 保持 legacy v1/v2 可 drain，v3 在 dark launch 与 Sandbox Gate 通过后才最终 Cutover。
@@ -51,6 +51,8 @@ commit
 ```
 
 RabbitMQ body 只携带定位 Claim 所需 ID；Worker随后从 Control取得不可变 TaskPayload。这样 Broker消息可由 Outbox重建，Secret/Code/Input 不复制到第三个权威存储。
+
+Adapter/Global Admission 与 Outbox backlog 的 count、bytes、oldest age 均从 PostgreSQL 权威事实精确计算并承担业务保护责任；RabbitMQ 的 `messages_ready`、`messages_unacknowledged` 等瞬时计数不能用于确认 202、Admission、Execution 终态或任务是否丢失。
 
 **替代方案：** ingress 直接 DB + RabbitMQ 双写。拒绝，因为任一写入或响应丢失都会留下无法原子解释的半成功。
 
@@ -191,19 +193,19 @@ queue    dlr.execution.infrastructure.dlq (quorum,durable)
 routing  worker.<worker_id>
 ```
 
-Queue policy使用 `x-queue-type=quorum`、`reject-publish`、length=2000、bytes=64MiB、有限 delivery limit、at-least-once dead-letter strategy、consumer timeout=300000ms。Bootstrap用 passive/declare + policy inspection验证实际参数；不兼容漂移使 RabbitMQ capability unhealthy，不删除重建含消息 Queue。
+Queue policy使用 `x-queue-type=quorum`、`reject-publish`、length=2000、bytes=64MiB、有限 delivery limit、at-least-once dead-letter strategy、consumer timeout=300000ms。`max-length`/`max-length-bytes` 是 Broker 的近似排队保护线和最终拒绝条件，不是精确业务容量；RabbitMQ 官方允许受 bounded in-flight publish/delivery 影响出现有界 overshoot，系统不得把它们宣称为精确硬上限。Broker bounds 必须为 Relay 在途窗口和运维处置保留明确 headroom，并通过接近阈值、拒绝 publish、overshoot 与恢复指标/告警暴露；`messages_ready` 仅用于运维观测。Bootstrap用 passive/declare + policy inspection验证实际参数；不兼容漂移使 RabbitMQ capability unhealthy，不删除重建含消息 Queue。
 
 Compose pin `rabbitmq:4.3.5-management` 的实际 digest。管理端口只在隔离开发 profile按需要绑定 localhost，默认服务网络不外露；生产凭据不得使用 guest。
 
 ### 5. Outbox Relay 使用 DB lease，Confirm 歧义允许重复
 
-Relay每轮短事务用 `FOR UPDATE SKIP LOCKED`领取 due pending/expired lease，设置随机 owner和短 lease后提交。事务外通过 dedicated channel publish persistent/mandatory message并等待 bounded confirm。结果短事务条件更新：
+Relay每轮短事务用 `FOR UPDATE SKIP LOCKED`领取 due pending/expired lease，设置随机 owner和短 lease后提交。事务外通过有限数量的 dedicated publisher channels publish persistent/mandatory message并等待 bounded confirm；publisher channel 数、并发 publish 数与 confirm 在途窗口都必须是有限、启动时校验的部署值，不能通过无界内存队列或无界并发绕过 Broker headroom。结果短事务条件更新：
 
 - ack且无 return：`published`；
-- nack/unroutable/timeout/connection loss：保持 pending，增加 attempts，计算 capped exponential backoff；
+- 任一 publisher confirm `nack`、mandatory `return`、confirm `timeout` 或 connection loss：保持 Outbox `pending`，增加 attempts，计算 capped exponential backoff；不得删除旧消息、标记 published 或依赖 drop-head 丢弃责任；
 - confirm ack后DB标记未知：不推断 exactly-once，lease到期重发。
 
-Outbox oldest/count/bytes来自 DB，是Ingress 503的权威保护；Broker ready count只作操作指标，不能代替Admission。
+Outbox oldest/count/bytes来自 DB，是 Ingress `503 outbox_backlog_full` 的精确、权威保护线；Broker `messages_ready` 只作操作指标，不能代替 Admission 或 Outbox backlog，也不能证明业务责任已完成。Relay 必须观测 channel 使用量、并发 publish 数、在途 confirm 数、headroom、reject/return/nack/timeout 与 pending oldest age，并在接近/越过运维阈值时告警。
 
 **替代方案：** 让 RabbitMQ confirm transaction与 PostgreSQL transaction互相等待。拒绝，因为没有分布式事务且会拉长DB锁。
 
@@ -358,7 +360,7 @@ DLR_SANDBOX_TMP_BYTES=1073741824
 DLR_SANDBOX_NOFILE=1024
 ```
 
-约束包括 renew < lease/3附近的安全余量、consumer timeout大于Claim+journal预算、adapter limit不大于global、Outbox payload限制不小于单条最小消息、cleanup budget小于recovery grace，以及Resource值大于Supervisor最低开销。
+Relay 的 publisher channel 数、最大并发 publish 数与最大 confirm 在途数必须分别配置为正的有限值，并在启动时校验上界、互相关系和 Broker 运维 headroom；不得存在无界 publish task/confirm buffer。其他约束包括 renew < lease/3附近的安全余量、consumer timeout大于Claim+journal预算、adapter limit不大于global、Outbox payload限制不小于单条最小消息、cleanup budget小于recovery grace，以及Resource值大于Supervisor最低开销。
 
 Feature gate只控制新RabbitMQ ingress；Control仍需能读取/恢复已存在RabbitMQ rows，不能用关gate逃避既有责任。
 
@@ -378,7 +380,7 @@ Ant Design实现前必须使用仓库 `.agents/skills/antd/SKILL.md` 并查询�
 
 ### 13. 可观测性与安全
 
-指标使用低基数标签：trigger/backend/status/error_class/worker_id；不得把execution/idempotency/token作为metric label。DB权威指标包括Admission、queued/retry/dead-letter、Outbox oldest；Broker指标包括ready/unacked/delayed/redelivery/DLQ；Attempt包括lease recovery/resource kill；Migration包括legacy counts/protocol distribution。
+指标使用低基数标签：trigger/backend/status/error_class/worker_id；不得把execution/idempotency/token作为metric label。DB权威指标包括Admission、queued/retry/dead-letter、Outbox count/bytes/oldest；Broker指标包括 `messages_ready`/unacked/delayed/redelivery/DLQ、queue bound reject/overshoot 与 Relay channel/concurrency/in-flight/headroom；其中 Broker ready 只作运维指标，不能作为业务正确性依据。Attempt包括lease recovery/resource kill；Migration包括legacy counts/protocol distribution。
 
 日志只记录稳定ID、generation、attempt no/fence摘要和错误码。RabbitMQ URL userinfo、Key原文、Claim/Cleanup Token、Secret、storage key、宿主路径与用户内容进入全局redaction测试。
 
@@ -399,6 +401,7 @@ LOCAL_FAST不触发或声称AO官方Review，不把checkpoint合入main。全部
 
 - **[单节点 RabbitMQ 仍是故障点]** → PostgreSQL Outbox保留责任并有背压；明确不声明HA，#129再引入Cluster。
 - **[Confirm歧义产生重复消息]** → generation、active Attempt唯一、Slot和Fencing吸收；Adapter外部副作用仍需业务幂等。
+- **[Quorum Queue bounds 允许有界 overshoot]** → `reject-publish` 作为最终拒绝第二道保护，DB Admission/Outbox 精确保护线承担业务正确性；Relay 在途窗口有限并保留运维 headroom，通过指标与告警暴露 overshoot/拒绝，不宣称精确 Broker 硬上限。
 - **[ACK后Worker崩溃不再有原消息]** → durable Attempt/Lease/journal是恢复权威，Recovery生成新generation；对该路径做故障注入。
 - **[同Adapter消息会造成Queue head-of-line]** → prefetch等于slots，Slot busy使用4.3 delayed retry；不引入per-Adapter Queue爆炸。
 - **[Admission counter可能漂移]** → terminal条件释放 + 权威Reconciler；所有异常路径测试counter不为负。

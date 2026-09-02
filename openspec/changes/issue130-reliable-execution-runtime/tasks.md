@@ -18,12 +18,12 @@
 ## 3. Batch 1 — RabbitMQ Topology 与 Transactional Outbox
 
 - [ ] 3.1 增加 RabbitMQ 4.3.5 Compose service、持久卷、非 guest Credential、healthcheck 与仅本地可选 management profile；验证：`docker compose config` 不泄露真实凭据，Broker 重启后 durable Queue/Message 保留
-- [ ] 3.2 实现幂等 topology bootstrap 与漂移检查，声明 direct exchange、每 Worker Quorum Queue、Infrastructure DLX/DLQ、reject-publish/length/bytes/delivery-limit/at-least-once策略；验证：重复 bootstrap 无变化，不兼容既有 Queue使health fail而不删除消息
+- [ ] 3.2 实现幂等 topology bootstrap 与漂移检查，声明 direct exchange、每 Worker Quorum Queue、Infrastructure DLX/DLQ、reject-publish/length/bytes/delivery-limit/at-least-once策略并保留 Relay/运维 headroom；验证：重复 bootstrap 无变化，不兼容既有 Queue使health fail而不删除消息，且 max-length/max-length-bytes 被记录为允许 bounded in-flight overshoot 的近似最终拒绝保护而非精确业务硬上限
 - [ ] 3.3 实现最小 dispatch message schema/serializer 与安全扫描；验证：persistent message 只含允许字段，Code/Input/Secret/Token/storage key/path 均不存在
-- [ ] 3.4 实现 Outbox 创建、due lease领取、bounded backoff 与 owner条件更新；验证：`FOR UPDATE SKIP LOCKED` 并发测试无重复 lease，数据库锁不跨网络 publish
-- [ ] 3.5 实现 Pika Relay 的 mandatory Publisher Confirm 与 timeout/return/nack处理；验证：正常 publish 标记 published，unroutable/nack/timeout保持 pending并记录稳定错误
+- [ ] 3.4 实现 Outbox 创建、due lease领取、bounded backoff 与 owner条件更新；验证：`FOR UPDATE SKIP LOCKED` 并发测试无重复 lease，数据库锁不跨网络 publish，任何失败重试都不删除旧 pending 消息
+- [ ] 3.5 实现 Pika Relay 的 mandatory Publisher Confirm 与 timeout/return/nack处理，以及有限 publisher channel 数、并发 publish 数和 confirm 在途窗口；验证：正常 publish 标记 published，unroutable/nack/timeout/connection loss保持 pending并按 capped backoff 重试，无 unbounded publish buffer
 - [ ] 3.6 注入 Confirm ack 后 DB mark 前崩溃；验证：lease到期会重复publish但同 `(execution,generation)` 事实不丢失，Relay重启可继续
-- [ ] 3.7 实现 Outbox pending count/bytes/oldest保护与health/metrics；验证：任一阈值触发 `outbox_backlog_full`，既有 pending仍恢复且普通 retention不删除
+- [ ] 3.7 实现 Outbox pending count/bytes/oldest精确保护与 Relay/Broker health/metrics/alerts；验证：任一 DB 阈值触发 `outbox_backlog_full`，`messages_ready` 不参与业务判断，既有 pending仍恢复且普通 retention不删除，queue reject/overshoot/headroom 可观测
 
 ## 4. Batch 1 — 可靠 Ingress、Admission、Idempotency 与 Schedule
 
@@ -50,7 +50,7 @@
 ## 6. Batch 1 — Candidate Gate
 
 - [ ] 6.1 运行Batch1相关Backend Ruff/format/Mypy/pytest、fresh+upgrade migration和PostgreSQL并发测试；验证：全部失败均修复或标记 `BLOCKED_B1_GATE`，未全绿不勾选本项
-- [ ] 6.2 在隔离Compose运行RabbitMQ启动/重启/outage/overflow/unroutable/Confirm ambiguity与Outbox recovery矩阵；验证：已接受Execution不丢、保护线准确、无drop-head/孤儿Outbox
+- [ ] 6.2 在隔离Compose运行RabbitMQ启动/重启/outage/overflow/unroutable/Confirm ambiguity与Outbox recovery矩阵；验证：已接受Execution不丢、DB Admission/Outbox保护线准确、Broker bounded overshoot/reject 与 Relay headroom 可观测、无drop-head/孤儿Outbox
 - [ ] 6.3 证明Batch1禁止项仍成立：minimum≠3、`uq_executions_active_adapter`存在、legacy Claim启用、RabbitMQ ingress默认off；验证：自动断言全部PASS
 - [ ] 6.4 形成Batch1 checkpoint commit与Candidate SHA，清点差异只属于Issue #130及受保护AO规则；验证：工作区状态、diff、测试证据绑定同一SHA
 - [ ] 6.5 由当前主代理Sol对Batch1 exact SHA做只读架构/并发/安全审计并修复所有finding；验证：最终审计PASS绑定最新SHA，且不声称AO官方Review、不创建PR
