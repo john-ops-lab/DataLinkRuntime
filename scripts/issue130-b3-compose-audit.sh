@@ -86,7 +86,9 @@ require_runbook_literal 'SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_co
 require_runbook_literal 'for controller in cpu memory pids; do'
 require_runbook_literal 'ATTEMPT="$CONTROL_GROUP/attempt"'
 require_runbook_literal 'mkdir -p "$ATTEMPT"'
+require_runbook_literal 'test "$(dirname "$ATTEMPT")" = "$CONTROL_GROUP"'
 require_runbook_literal 'for interface in cpu.max memory.max memory.swap.max pids.max; do'
+require_runbook_literal 'test -r "$ATTEMPT/$interface"'
 require_runbook_literal 'test -w "$ATTEMPT/$interface"'
 require_runbook_literal 'printf "100000 100000\\n" > "$ATTEMPT/cpu.max"'
 require_runbook_literal 'printf "67108864\\n" > "$ATTEMPT/memory.max"'
@@ -103,6 +105,8 @@ require_runbook_literal 'test -z "$(cat "$PARENT/cgroup.procs")"'
 require_runbook_literal 'grep -qx "$KEEPER_PID" "$PARENT/agent/cgroup.procs"'
 require_runbook_literal 'test -s "$PARENT/attempt/cgroup.procs"'
 require_runbook_literal 'test -w "$PARENT/attempt/$interface"'
+require_runbook_literal 'NO_NEW_PRIVS=$(awk '\''$1 == "NoNewPrivs:" { print $2; exit }'\'' /proc/self/status)'
+require_runbook_literal 'test "$NO_NEW_PRIVS" = 1'
 require_runbook_literal 'docker info --format '\''CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'\'''
 
 if grep -Eq 'agent/keeper|KEEPER=' "$runbook"; then
@@ -110,7 +114,7 @@ if grep -Eq 'agent/keeper|KEEPER=' "$runbook"; then
   exit 1
 fi
 
-if grep -Eq '\$(CONTROL_GROUP|AGENT)/(cpu\.max|memory\.max|memory\.swap\.max|pids\.max)' "$runbook"; then
+if grep -Eq '\$(CONTROL_GROUP|AGENT|PARENT)/(cpu\.max|memory\.max|memory\.swap\.max|pids\.max)' "$runbook"; then
   echo "runbook must write controller limits only in the attempt child" >&2
   exit 1
 fi

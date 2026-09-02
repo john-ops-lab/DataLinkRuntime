@@ -49,6 +49,7 @@ sudo -n systemd-run \
     done
     ATTEMPT="$CONTROL_GROUP/attempt"
     mkdir -p "$ATTEMPT"
+    test "$(dirname "$ATTEMPT")" = "$CONTROL_GROUP"
     for interface in cpu.max memory.max memory.swap.max pids.max; do
       test -r "$ATTEMPT/$interface"
       test -w "$ATTEMPT/$interface"
@@ -75,6 +76,8 @@ sudo -n systemd-run \
     grep -qx "$WORKLOAD_PID" "$ATTEMPT/cgroup.procs"
     test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"
     grep -qx "$$" "$AGENT/cgroup.procs"
+    NO_NEW_PRIVS=$(awk '$1 == "NoNewPrivs:" { print $2; exit }' /proc/self/status)
+    test "$NO_NEW_PRIVS" = 1
 
     exec /bin/sleep infinity
   '
