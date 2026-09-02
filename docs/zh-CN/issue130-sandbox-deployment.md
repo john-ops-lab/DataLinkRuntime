@@ -47,18 +47,34 @@ sudo -n systemd-run \
         *) exit 1 ;;
       esac
     done
+    ATTEMPT="$CONTROL_GROUP/attempt"
+    mkdir -p "$ATTEMPT"
     for interface in cpu.max memory.max memory.swap.max pids.max; do
-      test -r "$AGENT/$interface"
-      test -w "$AGENT/$interface"
+      test -r "$ATTEMPT/$interface"
+      test -w "$ATTEMPT/$interface"
     done
-    printf "100000 100000\\n" > "$AGENT/cpu.max"
-    printf "67108864\\n" > "$AGENT/memory.max"
-    printf "0\\n" > "$AGENT/memory.swap.max"
-    printf "64\\n" > "$AGENT/pids.max"
-    test "$(cat "$AGENT/cpu.max")" = "100000 100000"
-    test "$(cat "$AGENT/memory.max")" = "67108864"
-    test "$(cat "$AGENT/memory.swap.max")" = "0"
-    test "$(cat "$AGENT/pids.max")" = "64"
+    printf "100000 100000\\n" > "$ATTEMPT/cpu.max"
+    printf "67108864\\n" > "$ATTEMPT/memory.max"
+    printf "0\\n" > "$ATTEMPT/memory.swap.max"
+    printf "64\\n" > "$ATTEMPT/pids.max"
+    test "$(cat "$ATTEMPT/cpu.max")" = "100000 100000"
+    test "$(cat "$ATTEMPT/memory.max")" = "67108864"
+    test "$(cat "$ATTEMPT/memory.swap.max")" = "0"
+    test "$(cat "$ATTEMPT/pids.max")" = "64"
+
+    # The workload is a sibling of agent; the keeper remains in agent.
+    (
+      printf "%s\\n" "$BASHPID" > "$ATTEMPT/cgroup.procs"
+      exec /bin/sleep infinity
+    ) &
+    WORKLOAD_PID=$!
+    for _ in $(seq 1 50); do
+      grep -qx "$WORKLOAD_PID" "$ATTEMPT/cgroup.procs" && break
+      sleep 0.05
+    done
+    grep -qx "$WORKLOAD_PID" "$ATTEMPT/cgroup.procs"
+    test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"
+    grep -qx "$$" "$AGENT/cgroup.procs"
 
     exec /bin/sleep infinity
   '
@@ -69,6 +85,7 @@ PARENT=/sys/fs/cgroup$CONTROL_GROUP
 KEEPER_PID=$(sudo -n systemctl show "$UNIT" -p MainPID --value)
 test -z "$(cat "$PARENT/cgroup.procs")"
 grep -qx "$KEEPER_PID" "$PARENT/agent/cgroup.procs"
+test -s "$PARENT/attempt/cgroup.procs"
 SUBTREE_CONTROL=$(cat "$PARENT/cgroup.subtree_control")
 for controller in cpu memory pids; do
   case " $SUBTREE_CONTROL " in
@@ -77,8 +94,8 @@ for controller in cpu memory pids; do
   esac
 done
 for interface in cpu.max memory.max memory.swap.max pids.max; do
-  test -r "$PARENT/agent/$interface"
-  test -w "$PARENT/agent/$interface"
+  test -r "$PARENT/attempt/$interface"
+  test -w "$PARENT/attempt/$interface"
 done
 export DLR_SANDBOX_CGROUP_PARENT="$CONTROL_GROUP"
 export DLR_SANDBOX_CGROUP_PATH="/sys/fs/cgroup$CONTROL_GROUP"
@@ -89,12 +106,14 @@ export DLR_SANDBOX_CGROUP_PATH="/sys/fs/cgroup$CONTROL_GROUP"
 `keeper` 只创建单层 `agent` 并把自身直接移入其中；只有确认 parent 的
 `cgroup.procs` 为空后，才在 parent 写入并读回 `+cpu +memory +pids`。随后确认
 parent 的 `subtree_control` 已委派三控制器；四个限额文件必须只在单层 `agent`
-child 上写入并读回，不能写 systemd 管理的 unit parent。这样遵守 cgroup v2
+child 的 sibling `attempt` 上写入并读回，不能写 `agent` 或 systemd 管理的 unit
+parent。这样遵守 cgroup v2
 no-internal-process 约束，同时保留 ControlGroup 作为 Compose `cgroup_parent` 与精确
-bind source；后续
-Attempt child 只能由 Worker 在该 subtree 内创建，并且是 unit parent 下与 `agent`
-平级的 `attempt-*` child，Agent 不进入 Attempt。`Delegate=yes` 是让该 unit
-ControlGroup 成为 Worker 可管理 subtree 的必要条件。
+bind source；本 provisioning smoke 创建与 `agent` 平级的 `attempt` sibling，把
+workload 放入其中并将四个限额写/read 于 `/attempt`。keeper/MainPID 只驻留
+`/agent`，不进入 Attempt；停止 transient unit 时由 systemd 一并删除 `attempt`
+与 `agent`。`Delegate=yes` 是让该 unit ControlGroup 成为 Worker 可管理 subtree
+的必要条件。
 
 ## Docker cgroup driver 与路径检查
 

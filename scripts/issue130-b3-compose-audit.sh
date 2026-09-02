@@ -84,19 +84,25 @@ require_runbook_literal 'grep -qx "$$" "$AGENT/cgroup.procs"'
 require_runbook_literal 'printf "+cpu +memory +pids\\n" > "$CONTROL_GROUP/cgroup.subtree_control"'
 require_runbook_literal 'SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_control")'
 require_runbook_literal 'for controller in cpu memory pids; do'
+require_runbook_literal 'ATTEMPT="$CONTROL_GROUP/attempt"'
+require_runbook_literal 'mkdir -p "$ATTEMPT"'
 require_runbook_literal 'for interface in cpu.max memory.max memory.swap.max pids.max; do'
-require_runbook_literal 'test -w "$AGENT/$interface"'
-require_runbook_literal 'printf "100000 100000\\n" > "$AGENT/cpu.max"'
-require_runbook_literal 'printf "67108864\\n" > "$AGENT/memory.max"'
-require_runbook_literal 'printf "0\\n" > "$AGENT/memory.swap.max"'
-require_runbook_literal 'printf "64\\n" > "$AGENT/pids.max"'
-require_runbook_literal 'test "$(cat "$AGENT/cpu.max")" = "100000 100000"'
-require_runbook_literal 'test "$(cat "$AGENT/memory.max")" = "67108864"'
-require_runbook_literal 'test "$(cat "$AGENT/memory.swap.max")" = "0"'
-require_runbook_literal 'test "$(cat "$AGENT/pids.max")" = "64"'
+require_runbook_literal 'test -w "$ATTEMPT/$interface"'
+require_runbook_literal 'printf "100000 100000\\n" > "$ATTEMPT/cpu.max"'
+require_runbook_literal 'printf "67108864\\n" > "$ATTEMPT/memory.max"'
+require_runbook_literal 'printf "0\\n" > "$ATTEMPT/memory.swap.max"'
+require_runbook_literal 'printf "64\\n" > "$ATTEMPT/pids.max"'
+require_runbook_literal 'test "$(cat "$ATTEMPT/cpu.max")" = "100000 100000"'
+require_runbook_literal 'test "$(cat "$ATTEMPT/memory.max")" = "67108864"'
+require_runbook_literal 'test "$(cat "$ATTEMPT/memory.swap.max")" = "0"'
+require_runbook_literal 'test "$(cat "$ATTEMPT/pids.max")" = "64"'
+require_runbook_literal 'printf "%s\\n" "$BASHPID" > "$ATTEMPT/cgroup.procs"'
+require_runbook_literal 'WORKLOAD_PID=$!'
+require_runbook_literal 'grep -qx "$WORKLOAD_PID" "$ATTEMPT/cgroup.procs"'
 require_runbook_literal 'test -z "$(cat "$PARENT/cgroup.procs")"'
 require_runbook_literal 'grep -qx "$KEEPER_PID" "$PARENT/agent/cgroup.procs"'
-require_runbook_literal 'test -w "$PARENT/agent/$interface"'
+require_runbook_literal 'test -s "$PARENT/attempt/cgroup.procs"'
+require_runbook_literal 'test -w "$PARENT/attempt/$interface"'
 require_runbook_literal 'docker info --format '\''CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'\'''
 
 if grep -Eq 'agent/keeper|KEEPER=' "$runbook"; then
@@ -104,8 +110,8 @@ if grep -Eq 'agent/keeper|KEEPER=' "$runbook"; then
   exit 1
 fi
 
-if grep -Eq '\$CONTROL_GROUP/(cpu\.max|memory\.max|memory\.swap\.max|pids\.max)' "$runbook"; then
-  echo "runbook must not write controller limits in the systemd unit parent" >&2
+if grep -Eq '\$(CONTROL_GROUP|AGENT)/(cpu\.max|memory\.max|memory\.swap\.max|pids\.max)' "$runbook"; then
+  echo "runbook must write controller limits only in the attempt child" >&2
   exit 1
 fi
 
