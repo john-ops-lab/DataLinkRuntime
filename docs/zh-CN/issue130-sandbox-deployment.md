@@ -153,7 +153,7 @@ Docker 会把 parent 解析到 daemon cgroup 之下。渲染后的 Compose 必�
 cgroup_parent: /system.slice/$UNIT
 source: /sys/fs/cgroup/system.slice/$UNIT
 target: /run/dlr-cgroup
-cgroup: private
+cgroup: host
 DLR_SANDBOX_CGROUP_PATH: /run/dlr-cgroup
 unit parent owner: root:root
 parent cgroup.procs: owner access, exact unit parent only
@@ -182,7 +182,7 @@ docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d worker
 ### Worker-only AppArmor 例外与负向 probe
 
 Colima `default` 的 Docker daemon 保持默认 seccomp；本地实测 `docker-default` AppArmor
-在 Worker 保持 `privileged:false`、exact `CAP_SYS_ADMIN,CAP_SETUID,CAP_SETGID`、`NNP=1`、private cgroup namespace
+在 Worker 保持 `privileged:false`、exact `CAP_SYS_ADMIN,CAP_SETUID,CAP_SETGID`、`NNP=1`、host cgroup namespace
 和 exact delegated bind 时，`unshare(CLONE_NEWNS)` 可以成功，但
 `mount(NULL, "/", MS_REC|MS_PRIVATE)` 和 task-owned tmpfs mount 返回
 `EACCES (errno=13)`。这是一个必须保留的 negative receipt，不能把 helper 的 `125`
@@ -218,7 +218,7 @@ override 对 Worker 固定声明：
 | capability | 仅增加 `SYS_ADMIN`、`SETUID`、`SETGID`，同时 `cap_drop: ALL`；不得出现其他 capability |
 | privilege escalation | `no-new-privileges:true` |
 | AppArmor | 仅 sandbox Worker 使用 `apparmor=unconfined`；默认 seccomp 不变，其他 service 不继承该 override |
-| cgroup namespace | `private`；只 bind 精确 delegated subtree 到既有 `/run/dlr-cgroup`，Adapter 运行期隐藏 cgroupfs |
+| cgroup namespace | `host`；只 bind 精确 delegated subtree 到既有 `/run/dlr-cgroup`，Adapter 运行期隐藏 cgroupfs |
 | delegated subtree access | exact parent 与 root Worker supervisor 均为 `root:root`；仅使用 owner access 完成 child 创建和 common-ancestor migration check；不 chmod broad path、不增加 `CAP_DAC_OVERRIDE`，不开放 parent controller interfaces，每个 fresh Attempt 仍须自行 limits write/read |
 | cgroup parent | 精确的 systemd transient `ControlGroup` |
 | cgroup mount | 只读写 bind 一个精确 subtree 到 `/run/dlr-cgroup`；不覆盖 Docker 的 cgroup root |

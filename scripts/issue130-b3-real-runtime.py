@@ -97,6 +97,20 @@ for line in Path('/proc/self/status').read_text().splitlines():
         STATUS[key.strip()] = value.strip().split()[0] if value.strip() else ''
 FIRST_LINE = True
 
+def cgroup_probe(root):
+    result = {'read_blocked': False, 'write_blocked': False}
+    try:
+        (root / 'cgroup.controllers').read_text()
+    except OSError:
+        result['read_blocked'] = True
+    try:
+        (root / 'dlr-write-probe').write_text('x')
+    except OSError:
+        result['write_blocked'] = True
+    if not all(result.values()):
+        raise RuntimeError('cgroup control plane visible')
+    return result
+
 def handle(context, input):
     secret_dir = Path('/run/secrets')
     return {
@@ -105,10 +119,15 @@ def handle(context, input):
         'attempt_membership': 'attempt-' in Path('/proc/self/cgroup').read_text(),
         'private_pid': os.getpid() == 1,
         'private_mount': os.readlink('/proc/self/ns/mnt') != os.environ.get('DLR_PREFLIGHT_PARENT_MNT'),
-        'hidden_cgroup': not Path('/sys/fs/cgroup/cgroup.controllers').exists(),
+        'hidden_cgroup': {
+            path: cgroup_probe(Path(path)) for path in ('/run/dlr-cgroup', '/sys/fs/cgroup')
+        },
         'hidden_secrets': not secret_dir.exists() or (secret_dir.is_dir() and not any(secret_dir.iterdir())),
         'no_new_privileges': STATUS.get('NoNewPrivs') == '1',
+        'cap_prm_zero': int(STATUS.get('CapPrm', '0'), 16) == 0,
         'cap_eff_zero': int(STATUS.get('CapEff', '0'), 16) == 0,
+        'cap_inh_zero': int(STATUS.get('CapInh', '0'), 16) == 0,
+        'cap_amb_zero': int(STATUS.get('CapAmb', '0'), 16) == 0,
         'nofile': resource.getrlimit(resource.RLIMIT_NOFILE) == (64, 64),
         'docker_socket_absent': not Path('/var/run/docker.sock').exists(),
         'platform_credentials_absent': all(key not in os.environ for key in (
@@ -133,6 +152,16 @@ const platformKeys = [
   'DLR_RABBITMQ_URL', 'DLR_RABBITMQ_USER', 'DLR_RABBITMQ_PASSWORD',
   'DATABASE_URL',
 ];
+const cgroupProbe = (root) => {
+  let readBlocked = false;
+  try { fs.readFileSync(`${root}/cgroup.controllers`, 'utf8'); }
+  catch { readBlocked = true; }
+  let writeBlocked = false;
+  try { fs.writeFileSync(`${root}/dlr-write-probe`, 'x'); }
+  catch { writeBlocked = true; }
+  if (!readBlocked || !writeBlocked) throw new Error('cgroup control plane visible');
+  return {read_blocked: readBlocked, write_blocked: writeBlocked};
+};
 export function handle(context, input) {
   const secretDir = '/run/secrets';
   const hiddenSecrets = !fs.existsSync(secretDir) || fs.readdirSync(secretDir).length === 0;
@@ -145,9 +174,14 @@ export function handle(context, input) {
     attempt_membership: fs.readFileSync('/proc/self/cgroup', 'utf8').includes('attempt-'),
     private_pid: process.pid === 1,
     private_mount: fs.readlinkSync('/proc/self/ns/mnt') !== process.env.DLR_PREFLIGHT_PARENT_MNT,
-    hidden_cgroup: !fs.existsSync('/sys/fs/cgroup/cgroup.controllers'),
+    hidden_cgroup: Object.fromEntries(
+      ['/run/dlr-cgroup', '/sys/fs/cgroup'].map((root) => [root, cgroupProbe(root)])
+    ),
     hidden_secrets: hiddenSecrets, no_new_privileges: field('NoNewPrivs') === '1',
+    cap_prm_zero: Number.parseInt(field('CapPrm') || '0', 16) === 0,
     cap_eff_zero: Number.parseInt(field('CapEff') || '0', 16) === 0,
+    cap_inh_zero: Number.parseInt(field('CapInh') || '0', 16) === 0,
+    cap_amb_zero: Number.parseInt(field('CapAmb') || '0', 16) === 0,
     nofile, docker_socket_absent: !fs.existsSync('/var/run/docker.sock'),
     platform_credentials_absent: platformKeys.every((key) => process.env[key] === undefined),
     uid: Number(field('Uid').split(',')[0]), gid: Number(field('Gid').split(',')[0]),
@@ -177,6 +211,19 @@ public class Adapter {
     if (!Files.exists(path)) return true;
     try (var entries = Files.list(path)) { return entries.findAny().isEmpty(); }
   }
+  private static Map<String, Boolean> cgroupProbe(Path root) throws Exception {
+    boolean readBlocked = false;
+    try { Files.readString(root.resolve("cgroup.controllers")); }
+    catch (Exception error) { readBlocked = true; }
+    boolean writeBlocked = false;
+    try { Files.writeString(root.resolve("dlr-write-probe"), "x"); }
+    catch (Exception error) { writeBlocked = true; }
+    if (!readBlocked || !writeBlocked) throw new Exception("cgroup control plane visible");
+    Map<String, Boolean> result = new LinkedHashMap<>();
+    result.put("read_blocked", readBlocked);
+    result.put("write_blocked", writeBlocked);
+    return result;
+  }
   public Object handle(Context context, Object input) throws Exception {
     String cgroup = Files.readString(Path.of("/proc/self/cgroup"));
     String mount = Files.readSymbolicLink(Path.of("/proc/self/ns/mnt")).toString();
@@ -186,10 +233,16 @@ public class Adapter {
     result.put("attempt_membership", cgroup.contains("attempt-"));
     result.put("private_pid", ProcessHandle.current().pid() == 1);
     result.put("private_mount", !mount.equals(System.getenv("DLR_PREFLIGHT_PARENT_MNT")));
-    result.put("hidden_cgroup", !Files.exists(Path.of("/sys/fs/cgroup/cgroup.controllers")));
+    Map<String, Object> hidden = new LinkedHashMap<>();
+    hidden.put("/run/dlr-cgroup", cgroupProbe(Path.of("/run/dlr-cgroup")));
+    hidden.put("/sys/fs/cgroup", cgroupProbe(Path.of("/sys/fs/cgroup")));
+    result.put("hidden_cgroup", hidden);
     result.put("hidden_secrets", emptyDirectory(Path.of("/run/secrets")));
     result.put("no_new_privileges", "1".equals(field("NoNewPrivs")));
+    result.put("cap_prm_zero", Long.parseLong(field("CapPrm"), 16) == 0L);
     result.put("cap_eff_zero", Long.parseLong(field("CapEff"), 16) == 0L);
+    result.put("cap_inh_zero", Long.parseLong(field("CapInh"), 16) == 0L);
+    result.put("cap_amb_zero", Long.parseLong(field("CapAmb"), 16) == 0L);
     result.put("nofile", Files.readString(Path.of("/proc/self/limits")).lines().anyMatch(line -> {
       String[] values = line.trim().split("\\s+");
       return values.length >= 5 && "Max".equals(values[0]) && "open".equals(values[1]) && "files".equals(values[2]) && "64".equals(values[3]) && "64".equals(values[4]);
@@ -247,7 +300,10 @@ def main() -> int:
             "DLR_B3_RUNTIME_ROOT", f"/tmp/dlr-issue130-b3-20260902-real-{os.getpid()}"
         )
     )
-    root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    # The helper execs the prebuilt runtime after dropping to uid 501. Keep
+    # this disposable parent searchable, but not listable or writable; the
+    # workspace and recovery journal remain individually mode 0700.
+    root.mkdir(mode=0o711, parents=True, exist_ok=False)
     config = sandbox.SandboxConfig.from_environment()
     if not all(key in os.environ for key in PLATFORM_ENV_KEYS):
         raise AssertionError(
@@ -256,9 +312,11 @@ def main() -> int:
     # Docker cannot make CAP_SYS_ADMIN effective for a non-root process while
     # also enforcing NNP. The supervisor is therefore root with only this
     # capability; the Adapter assertions below prove the 501:1000 payload.
-    expected_uid = int(os.environ.get("DLR_B3_SUPERVISOR_UID", str(os.getuid())))
-    expected_gid = int(os.environ.get("DLR_B3_SUPERVISOR_GID", str(os.getgid())))
-    assert (os.getuid(), os.getgid()) == (expected_uid, expected_gid)
+    expected_supervisor_uid = int(os.environ.get("DLR_B3_SUPERVISOR_UID", str(os.getuid())))
+    expected_supervisor_gid = int(os.environ.get("DLR_B3_SUPERVISOR_GID", str(os.getgid())))
+    expected_payload_uid = int(os.environ.get("DLR_SANDBOX_PAYLOAD_UID", "501"))
+    expected_payload_gid = int(os.environ.get("DLR_SANDBOX_PAYLOAD_GID", "1000"))
+    assert (os.getuid(), os.getgid()) == (expected_supervisor_uid, expected_supervisor_gid)
     parent = config.cgroup_path
     assert parent is not None
     assert parent.is_dir()
@@ -304,17 +362,23 @@ def main() -> int:
                 "attempt_membership",
                 "private_pid",
                 "private_mount",
-                "hidden_cgroup",
                 "hidden_secrets",
                 "no_new_privileges",
+                "cap_prm_zero",
                 "cap_eff_zero",
+                "cap_inh_zero",
+                "cap_amb_zero",
                 "nofile",
                 "docker_socket_absent",
                 "platform_credentials_absent",
             )
         ), (language, output)
-        assert output["uid"] == expected_uid, (language, output)
-        assert output["gid"] == expected_gid, (language, output)
+        assert output["uid"] == expected_payload_uid, (language, output)
+        assert output["gid"] == expected_payload_gid, (language, output)
+        assert output["hidden_cgroup"] == {
+            "/run/dlr-cgroup": {"read_blocked": True, "write_blocked": True},
+            "/sys/fs/cgroup": {"read_blocked": True, "write_blocked": True},
+        }, (language, output)
         language_results[language] = {
             "status": result["status"],
             "output": output,

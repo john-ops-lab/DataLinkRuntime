@@ -107,6 +107,14 @@ HELPER_PHASE_ERROR_CODES = {
     "secrets_hide": "sandbox_secrets_mount_failed",
     "pid_namespace": "sandbox_pid_namespace_failed",
     "payload_setup": "sandbox_payload_setup_failed",
+    "payload_setrlimit": "sandbox_payload_setup_failed",
+    "payload_identity": "sandbox_payload_setup_failed",
+    "payload_no_new_privileges": "sandbox_payload_setup_failed",
+    "payload_capabilities": "sandbox_payload_setup_failed",
+    "payload_workspace_chdir": "sandbox_payload_setup_failed",
+    "payload_fd_setup": "sandbox_payload_setup_failed",
+    "payload_environment": "sandbox_payload_setup_failed",
+    "payload_exec": "sandbox_payload_setup_failed",
     "attempt_membership": "sandbox_process_membership_failed",
     "payload_wait": "sandbox_payload_wait_failed",
     "output_copy": "sandbox_output_copy_failed",
@@ -1011,17 +1019,23 @@ def _helper_child(
                 if os.read(payload_gate_read, 1) != b"1":
                     raise OSError(errno.ECANCELED, "payload cgroup gate was not released")
                 os.close(payload_gate_read)
-                stage = "payload_setup"
+                stage = "payload_setrlimit"
                 resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
+                stage = "payload_identity"
                 _drop_identity(payload_uid, payload_gid)
+                stage = "payload_no_new_privileges"
                 _set_no_new_privileges()
+                stage = "payload_capabilities"
                 _drop_capabilities()
                 assert payload_workspace is not None
+                stage = "payload_workspace_chdir"
                 os.chdir(payload_workspace)
                 # The diagnostic channel belongs to the helper, not the
                 # Adapter.  CLOEXEC keeps the payload from discovering or
                 # writing the supervisor's private control channel.
+                stage = "payload_fd_setup"
                 os.set_inheritable(diagnostic_fd, False)
+                stage = "payload_environment"
                 adapter_environment = {
                     key: value
                     for key, value in os.environ.items()
@@ -1036,6 +1050,7 @@ def _helper_child(
                         if key.startswith("DLR_PREFLIGHT_")
                     }
                 )
+                stage = "payload_exec"
                 os.execvpe(
                     command[0],
                     _replace_workspace(command, host_workspace, payload_workspace),

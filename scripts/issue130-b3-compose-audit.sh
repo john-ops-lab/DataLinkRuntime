@@ -11,6 +11,8 @@ sandbox_source=backend/src/dlr/worker/sandbox.py
 consumer_source=backend/src/dlr/worker/consumer.py
 executor_source=backend/src/dlr/worker/executor.py
 runtime_tests=backend/tests/test_issue130_b3_runtime.py
+real_runtime_source=scripts/issue130-b3-real-runtime.py
+expected_session=${AO_SESSION_ID:-compose}
 
 docker_cgroup_driver=$(docker info --format '{{.CgroupDriver}}')
 docker_cgroup_version=$(docker info --format '{{.CgroupVersion}}')
@@ -53,6 +55,7 @@ require_literal "      - SETGID"
 require_literal "      - ALL"
 require_literal "      - no-new-privileges:true"
 require_literal "      - apparmor=unconfined"
+require_literal "      dlr.task: issue130-b3-20260902"
 expected_cap_add=$'      - SYS_ADMIN\n      - SETUID\n      - SETGID'
 actual_cap_add=$(awk '
   /^    cap_add:$/ { in_block=1; next }
@@ -71,11 +74,13 @@ if grep -Eq '^[[:space:]]+group_add:' docker-compose.sandbox.yml; then
   echo "group_add is not needed with the root-owned exact delegated parent" >&2
   exit 1
 fi
-require_literal "    cgroup: private"
+require_literal "    cgroup: host"
 require_literal "      DLR_SANDBOX_CGROUP_PATH: /run/dlr-cgroup"
 require_literal "    cgroup_parent: ${example_parent}"
 require_literal "        source: ${example_path}"
 require_literal "        target: /run/dlr-cgroup"
+require_literal "      ao.session: ${expected_session}"
+require_literal "      dlr.task: issue130-b3-20260902"
 
 if ! grep -Eq '^[[:space:]]+read_only:[[:space:]]+false$' docker-compose.sandbox.yml; then
   echo "missing explicit writable exact cgroup bind" >&2
@@ -243,6 +248,24 @@ if ! grep -Fq 'sandbox_diagnostic' "$executor_source" \
   echo "Executor must preserve helper phase/errno diagnostics in the sandbox receipt" >&2
   exit 1
 fi
+
+require_runtime_literal() {
+  local literal=$1
+  if ! grep -Fq -- "$literal" "$real_runtime_source"; then
+    echo "real runtime matrix must assert: $literal" >&2
+    exit 1
+  fi
+}
+
+require_runtime_literal 'root.mkdir(mode=0o711, parents=True, exist_ok=False)'
+require_runtime_literal "'/run/dlr-cgroup', '/sys/fs/cgroup'"
+require_runtime_literal 'cap_prm_zero'
+require_runtime_literal 'cap_eff_zero'
+require_runtime_literal 'cap_inh_zero'
+require_runtime_literal 'cap_amb_zero'
+require_runtime_literal 'expected_payload_uid = int(os.environ.get("DLR_SANDBOX_PAYLOAD_UID", "501"))'
+require_runtime_literal 'expected_payload_gid = int(os.environ.get("DLR_SANDBOX_PAYLOAD_GID", "1000"))'
+require_runtime_literal 'assert output["hidden_cgroup"] == {'
 
 if grep -Fq 'if exact_cgroup_mount.is_dir()' "$sandbox_source"; then
   echo "exact configured cgroup hide must not silently skip a missing target" >&2

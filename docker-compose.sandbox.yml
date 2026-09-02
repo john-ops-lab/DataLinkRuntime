@@ -6,11 +6,13 @@
 # path is fixed to the ordinary /run/dlr-cgroup mount below.
 services:
   worker:
+    labels:
+      - "dlr.task=${DLR_TASK_ID:-issue130-b3-20260902}"
     privileged: false
-    # Keep Docker's cgroup namespace private.  The Worker receives only the
-    # already-delegated host subtree through the exact bind below; the Adapter
-    # later hides cgroupfs in its own private mount namespace.
-    cgroup: private
+    # The Worker must share the host cgroup namespace so the supervisor can
+    # migrate payloads into the exact delegated subtree bind below. The Adapter
+    # still hides cgroupfs in its own private mount namespace.
+    cgroup: host
     # The Worker supervisor runs as the default container root so it matches
     # the root-owned exact systemd delegated subtree. The trusted supervisor
     # receives exactly the three capabilities needed for namespace/cgroup work
@@ -43,3 +45,31 @@ services:
         read_only: false
         bind:
           create_host_path: false
+
+volumes:
+  dlr_artifact_store:
+    labels:
+      ao.session: "${AO_SESSION_ID:-compose}"
+      dlr.task: "${DLR_TASK_ID:-issue130-b3-20260902}"
+  dlr_pg_data:
+    labels:
+      ao.session: "${AO_SESSION_ID:-compose}"
+      dlr.task: "${DLR_TASK_ID:-issue130-b3-20260902}"
+  dlr_rabbitmq_data:
+    labels:
+      ao.session: "${AO_SESSION_ID:-compose}"
+      dlr.task: "${DLR_TASK_ID:-issue130-b3-20260902}"
+  dlr_worker_runtime:
+    labels:
+      ao.session: "${AO_SESSION_ID:-compose}"
+      dlr.task: "${DLR_TASK_ID:-issue130-b3-20260902}"
+  dlr_worker_journal:
+    labels:
+      ao.session: "${AO_SESSION_ID:-compose}"
+      dlr.task: "${DLR_TASK_ID:-issue130-b3-20260902}"
+
+networks:
+  default:
+    labels:
+      ao.session: "${AO_SESSION_ID:-compose}"
+      dlr.task: "${DLR_TASK_ID:-issue130-b3-20260902}"
