@@ -886,6 +886,9 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
     payload = V3TaskPayload.model_validate(payload_data)
     runner_started = threading.Event()
     runner_stopped = threading.Event()
+    renew_called = threading.Event()
+    renew_response_allowed = threading.Event()
+    renew_response_returned = threading.Event()
     terminal_response = {
         "decision": "ACK_NOOP",
         "reason": "already_terminal",
@@ -931,7 +934,15 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
             _body: Mapping[str, Any],
         ) -> dict[str, Any]:
             self.renew_calls += 1
-            return terminal_response if lost_via == "renew" else renewed_response
+            renew_called.set()
+            if lost_via == "renew":
+                if not renew_response_allowed.wait(timeout=3):
+                    raise AssertionError("test did not release the first renew response")
+                response = terminal_response
+            else:
+                response = renewed_response
+            renew_response_returned.set()
+            return response
 
         def progress_attempt(
             self,
@@ -962,6 +973,10 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
     ) -> dict[str, Any]:
         del input_downloader
         runner_started.set()
+        if lost_via == "renew":
+            assert renew_called.wait(timeout=3)
+            renew_response_allowed.set()
+            assert renew_response_returned.wait(timeout=3)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if progress_callback("", ""):
@@ -994,7 +1009,9 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
     assert client.result_calls == 0
     if lost_via == "renew":
         assert client.renew_calls >= 1
-        assert client.progress_calls >= 1
+        assert renew_called.is_set()
+        assert renew_response_returned.is_set()
+        assert client.progress_calls == 0
     else:
         assert client.renew_calls == 0
         assert client.progress_calls == 1
