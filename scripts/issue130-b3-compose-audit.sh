@@ -6,6 +6,14 @@ cd "$(dirname "$0")/.."
 
 example_parent=/system.slice/dlr-worker-sandbox-example.service
 example_path=/sys/fs/cgroup${example_parent}
+runbook=docs/zh-CN/issue130-sandbox-deployment.md
+
+docker_cgroup_driver=$(docker info --format '{{.CgroupDriver}}')
+docker_cgroup_version=$(docker info --format '{{.CgroupVersion}}')
+if [[ "$docker_cgroup_driver" != cgroupfs || "$docker_cgroup_version" != 2 ]]; then
+  echo "expected Colima target Docker cgroupfs v2, got driver=$docker_cgroup_driver version=$docker_cgroup_version" >&2
+  exit 1
+fi
 
 rendered=$(
   DLR_RABBITMQ_USER=EXAMPLE_RABBITMQ_USER \
@@ -52,6 +60,38 @@ if grep -Fq '/var/run/docker.sock' <<<"$rendered" || grep -Fq '/run/docker.sock'
 fi
 if grep -Eq '/sys/fs/cgroup([[:space:]]|$|:)' <<<"$rendered"; then
   echo "forbidden broad cgroup filesystem mount in Worker Compose config" >&2
+  exit 1
+fi
+
+require_runbook_literal() {
+  local literal=$1
+  if ! grep -Fq -- "$literal" "$runbook"; then
+    echo "missing runbook provisioning contract: $literal" >&2
+    exit 1
+  fi
+}
+
+require_runbook_literal '--property=User=king'
+require_runbook_literal '--property=Group=king'
+require_runbook_literal '--property=Delegate=yes'
+require_runbook_literal '--property=TasksMax=infinity'
+require_runbook_literal 'AGENT="$CONTROL_GROUP/agent"'
+require_runbook_literal 'KEEPER="$AGENT/keeper"'
+require_runbook_literal 'mkdir -p "$KEEPER"'
+require_runbook_literal 'printf "%s\\n" "$$" > "$KEEPER/cgroup.procs"'
+require_runbook_literal 'test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"'
+require_runbook_literal 'test "$(cat "$KEEPER/cgroup.procs")" = "$$"'
+require_runbook_literal 'printf "+cpu +memory +pids\\n" > "$CONTROL_GROUP/cgroup.subtree_control"'
+require_runbook_literal 'SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_control")'
+require_runbook_literal 'for controller in cpu memory pids; do'
+require_runbook_literal 'for interface in cpu.max memory.max memory.swap.max pids.max; do'
+require_runbook_literal 'test -w "$CONTROL_GROUP/$interface"'
+require_runbook_literal 'test -z "$(cat "$PARENT/cgroup.procs")"'
+require_runbook_literal 'test "$(cat "$PARENT/agent/keeper/cgroup.procs")" = "$KEEPER_PID"'
+require_runbook_literal 'docker info --format '\''CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'\'''
+
+if grep -Eq '^[[:space:]]+/bin/sleep infinity$' "$runbook"; then
+  echo "runbook must not leave the keeper directly in the unit parent" >&2
   exit 1
 fi
 
