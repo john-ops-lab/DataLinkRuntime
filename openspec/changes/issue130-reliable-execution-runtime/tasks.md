@@ -94,7 +94,7 @@
 - [x] 10.1 运行Batch2相关Backend全量静态检查/pytest、Rabbit/DB并发与Worker故障矩阵；验证：全部失败修复或 `BLOCKED_B2_GATE`，未全绿不勾选
 - [x] 10.2 自动断言Batch2结束仍为dark launch：minimum≠3、旧索引存在、legacy Claim启用、普通新流量legacy、Sandbox尚未冒充通过；验证：全部PASS
 - [x] 10.3 形成Batch2 checkpoint commit/Candidate SHA并核对不含不可逆Cutover；验证：差异/测试/故障证据绑定同一SHA
-- [ ] 10.4 由当前主代理Sol对Batch2 exact SHA做只读Attempt/ACK/Lease/Retry/迁移审计并修复finding；验证：最新SHA审计PASS，仍不创建PR或声称AO官方Review
+- [x] 10.4 由当前主代理Sol对Batch2 exact SHA做只读Attempt/ACK/Lease/Retry/迁移审计并修复finding；验证：最新SHA审计PASS，仍不创建PR或声称AO官方Review
 
 ## 11. Batch 3 — Linux Resource Sandbox
 
