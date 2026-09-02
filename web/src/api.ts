@@ -40,6 +40,8 @@ import type {
   PackageSource,
   PackageSourceDefaults,
   ReachabilityResult,
+  ReliableExecutionDetail,
+  ReplayResponse,
   SystemLocaleResponse,
   VersionDetail,
   VersionSummary,
@@ -383,6 +385,12 @@ export const api = {
 
   getExecution: (executionId: number): Promise<Execution> =>
     request(`/api/executions/${executionId}`),
+
+  getReliableExecutionDetail: (executionId: number): Promise<ReliableExecutionDetail> =>
+    request(`/api/executions/${executionId}/reliable-detail`),
+
+  replayExecution: (executionId: number): Promise<ReplayResponse> =>
+    request(`/api/executions/${executionId}/replay`, { method: "POST" }),
 
   cancelExecution: (executionId: number): Promise<Execution> =>
     request(`/api/executions/${executionId}/cancel`, { method: "POST" }),

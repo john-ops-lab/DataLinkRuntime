@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
 import { applyUiLocale } from "../i18n";
-import type { Execution, ExecutionSummary } from "../types";
+import type { Execution, ExecutionSummary, ReliableExecutionDetail } from "../types";
 import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
 
 function summary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
@@ -74,6 +74,66 @@ afterEach(async () => {
 });
 
 describe("Issue #127 D2 execution history", () => {
+  it("renders RabbitMQ Attempt facts, infrastructure Incidents, and Replay", async () => {
+    const rabbitExecution = execution({
+      dispatch_backend: "rabbitmq",
+      status: "dead_letter",
+      replay_available: false,
+      replay_unavailable_reason: null,
+    });
+    const runtimeDetail: ReliableExecutionDetail = {
+      execution_id: rabbitExecution.id,
+      dispatch_backend: "rabbitmq",
+      status: "dead_letter",
+      attempts: [{
+        id: 801,
+        execution_id: rabbitExecution.id,
+        adapter_id: rabbitExecution.adapter_id,
+        attempt_no: 1,
+        worker_id: 3,
+        fencing_token: 1,
+        lease_expires_at: "2026-08-28T00:01:00Z",
+        status: "failed",
+        claimed_at: "2026-08-28T00:00:01Z",
+        started_at: "2026-08-28T00:00:02Z",
+        ended_at: "2026-08-28T00:00:03Z",
+        error_code: "adapter_failed",
+        resource_usage_json: null,
+        output_summary: null,
+        cleanup_summary: null,
+      }],
+      incidents: [{
+        id: 901,
+        kind: "dispatch_infrastructure_error",
+        status: "open",
+        attempts: 2,
+        last_error: "dispatch_infrastructure_error",
+        created_at: "2026-08-28T00:00:04Z",
+        resolved_at: null,
+      }],
+      replay_available: true,
+      replay_reason: null,
+    };
+    const detailApi = vi.spyOn(api, "getReliableExecutionDetail").mockResolvedValue(runtimeDetail);
+    const replayApi = vi.spyOn(api, "replayExecution").mockResolvedValue({
+      execution_id: 72,
+      replay_of_execution_id: rabbitExecution.id,
+    });
+    renderHistory(rabbitExecution);
+    fireEvent.click(await screen.findByTestId("history-row"));
+
+    expect(await screen.findByTestId("execution-attempt-timeline")).toBeTruthy();
+    expect(screen.getByTestId("execution-attempt-1").textContent).toContain("Attempt #1");
+    expect(screen.getByTestId("execution-attempt-1").textContent).toContain("adapter_failed");
+    expect(screen.getByTestId("execution-incidents").textContent).toContain("dispatch_infrastructure_error");
+    expect(detailApi).toHaveBeenCalledWith(rabbitExecution.id);
+
+    fireEvent.click(screen.getByTestId("execution-replay"));
+    expect(await screen.findByTestId("execution-replay-success")).toBeTruthy();
+    expect(screen.getByTestId("execution-replay-success").textContent).toContain("72");
+    expect(replayApi).toHaveBeenCalledWith(rabbitExecution.id);
+  });
+
   it("renders none as a read-only summary and keeps the history request lightweight", async () => {
     const list = renderHistory(execution({ input: { storage_key: "must-not-render" } }));
     const row = await screen.findByTestId("history-row");

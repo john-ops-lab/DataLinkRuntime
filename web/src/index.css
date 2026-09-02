@@ -2326,6 +2326,55 @@ body {
   height: 100%;
 }
 
+.execution-detail-runtime-facts {
+  width: 100%;
+}
+
+.reliable-runtime-facts,
+.reliable-runtime-section {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.reliable-runtime-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+  border-top: 1px solid var(--dlr-border);
+}
+
+.reliable-runtime-section-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--dlr-text);
+}
+
+.reliable-runtime-attempt-heading,
+.worker-fact-tags,
+.worker-capabilities {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.worker-facts {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.worker-fact-tags,
+.worker-capabilities {
+  margin-top: 5px;
+}
+
+.worker-capabilities .ant-tag,
+.worker-fact-tags .ant-tag {
+  margin-inline-end: 0;
+  white-space: normal;
+}
+
 /* --- 触发器（M5.2 Schedule / M5.3 Webhook） ---------------------------------------------- */
 
 .triggers-tab {

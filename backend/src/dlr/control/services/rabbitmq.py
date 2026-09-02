@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -306,7 +307,10 @@ def _runtime_worker_set_is_current(session: Session, worker_ids: frozenset[int])
 
 
 def ingress_configuration_ready(
-    session: Session | None = None, *, worker_id: int | None = None
+    session: Session | None = None,
+    *,
+    worker_id: int | None = None,
+    allow_disabled: bool = False,
 ) -> bool:
     """Return whether live or restart-persisted capability permits ingress.
 
@@ -316,7 +320,9 @@ def ingress_configuration_ready(
     cold process cannot claim a persisted generation.
     """
 
-    if not settings.rabbitmq_execution_enabled or not settings.rabbitmq_url:
+    if (
+        not settings.rabbitmq_execution_enabled and not allow_disabled
+    ) or not settings.rabbitmq_url:
         return False
     if _runtime_status["last_error_code"] in RABBITMQ_CONFIGURATION_ERROR_CODES:
         return False
@@ -501,8 +507,35 @@ def topology_names(worker_id: int) -> TopologyNames:
     return TopologyNames(worker_id)
 
 
+def _retry_delay_milliseconds(value: object, *, setting_name: str) -> int:
+    """Convert a positive retry setting to a bounded AMQP integer delay."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{setting_name} must be a finite positive number")
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"{setting_name} must be a finite positive number")
+    # Settings cap these values at one hour.  Keep the conversion explicit and
+    # non-zero even when a sub-millisecond value is supplied by a direct test
+    # or an already-created Settings singleton.
+    return max(1, int(seconds * 1_000))
+
+
 def work_queue_arguments() -> dict[str, Any]:
     """Return a fresh bounded Quorum Queue argument map."""
+
+    retry_min_ms = _retry_delay_milliseconds(
+        settings.rabbitmq_retry_base_seconds,
+        setting_name="DLR_RABBITMQ_RETRY_BASE_SECONDS",
+    )
+    retry_max_ms = _retry_delay_milliseconds(
+        settings.rabbitmq_retry_max_seconds,
+        setting_name="DLR_RABBITMQ_RETRY_MAX_SECONDS",
+    )
+    if retry_min_ms > retry_max_ms:
+        raise ValueError(
+            "DLR_RABBITMQ_RETRY_BASE_SECONDS must not exceed DLR_RABBITMQ_RETRY_MAX_SECONDS"
+        )
 
     return {
         "x-queue-type": "quorum",
@@ -514,12 +547,14 @@ def work_queue_arguments() -> dict[str, Any]:
         "x-dead-letter-routing-key": INFRASTRUCTURE_ROUTING_KEY,
         "x-dead-letter-strategy": "at-least-once",
         "x-consumer-timeout": settings.rabbitmq_consumer_timeout_ms,
-        # RabbitMQ 4.3 delayed retry keeps defer bounded without a hot
-        # requeue loop. Batch 1 declares the capability but does not consume
-        # messages with the later v3 Worker.
-        "x-delayed-retry-type": "failed",
-        "x-delayed-retry-min": 100,
-        "x-delayed-retry-max": 60_000,
+        # RabbitMQ 4.3 Quorum Queue delayed retry is native to the queue.  The
+        # v3 Consumer returns DEFER with basic.nack(requeue=True); it never
+        # republishes an x-delay copy.  ``all`` additionally delays messages
+        # returned by connection/channel recovery, while ``returned`` is the
+        # narrower explicit-return mode.
+        "x-delayed-retry-type": settings.rabbitmq_delayed_retry_type,
+        "x-delayed-retry-min": retry_min_ms,
+        "x-delayed-retry-max": retry_max_ms,
     }
 
 

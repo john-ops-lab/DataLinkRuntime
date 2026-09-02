@@ -220,14 +220,18 @@ def accept_execution(
     idempotency_body: Any = None,
     idempotency_lookup: idempotency.IdempotencyLookup | None = None,
     schedule_policy_snapshot: dict[str, object] | None = None,
+    canary: bool = False,
+    version_id: int | None = None,
 ) -> Execution:
     """Atomically accept one gated RabbitMQ Execution or its idempotent hit."""
 
-    if not settings.rabbitmq_execution_enabled:
+    if not settings.rabbitmq_execution_enabled and not (
+        canary and settings.rabbitmq_execution_canary_enabled
+    ):
         raise RuntimeError("RabbitMQ reliable ingress is disabled")
     from dlr.control.services import rabbitmq
 
-    if not rabbitmq.ingress_configuration_ready(session):
+    if not rabbitmq.ingress_configuration_ready(session, allow_disabled=canary):
         raise domain_error(
             503,
             "rabbitmq_not_ready",
@@ -271,7 +275,9 @@ def accept_execution(
         return existing
 
     worker = resolve_queue_target_worker(session, adapter)
-    if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):
+    if not rabbitmq.ingress_configuration_ready(
+        session, worker_id=worker.id, allow_disabled=canary
+    ):
         raise domain_error(
             503,
             "rabbitmq_not_ready",
@@ -292,6 +298,10 @@ def accept_execution(
             "Request input is outside the canonical JSON number domain",
         ) from None
     admission.reserve_admission(session, adapter.id, logical_bytes)
+    if input_source_type == "managed_files":
+        from dlr.control.services.attempt import ensure_managed_file_hold_capacity
+
+        ensure_managed_file_hold_capacity(session)
     now = _db_now(session)
     execution = _create_pending_execution_locked(
         session,
@@ -313,6 +323,7 @@ def accept_execution(
         credential_bindings_snapshot=credential_bindings_snapshot,
         schedule_policy_snapshot=schedule_policy_snapshot,
         resource_class=RESOURCE_PROFILE_CLASS,
+        version_id_override=version_id,
     )
     # Keep the DB clock as the accepted-at source for all generated facts.
     execution.queued_at = now

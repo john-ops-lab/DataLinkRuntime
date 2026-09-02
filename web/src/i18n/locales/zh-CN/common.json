@@ -246,7 +246,22 @@
     "lastHeartbeat": "最近心跳：{{time}}",
     "onlineSummary": "{{online}}/{{total}} 在线",
     "hint": "在线状态已结合最近心跳和超时阈值判定；最近心跳时间用于排障。",
-    "option": "{{name}}（{{status}}）"
+    "option": "{{name}}（{{status}}）",
+    "protocol": "协议 v{{version}}",
+    "isolationPreflightPassed": "隔离预检通过",
+    "isolationPreflightFailed": "隔离预检失败",
+    "isolationPreflightUnknown": "隔离预检未知",
+    "v3Enabled": "Worker v3 已启用",
+    "v3Paused": "Worker v3 已暂停",
+    "capability": {
+      "cgroup_v2": "cgroup v2",
+      "mount_namespace": "Mount NS",
+      "pid_namespace": "PID NS",
+      "memory_hard_limit": "Memory limit",
+      "pids_hard_limit": "PID limit",
+      "tmpfs_hard_limit": "tmpfs limit",
+      "bounded_output": "Bounded output"
+    }
   },
   "empty": {
     "noAdapter": "请选择一个适配器进行管理。",

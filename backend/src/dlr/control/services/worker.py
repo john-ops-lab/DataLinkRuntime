@@ -10,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select, update
@@ -35,6 +35,7 @@ from dlr.control.schemas.worker import (
     TaskInputFile,
     TaskPayload,
     WorkerRegister,
+    isolation_capabilities_ready,
 )
 from dlr.control.services import package_source as package_source_service
 from dlr.control.services import secrets as secrets_service
@@ -302,20 +303,35 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
     attempted while the Worker is offline.
     """
     worker = session.scalar(select(Worker).where(Worker.name == data.name).with_for_update())
+    protocol_version = int(data.protocol_version or 1)
+    preflight_ready = protocol_version >= 3 and isolation_capabilities_ready(
+        data.isolation_capabilities
+    )
+    preflight_status = (
+        "passed" if preflight_ready else ("failed" if protocol_version >= 3 else "unknown")
+    )
     if worker is None:
         worker = Worker(
             name=data.name,
             status="online",
             last_heartbeat=func.now(),
             capabilities=data.capabilities,
-            protocol_version=data.protocol_version,
+            protocol_version=protocol_version,
+            isolation_capabilities=data.isolation_capabilities,
+            isolation_preflight_status=preflight_status,
+            isolation_preflight_at=func.now() if protocol_version >= 3 else None,
+            rabbitmq_execution_v3=preflight_ready,
         )
         session.add(worker)
     else:
         worker.status = "online"
         worker.last_heartbeat = func.now()
         worker.capabilities = data.capabilities
-        worker.protocol_version = data.protocol_version
+        worker.protocol_version = protocol_version
+        worker.isolation_capabilities = cast(dict[str, object], data.isolation_capabilities)
+        worker.isolation_preflight_status = preflight_status
+        worker.isolation_preflight_at = func.now() if protocol_version >= 3 else None
+        worker.rabbitmq_execution_v3 = preflight_ready
         session.execute(
             update(WorkerCleanupRequest)
             .where(
@@ -329,10 +345,21 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
     return worker
 
 
-def heartbeat(session: Session, worker_id: int) -> None:
+def heartbeat(
+    session: Session,
+    worker_id: int,
+    isolation_capabilities: dict[str, bool] | None = None,
+) -> None:
     worker = get_worker(session, worker_id)
     worker.status = "online"
     worker.last_heartbeat = func.now()
+    if isolation_capabilities is not None:
+        worker.isolation_capabilities = cast(dict[str, object], isolation_capabilities)
+        if int(worker.protocol_version or 1) >= 3:
+            ready = isolation_capabilities_ready(isolation_capabilities)
+            worker.isolation_preflight_status = "passed" if ready else "failed"
+            worker.isolation_preflight_at = func.now()
+            worker.rabbitmq_execution_v3 = ready
     session.commit()
 
 
@@ -415,7 +442,7 @@ def build_task_payload(
         # Execution (manual, schedule and webhook). The platform setting is
         # only a defensive fallback for rows predating the migration.
         execution_timeout_seconds=timeout_seconds,
-        secrets=secrets_service.resolve_adapter_secrets(session, execution.adapter_id),
+        secrets=secrets_service.resolve_execution_secrets(session, execution),
         index_url=package_source_service.resolve_default_index_url(
             session,
             {"python": "pypi", "javascript": "npm", "java": "maven"}[adapter.language],

@@ -10,6 +10,23 @@ function formatTime(value: string, locale: "zh-CN" | "en"): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale === "en" ? "en-US" : "zh-CN");
 }
 
+const REQUIRED_ISOLATION_CAPABILITIES = [
+  "cgroup_v2",
+  "mount_namespace",
+  "pid_namespace",
+  "memory_hard_limit",
+  "pids_hard_limit",
+  "tmpfs_hard_limit",
+  "bounded_output",
+] as const;
+
+function isolationCapabilityLabel(
+  capability: (typeof REQUIRED_ISOLATION_CAPABILITIES)[number],
+  translate: (key: string) => string,
+): string {
+  return translate(`worker.capability.${capability}`);
+}
+
 interface WorkerStatusProps {
   workers: Worker[];
   loading: boolean;
@@ -41,7 +58,34 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
                     </Tag>
                   </span>
                 }
-                description={t("worker.lastHeartbeat", { time: formatTime(worker.last_heartbeat, locale) })}
+                description={(
+                  <div className="worker-facts">
+                    <div>{t("worker.lastHeartbeat", { time: formatTime(worker.last_heartbeat, locale) })}</div>
+                    <div className="worker-fact-tags">
+                      <Tag>{t("worker.protocol", { version: worker.protocol_version ?? 1 })}</Tag>
+                      <Tag color={worker.isolation_preflight_status === "passed" ? "green" : "red"}>
+                        {worker.isolation_preflight_status === "passed"
+                          ? t("worker.isolationPreflightPassed")
+                          : worker.isolation_preflight_status === "failed"
+                            ? t("worker.isolationPreflightFailed")
+                            : t("worker.isolationPreflightUnknown")}
+                      </Tag>
+                      <Tag color={worker.rabbitmq_execution_v3 === true ? "green" : "default"}>
+                        {worker.rabbitmq_execution_v3 === true ? t("worker.v3Enabled") : t("worker.v3Paused")}
+                      </Tag>
+                    </div>
+                    <div className="worker-capabilities">
+                      {REQUIRED_ISOLATION_CAPABILITIES.map((capability) => {
+                        const enabled = worker.isolation_capabilities?.[capability] === true;
+                        return (
+                          <Tag key={capability} color={enabled ? "green" : "default"}>
+                            {enabled ? "✓" : "—"} {isolationCapabilityLabel(capability, (key) => t(key))}
+                          </Tag>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               />
             </List.Item>
           )}

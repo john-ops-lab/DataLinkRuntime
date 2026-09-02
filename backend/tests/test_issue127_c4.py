@@ -134,13 +134,19 @@ def test_worker_protocol_version_can_select_v2(monkeypatch: pytest.MonkeyPatch) 
     assert WorkerConfig().protocol_version == 2
 
 
-@pytest.mark.parametrize("value", ["0", "3", "not-a-version"])
+def test_worker_protocol_version_can_select_v3(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DLR_WORKER_PROTOCOL_VERSION", "3")
+
+    assert WorkerConfig().protocol_version == 3
+
+
+@pytest.mark.parametrize("value", ["0", "4", "not-a-version"])
 def test_worker_protocol_version_rejects_unsupported_values(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     monkeypatch.setenv("DLR_WORKER_PROTOCOL_VERSION", value)
 
-    with pytest.raises(ValueError, match="DLR_WORKER_PROTOCOL_VERSION must be 1 or 2"):
+    with pytest.raises(ValueError, match="DLR_WORKER_PROTOCOL_VERSION must be 1, 2 or 3"):
         WorkerConfig()
 
 

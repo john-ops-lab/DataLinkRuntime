@@ -663,13 +663,13 @@ def run(
             protocol_version=2,
         )
     protocol_version = raw_protocol_version
-    if protocol_version not in {1, 2}:
+    if protocol_version not in {1, 2, 3}:
         return _workspace_failure(
             locale,
             "worker_protocol_payload_invalid",
             protocol_version=2,
         )
-    if protocol_version == 2:
+    if protocol_version >= 2:
         try:
             validated_v2 = _validated_v2_payload(payload)
         except (TypeError, ValueError):

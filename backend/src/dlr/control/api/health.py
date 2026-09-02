@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
 from dlr.control import db
-from dlr.control.services import outbox, rabbitmq
+from dlr.control.services import attempt, outbox, rabbitmq
 
 router = APIRouter()
 logger = logging.getLogger("dlr.control.health")
@@ -106,5 +106,6 @@ def health() -> JSONResponse:
         "database": database_ok,
         "rabbitmq": rabbitmq_status,
         "outbox": outbox_status,
+        "reliable_runtime": {"attempt": attempt.metrics_snapshot()},
     }
     return JSONResponse(content=payload, status_code=200 if healthy else 503)

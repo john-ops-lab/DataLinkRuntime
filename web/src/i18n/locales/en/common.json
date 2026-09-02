@@ -246,7 +246,22 @@
     "lastHeartbeat": "Last heartbeat: {{time}}",
     "onlineSummary": "{{online}}/{{total}} online",
     "hint": "Online status combines the latest heartbeat with the timeout threshold; the heartbeat time helps with troubleshooting.",
-    "option": "{{name}} ({{status}})"
+    "option": "{{name}} ({{status}})",
+    "protocol": "Protocol v{{version}}",
+    "isolationPreflightPassed": "Isolation preflight passed",
+    "isolationPreflightFailed": "Isolation preflight failed",
+    "isolationPreflightUnknown": "Isolation preflight unknown",
+    "v3Enabled": "Worker v3 enabled",
+    "v3Paused": "Worker v3 paused",
+    "capability": {
+      "cgroup_v2": "cgroup v2",
+      "mount_namespace": "Mount NS",
+      "pid_namespace": "PID NS",
+      "memory_hard_limit": "Memory limit",
+      "pids_hard_limit": "PID limit",
+      "tmpfs_hard_limit": "tmpfs limit",
+      "bounded_output": "Bounded output"
+    }
   },
   "empty": {
     "noAdapter": "Select an Adapter to manage.",

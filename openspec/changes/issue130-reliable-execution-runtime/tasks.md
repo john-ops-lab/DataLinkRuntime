@@ -57,43 +57,43 @@
 
 ## 7. Batch 2 — Worker v3 Consumer 与 Attempt Claim
 
-- [ ] 7.1 扩展Worker注册/heartbeat保存v3 isolation matrix并对v1/v2保持兼容；验证：bool/float/string/unknown协议fail closed，v2看不到RabbitMQ backend
-- [ ] 7.2 实现v3 Pika Consumer专用线程、`prefetch=execution_slots`、本地Semaphore与服务级pause/backoff；验证：slots满不无界拉取，Control/auth故障不逐条热循环
-- [ ] 7.3 实现Control v3 Claim API与五态decision schema；验证：backend/generation/target/due/protocol/capability/slot矩阵逐项覆盖稳定reason
-- [ ] 7.4 实现Claim事务创建Attempt、递增attempt_no/fencing、绑定Slot0并`queued→running`；验证：同Execution/同Adapter并发Claim最多一个EXECUTE且无部分副作用
-- [ ] 7.5 实现Attempt-scoped Claim/Cleanup Token hash与constant-time验证；验证：Token不可互换、原文不落DB/URL/Rabbit/日志
-- [ ] 7.6 扩展Worker私有Attempt journal，在Claim后以0600临时文件+fsync+rename持久后ACK；验证：journal内容最小、ACK不等待terminal、写入失败不启动Adapter
-- [ ] 7.7 实现Worker start/renew/progress/result/prepare-failed API与fence条件更新；验证：默认60/15秒、旧fence/非owner拒绝、重复同terminal幂等
-- [ ] 7.8 实现Attempt Lease Reconciler与Slot条件释放；验证：claimed/running过期均收敛worker_lost，Result竞争只有一个权威终态
-- [ ] 7.9 扩展cancel覆盖queued/retry_wait/active Attempt与旧message ACK_NOOP；验证：cancel/result并发只释放Admission/Slot/Lease一次
-- [ ] 7.10 复用v2 Managed Files下载、Token、Context与cleanup receipt到v3 payload；验证：三语言文件顺序/校验/清理不回归，Rabbit消息无文件/路径
+- [x] 7.1 扩展Worker注册/heartbeat保存v3 isolation matrix并对v1/v2保持兼容；验证：bool/float/string/unknown协议fail closed，v2看不到RabbitMQ backend
+- [x] 7.2 实现v3 Pika Consumer专用线程、`prefetch=execution_slots`、本地Semaphore与服务级pause/backoff；验证：slots满不无界拉取，Control/auth故障不逐条热循环
+- [x] 7.3 实现Control v3 Claim API与五态decision schema；验证：backend/generation/target/due/protocol/capability/slot矩阵逐项覆盖稳定reason
+- [x] 7.4 实现Claim事务创建Attempt、递增attempt_no/fencing、绑定Slot0并`queued→running`；验证：同Execution/同Adapter并发Claim最多一个EXECUTE且无部分副作用
+- [x] 7.5 实现Attempt-scoped Claim/Cleanup Token hash与constant-time验证；验证：Token不可互换、原文不落DB/URL/Rabbit/日志
+- [x] 7.6 扩展Worker私有Attempt journal，在Claim后以0600临时文件+fsync+rename持久后ACK；验证：journal内容最小、ACK不等待terminal、写入失败不启动Adapter
+- [x] 7.7 实现Worker start/renew/progress/result/prepare-failed API与fence条件更新；验证：默认60/15秒、旧fence/非owner拒绝、重复同terminal幂等
+- [x] 7.8 实现Attempt Lease Reconciler与Slot条件释放；验证：claimed/running过期均收敛worker_lost，Result竞争只有一个权威终态
+- [x] 7.9 扩展cancel覆盖queued/retry_wait/active Attempt与旧message ACK_NOOP；验证：cancel/result并发只释放Admission/Slot/Lease一次
+- [x] 7.10 复用v2 Managed Files下载、Token、Context与cleanup receipt到v3 payload；验证：三语言文件顺序/校验/清理不回归，Rabbit消息无文件/路径
 
 ## 8. Batch 2 — Retry、Dead Letter、Replay 与 DLQ
 
-- [ ] 8.1 实现闭合Retry Policy schema/default/snapshot与保守错误分类；验证：默认只重试platform transient/worker_lost，业务/timeout/resource错误默认dead-letter
-- [ ] 8.2 实现Attempt terminal到succeeded/retry_wait/dead_letter/cancelled的单一事务服务；验证：attempt_count只在Claim增加，Admission/Slot/Hold/cleanup副作用各一次
-- [ ] 8.3 实现due Retry Dispatcher的generation+1与唯一Outbox；验证：多Dispatcher并发和crash/retry不重复generation/Outbox
-- [ ] 8.4 实现Business Dead Letter detail与Replay新Execution；验证：旧历史不可变、Replay走新Admission/snapshot/Outbox且非dead-letter transition拒绝
-- [ ] 8.5 实现Managed File 7天Hold、held count/bytes Gate、到期/purge与GC保护；验证：既有任务dead-letter不因保护线失败，Hold到期后Replay稳定返回 `dead_letter_input_expired`
-- [ ] 8.6 实现Infrastructure DLQ consumer/reconciler与DB Incident；验证：poison/delivery-limit可关联Execution/generation，不能留下Broker-only孤儿或误写Business Dead Letter
-- [ ] 8.7 实现Attempt/Retry/DLQ/lease/resource低基数指标与脱敏日志；验证：metrics不使用execution/key/token高基数label，secret/path扫描全空
-- [ ] 8.8 扩展Web Attempt timeline、retry wait、dead-letter/replay/Incident与capability状态；验证：权限、服务端权威、zh-CN/en与轻量列表测试通过
+- [x] 8.1 实现闭合Retry Policy schema/default/snapshot与保守错误分类；验证：默认只重试platform transient/worker_lost，业务/timeout/resource错误默认dead-letter
+- [x] 8.2 实现Attempt terminal到succeeded/retry_wait/dead_letter/cancelled的单一事务服务；验证：attempt_count只在Claim增加，Admission/Slot/Hold/cleanup副作用各一次
+- [x] 8.3 实现due Retry Dispatcher的generation+1与唯一Outbox；验证：多Dispatcher并发和crash/retry不重复generation/Outbox
+- [x] 8.4 实现Business Dead Letter detail与Replay新Execution；验证：旧历史不可变、Replay走新Admission/snapshot/Outbox且非dead-letter transition拒绝
+- [x] 8.5 实现Managed File 7天Hold、held count/bytes Gate、到期/purge与GC保护；验证：既有任务dead-letter不因保护线失败，Hold到期后Replay稳定返回 `dead_letter_input_expired`
+- [x] 8.6 实现Infrastructure DLQ consumer/reconciler与DB Incident；验证：poison/delivery-limit可关联Execution/generation，不能留下Broker-only孤儿或误写Business Dead Letter
+- [x] 8.7 实现Attempt/Retry/DLQ/lease/resource低基数指标与脱敏日志；验证：metrics不使用execution/key/token高基数label，secret/path扫描全空
+- [x] 8.8 扩展Web Attempt timeline、retry wait、dead-letter/replay/Incident与capability状态；验证：权限、服务端权威、zh-CN/en与轻量列表测试通过
 
 ## 9. Batch 2 — Dark Launch 与迁移演练
 
-- [ ] 9.1 实现RabbitMQ ingress canary/测试入口，默认生产gate仍off；验证：只有明确canary创建rabbitmq Execution，普通Manual/Schedule/Webhook继续legacy
-- [ ] 9.2 实现migration inventory/dry-run，输出schema、legacy counts、protocol distribution、Rabbit/Outbox/Sandbox readiness且脱敏；验证：重复运行只读、计数稳定
-- [ ] 9.3 实现legacy pending事务迁移工具与already-converted收敛；验证：提交前崩溃保持legacy，提交后响应丢失重跑不重复Outbox并完整保留#127快照/Lease
-- [ ] 9.4 演练legacy running drain边界；验证：工具拒绝中途转换running，未清零时Cutover Gate明确失败
-- [ ] 9.5 注入duplicate dispatch、ACK loss、ACK后崩溃、journal失败、Control分区、lease expiry与stale Result；验证：无第二active Attempt、无旧fence覆盖、每个Execution可解释收敛
-- [ ] 9.6 注入Broker delayed defer与同Adapter消息拥塞；验证：DEFER不增加attempt_count、无即时nack热循环、其他Adapter仍可使用slots
-- [ ] 9.7 运行三语言none/json/managed-files v3 canary及cleanup recovery；验证：input/output/log/Token边界与legacy v1/v2回归均PASS
+- [x] 9.1 实现RabbitMQ ingress canary/测试入口，默认生产gate仍off；验证：只有明确canary创建rabbitmq Execution，普通Manual/Schedule/Webhook继续legacy
+- [x] 9.2 实现migration inventory/dry-run，输出schema、legacy counts、protocol distribution、Rabbit/Outbox/Sandbox readiness且脱敏；验证：重复运行只读、计数稳定
+- [x] 9.3 实现legacy pending事务迁移工具与already-converted收敛；验证：提交前崩溃保持legacy，提交后响应丢失重跑不重复Outbox并完整保留#127快照/Lease
+- [x] 9.4 演练legacy running drain边界；验证：工具拒绝中途转换running，未清零时Cutover Gate明确失败
+- [x] 9.5 注入duplicate dispatch、ACK loss、ACK后崩溃、journal失败、Control分区、lease expiry与stale Result；验证：无第二active Attempt、无旧fence覆盖、每个Execution可解释收敛
+- [x] 9.6 注入Broker delayed defer与同Adapter消息拥塞；验证：DEFER不增加attempt_count、无即时nack热循环、其他Adapter仍可使用slots
+- [x] 9.7 运行三语言none/json/managed-files v3 canary及cleanup recovery；验证：input/output/log/Token边界与legacy v1/v2回归均PASS
 
 ## 10. Batch 2 — Candidate Gate
 
-- [ ] 10.1 运行Batch2相关Backend全量静态检查/pytest、Rabbit/DB并发与Worker故障矩阵；验证：全部失败修复或 `BLOCKED_B2_GATE`，未全绿不勾选
-- [ ] 10.2 自动断言Batch2结束仍为dark launch：minimum≠3、旧索引存在、legacy Claim启用、普通新流量legacy、Sandbox尚未冒充通过；验证：全部PASS
-- [ ] 10.3 形成Batch2 checkpoint commit/Candidate SHA并核对不含不可逆Cutover；验证：差异/测试/故障证据绑定同一SHA
+- [x] 10.1 运行Batch2相关Backend全量静态检查/pytest、Rabbit/DB并发与Worker故障矩阵；验证：全部失败修复或 `BLOCKED_B2_GATE`，未全绿不勾选
+- [x] 10.2 自动断言Batch2结束仍为dark launch：minimum≠3、旧索引存在、legacy Claim启用、普通新流量legacy、Sandbox尚未冒充通过；验证：全部PASS
+- [x] 10.3 形成Batch2 checkpoint commit/Candidate SHA并核对不含不可逆Cutover；验证：差异/测试/故障证据绑定同一SHA
 - [ ] 10.4 由当前主代理Sol对Batch2 exact SHA做只读Attempt/ACK/Lease/Retry/迁移审计并修复finding；验证：最新SHA审计PASS，仍不创建PR或声称AO官方Review
 
 ## 11. Batch 3 — Linux Resource Sandbox

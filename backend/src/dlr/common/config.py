@@ -202,6 +202,12 @@ class Settings(BaseSettings):
     rabbitmq_execution_enabled: bool = Field(
         default=False, validation_alias="DLR_RABBITMQ_EXECUTION_ENABLED"
     )
+    # Explicit canary/test entry is independent from ordinary Manual,
+    # Schedule and Webhook traffic.  It stays disabled in production by
+    # default and is never used to raise the minimum Worker protocol.
+    rabbitmq_execution_canary_enabled: bool = Field(
+        default=False, validation_alias="DLR_RABBITMQ_EXECUTION_CANARY_ENABLED"
+    )
     rabbitmq_url: str | None = Field(default=None, validation_alias="DLR_RABBITMQ_URL")
     # Compose keeps the broker vhost as one raw value and the AMQP client
     # encodes it at connection construction time.  This avoids maintaining a
@@ -295,6 +301,14 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
         validation_alias="DLR_RABBITMQ_RETRY_MAX_SECONDS",
     )
+    # RabbitMQ 4.3 Quorum Queues own the delay for a broker-level DEFER.  The
+    # v3 consumer uses basic.nack(requeue=True), which is a native returned
+    # disposition.  ``all`` also delays connection/channel requeues; the
+    # narrower ``returned`` mode is available when only explicit DEFERs should
+    # be delayed.
+    rabbitmq_delayed_retry_type: str = Field(
+        default="all", validation_alias="DLR_RABBITMQ_DELAYED_RETRY_TYPE"
+    )
     # Relay publication is deliberately bounded even when several Relay
     # invocations overlap.  The defaults leave a small, explicit window for
     # the single-node Quorum Queue while keeping every publisher resource
@@ -376,6 +390,13 @@ class Settings(BaseSettings):
     attempt_renew_seconds: int = Field(
         default=15, ge=1, le=28_800, validation_alias="DLR_ATTEMPT_RENEW_SECONDS"
     )
+    attempt_reconcile_interval_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+        validation_alias="DLR_ATTEMPT_RECONCILE_INTERVAL_SECONDS",
+    )
     idempotency_retention_seconds: int = Field(
         default=86_400,
         ge=86_400,
@@ -387,6 +408,18 @@ class Settings(BaseSettings):
         ge=60,
         le=31_536_000,
         validation_alias="DLR_DEAD_LETTER_HOLD_SECONDS",
+    )
+    dead_letter_hold_max_count: int = Field(
+        default=10_000,
+        ge=1,
+        le=10_000_000,
+        validation_alias="DLR_DEAD_LETTER_HOLD_MAX_COUNT",
+    )
+    dead_letter_hold_max_bytes: int = Field(
+        default=10 * 1024 * 1024 * 1024,
+        ge=1,
+        le=10 * 1024 * 1024 * 1024 * 1024,
+        validation_alias="DLR_DEAD_LETTER_HOLD_MAX_BYTES",
     )
 
     # The resource profile is only snapshotted in B1.  Real cgroup/namespace
@@ -564,6 +597,8 @@ def validate_deployment_configuration(value: Settings) -> Settings:
         raise ValueError(
             "DLR_RABBITMQ_RETRY_BASE_SECONDS must not exceed DLR_RABBITMQ_RETRY_MAX_SECONDS"
         )
+    if value.rabbitmq_delayed_retry_type not in {"all", "returned"}:
+        raise ValueError("DLR_RABBITMQ_DELAYED_RETRY_TYPE must be all or returned")
     if not 1 <= value.execution_retry_max_attempts <= 100:
         raise ValueError("DLR_EXECUTION_RETRY_MAX_ATTEMPTS must be between 1 and 100")
     if not 0 < value.execution_retry_initial_backoff_seconds <= 300:

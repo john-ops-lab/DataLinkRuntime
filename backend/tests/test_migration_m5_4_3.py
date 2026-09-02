@@ -21,7 +21,7 @@ FRESH_ISSUE130_DATABASE = "dlr_test_issue130_fresh"
 CURRENT_MAIN_ISSUE130_DATABASE = "dlr_test_issue130_0029"
 LEGACY_REVISION = "0010_m5_4_2_task_run_mode"
 CURRENT_MAIN_REVISION = "0029_issue127_c0_exec_lease"
-FINAL_REVISION = "0030_issue130_reliable_runtime"
+FINAL_REVISION = "0031_issue130_b2_runtime"
 LEGACY_PUBLIC_ID = "Legacy_Path_ABC123"
 
 

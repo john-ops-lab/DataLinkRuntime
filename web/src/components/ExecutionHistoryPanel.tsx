@@ -1,7 +1,7 @@
 /** 执行记录 Tab：游标分页历史列表 + 详情抽屉（M3 §5/§9，SSE 自动打开）。 */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag } from "antd";
+import { Alert, Button, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag, Timeline } from "antd";
 import { DownOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useTranslation } from "react-i18next";
@@ -9,7 +9,7 @@ import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
-import type { ExecutionSummary } from "../types";
+import type { ExecutionSummary, ReliableExecutionDetail, ReplayResponse } from "../types";
 import { unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import ExecutionInputSummary from "./ExecutionInputSummary";
@@ -58,6 +58,36 @@ function formatDuration(
     : translate("units.milliseconds", { value: durationMs });
 }
 
+function attemptStatusLabel(
+  status: string,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const knownStatuses = new Set([
+    "claimed",
+    "running",
+    "succeeded",
+    "failed",
+    "timed_out",
+    "cancelled",
+    "worker_lost",
+    "resource_exceeded",
+  ]);
+  return knownStatuses.has(status) ? translate(`history.attemptStatus.${status}`) : status;
+}
+
+function attemptStatusColor(status: string): string {
+  if (status === "succeeded") {
+    return "green";
+  }
+  if (status === "claimed" || status === "running") {
+    return "blue";
+  }
+  if (status === "cancelled") {
+    return "orange";
+  }
+  return "red";
+}
+
 function RetryCountdown(props: {
   nextAttemptAt: string;
   translate: (key: string, options?: Record<string, unknown>) => string;
@@ -101,6 +131,11 @@ export default function ExecutionHistoryPanel(props: {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [requestedExecutionId, setRequestedExecutionId] = useState<number | null>(null);
   const [selectedSummary, setSelectedSummary] = useState<ExecutionSummary | null>(null);
+  const [reliableDetail, setReliableDetail] = useState<ReliableExecutionDetail | null>(null);
+  const [reliableDetailLoading, setReliableDetailLoading] = useState(false);
+  const [reliableDetailError, setReliableDetailError] = useState<string | null>(null);
+  const [replayLoading, setReplayLoading] = useState(false);
+  const [replayResult, setReplayResult] = useState<ReplayResponse | null>(null);
   // Only the newest detail request may commit UI state: rapid clicks (A slow,
   // B fast) must never let a stale A response overwrite the B detail.
   const detailRequestRef = useRef(0);
@@ -167,6 +202,9 @@ export default function ExecutionHistoryPanel(props: {
     setSelectedSummary(summary);
     setDrawerOpen(true);
     setDetailLoading(true);
+    setReliableDetail(null);
+    setReliableDetailError(null);
+    setReplayResult(null);
     try {
       const loaded = await api.getExecution(executionId);
       if (requestId !== detailRequestRef.current) {
@@ -175,6 +213,25 @@ export default function ExecutionHistoryPanel(props: {
       // watch() commits the detail synchronously and follows non-terminal
       // executions live (SSE + bounded fallback), shared with the Workbench log surface.
       watcher.watch(loaded);
+      if (loaded.dispatch_backend === "rabbitmq") {
+        setReliableDetailLoading(true);
+        void api.getReliableExecutionDetail(executionId).then((runtimeDetail) => {
+          if (requestId !== detailRequestRef.current) {
+            return;
+          }
+          setReliableDetail(runtimeDetail);
+        }).catch((error: unknown) => {
+          if (requestId === detailRequestRef.current) {
+            setReliableDetailError(errorMessage(error));
+          }
+        }).finally(() => {
+          if (requestId === detailRequestRef.current) {
+            setReliableDetailLoading(false);
+          }
+        });
+      } else {
+        setReliableDetailLoading(false);
+      }
     } catch (error) {
       if (requestId !== detailRequestRef.current) {
         return;
@@ -337,6 +394,9 @@ export default function ExecutionHistoryPanel(props: {
           setDrawerOpen(false);
           setRequestedExecutionId(null);
           setSelectedSummary(null);
+          setReliableDetail(null);
+          setReliableDetailError(null);
+          setReplayResult(null);
         }}
       >
         {detailLoading && <Spin />}
@@ -435,23 +495,117 @@ export default function ExecutionHistoryPanel(props: {
               ]}
             />
             <Space direction="vertical" size="small" className="execution-detail-runtime-facts">
-              <Alert
-                type="info"
-                showIcon
-                data-testid="execution-attempt-timeline-placeholder"
-                message={t("history.runtimeFacts")}
-                description={t("history.attemptTimeline")}
-              />
-              <Alert
-                type="info"
-                showIcon
-                data-testid="execution-incident-placeholder"
-                message={t("history.incidentPlaceholder")}
-              />
+              {visibleDetail.dispatch_backend === "rabbitmq" && (
+                <div className="reliable-runtime-facts" data-testid="execution-reliable-runtime-facts">
+                  <div className="reliable-runtime-section">
+                    <div className="reliable-runtime-section-title">{t("history.runtimeFacts")}</div>
+                    {reliableDetailLoading && <Spin size="small" />}
+                    {reliableDetailError !== null && (
+                      <Alert
+                        type="warning"
+                        showIcon
+                        data-testid="execution-reliable-detail-error"
+                        message={t("history.reliableDetailUnavailable")}
+                        description={reliableDetailError}
+                      />
+                    )}
+                  </div>
+                  {reliableDetail !== null && (
+                    <>
+                      <div className="reliable-runtime-section" data-testid="execution-attempt-timeline">
+                        <div className="reliable-runtime-section-title">{t("history.attemptTimeline")}</div>
+                        {reliableDetail.attempts.length === 0 ? (
+                          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("history.noAttempts")} />
+                        ) : (
+                          <Timeline
+                            items={reliableDetail.attempts.map((attempt) => ({
+                              key: String(attempt.id),
+                              color: attemptStatusColor(attempt.status),
+                              children: (
+                                <div data-testid={`execution-attempt-${attempt.attempt_no}`}>
+                                  <div className="reliable-runtime-attempt-heading">
+                                    <strong>{t("history.attemptNumber", { number: attempt.attempt_no })}</strong>
+                                    <Tag color={attemptStatusColor(attempt.status)}>
+                                      {attemptStatusLabel(attempt.status, (key, options) => t(key, options))}
+                                    </Tag>
+                                  </div>
+                                  <div className="execution-version-debug">
+                                    {t("history.attemptClaimedAt", { time: formatTime(attempt.claimed_at, locale) })}
+                                  </div>
+                                  {attempt.error_code !== null && (
+                                    <div className="execution-version-debug">
+                                      {t("history.attemptError", { code: attempt.error_code })}
+                                    </div>
+                                  )}
+                                </div>
+                              ),
+                            }))}
+                          />
+                        )}
+                      </div>
+                      <div className="reliable-runtime-section" data-testid="execution-incidents">
+                        <div className="reliable-runtime-section-title">{t("history.incidents")}</div>
+                        {reliableDetail.incidents.length === 0 ? (
+                          <div className="execution-version-debug">{t("history.noIncidents")}</div>
+                        ) : (
+                          reliableDetail.incidents.map((incident) => (
+                            <Alert
+                              key={incident.id}
+                              type={incident.status === "open" ? "warning" : "info"}
+                              showIcon
+                              message={t("history.incidentTitle", { kind: incident.kind })}
+                              description={t("history.incidentAttempts", {
+                                attempts: incident.attempts,
+                                error: incident.last_error ?? "—",
+                              })}
+                            />
+                          ))
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
               {visibleDetail.status === "dead_letter" && (
-                visibleDetail.replay_available === false && visibleDetail.replay_unavailable_reason === "dead_letter_input_expired"
-                  ? <Alert type="warning" showIcon data-testid="execution-replay-expired" message={t("history.replayExpired")} />
-                  : <Button disabled data-testid="execution-replay-placeholder">{t("history.replayUnavailable")}</Button>
+                reliableDetail?.replay_available === true
+                  ? (
+                    <>
+                      <Button
+                        type="primary"
+                        loading={replayLoading}
+                        data-testid="execution-replay"
+                        onClick={() => {
+                          if (requestedExecutionId === null) {
+                            return;
+                          }
+                          setReplayLoading(true);
+                          void api.replayExecution(requestedExecutionId).then((result) => {
+                            setReplayResult(result);
+                          }).catch((error: unknown) => {
+                            setLoadError(errorMessage(error));
+                          }).finally(() => setReplayLoading(false));
+                        }}
+                      >
+                        {t("history.replay")}
+                      </Button>
+                      {replayResult !== null && (
+                        <Alert
+                          type="success"
+                          showIcon
+                          data-testid="execution-replay-success"
+                          message={t("history.replayCreated", { id: replayResult.execution_id })}
+                          action={(
+                            <Button size="small" onClick={() => void openExecution(replayResult.execution_id)}>
+                              {t("history.openReplay")}
+                            </Button>
+                          )}
+                        />
+                      )}
+                    </>
+                  )
+                  : (reliableDetail?.replay_reason === "dead_letter_input_expired" || visibleDetail.replay_unavailable_reason === "dead_letter_input_expired")
+                    ? <Alert type="warning" showIcon data-testid="execution-replay-expired" message={t("history.replayExpired")} />
+                    : <Button disabled data-testid="execution-replay-unavailable">{t("history.replayUnavailable")}</Button>
               )}
             </Space>
             {/* M5.5.10：内部 Execution ID 只作为次级技术信息展示（易理解名称“运行 ID”）。 */}

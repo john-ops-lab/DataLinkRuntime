@@ -27,7 +27,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
-from dlr.control.models import Adapter, AdapterWebhook, Execution
+from dlr.control.models import (
+    Adapter,
+    AdapterWebhook,
+    Execution,
+    ExecutionCredentialBindingSnapshot,
+)
 from dlr.control.models.platform import (
     CREDENTIAL_FIELDS,
     LEGACY_ACCESS_KEY_FIELDS,
@@ -384,3 +389,51 @@ def resolve_adapter_secrets(session: Session, adapter_id: int) -> dict[str, str]
             raise RuntimeError("binding references a missing credential")
         secrets[binding.env_key] = decrypt_fields(credential.ciphertext)[binding.field]
     return secrets
+
+
+def resolve_execution_secrets(session: Session, execution: Execution) -> dict[str, str]:
+    """Decrypt the immutable credential binding snapshot of one Execution.
+
+    RabbitMQ rows must not resolve the Adapter's current bindings at Claim
+    time: an administrator may have replaced those bindings after acceptance.
+    Legacy rows retain the historical Adapter lookup because they predate the
+    snapshot contract and never enter the v3 Claim path.
+    """
+    if execution.dispatch_backend != "rabbitmq":
+        return resolve_adapter_secrets(session, execution.adapter_id)
+    snapshots = execution.credential_bindings_snapshot
+    if not isinstance(snapshots, list):
+        raise RuntimeError("execution credential binding snapshot is malformed")
+    if not snapshots:
+        return {}
+    rows = session.scalars(
+        select(ExecutionCredentialBindingSnapshot)
+        .where(ExecutionCredentialBindingSnapshot.execution_id == execution.id)
+        .order_by(ExecutionCredentialBindingSnapshot.id.asc())
+    ).all()
+    if len(rows) != len(snapshots):
+        raise RuntimeError("execution credential binding snapshot is incomplete")
+    result: dict[str, str] = {}
+    for snapshot, row in zip(snapshots, rows, strict=True):
+        if not isinstance(snapshot, dict):
+            raise RuntimeError("execution credential binding snapshot is malformed")
+        if (
+            snapshot.get("binding_id") != row.binding_id
+            or snapshot.get("credential_id") != row.credential_id
+            or snapshot.get("env_key") != row.env_key
+            or snapshot.get("field") != row.field
+        ):
+            raise RuntimeError("execution credential binding snapshot does not match its rows")
+        credential = session.get(Credential, row.credential_id)
+        if credential is None:
+            raise RuntimeError("execution binding references a missing credential")
+        fields = decrypt_fields(credential.ciphertext)
+        try:
+            result[row.env_key] = fields[row.field]
+        except KeyError as error:
+            raise domain_error(
+                500,
+                "secret_store_decrypt_failed",
+                "Credential does not contain its snapshotted field",
+            ) from error
+    return result

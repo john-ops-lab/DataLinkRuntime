@@ -72,6 +72,25 @@ class Worker(Base):
     protocol_version: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=1, server_default=text("1")
     )
+    # The matrix is an observed Worker capability fact, never inferred from
+    # protocol_version alone.  An empty/default matrix intentionally keeps
+    # v3 diagnostics fail-closed until a later Linux preflight proves the
+    # resource-isolation contract.
+    isolation_capabilities: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    isolation_preflight_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default=text("'unknown'")
+    )
+    isolation_preflight_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # This is deliberately a persisted gate rather than a computed
+    # ``protocol_version == 3`` shortcut.  Batch 2 records the fact and keeps
+    # it false on hosts that have not passed the Batch 3 sandbox probe.
+    rabbitmq_execution_v3: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

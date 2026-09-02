@@ -152,6 +152,7 @@ def _create_pending_execution_locked(
     credential_bindings_snapshot: list[dict[str, object]] | None = None,
     schedule_policy_snapshot: dict[str, object] | None = None,
     resource_class: str | None = "legacy",
+    version_id_override: int | None = None,
 ) -> Execution:
     """Create a fully initialized pending Execution under the Adapter lock.
 
@@ -161,7 +162,9 @@ def _create_pending_execution_locked(
     """
     from dlr.control.services.input_config import database_now
 
-    version_id = adapter.latest_version_id
+    version_id = (
+        version_id_override if version_id_override is not None else adapter.latest_version_id
+    )
     if version_id is None:  # pragma: no cover - every caller validates readiness
         raise RuntimeError("cannot create an Execution without a saved Adapter version")
     created_at = database_now(session)
@@ -233,6 +236,7 @@ def _create_execution_locked(
     idempotency_key: str | None = None,
     idempotency_body: Any = None,
     idempotency_lookup: Any = None,
+    canary: bool = False,
 ) -> Execution:
     """Create one Execution while the caller owns the Adapter transaction lock."""
     from dlr.control.services.input_config import resolve_for_execution
@@ -243,13 +247,13 @@ def _create_execution_locked(
         raise domain_error(409, "adapter_deleted", "Adapter is deleted")
     if adapter.latest_version_id is None:
         raise domain_error(409, "adapter_has_no_version", "Adapter has no saved Revision yet")
-    if (
-        not settings.rabbitmq_execution_enabled
-        and adapter_runtime.active_execution(session, adapter.id) is not None
-    ):
+    reliable_enabled = settings.rabbitmq_execution_enabled or (
+        canary and settings.rabbitmq_execution_canary_enabled
+    )
+    if not reliable_enabled and adapter_runtime.active_execution(session, adapter.id) is not None:
         raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
 
-    if settings.rabbitmq_execution_enabled:
+    if reliable_enabled:
         from dlr.control.services import idempotency as idempotency_service
         from dlr.control.services.reliable_execution import accept_execution
 
@@ -291,7 +295,7 @@ def _create_execution_locked(
             adapter.id,
         )
 
-    if settings.rabbitmq_execution_enabled:
+    if reliable_enabled:
         return accept_execution(
             session,
             adapter,
@@ -314,6 +318,7 @@ def _create_execution_locked(
             idempotency_key=idempotency_key,
             idempotency_body=idempotency_body,
             idempotency_lookup=lookup,
+            canary=canary,
         )
     worker = resolve_runtime_worker(session, adapter, now=worker_availability.current_time(session))
     return _create_pending_execution_locked(
@@ -346,11 +351,15 @@ def create_execution(
     *,
     idempotency_key: str | None = None,
     idempotency_body: object = None,
+    canary: bool = False,
 ) -> Execution:
     """Create one Manual or schedule run-now Execution from saved input."""
     input_is_present = "input" in data.model_fields_set
     rabbit_idempotency_lookup = None
-    if settings.rabbitmq_execution_enabled:
+    reliable_enabled = settings.rabbitmq_execution_enabled or (
+        canary and settings.rabbitmq_execution_canary_enabled
+    )
+    if reliable_enabled:
         from dlr.control.services import idempotency as idempotency_service
 
         adapter = session.get(Adapter, adapter_id, with_for_update=True)
@@ -393,6 +402,7 @@ def create_execution(
             idempotency_body=idempotency_body,
             idempotency_key=idempotency_key,
             idempotency_lookup=rabbit_idempotency_lookup,
+            canary=canary,
         )
         session.commit()
     except IntegrityError as exc:

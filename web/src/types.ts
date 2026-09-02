@@ -204,6 +204,50 @@ export interface ExecutionHistoryPage {
   next_before_id: number | null;
 }
 
+/** Safe Attempt facts returned by the B2 reliable-runtime detail endpoint. */
+export interface AttemptSummary {
+  id: number;
+  execution_id: number;
+  adapter_id: number;
+  attempt_no: number;
+  worker_id: number;
+  fencing_token: number;
+  lease_expires_at: string;
+  status: string;
+  claimed_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+  error_code: string | null;
+  resource_usage_json: Record<string, unknown> | null;
+  output_summary: Record<string, unknown> | null;
+  cleanup_summary: Record<string, unknown> | null;
+}
+
+export interface ReliableExecutionIncident {
+  id: number;
+  kind: string;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface ReliableExecutionDetail {
+  execution_id: number;
+  dispatch_backend: "legacy" | "rabbitmq";
+  status: string;
+  attempts: AttemptSummary[];
+  incidents: ReliableExecutionIncident[];
+  replay_available: boolean;
+  replay_reason: string | null;
+}
+
+export interface ReplayResponse {
+  execution_id: number;
+  replay_of_execution_id: number;
+}
+
 // --- M5.2: Schedule Trigger --------------------------------------------------
 
 export type ScheduleMisfirePolicy =
@@ -418,6 +462,10 @@ export interface Worker {
   capabilities: string[];
   /** Protocol negotiated by the Worker registration boundary. */
   protocol_version?: number;
+  isolation_capabilities?: Record<string, boolean>;
+  isolation_preflight_status?: "unknown" | "passed" | "failed" | string;
+  isolation_preflight_at?: string | null;
+  rabbitmq_execution_v3?: boolean;
 }
 
 // --- M3.2/M3.3: Secret Store credentials and dependency sources -----------

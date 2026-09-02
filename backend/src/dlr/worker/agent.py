@@ -8,6 +8,7 @@ When the Control Node is unavailable the agent keeps registering /
 heartbeating / claiming with simple capped backoff instead of crashing.
 """
 
+import json
 import logging
 import os
 import re
@@ -28,6 +29,7 @@ from dlr.worker import executor, i18n
 from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
+from dlr.worker.consumer import ConsumerConfig, V3Consumer
 
 logger = logging.getLogger("dlr.worker")
 
@@ -38,7 +40,17 @@ MAX_BACKOFF_SECONDS = 30.0
 REPORT_ATTEMPTS = 3
 MIN_JAVA_MAJOR_VERSION = 21
 DEFAULT_PROTOCOL_VERSION = 1
-SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2})
+SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2, 3})
+ISOLATION_CAPABILITY_KEYS = (
+    "cgroup_v2",
+    "mount_namespace",
+    "pid_namespace",
+    "memory_hard_limit",
+    "pids_hard_limit",
+    "tmpfs_hard_limit",
+    "bounded_output",
+    "preflight_passed",
+)
 
 
 def _runtime_major_version(command: str) -> int | None:
@@ -81,9 +93,9 @@ class WorkerConfig:
                 os.environ.get("DLR_WORKER_PROTOCOL_VERSION", str(DEFAULT_PROTOCOL_VERSION))
             )
         except ValueError as error:
-            raise ValueError("DLR_WORKER_PROTOCOL_VERSION must be 1 or 2") from error
+            raise ValueError("DLR_WORKER_PROTOCOL_VERSION must be 1, 2 or 3") from error
         if self.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
-            raise ValueError("DLR_WORKER_PROTOCOL_VERSION must be 1 or 2")
+            raise ValueError("DLR_WORKER_PROTOCOL_VERSION must be 1, 2 or 3")
         self.heartbeat_seconds = float(os.environ.get("DLR_WORKER_HEARTBEAT_SECONDS", "10"))
         self.claim_wait_seconds = int(os.environ.get("DLR_WORKER_CLAIM_WAIT_SECONDS", "20"))
         self.max_concurrency = int(os.environ.get("DLR_WORKER_MAX_CONCURRENCY", "4"))
@@ -110,6 +122,28 @@ class WorkerConfig:
         self.pypi_index_url = os.environ.get("DLR_PYPI_INDEX_URL") or None
         self.npm_registry_url = os.environ.get("DLR_NPM_REGISTRY_URL") or None
         self.maven_repository_url = os.environ.get("DLR_MAVEN_REPOSITORY_URL") or None
+        self.rabbitmq_url = os.environ.get("DLR_RABBITMQ_URL") or None
+        self.execution_slots = max(
+            1, int(os.environ.get("DLR_WORKER_EXECUTION_SLOTS", str(self.max_concurrency)))
+        )
+        self.attempt_journal_root = Path(
+            os.environ.get("DLR_ATTEMPT_JOURNAL_ROOT", str(self.runtime_root / "attempt-journal"))
+        )
+        self.isolation_capabilities = self._read_isolation_capabilities()
+
+    def _read_isolation_capabilities(self) -> dict[str, bool]:
+        """Report observed capabilities; Batch 2 never infers sandbox PASS."""
+        raw = os.environ.get("DLR_WORKER_ISOLATION_CAPABILITIES_JSON")
+        if raw:
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                value = {}
+            if isinstance(value, dict) and all(
+                isinstance(key, str) and isinstance(flag, bool) for key, flag in value.items()
+            ):
+                return {key: value[key] for key in value if key in ISOLATION_CAPABILITY_KEYS}
+        return {key: False for key in ISOLATION_CAPABILITY_KEYS}
 
     def capabilities(self) -> list[str]:
         capabilities: list[str] = []
@@ -147,9 +181,13 @@ class Agent:
         # using it (a plain set would discard the version as soon as the
         # first Execution finishes).
         self._active_versions: dict[tuple[int, int], int] = {}
+        self._registration_info: dict[str, Any] = {}
+        self._consumer: V3Consumer | None = None
 
     def request_stop(self) -> None:
         self._stop.set()
+        if self._consumer is not None:
+            self._consumer.request_stop()
 
     def _mark_execution_in_flight(self, execution_id: int) -> None:
         with self._state_lock:
@@ -175,7 +213,17 @@ class Agent:
         )
         heartbeat_thread.start()
         try:
-            self._claim_loop(worker_id)
+            if self._config.protocol_version >= 3:
+                if not self._registration_info.get("rabbitmq_execution_v3", False):
+                    logger.warning(
+                        "Worker v3 isolation preflight is not passed; RabbitMQ "
+                        "Consumer remains paused"
+                    )
+                    self._stop.wait()
+                else:
+                    self._run_v3_consumer(worker_id)
+            else:
+                self._claim_loop(worker_id)
         finally:
             ready_file.unlink(missing_ok=True)
             self._graceful_offline(worker_id)
@@ -188,11 +236,25 @@ class Agent:
                 capabilities = self._config.capabilities()
                 if not capabilities:
                     raise RuntimeError("no supported Runtime is installed")
-                info = self._client.register(
-                    self._config.name,
-                    capabilities,
-                    protocol_version=self._config.protocol_version,
-                )
+                try:
+                    info = self._client.register(
+                        self._config.name,
+                        capabilities,
+                        protocol_version=self._config.protocol_version,
+                        isolation_capabilities=self._config.isolation_capabilities,
+                    )
+                except TypeError as error:
+                    # Keep the v1/v2 in-process client seam usable during a
+                    # rolling deployment. A real ControlClient accepts the
+                    # matrix; only an older injected client may not.
+                    if "isolation_capabilities" not in str(error):
+                        raise
+                    info = self._client.register(
+                        self._config.name,
+                        capabilities,
+                        protocol_version=self._config.protocol_version,
+                    )
+                self._registration_info = info
                 return int(info["id"])
             except ControlUnavailableError as error:
                 logger.warning(
@@ -210,10 +272,29 @@ class Agent:
             backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
         return None
 
+    def _run_v3_consumer(self, worker_id: int) -> None:
+        from dlr.control.services import rabbitmq
+
+        self._consumer = V3Consumer(
+            ConsumerConfig(
+                worker_id=worker_id,
+                queue=rabbitmq.topology_names(worker_id).queue,
+                execution_slots=self._config.execution_slots,
+                runtime_root=self._config.runtime_root,
+                attempt_journal_root=self._config.attempt_journal_root,
+            ),
+            self._client,
+            connection_factory=rabbitmq.connect,
+            runtime_settings=self._config.runtime_settings(),
+        )
+        self._consumer.run()
+
     def _heartbeat_loop(self, worker_id: int) -> None:
         while not self._stop.wait(self._config.heartbeat_seconds):
             try:
-                self._client.heartbeat(worker_id)
+                self._client.heartbeat(
+                    worker_id, isolation_capabilities=self._config.isolation_capabilities
+                )
             except ControlUnavailableError:
                 logger.debug("heartbeat skipped: control unavailable")
             except ClientError:

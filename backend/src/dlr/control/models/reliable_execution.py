@@ -1,10 +1,10 @@
 """Additive Issue #130 persistence models.
 
-These tables describe durable responsibility and future Attempt/Slot facts;
-the RabbitMQ Consumer, Attempt Claim, Retry and Sandbox state machines remain
-disabled until their later Batch gates.  In particular, an Outbox row is not
-itself a business Execution and an Adapter Slot is not an execution permit
-until a later Claim transaction binds an Attempt to it.
+The B2 Attempt/Slot tables are the PostgreSQL authority for a v3 Worker run.
+An Outbox row is still only dispatch responsibility, while an Adapter Slot is
+bound to an Attempt by the Claim transaction. Resource sandbox enforcement is
+deliberately not implemented in this module; Worker capability facts remain
+fail-closed until the Batch 3 Linux gate.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dlr.control.db import Base
+
+_ZERO_TOKEN_DIGEST = "0" * 64
 
 
 class ExecutionIdempotencyRecord(Base):
@@ -303,7 +305,7 @@ class ExecutionOutbox(Base):
 
 
 class ExecutionAttempt(Base):
-    """Immutable actual-run record reserved for the later v3 Claim flow."""
+    """One immutable actual-run record created by a v3 Claim transaction."""
 
     __tablename__ = "execution_attempts"
     __table_args__ = (
@@ -314,6 +316,10 @@ class ExecutionAttempt(Base):
         ),
         CheckConstraint("attempt_no > 0", name="ck_execution_attempts_attempt_no_positive"),
         CheckConstraint("fencing_token > 0", name="ck_execution_attempts_fencing_positive"),
+        CheckConstraint(
+            "claim_token_hash ~ '^[0-9a-f]{64}$' AND cleanup_token_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_execution_attempts_token_hashes_sha256",
+        ),
         CheckConstraint(
             "status IN ('claimed', 'running', 'succeeded', 'failed', 'timed_out', "
             "'cancelled', 'worker_lost', 'resource_exceeded')",
@@ -346,6 +352,24 @@ class ExecutionAttempt(Base):
         nullable=False,
     )
     fencing_token: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Raw Claim/Cleanup credentials are returned only to the Worker over
+    # authenticated HTTP. PostgreSQL stores SHA-256 digests and the service
+    # compares them with hmac.compare_digest.
+    # The zero digests are only a compatibility default for pre-B2/manual
+    # data-contract rows. Real v3 Claim always replaces them with generated
+    # per-Attempt digests before commit.
+    claim_token_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default=_ZERO_TOKEN_DIGEST,
+        server_default=text(f"'{_ZERO_TOKEN_DIGEST}'"),
+    )
+    cleanup_token_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default=_ZERO_TOKEN_DIGEST,
+        server_default=text(f"'{_ZERO_TOKEN_DIGEST}'"),
+    )
     lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -523,7 +547,14 @@ class ExecutionArtifactHold(Base):
         server_default=text("'dead_letter_replay'"),
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Snapshot the logical bytes protected by this hold.  This is a governance
+    # counter only; it never duplicates the ArtifactStore's physical bytes.
+    held_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    purged_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    purge_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -31,6 +31,7 @@ logger = logging.getLogger("dlr.worker.workspace")
 
 WORKSPACES_DIRNAME = "workspaces"
 JOURNAL_SUFFIX = ".json"
+ATTEMPT_JOURNAL_SUFFIX = ".attempt.json"
 MARKER_FILENAME = ".dlr-execution-workspace"
 MANIFEST_FILENAME = "input_manifest.json"
 INPUT_DIRNAME = "input"
@@ -38,6 +39,7 @@ TEMP_DIRNAME = "temp"
 OUTPUT_DIRNAME = "output"
 WORKSPACE_NAME_PATTERN = re.compile(r"dlr-exec-([1-9][0-9]*)\Z")
 JOURNAL_NAME_PATTERN = re.compile(r"([1-9][0-9]*)\.json\Z")
+ATTEMPT_JOURNAL_NAME_PATTERN = re.compile(r"attempt-([1-9][0-9]*)\.attempt\.json\Z")
 MOUNT_NAME_PATTERN = re.compile(
     rf"input-([0-9]{{2}})(?:\.(?:{MANAGED_INPUT_FILE_EXTENSION_ALTERNATION}))?\Z"
 )
@@ -64,6 +66,19 @@ RECOVERY_RETRY_BACKOFF_SECONDS = 60.0
 # Keep this list deliberately small.  A journal must never become a general
 # task snapshot or a convenient place to retain user data.
 JOURNAL_FIELDS = frozenset({"execution_id", "protocol_version", "workspace_path", "cleanup_token"})
+ATTEMPT_JOURNAL_FIELDS = frozenset(
+    {
+        "execution_id",
+        "attempt_id",
+        "attempt_no",
+        "fencing_token",
+        "lease_expires_at",
+        "protocol_version",
+        "workspace_path",
+        "claim_token",
+        "cleanup_token",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -218,6 +233,128 @@ def journal_path(journal_root: Path, execution_id: int) -> Path:
     if execution_id <= 0 or not Path(journal_root).is_absolute():
         raise WorkspaceError("workspace_cleanup_unknown")
     return Path(journal_root) / f"{execution_id}{JOURNAL_SUFFIX}"
+
+
+def attempt_journal_path(journal_root: Path, attempt_id: int) -> Path:
+    """Return the private v3 Attempt journal path."""
+    if attempt_id <= 0 or not Path(journal_root).is_absolute():
+        raise WorkspaceError("attempt_journal_invalid")
+    return Path(journal_root) / f"attempt-{attempt_id}{ATTEMPT_JOURNAL_SUFFIX}"
+
+
+def write_attempt_journal(
+    journal_root: Path,
+    *,
+    execution_id: int,
+    attempt_id: int,
+    attempt_no: int,
+    fencing_token: int,
+    lease_expires_at: str,
+    workspace: Path,
+    claim_token: str,
+    cleanup_token: str,
+) -> Path:
+    """Durably persist the v3 recovery hand-off before any Adapter side effect."""
+    if (
+        any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in (execution_id, attempt_id, attempt_no, fencing_token)
+        )
+        or not isinstance(lease_expires_at, str)
+        or not lease_expires_at
+        or not isinstance(claim_token, str)
+        or not claim_token
+        or not isinstance(cleanup_token, str)
+        or not cleanup_token
+        or not Path(journal_root).is_absolute()
+        or not workspace.is_absolute()
+    ):
+        raise WorkspaceError("attempt_journal_invalid")
+    root = Path(journal_root)
+    target = attempt_journal_path(root, attempt_id)
+    existing = _lstat(target)
+    if existing is not None:
+        loaded = load_attempt_journal(root, attempt_id)
+        if loaded is None:
+            raise WorkspaceError("attempt_journal_invalid")
+        if loaded["execution_id"] != execution_id or loaded["fencing_token"] != fencing_token:
+            raise WorkspaceError("attempt_journal_conflict")
+        return target
+    _write_json(
+        target,
+        {
+            "attempt_id": attempt_id,
+            "attempt_no": attempt_no,
+            "claim_token": claim_token,
+            "cleanup_token": cleanup_token,
+            "execution_id": execution_id,
+            "fencing_token": fencing_token,
+            "lease_expires_at": lease_expires_at,
+            "protocol_version": 3,
+            "workspace_path": str(workspace),
+        },
+        mode=0o600,
+    )
+    return target
+
+
+def load_attempt_journal(journal_root: Path, attempt_id: int) -> dict[str, Any] | None:
+    """Read and validate only the exact v3 Attempt journal shape."""
+    try:
+        target = attempt_journal_path(Path(journal_root), attempt_id)
+    except WorkspaceError:
+        return None
+    info = _lstat(target)
+    if (
+        info is None
+        or stat_module.S_ISLNK(info.st_mode)
+        or not stat_module.S_ISREG(info.st_mode)
+        or stat_module.S_IMODE(info.st_mode) != 0o600
+    ):
+        return None
+    value = _read_json(target)
+    if not isinstance(value, Mapping) or set(value) != ATTEMPT_JOURNAL_FIELDS:
+        return None
+    positive = ("execution_id", "attempt_id", "attempt_no", "fencing_token")
+    if any(
+        not isinstance(value[key], int) or isinstance(value[key], bool) or value[key] <= 0
+        for key in positive
+    ):
+        return None
+    if (
+        value["attempt_id"] != attempt_id
+        or value["protocol_version"] != 3
+        or not isinstance(value["lease_expires_at"], str)
+        or not isinstance(value["workspace_path"], str)
+        or not Path(value["workspace_path"]).is_absolute()
+        or not isinstance(value["claim_token"], str)
+        or not value["claim_token"]
+        or not isinstance(value["cleanup_token"], str)
+        or not value["cleanup_token"]
+    ):
+        return None
+    return dict(value)
+
+
+def remove_attempt_journal(journal_root: Path, attempt_id: int) -> bool:
+    """Remove one exact v3 journal after terminal cleanup is acknowledged."""
+    try:
+        target = attempt_journal_path(Path(journal_root), attempt_id)
+    except WorkspaceError:
+        return False
+    info = _lstat(target)
+    if info is None:
+        return True
+    if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode):
+        return False
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    _sync_directory(target.parent)
+    return True
 
 
 def write_cleanup_journal(
