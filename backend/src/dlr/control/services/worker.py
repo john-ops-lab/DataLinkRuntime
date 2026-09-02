@@ -23,6 +23,7 @@ from dlr.control.models import (
     Adapter,
     AdapterVersion,
     Execution,
+    ExecutionAttempt,
     ExecutionInputArtifactLease,
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
@@ -47,6 +48,7 @@ from dlr.control.services.worker_protocol import (
     hash_token,
     require_claim_token,
     require_cleanup_token,
+    token_matches,
 )
 
 MAX_CLAIM_WAIT_SECONDS = 30
@@ -61,6 +63,10 @@ READABLE_ARTIFACT_STATUSES = frozenset(
 )
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
+V3_TERMINAL_ATTEMPT_STATUSES = frozenset(
+    {"succeeded", "failed", "timed_out", "cancelled", "worker_lost", "resource_exceeded"}
+)
+V3_ACTIVE_ATTEMPT_STATUSES = frozenset({"claimed", "running"})
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -149,18 +155,36 @@ def validate_claim_for_route(
     the protocol credential boundary before returning its not-ready result.
     """
     execution = session.get(Execution, execution_id)
-    if (
-        execution is None
-        or execution.worker_id != worker_id
-        or execution.status != "running"
-        or execution.claim_token_hash is None
-    ):
+    if execution is None or execution.worker_id != worker_id or execution.status != "running":
         raise domain_error(
             422,
             "execution_claim_token_invalid",
             "A valid Claim Token is required",
         )
-    require_claim_token(claim_token, execution.claim_token_hash)
+    if execution.dispatch_backend == "rabbitmq":
+        attempt = session.scalar(
+            select(ExecutionAttempt).where(
+                ExecutionAttempt.execution_id == execution.id,
+                ExecutionAttempt.attempt_no == execution.attempt_count,
+                ExecutionAttempt.worker_id == worker_id,
+                ExecutionAttempt.status.in_(V3_ACTIVE_ATTEMPT_STATUSES),
+            )
+        )
+        if attempt is None:
+            raise domain_error(
+                422,
+                "execution_claim_token_invalid",
+                "A valid Claim Token is required",
+            )
+        require_claim_token(claim_token, attempt.claim_token_hash)
+    else:
+        if execution.claim_token_hash is None:
+            raise domain_error(
+                422,
+                "execution_claim_token_invalid",
+                "A valid Claim Token is required",
+            )
+        require_claim_token(claim_token, execution.claim_token_hash)
     return execution
 
 
@@ -250,7 +274,7 @@ def apply_cleanup_receipt(
     execution_id: int,
     cleanup_token: str | None,
 ) -> Execution:
-    """Advance only the cleanup state after a valid v2 receipt.
+    """Advance only cleanup state after a valid v2 or v3 receipt.
 
     The row lock and capability-token check make retries after a lost HTTP
     response idempotent.  No business result, timestamp, or Lease is changed
@@ -262,20 +286,87 @@ def apply_cleanup_receipt(
         .with_for_update()
         .one_or_none()
     )
-    if execution is None or execution.cleanup_receipt_token_hash is None:
+    if execution is None:
         raise domain_error(
             422,
             "execution_cleanup_token_invalid",
             "A valid Cleanup Token is required",
         )
-    require_cleanup_token(cleanup_token, execution.cleanup_receipt_token_hash)
-    if execution.status not in {"succeeded", "failed", "timeout", "cancelled"}:
+    matched_attempt: ExecutionAttempt | None = None
+    if execution.cleanup_receipt_token_hash is not None:
+        require_cleanup_token(cleanup_token, execution.cleanup_receipt_token_hash)
+    elif execution.dispatch_backend == "rabbitmq":
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt)
+                .where(ExecutionAttempt.execution_id == execution_id)
+                .order_by(ExecutionAttempt.attempt_no)
+                .with_for_update()
+            )
+        )
+        matched_attempt = next(
+            (
+                attempt
+                for attempt in attempts
+                if token_matches(cleanup_token, attempt.cleanup_token_hash)
+            ),
+            None,
+        )
+        if matched_attempt is None:
+            raise domain_error(
+                422,
+                "execution_cleanup_token_invalid",
+                "A valid Cleanup Token is required",
+            )
+    else:
+        raise domain_error(
+            422,
+            "execution_cleanup_token_invalid",
+            "A valid Cleanup Token is required",
+        )
+    if matched_attempt is None:
+        allowed_statuses = {"succeeded", "failed", "timeout", "cancelled"}
+    else:
+        if matched_attempt.status not in V3_TERMINAL_ATTEMPT_STATUSES:
+            raise domain_error(
+                422,
+                "workspace_cleanup_transition_invalid",
+                "Workspace cleanup is not available before the Attempt is terminal",
+            )
+        # A receipt for an older Attempt can arrive while the next Attempt is
+        # running. It is independently idempotent and must not complete the
+        # current Attempt's Execution cleanup state.
+        allowed_statuses = {
+            "queued",
+            "running",
+            "retry_wait",
+            "succeeded",
+            "dead_letter",
+            "cancelled",
+            "expired",
+        }
+    if execution.status not in allowed_statuses:
         raise domain_error(
             422,
             "workspace_cleanup_transition_invalid",
-            "Workspace cleanup is not available before the Execution is terminal",
+            "Workspace cleanup is not available in the current Execution state",
         )
-    if execution.workspace_cleanup_status == "deferred":
+    if matched_attempt is not None:
+        summary = dict(matched_attempt.cleanup_summary or {})
+        summary["workspace_cleanup_status"] = "completed"
+        summary.pop("workspace_cleanup_error_code", None)
+        matched_attempt.cleanup_summary = summary
+        if matched_attempt.attempt_no == execution.attempt_count:
+            if execution.workspace_cleanup_status == "deferred":
+                execution.workspace_cleanup_status = "completed"
+                execution.workspace_cleanup_error_code = None
+            elif execution.workspace_cleanup_status != "completed":
+                raise domain_error(
+                    422,
+                    "workspace_cleanup_transition_invalid",
+                    "Workspace cleanup state cannot transition to completed",
+                )
+    elif execution.workspace_cleanup_status == "deferred":
         execution.workspace_cleanup_status = "completed"
         execution.workspace_cleanup_error_code = None
     elif execution.workspace_cleanup_status != "completed":

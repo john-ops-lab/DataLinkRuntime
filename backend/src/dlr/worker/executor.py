@@ -532,6 +532,7 @@ def _v2_cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
 @dataclass(frozen=True)
 class _ValidatedV2Payload:
     execution_id: int
+    attempt_id: int | None
     adapter_id: int
     version_id: int
     timeout_seconds: int
@@ -554,6 +555,13 @@ def _required_v2_integer(
 def _validated_v2_payload(payload: Mapping[str, Any]) -> _ValidatedV2Payload:
     """Validate the complete protocol-v2 envelope before local side effects."""
     execution_id = _required_v2_integer(payload, "execution_id")
+    raw_attempt_id = payload.get("attempt_id")
+    if raw_attempt_id is not None and (
+        not isinstance(raw_attempt_id, int)
+        or isinstance(raw_attempt_id, bool)
+        or raw_attempt_id <= 0
+    ):
+        raise ValueError("v2 attempt_id is invalid")
     adapter_id = _required_v2_integer(payload, "adapter_id")
     version_id = _required_v2_integer(payload, "version_id")
     timeout_seconds = _required_v2_integer(payload, "execution_timeout_seconds", maximum=86_400)
@@ -588,6 +596,7 @@ def _validated_v2_payload(payload: Mapping[str, Any]) -> _ValidatedV2Payload:
     assert isinstance(cleanup_token, str)
     return _ValidatedV2Payload(
         execution_id=execution_id,
+        attempt_id=raw_attempt_id,
         adapter_id=adapter_id,
         version_id=version_id,
         timeout_seconds=timeout_seconds,
@@ -679,13 +688,21 @@ def run(
                 protocol_version=protocol_version,
             )
         execution_id = validated_v2.execution_id
+        attempt_id = validated_v2.attempt_id
         adapter_id = validated_v2.adapter_id
         version_id = validated_v2.version_id
         timeout = validated_v2.timeout_seconds
         input_files: list[dict[str, Any]] = validated_v2.input_files
         input_files_valid = True
         cleanup_budget = validated_v2.cleanup_budget
+        if protocol_version == 3 and attempt_id is None:
+            return _workspace_failure(
+                locale,
+                "worker_protocol_payload_invalid",
+                protocol_version=protocol_version,
+            )
     else:
+        attempt_id = None
         execution_id = int(payload["execution_id"])
         adapter_id = int(payload["adapter_id"])
         version_id = int(payload["version_id"])
@@ -714,13 +731,19 @@ def run(
     )
     if protocol_version >= 2:
         try:
-            planned_workspace = workspace_manager.workspace_path(config.runtime_root, execution_id)
+            cleanup_attempt_id = attempt_id if protocol_version == 3 else None
+            planned_workspace = workspace_manager.workspace_path(
+                config.runtime_root,
+                execution_id,
+                attempt_id=cleanup_attempt_id,
+            )
             workspace_manager.write_cleanup_journal(
                 cleanup_journal_root,
                 execution_id,
                 planned_workspace,
                 validated_v2.cleanup_token,
                 protocol_version=protocol_version,
+                attempt_id=cleanup_attempt_id,
             )
         except (workspace_manager.WorkspaceError, OSError, ValueError) as error:
             logger.warning("cleanup journal unavailable for execution %s", execution_id)
@@ -928,10 +951,15 @@ def run(
     attempt_timeout, total_timeout = cleanup_budget
     try:
         if planned_workspace is None:
-            planned_workspace = workspace_manager.workspace_path(config.runtime_root, execution_id)
+            planned_workspace = workspace_manager.workspace_path(
+                config.runtime_root,
+                execution_id,
+                attempt_id=attempt_id if protocol_version == 3 else None,
+            )
         layout = workspace_manager.create_workspace(
             config.runtime_root,
             execution_id,
+            attempt_id=attempt_id if protocol_version == 3 else None,
             attempt_timeout_seconds=attempt_timeout,
             total_timeout_seconds=total_timeout,
         )

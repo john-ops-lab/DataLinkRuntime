@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
 import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,18 +29,24 @@ from dlr.control.models import (
     ExecutionArtifactHold,
     ExecutionAttempt,
     ExecutionInfrastructureIncident,
+    ExecutionInputArtifactLease,
     ExecutionOutbox,
     GlobalExecutionAdmission,
     ManagedInputArtifact,
 )
 from dlr.control.schemas.reliable_runtime import (
+    AttemptProgressBody,
     AttemptRenewBody,
     AttemptResultBody,
+    AttemptStartBody,
     V3TaskPayload,
 )
 from dlr.control.services import attempt as attempt_service
+from dlr.control.services import execution as execution_service
 from dlr.control.services import infrastructure_dlq, rabbitmq, reliable_execution
+from dlr.control.services.artifact_store import LocalFileArtifactStore
 from dlr.control.services.dispatch import DISPATCH_EXCHANGE, worker_routing_key
+from dlr.worker import executor, workspace
 from dlr.worker.client import ClientError, ControlUnavailableError
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
 from test_adapters import create_adapter, save_version
@@ -93,9 +101,13 @@ def _rabbit_adapter(
     name: str,
     *,
     language: str = "python",
+    code: str | None = None,
 ) -> dict[str, Any]:
     adapter = create_adapter(client, name=name, language=language)
-    save_version(client, adapter["id"])
+    if code is None:
+        save_version(client, adapter["id"])
+    else:
+        save_version(client, adapter["id"], code=code)
     response = client.patch(
         f"/api/adapters/{adapter['id']}",
         json={"runtime_worker_id": worker["id"]},
@@ -130,9 +142,141 @@ def _dispatch(session_factory: sessionmaker[Session], execution_id: int) -> dict
         return dict(row.payload_json)
 
 
+def _dispatch_generation(
+    session_factory: sessionmaker[Session], execution_id: int, generation: int
+) -> dict[str, Any]:
+    with session_factory() as session:
+        row = session.scalar(
+            select(ExecutionOutbox)
+            .where(ExecutionOutbox.execution_id == execution_id)
+            .where(ExecutionOutbox.dispatch_generation == generation)
+        )
+        assert row is not None
+        return dict(row.payload_json)
+
+
 def _claim(session_factory: sessionmaker[Session], worker_id: int, dispatch: dict[str, Any]) -> Any:
     with session_factory() as session:
         return attempt_service.claim_dispatch(session, worker_id, dispatch)
+
+
+class _V3ServiceClient:
+    """Test transport that drives the real Control services and download API."""
+
+    def __init__(
+        self,
+        api_client: TestClient,
+        session_factory: sessionmaker[Session],
+        *,
+        fail_first_cleanup_receipt: bool = False,
+    ) -> None:
+        self.api_client = api_client
+        self.session_factory = session_factory
+        self.fail_first_cleanup_receipt = fail_first_cleanup_receipt
+        self.claimed_payload: dict[str, Any] | None = None
+        self.result_bodies: list[dict[str, Any]] = []
+        self.result_event = threading.Event()
+        self.cleanup_receipt_attempted = threading.Event()
+        self.cleanup_receipt_calls: list[tuple[int, str]] = []
+        self.download_claim_tokens: list[str] = []
+
+    def claim_v3(self, worker_id: int, dispatch: Mapping[str, Any]) -> dict[str, Any]:
+        with self.session_factory() as session:
+            decision = attempt_service.claim_dispatch(session, worker_id, dispatch)
+        body = decision.model_dump(mode="json")
+        payload = body.get("payload")
+        if isinstance(payload, Mapping):
+            self.claimed_payload = dict(payload)
+        return body
+
+    def start_attempt(
+        self, worker_id: int, attempt_id: int, body: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        with self.session_factory() as session:
+            decision = attempt_service.start_attempt(
+                session,
+                worker_id,
+                attempt_id,
+                AttemptStartBody.model_validate(body),
+            )
+        return decision.model_dump(mode="json")
+
+    def renew_attempt(
+        self, worker_id: int, attempt_id: int, body: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        with self.session_factory() as session:
+            decision = attempt_service.renew_attempt(
+                session,
+                worker_id,
+                attempt_id,
+                AttemptRenewBody.model_validate(body),
+            )
+        return decision.model_dump(mode="json")
+
+    def progress_attempt(
+        self, worker_id: int, attempt_id: int, body: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        with self.session_factory() as session:
+            decision = attempt_service.progress_attempt(
+                session,
+                worker_id,
+                attempt_id,
+                AttemptProgressBody.model_validate(body),
+            )
+        return decision.model_dump(mode="json")
+
+    def result_attempt(
+        self, worker_id: int, attempt_id: int, body: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        self.result_bodies.append(dict(body))
+        try:
+            with self.session_factory() as session:
+                decision = attempt_service.finish_attempt(
+                    session,
+                    worker_id,
+                    attempt_id,
+                    AttemptResultBody.model_validate(body),
+                )
+            return decision.model_dump(mode="json")
+        finally:
+            self.result_event.set()
+
+    def download_input_artifact(
+        self,
+        worker_id: int,
+        execution_id: int,
+        artifact_id: int,
+        *,
+        claim_token: str,
+        destination: Any,
+    ) -> int:
+        self.download_claim_tokens.append(claim_token)
+        response = self.api_client.get(
+            f"/api/workers/{worker_id}/executions/{execution_id}"
+            f"/input-artifacts/{artifact_id}/content",
+            headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claim_token},
+        )
+        if response.status_code != 200:
+            raise ClientError(response.status_code, response.text)
+        destination.write(response.content)
+        return len(response.content)
+
+    def report_cleanup_receipt(
+        self, _worker_id: int, execution_id: int, *, cleanup_token: str
+    ) -> dict[str, Any]:
+        self.cleanup_receipt_attempted.set()
+        self.cleanup_receipt_calls.append((execution_id, cleanup_token))
+        if self.fail_first_cleanup_receipt:
+            self.fail_first_cleanup_receipt = False
+            raise ControlUnavailableError("simulated restart before cleanup receipt")
+        response = self.api_client.post(
+            f"/api/workers/executions/{execution_id}/workspace-cleanup",
+            json={"status": "completed"},
+            headers={**WORKER_HEADERS, "X-DLR-Cleanup-Token": cleanup_token},
+        )
+        if response.status_code != 200:
+            raise ClientError(response.status_code, response.text)
+        return response.json()
 
 
 class _NativeDeferChannel:
@@ -303,7 +447,7 @@ def test_v3_consumer_local_slot_defers_second_delivery_until_first_finishes(
             _attempt_id: int,
             _body: Mapping[str, Any],
         ) -> dict[str, Any]:
-            return {}
+            return {"decision": "ACK_NOOP", "reason": "started"}
 
         def renew_attempt(
             self,
@@ -532,13 +676,16 @@ def test_v3_result_cleanup_removes_journal_after_control_accepts_result(
     """A journal is retained for recovery until the terminal result is accepted."""
 
     class SuccessfulClient:
+        def __init__(self) -> None:
+            self.cleanup_receipts: list[tuple[int, str]] = []
+
         def start_attempt(
             self,
             _worker_id: int,
             _attempt_id: int,
             _payload: Mapping[str, Any],
         ) -> dict[str, Any]:
-            return {}
+            return {"decision": "ACK_NOOP", "reason": "started"}
 
         def result_attempt(
             self,
@@ -546,6 +693,16 @@ def test_v3_result_cleanup_removes_journal_after_control_accepts_result(
             _attempt_id: int,
             _payload: Mapping[str, Any],
         ) -> dict[str, Any]:
+            return {"decision": "ACK_NOOP"}
+
+        def report_cleanup_receipt(
+            self,
+            _worker_id: int,
+            execution_id: int,
+            *,
+            cleanup_token: str,
+        ) -> dict[str, Any]:
+            self.cleanup_receipts.append((execution_id, cleanup_token))
             return {"decision": "ACK_NOOP"}
 
     removed: list[tuple[Path, int]] = []
@@ -594,6 +751,7 @@ def test_v3_result_cleanup_removes_journal_after_control_accepts_result(
             },
         }
     )
+    client = SuccessfulClient()
     consumer = V3Consumer(
         ConsumerConfig(
             worker_id=7,
@@ -602,10 +760,13 @@ def test_v3_result_cleanup_removes_journal_after_control_accepts_result(
             runtime_root=Path("/tmp/dlr-b2-runtime"),
             attempt_journal_root=Path("/tmp/dlr-b2-journal"),
         ),
-        SuccessfulClient(),  # type: ignore[arg-type]
+        client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
         runtime_settings=SimpleNamespace(),
-        runner=lambda *_args, **_kwargs: {"status": "succeeded"},
+        runner=lambda *_args, **_kwargs: {
+            "status": "succeeded",
+            "workspace_cleanup_status": "completed",
+        },
     )
     try:
         assert consumer._slots.acquire(blocking=False)
@@ -613,6 +774,181 @@ def test_v3_result_cleanup_removes_journal_after_control_accepts_result(
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
     assert removed == [(Path("/tmp/dlr-b2-journal"), 41)]
+    assert client.cleanup_receipts == [(13, "cleanup-token")]
+
+
+@pytest.mark.parametrize("transition", ["cancel", "lease_recovery"])
+def test_v3_start_boundary_fails_closed_after_cancel_or_recovery(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    transition: str,
+) -> None:
+    """A Claim never starts an Adapter after Control withdraws run authority."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, f"b2-start-boundary-{transition}-worker")
+    adapter = _rabbit_adapter(api_client, worker, f"b2-start-boundary-{transition}-adapter")
+    execution = _canary_execution(api_client, adapter["id"])
+    dispatch = _dispatch(session_factory, execution["id"])
+    claimed = _claim(session_factory, worker["id"], dispatch)
+    assert claimed.payload is not None and claimed.attempt_id is not None
+
+    if transition == "cancel":
+        with session_factory() as session:
+            cancelled = execution_service.cancel_execution(session, execution["id"])
+            assert cancelled.status == "running"
+            assert cancelled.cancel_requested is True
+    else:
+        with session_factory.begin() as session:
+            session.execute(
+                update(ExecutionAttempt)
+                .where(ExecutionAttempt.id == claimed.attempt_id)
+                .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+        with session_factory() as session:
+            assert attempt_service.recover_expired_attempts(session, limit=10) == 1
+
+    class StartClient:
+        def __init__(self) -> None:
+            self.response: dict[str, Any] | None = None
+
+        def start_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            with session_factory() as session:
+                decision = attempt_service.start_attempt(
+                    session,
+                    worker["id"],
+                    claimed.attempt_id,
+                    AttemptStartBody.model_validate(body),
+                )
+            self.response = decision.model_dump(mode="json")
+            return self.response
+
+    client = StartClient()
+    runner_calls = 0
+
+    def runner(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal runner_calls
+        runner_calls += 1
+        return {"status": "succeeded"}
+
+    consumer = V3Consumer(
+        ConsumerConfig(
+            worker_id=worker["id"],
+            queue="dlr.worker.test.q",
+            execution_slots=1,
+            runtime_root=tmp_path / "runtime",
+            attempt_journal_root=tmp_path / "journal",
+        ),
+        client,  # type: ignore[arg-type]
+        connection_factory=lambda: object(),  # type: ignore[return-value]
+        runtime_settings=SimpleNamespace(),
+        runner=runner,
+    )
+    try:
+        assert consumer._slots.acquire(blocking=False)
+        consumer._run_attempt(claimed.payload)
+    finally:
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+    assert runner_calls == 0
+    assert client.response is not None
+    assert client.response["decision"] == "ACK_NOOP"
+    assert client.response["reason"] in {"cancel_requested", "already_terminal"}
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        attempt = session.get(ExecutionAttempt, claimed.attempt_id)
+        assert row is not None and attempt is not None
+        if transition == "cancel":
+            assert row.status == "cancelled"
+            assert attempt.status == "cancelled"
+            assert row.admission_released_at is not None
+        else:
+            assert row.status == "retry_wait"
+            assert attempt.status == "worker_lost"
+
+
+@pytest.mark.parametrize(
+    ("control_available", "expected_ack", "expected_pause"),
+    [(True, 1, False), (False, 0, True)],
+    ids=["prepare-failed-ack", "control-unavailable-pause"],
+)
+def test_v3_attempt_journal_failure_never_starts_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    control_available: bool,
+    expected_ack: int,
+    expected_pause: bool,
+) -> None:
+    """A failed durable hand-off is ACKed only after Control records it."""
+
+    class PrepareClient:
+        def __init__(self) -> None:
+            self.prepare_failed_calls = 0
+
+        def prepare_failed_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            _body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            self.prepare_failed_calls += 1
+            if not control_available:
+                raise ControlUnavailableError("control partition")
+            return {"decision": "ACK_NOOP", "reason": "terminal_recorded"}
+
+    def fail_journal(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("journal disk full")
+
+    monkeypatch.setattr(workspace, "write_attempt_journal", fail_journal)
+    client = PrepareClient()
+    runner_calls = 0
+
+    def runner(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal runner_calls
+        runner_calls += 1
+        return {"status": "succeeded"}
+
+    consumer = V3Consumer(
+        ConsumerConfig(
+            worker_id=7,
+            queue="dlr.worker.test.q",
+            execution_slots=1,
+            runtime_root=tmp_path / "runtime",
+            attempt_journal_root=tmp_path / "journal",
+        ),
+        client,  # type: ignore[arg-type]
+        connection_factory=lambda: object(),  # type: ignore[return-value]
+        runtime_settings=SimpleNamespace(),
+        runner=runner,
+    )
+    channel = _NativeDeferChannel()
+    try:
+        assert consumer._slots.acquire(blocking=False)
+        assert (
+            consumer._prepare_execute(
+                _ImmediateCallbackConnection(),
+                channel,
+                delivery_tag=41,
+                decision={"decision": "EXECUTE", "payload": _valid_consumer_payload()},
+            )
+            is False
+        )
+    finally:
+        consumer._slots.release()
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+    assert client.prepare_failed_calls == 1
+    assert runner_calls == 0
+    assert channel.acks == expected_ack
+    assert channel.nacks == []
+    assert consumer._pause.is_set() is expected_pause
 
 
 @pytest.mark.parametrize("retry_type", ["all", "returned"])
@@ -788,6 +1124,143 @@ def test_same_adapter_slot_blocks_second_claim_during_concurrent_long_claim(
         )
         assert len(attempts) == 1
         assert slot is not None and slot.active_attempt_id == attempts[0].id
+
+
+def test_concurrent_cancel_and_success_result_release_once(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent cancellation and Result converge to one terminal release."""
+
+    _enable_canary(monkeypatch)
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    worker = _ready_worker(api_client, "b2-terminal-race-worker")
+    adapter = _rabbit_adapter(api_client, worker, "b2-terminal-race-adapter")
+    artifact_id = create_artifact(session_factory, adapter["id"], "b2-race.txt", status="READY")
+    configured = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "managed_files",
+            "artifact_ids": [artifact_id],
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    execution = _canary_execution(api_client, adapter["id"])
+    dispatch = _dispatch(session_factory, execution["id"])
+    claimed = _claim(session_factory, worker["id"], dispatch)
+    assert claimed.payload is not None and claimed.attempt_id is not None
+
+    release_lock = threading.Lock()
+    admission_releases = 0
+    slot_releases = 0
+    execution_lease_releases = 0
+    original_admission_release = attempt_service.admission.release_admission_once
+    original_slot_release = attempt_service._release_slot_locked
+    original_execution_lease_release = execution_service.release_execution_leases
+
+    def count_admission_release(*args: Any, **kwargs: Any) -> bool:
+        nonlocal admission_releases
+        with release_lock:
+            admission_releases += 1
+        return original_admission_release(*args, **kwargs)
+
+    def count_slot_release(*args: Any, **kwargs: Any) -> bool:
+        nonlocal slot_releases
+        with release_lock:
+            slot_releases += 1
+        return original_slot_release(*args, **kwargs)
+
+    def count_execution_lease_release(*args: Any, **kwargs: Any) -> None:
+        nonlocal execution_lease_releases
+        with release_lock:
+            execution_lease_releases += 1
+        original_execution_lease_release(*args, **kwargs)
+
+    monkeypatch.setattr(
+        attempt_service.admission, "release_admission_once", count_admission_release
+    )
+    monkeypatch.setattr(attempt_service, "_release_slot_locked", count_slot_release)
+    monkeypatch.setattr(
+        execution_service,
+        "release_execution_leases",
+        count_execution_lease_release,
+    )
+
+    race_gate = threading.Barrier(2)
+
+    def cancel() -> str:
+        race_gate.wait(timeout=10)
+        with session_factory() as session:
+            return execution_service.cancel_execution(session, execution["id"]).status
+
+    def succeed() -> str:
+        race_gate.wait(timeout=10)
+        with session_factory() as session:
+            result = attempt_service.finish_attempt(
+                session,
+                worker["id"],
+                claimed.attempt_id,
+                AttemptResultBody.model_validate(
+                    {
+                        "attempt_id": claimed.attempt_id,
+                        "fencing_token": claimed.payload.fencing_token,
+                        "claim_token": claimed.payload.claim_token,
+                        "status": "succeeded",
+                    }
+                ),
+            )
+            return result.reason
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cancel_future = pool.submit(cancel)
+        result_future = pool.submit(succeed)
+        cancel_status = cancel_future.result(timeout=15)
+        result_reason = result_future.result(timeout=15)
+
+    assert cancel_status in {"running", "succeeded"}
+    assert result_reason in {"terminal_recorded", "already_terminal"}
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt)
+                .where(ExecutionAttempt.execution_id == execution["id"])
+                .order_by(ExecutionAttempt.attempt_no)
+            )
+        )
+        slot = session.scalar(
+            select(AdapterExecutionSlot).where(
+                AdapterExecutionSlot.adapter_id == adapter["id"],
+                AdapterExecutionSlot.slot_no == 0,
+            )
+        )
+        adapter_counter = session.get(AdapterExecutionAdmission, adapter["id"])
+        global_counter = session.get(GlobalExecutionAdmission, "global")
+        lease = session.scalar(
+            select(ExecutionInputArtifactLease).where(
+                ExecutionInputArtifactLease.execution_id == execution["id"]
+            )
+        )
+        assert row is not None and slot is not None
+        assert row.status in {"cancelled", "succeeded"}
+        assert row.admission_released_at is not None
+        assert len(attempts) == 1
+        assert attempts[0].status in {
+            "cancelled",
+            "succeeded",
+        }
+        assert slot.active_attempt_id is None
+        assert slot.lease_expires_at is None
+        assert adapter_counter is not None and adapter_counter.outstanding_count == 0
+        assert global_counter is not None and global_counter.outstanding_count == 0
+        assert lease is None
+
+    assert admission_releases == 1
+    assert slot_releases == 1
+    assert execution_lease_releases == 1
 
 
 @pytest.mark.parametrize("edge", ["lower", "upper"])
@@ -1015,6 +1488,7 @@ def test_claim_duplicate_lease_recovery_and_stale_result_are_fenced(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     _enable_canary(monkeypatch)
     worker = _ready_worker(api_client, "b2-failure-matrix-worker")
@@ -1027,10 +1501,32 @@ def test_claim_duplicate_lease_recovery_and_stale_result_are_fenced(
     assert first.payload is not None
     assert first.attempt_id is not None
     payload = first.payload
+    workspace.write_attempt_journal(
+        tmp_path / "attempt-journal",
+        execution_id=payload.execution_id,
+        attempt_id=payload.attempt_id,
+        attempt_no=payload.attempt_no,
+        fencing_token=payload.fencing_token,
+        lease_expires_at=payload.lease_expires_at.isoformat(),
+        workspace=workspace.workspace_path(tmp_path / "runtime", payload.execution_id),
+        claim_token=payload.claim_token,
+        cleanup_token=payload.cleanup_token,
+    )
 
     duplicate = _claim(session_factory, worker["id"], dispatch)
     assert duplicate.decision == "ACK_NOOP"
     assert duplicate.reason == "execution_not_queued"
+    with session_factory() as session:
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt).where(ExecutionAttempt.execution_id == execution["id"])
+            )
+        )
+        assert len(attempts) == 1
+        assert [item for item in attempts if item.status in {"claimed", "running"}] == attempts
+    assert workspace.attempt_journal_path(
+        tmp_path / "attempt-journal", payload.attempt_id
+    ).is_file()
 
     with session_factory.begin() as session:
         session.execute(
@@ -1054,6 +1550,13 @@ def test_claim_duplicate_lease_recovery_and_stale_result_are_fenced(
         assert recovered is not None and recovered.status == "worker_lost"
         assert current is not None and current.status == "retry_wait"
         assert slot is not None and slot.active_attempt_id is None
+    assert workspace.attempt_journal_path(
+        tmp_path / "attempt-journal", payload.attempt_id
+    ).is_file()
+
+    redelivered_after_recovery = _claim(session_factory, worker["id"], dispatch)
+    assert redelivered_after_recovery.decision == "ACK_NOOP"
+    assert redelivered_after_recovery.reason == "retry_not_due"
 
     with session_factory() as session:
         assert (
@@ -1063,6 +1566,22 @@ def test_claim_duplicate_lease_recovery_and_stale_result_are_fenced(
             )
             == 1
         )
+    with session_factory() as session:
+        assert (
+            attempt_service.retry_dispatcher_once(
+                session,
+                now=datetime.now(UTC) + timedelta(days=1),
+            )
+            == 0
+        )
+        next_outbox = list(
+            session.scalars(
+                select(ExecutionOutbox)
+                .where(ExecutionOutbox.execution_id == execution["id"])
+                .where(ExecutionOutbox.dispatch_generation == 2)
+            )
+        )
+        assert len(next_outbox) == 1
 
     with session_factory() as session:
         stale = attempt_service.finish_attempt(
@@ -1402,3 +1921,583 @@ def test_managed_file_dead_letter_hold_is_bounded_and_replayable(
         assert hold is not None and hold.held_bytes == 8
         assert artifact is not None and artifact.size_bytes == hold.held_bytes
         assert attempt_service.held_backlog(session) == (1, 8)
+
+
+_REAL_LANGUAGE_ADAPTERS = {
+    "python": (
+        "def handle(context, input):\n"
+        "    return {'language': 'python', 'input': input, "
+        "'input_files': len(context.input_files)}\n"
+    ),
+    "javascript": (
+        "export async function handle(context, input) {\n"
+        "  return {language: 'javascript', input, input_files: context.inputFiles.length};\n"
+        "}\n"
+    ),
+    "java": (
+        "import java.util.LinkedHashMap;\n"
+        "import java.util.Map;\n"
+        "public class Adapter {\n"
+        "  public Object handle(Context context, Object input) {\n"
+        "    Map<String, Object> result = new LinkedHashMap<>();\n"
+        '    result.put("language", "java");\n'
+        '    result.put("input", input);\n'
+        '    result.put("input_files", context.inputFiles.size());\n'
+        "    return result;\n"
+        "  }\n"
+        "}\n"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("language", "input_value"),
+    [
+        ("python", None),
+        ("javascript", {"source": "json", "language": "javascript"}),
+        ("java", {"source": "json", "language": "java"}),
+    ],
+    ids=["python-none", "javascript-json", "java-json"],
+)
+def test_v3_consumer_executes_real_language_adapter_and_records_terminal_result(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    language: str,
+    input_value: Any,
+) -> None:
+    """The v3 Consumer invokes each real local language runtime end to end."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, f"b2-part2-{language}-worker", [language])
+    adapter = _rabbit_adapter(
+        api_client,
+        worker,
+        f"b2-part2-{language}-adapter",
+        language=language,
+        code=_REAL_LANGUAGE_ADAPTERS[language],
+    )
+    execution = _canary_execution(api_client, adapter["id"], input_value=input_value)
+    dispatch = _dispatch(session_factory, execution["id"])
+    client = _V3ServiceClient(api_client, session_factory)
+    runtime_root = tmp_path / "runtime"
+    cleanup_root = tmp_path / "cleanup-journal"
+    consumer = V3Consumer(
+        ConsumerConfig(
+            worker_id=worker["id"],
+            queue=f"dlr.worker.{worker['id']}.q",
+            execution_slots=1,
+            runtime_root=runtime_root,
+            attempt_journal_root=tmp_path / "attempt-journal",
+        ),
+        client,  # type: ignore[arg-type]
+        connection_factory=lambda: object(),  # type: ignore[return-value]
+        runtime_settings=executor.RuntimeSettings(
+            runtime_root=runtime_root,
+            execution_timeout_seconds=30,
+            dep_install_timeout_seconds=120,
+            workspace_cleanup_journal_root=cleanup_root,
+        ),
+    )
+    channel = _NativeDeferChannel()
+    try:
+        consumer._on_delivery(
+            _ImmediateCallbackConnection(),
+            channel,
+            SimpleNamespace(delivery_tag=1),
+            None,
+            json.dumps(dispatch).encode("utf-8"),
+        )
+        assert client.result_event.wait(timeout=120), f"{language} Result was not reported"
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+    finally:
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+    assert client.claimed_payload is not None
+    assert client.claimed_payload["protocol_version"] == 3
+    assert client.claimed_payload["claim_token"]
+    assert client.claimed_payload["cleanup_token"]
+    assert client.claimed_payload["input_source_type"] == (
+        "none" if input_value is None else "json"
+    )
+    assert len(client.result_bodies) == 1
+    result_body = client.result_bodies[0]
+    assert result_body["status"] == "succeeded"
+    assert result_body["workspace_cleanup_status"] == "completed"
+    assert result_body["output"] == {
+        "language": language,
+        "input": input_value,
+        "input_files": 0,
+    }
+    assert len(client.cleanup_receipt_calls) == 1
+    assert channel.acks == 1
+    assert channel.nacks == []
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        attempt = session.scalar(
+            select(ExecutionAttempt).where(ExecutionAttempt.execution_id == execution["id"])
+        )
+        assert row is not None and row.status == "succeeded"
+        assert row.workspace_cleanup_status == "completed"
+        assert attempt is not None and attempt.status == "succeeded"
+    assert not workspace.journal_path(
+        cleanup_root,
+        execution["id"],
+        attempt_id=client.claimed_payload["attempt_id"],
+    ).exists()
+
+
+def test_v3_consumer_managed_files_download_manifest_and_restart_cleanup_recovery(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """v3 proves Claim auth, Control streaming, materialization and recovery."""
+
+    _enable_canary(monkeypatch)
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    store_root = tmp_path / "artifact-store"
+    monkeypatch.setattr(settings, "artifact_store_root", str(store_root))
+    content = b"managed-v3"
+    store = LocalFileArtifactStore(store_root)
+    storage_key = store.new_storage_key()
+    with store.put_part(storage_key) as part:
+        part.write(content)
+    store.commit(storage_key)
+
+    worker = _ready_worker(api_client, "b2-part2-managed-worker", ["python"])
+    adapter = _rabbit_adapter(
+        api_client,
+        worker,
+        "b2-part2-managed-adapter",
+        code=(
+            "def handle(context, input):\n"
+            "    item = context.input_files[0]\n"
+            "    return {'source': input, 'filename': item.original_name, "
+            "'content': item.path.read_text(encoding='utf-8'), "
+            "'sha256': item.sha256, 'input_files': len(context.input_files)}\n"
+        ),
+    )
+    artifact_id = create_artifact(session_factory, adapter["id"], "managed-v3.txt", status="READY")
+    with session_factory.begin() as session:
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        assert artifact is not None
+        artifact.storage_key = storage_key
+        artifact.size_bytes = len(content)
+        artifact.sha256 = hashlib.sha256(content).hexdigest()
+    configured = api_client.put(
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "managed_files",
+            "artifact_ids": [artifact_id],
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    execution = _canary_execution(api_client, adapter["id"])
+    dispatch = _dispatch(session_factory, execution["id"])
+    client = _V3ServiceClient(
+        api_client,
+        session_factory,
+        fail_first_cleanup_receipt=True,
+    )
+    runtime_root = tmp_path / "runtime"
+    cleanup_root = tmp_path / "cleanup-journal"
+    consumer = V3Consumer(
+        ConsumerConfig(
+            worker_id=worker["id"],
+            queue=f"dlr.worker.{worker['id']}.q",
+            execution_slots=1,
+            runtime_root=runtime_root,
+            attempt_journal_root=tmp_path / "attempt-journal",
+        ),
+        client,  # type: ignore[arg-type]
+        connection_factory=lambda: object(),  # type: ignore[return-value]
+        runtime_settings=executor.RuntimeSettings(
+            runtime_root=runtime_root,
+            execution_timeout_seconds=30,
+            dep_install_timeout_seconds=120,
+            workspace_cleanup_journal_root=cleanup_root,
+        ),
+    )
+    channel = _NativeDeferChannel()
+    try:
+        consumer._on_delivery(
+            _ImmediateCallbackConnection(),
+            channel,
+            SimpleNamespace(delivery_tag=1),
+            None,
+            json.dumps(dispatch).encode("utf-8"),
+        )
+        assert client.result_event.wait(timeout=120), "managed-file Result was not reported"
+        assert client.cleanup_receipt_attempted.wait(timeout=30)
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+    finally:
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+    assert client.claimed_payload is not None
+    claimed_payload = client.claimed_payload
+    assert claimed_payload["input_source_type"] == "managed_files"
+    assert len(claimed_payload["input_files"]) == 1
+    assert claimed_payload["input_files"][0]["id"] == artifact_id
+    assert claimed_payload["claim_token"]
+    assert client.download_claim_tokens == [claimed_payload["claim_token"]]
+    assert len(client.result_bodies) == 1
+    assert client.result_bodies[0]["status"] == "succeeded"
+    assert client.result_bodies[0]["workspace_cleanup_status"] == "completed"
+    assert len(client.cleanup_receipt_calls) == 1
+    cleanup_journal = workspace.journal_path(
+        cleanup_root,
+        execution["id"],
+        attempt_id=claimed_payload["attempt_id"],
+    )
+    assert cleanup_journal.exists(), "cleanup journal must survive the lost receipt"
+    assert not workspace.workspace_path(
+        runtime_root,
+        execution["id"],
+        attempt_id=claimed_payload["attempt_id"],
+    ).exists()
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        assert row.status == "succeeded"
+        assert row.output == {
+            "source": None,
+            "filename": "managed-v3.txt",
+            "content": content.decode(),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "input_files": 1,
+        }
+        assert row.workspace_cleanup_status == "completed"
+
+    recovered = workspace.recover_cleanup_journals(
+        cleanup_root,
+        runtime_root,
+        report_cleanup=lambda execution_id, cleanup_token: bool(
+            client.report_cleanup_receipt(worker["id"], execution_id, cleanup_token=cleanup_token)
+        ),
+        scan_timeout_seconds=5,
+        retry_backoff_seconds=0,
+    )
+    assert recovered == {"inspected": 1, "completed": 1, "deferred": 0, "retained": 0}
+    assert len(client.cleanup_receipt_calls) == 2
+    assert not cleanup_journal.exists()
+    assert not workspace.workspace_path(
+        runtime_root,
+        execution["id"],
+        attempt_id=claimed_payload["attempt_id"],
+    ).exists()
+
+
+def test_v3_cleanup_journals_are_attempt_scoped_and_v2_shape_remains_legacy(
+    tmp_path: Path,
+) -> None:
+    """A deferred v3 Attempt can recover beside another Attempt's journal."""
+
+    runtime_root = tmp_path / "runtime"
+    journal_root = tmp_path / "cleanup-journal"
+    planned_first = workspace.workspace_path(runtime_root, 17, attempt_id=101)
+    planned_second = workspace.workspace_path(runtime_root, 17, attempt_id=102)
+    first_journal = workspace.write_cleanup_journal(
+        journal_root,
+        17,
+        planned_first,
+        "cleanup-token-first",
+        protocol_version=3,
+        attempt_id=101,
+    )
+    second_journal = workspace.write_cleanup_journal(
+        journal_root,
+        17,
+        planned_second,
+        "cleanup-token-second",
+        protocol_version=3,
+        attempt_id=102,
+    )
+    first_layout = workspace.create_workspace(runtime_root, 17, attempt_id=101)
+    second_layout = workspace.create_workspace(runtime_root, 17, attempt_id=102)
+    workspace.prepare_input_files(first_layout, [], None)
+    workspace.prepare_input_files(second_layout, [], None)
+
+    assert first_journal != second_journal
+    assert first_journal.is_file() and second_journal.is_file()
+    assert json.loads(first_journal.read_text(encoding="utf-8"))["attempt_id"] == 101
+    assert json.loads(second_journal.read_text(encoding="utf-8"))["attempt_id"] == 102
+    receipts: list[tuple[int, str]] = []
+    recovered = workspace.recover_cleanup_journals(
+        journal_root,
+        runtime_root,
+        report_cleanup=lambda execution_id, token: receipts.append((execution_id, token)) or True,
+        retry_backoff_seconds=0,
+    )
+
+    assert recovered == {"inspected": 2, "completed": 2, "deferred": 0, "retained": 0}
+    assert receipts == [(17, "cleanup-token-first"), (17, "cleanup-token-second")]
+    assert not first_journal.exists() and not second_journal.exists()
+    assert not first_layout.root.exists() and not second_layout.root.exists()
+    legacy_journal = workspace.write_cleanup_journal(
+        tmp_path / "legacy-journal",
+        18,
+        workspace.workspace_path(tmp_path / "legacy-runtime", 18),
+        "legacy-cleanup-token",
+    )
+    assert set(json.loads(legacy_journal.read_text(encoding="utf-8"))) == workspace.JOURNAL_FIELDS
+
+
+def test_v3_retry_keeps_old_cleanup_receipt_from_completing_next_attempt(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A lost receipt leaves the old journal recoverable without blocking Claim 2."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, "b2-cleanup-retry-worker")
+    adapter = _rabbit_adapter(api_client, worker, "b2-cleanup-retry-adapter")
+    execution = _canary_execution(api_client, adapter["id"])
+    first_dispatch = _dispatch(session_factory, execution["id"])
+    first = _claim(session_factory, worker["id"], first_dispatch)
+    assert first.decision == "EXECUTE"
+    assert first.payload is not None and first.attempt_id is not None
+    first_payload = first.payload
+    runtime_root = tmp_path / "runtime"
+    cleanup_root = tmp_path / "cleanup-journal"
+    first_journal = workspace.write_cleanup_journal(
+        cleanup_root,
+        execution["id"],
+        workspace.workspace_path(
+            runtime_root, execution["id"], attempt_id=first_payload.attempt_id
+        ),
+        first_payload.cleanup_token,
+        protocol_version=3,
+        attempt_id=first_payload.attempt_id,
+    )
+
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        policy = reliable_execution.default_retry_policy()
+        policy["max_attempts"] = 3
+        row.retry_policy_snapshot = policy
+        row.max_attempts_snapshot = 3
+    with session_factory() as session:
+        terminal = attempt_service.finish_attempt(
+            session,
+            worker["id"],
+            first.attempt_id,
+            AttemptResultBody.model_validate(
+                {
+                    "attempt_id": first.attempt_id,
+                    "fencing_token": first_payload.fencing_token,
+                    "claim_token": first_payload.claim_token,
+                    "status": "failed",
+                    "error_code": "temporary_adapter_failure",
+                    "error_class": "platform_transient",
+                    "workspace_cleanup_status": "completed",
+                }
+            ),
+        )
+        assert terminal.decision == "ACK_NOOP"
+
+    client = _V3ServiceClient(
+        api_client,
+        session_factory,
+        fail_first_cleanup_receipt=True,
+    )
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None and row.status == "retry_wait"
+        assert row.workspace_cleanup_status == "completed"
+    with pytest.raises(ControlUnavailableError):
+        client.report_cleanup_receipt(
+            worker["id"], execution["id"], cleanup_token=first_payload.cleanup_token
+        )
+    assert first_journal.exists(), "transport loss must retain the old recovery journal"
+
+    with session_factory() as session:
+        assert (
+            attempt_service.retry_dispatcher_once(
+                session,
+                now=datetime.now(UTC) + timedelta(days=1),
+            )
+            == 1
+        )
+    second_dispatch = _dispatch_generation(session_factory, execution["id"], 2)
+    second = _claim(session_factory, worker["id"], second_dispatch)
+    assert second.decision == "EXECUTE"
+    assert second.payload is not None and second.attempt_id is not None
+    second_payload = second.payload
+    assert second_payload.attempt_id != first_payload.attempt_id
+    assert second_payload.cleanup_token != first_payload.cleanup_token
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        assert row.status == "running"
+        assert row.workspace_cleanup_status == "pending"
+        assert row.cleanup_receipt_token_hash is None
+
+    second_journal = workspace.write_cleanup_journal(
+        cleanup_root,
+        execution["id"],
+        workspace.workspace_path(
+            runtime_root, execution["id"], attempt_id=second_payload.attempt_id
+        ),
+        second_payload.cleanup_token,
+        protocol_version=3,
+        attempt_id=second_payload.attempt_id,
+    )
+    assert first_journal != second_journal
+    assert first_journal.exists() and second_journal.exists()
+
+    # The old receipt is valid for old local cleanup, but leaves the new
+    # Attempt's pending Execution cleanup state untouched.
+    accepted_old = client.report_cleanup_receipt(
+        worker["id"], execution["id"], cleanup_token=first_payload.cleanup_token
+    )
+    assert accepted_old["workspace_cleanup_status"] == "pending"
+    assert second_journal.exists(), "an old receipt must not remove the new journal"
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt)
+                .where(ExecutionAttempt.execution_id == execution["id"])
+                .order_by(ExecutionAttempt.attempt_no)
+            )
+        )
+        assert row is not None and row.workspace_cleanup_status == "pending"
+        assert len(attempts) == 2
+        assert attempts[0].cleanup_summary == {"workspace_cleanup_status": "completed"}
+    assert workspace.remove_cleanup_journal(
+        cleanup_root, execution["id"], attempt_id=first_payload.attempt_id
+    )
+    assert not first_journal.exists()
+
+    with session_factory() as session:
+        terminal = attempt_service.finish_attempt(
+            session,
+            worker["id"],
+            second.attempt_id,
+            AttemptResultBody.model_validate(
+                {
+                    "attempt_id": second.attempt_id,
+                    "fencing_token": second_payload.fencing_token,
+                    "claim_token": second_payload.claim_token,
+                    "status": "succeeded",
+                    "workspace_cleanup_status": "deferred",
+                    "workspace_cleanup_error_code": "workspace_cleanup_failed",
+                }
+            ),
+        )
+        assert terminal.decision == "ACK_NOOP"
+    client.report_cleanup_receipt(
+        worker["id"], execution["id"], cleanup_token=first_payload.cleanup_token
+    )
+    assert second_journal.exists(), "an old token must not complete new Attempt cleanup"
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None and row.status == "succeeded"
+        assert row.workspace_cleanup_status == "deferred"
+    accepted_new = client.report_cleanup_receipt(
+        worker["id"], execution["id"], cleanup_token=second_payload.cleanup_token
+    )
+    assert accepted_new["workspace_cleanup_status"] == "completed"
+    assert workspace.remove_cleanup_journal(
+        cleanup_root, execution["id"], attempt_id=second_payload.attempt_id
+    )
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None and row.workspace_cleanup_status == "completed"
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt)
+                .where(ExecutionAttempt.execution_id == execution["id"])
+                .order_by(ExecutionAttempt.attempt_no)
+            )
+        )
+        assert attempts[1].cleanup_summary == {"workspace_cleanup_status": "completed"}
+
+
+@pytest.mark.parametrize("final_status", ["succeeded", "dead_letter", "cancelled"])
+def test_v3_final_states_accept_cleanup_receipt_and_converge(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    final_status: str,
+) -> None:
+    """Every v3 terminal business state has an idempotent cleanup boundary."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, f"b2-final-cleanup-{final_status}-worker")
+    adapter = _rabbit_adapter(api_client, worker, f"b2-final-cleanup-{final_status}-adapter")
+    execution = _canary_execution(api_client, adapter["id"])
+    if final_status == "dead_letter":
+        with session_factory.begin() as session:
+            row = session.get(Execution, execution["id"])
+            assert row is not None
+            policy = reliable_execution.default_retry_policy()
+            policy["max_attempts"] = 1
+            row.retry_policy_snapshot = policy
+            row.max_attempts_snapshot = 1
+    dispatch = _dispatch(session_factory, execution["id"])
+    claimed = _claim(session_factory, worker["id"], dispatch)
+    assert claimed.payload is not None and claimed.attempt_id is not None
+    payload = claimed.payload
+    cleanup_root = tmp_path / "cleanup-journal"
+    journal = workspace.write_cleanup_journal(
+        cleanup_root,
+        execution["id"],
+        workspace.workspace_path(
+            tmp_path / "runtime", execution["id"], attempt_id=payload.attempt_id
+        ),
+        payload.cleanup_token,
+        protocol_version=3,
+        attempt_id=payload.attempt_id,
+    )
+    body: dict[str, Any] = {
+        "attempt_id": claimed.attempt_id,
+        "fencing_token": payload.fencing_token,
+        "claim_token": payload.claim_token,
+        "status": "failed" if final_status == "dead_letter" else final_status,
+        "workspace_cleanup_status": "deferred",
+        "workspace_cleanup_error_code": "workspace_cleanup_failed",
+    }
+    if final_status == "dead_letter":
+        body.update({"error_code": "business_failure", "error_class": "business_error"})
+    with session_factory() as session:
+        terminal = attempt_service.finish_attempt(
+            session,
+            worker["id"],
+            claimed.attempt_id,
+            AttemptResultBody.model_validate(body),
+        )
+        assert terminal.decision == "ACK_NOOP"
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None and row.status == final_status
+        assert row.workspace_cleanup_status == "deferred"
+
+    response = api_client.post(
+        f"/api/workers/executions/{execution['id']}/workspace-cleanup",
+        json={"status": "completed"},
+        headers={**WORKER_HEADERS, "X-DLR-Cleanup-Token": payload.cleanup_token},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["workspace_cleanup_status"] == "completed"
+    assert workspace.remove_cleanup_journal(
+        cleanup_root, execution["id"], attempt_id=payload.attempt_id
+    )
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        attempt = session.get(ExecutionAttempt, claimed.attempt_id)
+        assert row is not None and row.status == final_status
+        assert row.workspace_cleanup_status == "completed"
+        assert attempt is not None
+        assert attempt.cleanup_summary == {"workspace_cleanup_status": "completed"}
+    assert not journal.exists()

@@ -181,8 +181,19 @@ class AttemptResultBody(AttemptActionBody):
     error: str | None = None
     error_code: str | None = Field(default=None, max_length=64)
     error_class: str | None = Field(default=None, max_length=64)
+    workspace_cleanup_status: Literal["completed", "deferred"] | None = None
+    workspace_cleanup_error_code: str | None = Field(default=None, max_length=64)
     resource_usage: dict[str, Any] | None = None
     cleanup_summary: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_workspace_cleanup_result(self) -> AttemptResultBody:
+        if self.workspace_cleanup_status == "deferred":
+            if self.workspace_cleanup_error_code != "workspace_cleanup_failed":
+                raise ValueError("deferred workspace cleanup requires workspace_cleanup_failed")
+        elif self.workspace_cleanup_error_code is not None:
+            raise ValueError("workspace cleanup error code requires deferred status")
+        return self
 
 
 class AttemptPrepareFailedBody(AttemptActionBody):

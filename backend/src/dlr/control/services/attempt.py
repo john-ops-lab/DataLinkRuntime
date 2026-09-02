@@ -472,6 +472,11 @@ def claim_dispatch(
         session.commit()
         return _decision("ACK_NOOP", "retry_exhausted")
 
+    # Execution cleanup fields describe the currently claimed v3 Attempt.
+    # The authoritative raw token remains on that Attempt, so a previous
+    # deferred journal can be acknowledged later without changing this state.
+    execution.workspace_cleanup_status = "pending"
+    execution.workspace_cleanup_error_code = None
     claim_token = generate_token()
     cleanup_token = generate_token()
     fence = max(int(slot.fencing_token) + 1, 1)
@@ -513,6 +518,19 @@ def _lock_attempt_context(
     peek = session.get(ExecutionAttempt, attempt_id)
     if peek is None:
         raise domain_error(404, "attempt_not_found", "Attempt not found")
+    identity = session.execute(
+        select(Execution.adapter_id, Execution.dispatch_backend).where(
+            Execution.id == peek.execution_id
+        )
+    ).one_or_none()
+    if identity is None:
+        raise domain_error(404, "execution_not_found", "Execution not found")
+    adapter_id, dispatch_backend = identity
+    if (
+        dispatch_backend == "rabbitmq"
+        and admission.lock_admission_scope(session, int(adapter_id)) is None
+    ):
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
     execution = session.get(Execution, peek.execution_id, with_for_update=True)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
@@ -552,6 +570,31 @@ def start_attempt(
     execution, _adapter, attempt, _slot_row = _lock_attempt_context(session, worker_id, attempt_id)
     now = database_now(session)
     _validate_action(execution, attempt, payload, now)
+    if execution.cancel_requested and attempt.status == "claimed":
+        result = _apply_terminal_locked(
+            session,
+            execution,
+            attempt,
+            _slot_row,
+            status="cancelled",
+            error_code="execution_cancelled",
+            error_class="cancelled",
+            error="Execution was cancelled before Adapter start",
+            now=now,
+        )
+        session.commit()
+        del result
+        return _decision(
+            "ACK_NOOP",
+            "cancel_requested",
+            attempt_id=attempt.id,
+            cancel_requested=True,
+        )
+    if execution.cancel_requested:
+        session.rollback()
+        return _decision(
+            "ACK_NOOP", "cancel_requested", attempt_id=attempt.id, cancel_requested=True
+        )
     if attempt.status == "running":
         session.rollback()
         return _decision("ACK_NOOP", "already_started", attempt_id=attempt.id)
@@ -685,6 +728,8 @@ def _apply_terminal_locked(
     stderr: str = "",
     stdout_truncated: bool = False,
     stderr_truncated: bool = False,
+    workspace_cleanup_status: str | None = None,
+    workspace_cleanup_error_code: str | None = None,
     resource_usage: dict[str, Any] | None = None,
     cleanup_summary: dict[str, Any] | None = None,
     now: datetime,
@@ -718,6 +763,23 @@ def _apply_terminal_locked(
     execution.stderr = capped_stderr.decode("utf-8", errors="replace")
     execution.stdout_truncated = stdout_truncated or stdout_capped
     execution.stderr_truncated = stderr_truncated or stderr_capped
+    if execution.dispatch_backend == "rabbitmq":
+        # v3 reports the local cleanup result with the Attempt result.  A
+        # completed result is still idempotently receipt-acknowledged by
+        # Control; a deferred result remains the durable recovery boundary.
+        effective_cleanup_status = workspace_cleanup_status or "deferred"
+        effective_cleanup_error_code = (
+            workspace_cleanup_error_code if effective_cleanup_status == "deferred" else None
+        )
+        if effective_cleanup_status == "deferred" and effective_cleanup_error_code is None:
+            effective_cleanup_error_code = "workspace_cleanup_failed"
+        execution.workspace_cleanup_status = effective_cleanup_status
+        execution.workspace_cleanup_error_code = effective_cleanup_error_code
+        attempt.cleanup_summary["workspace_cleanup_status"] = effective_cleanup_status
+        if effective_cleanup_error_code is not None:
+            attempt.cleanup_summary["workspace_cleanup_error_code"] = effective_cleanup_error_code
+        else:
+            attempt.cleanup_summary.pop("workspace_cleanup_error_code", None)
     if output_preview is not None:
         preview_bytes = output_preview.encode()[: settings.execution_output_preview_max_bytes]
         output_preview = preview_bytes.decode("utf-8", errors="ignore")
@@ -806,6 +868,8 @@ def finish_attempt(
         stderr=payload.stderr,
         stdout_truncated=payload.stdout_truncated,
         stderr_truncated=payload.stderr_truncated,
+        workspace_cleanup_status=payload.workspace_cleanup_status,
+        workspace_cleanup_error_code=payload.workspace_cleanup_error_code,
         resource_usage=payload.resource_usage,
         cleanup_summary=payload.cleanup_summary,
         now=now,

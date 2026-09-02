@@ -198,7 +198,9 @@ class V3Consumer:
             return False
         try:
             planned_workspace = workspace.workspace_path(
-                self._config.runtime_root, payload.execution_id
+                self._config.runtime_root,
+                payload.execution_id,
+                attempt_id=payload.attempt_id,
             )
             workspace.write_attempt_journal(
                 self._config.attempt_journal_root,
@@ -249,7 +251,7 @@ class V3Consumer:
     def _run_attempt(self, payload: V3TaskPayload) -> None:
         try:
             try:
-                self._client.start_attempt(
+                start_response = self._client.start_attempt(
                     self._config.worker_id,
                     payload.attempt_id,
                     {
@@ -259,6 +261,16 @@ class V3Consumer:
                     },
                 )
             except (ControlUnavailableError, ClientError):
+                return
+            if not (
+                isinstance(start_response, Mapping)
+                and start_response.get("decision") == "ACK_NOOP"
+                and start_response.get("reason") in {"started", "already_started"}
+            ):
+                # Claim is durable, but only Control can authorize the
+                # Adapter side effect at this boundary.  Keep the journal
+                # and let lease recovery reconcile terminal/cancelled/lost
+                # Attempts instead of running an unowned process.
                 return
             renew_stop = threading.Event()
             ownership_lost = threading.Event()
@@ -337,6 +349,7 @@ class V3Consumer:
             status = result.get("status")
             if status == "timeout":
                 status = "timed_out"
+            cleanup_status = result.get("workspace_cleanup_status")
             report = {
                 "attempt_id": payload.attempt_id,
                 "fencing_token": payload.fencing_token,
@@ -349,6 +362,32 @@ class V3Consumer:
                 self._client.result_attempt(self._config.worker_id, payload.attempt_id, report)
             except (ControlUnavailableError, ClientError):
                 return
+            if cleanup_status == "completed":
+                cleanup_root = getattr(
+                    self._runtime_settings, "workspace_cleanup_journal_root", None
+                )
+                if cleanup_root is None:
+                    cleanup_root = self._config.runtime_root / "cleanup-journal"
+                try:
+                    self._client.report_cleanup_receipt(
+                        self._config.worker_id,
+                        payload.execution_id,
+                        cleanup_token=payload.cleanup_token,
+                    )
+                except (ControlUnavailableError, ClientError):
+                    # The terminal Attempt is durable, but the cleanup
+                    # journal remains the restart/recovery hand-off until
+                    # Control accepts the independent receipt.
+                    workspace.remove_attempt_journal(
+                        self._config.attempt_journal_root,
+                        payload.attempt_id,
+                    )
+                    return
+                workspace.remove_cleanup_journal(
+                    cleanup_root,
+                    payload.execution_id,
+                    attempt_id=payload.attempt_id,
+                )
             workspace.remove_attempt_journal(
                 self._config.attempt_journal_root,
                 payload.attempt_id,
