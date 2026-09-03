@@ -1,23 +1,22 @@
-<h1 align="center">DataLinkRuntime</h1>
+<p align="center">
+  <img src="docs/assets/dlr-logo.webp" alt="DataLinkRuntime" width="760">
+</p>
 
 <p align="center">
   <strong>Code your data connections.</strong>
 </p>
 
 <p align="center">
-  把数据连接逻辑写成 <strong>Adapter（适配器）</strong>，从代码编辑、依赖配置到执行、日志与历史追踪，<br>
-  DataLinkRuntime 提供一个轻量、自托管的数据适配开发与运行环境。
-</p>
-
-<p align="center">
-  <strong>Develop → Run → Observe</strong>
+  AI 辅助、代码优先的数据适配开发与运行平台。<br>
+  把零散的接口、采集脚本和数据转换逻辑，沉淀为可管理、可运行、可观测的 Adapter。
 </p>
 
 <p align="center">
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/actions/workflows/ci.yml"><img src="https://github.com/john-ops-lab/DataLinkRuntime/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="Apache License 2.0"></a>
   <img src="https://img.shields.io/badge/Python-3.13-blue" alt="Python 3.13">
   <img src="https://img.shields.io/badge/Runtime-Python%20%7C%20JavaScript%20%7C%20Java-informational" alt="Runtimes">
+  <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED" alt="Docker Compose">
 </p>
 
 <p align="center">
@@ -25,7 +24,6 @@
   <a href="README.en.md">English</a> ·
   <a href="docs/zh-CN/product.md">产品定义</a> ·
   <a href="docs/zh-CN/architecture.md">总体架构</a> ·
-  <a href="docs/specs/README.md">规格索引</a> ·
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/issues">Issues</a>
 </p>
 
@@ -33,202 +31,183 @@
 
 ## DataLinkRuntime 是什么？
 
-DataLinkRuntime（DLR）是一个 **AI 辅助、代码优先（Code-first）的数据适配开发与运行平台**。
+写一段“从 A 取数据、处理后写入 B”的代码并不难。
 
-很多数据连接任务，本质上只是一段并不复杂的代码：
+难的是，当这段代码需要长期运行时，你还要处理：
 
-```text
-读取 / 接收数据
-      ↓
-校验与转换
-      ↓
-处理业务逻辑
-      ↓
-输出到目标系统
-```
+**依赖、配置、凭据、调度、Webhook、版本、运行节点、实时日志、执行历史和故障排查。**
 
-代码本身可能只有几十到几百行，但一旦需要长期运行，就会同时带来依赖、配置、凭据、调度、版本、日志、执行历史和故障排查等问题。
-
-DLR 把这些能力统一收进一个轻量平台。每个 **Adapter** 都是一个自包含的数据处理单元：
+DataLinkRuntime（DLR）把这些运行时能力统一收进一个轻量、自托管的平台，让数据连接逻辑继续保持为清晰、可读、可修改的代码。
 
 ```text
-Source / Event
-      ↓
-   Adapter
-      ↓
-Transform / Process
-      ↓
-    Target
+API / DB / File / Event
+          │
+          ▼
+     ┌─────────┐
+     │ Adapter │   ← 你的数据连接代码
+     └────┬────┘
+          │
+          ▼
+ Transform / Process
+          │
+          ▼
+ API / DB / System
 ```
 
-Adapter 自己负责一次完整的数据处理和外部输出逻辑，DLR 负责它的开发、运行与管理。
+每个 **Adapter** 都是一个自包含的数据处理单元。你负责描述“数据怎么处理”，DLR 负责让它能够被开发、保存、运行和观察。
+
+> **DLR 不试图用更多拖拽节点消灭代码，而是用 AI 降低写代码的成本，再用 Runtime 管好代码的长期运行。**
 
 ---
 
-## Code-first, AI-assisted
+## 为什么做 DLR？
 
-很多数据集成平台通过组件、节点和流程图来降低开发门槛。DataLinkRuntime 选择另一条路径：
+很多组织里都存在大量这样的“小型数据连接”：
 
-> **不把逻辑拆成越来越多的平台组件，而是让 AI 帮助你直接生成和修改可读、可运行的 Adapter 代码。**
+- 从云平台、Kubernetes、数据库或业务系统定时采集数据；
+- 把一个 API 的字段、枚举和数据结构转换后写入另一个系统；
+- 接收 GitHub、CI/CD、监控或业务系统 Webhook，再校验、转换和转发；
+- 把散落在服务器、Cron、容器和个人目录里的脚本统一管理；
+- 为 CMDB、ITOM、数据平台或内部工具快速补齐长尾数据源。
 
-你可以自己写代码，也可以直接描述需求：
+这些任务通常不需要一套复杂的 DAG，却又不应该永远停留在“某台机器上的一个脚本”。
 
-```text
-Describe → Generate → Review → Run
-```
-
-DLR 的 AI Assistant 生成 Candidate，由用户查看 Diff 后明确 Apply；Apply 只修改浏览器中的 Working Copy，不会自动保存或运行 Adapter。
-
-代码仍然是最终资产，因此可以直接阅读、修改、测试和版本化，也可以继续使用 Python、JavaScript、Java 现有生态。
-
-**DLR 不试图用更多组件消灭代码，而是用 AI 让代码重新成为简单的表达方式。**
-
----
-
-## 应用场景
-
-DLR 适合那些 **逻辑相对独立，但需要稳定运行和长期维护的数据连接任务**。
-
-- **系统数据同步**：从系统 A 获取数据，转换后写入系统 B。
-- **API / 数据格式适配**：字段映射、枚举转换、结构重组、数据清洗与协议差异处理。
-- **数据采集**：定时采集云平台、Kubernetes、数据库、监控或业务系统数据。
-- **Webhook / 事件处理**：接收 GitHub、CI/CD、监控、云平台或业务系统事件并转换、转发。
-- **定时任务与脚本收敛**：把散落在服务器、Cron、容器或个人目录里的脚本统一纳入运行、日志和版本管理。
-- **一次性数据处理**：数据迁移、批量修正、临时转换和短期接口任务。
-
-常见处理模式：
+DLR 希望补上中间这一层：
 
 ```text
-Fetch → Transform → Push
-```
-
-或：
-
-```text
-Receive → Validate → Process → Send
+一次性脚本
+    ↓
+可保存的 Adapter
+    ↓
+可调度 / 可触发
+    ↓
+可观测的 Execution
+    ↓
+可持续维护的数据连接能力
 ```
 
 ---
 
-## 核心能力
+## 30 秒理解 DLR
 
-| 能力 | 说明 |
-|---|---|
-| **Web Workbench** | 在浏览器中创建、编辑和管理 Adapter |
-| **多语言 Runtime** | Python、JavaScript、Java 使用统一运行模型 |
-| **Task** | 支持手动运行和 Cron / Timezone 定时执行 |
-| **Webhook** | 接收外部 HTTP 请求并创建 Execution |
-| **依赖管理** | 管理 Python、npm、Maven 依赖及依赖源 |
-| **Credential** | 加密保存凭据，并通过 Secret Binding 注入运行环境 |
-| **版本留痕** | 每次保存形成不可变的运行快照 |
-| **实时日志** | 实时查看 Adapter 运行日志 |
-| **执行记录** | 查看 Execution 状态、耗时、输入、输出与日志 |
-| **Worker Runtime** | Control 与代码执行分离，由 Worker 实际运行 Adapter |
-| **AI Assistant** | Candidate → Diff → Apply 的 Human-in-the-loop 代码辅助 |
-| **AI Context** | 支持显式代码 / 日志上下文、附件和受控只读知识源 |
-| **自托管** | 一台服务器 + Docker Compose 即可部署 |
-| **国际化** | 提供简体中文与 English 界面 |
+### 1. 写一个 Adapter
 
----
-
-## Adapter Runtime Contract
-
-三种语言共享同一个核心模型：
+三种语言共享同一个运行模型：
 
 ```text
 Input → handle(context, input) → Output
 ```
 
-| 语言 | 入口 |
+例如 Python：
+
+```python
+def handle(context, input):
+    name = input.get("name", "DLR")
+
+    return {
+        "message": f"Hello, {name}",
+        "source": input,
+    }
+```
+
+对应入口：
+
+| Runtime | Adapter 入口 |
 |---|---|
 | Python | `def handle(context, input)` |
 | JavaScript | `export async function handle(context, input)` |
 | Java | `Adapter.handle(Context context, Object input)` |
 
-运行时提供：
+运行时通过 `context` 提供非敏感配置、已绑定 Secret 和日志能力。
 
-- `context.config`：非敏感运行参数；
-- `context.secrets.get(key)`：读取已绑定 Secret；
-- `context.logger`：输出实时日志；
-- `input`：JSON 兼容输入；
-- `output`：JSON 可序列化输出。
-
-Adapter 可以根据需要调用数据库、HTTP API、SDK 或其他外部系统。
-
----
-
-## Adapter 类型
-
-### Task
-
-用于主动执行的数据处理任务，支持：
-
-- 手动运行；
-- Cron / Timezone 定时运行；
-- 自定义 Input；
-- 运行 / 停止；
-- 实时日志；
-- 执行历史。
-
-典型流程：
+### 2. 保存并运行
 
 ```text
 Create → Edit → Save → Run / Schedule → Observe
 ```
 
-### Webhook
+保存后，DLR 为运行内容保留不可变快照；Execution 始终基于已保存内容执行。
 
-用于接收外部系统主动推送的数据：
+### 3. 让 DLR 管运行时
 
-```text
-External System
-      ↓
-POST Webhook
-      ↓
-DLR Control
-      ↓
-Execution
-      ↓
-Worker
-      ↓
-Adapter
-```
+你不需要为每段脚本重新搭一套运行框架：
 
-适合 GitHub、CI/CD、监控平台、云平台和业务系统事件接入。
+| 你专注于 | DLR 负责 |
+|---|---|
+| 数据获取与接收 | Adapter 管理 |
+| 字段映射与转换 | Python / JavaScript / Java Runtime |
+| 业务处理逻辑 | 依赖与运行参数 |
+| 写入目标系统 | Credential / Secret Binding |
+| 代码本身 | Task / Cron / Timezone / Webhook |
+|  | Worker 执行 |
+|  | 实时日志与 Execution 历史 |
+|  | 保存快照与运行追踪 |
 
 ---
 
-## AI Assistant
+## 核心能力
 
-AI Assistant 是 Adapter 的开发助手，而不是自主运行 Agent。
+| | 能力 | 说明 |
+|---|---|---|
+| 🧩 | **Code-first Adapter** | Adapter 是最终资产，可直接阅读、修改、测试和版本化 |
+| 🖥️ | **Web Workbench** | 在浏览器中创建、编辑、保存、Clone 和管理 Adapter |
+| ⚡ | **多语言 Runtime** | Python、JavaScript、Java 使用一致的 Input / Output / Log 模型 |
+| ⏱️ | **Task & Schedule** | 手动运行，或通过 Cron + Timezone 定时执行 |
+| 🔔 | **Webhook** | 接收外部 HTTP 事件并异步创建 Execution |
+| 🔐 | **Credential** | 加密保存凭据，通过 Secret Binding 按执行注入 |
+| 📜 | **实时日志与历史** | SSE 实时日志、状态、耗时、Input / Output 与历史 Execution |
+| 🧱 | **Worker Runtime** | Control 与实际代码执行分离，由 Worker 承担 Adapter Execution |
+| ✨ | **AI Assistant** | 根据代码、日志和显式上下文生成 Candidate，经 Diff 确认后 Apply |
+| 🌐 | **自托管与国际化** | Docker Compose 部署，提供简体中文 / English 界面 |
 
-它可以结合当前 Working Copy、用户显式加入的代码 / 日志上下文、附件，以及配置后的受控只读知识源，帮助生成、修改和解释 Adapter 代码。
+---
+
+## AI 辅助，但执行权始终在人手里
+
+DLR 的 AI Assistant 用来帮助你**生成、修改和理解 Adapter 代码**，而不是替你自主操作平台。
 
 ```text
-Working Copy + Context
-        ↓
-   AI Assistant
-        ↓
-     Candidate
-        ↓
-       Diff
-        ↓
-      Apply
-        ↓
-Working Copy (dirty)
+Working Copy + Explicit Context
+              │
+              ▼
+        AI Assistant
+              │
+              ▼
+          Candidate
+              │
+              ▼
+             Diff
+              │
+          User Apply
+              │
+              ▼
+      Working Copy (dirty)
 ```
 
-AI 不会自动执行：
+AI 不会自动替你执行：
 
-```text
-Save
-Run
-Stop
-修改 Worker
-修改 Schedule / Webhook 生命周期
-```
+- Save
+- Run / Stop
+- 修改 Worker
+- 修改 Schedule / Webhook 生命周期
+- 读取 Credential 真值
 
-最终保存和运行始终由用户明确触发。
+**Apply 只是把候选修改放回 Working Copy；最终保存与运行必须由用户明确触发。**
+
+---
+
+## 适合什么场景？
+
+| 适合 DLR | 更适合其他工具 |
+|---|---|
+| 系统 A → 转换 → 系统 B | 多任务依赖和复杂 DAG |
+| API / 数据格式适配 | 大规模实时流计算 |
+| CMDB / ITOM / 平台数据采集 | 通用企业服务总线 |
+| Cron 脚本收敛与长期运行 | 拖拽式低代码流程编排 |
+| GitHub / CI/CD / 监控 Webhook | 面向不可信租户的代码执行平台 |
+| 一次性迁移、修正、短期接口任务 | 通用 Serverless Runtime |
+
+DLR 专注的是 **独立 Adapter 的开发和运行**，而不是 Workflow / DAG 编排。
 
 ---
 
@@ -236,15 +215,19 @@ Stop
 
 ### 前置条件
 
-需要 Docker，并支持 Compose v2。
+- Docker
+- Docker Compose v2
 
-### 1. 创建部署配置
+### 1. 克隆并创建配置
 
 ```bash
+git clone https://github.com/john-ops-lab/DataLinkRuntime.git
+cd DataLinkRuntime
+
 cp .env.example .env
 ```
 
-至少设置：
+编辑 `.env`，至少设置：
 
 ```text
 DLR_ADMIN_TOKEN
@@ -252,148 +235,100 @@ DLR_WORKER_TOKEN
 DLR_MASTER_KEY
 ```
 
-请使用真实随机 Secret 替换示例值。
+请替换为真实随机 Secret，不要提交 `.env`。
 
-### 2. 准备平台日志 bind mount
+### 2. 准备日志目录
 
-`.env.example` 默认使用当前用户可写的仓库内目录 `./platform-logs`，与
-Linux 生产部署使用的绝对路径 `/var/lib/dlr/platform-logs` 不同。启动 Compose
-前先准备五个宿主机子目录；Compose 会把它们 bind mount 到容器内固定的
-`/var/lib/dlr/platform-logs/<service>/` 路径。仓库根目录的 `/platform-logs/`
-已在 `.gitignore` 中精确忽略，其他路径不受此规则影响：
+本地默认使用仓库内的 `./platform-logs`：
 
 ```bash
-LOG_ROOT=./platform-logs
-mkdir -p "$LOG_ROOT"/{control,worker,web,account-web,postgres}
+mkdir -p ./platform-logs/control \
+  ./platform-logs/worker \
+  ./platform-logs/web \
+  ./platform-logs/account-web \
+  ./platform-logs/postgres
 ```
 
-五个目录分别是 `control/`、`worker/`、`web/`、`account-web/` 和 `postgres/`。
-PostgreSQL 启动前会以容器内 `postgres` 用户检查 `postgres/` 是否可写；Linux
-生产环境请先在固定的 pinned image 中运行 `id postgres`，只给该目录授予所需的
-最小访问权限。不要使用 `chmod 777`。如果修改了 `DLR_PLATFORM_LOG_ROOT`，请在
-对应的宿主机根目录下重复上述准备步骤。
+Linux 生产部署的路径和权限要求请查看
+[平台日志部署文档](docs/deployment/platform-logs.md)。
 
-平台日志是独立的 bind mount：保留现有轮转和脱敏规则，不要把 Token、Secret、
-密码或其他真实凭据写入 `.env.example`、日志目录或命令输出。完整的生产路径、
-轮转和权限说明见 [平台日志部署文档](docs/deployment/platform-logs.md)。
-
-Control 的 AI 工具轨迹单独写入
-`<DLR_PLATFORM_LOG_ROOT>/control/ai-tool-audit.jsonl`，由应用按大小轮转，不进入
-宿主机仅匹配 `*.log` 的普通 logrotate。`DLR_AI_TOOL_AUDIT_MAX_BYTES` 默认
-`10485760`（10 MiB，允许 1～104857600），`DLR_AI_TOOL_AUDIT_BACKUP_COUNT`
-默认 `10`（允许 1～100）；默认最坏占用为当前文件加 10 份历史文件，即
-110 MiB。单次 Assist 总时限由 `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS` 控制，默认
-150 秒且仅允许 120～180 秒。回滚旧版 Control/Web 时移除这三个变量；审计文件
-无数据库依赖，可按部署保留策略保留或删除。
-
-### 3. 启动 PostgreSQL 并执行迁移
+### 3. 初始化数据库
 
 ```bash
 docker compose up -d postgres
 docker compose run --rm control alembic upgrade head
 ```
 
-### 4. 启动完整平台
+### 4. 启动 DLR
 
 ```bash
 docker compose up -d --build
-```
-
-检查状态：
-
-```bash
 docker compose ps
 ```
 
-全部服务健康后访问：
+服务健康后：
 
-- Web Console：`http://localhost:8080`
-- Account Console：`http://localhost:8081`
-- Health API：`http://localhost:8080/api/health`
+| 入口 | 地址 |
+|---|---|
+| Web Console | `http://localhost:8080` |
+| Account Console | `http://localhost:8081` |
+| Health API | `http://localhost:8080/api/health` |
 
-首次进入 Web Console 时输入 `DLR_ADMIN_TOKEN`。
+首次进入 Web Console 使用 `.env` 中的 `DLR_ADMIN_TOKEN`。
 
-账号入口首次登录使用 `admin / admin123`，随后必须修改密码；密码只保存为
-服务端安全 Hash。8080 Token 入口与 8081 账号入口共用同一个 Control、PostgreSQL
-和 Web 构建，不复制业务数据。账号入口宿主机端口可通过
-`DLR_ACCOUNT_WEB_HOST_PORT` 配置。
-
-清理本地环境与数据库卷：
-
-```bash
-docker compose down --volumes
-```
+> 想了解完整部署参数、日志轮转和生产路径，请阅读 [部署文档](docs/deployment/platform-logs.md)。
 
 ---
 
 ## 架构
 
-```text
-┌─────────────────────────────┐
-│ Web                         │
-│ React + Monaco + AI UI      │
-└──────────────┬──────────────┘
-               │ HTTP / JSON / SSE
-               ▼
-┌─────────────────────────────┐       ┌─────────────────────┐
-│ Control                     │──────▶│ PostgreSQL          │
-│ FastAPI                     │       │ State / History     │
-│ API / Scheduler / AI        │       └─────────────────────┘
-│ Webhook / Credential        │
-└──────────────┬──────────────┘
-               │ Worker Poll
-               ▼
-┌─────────────────────────────┐
-│ Worker                      │
-│ Python / Node.js / Java     │
-│ Adapter Execution           │
-└─────────────────────────────┘
+```mermaid
+flowchart LR
+    U["Web Workbench<br/>React + Monaco"] -->|"HTTP / JSON / SSE"| C["Control<br/>FastAPI"]
+    C --> P[("PostgreSQL<br/>State / History")]
+    C -->|"Poll / Claim"| W["Worker Runtime"]
+    W --> A["Adapter<br/>Python / JavaScript / Java"]
+    A --> X["External Systems"]
 ```
 
-职责边界：
+核心职责：
 
-- **Web**：提供 Adapter 开发、配置、运行和观察体验；
-- **Control**：负责 API、状态、事务门禁、调度、Webhook、Credential 和 AI Provider 集成；
-- **PostgreSQL**：保存平台权威状态、版本和执行历史；
+- **Web**：Adapter 开发、配置、运行和观察；
+- **Control**：API、状态、事务门禁、调度、Webhook、Credential、AI Provider 集成；
+- **PostgreSQL**：平台权威状态、保存快照和执行历史；
 - **Worker**：真正执行用户 Adapter 代码。
 
-Control 本身不执行 Adapter 代码。
+**Control 本身不执行 Adapter 代码。**
 
-详细合同见 [总体架构](docs/zh-CN/architecture.md)。
-
----
-
-## 产品边界
-
-DataLinkRuntime 专注于 **独立 Adapter 的开发和运行**。
-
-它不是：
-
-- DAG / Workflow 编排引擎；
-- 拖拽式低代码流程平台；
-- 大规模实时流计算平台；
-- 企业服务总线；
-- 通用 Serverless 平台；
-- 通用 AI Agent Runtime。
-
-如果一个需求的核心已经变成多任务依赖、并行分支、复杂条件、人工审批或跨任务状态编排，它更适合使用专门的 Workflow / DAG 平台。
+详细设计见 [总体架构](docs/zh-CN/architecture.md)。
 
 ---
 
-## 安全边界
+## 核心对象
 
-DLR 当前采用 **可信代码运行模型**。
+| 对象 | 含义 |
+|---|---|
+| **Adapter** | 独立的数据处理单元，当前类型为 Task 或 Webhook |
+| **Revision** | 每次保存形成的不可变代码、依赖与运行参数快照 |
+| **Execution** | 一次具体运行，记录状态、耗时、Input / Output 与日志 |
+| **Worker** | 实际执行 Adapter 的节点，按 Runtime capability 参与调度 |
+| **Credential** | 加密保存的凭据；浏览器不会获得 Secret 真值 |
 
-- Adapter 子进程隔离不等同于安全沙箱；
-- 不应运行来自不可信用户的任意代码；
+---
+
+## 安全模型
+
+DLR 当前采用 **可信管理员代码模型**。
+
+请特别注意：
+
+- Adapter 子进程隔离 **不等同于安全沙箱**；
+- 不应允许不可信用户在 Worker 上执行任意代码；
 - Credential 真值不会返回浏览器；
-- Secret 只为目标 Execution 按需注入，并从平台日志中脱敏；
-- Control 不直接执行用户 Adapter 代码；
-- 不要在 Adapter 源码中硬编码密码、Token、私钥等凭据；
+- Secret 仅按目标 Execution 注入，并参与平台日志脱敏；
+- 不要在 Adapter 源码中硬编码密码、Token 或私钥；
 - AI Assistant 不会把 Credential 真值作为正常上下文发送给模型；
-- AI 附件内容会发送给管理员配置的模型服务，请勿上传密码、密钥等敏感凭据。
-
-更多安全与运行合同见 [总体架构](docs/zh-CN/architecture.md)。
+- AI 附件会发送给管理员配置的模型服务，不应上传密码、密钥等敏感凭据。
 
 ---
 
@@ -401,12 +336,12 @@ DLR 当前采用 **可信代码运行模型**。
 
 | 层 | 技术 |
 |---|---|
-| Web | React 19、TypeScript、Vite、Ant Design、Monaco Editor、assistant-ui、i18next |
-| Control | Python 3.13、FastAPI、SQLAlchemy 2、Alembic |
+| Web | React 19 · TypeScript · Vite · Ant Design · Monaco Editor · assistant-ui · i18next |
+| Control | Python 3.13 · FastAPI · SQLAlchemy 2 · Alembic |
 | Database | PostgreSQL 16 |
-| Worker | Python、Node.js / npm、JDK 21 / Maven |
-| Python 工具链 | uv、pytest、Ruff、mypy |
-| 部署 | Docker Compose |
+| Worker | Python · Node.js / npm · JDK 21 / Maven |
+| Tooling | uv · pytest · Ruff · mypy |
+| Deploy | Docker Compose |
 
 ---
 
@@ -434,7 +369,7 @@ npm run test
 npm run build
 ```
 
-完整集成冒烟测试：
+完整 Compose 冒烟测试：
 
 ```bash
 ./scripts/compose-smoke.sh
@@ -444,20 +379,23 @@ Smoke Test 使用隔离的本地环境和 fake AI Provider，不会访问公网 
 
 ---
 
-## 文档
+## 文档与反馈
 
 - [产品定义](docs/zh-CN/product.md)
 - [总体架构](docs/zh-CN/architecture.md)
-- [规格索引与冲突优先级](docs/specs/README.md)
+- [Specs 索引与冲突优先级](docs/specs/README.md)
+- [平台日志与部署](docs/deployment/platform-logs.md)
+- [GitHub Issues](https://github.com/john-ops-lab/DataLinkRuntime/issues)
 
-历史 Specs 用于保留设计与演进记录。当历史文档与当前实现发生冲突时，请遵循 `docs/specs/README.md` 中定义的优先级。
+历史 Specs 用于保留产品与架构演进记录；如果历史文档与当前实现冲突，请遵循
+`docs/specs/README.md` 中定义的优先级。
 
-发现 Bug、产品问题或有新的使用场景建议，可以通过 [GitHub Issues](https://github.com/john-ops-lab/DataLinkRuntime/issues) 提交反馈。
+欢迎通过 Issues 提交 Bug、使用场景和功能建议；代码贡献也欢迎通过 Pull Request 提交。
 
 ---
 
 ## License
 
-DataLinkRuntime 基于 [MIT License](LICENSE) 开源。
+DataLinkRuntime 基于 [Apache License 2.0](LICENSE) 开源。
 
 Copyright (c) 2026 john-ops-lab
