@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 300" role="img" aria-labelledby="title desc">
+  <title id="title">DataLinkRuntime</title>
+  <desc id="desc">Three data connections flow into a terminal runtime and continue to the DataLinkRuntime wordmark.</desc>
+  <defs>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1478F2"/>
+      <stop offset="1" stop-color="#006BFF"/>
+    </linearGradient>
+    <linearGradient id="runtime" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0878FF"/>
+      <stop offset="1" stop-color="#1B73F3"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(40 55)">
+    <g fill="none" stroke="url(#blue)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M30 25 H125 C145 25 150 72 185 72 H235"/>
+      <path d="M30 95 H235"/>
+      <path d="M30 165 H125 C145 165 150 118 185 118 H235"/>
+    </g>
+    <g fill="#1179F4">
+      <circle cx="30" cy="25" r="21"/>
+      <circle cx="30" cy="95" r="21"/>
+      <circle cx="30" cy="165" r="21"/>
+    </g>
+    <g transform="translate(220 0)">
+      <rect x="0" y="0" width="205" height="190" rx="18" fill="#092E68"/>
+      <rect x="16" y="48" width="173" height="126" rx="4" fill="#FFFFFF"/>
+      <circle cx="30" cy="24" r="7" fill="#FFFFFF"/>
+      <circle cx="55" cy="24" r="7" fill="#FFFFFF"/>
+      <circle cx="80" cy="24" r="7" fill="#FFFFFF"/>
+      <path d="M48 82 L83 112 L48 142" fill="none" stroke="#0A326F" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M105 147 H145" fill="none" stroke="#0A326F" stroke-width="16" stroke-linecap="round"/>
+    </g>
+    <path d="M425 95 H492" stroke="#0B73F4" stroke-width="18" stroke-linecap="round"/>
+    <path d="M520 95 L480 63 V127 Z" fill="#0B73F4"/>
+  </g>
+  <text x="610" y="198" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif" font-size="132" font-weight="700" letter-spacing="-5">
+    <tspan fill="#082E69">DataLink</tspan><tspan fill="url(#runtime)">Runtime</tspan>
+  </text>
+</svg>
