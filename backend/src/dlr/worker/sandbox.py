@@ -31,6 +31,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping
@@ -104,6 +105,7 @@ HELPER_PHASE_ERROR_CODES = {
     "mount_namespace_unshare": "sandbox_mount_namespace_failed",
     "mount_namespace_private": "sandbox_mount_namespace_failed",
     "workspace_tmpfs_mount": "sandbox_tmpfs_mount_failed",
+    "workspace_tmpfs_usage": "resource_exceeded_disk",
     "workspace_copy": "sandbox_workspace_copy_failed",
     "workspace_ownership": "sandbox_workspace_ownership_failed",
     "cgroup_root_hide": "sandbox_cgroup_hide_failed",
@@ -129,6 +131,7 @@ HELPER_DIAGNOSTIC_PATTERN = re.compile(
     r"kind=(?P<kind>os_error|exception) "
     r"errno=(?P<errno>[0-9]+)\Z"
 )
+STREAM_COPY_CHUNK_BYTES = 64 * 1024
 
 
 class SandboxError(Exception):
@@ -348,6 +351,111 @@ class ResourceLimits:
 
 
 @dataclass(frozen=True)
+class ResourceReservation:
+    """One bounded multislot reservation held until an Attempt finishes."""
+
+    token: str
+    limits: ResourceLimits
+
+
+class ResourceBudget:
+    """Keep aggregate Attempt reservations below a Worker ceiling.
+
+    The capacity includes a separately reported Agent reserve.  This means
+    all configured slots can consume their declared per-Attempt ceiling while
+    the reserve remains unavailable to Attempts for heartbeat, Control,
+    RabbitMQ and cleanup work.
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity_cpu: float,
+        capacity_memory: int,
+        capacity_pids: int,
+        capacity_tmp: int,
+        agent_reserve_cpu: float,
+        agent_reserve_memory: int,
+        agent_reserve_pids: int,
+        agent_reserve_tmp: int,
+    ) -> None:
+        if (
+            capacity_cpu <= agent_reserve_cpu
+            or capacity_memory <= agent_reserve_memory
+            or capacity_pids <= agent_reserve_pids
+            or capacity_tmp <= agent_reserve_tmp
+        ):
+            raise ValueError("resource budget must leave an Agent reserve")
+        self._capacity = {
+            "cpu": float(capacity_cpu),
+            "memory": int(capacity_memory),
+            "pids": int(capacity_pids),
+            "tmp": int(capacity_tmp),
+        }
+        self._reserve = {
+            "cpu": float(agent_reserve_cpu),
+            "memory": int(agent_reserve_memory),
+            "pids": int(agent_reserve_pids),
+            "tmp": int(agent_reserve_tmp),
+        }
+        self._used: dict[str, float] = {key: 0.0 for key in self._capacity}
+        self._reservations: dict[str, ResourceLimits] = {}
+        self._lock = threading.RLock()
+
+    @classmethod
+    def for_worker(cls, config: SandboxConfig, slots: int) -> ResourceBudget:
+        if slots < 1:
+            raise ValueError("resource budget slots must be positive")
+        return cls(
+            capacity_cpu=config.cpu_cores * slots + max(0.25, config.cpu_cores * 0.25),
+            capacity_memory=config.memory_bytes * slots
+            + max(64 * 1024 * 1024, config.memory_bytes // 8),
+            capacity_pids=config.pids * slots + max(32, config.pids // 8),
+            capacity_tmp=config.tmp_bytes * slots + max(16 * 1024 * 1024, config.tmp_bytes // 8),
+            agent_reserve_cpu=max(0.25, config.cpu_cores * 0.25),
+            agent_reserve_memory=max(64 * 1024 * 1024, config.memory_bytes // 8),
+            agent_reserve_pids=max(32, config.pids // 8),
+            agent_reserve_tmp=max(16 * 1024 * 1024, config.tmp_bytes // 8),
+        )
+
+    def try_reserve(self, limits: ResourceLimits) -> ResourceReservation | None:
+        requested = {
+            "cpu": limits.cpu_cores,
+            "memory": limits.memory_bytes,
+            "pids": limits.pids,
+            "tmp": limits.tmp_bytes,
+        }
+        with self._lock:
+            for key, amount in requested.items():
+                if self._used[key] + amount > self._capacity[key] - self._reserve[key]:
+                    return None
+            token = uuid.uuid4().hex
+            for key, amount in requested.items():
+                self._used[key] += amount
+            self._reservations[token] = limits
+            return ResourceReservation(token, limits)
+
+    def release(self, reservation: ResourceReservation) -> None:
+        with self._lock:
+            limits = self._reservations.pop(reservation.token, None)
+            if limits is None:
+                return
+            self._used["cpu"] -= limits.cpu_cores
+            self._used["memory"] -= limits.memory_bytes
+            self._used["pids"] -= limits.pids
+            self._used["tmp"] -= limits.tmp_bytes
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "capacity": dict(self._capacity),
+                "agent_reserve": dict(self._reserve),
+                "used": dict(self._used),
+                "active_reservations": len(self._reservations),
+            }
+
+
+@dataclass(frozen=True)
 class CleanupResult:
     status: str
     error_code: str | None = None
@@ -455,6 +563,54 @@ def _write(path: Path, value: str) -> None:
 
 def _is_empty(path: Path) -> bool:
     return _read(path) == ""
+
+
+def _counter_file(path: Path) -> dict[str, int]:
+    """Read a bounded cgroup counter file without exposing its path."""
+    try:
+        values: dict[str, int] = {}
+        for line in path.read_text(encoding="ascii").splitlines()[:32]:
+            key, separator, raw = line.partition(" ")
+            if separator:
+                try:
+                    values[key] = int(raw.strip())
+                except ValueError:
+                    continue
+        return values
+    except OSError:
+        return {}
+
+
+def _integer_file(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _workspace_usage(path: Path, limit: int) -> tuple[int, int]:
+    """Return bounded (bytes, files) usage for one task-owned workspace."""
+    total = 0
+    files = 0
+    try:
+        for directory, dirnames, filenames in os.walk(path, followlinks=False):
+            dirnames[:] = [
+                name for name in dirnames if not os.path.islink(os.path.join(directory, name))
+            ]
+            for name in filenames:
+                candidate = Path(directory) / name
+                try:
+                    info = candidate.lstat()
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                    files += 1
+                    if total > limit:
+                        return total, files
+    except OSError:
+        return total, files
+    return total, files
 
 
 def _controllers(value: str) -> set[str]:
@@ -865,6 +1021,110 @@ def _copy_tree_as_owner(source: Path, target: Path, uid: int, gid: int) -> None:
     copy_directory(source, target)
 
 
+def _copy_bounded_output(
+    source: Path,
+    destination: Path,
+    metadata: Path,
+    max_bytes: int,
+    *,
+    source_uid: int | None = None,
+    source_gid: int | None = None,
+) -> None:
+    """Copy only an output prefix and retain the original stat size.
+
+    The Adapter writes into the bounded tmpfs.  Copying the whole output back
+    to the host workspace would defeat the output contract before the Worker
+    can apply its bounded reader, so the helper persists at most the allowed
+    prefix plus a tiny size/truncation metadata record.
+    """
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    if (source_uid is None) != (source_gid is None):
+        raise ValueError("source filesystem identity must be complete")
+    if source_uid is None:
+        source_fd = os.open(source, os.O_RDONLY | nofollow | cloexec)
+    else:
+        # The output is created by the non-root Adapter and may be mode 0600.
+        # Open only that source as the payload identity, then restore the
+        # supervisor fsuid before creating/replacing host-workspace files.
+        assert source_gid is not None
+        with _filesystem_identity(source_uid, source_gid):
+            source_fd = os.open(source, os.O_RDONLY | nofollow | cloexec)
+    try:
+        source_info = os.fstat(source_fd)
+        if not stat.S_ISREG(source_info.st_mode):
+            return
+        output_size = source_info.st_size
+    except BaseException:
+        os.close(source_fd)
+        raise
+    temporary = destination.with_name(f".{destination.name}.sandbox-{uuid.uuid4().hex}.tmp")
+    metadata_temporary = metadata.with_name(f".{metadata.name}.sandbox-{uuid.uuid4().hex}.tmp")
+    try:
+        destination_fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | cloexec,
+            0o600,
+        )
+        try:
+            source_stream = os.fdopen(source_fd, "rb")
+            source_fd = -1
+            destination_stream = os.fdopen(destination_fd, "wb")
+            destination_fd = -1
+        except BaseException:
+            os.close(destination_fd)
+            raise
+        with source_stream, destination_stream:
+            remaining = max_bytes
+            while remaining > 0:
+                chunk = source_stream.read(min(STREAM_COPY_CHUNK_BYTES, remaining))
+                if not chunk:
+                    break
+                destination_stream.write(chunk)
+                remaining -= len(chunk)
+            destination_stream.flush()
+            os.fsync(destination_stream.fileno())
+        os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR, follow_symlinks=False)
+        os.replace(temporary, destination)
+        metadata_fd = os.open(
+            metadata_temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | cloexec,
+            0o600,
+        )
+        try:
+            stream = os.fdopen(metadata_fd, "w", encoding="ascii")
+            metadata_fd = -1
+        except BaseException:
+            os.close(metadata_fd)
+            raise
+        with stream:
+            json.dump(
+                {"size": output_size, "truncated": output_size > max_bytes},
+                stream,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(metadata_temporary, stat.S_IRUSR | stat.S_IWUSR, follow_symlinks=False)
+        os.replace(metadata_temporary, metadata)
+    finally:
+        if source_fd >= 0:
+            with suppress(OSError):
+                os.close(source_fd)
+        if "destination_fd" in locals() and destination_fd >= 0:
+            with suppress(OSError):
+                os.close(destination_fd)
+        if "metadata_fd" in locals() and metadata_fd >= 0:
+            with suppress(OSError):
+                os.close(metadata_fd)
+        for path in (temporary, metadata_temporary):
+            with suppress(OSError):
+                path.unlink()
+
+
 def _replace_workspace(command: list[str], source: Path, target: Path) -> list[str]:
     """Rewrite the workspace root and every command argument below it."""
 
@@ -894,6 +1154,7 @@ def _helper_child(
     mount_root: Path,
     nofile: int,
     tmp_bytes: int,
+    output_max_bytes: int,
     payload_uid: int,
     payload_gid: int,
     hidden_cgroup_path: str | None,
@@ -1150,6 +1411,17 @@ def _helper_child(
             exit_code = 128 + os.WTERMSIG(status)
         else:
             exit_code = 125
+        try:
+            workspace_stats = os.statvfs(".")
+        except OSError:
+            workspace_stats = None
+        if workspace_stats is not None and workspace_stats.f_bavail == 0:
+            _write_helper_diagnostic(
+                diagnostic_fd,
+                "workspace_tmpfs_usage",
+                kind="os_error",
+                error_number=errno.ENOSPC,
+            )
         stage = "output_copy"
         assert workspace_relative is not None
         output = workspace_relative / "output.json"
@@ -1163,29 +1435,35 @@ def _helper_child(
             output_fd = -1
         if output_fd >= 0:
             staged_output = host_workspace / "output.json"
-            temporary = host_workspace / ".output.json.sandbox.tmp"
             try:
-                with (
-                    os.fdopen(output_fd, "rb") as source_stream,
-                    temporary.open("wb") as destination_stream,
-                ):
-                    output_fd = -1
-                    shutil.copyfileobj(source_stream, destination_stream)
-                os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR)
-                os.replace(temporary, staged_output)
+                os.close(output_fd)
+                output_fd = -1
+                _copy_bounded_output(
+                    output,
+                    staged_output,
+                    host_workspace / ".dlr-output-meta",
+                    output_max_bytes,
+                    source_uid=payload_uid,
+                    source_gid=payload_gid,
+                )
             finally:
                 if output_fd >= 0:
                     os.close(output_fd)
         return exit_code
     except OSError as error:
+        diagnostic_stage = (
+            "workspace_tmpfs_usage"
+            if error.errno == errno.ENOSPC and stage.startswith("workspace")
+            else stage
+        )
         _write_helper_diagnostic(
             diagnostic_fd,
-            stage,
+            diagnostic_stage,
             kind="os_error",
             error_number=error.errno or errno.EIO,
         )
         print(
-            f"DLR_SANDBOX_HELPER_ERROR:{stage}:errno={error.errno or errno.EIO}",
+            f"DLR_SANDBOX_HELPER_ERROR:{diagnostic_stage}:errno={error.errno or errno.EIO}",
             flush=True,
         )
         return 125
@@ -1254,6 +1532,7 @@ def _helper_main(argv: list[str]) -> int:
     parser.add_argument("--mount-root", required=True)
     parser.add_argument("--nofile", required=True, type=int)
     parser.add_argument("--tmp-bytes", required=True, type=int)
+    parser.add_argument("--output-max-bytes", required=True, type=int)
     parser.add_argument("--payload-uid", required=True, type=int)
     parser.add_argument("--payload-gid", required=True, type=int)
     parser.add_argument("--hidden-cgroup-path", default="")
@@ -1283,6 +1562,7 @@ def _helper_main(argv: list[str]) -> int:
             Path(args.mount_root),
             args.nofile,
             args.tmp_bytes,
+            args.output_max_bytes,
             args.payload_uid,
             args.payload_gid,
             args.hidden_cgroup_path or None,
@@ -1330,7 +1610,15 @@ class AttemptSandbox:
         self.attempt_id = attempt_id
         self.cgroup = _mkdir_child(self.parent, self.cgroup_name)
         self.workspace = workspace
-        self.mount_root = (workspace.parent / ".dlr-sandbox-mount").resolve()
+        # The production mount is derived from the validated Attempt identity
+        # (the attempt directory), not from marker-provided data or the
+        # execution leaf.  Preflight uses its one identity directory directly.
+        mount_parent = (
+            workspace
+            if PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(self.cgroup_name)
+            else workspace.parent
+        )
+        self.mount_root = (mount_parent / ".dlr-sandbox-mount").resolve()
         self.recovery_root = recovery_root
         try:
             self._limits_readback = _configure_child(self.cgroup, limits)
@@ -1349,6 +1637,7 @@ class AttemptSandbox:
         self._diagnostic_read_fd: int | None = None
         self._killed = False
         self._unmounted = False
+        self._dependency_tmpfs: Path | None = None
 
     @classmethod
     def for_preflight(
@@ -1360,7 +1649,11 @@ class AttemptSandbox:
         tmp_bytes: int = 1 << 20,
         cgroup_name: str | None = None,
     ) -> AttemptSandbox:
-        preflight_identity = cgroup_name or workspace.parent.name
+        preflight_identity = cgroup_name or (
+            workspace.name
+            if PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(workspace.name)
+            else workspace.parent.name
+        )
         if PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(preflight_identity) is None:
             raise SandboxError("sandbox_preflight_invalid")
         limits = ResourceLimits(
@@ -1468,6 +1761,8 @@ class AttemptSandbox:
                     str(self.limits.nofile),
                     "--tmp-bytes",
                     str(self.limits.tmp_bytes),
+                    "--output-max-bytes",
+                    str(self.limits.output_max_bytes),
                     "--payload-uid",
                     str(self.config.payload_uid),
                     "--payload-gid",
@@ -1535,27 +1830,82 @@ class AttemptSandbox:
                     os.killpg(os.getpgid(target.pid), signal.SIGKILL)
             raise
 
+    def mount_dependency_tmpfs(self, path: Path) -> None:
+        """Mount one exact task-owned tmpfs for dependency preparation.
+
+        Dependency installers are Worker-controlled commands, but their
+        package build hooks are not allowed to consume the host workspace.
+        Keep their temporary files inside the same Attempt boundary and
+        unmount this path before the workspace cleanup scanner runs.
+        """
+
+        if sys.platform != "linux":
+            raise SandboxError("sandbox_linux_target_required")
+        try:
+            workspace_root = self.workspace.resolve(strict=True)
+            target = Path(path).resolve(strict=False)
+        except OSError as error:
+            raise SandboxError("sandbox_workspace_tmpfs_prepare_failed") from error
+        if (
+            target == workspace_root
+            or not target.is_relative_to(workspace_root)
+            or target.name != ".dependency-tmp"
+            or target.exists()
+            and target.is_symlink()
+        ):
+            raise SandboxError("sandbox_workspace_tmpfs_prepare_failed")
+        try:
+            target.mkdir(mode=0o700)
+            _mount(
+                "tmpfs",
+                str(target),
+                "tmpfs",
+                MS_NOSUID | MS_NODEV | MS_NOEXEC,
+                f"size={self.limits.tmp_bytes},mode=0700",
+            )
+        except OSError as error:
+            with suppress(OSError):
+                target.rmdir()
+            raise SandboxError("sandbox_workspace_tmpfs_mount_failed") from error
+        self._dependency_tmpfs = target
+
     def resource_error_code(self) -> str | None:
         """Translate kernel cgroup event counters to stable result codes."""
 
-        def counters(filename: str) -> dict[str, int]:
-            try:
-                values: dict[str, int] = {}
-                for line in (self.cgroup / filename).read_text(encoding="ascii").splitlines():
-                    key, separator, raw = line.partition(" ")
-                    if separator:
-                        values[key] = int(raw.strip())
-                return values
-            except (OSError, ValueError):
-                return {}
-
-        memory = counters("memory.events")
+        memory = _counter_file(self.cgroup / "memory.events")
         if memory.get("oom_kill", 0) or memory.get("oom", 0):
             return "resource_exceeded_memory"
-        pids = counters("pids.events")
+        pids = _counter_file(self.cgroup / "pids.events")
         if pids.get("max", 0):
             return "resource_exceeded_pids"
+        used_bytes, _ = _workspace_usage(self.workspace, self.limits.tmp_bytes)
+        if used_bytes > self.limits.tmp_bytes:
+            return "resource_exceeded_disk"
         return None
+
+    def resource_usage(self) -> dict[str, Any]:
+        """Capture stable, path-free usage facts before cgroup teardown."""
+        usage: dict[str, Any] = {
+            "limits": self.limits.as_dict(),
+            "cpu": _counter_file(self.cgroup / "cpu.stat"),
+            "memory": {
+                "current": _integer_file(self.cgroup / "memory.current"),
+                "peak": _integer_file(self.cgroup / "memory.peak"),
+                "events": _counter_file(self.cgroup / "memory.events"),
+            },
+            "pids": {
+                "current": _integer_file(self.cgroup / "pids.current"),
+                "events": _counter_file(self.cgroup / "pids.events"),
+            },
+        }
+        used_bytes, file_count = _workspace_usage(self.workspace, self.limits.tmp_bytes)
+        usage["tmpfs"] = {
+            "bytes": used_bytes,
+            "files": file_count,
+            "limit": self.limits.tmp_bytes,
+            "bounded": used_bytes <= self.limits.tmp_bytes,
+        }
+        return usage
 
     def _write_recovery_marker(self) -> None:
         try:
@@ -1587,8 +1937,10 @@ class AttemptSandbox:
         except OSError:
             logger.warning("sandbox recovery marker could not be persisted")
 
-    def cleanup(self, *, wait_seconds: float = 2.0) -> CleanupResult:
+    def cleanup(self, *, wait_seconds: float | None = None) -> CleanupResult:
         killed = self._killed
+        if wait_seconds is None:
+            wait_seconds = float(self.limits.cleanup_attempt_seconds)
         if self._process is not None and self._process.poll() is None:
             try:
                 self.kill(self._process)
@@ -1623,6 +1975,9 @@ class AttemptSandbox:
                 time.sleep(0.05)
             else:
                 raise SandboxError("sandbox_cleanup_failed")
+            if self._dependency_tmpfs is not None:
+                _unmount(str(self._dependency_tmpfs))
+                self._dependency_tmpfs = None
             self.cgroup.rmdir()
             if self.mount_root.exists():
                 shutil.rmtree(self.mount_root)
@@ -1711,8 +2066,10 @@ def run_preflight(
     preflight_name = _new_preflight_identity()
     temp_root = preflight_root / preflight_name
     temp_root.mkdir(mode=0o700)
-    workspace = temp_root / "dlr-preflight-workspace"
-    workspace.mkdir(mode=0o700)
+    # The one generated identity is both the transient cgroup name and the
+    # runtime-root child directory. Keeping the workspace at that exact
+    # level makes the recovery mount derivable without trusting marker data.
+    workspace = temp_root
     output_log = workspace / ".probe.log"
     attempt: AttemptSandbox | None = None
     process: subprocess.Popen[bytes] | None = None
@@ -2009,6 +2366,34 @@ def _validate_preflight_recovery_parent(
         raise ValueError
 
 
+def _validate_attempt_recovery_parent(runtime_root: Path, name: str, expected_mount: Path) -> None:
+    """Require the exact Worker-created Attempt directory before recovery."""
+
+    match = ATTEMPT_CGROUP_NAME_PATTERN.fullmatch(name)
+    if match is None:
+        return
+    try:
+        root = runtime_root.resolve(strict=True)
+        workspaces = root / "workspaces"
+        attempt_directory = workspaces / f"attempt-{match.group('attempt_id')}"
+        normalized_expected = Path(os.path.normpath(os.fspath(expected_mount)))
+        workspaces_info = workspaces.lstat()
+        attempt_info = attempt_directory.lstat()
+    except OSError as error:
+        raise ValueError from error
+    if (
+        normalized_expected.parent != attempt_directory
+        or workspaces.parent != root
+        or not stat.S_ISDIR(workspaces_info.st_mode)
+        or stat.S_IMODE(workspaces_info.st_mode) != 0o700
+        or workspaces_info.st_uid != os.geteuid()
+        or not stat.S_ISDIR(attempt_info.st_mode)
+        or stat.S_IMODE(attempt_info.st_mode) != 0o700
+        or attempt_info.st_uid != os.geteuid()
+    ):
+        raise ValueError
+
+
 def _validated_recovery_mount(
     mount_path: str,
     runtime_root: Path,
@@ -2106,6 +2491,7 @@ def recover(config: SandboxConfig, recovery_root: Path, *, runtime_root: Path) -
             ):
                 raise ValueError
             expected_mount = _derived_recovery_mount(runtime_root, name, execution_id)
+            _validate_attempt_recovery_parent(runtime_root, name, expected_mount)
             _validate_preflight_recovery_parent(runtime_root, name, expected_mount)
             mount = _validated_recovery_mount(
                 mount_path,

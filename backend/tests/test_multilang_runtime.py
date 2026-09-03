@@ -844,9 +844,8 @@ def test_dependency_logs_are_unified_and_ready_environments_skip_install(
     assert len(uv_installs) == 1, "uv must resolve all Python requirements jointly"
     assert len(npm_installs) == 1, "npm must install the complete manifest once"
     assert len(maven_installs) == 1, "Maven must mediate the complete dependency graph once"
-    assert "--extra-index-url" in (
-        tmp_path / "python" / "adapters" / "30" / "versions" / "1" / "requirements.txt"
-    ).read_text(encoding="utf-8")
+    requirements_path = next((tmp_path / "python").rglob("requirements.txt"))
+    assert "--extra-index-url" in requirements_path.read_text(encoding="utf-8")
     assert npm_packages == [
         {
             "private": True,
@@ -951,9 +950,16 @@ def test_maven_mirror_controls_plugin_and_dependency_resolution_without_persiste
             maven_commands.append(command)
             if "-o" in command:
                 raise venv.DependencyPreparationError("offline fixture miss", "")
-            (directory / "deps" / "fixture.jar").write_bytes(b"fixture")
+            output_argument = next(
+                argument for argument in command if argument.startswith("-DoutputDirectory=")
+            )
+            deps = Path(output_argument.split("=", 1)[1])
+            deps.mkdir(parents=True, exist_ok=True)
+            (deps / "fixture.jar").write_bytes(b"fixture")
         elif command[0] == "javac":
-            (directory / "classes" / "Adapter.class").write_bytes(b"fixture")
+            classes = Path(command[command.index("-d") + 1])
+            classes.mkdir(parents=True, exist_ok=True)
+            (classes / "Adapter.class").write_bytes(b"fixture")
         return ""
 
     monkeypatch.setattr(venv, "_run_logged", fake_run)

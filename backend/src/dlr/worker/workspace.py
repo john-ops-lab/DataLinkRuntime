@@ -1138,7 +1138,7 @@ def recover_cleanup_journals(
         return {"inspected": 0, "completed": 0, "deferred": 0, "retained": 0}
     counts = {"inspected": 0, "completed": 0, "deferred": 0, "retained": 0}
     try:
-        candidates = list(root.iterdir())
+        candidates = sorted(root.iterdir(), key=lambda path: path.name)
     except OSError:
         return counts
     for candidate in candidates:

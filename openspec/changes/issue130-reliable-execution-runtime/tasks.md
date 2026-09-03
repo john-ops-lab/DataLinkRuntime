@@ -108,19 +108,19 @@
 
 ## 12. Batch 3 — 运行期有界与依赖准备
 
-- [ ] 12.1 把`.log`/spool改为硬字节上限并使用固定内存ring/pending-progress队列；验证：无换行/高频日志洪水下文件、RSS、队列均保持边界
-- [ ] 12.2 把Output `read_bytes()`路径替换为stat + `limit+1` bounded stream；验证：超大output不整文件入内存且size/preview/truncated/error准确
-- [ ] 12.3 让Python/npm/Maven dependency preparation进入Attempt cgroup/timeout/log/tmpfs边界；验证：慢下载、日志洪水、fork、磁盘满只终止当前Attempt
-- [ ] 12.4 实现只读已验证version cache与global byte reservation/low-watermark/bounded atomic promotion；验证：并发cache miss不超卖、失败staging可清理、Adapter不能写共享cache
-- [ ] 12.5 实现memory/pids/disk/timeout/sandbox-prepare稳定error与resource usage采集；验证：Control/Web zh-CN/en映射一致且无宿主路径
-- [ ] 12.6 验证Worker Agent reserve与多slots合计预算；验证：所有slots在limit压力下Agent仍heartbeat/renew/cancel/report，Control/Rabbit/Postgres健康
+- [x] 12.1 把`.log`/spool改为硬字节上限并使用固定内存ring/pending-progress队列；验证：无换行/高频日志洪水下文件、RSS、队列均保持边界
+- [x] 12.2 把Output `read_bytes()`路径替换为stat + `limit+1` bounded stream；验证：超大output不整文件入内存且size/preview/truncated/error准确
+- [x] 12.3 让Python/npm/Maven dependency preparation进入Attempt cgroup/timeout/log/tmpfs边界；验证：慢下载、日志洪水、fork、磁盘满只终止当前Attempt
+- [x] 12.4 实现只读已验证version cache与global byte reservation/low-watermark/bounded atomic promotion；验证：并发cache miss不超卖、失败staging可清理、Adapter不能写共享cache
+- [x] 12.5 实现memory/pids/disk/timeout/sandbox-prepare稳定error与resource usage采集；验证：Control/Web zh-CN/en映射一致且无宿主路径
+- [x] 12.6 验证Worker Agent reserve与多slots合计预算；验证：所有slots在limit压力下Agent仍heartbeat/renew/cancel/report，Control/Rabbit/Postgres健康
 
 ## 13. Batch 3 — Sandbox 故障与 Candidate Gate
 
-- [ ] 13.1 对Python/JavaScript/Java分别注入CPU、Memory OOM、fork bomb、tmpfs fill、FD与wall timeout；验证：每次只终止目标Attempt，稳定error/cleanup正确，其他Attempt继续
-- [ ] 13.2 注入log flood、超大Output、dependency timeout/cache low-watermark与cleanup residue；验证：运行期资源全有界、startup recovery幂等、日志无Secret/path
-- [ ] 13.3 在真实Linux cgroup v2 Compose运行startup preflight和完整fault matrix；验证：不可用环境明确fail closed，不能以macOS/模拟结果替代
-- [ ] 13.4 运行Batch3相关Backend/Web/Compose/三语言测试与安全扫描；验证：所有失败修复或 `BLOCKED_B3_GATE`，全绿前不进入Cutover
+- [x] 13.1 对Python/JavaScript/Java分别注入CPU、Memory OOM、fork bomb、tmpfs fill、FD与wall timeout；验证：每次只终止目标Attempt，稳定error/cleanup正确，其他Attempt继续
+- [x] 13.2 注入log flood、超大Output、dependency timeout/cache low-watermark与cleanup residue；验证：运行期资源全有界、startup recovery幂等、日志无Secret/path
+- [x] 13.3 在真实Linux cgroup v2 Compose运行startup preflight和完整fault matrix；验证：不可用环境明确fail closed，不能以macOS/模拟结果替代
+- [x] 13.4 运行Batch3相关Backend/Web/Compose/三语言测试与安全扫描；验证：所有失败修复或 `BLOCKED_B3_GATE`，全绿前不进入Cutover
 - [ ] 13.5 形成Sandbox checkpoint Candidate SHA，由当前主代理Sol做exact-SHA只读资源/安全审计并修复finding；验证：最新SHA审计PASS且尚未执行不可逆Cutover
 
 ## 14. Batch 3 — Final Cutover

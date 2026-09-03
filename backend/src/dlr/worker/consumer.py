@@ -73,6 +73,12 @@ class V3Consumer:
         self._stop = threading.Event()
         self._pause = threading.Event()
         self._slots = threading.BoundedSemaphore(config.execution_slots)
+        sandbox_config = getattr(runtime_settings, "sandbox_config", None)
+        self._resource_budget = (
+            sandbox.ResourceBudget.for_worker(sandbox_config, config.execution_slots)
+            if sandbox_config is not None
+            else None
+        )
         self._pool = ThreadPoolExecutor(
             max_workers=config.execution_slots,
             thread_name_prefix="dlr-v3-attempt",
@@ -252,6 +258,20 @@ class V3Consumer:
                 else:
                     self._request_pause(connection, channel)
                 return False
+        reservation: sandbox.ResourceReservation | None = None
+        if self._resource_budget is not None:
+            assert prevalidated_profile is not None
+            reservation = self._resource_budget.try_reserve(prevalidated_profile)
+            if reservation is None:
+                if self._report_prepare_failure(
+                    decision,
+                    error_code="resource_capacity_unavailable",
+                    error_class="platform_transient",
+                ):
+                    self._ack(connection, channel, delivery_tag)
+                else:
+                    self._request_pause(connection, channel)
+                return False
         try:
             planned_workspace = workspace.workspace_path(
                 self._config.runtime_root,
@@ -270,17 +290,21 @@ class V3Consumer:
                 cleanup_token=payload.cleanup_token,
             )
         except Exception:
+            if reservation is not None and self._resource_budget is not None:
+                self._resource_budget.release(reservation)
             if self._report_prepare_failure(decision):
                 self._ack(connection, channel, delivery_tag)
             else:
                 self._request_pause(connection, channel)
             return False
         try:
-            self._pool.submit(self._run_attempt, payload)
+            self._pool.submit(self._run_attempt, payload, reservation)
         except RuntimeError:
             # A concurrent stop can close the pool after the journal has been
             # made durable. Leave the Attempt to Control lease recovery; do
             # not ACK a delivery while pretending the local run was queued.
+            if reservation is not None and self._resource_budget is not None:
+                self._resource_budget.release(reservation)
             self._request_pause(connection, channel)
             return False
         self._ack(connection, channel, delivery_tag)
@@ -310,7 +334,11 @@ class V3Consumer:
         except (ControlUnavailableError, ClientError, KeyError, TypeError, ValueError):
             return False
 
-    def _run_attempt(self, payload: V3TaskPayload) -> None:
+    def _run_attempt(
+        self,
+        payload: V3TaskPayload,
+        reservation: sandbox.ResourceReservation | None = None,
+    ) -> None:
         try:
             try:
                 start_response = self._client.start_attempt(
@@ -464,6 +492,8 @@ class V3Consumer:
                 payload.attempt_id,
             )
         finally:
+            if reservation is not None and self._resource_budget is not None:
+                self._resource_budget.release(reservation)
             self._slots.release()
 
     def _defer(

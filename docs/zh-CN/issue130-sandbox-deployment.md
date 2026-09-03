@@ -327,13 +327,30 @@ capability ceiling；同一 profile 同时 malformed 且超上限时，必须返
 `resource_profile_invalid`，不能先返回 `resource_profile_exceeds_worker_capability`。
 
 v1/v2 legacy 与普通流量保持原有路径；minimum protocol 仍不是 3，RabbitMQ/v3 只有在
-完整 preflight matrix 通过后才可由 Control 视为可用。更广的 dependency/cache、log/spool
-和 output 运行期预算属于后续 12.x，不由本阶段静默扩大范围。
+完整 preflight matrix 通过后才可由 Control 视为可用。12.x 的运行期边界也必须沿用同一
+Attempt：`.log` 与 progress pending queue 使用固定内存 ring 和硬字节上限；Output 使用
+`stat` 加 `limit+1` 流式读取；Python/npm/Maven dependency preparation 在 Attempt 的
+cgroup、tmpfs、RLIMIT_NOFILE、超时和脱敏日志边界内运行。version cache 只接受带闭合
+identity、digest、byte count 和不可写 `.ready` 标记的原子 promotion，并在 staging 前
+持有全局 byte reservation 与 low-watermark；Adapter 不得写共享 cache。memory/pids/disk/
+timeout/sandbox-prepare 失败使用稳定 error code，receipt 只包含有界 resource usage，不
+包含宿主路径。Worker 的每个 slot 还必须保留单独 Agent reserve，不能把全部 delegated
+容量分配给 Attempts。
+
+13.x 的真实 Linux matrix 必须对 Python、JavaScript、Java 分别覆盖 CPU、memory、pids/
+fork、tmpfs、FD、wall timeout、log flood、超大 output、dependency timeout、cache
+low-watermark、cancel、crash 与 recovery；一次故障只能 kill 对应 Attempt，其他 Attempt
+和 Agent 继续工作。Recovery 仍只接受由 `runtime_root` 与已校验 Attempt/preflight
+identity 派生的 workspace，伪造 marker 不得删除无关 sentinel。不能用 macOS、host-only
+或模拟 cgroup 结果替代真实 Compose Worker；不可用环境必须保持 v3 fail closed。
 
 ## 验证边界
 
 `scripts/issue130-b3-compose-audit.sh` 使用匿名占位值渲染 override，并断言上述
-security/cgroup 条件，同时拒绝 `privileged: true`、Docker socket 和 cgroup root
-broad mount。Compose 配置审计不能替代目标 Linux 上的真实 startup probe；真实运行期
-receipt 应记录 target kernel、ControlGroup、child limits、membership、namespace、
-cleanup 和 residue=0，且只清理本次精确 task-owned 资源。
+security/cgroup、bounded runtime、cache、recovery 与 multilingual matrix 条件，同时拒绝
+`privileged: true`、Docker socket 和 cgroup root broad mount。Compose 配置审计不能替代
+目标 Linux 上的真实 startup probe；真实运行期 receipt 应记录 target kernel、ControlGroup、
+child limits、membership、namespace、bounded log/output/dependency/cache/fault facts、
+cleanup 和 residue=0，且只清理本次精确 task-owned 资源。通过 audit 的源码和测试存在性
+同样不能单独标记 OpenSpec 任务完成；只有最终 actual-Compose receipt 通过后才能更新
+对应复选框。

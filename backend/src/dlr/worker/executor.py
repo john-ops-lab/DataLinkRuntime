@@ -28,14 +28,17 @@ process group is killed and the final report uses status ``cancelled``.
 import json
 import logging
 import os
+import selectors
 import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from dlr.common.bigfields import truncate_utf8
 from dlr.common.config import settings
@@ -65,8 +68,22 @@ PROGRESS_POLL_SECONDS = 1.0
 # so a wedged upload must never delay the final result for longer than this.
 PROGRESS_DRAIN_SECONDS = 1.0
 
+RESOURCE_ERROR_CODES = frozenset(
+    {
+        "resource_exceeded_memory",
+        "resource_exceeded_pids",
+        "resource_exceeded_disk",
+    }
+)
+
 # M5.5.10: every unified-log line carries one capture-time prefix.
 LOG_LINE_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# A read from a regular file or pipe must never be allowed to turn one noisy
+# Adapter into an in-memory queue.  The value is deliberately smaller than
+# the protocol cap and is only a read chunk; the ring itself is bounded by the
+# immutable Resource Profile.
+STREAM_READ_CHUNK_BYTES = 64 * 1024
 
 # Receives already redacted (stdout_chunk, stderr_chunk) and returns whether
 # Control requested cancellation of this Execution (M3.2); see run().
@@ -192,16 +209,150 @@ class _LineTimestampBuffer:
         return _timestamped_line(tail)
 
 
-def _timestamped_text(text: str) -> str:
-    """Timestamp an already-redacted whole text (e.g. a dependency log)."""
+class _BoundedByteRing:
+    """Fixed-memory head/tail byte ring used for logs and progress payloads.
+
+    The old executor accumulated every poll in a Python ``str`` and applied
+    ``truncate_utf8`` only at the very end.  That made a newline-free flood
+    unbounded even though the wire result was capped.  This ring stores at
+    most ``max_bytes`` worth of head/tail data plus a small amount of metadata
+    and retains the omitted-byte count for the stable truncation marker.
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        if max_bytes < 1:
+            raise ValueError("bounded ring requires a positive byte limit")
+        self.max_bytes = max_bytes
+        self._data = bytearray()
+        self._head = bytearray()
+        self._tail = deque[bytes]()
+        self._tail_bytes = 0
+        self._total_bytes = 0
+        self._truncated = False
+
+    @property
+    def truncated(self) -> bool:
+        return self._truncated
+
+    @property
+    def total_bytes(self) -> int:
+        return self._total_bytes
+
+    def add(self, value: str | bytes) -> None:
+        raw = value if isinstance(value, bytes) else value.encode("utf-8")
+        if not raw:
+            return
+        self._total_bytes += len(raw)
+        if not self._truncated and len(self._data) + len(raw) <= self.max_bytes:
+            self._data.extend(raw)
+            return
+        if not self._truncated:
+            # Keep only a bounded prefix/suffix while transitioning.  Do not
+            # concatenate a potentially huge caller-owned value.
+            self._head = self._data[: self._head_budget()]
+            self._tail = deque()
+            self._tail_bytes = 0
+            self._append_tail(bytes(self._data[self._head_budget() :]))
+            self._data.clear()
+            self._truncated = True
+        self._append_tail(raw)
+
+    def _head_budget(self) -> int:
+        return max(0, (self.max_bytes - 96) // 2)
+
+    def _tail_budget(self) -> int:
+        return max(0, self.max_bytes - self._head_budget() - 96)
+
+    def _append_tail(self, raw: bytes) -> None:
+        budget = self._tail_budget()
+        if budget <= 0:
+            return
+        if len(raw) >= budget:
+            self._tail.clear()
+            self._tail.append(raw[-budget:])
+            self._tail_bytes = budget
+            return
+        self._tail.append(raw)
+        self._tail_bytes += len(raw)
+        while self._tail_bytes > budget and self._tail:
+            first = self._tail.popleft()
+            excess = self._tail_bytes - budget
+            if len(first) <= excess:
+                self._tail_bytes -= len(first)
+            else:
+                kept = first[excess:]
+                self._tail.appendleft(kept)
+                self._tail_bytes -= excess
+
+    def bytes(self) -> bytes:
+        if not self._truncated:
+            return bytes(self._data)
+        omitted = max(0, self._total_bytes - len(self._head) - self._tail_bytes)
+        marker = f"\n...[truncated {omitted} bytes]...\n".encode("ascii")
+        available = max(0, self.max_bytes - len(marker))
+        head_length = min(len(self._head), available // 2)
+        tail_length = min(self._tail_bytes, available - head_length)
+        head = bytes(self._head[:head_length])
+        tail = b"".join(self._tail)[-tail_length:] if tail_length else b""
+        result = head + marker + tail
+        if len(result) <= self.max_bytes:
+            return result
+        # Extremely large omitted counts can make the marker itself consume
+        # more than the reserved budget.  Preserve the hard cap and retain a
+        # valid UTF-8-ish marker prefix rather than spilling memory.
+        return result[: self.max_bytes]
+
+    def text(self) -> str:
+        return self.bytes().decode("utf-8", errors="replace")
+
+
+def _bounded_text(value: str, max_bytes: int) -> tuple[str, bool]:
+    ring = _BoundedByteRing(max_bytes)
+    ring.add(value)
+    return ring.text(), ring.truncated
+
+
+def _timestamped_text(text: str, max_bytes: int | None = None) -> str:
+    """Timestamp text into a bounded ring (e.g. a dependency log)."""
     buffer = _LineTimestampBuffer()
-    return buffer.push(text) + buffer.flush()
+    if max_bytes is None:
+        return buffer.push(text) + buffer.flush()
+    ring = _BoundedByteRing(max_bytes)
+    for offset in range(0, len(text), STREAM_READ_CHUNK_BYTES):
+        ring.add(buffer.push(text[offset : offset + STREAM_READ_CHUNK_BYTES]))
+    ring.add(buffer.flush())
+    return ring.text()
 
 
-def _finalize_stream(path: Path, secret_values: Iterable[str]) -> str:
-    """Build the full timestamped stream text from a finished log file."""
-    raw = path.read_bytes().decode("utf-8", errors="replace")
-    return _timestamped_text(redact_secrets(raw, secret_values))
+def _finalize_stream(
+    path: Path,
+    secret_values: Iterable[str],
+    max_bytes: int | None = None,
+) -> str:
+    """Build a bounded timestamped stream from a finished log file.
+
+    Whole-file reads are intentionally avoided.  The file may be much larger
+    than the reported field cap when an Adapter writes without
+    newlines; the ring and fixed read chunks keep Worker RSS bounded.
+    """
+    limit = settings.execution_stream_max_bytes if max_bytes is None else max_bytes
+    ring = _BoundedByteRing(limit)
+    guard = _SecretHoldback(secret_values)
+    lines = _LineTimestampBuffer()
+    try:
+        with path.open("rb") as stream:
+            while True:
+                raw = stream.read(STREAM_READ_CHUNK_BYTES)
+                if not raw:
+                    break
+                text = raw.decode("utf-8", errors="replace")
+                formatted = lines.push(guard.push(text))
+                ring.add(formatted)
+        ring.add(lines.push(guard.flush()))
+        ring.add(lines.flush())
+    except OSError:
+        return ""
+    return ring.text()
 
 
 class _SecretHoldback:
@@ -295,7 +446,54 @@ def _redact_json_value(value: Any, secret_values: Iterable[str]) -> Any:
 def _cap_stream(raw: bytes, max_bytes: int | None = None) -> tuple[str, bool]:
     limit = settings.execution_stream_max_bytes if max_bytes is None else max_bytes
     capped, truncated = truncate_utf8(raw, limit)
+    # A bounded ring has already inserted the canonical marker before this
+    # final serialization pass.  Its rendered bytes can fit under ``limit``
+    # even though the source file was larger, so preserve that fact.
+    truncated = truncated or b"...[truncated " in raw
     return capped.decode("utf-8", errors="replace"), truncated
+
+
+def _read_bounded_file(path: Path, limit: int) -> tuple[bytes, int, bool]:
+    """Read at most ``limit + 1`` bytes and return ``(prefix, size, huge)``.
+
+    ``stat`` is authoritative for the reported size, while the extra byte
+    handles a file that grows between stat and open.  Callers must not parse
+    ``prefix`` when ``huge`` is true.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return b"", 0, False
+    try:
+        with path.open("rb") as stream:
+            prefix = stream.read(max(0, limit) + 1)
+    except OSError:
+        return b"", size, False
+    observed_size = max(size, len(prefix))
+    huge = observed_size > limit or len(prefix) > limit
+    return prefix[:limit], observed_size, huge
+
+
+def _read_output_metadata(path: Path) -> tuple[int | None, bool]:
+    """Read the helper's tiny original-size record without unbounded input."""
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(256)
+        value = json.loads(raw)
+    except (OSError, UnicodeDecodeError, ValueError, TypeError):
+        return None, False
+    if not isinstance(value, dict):
+        return None, False
+    size = value.get("size")
+    truncated = value.get("truncated")
+    if (
+        not isinstance(size, int)
+        or isinstance(size, bool)
+        or size < 0
+        or not isinstance(truncated, bool)
+    ):
+        return None, False
+    return size, truncated
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
@@ -318,11 +516,14 @@ class _ProgressUploader:
     and stretch the adapter timeout semantics.
     """
 
-    def __init__(self, callback: ProgressCallback) -> None:
+    def __init__(self, callback: ProgressCallback, max_bytes: int | None = None) -> None:
         self._callback = callback
+        self._max_bytes = settings.execution_stream_max_bytes if max_bytes is None else max_bytes
         self._lock = threading.Lock()
         self._idle = threading.Condition(self._lock)
-        self._pending: tuple[str, str] = ("", "")
+        self._pending_stdout = _BoundedByteRing(self._max_bytes)
+        self._pending_stderr = _BoundedByteRing(self._max_bytes)
+        self._pending = False
         self._in_flight = False
         self._cancel = threading.Event()
 
@@ -337,8 +538,9 @@ class _ProgressUploader:
         subprocess without any output can still observe a cancel request.
         """
         with self._lock:
-            out, err = self._pending
-            self._pending = (out + stdout_chunk, err + stderr_chunk)
+            self._pending_stdout.add(stdout_chunk)
+            self._pending_stderr.add(stderr_chunk)
+            self._pending = True
             if self._in_flight:
                 return
             self._in_flight = True
@@ -353,7 +555,7 @@ class _ProgressUploader:
         """
         with self._idle:
             end = time.monotonic() + timeout
-            while self._in_flight or self._pending != ("", ""):
+            while self._in_flight or self._pending:
                 remaining = end - time.monotonic()
                 if remaining <= 0:
                     return
@@ -362,8 +564,11 @@ class _ProgressUploader:
     def _run(self) -> None:
         while True:
             with self._lock:
-                stdout_chunk, stderr_chunk = self._pending
-                self._pending = ("", "")
+                stdout_chunk = self._pending_stdout.text()
+                stderr_chunk = self._pending_stderr.text()
+                self._pending_stdout = _BoundedByteRing(self._max_bytes)
+                self._pending_stderr = _BoundedByteRing(self._max_bytes)
+                self._pending = False
             # Always invoke (even with empty chunks): the round trip is the
             # cancel channel, so a silent subprocess still gets polled.
             try:
@@ -375,7 +580,7 @@ class _ProgressUploader:
                 # risk copying a delegated credential into it.
                 logger.warning("progress upload failed; continuing execution")
             with self._lock:
-                if self._pending == ("", ""):
+                if not self._pending:
                     self._in_flight = False
                     self._idle.notify_all()
                     return
@@ -393,7 +598,7 @@ class _StreamTailer:
         self._pending = bytearray()
 
     def read_new(self) -> str:
-        raw = self._handle.read()
+        raw = self._handle.read(STREAM_READ_CHUNK_BYTES)
         if raw:
             self._pending.extend(raw)
         data = bytes(self._pending)
@@ -419,6 +624,60 @@ class _StreamTailer:
         self._handle.close()
 
 
+class _BoundedLogWriter:
+    """Write a raw subprocess stream while keeping the on-disk log capped.
+
+    The subprocess is drained through a pipe, so a noisy Adapter cannot block
+    on a full log file.  Only the first ``max_bytes`` raw bytes are persisted;
+    the formatter below still keeps a bounded head/tail report and records the
+    fact that bytes were omitted.
+    """
+
+    def __init__(self, path: Path, max_bytes: int) -> None:
+        if max_bytes < 1:
+            raise ValueError("bounded log requires a positive byte limit")
+        descriptor = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_TRUNC
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        self._handle = os.fdopen(descriptor, "wb")
+        self.max_bytes = max_bytes
+        self.written_bytes = 0
+        self.total_bytes = 0
+        self.truncated = False
+
+    def write(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self.total_bytes += len(chunk)
+        remaining = self.max_bytes - self.written_bytes
+        if remaining <= 0:
+            self.truncated = True
+            return
+        data = chunk[:remaining]
+        self._handle.write(data)
+        self._handle.flush()
+        self.written_bytes += len(data)
+        if len(data) != len(chunk):
+            self.truncated = True
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+def _pipe_chunk(stream: Any) -> bytes:
+    """Read one bounded chunk from a real or test pipe."""
+    reader = getattr(stream, "read1", None)
+    if callable(reader):
+        return cast(bytes, reader(STREAM_READ_CHUNK_BYTES))
+    return cast(bytes, stream.read(STREAM_READ_CHUNK_BYTES))
+
+
 def _wait_with_progress(
     process: subprocess.Popen[bytes],
     stream_path: Path,
@@ -426,6 +685,7 @@ def _wait_with_progress(
     progress_callback: ProgressCallback | None,
     secret_values: Iterable[str] = (),
     kill_callback: Callable[[], None] | None = None,
+    max_bytes: int | None = None,
 ) -> tuple[int, bool, bool, str]:
     """Wait for the adapter subprocess, uploading unified live-log chunks.
 
@@ -453,6 +713,113 @@ def _wait_with_progress(
         if process.poll() is None:
             _kill_process_group(process)
 
+    process_stdout = getattr(process, "stdout", None)
+    if process_stdout is not None:
+        stream_limit = settings.execution_stream_max_bytes if max_bytes is None else max_bytes
+        writer = _BoundedLogWriter(stream_path, stream_limit)
+        pipe_selector = selectors.DefaultSelector()
+        pipe_selector.register(process_stdout, selectors.EVENT_READ)
+        guard = _SecretHoldback(secret_values)
+        line_buffer = _LineTimestampBuffer()
+        final_ring = _BoundedByteRing(stream_limit)
+        uploader = (
+            _ProgressUploader(progress_callback, stream_limit)
+            if progress_callback is not None
+            else None
+        )
+
+        def emit(raw: bytes = b"", *, final: bool = False) -> None:
+            if raw:
+                writer.write(raw)
+                text = guard.push(raw.decode("utf-8", errors="replace"))
+            else:
+                text = guard.push("")
+            if final:
+                text += guard.flush()
+            text = line_buffer.push(text)
+            if final:
+                text += line_buffer.flush()
+            final_ring.add(text)
+            if uploader is not None:
+                # Empty submissions are the cancel poll for silent payloads.
+                uploader.submit(text, "")
+
+        def drain_ready() -> None:
+            while pipe_selector.get_map():
+                events = pipe_selector.select(0)
+                if not events:
+                    return
+                for key, _ in events:
+                    chunk = _pipe_chunk(key.fileobj)
+                    if chunk:
+                        emit(chunk)
+                    else:
+                        pipe_selector.unregister(key.fileobj)
+
+        def drain_after_terminate() -> None:
+            drain_deadline = time.monotonic() + PROGRESS_DRAIN_SECONDS
+            while pipe_selector.get_map() and time.monotonic() < drain_deadline:
+                events = pipe_selector.select(
+                    min(0.05, max(0.0, drain_deadline - time.monotonic()))
+                )
+                if not events:
+                    continue
+                for key, _ in events:
+                    chunk = _pipe_chunk(key.fileobj)
+                    if chunk:
+                        emit(chunk)
+                    else:
+                        pipe_selector.unregister(key.fileobj)
+            if process.poll() is None:
+                with suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=0.2)
+            if process.poll() is None:
+                _kill_process_group(process)
+            drain_ready()
+
+        deadline = time.monotonic() + timeout
+        timed_out = False
+        cancelled = False
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    terminate()
+                    timed_out = True
+                    drain_after_terminate()
+                    emit(final=True)
+                    if uploader is not None:
+                        uploader.drain(PROGRESS_DRAIN_SECONDS)
+                    return -1, timed_out, cancelled, final_ring.text()
+                wait_slice = min(PROGRESS_POLL_SECONDS, remaining)
+                events = pipe_selector.select(wait_slice)
+                for key, _ in events:
+                    chunk = _pipe_chunk(key.fileobj)
+                    if chunk:
+                        emit(chunk)
+                    else:
+                        pipe_selector.unregister(key.fileobj)
+                drain_ready()
+                if uploader is not None:
+                    emit()
+                    if uploader.cancel_requested:
+                        terminate()
+                        cancelled = True
+                        drain_after_terminate()
+                        emit(final=True)
+                        uploader.drain(PROGRESS_DRAIN_SECONDS)
+                        return -1, timed_out, cancelled, final_ring.text()
+                if process.poll() is not None and not pipe_selector.get_map():
+                    emit(final=True)
+                    if uploader is not None:
+                        uploader.drain(PROGRESS_DRAIN_SECONDS)
+                    return process.returncode or 0, timed_out, cancelled, final_ring.text()
+        finally:
+            pipe_selector.close()
+            with suppress(OSError):
+                process_stdout.close()
+            writer.close()
+
     if progress_callback is None:
         try:
             returncode = process.wait(timeout=timeout)
@@ -460,7 +827,7 @@ def _wait_with_progress(
                 returncode,
                 False,
                 False,
-                _finalize_stream(stream_path, secret_values),
+                _finalize_stream(stream_path, secret_values, max_bytes),
             )
         except subprocess.TimeoutExpired:
             terminate()
@@ -470,11 +837,11 @@ def _wait_with_progress(
     tailer = _StreamTailer(stream_path)
     guard = _SecretHoldback(secret_values)
     line_buffer = _LineTimestampBuffer()
-    uploader = _ProgressUploader(progress_callback)
-    final_text = ""
+    stream_limit = settings.execution_stream_max_bytes if max_bytes is None else max_bytes
+    uploader = _ProgressUploader(progress_callback, stream_limit)
+    final_ring = _BoundedByteRing(stream_limit)
 
-    def emit(final: bool = False) -> None:
-        nonlocal final_text
+    def emit_file(final: bool = False) -> None:
         text = guard.push(tailer.read_new())
         if final:
             # Process is gone: release the hold-back tails as well.
@@ -482,8 +849,7 @@ def _wait_with_progress(
         text = line_buffer.push(text)
         if final:
             text += line_buffer.flush()
-        if text:
-            final_text += text
+        final_ring.add(text)
         # Empty submissions are kept: they double as the cancel poll so a
         # subprocess without any output can still observe a cancel request.
         uploader.submit(text, "")
@@ -493,25 +859,25 @@ def _wait_with_progress(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 terminate()
-                emit(final=True)
+                emit_file(final=True)
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
-                return -1, True, False, final_text
+                return -1, True, False, final_ring.text()
             # Wait at most one poll slice, and never past the execution
             # deadline; uploads run off-thread and can never delay this loop.
             wait_slice = min(PROGRESS_POLL_SECONDS, remaining)
             try:
                 returncode = process.wait(timeout=wait_slice)
-                emit(final=True)  # final drain so the live view matches the end state
+                emit_file(final=True)  # final drain so the live view matches the end state
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
-                return returncode, False, False, final_text
+                return returncode, False, False, final_ring.text()
             except subprocess.TimeoutExpired:
                 pass
-            emit()
+            emit_file()
             if uploader.cancel_requested:
                 terminate()
-                emit(final=True)
+                emit_file(final=True)
                 uploader.drain(PROGRESS_DRAIN_SECONDS)
-                return -1, False, True, final_text
+                return -1, False, True, final_ring.text()
     finally:
         tailer.close()
 
@@ -829,8 +1195,24 @@ def run(
     secret_values = _env_secret_values() + [value for value in payload_secrets.values() if value]
     dependency_secret_values = secret_values + venv_manager.package_index_secret_values(index_url)
 
-    dependency_log: list[str] = []
-    dependency_uploader = _ProgressUploader(progress_callback) if progress_callback else None
+    stream_limit = (
+        sandbox_limits.stream_max_bytes
+        if sandbox_limits is not None
+        else settings.execution_stream_max_bytes
+    )
+    dependency_log_ring = _BoundedByteRing(stream_limit)
+    dependency_uploader = (
+        _ProgressUploader(progress_callback, stream_limit) if progress_callback else None
+    )
+
+    # v3 dependency preparation is itself an Attempt workload.  Establish the
+    # journaled workspace and delegated cgroup before invoking uv/npm/Maven so
+    # a slow, noisy or fork-heavy build cannot run beside the Worker Agent.
+    layout: workspace_manager.WorkspaceLayout | None = None
+    workspace: Path | None = None
+    sandbox_attempt: sandbox.AttemptSandbox | None = None
+    dependency_context: venv_manager.DependencyExecutionContext | None = None
+    attempt_timeout, total_timeout = cleanup_budget
 
     def emit_dependency_log(message: str, level: str = "INFO") -> None:
         """Format and upload one redacted dependency-stage line."""
@@ -842,9 +1224,61 @@ def run(
             f"{i18n.text(locale, 'dependency.log_prefix')} {safe_message}",
             dependency_secret_values,
         )
-        dependency_log.append(line)
+        dependency_log_ring.add(line)
         if dependency_uploader is not None:
             dependency_uploader.submit(line, "")
+
+    if protocol_version == 3 and sandbox_limits is not None:
+        try:
+            if planned_workspace is None:
+                planned_workspace = workspace_manager.workspace_path(
+                    config.runtime_root,
+                    execution_id,
+                    attempt_id=attempt_id,
+                )
+            layout = workspace_manager.create_workspace(
+                config.runtime_root,
+                execution_id,
+                attempt_id=attempt_id,
+                attempt_timeout_seconds=attempt_timeout,
+                total_timeout_seconds=total_timeout,
+            )
+            workspace = layout.root
+            assert attempt_id is not None
+            sandbox_config = config.sandbox_config
+            if sandbox_config is None:
+                raise sandbox.SandboxError("sandbox_linux_target_required")
+            sandbox_attempt = sandbox.AttemptSandbox(
+                sandbox_config,
+                sandbox_limits,
+                execution_id=execution_id,
+                attempt_id=attempt_id,
+                workspace=workspace,
+                recovery_root=cleanup_journal_root / "sandbox-recovery",
+            )
+            dependency_tmp = layout.temp / ".dependency-tmp"
+            sandbox_attempt.mount_dependency_tmpfs(dependency_tmp)
+            dependency_context = venv_manager.DependencyExecutionContext(
+                cgroup_path=sandbox_attempt.cgroup,
+                tmpdir=dependency_tmp,
+                nofile=sandbox_limits.nofile,
+                log_max_bytes=stream_limit,
+            )
+        except (sandbox.SandboxError, workspace_manager.WorkspaceError, OSError) as error:
+            if sandbox_attempt is not None:
+                sandbox_attempt.cleanup()
+            if workspace is not None:
+                workspace_manager.cleanup_workspace(
+                    workspace,
+                    attempt_timeout_seconds=attempt_timeout,
+                    total_timeout_seconds=total_timeout,
+                )
+            error_code = (
+                error.code
+                if isinstance(error, (sandbox.SandboxError, workspace_manager.WorkspaceError))
+                else "workspace_cleanup_failed"
+            )
+            return _workspace_failure(locale, error_code, protocol_version=3)
 
     runtime_path: Path | None = None
     preparation_error: venv_manager.DependencyPreparationError | None = None
@@ -859,6 +1293,11 @@ def run(
                     timeout_seconds=config.dep_install_timeout_seconds,
                     index_url=index_url,
                     dependency_log=emit_dependency_log,
+                    **(
+                        {"dependency_context": dependency_context}
+                        if dependency_context is not None
+                        else {}
+                    ),
                 )
             elif language == "javascript":
                 runtime_path = nodeenv.prepare_version_node(
@@ -870,6 +1309,11 @@ def run(
                     timeout_seconds=config.dep_install_timeout_seconds,
                     registry_url=index_url,
                     dependency_log=emit_dependency_log,
+                    **(
+                        {"dependency_context": dependency_context}
+                        if dependency_context is not None
+                        else {}
+                    ),
                 )
             elif language == "java":
                 runtime_path = javaenv.prepare_version_java(
@@ -881,6 +1325,11 @@ def run(
                     timeout_seconds=config.dep_install_timeout_seconds,
                     repository_url=index_url,
                     dependency_log=emit_dependency_log,
+                    **(
+                        {"dependency_context": dependency_context}
+                        if dependency_context is not None
+                        else {}
+                    ),
                 )
             else:
                 result = {
@@ -963,27 +1412,38 @@ def run(
         failure_detail += f": {failure_message}"
         # M5.5.10: the dependency failure lives in the unified log stream
         # (stdout channel) with the same line format as every other source.
-        unified_log = "".join(dependency_log)
-        unified_log += _timestamped_text(redact_secrets(safe_install_log, dependency_secret_values))
+        unified_log_ring = _BoundedByteRing(stream_limit)
+        unified_log_ring.add(dependency_log_ring.text())
+        unified_log_ring.add(
+            _timestamped_text(
+                redact_secrets(safe_install_log, dependency_secret_values),
+                stream_limit,
+            )
+        )
         result_error = failure_detail
-        unified_log += _platform_message(
-            "ERROR",
-            failure_message,
-            dependency_secret_values,
+        unified_log_ring.add(
+            _platform_message(
+                "ERROR",
+                failure_message,
+                dependency_secret_values,
+            )
         )
-        unified_log += _platform_message(
-            "ERROR",
-            i18n.text(locale, "dependency.script_not_started"),
-            dependency_secret_values,
+        unified_log_ring.add(
+            _platform_message(
+                "ERROR",
+                i18n.text(locale, "dependency.script_not_started"),
+                dependency_secret_values,
+            )
         )
+        unified_log = unified_log_ring.text()
         stdout, stdout_truncated = _cap_stream(
             unified_log.encode(),
             sandbox_limits.stream_max_bytes if sandbox_limits is not None else None,
         )
-        return {
+        result = {
             "status": "failed",
             "error": redact_secrets(result_error, dependency_secret_values),
-            "error_code": "dependency_preparation_failed",
+            "error_code": preparation.error_code,
             "stdout": stdout,
             "stdout_truncated": stdout_truncated,
             "stderr": "",
@@ -997,48 +1457,79 @@ def run(
                 else {}
             ),
         }
+        if sandbox_attempt is not None:
+            preparation_usage = sandbox_attempt.resource_usage()
+            preparation_cleanup = sandbox_attempt.cleanup()
+            result["resource_usage"] = preparation_usage
+            result["cleanup_summary"] = {
+                "sandbox": {
+                    "status": preparation_cleanup.status,
+                    "error_code": preparation_cleanup.error_code,
+                    "cgroup": preparation_cleanup.cgroup_name,
+                    "mount": preparation_cleanup.mount_name,
+                    "killed": preparation_cleanup.killed,
+                    "unmounted": preparation_cleanup.unmounted,
+                    "residue": preparation_cleanup.residue,
+                    "limits": sandbox_attempt.limits_readback,
+                }
+            }
+        if workspace is not None:
+            preparation_workspace_cleanup = workspace_manager.cleanup_workspace(
+                workspace,
+                attempt_timeout_seconds=attempt_timeout,
+                total_timeout_seconds=total_timeout,
+            )
+            result["workspace_cleanup_status"] = preparation_workspace_cleanup.status
+            result["workspace_cleanup_error_code"] = preparation_workspace_cleanup.error_code
+        return result
 
     assert runtime_path is not None
-    dependency_log_text = "".join(dependency_log)
-    attempt_timeout, total_timeout = cleanup_budget
-    try:
-        if planned_workspace is None:
-            planned_workspace = workspace_manager.workspace_path(
+    dependency_log_text = dependency_log_ring.text()
+    if layout is None:
+        try:
+            if planned_workspace is None:
+                planned_workspace = workspace_manager.workspace_path(
+                    config.runtime_root,
+                    execution_id,
+                    attempt_id=attempt_id if protocol_version == 3 else None,
+                )
+            layout = workspace_manager.create_workspace(
                 config.runtime_root,
                 execution_id,
                 attempt_id=attempt_id if protocol_version == 3 else None,
+                attempt_timeout_seconds=attempt_timeout,
+                total_timeout_seconds=total_timeout,
             )
-        layout = workspace_manager.create_workspace(
-            config.runtime_root,
-            execution_id,
-            attempt_id=attempt_id if protocol_version == 3 else None,
-            attempt_timeout_seconds=attempt_timeout,
-            total_timeout_seconds=total_timeout,
-        )
-    except workspace_manager.WorkspaceError as error:
-        logger.warning("controlled workspace unavailable for execution %s", execution_id)
-        result = _workspace_failure(
-            locale,
-            error.code,
-            protocol_version=protocol_version,
-        )
-        if protocol_version >= 2:
-            cleanup_outcome = error.cleanup_outcome or workspace_manager.CleanupOutcome("completed")
-            result["workspace_cleanup_status"] = cleanup_outcome.status
-            result["workspace_cleanup_error_code"] = cleanup_outcome.error_code
-        return result
+        except workspace_manager.WorkspaceError as error:
+            logger.warning("controlled workspace unavailable for execution %s", execution_id)
+            result = _workspace_failure(
+                locale,
+                error.code,
+                protocol_version=protocol_version,
+            )
+            if protocol_version >= 2:
+                cleanup_outcome = error.cleanup_outcome or workspace_manager.CleanupOutcome(
+                    "completed"
+                )
+                result["workspace_cleanup_status"] = cleanup_outcome.status
+                result["workspace_cleanup_error_code"] = cleanup_outcome.error_code
+            return result
+    assert layout is not None
     workspace = layout.root
     output_raw: bytes | None = None
+    output_size_on_disk: int | None = None
+    output_file_truncated = False
     timed_out = False
     cancelled = False
     returncode = 0
     cleanup_outcome = workspace_manager.CleanupOutcome("deferred", "workspace_cleanup_failed")
     cleanup_attempted = False
-    sandbox_attempt: sandbox.AttemptSandbox | None = None
     sandbox_cleanup: sandbox.CleanupResult | None = None
     sandbox_error_code: str | None = None
     sandbox_diagnostic: sandbox.HelperDiagnostic | None = None
-    unified_log = dependency_log_text
+    resource_usage: dict[str, Any] | None = None
+    unified_log_ring = _BoundedByteRing(stream_limit)
+    unified_log_ring.add(dependency_log_text)
     try:
         try:
             if language == "python":
@@ -1089,56 +1580,78 @@ def run(
             return result
 
         stdout_path = workspace / ".log"
-        with stdout_path.open("wb") as out_file:
-            # M5.5.10 unified stream: stderr merges into the same file at the
-            # OS level, so the captured text keeps the actual byte order of
-            # stdout, stderr, logger and traceback output.
-            if protocol_version == 3 and config.sandbox_config is not None:
-                assert sandbox_limits is not None and attempt_id is not None
-                sandbox_attempt = sandbox.AttemptSandbox(
-                    config.sandbox_config,
-                    sandbox_limits,
-                    execution_id=execution_id,
-                    attempt_id=attempt_id,
-                    workspace=workspace,
-                    recovery_root=cleanup_journal_root / "sandbox-recovery",
-                )
-                process = sandbox_attempt.start(
-                    command,
-                    stdout=out_file,
-                    environment=child_env(payload_secrets),
-                )
-                returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
-                    process,
-                    stdout_path,
-                    timeout,
-                    progress_callback,
-                    secret_values,
-                    kill_callback=lambda: sandbox_attempt.kill(process),
-                )
-            else:
-                process = subprocess.Popen(  # noqa: S603 - fixed harness command
-                    command,
-                    stdout=out_file,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                    env=child_env(payload_secrets),
-                    cwd=str(workspace),
-                )
-                returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
-                    process, stdout_path, timeout, progress_callback, secret_values
-                )
-            unified_log = dependency_log_text + runtime_log
+        # Drain the child through a bounded parent-side pipe.  Passing an open
+        # file directly to Popen lets an untrusted Adapter grow ``.log``
+        # without a runtime write boundary; _wait_with_progress persists only
+        # the configured prefix while continuing to drain the pipe.
+        if protocol_version == 3 and config.sandbox_config is not None:
+            assert sandbox_limits is not None and attempt_id is not None
+            assert sandbox_attempt is not None
+            process = sandbox_attempt.start(
+                command,
+                stdout=subprocess.PIPE,
+                environment=child_env(payload_secrets),
+            )
+            returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
+                process,
+                stdout_path,
+                timeout,
+                progress_callback,
+                secret_values,
+                kill_callback=lambda: sandbox_attempt.kill(process),
+                max_bytes=sandbox_limits.stream_max_bytes,
+            )
+        else:
+            process = subprocess.Popen(  # noqa: S603 - fixed harness command
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=child_env(payload_secrets),
+                cwd=str(workspace),
+            )
+            returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
+                process,
+                stdout_path,
+                timeout,
+                progress_callback,
+                secret_values,
+                max_bytes=(
+                    sandbox_limits.stream_max_bytes
+                    if sandbox_limits is not None
+                    else settings.execution_stream_max_bytes
+                ),
+            )
+        unified_log_ring = _BoundedByteRing(stream_limit)
+        unified_log_ring.add(dependency_log_text)
+        unified_log_ring.add(runtime_log)
         if sandbox_attempt is not None:
             sandbox_error_code = sandbox_attempt.resource_error_code()
+            resource_usage = sandbox_attempt.resource_usage()
         if not timed_out and not cancelled and sandbox_error_code is None and returncode == 0:
             output_file = workspace / "output.json"
-            output_raw = output_file.read_bytes() if output_file.exists() else None
+            output_limit = (
+                sandbox_limits.output_max_bytes
+                if sandbox_limits is not None
+                else settings.execution_output_max_bytes
+            )
+            if output_file.exists():
+                output_raw, output_size_on_disk, output_file_truncated = _read_bounded_file(
+                    output_file, output_limit
+                )
+                metadata_size, metadata_truncated = _read_output_metadata(
+                    workspace / ".dlr-output-meta"
+                )
+                if metadata_size is not None:
+                    output_size_on_disk = max(output_size_on_disk or 0, metadata_size)
+                    output_file_truncated = output_file_truncated or metadata_truncated
     except sandbox.SandboxError as error:
         # The staging Workspace is still cleaned by the outer finally.  The
         # Adapter was never execed when this boundary is reached.
         sandbox_error_code = error.code
-        unified_log += _platform_message("ERROR", "sandbox preparation failed", secret_values)
+        unified_log_ring.add(
+            _platform_message("ERROR", "sandbox preparation failed", secret_values)
+        )
         returncode = 125
     finally:
         if sandbox_attempt is not None:
@@ -1175,6 +1688,8 @@ def run(
         }
         if sandbox_diagnostic is not None:
             sandbox_summary["helper_diagnostic"] = sandbox_diagnostic.as_dict()
+        if resource_usage is not None:
+            sandbox_summary["resource_usage"] = resource_usage
 
     cleanup_fields = {
         "workspace_cleanup_status": cleanup_outcome.status,
@@ -1184,20 +1699,24 @@ def run(
     # M5.5.10: terminal platform messages are appended to the unified stream
     # (redacted, timestamped) so the log alone explains the outcome.
     if cancelled:
-        unified_log += _platform_message(
-            "ERROR",
-            "execution cancelled"
-            if legacy_terminal_text
-            else i18n.text(locale, "execution.cancelled"),
-            secret_values,
+        unified_log_ring.add(
+            _platform_message(
+                "ERROR",
+                "execution cancelled"
+                if legacy_terminal_text
+                else i18n.text(locale, "execution.cancelled"),
+                secret_values,
+            )
         )
     elif timed_out:
-        unified_log += _platform_message(
-            "ERROR",
-            f"execution timed out after {timeout}s"
-            if legacy_terminal_text
-            else i18n.text(locale, "execution.timed_out", timeout=timeout),
-            secret_values,
+        unified_log_ring.add(
+            _platform_message(
+                "ERROR",
+                f"execution timed out after {timeout}s"
+                if legacy_terminal_text
+                else i18n.text(locale, "execution.timed_out", timeout=timeout),
+                secret_values,
+            )
         )
     elif returncode != 0:
         if sandbox_diagnostic is not None:
@@ -1212,30 +1731,62 @@ def run(
                 if legacy_terminal_text
                 else i18n.text(locale, "execution.process_exited", returncode=returncode)
             )
-        unified_log += _platform_message(
-            "ERROR",
-            message,
-            secret_values,
+        unified_log_ring.add(
+            _platform_message(
+                "ERROR",
+                message,
+                secret_values,
+            )
         )
     elif output_raw is None:
-        unified_log += _platform_message(
-            "ERROR",
-            "adapter produced no output.json"
-            if legacy_terminal_text
-            else i18n.text(locale, "execution.no_output"),
-            secret_values,
+        unified_log_ring.add(
+            _platform_message(
+                "ERROR",
+                "adapter produced no output.json"
+                if legacy_terminal_text
+                else i18n.text(locale, "execution.no_output"),
+                secret_values,
+            )
         )
+    elif output_file_truncated:
+        preview_max_bytes = (
+            sandbox_limits.output_preview_max_bytes
+            if sandbox_limits is not None
+            else settings.execution_output_preview_max_bytes
+        )
+        preview_ring = _BoundedByteRing(preview_max_bytes)
+        preview_ring.add(
+            redact_secrets((output_raw or b"").decode("utf-8", errors="replace"), secret_values)
+        )
+        unified_log_ring.add(
+            _platform_message(
+                "ERROR",
+                i18n.text(locale, "execution.output_too_large"),
+                secret_values,
+            )
+        )
+        base_output_too_large = {
+            "status": "succeeded",
+            "error_code": "output_too_large",
+            "output_truncated": True,
+            "output_size": output_size_on_disk or len(output_raw or b""),
+            "output_preview": preview_ring.text(),
+        }
     else:
         try:
             output_value = json.loads(output_raw)
         except ValueError as error:
-            unified_log += _platform_message(
-                "ERROR",
-                f"invalid output.json: {error}"
-                if legacy_terminal_text
-                else i18n.text(locale, "execution.invalid_output", detail=error),
-                secret_values,
+            unified_log_ring.add(
+                _platform_message(
+                    "ERROR",
+                    f"invalid output.json: {error}"
+                    if legacy_terminal_text
+                    else i18n.text(locale, "execution.invalid_output", detail=error),
+                    secret_values,
+                )
             )
+
+    unified_log = unified_log_ring.text()
 
     stdout, stdout_truncated = _cap_stream(
         unified_log.encode(),
@@ -1252,20 +1803,32 @@ def run(
     }
     if protocol_version >= 2:
         base.update(cleanup_fields)
+    if resource_usage is not None:
+        base["resource_usage"] = resource_usage
     if sandbox_summary is not None:
         base["cleanup_summary"] = {"sandbox": sandbox_summary}
 
     if cancelled:
-        return base | {"status": "cancelled", "error": "execution cancelled"}
+        return base | {
+            "status": "cancelled",
+            "error": "execution cancelled",
+            "error_code": "execution_cancelled",
+        }
     if timed_out:
         return base | {
             "status": "timeout",
             "error": redact_secrets(f"execution timed out after {timeout}s", secret_values),
+            "error_code": "execution_timeout",
         }
     if sandbox_error_code is not None:
+        resource_failure = sandbox_error_code in RESOURCE_ERROR_CODES
         return base | {
-            "status": "failed",
-            "error": "Sandbox preparation failed",
+            "status": "resource_exceeded" if resource_failure else "failed",
+            "error": (
+                i18n.text(locale, "execution.resource_exceeded")
+                if resource_failure
+                else "Sandbox preparation failed"
+            ),
             "error_code": sandbox_error_code,
         }
     if returncode != 0:
@@ -1278,6 +1841,9 @@ def run(
         return base | failure_result
     if output_raw is None:
         return base | {"status": "failed", "error": "adapter produced no output.json"}
+
+    if output_file_truncated:
+        return base | base_output_too_large
 
     try:
         output_value = json.loads(output_raw)
@@ -1312,6 +1878,7 @@ def run(
     preview = serialized[:preview_max_bytes].decode("utf-8", errors="ignore")
     return base | {
         "status": "succeeded",
+        "error_code": "output_too_large",
         "output_truncated": True,
         "output_size": len(serialized),
         "output_preview": redact_secrets(preview, secret_values),

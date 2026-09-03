@@ -18,6 +18,19 @@ it("preserves an existing Chinese domain message with its stable code", () => {
   );
 });
 
+it("maps sandbox resource codes through the bilingual domain catalog", () => {
+  expect(userErrorMessage(new ApiError(200, "resource_exceeded_memory", "opaque"))).toBe(
+    "执行超出内存限制（错误码：resource_exceeded_memory）",
+  );
+  expect(
+    userErrorMessage(
+      new ApiError(200, "resource_exceeded_memory", "opaque"),
+      undefined,
+      "en",
+    ),
+  ).toBe("The execution exceeded its memory limit (Error code: resource_exceeded_memory)");
+});
+
 it("keeps bounded Retry-After feedback separate from the server body", async () => {
   const fetchMock = vi.fn().mockResolvedValue(
     new Response(

@@ -13,24 +13,51 @@ source index URL, and fails with an explicit operator-facing message when
 neither is available.
 """
 
+import hashlib
 import logging
 import os
 import re
+import resource
+import selectors
 import shutil
+import signal
 import subprocess
 import threading
-from collections.abc import Callable, Iterable
+import time
+from collections.abc import Callable, Iterable, Mapping
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 from urllib import parse as url_parse
 
-from dlr.worker import i18n
+from dlr.worker import cache, i18n
+from dlr.worker.cache import CacheReservation, VerifiedVersionCache
 
 logger = logging.getLogger("dlr.worker.venv")
 
 DependencyLogCallback = Callable[[str], None]
 
+
+@dataclass(frozen=True)
+class DependencyExecutionContext:
+    """The already-created Attempt boundary used by dependency preparation."""
+
+    cgroup_path: Path
+    tmpdir: Path
+    nofile: int
+    log_max_bytes: int
+
+
+# Keep the original function as an explicit test seam.  Unit tests that
+# replace ``subprocess.run`` still get their deterministic fake, while real
+# dependency commands use the fixed-chunk Popen reader below.
+_ORIGINAL_SUBPROCESS_RUN = subprocess.run
+_DEPENDENCY_READ_CHUNK = 64 * 1024
+
 _build_locks: dict[tuple[int, int], threading.Lock] = {}
 _build_locks_guard = threading.Lock()
+_CACHE_RESERVATION_BYTES = 256 * 1024 * 1024
 
 _URI_USERINFO_PATTERN = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#@]+@")
 
@@ -274,10 +301,17 @@ def classify_dependency_install_error(
     return i18n.source_hint(locale, dependency_source_hint_code(log))
 
 
-def _run_install_logged(command: list[str], timeout_seconds: int) -> str:
+def _run_install_logged(
+    command: list[str],
+    timeout_seconds: int,
+    *,
+    context: DependencyExecutionContext | None = None,
+) -> str:
     """Run a dependency-install command with an actionable error hint appended."""
     try:
-        return _run_logged(command, timeout_seconds)
+        if context is None:
+            return _run_logged(command, timeout_seconds)
+        return _run_logged(command, timeout_seconds, context=context)
     except DependencyPreparationError as error:
         # Keep the exception message locale-neutral. The executor owns the
         # user-facing localized hint and the raw install log remains separate.
@@ -287,7 +321,24 @@ def _run_install_logged(command: list[str], timeout_seconds: int) -> str:
             dependency=error.dependency,
             hint_code=error.hint_code,
             no_source=error.no_source,
+            error_code=error.error_code,
         ) from error
+
+
+def _run_logged_in_context(
+    command: list[str], timeout_seconds: int, context: DependencyExecutionContext | None
+) -> str:
+    if context is None:
+        return _run_logged(command, timeout_seconds)
+    return _run_logged(command, timeout_seconds, context=context)
+
+
+def _run_install_logged_in_context(
+    command: list[str], timeout_seconds: int, context: DependencyExecutionContext | None
+) -> str:
+    if context is None:
+        return _run_install_logged(command, timeout_seconds)
+    return _run_install_logged(command, timeout_seconds, context=context)
 
 
 class DependencyPreparationError(Exception):
@@ -300,11 +351,13 @@ class DependencyPreparationError(Exception):
         dependency: str | None = None,
         hint_code: str | None = None,
         no_source: bool = False,
+        error_code: str = "dependency_preparation_failed",
     ) -> None:
         super().__init__(message)
         self.install_log = install_log
         self.dependency = dependency
         self.hint_code = hint_code or dependency_source_hint_code(install_log)
+        self.error_code = error_code
         # Stable machine marker: this failure is exactly "no dependency source
         # is configured". The executor replaces the English instruction with
         # the Execution-locale message without relying on the dependency label.
@@ -321,7 +374,66 @@ def _lock_for(adapter_id: int, version_id: int) -> threading.Lock:
 
 
 def version_dir(runtime_root: Path, adapter_id: int, version_id: int) -> Path:
-    return runtime_root / "adapters" / str(adapter_id) / "versions" / str(version_id)
+    return runtime_root / "version-cache" / "entries" / f"{adapter_id}-{version_id}"
+
+
+def _cache_identity(
+    adapter_id: int,
+    version_id: int,
+    language: str,
+    source: str,
+) -> dict[str, object]:
+    return {
+        "adapter_id": adapter_id,
+        "version_id": version_id,
+        "language": language,
+        "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+    }
+
+
+@dataclass
+class _VersionBuild:
+    cache: VerifiedVersionCache
+    staging: Path
+    target: Path
+    reservation: CacheReservation
+
+    def finish(self, identity: Mapping[str, object]) -> Path:
+        return self.cache.promote(
+            self.staging,
+            self.target,
+            identity=identity,
+            reservation=self.reservation,
+        )
+
+    def abort(self) -> None:
+        try:
+            self.cache.remove_staging(self.staging)
+        finally:
+            self.reservation.release()
+
+
+def _begin_version_build(
+    runtime_root: Path,
+    adapter_id: int,
+    version_id: int,
+    *,
+    identity: Mapping[str, object],
+) -> tuple[VerifiedVersionCache, Path, _VersionBuild | None]:
+    version_cache = VerifiedVersionCache(runtime_root / "version-cache")
+    target = version_dir(runtime_root, adapter_id, version_id)
+    if version_cache.verify(target, identity):
+        return version_cache, target, None
+    if target.exists():
+        version_cache.remove_entry(target)
+    reservation = version_cache.reserve(_CACHE_RESERVATION_BYTES)
+    staging = version_cache.staging_path(f"{adapter_id}-{version_id}", reservation.token)
+    try:
+        staging.mkdir(mode=0o700)
+    except OSError as error:
+        reservation.release()
+        raise cache.CacheError("cache_staging_create_failed") from error
+    return version_cache, target, _VersionBuild(version_cache, staging, target, reservation)
 
 
 def venv_python(directory: Path) -> Path:
@@ -339,29 +451,187 @@ def _partial_log(error: subprocess.TimeoutExpired) -> str:
     return "".join(chunks)
 
 
-def _run_logged(command: list[str], timeout_seconds: int) -> str:
-    """Run a command with a minimal environment, returning its redacted combined output."""
+def _dependency_resource_error(context: DependencyExecutionContext | None) -> str | None:
+    """Map an Attempt's bounded kernel counters to a stable dependency code."""
+    if context is None:
+        return None
+    try:
+        events = {}
+        for line in (
+            (context.cgroup_path / "memory.events").read_text(encoding="ascii").splitlines()
+        ):
+            key, separator, value = line.partition(" ")
+            if separator:
+                with suppress(ValueError):
+                    events[key] = int(value.strip())
+        if events.get("oom_kill", 0) or events.get("oom", 0):
+            return "resource_exceeded_memory"
+    except OSError:
+        pass
+    try:
+        events = {}
+        for line in (context.cgroup_path / "pids.events").read_text(encoding="ascii").splitlines():
+            key, separator, value = line.partition(" ")
+            if separator:
+                with suppress(ValueError):
+                    events[key] = int(value.strip())
+        if events.get("max", 0):
+            return "resource_exceeded_pids"
+    except OSError:
+        pass
+    try:
+        if os.statvfs(context.tmpdir).f_bavail == 0:
+            return "resource_exceeded_disk"
+    except OSError:
+        pass
+    return None
+
+
+def _run_logged(
+    command: list[str],
+    timeout_seconds: int,
+    *,
+    context: DependencyExecutionContext | None = None,
+) -> str:
+    """Run a dependency command with bounded output and optional Attempt join."""
     env = _dependency_env()
+    if context is not None:
+        context.tmpdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        env.update(
+            {
+                "TMPDIR": str(context.tmpdir),
+                "TMP": str(context.tmpdir),
+                "TEMP": str(context.tmpdir),
+            }
+        )
     sensitive_values = [
         value for argument in command for value in package_index_secret_values(argument)
     ]
+
+    def preexec() -> None:
+        if context is not None:
+            with (context.cgroup_path / "cgroup.procs").open("w", encoding="ascii") as stream:
+                stream.write(f"{os.getpid()}\n")
+            resource.setrlimit(resource.RLIMIT_NOFILE, (context.nofile, context.nofile))
+
+    if subprocess.run is not _ORIGINAL_SUBPROCESS_RUN:
+        # Compatibility seam for existing in-process tests and embedders that
+        # replace the runner.  Production never enters this branch.
+        try:
+            completed = subprocess.run(  # noqa: S603 - fixed dependency command list
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise DependencyPreparationError(
+                f"{' '.join(command[:3])} timed out after {timeout_seconds}s",
+                _redact_sensitive(_partial_log(error), sensitive_values),
+                error_code="dependency_timeout",
+            ) from error
+        log = _redact_sensitive(completed.stdout + completed.stderr, sensitive_values)
+        if completed.returncode != 0:
+            raise DependencyPreparationError(f"{' '.join(command[:3])} failed", log)
+        return log
+
+    selector = selectors.DefaultSelector()
+    process: subprocess.Popen[bytes] | None = None
+    log_limit = context.log_max_bytes if context is not None else 1 * 1024 * 1024
+    ring = bytearray()
+    total_bytes = 0
+    truncated = False
+
+    def append_output(chunk: bytes) -> None:
+        nonlocal total_bytes, truncated
+        total_bytes += len(chunk)
+        if len(ring) < log_limit:
+            remaining = log_limit - len(ring)
+            ring.extend(chunk[:remaining])
+        if total_bytes > log_limit:
+            truncated = True
+
+    def terminate() -> None:
+        if context is not None:
+            try:
+                (context.cgroup_path / "cgroup.kill").write_text("1\n", encoding="ascii")
+            except OSError:
+                logger.warning("dependency cgroup kill failed", exc_info=True)
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except OSError:
+                process.kill()
+
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed uv command list
+        process = subprocess.Popen(  # noqa: S603 - fixed dependency command list
             command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             env=env,
+            start_new_session=True,
+            # ``start_new_session`` performs the session transition in the
+            # child.  Calling setsid again from a pre-exec hook races with
+            # that transition and fails with EPERM on macOS/Linux.
+            preexec_fn=preexec if context is not None else None,
         )
+        assert process.stdout is not None
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + timeout_seconds
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate()
+                process.wait()
+                raise DependencyPreparationError(
+                    f"{' '.join(command[:3])} timed out after {timeout_seconds}s",
+                    _redact_sensitive(bytes(ring).decode(errors="replace"), sensitive_values),
+                    error_code="dependency_timeout",
+                )
+            for key, _ in selector.select(min(0.25, remaining)):
+                chunk = cast(Any, key.fileobj).read(_DEPENDENCY_READ_CHUNK)
+                if chunk:
+                    append_output(chunk)
+                else:
+                    selector.unregister(key.fileobj)
+        returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
     except subprocess.TimeoutExpired as error:
+        terminate()
+        if process is not None:
+            process.wait()
         raise DependencyPreparationError(
             f"{' '.join(command[:3])} timed out after {timeout_seconds}s",
-            _redact_sensitive(_partial_log(error), sensitive_values),
+            _redact_sensitive(bytes(ring).decode(errors="replace"), sensitive_values),
+            error_code="dependency_timeout",
         ) from error
-    log = _redact_sensitive(completed.stdout + completed.stderr, sensitive_values)
-    if completed.returncode != 0:
-        raise DependencyPreparationError(f"{' '.join(command[:3])} failed", log)
+    except (OSError, subprocess.SubprocessError) as error:
+        terminate()
+        raise DependencyPreparationError(
+            f"{' '.join(command[:3])} failed",
+            _redact_sensitive(bytes(ring).decode(errors="replace"), sensitive_values),
+            error_code="dependency_sandbox_failed",
+        ) from error
+    finally:
+        if process is not None and process.poll() is None:
+            terminate()
+            process.wait()
+        selector.close()
+    log = _redact_sensitive(bytes(ring).decode(errors="replace"), sensitive_values)
+    if truncated:
+        marker = f"\n...[truncated dependency log after {total_bytes} bytes]...\n".encode("ascii")
+        if len(marker) >= log_limit:
+            log = marker[:log_limit].decode("ascii", errors="replace")
+        else:
+            prefix = bytes(ring)[: log_limit - len(marker)]
+            log = (prefix + marker).decode("utf-8", errors="replace")
+    if returncode != 0:
+        raise DependencyPreparationError(
+            f"{' '.join(command[:3])} failed",
+            log,
+            error_code=_dependency_resource_error(context) or "dependency_preparation_failed",
+        )
     return log
 
 
@@ -374,26 +644,44 @@ def prepare_version_venv(
     timeout_seconds: int,
     index_url: str | None = None,
     dependency_log: DependencyLogCallback | None = None,
+    dependency_context: DependencyExecutionContext | None = None,
 ) -> Path:
     """Return the venv Python path, building the venv on first use."""
     directory = version_dir(runtime_root, adapter_id, version_id)
     python_path = venv_python(directory)
     dependencies = dependency_specs(requirements)
     with _lock_for(adapter_id, version_id):
-        if (directory / ".ready").exists() and python_path.exists():
+        identity = _cache_identity(adapter_id, version_id, "python", requirements)
+        try:
+            _version_cache, directory, build = _begin_version_build(
+                runtime_root,
+                adapter_id,
+                version_id,
+                identity=identity,
+            )
+        except cache.CacheError as error:
+            raise DependencyPreparationError("version cache is unavailable", "") from error
+        if build is None and python_path.exists():
             if dependency_log is not None:
                 for dependency in dependencies:
                     dependency_log(f"{dependency} 已安装，检查通过")
             return python_path
-        # Incomplete leftovers (no .ready marker) are rebuilt from scratch.
-        if directory.exists():
-            shutil.rmtree(directory, ignore_errors=True)
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "requirements.txt").write_text(requirements, encoding="utf-8")
+        assert build is not None
+        directory = build.staging
+        python_path = venv_python(directory)
+        try:
+            (directory / "requirements.txt").write_text(requirements, encoding="utf-8")
+        except OSError as error:
+            build.abort()
+            raise DependencyPreparationError("version cache staging failed", "") from error
 
         install_log = ""
         try:
-            install_log += _run_logged(["uv", "venv", str(directory / ".venv")], timeout_seconds)
+            install_log += _run_logged_in_context(
+                ["uv", "venv", str(directory / ".venv")],
+                timeout_seconds,
+                dependency_context,
+            )
             if requirements.strip():
                 if dependency_log is not None:
                     for dependency in dependencies:
@@ -409,8 +697,10 @@ def prepare_version_venv(
                 ]
                 # Offline-first: a warm local cache must not need any network.
                 try:
-                    install_log += _run_install_logged(
-                        base_command + ["--offline"], timeout_seconds
+                    install_log += _run_install_logged_in_context(
+                        base_command + ["--offline"],
+                        timeout_seconds,
+                        dependency_context,
                     )
                 except DependencyPreparationError as offline_error:
                     if not index_url:
@@ -424,12 +714,15 @@ def prepare_version_venv(
                                 dependencies, offline_error.install_log
                             ),
                             no_source=True,
+                            error_code=offline_error.error_code,
                         ) from offline_error
                     install_log += offline_error.install_log
                     install_log += f"\n{OFFLINE_CACHE_FALLBACK_MARKER}\n"
                     try:
-                        install_log += _run_install_logged(
-                            base_command + ["--index-url", index_url], timeout_seconds
+                        install_log += _run_install_logged_in_context(
+                            base_command + ["--index-url", index_url],
+                            timeout_seconds,
+                            dependency_context,
                         )
                     except DependencyPreparationError as source_error:
                         raise DependencyPreparationError(
@@ -438,17 +731,23 @@ def prepare_version_venv(
                             dependency=dependency_failure_label(
                                 dependencies, install_log + source_error.install_log
                             ),
+                            error_code=source_error.error_code,
                         ) from source_error
                 if dependency_log is not None:
                     for dependency in dependencies:
                         dependency_log(f"{dependency} 安装成功")
         except DependencyPreparationError:
-            # Leave no half-built venv behind; next attempt rebuilds cleanly.
-            shutil.rmtree(directory, ignore_errors=True)
+            # Leave no half-built staging entry behind; next attempt rebuilds
+            # cleanly without publishing an unverified runtime.
+            build.abort()
             raise
-        (directory / ".ready").write_text("ready", encoding="utf-8")
+        try:
+            final_directory = build.finish(identity)
+        except cache.CacheError as error:
+            build.abort()
+            raise DependencyPreparationError("version cache promotion failed", "") from error
         logger.info("venv ready for adapter %s version %s", adapter_id, version_id)
-        return python_path
+        return venv_python(final_directory)
 
 
 def cleanup_stale_venvs(runtime_root: Path, adapter_id: int, keep_version_ids: set[int]) -> None:
@@ -457,20 +756,26 @@ def cleanup_stale_venvs(runtime_root: Path, adapter_id: int, keep_version_ids: s
     Failures only land in the Worker log; cleanup never affects Execution
     outcome. Kept versions are rebuilt lazily if executed again later.
     """
-    base = runtime_root / "adapters" / str(adapter_id) / "versions"
-    if not base.exists():
-        return
-    for child in base.iterdir():
-        if not child.is_dir():
-            continue
-        try:
-            version_id = int(child.name)
-        except ValueError:
-            continue
-        if version_id in keep_version_ids:
-            continue
-        shutil.rmtree(child, ignore_errors=True)
-        logger.info("cleaned stale venv for adapter %s version %s", adapter_id, version_id)
+    base = runtime_root / "version-cache" / "entries"
+    if base.exists():
+        for child in base.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            prefix, separator, raw_version = child.name.partition("-")
+            if not separator or prefix != str(adapter_id):
+                continue
+            try:
+                version_id = int(raw_version)
+            except ValueError:
+                continue
+            if version_id in keep_version_ids:
+                continue
+            try:
+                cache.VerifiedVersionCache(runtime_root / "version-cache").remove_entry(child)
+            except cache.CacheError:
+                logger.warning("could not clean stale venv for adapter %s", adapter_id)
+            else:
+                logger.info("cleaned stale venv for adapter %s version %s", adapter_id, version_id)
 
 
 def cleanup_adapter_environment(runtime_root: Path, adapter_id: int) -> None:
@@ -479,6 +784,17 @@ def cleanup_adapter_environment(runtime_root: Path, adapter_id: int) -> None:
     The shared ``uv``/npm/Maven caches live outside this path and are never
     removed by permanent Adapter deletion.
     """
+    base = runtime_root / "version-cache" / "entries"
+    prefix = f"{adapter_id}-"
+    if base.is_dir():
+        for child in base.iterdir():
+            if child.name.startswith(prefix):
+                try:
+                    cache.VerifiedVersionCache(runtime_root / "version-cache").remove_entry(child)
+                except cache.CacheError:
+                    logger.warning("could not clean runtime environment for adapter %s", adapter_id)
+    # Remove the pre-cache layout left by older Workers as well; this is the
+    # exact Adapter subtree, never the shared package cache.
     base = runtime_root / "adapters" / str(adapter_id)
     if base.is_symlink() or base.is_file():
         base.unlink(missing_ok=True)

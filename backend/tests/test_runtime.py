@@ -333,6 +333,100 @@ def test_executor_truncates_large_stdout_keeping_tail(
     assert "truncated" in result["stdout"]
 
 
+def test_wait_with_progress_caps_the_physical_log_file(
+    tmp_path: object,
+) -> None:
+    stream_path = Path(tmp_path) / "bounded.log"
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import os; os.write(1, b'x' * 2000000)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        returncode, timed_out, cancelled, final_text = executor._wait_with_progress(
+            process,
+            stream_path,
+            timeout=5,
+            progress_callback=None,
+            max_bytes=4096,
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    assert returncode == 0
+    assert timed_out is False
+    assert cancelled is False
+    assert stream_path.stat().st_size <= 4096
+    assert len(final_text.encode()) <= 4096
+    assert "truncated" in final_text
+
+
+def test_dependency_preparation_uses_attempt_cgroup_and_bounded_log(
+    tmp_path: object,
+) -> None:
+    cgroup = Path(tmp_path) / "attempt"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("", encoding="ascii")
+    (cgroup / "cgroup.kill").write_text("", encoding="ascii")
+    dependency_tmp = Path(tmp_path) / "dependency-tmp"
+    context = venv_manager.DependencyExecutionContext(
+        cgroup_path=cgroup,
+        tmpdir=dependency_tmp,
+        nofile=64,
+        log_max_bytes=4096,
+    )
+    command = [sys.executable, "-c", "import os; os.write(1, b'x' * 200000)"]
+
+    log = venv_manager._run_logged(command, timeout_seconds=5, context=context)
+
+    assert len(log.encode()) <= 4096
+    assert "truncated dependency log" in log
+    assert (cgroup / "cgroup.procs").read_text(encoding="ascii").strip()
+
+
+def test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size(
+    tmp_path: object,
+) -> None:
+    source = Path(tmp_path) / "tmpfs-output.json"
+    destination = Path(tmp_path) / "host-output.json"
+    metadata = Path(tmp_path) / ".dlr-output-meta"
+    source.write_bytes(b"0123456789" * 100)
+
+    from dlr.worker import sandbox
+
+    sandbox._copy_bounded_output(source, destination, metadata, 17)
+
+    expected_prefix = (b"0123456789" * 100)[:17]
+    assert destination.read_bytes() == expected_prefix
+    assert destination.stat().st_size == 17
+    assert executor._read_bounded_file(destination, 17) == (
+        expected_prefix,
+        17,
+        False,
+    )
+    assert executor._read_output_metadata(metadata) == (1000, True)
+
+
+def test_sandbox_output_copy_replaces_symlink_without_following_it(tmp_path: object) -> None:
+    source = Path(tmp_path) / "tmpfs-output.json"
+    destination = Path(tmp_path) / "host-output.json"
+    metadata = Path(tmp_path) / ".dlr-output-meta"
+    outside = Path(tmp_path) / "unrelated.txt"
+    source.write_bytes(b"safe-output")
+    outside.write_text("must-survive", encoding="ascii")
+    destination.symlink_to(outside)
+
+    from dlr.worker import sandbox
+
+    sandbox._copy_bounded_output(source, destination, metadata, 1024)
+
+    assert not destination.is_symlink()
+    assert destination.read_bytes() == b"safe-output"
+    assert outside.read_text(encoding="ascii") == "must-survive"
+
+
 # --- credential isolation --------------------------------------------------------
 
 

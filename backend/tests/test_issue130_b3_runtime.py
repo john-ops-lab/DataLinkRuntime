@@ -227,6 +227,35 @@ def test_supervisor_capability_mask_is_exactly_the_approved_three() -> None:
     )
 
 
+def test_resource_budget_keeps_agent_reserve_when_all_slots_are_used() -> None:
+    config = _worker_config()
+    budget = sandbox.ResourceBudget.for_worker(config, slots=2)
+    limits = sandbox.ResourceLimits(
+        cpu_cores=1.0,
+        memory_bytes=256 * MiB,
+        pids=64,
+        tmp_bytes=16 * MiB,
+        nofile=64,
+        execution_timeout_seconds=20,
+    )
+
+    first = budget.try_reserve(limits)
+    second = budget.try_reserve(limits)
+
+    assert first is not None
+    assert second is not None
+    snapshot = budget.snapshot()
+    assert snapshot["active_reservations"] == 2
+    assert snapshot["agent_reserve"]["memory"] > 0
+    assert snapshot["agent_reserve"]["pids"] > 0
+    assert budget.try_reserve(limits) is None
+
+    budget.release(first)
+    budget.release(second)
+    assert budget.snapshot()["active_reservations"] == 0
+    assert budget.snapshot()["used"] == {"cpu": 0, "memory": 0, "pids": 0, "tmp": 0}
+
+
 def test_v3_payload_snapshots_are_required_to_match_the_queued_profile() -> None:
     config = _worker_config()
     profile = _profile()
@@ -310,6 +339,75 @@ def test_recovery_marker_cannot_authorize_an_unrelated_mount(
     assert marker.exists()
     assert sentinel.read_text(encoding="ascii") == "keep"
     assert unrelated_mount.is_dir()
+
+
+def test_attempt_recovery_marker_removes_only_derived_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sandbox,
+        "_filesystem_magic",
+        lambda _path: sandbox.CGROUP2_SUPER_MAGIC,
+    )
+    parent = (tmp_path / "delegated").resolve()
+    parent.mkdir(mode=0o700)
+    (parent / "cgroup.controllers").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.subtree_control").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.procs").write_text("", encoding="ascii")
+    (parent / "cgroup.kill").write_text("", encoding="ascii")
+    runtime_root = (tmp_path / "runtime").resolve()
+    runtime_root.mkdir(mode=0o700)
+    workspaces = runtime_root / "workspaces"
+    workspaces.mkdir(mode=0o700)
+    attempt_parent = workspaces / "attempt-8001"
+    mount = attempt_parent / ".dlr-sandbox-mount"
+    mount.mkdir(mode=0o700, parents=True)
+    attempt_parent.chmod(0o700)
+    sentinel = mount / "recovery-owned"
+    sentinel.write_text("remove", encoding="ascii")
+    child = parent / "attempt-7001-8001"
+    child.mkdir(mode=0o700)
+    (child / "cgroup.procs").write_text("", encoding="ascii")
+    (child / "cgroup.kill").write_text("", encoding="ascii")
+    real_rmdir = Path.rmdir
+
+    def rmdir_fake_cgroup(path: Path) -> None:
+        if path == child:
+            (path / "cgroup.procs").unlink()
+            (path / "cgroup.kill").unlink()
+        real_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", rmdir_fake_cgroup)
+    recovery_root = runtime_root / "sandbox-recovery"
+    recovery_root.mkdir(mode=0o700, parents=True)
+    marker = recovery_root / "sandbox-attempt-7001-8001.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "cgroup_name": "attempt-7001-8001",
+                "execution_id": 7001,
+                "mount_name": ".dlr-sandbox-mount",
+                "mount_path": str(mount),
+            }
+        )
+        + "\n",
+        encoding="ascii",
+    )
+    marker.chmod(0o600)
+
+    result = sandbox.recover(
+        _worker_config(cgroup_path=parent),
+        recovery_root,
+        runtime_root=runtime_root,
+    )
+
+    assert result == {"inspected": 1, "completed": 1, "retained": 0}
+    assert not marker.exists()
+    assert not child.exists()
+    assert not mount.exists()
+    assert not sentinel.exists()
+    assert attempt_parent.is_dir()
 
 
 def test_preflight_recovery_marker_cannot_authorize_an_unrelated_mount(
@@ -525,6 +623,40 @@ def test_copied_tmpfs_workspace_allows_payload_output_but_not_managed_input(
     (copied / "temp" / "fill-1").write_bytes(b"x" * (1024 * 1024))
     with pytest.raises(PermissionError):
         copied_input.write_bytes(b"must remain read-only")
+
+
+def test_bounded_output_reads_payload_owned_source_and_writes_host_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "tmpfs" / "output.json"
+    destination = tmp_path / "host" / "output.json"
+    metadata = tmp_path / "host" / ".dlr-output-meta"
+    source.parent.mkdir()
+    destination.parent.mkdir(mode=0o700)
+    source.write_text('{"ok":true}\n', encoding="ascii")
+    source.chmod(0o600)
+    identities: list[tuple[int, int]] = []
+
+    def fake_filesystem_identity(uid: int, gid: int) -> Any:
+        identities.append((uid, gid))
+        return nullcontext()
+
+    monkeypatch.setattr(sandbox, "_filesystem_identity", fake_filesystem_identity)
+    sandbox._copy_bounded_output(
+        source,
+        destination,
+        metadata,
+        1024,
+        source_uid=501,
+        source_gid=1000,
+    )
+
+    assert identities == [(501, 1000)]
+    assert destination.read_text(encoding="ascii") == '{"ok":true}\n'
+    assert json.loads(metadata.read_text(encoding="ascii")) == {
+        "size": len('{"ok":true}\n'),
+        "truncated": False,
+    }
 
 
 def test_preflight_without_linux_delegation_fails_closed_without_side_effects(

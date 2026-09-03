@@ -8,9 +8,15 @@ example_parent=/system.slice/dlr-worker-sandbox-example.service
 example_path=/sys/fs/cgroup${example_parent}
 runbook=docs/zh-CN/issue130-sandbox-deployment.md
 sandbox_source=backend/src/dlr/worker/sandbox.py
+cache_source=backend/src/dlr/worker/cache.py
+venv_source=backend/src/dlr/worker/venv.py
+workspace_source=backend/src/dlr/worker/workspace.py
 consumer_source=backend/src/dlr/worker/consumer.py
 executor_source=backend/src/dlr/worker/executor.py
 runtime_tests=backend/tests/test_issue130_b3_runtime.py
+runtime_unit_tests=backend/tests/test_runtime.py
+cache_tests=backend/tests/test_worker_cache.py
+multilang_tests=backend/tests/test_multilang_runtime.py
 real_runtime_source=scripts/issue130-b3-real-runtime.py
 expected_session=${AO_SESSION_ID:-compose}
 
@@ -211,7 +217,8 @@ require_source_literal 'name=name,'
 require_source_literal 'execution_id=execution_id,'
 require_source_literal 'def _new_preflight_identity() -> str:'
 require_source_literal 'preflight_name = _new_preflight_identity()'
-require_source_literal 'preflight_identity = cgroup_name or workspace.parent.name'
+require_source_literal 'preflight_identity = cgroup_name or ('
+require_source_literal 'workspace.name'
 require_source_literal 'PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(preflight_identity)'
 require_source_literal 'CGROUP2_SUPER_MAGIC'
 require_source_literal 'def _filesystem_magic(path: Path) -> int:'
@@ -270,6 +277,43 @@ if ! grep -Fq 'prevalidated_profile' "$consumer_source" \
   echo "Consumer must validate the raw Resource Profile before Pydantic/model side effects" >&2
   exit 1
 fi
+
+require_source_literal 'or profile.output_preview_max_bytes > profile.output_max_bytes'
+require_source_literal 'raise SandboxError("resource_profile_invalid")'
+
+require_source_literal 'class ResourceBudget:'
+require_source_literal 'agent_reserve_memory'
+require_source_literal 'def try_reserve(self, limits: ResourceLimits) -> ResourceReservation | None:'
+require_source_literal 'self._capacity[key] - self._reserve[key]'
+
+for literal in \
+  'class _BoundedByteRing:' \
+  'class _BoundedLogWriter:' \
+  'pending_stdout' \
+  'stream.read(STREAM_READ_CHUNK_BYTES)' \
+  'class DependencyExecutionContext' \
+  'context.cgroup_path / "cgroup.procs"' \
+  'context.cgroup_path / "cgroup.kill"' \
+  'resource.setrlimit(resource.RLIMIT_NOFILE' \
+  'class VerifiedVersionCache' \
+  'fcntl.flock' \
+  'DEFAULT_CACHE_LOW_WATERMARK_BYTES' \
+  'os.replace(staging_path, target_path)' \
+  '_direct_entry' \
+  'cache_low_watermark' \
+  'output_too_large' \
+  'resource_exceeded_memory' \
+  'resource_exceeded_pids' \
+  'resource_exceeded_disk'; do
+  if ! grep -Fq -- "$literal" "$executor_source" "$venv_source" "$cache_source" "$sandbox_source"; then
+    echo "missing bounded runtime implementation: $literal" >&2
+    exit 1
+  fi
+done
+if grep -Fq 'read_bytes()' "$executor_source"; then
+  echo "Executor output/log handling must not use unbounded read_bytes()" >&2
+  exit 1
+fi
 if ! grep -Fq 'sandbox_diagnostic' "$executor_source" \
   || ! grep -Fq 'helper_diagnostic' "$executor_source"; then
   echo "Executor must preserve helper phase/errno diagnostics in the sandbox receipt" >&2
@@ -300,6 +344,57 @@ require_runtime_literal 'SUPERVISOR_CAPABILITY_MASK'
 require_runtime_literal 'adapter_identity'
 require_runtime_literal 'adapter_hidden_cgroup_paths'
 require_runtime_literal 'adapter_mount'
+require_runtime_literal 'CapBnd'
+require_runtime_literal 'bounded'
+require_runtime_literal 'log_flood'
+require_runtime_literal 'output_too_large'
+require_runtime_literal 'dependency_timeout'
+require_runtime_literal 'cache_low_watermark'
+require_runtime_literal 'ResourceBudget'
+require_runtime_literal 'managed_input_read_only'
+require_runtime_literal 'positive_recovery'
+require_runtime_literal 'forged_marker_rejected'
+require_runtime_literal 'python'
+require_runtime_literal 'javascript'
+require_runtime_literal 'java'
+require_runtime_literal 'fork'
+require_runtime_literal 'tmpfs'
+require_runtime_literal 'nofile'
+require_runtime_literal 'timeout'
+require_runtime_literal 'cancel'
+require_runtime_literal 'crash'
+
+for test_name in \
+  test_wait_with_progress_caps_the_physical_log_file \
+  test_dependency_preparation_uses_attempt_cgroup_and_bounded_log \
+  test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size; do
+  if ! grep -Fq -- "$test_name" "$runtime_unit_tests"; then
+    echo "missing bounded runtime test: $test_name" >&2
+    exit 1
+  fi
+done
+for test_name in \
+  test_promoted_entry_is_verified_read_only_and_tamper_detected \
+  test_reservations_are_bounded_across_concurrent_misses \
+  test_cache_rejects_leaf_symlinks_for_verify_and_cleanup; do
+  if ! grep -Fq -- "$test_name" "$cache_tests"; then
+    echo "missing verified cache test: $test_name" >&2
+    exit 1
+  fi
+done
+for test_name in \
+  test_resource_budget_keeps_agent_reserve_when_all_slots_are_used \
+  test_attempt_recovery_marker_removes_only_derived_mount \
+  test_preflight_recovery_marker_removes_derived_mount; do
+  if ! grep -Fq -- "$test_name" "$runtime_tests"; then
+    echo "missing B3 recovery/budget test: $test_name" >&2
+    exit 1
+  fi
+done
+if ! grep -Fq 'test_dependency_logs_are_unified_and_ready_environments_skip_install' "$multilang_tests"; then
+  echo "missing three-language dependency/cache regression" >&2
+  exit 1
+fi
 
 if grep -Fq 'if exact_cgroup_mount.is_dir()' "$sandbox_source"; then
   echo "exact configured cgroup hide must not silently skip a missing target" >&2
