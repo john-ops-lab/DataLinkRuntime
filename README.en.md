@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/dlr-logo.webp" alt="DataLinkRuntime" width="760">
+  <img src="docs/assets/dlr-logo.svg" alt="DataLinkRuntime" width="760">
 </p>
 
 <p align="center">
