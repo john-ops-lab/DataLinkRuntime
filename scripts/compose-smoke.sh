@@ -25,6 +25,8 @@ if [ "$DLR_PLATFORM_LOG_ROOT" = "$SMOKE_PLATFORM_LOG_ROOT" ]; then
 fi
 export DLR_ADMIN_TOKEN=${DLR_ADMIN_TOKEN:-smoke-admin-token-$$}
 export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
+export DLR_RABBITMQ_USER=${DLR_RABBITMQ_USER:-dlr_smoke}
+export DLR_RABBITMQ_PASSWORD=${DLR_RABBITMQ_PASSWORD:-smoke-rabbitmq-password-$$}
 export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-env-secret-$$}
 export DLR_MASTER_KEY=${DLR_MASTER_KEY:-smoke-master-key-$$}
 export SMOKE_STORED_SECRET=${SMOKE_STORED_SECRET:-smoke-stored-secret-$$}
