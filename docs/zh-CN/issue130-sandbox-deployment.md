@@ -170,6 +170,27 @@ matrix 保持为 false；Control 因此保持 `rabbitmq_execution_v3=false`，�
 通过的 finite envelope snapshot 会传入 Consumer，避免 eligibility 与后续第二次 cgroup 读取
 不一致。
 
+### F3 实际 Agent 压力入口
+
+Compose Worker 的唯一生产入口必须保持为镜像中的 `python -m dlr.worker.agent`。F3
+压力驱动是同一 Compose network 上另一个 task-owned、无持久状态的 probe container；它
+只通过 Control API 创建带 `dispatch_backend=rabbitmq` 的 canary、读取 Attempt/Lease/Result
+状态并采样 `/api/health`，不进入 Worker container，也不调用
+`scripts/issue130-b3-real-runtime.py` 的 `run_one` 或本地 ledger。这样 Worker 自身才是
+真实 RabbitMQ consumer，heartbeat、lease renew、cancel 和 result report 必须来自该 Agent
+的实际生命周期。
+
+driver 启动前，systemd transient unit 的 provisioning shell 从同一个 delegated parent
+读出有限 CPU/memory/PID envelope，并以脱敏 JSON 传给 driver；Worker 则在自身注册前
+独立读取同一 parent、运行 `ResourceBudget.from_verified_envelope`，随后才运行 disposable
+preflight。Agent 日志中的
+`v3 pre-registration finite resource envelope gate passed; starting sandbox preflight`
+必须出现在 registration 前；envelope 不可用或不足时仍可注册供诊断，但完整 matrix 为
+false 且 Control 必须保持 `rabbitmq_execution_v3=false`。F3 receipt 必须同时记录
+Worker image entrypoint、driver container identity、`driver_not_worker_exec=true`、注册返回
+的 `resource_envelope_verified=true`、压力期间的 heartbeat/renew/cancel/report 以及
+Control、RabbitMQ、PostgreSQL health 样本；仅直接 `exec` 诊断脚本的结果为 `NO_COUNT`。
+
 ## Docker cgroup driver 与路径检查
 
 当前 Colima `default` 的只读检查应为：

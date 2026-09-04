@@ -201,6 +201,10 @@ class WorkerConfig:
                 slots=self.execution_slots,
                 envelope=envelope,
             )
+            logger.info(
+                "v3 pre-registration finite resource envelope gate passed; "
+                "starting sandbox preflight"
+            )
         except Exception as error:  # noqa: BLE001 - startup gate must fail closed
             error_code = getattr(error, "code", type(error).__name__)
             logger.warning(

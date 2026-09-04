@@ -19,6 +19,8 @@ runtime_unit_tests=backend/tests/test_runtime.py
 cache_tests=backend/tests/test_worker_cache.py
 multilang_tests=backend/tests/test_multilang_runtime.py
 real_runtime_source=scripts/issue130-b3-real-runtime.py
+agent_pressure_driver=scripts/issue130-b3-agent-pressure.py
+worker_dockerfile=docker/worker.Dockerfile
 expected_session=${AO_SESSION_ID:-compose}
 
 docker_cgroup_driver=$(docker info --format '{{.CgroupDriver}}')
@@ -296,11 +298,36 @@ fi
 if ! grep -Fq 'read_verified_resource_envelope(self.sandbox_config)' "$agent_source" \
   || ! grep -Fq 'ResourceBudget.from_verified_envelope' "$agent_source" \
   || ! grep -Fq 'resource_envelope_verified' "$agent_source" \
+  || ! grep -Fq 'v3 pre-registration finite resource envelope gate passed' "$agent_source" \
   || ! grep -Fq 'resource_envelope' "$executor_source" \
   || ! grep -Fq 'resource_envelope_verified' backend/src/dlr/control/schemas/worker.py; then
   echo "Worker must verify the finite deployment envelope before v3 registration" >&2
   exit 1
 fi
+
+if ! grep -Fq 'CMD ["python", "-m", "dlr.worker.agent"]' "$worker_dockerfile"; then
+  echo "the Compose Worker image must start the real Agent entrypoint" >&2
+  exit 1
+fi
+if grep -Eq 'run_one[[:space:]]*\(|run_budget_probe[[:space:]]*\(|docker exec[[:space:]].*worker' "$agent_pressure_driver"; then
+  echo "the counted F3 driver must not execute the diagnostic or in-process run_one path" >&2
+  exit 1
+fi
+for literal in \
+  'external_control_rabbitmq_pressure_driver' \
+  'driver_not_worker_exec' \
+  'rabbitmq_execution_v3' \
+  'resource_envelope_verified_before_registration' \
+  'pressure_heartbeat_updates' \
+  'pressure_healthy_control_database_rabbitmq_outbox_samples' \
+  'renewed_and_reported' \
+  'cancel_requested_and_reported' \
+  'result_reports'; do
+  if ! grep -Fq -- "$literal" "$agent_pressure_driver"; then
+    echo "actual Agent pressure driver is missing evidence field: $literal" >&2
+    exit 1
+  fi
+done
 
 require_source_literal 'or profile.output_preview_max_bytes > profile.output_max_bytes'
 require_source_literal 'raise SandboxError("resource_profile_invalid")'
