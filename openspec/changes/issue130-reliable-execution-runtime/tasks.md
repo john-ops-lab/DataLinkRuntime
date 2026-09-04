@@ -121,7 +121,7 @@
 - [x] 13.2 注入log flood、超大Output、dependency timeout/cache low-watermark与cleanup residue；验证：运行期资源全有界、startup recovery幂等、日志无Secret/path
 - [x] 13.3 在真实Linux cgroup v2 Compose运行startup preflight和完整fault matrix；验证：不可用环境明确fail closed，不能以macOS/模拟结果替代
 - [x] 13.4 运行Batch3相关Backend/Web/Compose/三语言测试与安全扫描；验证：所有失败修复或 `BLOCKED_B3_GATE`，全绿前不进入Cutover
-- [ ] 13.5 形成Sandbox checkpoint Candidate SHA，由当前主代理Sol做exact-SHA只读资源/安全审计并修复finding；验证：最新SHA审计PASS且尚未执行不可逆Cutover
+- [x] 13.5 形成Sandbox checkpoint Candidate SHA，由当前主代理Sol做exact-SHA只读资源/安全审计并修复finding；验证：最新SHA审计PASS且尚未执行不可逆Cutover
 
 ## 14. Batch 3 — Final Cutover
 
