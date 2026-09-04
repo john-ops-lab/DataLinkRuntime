@@ -26,7 +26,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 from urllib import parse as url_parse
@@ -47,6 +47,20 @@ class DependencyExecutionContext:
     tmpdir: Path
     nofile: int
     log_max_bytes: int
+    reservation_check: Callable[[], None] | None = None
+    reservation_lost: threading.Event | None = None
+
+    def with_reservation(
+        self,
+        reservation_check: Callable[[], None],
+        reservation_lost: threading.Event,
+    ) -> "DependencyExecutionContext":
+        """Bind dependency writes and subprocesses to one live reservation."""
+        return replace(
+            self,
+            reservation_check=reservation_check,
+            reservation_lost=reservation_lost,
+        )
 
 
 # Keep the original function as an explicit test seam.  Unit tests that
@@ -401,6 +415,8 @@ class _VersionBuild:
     staging_root: Path | None = None
     _lease_stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _lease_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _lease_lost: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _lease_error_code: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         interval = max(0.05, min(self.reservation.ttl_seconds / 3, 30.0))
@@ -409,8 +425,10 @@ class _VersionBuild:
             while not self._lease_stop.wait(interval):
                 try:
                     self.reservation.renew()
-                except cache.CacheError:
-                    logger.warning("version cache reservation lease was lost")
+                except cache.CacheError as error:
+                    self._lease_error_code = error.code
+                    self._lease_lost.set()
+                    logger.warning("version cache reservation lease was lost (%s)", error.code)
                     return
 
         self._lease_thread = threading.Thread(
@@ -419,6 +437,22 @@ class _VersionBuild:
             daemon=True,
         )
         self._lease_thread.start()
+
+    @property
+    def lease_lost(self) -> threading.Event:
+        """Expose the one-way lease-loss signal to dependency subprocesses."""
+        return self._lease_lost
+
+    def assert_live(self) -> None:
+        """Check the reservation before every externally visible build step."""
+        if self._lease_lost.is_set():
+            raise cache.CacheError(self._lease_error_code or "cache_reservation_expired")
+        try:
+            self.reservation.assert_active()
+        except cache.CacheError as error:
+            self._lease_error_code = error.code
+            self._lease_lost.set()
+            raise
 
     def _stop_lease(self) -> None:
         self._lease_stop.set()
@@ -593,6 +627,14 @@ def _run_logged(
         value for argument in command for value in package_index_secret_values(argument)
     ]
 
+    def assert_reservation() -> None:
+        if context is None:
+            return
+        if context.reservation_lost is not None and context.reservation_lost.is_set():
+            raise cache.CacheError("cache_reservation_expired")
+        if context.reservation_check is not None:
+            context.reservation_check()
+
     def preexec() -> None:
         if context is not None:
             with (context.cgroup_path / "cgroup.procs").open("w", encoding="ascii") as stream:
@@ -603,6 +645,7 @@ def _run_logged(
         # Compatibility seam for existing in-process tests and embedders that
         # replace the runner.  Production never enters this branch.
         try:
+            assert_reservation()
             completed = subprocess.run(  # noqa: S603 - fixed dependency command list
                 command,
                 capture_output=True,
@@ -611,6 +654,13 @@ def _run_logged(
                 check=False,
                 env=env,
             )
+            assert_reservation()
+        except cache.CacheError as error:
+            raise DependencyPreparationError(
+                "dependency cache reservation is no longer active",
+                "",
+                error_code="dependency_cache_reservation_expired",
+            ) from error
         except subprocess.TimeoutExpired as error:
             raise DependencyPreparationError(
                 f"{' '.join(command[:3])} timed out after {timeout_seconds}s",
@@ -651,6 +701,7 @@ def _run_logged(
                 process.kill()
 
     try:
+        assert_reservation()
         process = subprocess.Popen(  # noqa: S603 - fixed dependency command list
             command,
             stdout=subprocess.PIPE,
@@ -666,6 +717,7 @@ def _run_logged(
         selector.register(process.stdout, selectors.EVENT_READ)
         deadline = time.monotonic() + timeout_seconds
         while selector.get_map():
+            assert_reservation()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 terminate()
@@ -682,6 +734,7 @@ def _run_logged(
                 else:
                     selector.unregister(key.fileobj)
         returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        assert_reservation()
     except subprocess.TimeoutExpired as error:
         terminate()
         if process is not None:
@@ -690,6 +743,15 @@ def _run_logged(
             f"{' '.join(command[:3])} timed out after {timeout_seconds}s",
             _redact_sensitive(bytes(ring).decode(errors="replace"), sensitive_values),
             error_code="dependency_timeout",
+        ) from error
+    except cache.CacheError as error:
+        terminate()
+        if process is not None:
+            process.wait()
+        raise DependencyPreparationError(
+            "dependency cache reservation is no longer active",
+            _redact_sensitive(bytes(ring).decode(errors="replace"), sensitive_values),
+            error_code="dependency_cache_reservation_expired",
         ) from error
     except (OSError, subprocess.SubprocessError) as error:
         terminate()
@@ -753,6 +815,19 @@ def prepare_version_venv(
                     dependency_log(f"{dependency} 已安装，检查通过")
             return python_path
         assert build is not None
+        if dependency_context is not None:
+            dependency_context = dependency_context.with_reservation(
+                build.assert_live, build.lease_lost
+            )
+        try:
+            build.assert_live()
+        except cache.CacheError as error:
+            build.abort()
+            raise DependencyPreparationError(
+                "dependency cache reservation is no longer active",
+                "",
+                error_code="dependency_cache_reservation_expired",
+            ) from error
         directory = build.staging
         python_path = venv_python(directory)
         try:

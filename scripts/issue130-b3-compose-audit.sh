@@ -318,6 +318,8 @@ for literal in \
   'class DependencyExecutionContext' \
   'context.cgroup_path / "cgroup.procs"' \
   'context.cgroup_path / "cgroup.kill"' \
+  'reservation_check' \
+  'dependency_cache_reservation_expired' \
   'resource.setrlimit(resource.RLIMIT_NOFILE' \
   'class VerifiedVersionCache' \
   'fcntl.flock' \
@@ -411,6 +413,7 @@ for test_name in \
   test_dependency_preparation_uses_attempt_cgroup_and_bounded_log \
   test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size \
   test_dependency_build_stages_inside_attempt_tmpfs_until_promotion \
+  test_dependency_command_stops_when_cache_reservation_is_lost \
   test_live_version_build_renews_global_reservation_until_finish; do
   if ! grep -Fq -- "$test_name" "$runtime_unit_tests"; then
     echo "missing bounded runtime test: $test_name" >&2

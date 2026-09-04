@@ -64,6 +64,10 @@ class CacheReservation:
         lease = self.ttl_seconds if ttl_seconds is None else ttl_seconds
         self.cache.renew(self, ttl_seconds=lease)
 
+    def assert_active(self) -> None:
+        """Fail closed when this reservation is no longer authoritative."""
+        self.cache._assert_active(self)
+
     def __enter__(self) -> CacheReservation:
         return self
 

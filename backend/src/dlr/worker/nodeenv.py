@@ -90,6 +90,19 @@ def prepare_version_node(
                     dependency_log(f"{name}@{version} 已安装，检查通过")
             return directory
         assert build is not None
+        if dependency_context is not None:
+            dependency_context = dependency_context.with_reservation(
+                build.assert_live, build.lease_lost
+            )
+        try:
+            build.assert_live()
+        except CacheError as error:
+            build.abort()
+            raise venv.DependencyPreparationError(
+                "dependency cache reservation is no longer active",
+                "",
+                error_code="dependency_cache_reservation_expired",
+            ) from error
         directory = build.staging
         if shutil.which("node") is None:
             build.abort()

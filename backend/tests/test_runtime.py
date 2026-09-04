@@ -436,6 +436,58 @@ def test_live_version_build_renews_global_reservation_until_finish(tmp_path: obj
     assert version_cache._state() == {}
 
 
+def test_dependency_command_stops_when_cache_reservation_is_lost(tmp_path: object) -> None:
+    root = Path(tmp_path)
+    version_cache = cache.VerifiedVersionCache(
+        root / "cache", max_bytes=4096, low_watermark_bytes=0
+    )
+    reservation = version_cache.reserve(3000, ttl_seconds=60)
+    staging = version_cache.staging_path("lease-loss", reservation.token)
+    staging.mkdir(mode=0o700)
+    build = venv_manager._VersionBuild(
+        version_cache,
+        staging,
+        version_cache.entry_path("lease-loss"),
+        reservation,
+    )
+    cgroup = root / "attempt-cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("", encoding="ascii")
+    (cgroup / "cgroup.kill").write_text("", encoding="ascii")
+    checks = 0
+
+    def release_after_start() -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            reservation.release()
+        build.assert_live()
+
+    context = venv_manager.DependencyExecutionContext(
+        cgroup_path=cgroup,
+        tmpdir=root / "dependency-tmp",
+        nofile=64,
+        log_max_bytes=4096,
+    ).with_reservation(release_after_start, build.lease_lost)
+    try:
+        with pytest.raises(venv_manager.DependencyPreparationError) as error:
+            venv_manager._run_logged(
+                [
+                    sys.executable,
+                    "-c",
+                    "import time; print('started', flush=True); time.sleep(30)",
+                ],
+                timeout_seconds=5,
+                context=context,
+            )
+        assert error.value.error_code == "dependency_cache_reservation_expired"
+        assert (cgroup / "cgroup.kill").read_text(encoding="ascii") == "1\n"
+    finally:
+        build.abort()
+    assert not staging.exists()
+    assert version_cache._state() == {}
+
+
 def test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size(
     tmp_path: object,
 ) -> None:

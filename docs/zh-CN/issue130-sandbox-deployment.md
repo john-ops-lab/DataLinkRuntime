@@ -366,7 +366,10 @@ Attempt：`.log` 与 progress pending queue 使用固定内存 ring 和硬字节
 `stat` 加 `limit+1` 流式读取；Python/npm/Maven dependency preparation 在 Attempt 的
 cgroup、tmpfs、RLIMIT_NOFILE、超时和脱敏日志边界内运行。version cache 只接受带闭合
 identity、digest、byte count 和不可写 `.ready` 标记的原子 promotion，并在 staging 前
-持有全局 byte reservation 与 low-watermark；Adapter 不得写共享 cache。memory/pids/disk/
+持有全局 byte reservation 与 low-watermark；cache miss 的全部构造写入同一 Attempt bounded
+tmpfs，reservation 是整个 live build 的权威 byte budget。Worker 持续续租；若续租或
+reservation 检查失败，依赖进程会被终止、staging 清理且禁止 promotion，不以 TTL 过期后
+继续写入。Adapter 不得写共享 cache。memory/pids/disk/
 timeout/sandbox-prepare 失败使用稳定 error code，receipt 只包含有界 resource usage，不
 包含宿主路径。Worker 的每个 slot 还必须保留单独 Agent reserve，不能把全部 delegated
 容量分配给 Attempts。
