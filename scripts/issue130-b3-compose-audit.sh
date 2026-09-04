@@ -189,7 +189,7 @@ require_runbook_literal 'output.json'
 require_runbook_literal 'temp` fill'
 require_runbook_literal '所有 descendant 路径'
 require_runbook_literal 'recursive-bind'
-require_runbook_literal 'task-owned `/tmp/.dlr-sandbox-*`'
+require_runbook_literal 'task-owned `/run/.dlr-sandbox-*`'
 require_runbook_literal 'fork 出来的 payload PID'
 require_runbook_literal 'helper 也始终留在 Worker'
 require_runbook_literal 'cgroup.kill` 只终止 Attempt payload'
@@ -278,7 +278,11 @@ require_source_literal 'if entry.is_dir(follow_symlinks=False):'
 require_source_literal 'stage = "workspace_ownership"'
 require_source_literal 'f"size={tmp_bytes},mode=0711"'
 require_source_literal 'MS_BIND | MS_REC'
-require_source_literal 'payload_root = Path("/tmp")'
+require_source_literal 'payload_root = Path("/run")'
+if grep -Fq 'f"/tmp/dlr-issue130-b3-' "$real_runtime_source"; then
+  echo "real runtime root must stay outside payload temp mounts" >&2
+  exit 1
+fi
 require_source_literal 'created_payload_root = False'
 require_source_literal 'payload_outer_fd'
 require_source_literal 'payload_root.rmdir()'

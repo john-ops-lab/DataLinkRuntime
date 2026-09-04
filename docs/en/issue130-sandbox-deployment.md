@@ -153,6 +153,12 @@ capability error.
 Each Attempt receives a sibling `attempt-*` cgroup with CPU, memory/swap, PID, tmpfs,
 file-descriptor, output, and wall-time limits. Only the payload enters that child;
 the helper and Agent remain outside it. The workspace is a private, bounded tmpfs.
+Inside the payload-only mount namespace, `/tmp`, `/var/tmp`, and `/dev/shm` are
+private bind mounts backed by that same Attempt tmpfs. `HOME`, `TMPDIR`, `TMP`, and
+`TEMP` point into those mounts, so conventional temporary writes cannot bypass the
+profile's `tmp_bytes` quota or survive into another Attempt. Keep the trusted Worker
+runtime/cache root outside those paths; the Compose contract uses
+`/var/lib/dlr/runtime`.
 Managed input is copied without following symlinks and remains read-only; no host
 workspace path, platform credential mount, cgroup control plane, Worker token, or
 RabbitMQ credential reaches Adapter code.

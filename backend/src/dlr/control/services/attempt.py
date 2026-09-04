@@ -356,8 +356,12 @@ def claim_dispatch(
             session, kind="dispatch_target_mismatch", message_id=message.message_id
         )
 
-    execution = session.get(Execution, message.execution_id, with_for_update=True)
-    if execution is None:
+    identity = session.execute(
+        select(Execution.adapter_id, Execution.dispatch_backend).where(
+            Execution.id == message.execution_id
+        )
+    ).one_or_none()
+    if identity is None:
         return _reject_dispatch(
             session,
             kind="execution_not_found",
@@ -365,13 +369,27 @@ def claim_dispatch(
             execution_id=message.execution_id,
             dispatch_generation=message.dispatch_generation,
         )
-    adapter = session.get(Adapter, execution.adapter_id, with_for_update=True)
+    adapter_id, dispatch_backend = identity
+    if dispatch_backend == "rabbitmq":
+        admission_scope = admission.lock_admission_scope(session, int(adapter_id))
+        adapter = session.get(Adapter, int(adapter_id)) if admission_scope is not None else None
+    else:
+        adapter = session.get(Adapter, int(adapter_id), with_for_update=True)
     if adapter is None:
         return _reject_dispatch(
             session,
             kind="adapter_not_found",
             message_id=message.message_id,
-            execution_id=execution.id,
+            execution_id=message.execution_id,
+            dispatch_generation=message.dispatch_generation,
+        )
+    execution = session.get(Execution, message.execution_id, with_for_update=True)
+    if execution is None:
+        return _reject_dispatch(
+            session,
+            kind="execution_not_found",
+            message_id=message.message_id,
+            execution_id=message.execution_id,
             dispatch_generation=message.dispatch_generation,
         )
     now = database_now(session)
@@ -956,9 +974,9 @@ def retry_dispatcher_once(
 ) -> int:
     """Move due retry_wait rows to a unique next generation and Outbox."""
     effective_now = _utc(now or database_now(session))
-    ids = list(
-        session.scalars(
-            select(Execution.id)
+    candidates = list(
+        session.execute(
+            select(Execution.id, Execution.adapter_id)
             .where(
                 Execution.dispatch_backend == "rabbitmq",
                 Execution.status == "retry_wait",
@@ -966,17 +984,23 @@ def retry_dispatcher_once(
             )
             .order_by(Execution.next_attempt_at, Execution.id)
             .limit(max(1, min(int(limit), 1_000)))
-            .with_for_update(skip_locked=True)
         )
     )
     dispatched = 0
-    for execution_id in ids:
-        execution = session.get(Execution, execution_id, with_for_update=True)
+    for execution_id, adapter_id in candidates:
+        adapter = session.scalar(
+            select(Adapter).where(Adapter.id == adapter_id).with_for_update(skip_locked=True)
+        )
+        if adapter is None:
+            session.rollback()
+            continue
+        execution = session.scalar(
+            select(Execution).where(Execution.id == execution_id).with_for_update(skip_locked=True)
+        )
         if execution is None or execution.status != "retry_wait":
             session.rollback()
             continue
-        adapter = session.get(Adapter, execution.adapter_id, with_for_update=True)
-        if adapter is None:
+        if execution.adapter_id != adapter.id:
             session.rollback()
             continue
         # Keep the injected clock authoritative for deterministic reconciliation

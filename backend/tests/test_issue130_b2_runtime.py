@@ -43,7 +43,12 @@ from dlr.control.schemas.reliable_runtime import (
 )
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import execution as execution_service
-from dlr.control.services import infrastructure_dlq, rabbitmq, reliable_execution
+from dlr.control.services import (
+    execution_cancellation,
+    infrastructure_dlq,
+    rabbitmq,
+    reliable_execution,
+)
 from dlr.control.services.artifact_store import LocalFileArtifactStore
 from dlr.control.services.dispatch import DISPATCH_EXCHANGE, worker_routing_key
 from dlr.worker import executor, workspace
@@ -1412,6 +1417,178 @@ def test_same_adapter_slot_blocks_second_claim_during_concurrent_long_claim(
         )
         assert len(attempts) == 1
         assert slot is not None and slot.active_attempt_id == attempts[0].id
+
+
+def test_claim_and_cancel_share_adapter_first_lock_order(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation waits at Adapter instead of deadlocking with Claim at Execution."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, "b2-claim-cancel-lock-worker")
+    adapter = _rabbit_adapter(api_client, worker, "b2-claim-cancel-lock-adapter")
+    execution = _canary_execution(api_client, adapter["id"])
+    dispatch = _dispatch(session_factory, execution["id"])
+
+    claim_has_admission_scope = threading.Event()
+    release_claim = threading.Event()
+    cancel_entered_admission_scope = threading.Event()
+    cancel_reached_execution = threading.Event()
+    original_scope_lock = attempt_service.admission.lock_admission_scope
+    original_execution_lock = execution_cancellation.lock_execution
+
+    def pause_claim_after_scope_lock(session: Session, adapter_id: int) -> Any:
+        if threading.current_thread().name == "b2-cancel-lock-order":
+            cancel_entered_admission_scope.set()
+        scope = original_scope_lock(session, adapter_id)
+        if threading.current_thread().name == "b2-claim-lock-order":
+            claim_has_admission_scope.set()
+            assert release_claim.wait(timeout=10)
+        return scope
+
+    def observe_cancel_execution_lock(session: Session, execution_id: int) -> Execution | None:
+        if threading.current_thread().name == "b2-cancel-lock-order":
+            cancel_reached_execution.set()
+        return original_execution_lock(session, execution_id)
+
+    monkeypatch.setattr(
+        attempt_service.admission,
+        "lock_admission_scope",
+        pause_claim_after_scope_lock,
+    )
+    monkeypatch.setattr(
+        execution_cancellation,
+        "lock_execution",
+        observe_cancel_execution_lock,
+    )
+    results: dict[str, Any] = {}
+
+    def claim() -> None:
+        try:
+            results["claim"] = _claim(session_factory, worker["id"], dispatch)
+        except BaseException as error:  # pragma: no cover - surfaced below
+            results["claim_error"] = error
+
+    def cancel() -> None:
+        try:
+            with session_factory() as session:
+                results["cancel"] = execution_service.cancel_execution(session, execution["id"])
+        except BaseException as error:  # pragma: no cover - surfaced below
+            results["cancel_error"] = error
+
+    claim_thread = threading.Thread(target=claim, name="b2-claim-lock-order")
+    cancel_thread = threading.Thread(target=cancel, name="b2-cancel-lock-order")
+    claim_thread.start()
+    assert claim_has_admission_scope.wait(timeout=10)
+    cancel_thread.start()
+    assert cancel_entered_admission_scope.wait(timeout=10)
+    assert not cancel_reached_execution.is_set()
+    release_claim.set()
+    claim_thread.join(timeout=10)
+    cancel_thread.join(timeout=10)
+
+    assert not claim_thread.is_alive()
+    assert not cancel_thread.is_alive()
+    assert "claim_error" not in results, results.get("claim_error")
+    assert "cancel_error" not in results, results.get("cancel_error")
+    assert results["claim"].decision == "EXECUTE"
+    assert results["cancel"].cancel_requested is True
+
+
+def test_retry_dispatch_and_cancel_share_adapter_first_lock_order(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retry dispatch holds Adapter before Execution, matching cancellation."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, "b2-retry-cancel-lock-worker")
+    adapter = _rabbit_adapter(api_client, worker, "b2-retry-cancel-lock-adapter")
+    execution = _canary_execution(api_client, adapter["id"])
+    due_at = datetime.now(UTC) - timedelta(seconds=1)
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        row.status = "retry_wait"
+        row.next_attempt_at = due_at
+
+    retry_has_adapter = threading.Event()
+    release_retry = threading.Event()
+    cancel_entered_admission_scope = threading.Event()
+    cancel_reached_execution = threading.Event()
+    original_scope_lock = attempt_service.admission.lock_admission_scope
+    original_execution_lock = execution_cancellation.lock_execution
+
+    def observe_cancel_scope_lock(session: Session, adapter_id: int) -> Any:
+        if threading.current_thread().name == "b2-retry-cancel":
+            cancel_entered_admission_scope.set()
+        return original_scope_lock(session, adapter_id)
+
+    def observe_cancel_execution_lock(session: Session, execution_id: int) -> Execution | None:
+        if threading.current_thread().name == "b2-retry-cancel":
+            cancel_reached_execution.set()
+        return original_execution_lock(session, execution_id)
+
+    monkeypatch.setattr(
+        attempt_service.admission,
+        "lock_admission_scope",
+        observe_cancel_scope_lock,
+    )
+    monkeypatch.setattr(
+        execution_cancellation,
+        "lock_execution",
+        observe_cancel_execution_lock,
+    )
+    results: dict[str, Any] = {}
+
+    def retry() -> None:
+        try:
+            with session_factory() as session:
+                original_scalar = session.scalar
+
+                def pause_after_adapter_lock(statement: Any, *args: Any, **kwargs: Any) -> Any:
+                    value = original_scalar(statement, *args, **kwargs)
+                    sql = str(statement)
+                    if "FROM adapters" in sql and "FOR UPDATE" in sql:
+                        retry_has_adapter.set()
+                        assert release_retry.wait(timeout=10)
+                    return value
+
+                session.scalar = pause_after_adapter_lock  # type: ignore[method-assign]
+                results["retry"] = attempt_service.retry_dispatcher_once(
+                    session,
+                    now=datetime.now(UTC),
+                )
+        except BaseException as error:  # pragma: no cover - surfaced below
+            results["retry_error"] = error
+
+    def cancel() -> None:
+        try:
+            with session_factory() as session:
+                results["cancel"] = execution_service.cancel_execution(session, execution["id"])
+        except BaseException as error:  # pragma: no cover - surfaced below
+            results["cancel_error"] = error
+
+    retry_thread = threading.Thread(target=retry, name="b2-retry-lock-order")
+    cancel_thread = threading.Thread(target=cancel, name="b2-retry-cancel")
+    retry_thread.start()
+    assert retry_has_adapter.wait(timeout=10)
+    cancel_thread.start()
+    assert cancel_entered_admission_scope.wait(timeout=10)
+    assert not cancel_reached_execution.is_set()
+    release_retry.set()
+    retry_thread.join(timeout=10)
+    cancel_thread.join(timeout=10)
+
+    assert not retry_thread.is_alive()
+    assert not cancel_thread.is_alive()
+    assert "retry_error" not in results, results.get("retry_error")
+    assert "cancel_error" not in results, results.get("cancel_error")
+    assert results["retry"] == 1
+    assert results["cancel"].status == "cancelled"
 
 
 def test_concurrent_cancel_and_success_result_release_once(

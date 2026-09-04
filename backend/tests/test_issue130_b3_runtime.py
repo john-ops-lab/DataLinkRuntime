@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import threading
+from collections.abc import Iterator
 from contextlib import nullcontext
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
@@ -118,6 +120,109 @@ def _v3_payload(
         "workspace_cleanup_attempt_timeout_seconds_snapshot": 5,
         "workspace_cleanup_total_timeout_seconds_snapshot": 20,
     }
+
+
+def test_worker_timeout_ceiling_defaults_to_api_maximum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DLR_WORKER_EXECUTION_TIMEOUT_MAX_SECONDS", raising=False)
+    assert sandbox.SandboxConfig.from_environment().execution_timeout_seconds == 86_400
+
+
+def test_compose_passes_resource_profile_settings_to_both_services() -> None:
+    compose = (Path(__file__).parents[2] / "docker-compose.yml").read_text(encoding="utf-8")
+    shared_defaults = {
+        "DLR_EXECUTION_TIMEOUT_SECONDS": "300",
+        "DLR_SANDBOX_BACKEND": "cgroup_v2",
+        "DLR_SANDBOX_CPU_CORES": "1.0",
+        "DLR_SANDBOX_MEMORY_BYTES": "536870912",
+        "DLR_SANDBOX_PIDS": "128",
+        "DLR_SANDBOX_TMP_BYTES": "1073741824",
+        "DLR_SANDBOX_NOFILE": "1024",
+        "DLR_EXECUTION_STREAM_MAX_BYTES": "1048576",
+        "DLR_EXECUTION_OUTPUT_MAX_BYTES": "524288",
+        "DLR_EXECUTION_OUTPUT_PREVIEW_MAX_BYTES": "16384",
+    }
+    for name, default in shared_defaults.items():
+        assert compose.count(f"      {name}: ${{{name}:-{default}}}") == 2
+    assert (
+        compose.count(
+            "      DLR_WORKER_EXECUTION_TIMEOUT_MAX_SECONDS: "
+            "${DLR_WORKER_EXECUTION_TIMEOUT_MAX_SECONDS:-86400}"
+        )
+        == 1
+    )
+
+
+def test_payload_temp_paths_are_all_backed_by_attempt_tmpfs() -> None:
+    assert sandbox.PAYLOAD_TEMP_MOUNTS == (
+        (".dlr-payload-var-tmp", "/var/tmp"),
+        (".dlr-payload-shm", "/dev/shm"),
+        (".dlr-payload-tmp", "/tmp"),
+    )
+
+
+def test_payload_temp_bind_mounts_use_attempt_owned_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "attempt-tmpfs").mkdir()
+    targets = tuple(
+        (source, str(tmp_path / f"target-{index}"))
+        for index, (source, _target) in enumerate(sandbox.PAYLOAD_TEMP_MOUNTS)
+    )
+    for _source, target in targets:
+        Path(target).mkdir()
+    calls: list[tuple[str | None, str, str | None, int, str | None]] = []
+    monkeypatch.setattr(
+        sandbox,
+        "_filesystem_identity",
+        lambda _uid, _gid: nullcontext(),
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "_mount",
+        lambda source, target, filesystem, flags, data: calls.append(
+            (source, target, filesystem, flags, data)
+        ),
+    )
+
+    mounted = sandbox._mount_payload_temp_dirs(
+        tmp_path / "attempt-tmpfs",
+        os.getuid(),
+        os.getgid(),
+        mounts=targets,
+    )
+
+    assert mounted == [target for _source, target in targets]
+    expected_calls = []
+    for source_name, target in targets:
+        expected_calls.extend(
+            [
+                (
+                    str(tmp_path / "attempt-tmpfs" / source_name),
+                    target,
+                    None,
+                    sandbox.MS_BIND,
+                    None,
+                ),
+                (
+                    None,
+                    target,
+                    None,
+                    sandbox.MS_BIND
+                    | sandbox.MS_REMOUNT
+                    | sandbox.MS_NOSUID
+                    | sandbox.MS_NODEV
+                    | sandbox.MS_NOEXEC,
+                    None,
+                ),
+            ]
+        )
+    assert calls == expected_calls
+    for source_name, _target in targets:
+        assert (tmp_path / "attempt-tmpfs" / source_name).is_dir()
+    assert (tmp_path / "attempt-tmpfs" / ".dlr-payload-tmp" / "home").is_dir()
 
 
 def test_resource_profile_is_complete_immutable_and_bounded() -> None:
@@ -1171,6 +1276,22 @@ def _allow_payload_traversal(path: Path) -> None:
         candidate = candidate.parent
 
 
+@pytest.fixture
+def real_runtime_root(tmp_path: Path) -> Iterator[Path]:
+    """Keep trusted runtimes outside payload temp paths that are intentionally hidden."""
+
+    _real_target_config()
+    base = Path(os.environ.get("DLR_B3_TEST_RUNTIME_ROOT", "/var/lib/dlr/runtime/b3-tests"))
+    root = base / f"pytest-{tmp_path.parent.name}-{tmp_path.name}"
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(mode=0o755, parents=True)
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
     config = _real_target_config()
     result = sandbox.run_preflight(config, recovery_root=tmp_path / "sandbox-recovery")
@@ -1293,7 +1414,12 @@ def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
     ],
     ids=["python", "javascript", "java"],
 )
-def test_real_linux_three_languages_are_sandboxed(tmp_path: Path, language: str, code: str) -> None:
+def test_real_linux_three_languages_are_sandboxed(
+    tmp_path: Path,
+    real_runtime_root: Path,
+    language: str,
+    code: str,
+) -> None:
     config = _real_target_config()
     _allow_payload_traversal(tmp_path)
     payload = _v3_payload(
@@ -1302,7 +1428,7 @@ def test_real_linux_three_languages_are_sandboxed(tmp_path: Path, language: str,
     result = executor.run(
         payload,
         executor.RuntimeSettings(
-            runtime_root=tmp_path / language,
+            runtime_root=real_runtime_root / language,
             execution_timeout_seconds=300,
             dep_install_timeout_seconds=120,
             workspace_cleanup_journal_root=tmp_path / language / "cleanup-journal",
@@ -1317,11 +1443,69 @@ def test_real_linux_three_languages_are_sandboxed(tmp_path: Path, language: str,
         "/run/dlr-cgroup": {"read_blocked": True, "write_blocked": True},
         "/sys/fs/cgroup": {"read_blocked": True, "write_blocked": True},
     }
-    assert not list((tmp_path / language / "workspaces").glob("**/.dlr-sandbox-mount"))
+    assert not list((real_runtime_root / language / "workspaces").glob("**/.dlr-sandbox-mount"))
+
+
+def test_real_linux_payload_temp_paths_are_private_and_share_attempt_quota(
+    tmp_path: Path,
+    real_runtime_root: Path,
+) -> None:
+    config = _real_target_config()
+    _allow_payload_traversal(tmp_path)
+    code = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "def handle(context, input):\n"
+        "    marker = Path('/tmp/dlr-attempt-marker')\n"
+        "    existed = marker.exists()\n"
+        "    marker.write_text('attempt-local')\n"
+        "    paths = ['.', '/tmp', '/var/tmp', '/dev/shm']\n"
+        "    return {\n"
+        "        'marker_existed': existed,\n"
+        "        'devices': {path: os.stat(path).st_dev for path in paths},\n"
+        "        'tmpfs_bytes': {path: os.statvfs(path).f_blocks * "
+        "os.statvfs(path).f_frsize for path in paths},\n"
+        "        'environment': {name: os.environ[name] for name in "
+        "['HOME', 'TMPDIR', 'TMP', 'TEMP']},\n"
+        "    }\n"
+    )
+    settings = executor.RuntimeSettings(
+        runtime_root=real_runtime_root / "payload-temp",
+        execution_timeout_seconds=300,
+        dep_install_timeout_seconds=120,
+        workspace_cleanup_journal_root=tmp_path / "payload-temp-journal",
+        sandbox_config=config,
+    )
+
+    first = executor.run(
+        _v3_payload("python", code, execution_id=7196, attempt_id=8196),
+        settings,
+    )
+    second = executor.run(
+        _v3_payload("python", code, execution_id=7197, attempt_id=8197),
+        settings,
+    )
+
+    for result in (first, second):
+        assert result["status"] == "succeeded", result
+        output = result["output"]
+        assert output["marker_existed"] is False
+        assert len(set(output["devices"].values())) == 1
+        assert set(output["tmpfs_bytes"].values()) == {_profile()["tmp_bytes"]}
+        assert output["environment"] == {
+            "HOME": "/tmp/home",
+            "TMPDIR": "/tmp",
+            "TMP": "/tmp",
+            "TEMP": "/tmp",
+        }
+        assert result["cleanup_summary"]["sandbox"]["status"] == "completed"
+        assert result["cleanup_summary"]["sandbox"]["residue"] is False
 
 
 def test_real_linux_dependency_resource_failure_is_classified_and_cleaned(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    real_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _real_target_config()
     _allow_payload_traversal(tmp_path)
@@ -1345,7 +1529,7 @@ def test_real_linux_dependency_resource_failure_is_classified_and_cleaned(
             attempt_id=8198,
         ),
         executor.RuntimeSettings(
-            runtime_root=tmp_path / "dependency-resource",
+            runtime_root=real_runtime_root / "dependency-resource",
             execution_timeout_seconds=300,
             dep_install_timeout_seconds=120,
             workspace_cleanup_journal_root=tmp_path / "dependency-resource-journal",
@@ -1357,12 +1541,15 @@ def test_real_linux_dependency_resource_failure_is_classified_and_cleaned(
     assert result["error_code"] == "resource_exceeded_memory", result
     assert result["cleanup_summary"]["sandbox"]["status"] == "completed"
     assert result["cleanup_summary"]["sandbox"]["residue"] is False
-    assert not list((tmp_path / "dependency-resource").glob("**/.dependency-tmp"))
+    assert not list((real_runtime_root / "dependency-resource").glob("**/.dependency-tmp"))
 
 
 @pytest.mark.parametrize("outcome", ["cancel", "timeout", "crash"])
 def test_real_linux_cancel_timeout_crash_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+    tmp_path: Path,
+    real_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
 ) -> None:
     config = _real_target_config()
     _allow_payload_traversal(tmp_path)
@@ -1396,7 +1583,7 @@ def test_real_linux_cancel_timeout_crash_cleanup(
     result = executor.run(
         payload,
         executor.RuntimeSettings(
-            runtime_root=tmp_path / outcome,
+            runtime_root=real_runtime_root / outcome,
             execution_timeout_seconds=300,
             dep_install_timeout_seconds=120,
             workspace_cleanup_journal_root=tmp_path / outcome / "cleanup-journal",

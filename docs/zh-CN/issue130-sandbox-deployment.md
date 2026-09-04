@@ -379,10 +379,14 @@ descriptor，再用 Linux `setfsuid`/`setfsgid` 创建每个 destination node，
 `follow_symlinks=False` 语义且不跟随 staged symlink，保留 managed input directory/file
 的 `0555`/`0444` read-only modes。payload 通过 inherited workspace directory FD 的
 `/proc/self/fd/<fd>/dlr-exec-*` absolute path 访问 workspace，仍可写 `output.json` 和
-`temp` fill；命令行中的 workspace 根及其所有 descendant 路径（包括 Node harness）都
+`temp` fill。payload 自己的 mount namespace 会把 `/tmp`、`/var/tmp`、`/dev/shm`
+分别绑定到同一个 Attempt tmpfs 内的私有目录，同时把 `HOME`、`TMPDIR`、`TMP`、`TEMP`
+指向这些目录；因此常规临时文件既不能绕过 profile 的 `tmp_bytes` 配额，也不会泄漏到
+下一个 Attempt。受信任的 Worker runtime/cache 根必须放在这些路径之外；Compose 契约使用
+`/var/lib/dlr/runtime`。命令行中的 workspace 根及其所有 descendant 路径（包括 Node harness）都
 必须重写到该 `/proc/self/fd/<fd>/dlr-exec-*` tree，不能把 host workspace 路径传给
 payload。为满足 Node/Java runtime 的真实路径解析，helper 只把 outer tmpfs recursive-bind
-到由 Attempt workspace 名派生的 task-owned `/tmp/.dlr-sandbox-*` 临时目录；该目录不是
+到由 Attempt workspace 名派生的 task-owned `/run/.dlr-sandbox-*` 临时目录；该目录不是
 用户可配置路径，且必须在 unmount 后精确 `rmdir`，不能覆盖 workspace 或任意 host path。
 ownership handoff 失败必须记录
 `phase=workspace_ownership`/`sandbox_workspace_ownership_failed`

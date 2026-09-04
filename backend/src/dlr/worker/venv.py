@@ -13,7 +13,9 @@ source index URL, and fails with an explicit operator-facing message when
 neither is available.
 """
 
+import base64
 import hashlib
+import json
 import logging
 import os
 import re
@@ -22,6 +24,7 @@ import selectors
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -75,6 +78,43 @@ CACHE_RESERVATION_BYTES = 256 * 1024 * 1024
 _CACHE_RESERVATION_BYTES = CACHE_RESERVATION_BYTES
 
 _URI_USERINFO_PATTERN = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#@]+@")
+
+
+def _dependency_child(command: list[str], ready_fd: int, nofile: int) -> int:
+    """Wait for parent-side cgroup placement, then apply limits and exec."""
+
+    try:
+        try:
+            if os.read(ready_fd, 1) != b"1":
+                return 125
+        finally:
+            os.close(ready_fd)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
+        os.execvpe(command[0], command, os.environ)
+    except BaseException:
+        # Keep helper diagnostics stable and path-free; the parent maps a
+        # non-zero exit to the existing dependency sandbox error contract.
+        print("DLR_DEPENDENCY_HELPER_ERROR", flush=True)
+        return 125
+
+
+def _dependency_helper_command(command: list[str], ready_fd: int, nofile: int) -> list[str]:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(command, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    return [
+        sys.executable,
+        "-m",
+        "dlr.worker.venv",
+        "--dependency-child",
+        "--command",
+        encoded,
+        "--ready-fd",
+        str(ready_fd),
+        "--nofile",
+        str(nofile),
+    ]
+
 
 # DLR-owned marker inserted between third-party install outputs.
 OFFLINE_CACHE_FALLBACK_MARKER = (
@@ -678,12 +718,6 @@ def _run_logged(
         if context.reservation_check is not None:
             context.reservation_check()
 
-    def preexec() -> None:
-        if context is not None:
-            with (context.cgroup_path / "cgroup.procs").open("w", encoding="ascii") as stream:
-                stream.write(f"{os.getpid()}\n")
-            resource.setrlimit(resource.RLIMIT_NOFILE, (context.nofile, context.nofile))
-
     if subprocess.run is not _ORIGINAL_SUBPROCESS_RUN:
         # Compatibility seam for existing in-process tests and embedders that
         # replace the runner.  Production never enters this branch.
@@ -717,6 +751,8 @@ def _run_logged(
 
     selector = selectors.DefaultSelector()
     process: subprocess.Popen[bytes] | None = None
+    gate_read_fd: int | None = None
+    gate_write_fd: int | None = None
     log_limit = context.log_max_bytes if context is not None else 1 * 1024 * 1024
     ring = bytearray()
     total_bytes = 0
@@ -745,17 +781,35 @@ def _run_logged(
 
     try:
         assert_reservation()
+        pass_fds: tuple[int, ...] = ()
+        launch_command = command
+        if context is not None:
+            gate_read_fd, gate_write_fd = os.pipe()
+            os.set_inheritable(gate_read_fd, True)
+            pass_fds = (gate_read_fd,)
+            launch_command = _dependency_helper_command(command, gate_read_fd, context.nofile)
         process = subprocess.Popen(  # noqa: S603 - fixed dependency command list
-            command,
+            launch_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
-            # ``start_new_session`` performs the session transition in the
-            # child.  Calling setsid again from a pre-exec hook races with
-            # that transition and fails with EPERM on macOS/Linux.
-            preexec_fn=preexec if context is not None else None,
+            pass_fds=pass_fds,
         )
+        if gate_read_fd is not None:
+            os.close(gate_read_fd)
+            gate_read_fd = None
+        if context is not None:
+            assert gate_write_fd is not None
+            with (context.cgroup_path / "cgroup.procs").open("w", encoding="ascii") as stream:
+                stream.write(f"{process.pid}\n")
+            members = (context.cgroup_path / "cgroup.procs").read_text(encoding="ascii").split()
+            if str(process.pid) not in members:
+                raise OSError("dependency process cgroup membership readback failed")
+            assert_reservation()
+            os.write(gate_write_fd, b"1")
+            os.close(gate_write_fd)
+            gate_write_fd = None
         assert process.stdout is not None
         selector.register(process.stdout, selectors.EVENT_READ)
         deadline = time.monotonic() + timeout_seconds
@@ -810,6 +864,12 @@ def _run_logged(
             error_code="dependency_sandbox_failed",
         ) from error
     finally:
+        if gate_read_fd is not None:
+            with suppress(OSError):
+                os.close(gate_read_fd)
+        if gate_write_fd is not None:
+            with suppress(OSError):
+                os.close(gate_write_fd)
         if process is not None and process.poll() is None:
             terminate()
             process.wait()
@@ -1012,3 +1072,31 @@ def cleanup_adapter_environment(runtime_root: Path, adapter_id: int) -> None:
     if base.is_dir():
         shutil.rmtree(base)
         logger.info("cleaned runtime environment for deleted adapter %s", adapter_id)
+
+
+def _helper_main(argv: list[str]) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--dependency-child", action="store_true")
+    parser.add_argument("--command", required=True)
+    parser.add_argument("--ready-fd", required=True, type=int)
+    parser.add_argument("--nofile", required=True, type=int)
+    args = parser.parse_args(argv)
+    if not args.dependency_child:
+        return 125
+    try:
+        command = json.loads(base64.urlsafe_b64decode(args.command.encode("ascii")).decode("utf-8"))
+    except (ValueError, UnicodeError, json.JSONDecodeError):
+        return 125
+    if (
+        not isinstance(command, list)
+        or not command
+        or not all(isinstance(item, str) for item in command)
+    ):
+        return 125
+    return _dependency_child(command, args.ready_fd, args.nofile)
+
+
+if __name__ == "__main__":
+    raise SystemExit(_helper_main(sys.argv[1:]))

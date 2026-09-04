@@ -83,6 +83,7 @@ MS_RDONLY = 1
 MS_NOSUID = 2
 MS_NODEV = 4
 MS_NOEXEC = 8
+MS_REMOUNT = 32
 MS_REC = 16_384
 MS_PRIVATE = 1 << 18
 MS_BIND = 4096
@@ -106,6 +107,7 @@ HELPER_PHASE_ERROR_CODES = {
     "mount_namespace_private": "sandbox_mount_namespace_failed",
     "workspace_tmpfs_mount": "sandbox_tmpfs_mount_failed",
     "workspace_tmpfs_usage": "resource_exceeded_disk",
+    "payload_temp_mounts": "sandbox_tmpfs_mount_failed",
     "workspace_copy": "sandbox_workspace_copy_failed",
     "workspace_ownership": "sandbox_workspace_ownership_failed",
     "cgroup_root_hide": "sandbox_cgroup_hide_failed",
@@ -132,6 +134,13 @@ HELPER_DIAGNOSTIC_PATTERN = re.compile(
     r"errno=(?P<errno>[0-9]+)\Z"
 )
 STREAM_COPY_CHUNK_BYTES = 64 * 1024
+PAYLOAD_TEMP_MOUNTS = (
+    (".dlr-payload-var-tmp", "/var/tmp"),
+    (".dlr-payload-shm", "/dev/shm"),
+    # Resolve the other conventional targets before hiding the root temporary
+    # tree.  The source remains on the stable task-owned /run bind.
+    (".dlr-payload-tmp", "/tmp"),
+)
 
 
 class SandboxError(Exception):
@@ -265,7 +274,9 @@ class SandboxConfig:
             pids=integer("DLR_SANDBOX_PIDS", 128, 16, 1_000_000),
             tmp_bytes=integer("DLR_SANDBOX_TMP_BYTES", 1 << 30, 1 << 20, 1 << 40),
             nofile=integer("DLR_SANDBOX_NOFILE", 1024, 64, 1_048_576),
-            execution_timeout_seconds=integer("DLR_EXECUTION_TIMEOUT_SECONDS", 300, 1, 86_400),
+            execution_timeout_seconds=integer(
+                "DLR_WORKER_EXECUTION_TIMEOUT_MAX_SECONDS", 86_400, 1, 86_400
+            ),
             claim_timeout_seconds=integer("DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS", 300, 30, 86_400),
             recovery_grace_seconds=integer("DLR_EXECUTION_RECOVERY_GRACE_SECONDS", 60, 10, 3_600),
             cleanup_attempt_seconds=integer(
@@ -1180,6 +1191,48 @@ def _copy_tree_as_owner(source: Path, target: Path, uid: int, gid: int) -> None:
     copy_directory(source, target)
 
 
+def _mount_payload_temp_dirs(
+    tmpfs_root: Path,
+    payload_uid: int,
+    payload_gid: int,
+    *,
+    mounts: tuple[tuple[str, str], ...] = PAYLOAD_TEMP_MOUNTS,
+) -> list[str]:
+    """Bind all conventional payload temp paths to the Attempt tmpfs."""
+
+    with _filesystem_identity(payload_uid, payload_gid):
+        for source_name, _target in mounts:
+            source_path = tmpfs_root / source_name
+            source_path.mkdir(mode=0o700)
+            os.chmod(source_path, 0o700, follow_symlinks=False)
+        tmp_source_name = next(source for source, _target in mounts if source == ".dlr-payload-tmp")
+        home = tmpfs_root / tmp_source_name / "home"
+        home.mkdir(mode=0o700)
+        os.chmod(home, 0o700, follow_symlinks=False)
+
+    mounted: list[str] = []
+    try:
+        for source_name, target in mounts:
+            if not Path(target).is_dir():
+                raise OSError(errno.ENOENT, "payload temp target is unavailable")
+            source_mount = str(tmpfs_root / source_name)
+            _mount(source_mount, target, None, MS_BIND, None)
+            mounted.append(target)
+            _mount(
+                None,
+                target,
+                None,
+                MS_BIND | MS_REMOUNT | MS_NOSUID | MS_NODEV | MS_NOEXEC,
+                None,
+            )
+    except BaseException:
+        for target in reversed(mounted):
+            with suppress(OSError):
+                _unmount(target)
+        raise
+    return mounted
+
+
 def _copy_bounded_output(
     source: Path,
     destination: Path,
@@ -1391,7 +1444,7 @@ def _helper_child(
         )
         mounted_tmpfs = True
         outer_fd = os.open(mount_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        payload_root = Path("/tmp") / f".dlr-sandbox-{mount_root.parent.name}"
+        payload_root = Path("/run") / f".dlr-sandbox-{mount_root.parent.name}"
         payload_parent_fd = os.open(
             payload_root.parent,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
@@ -1445,6 +1498,14 @@ def _helper_child(
                 if os.read(payload_gate_read, 1) != b"1":
                     raise OSError(errno.ECANCELED, "payload cgroup gate was not released")
                 os.close(payload_gate_read)
+                stage = "payload_temp_mounts"
+                _unshare(CLONE_NEWNS)
+                assert payload_root is not None
+                _mount_payload_temp_dirs(
+                    payload_root / host_workspace.name,
+                    payload_uid,
+                    payload_gid,
+                )
                 stage = "payload_setrlimit"
                 resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
                 stage = "payload_identity"
@@ -1454,8 +1515,12 @@ def _helper_child(
                 stage = "payload_capabilities"
                 _drop_capabilities()
                 assert payload_workspace is not None
+                assert payload_root is not None
                 stage = "payload_workspace_chdir"
-                os.chdir(payload_workspace)
+                # Java's native startup rejects a cwd reached only through a
+                # procfs descriptor.  The stable path is still task-owned,
+                # private to this mount namespace, and contains no host path.
+                os.chdir(payload_root / host_workspace.name / host_workspace.name)
                 # The diagnostic channel belongs to the helper, not the
                 # Adapter.  CLOEXEC keeps the payload from discovering or
                 # writing the supervisor's private control channel.
@@ -1467,6 +1532,14 @@ def _helper_child(
                     for key, value in os.environ.items()
                     if not key.startswith("DLR_SANDBOX_")
                 }
+                adapter_environment.update(
+                    {
+                        "HOME": "/tmp/home",
+                        "TMPDIR": "/tmp",
+                        "TMP": "/tmp",
+                        "TEMP": "/tmp",
+                    }
+                )
                 # These are probe-only namespace assertions.  Production
                 # attempts do not provide DLR_PREFLIGHT_* values.
                 adapter_environment.update(

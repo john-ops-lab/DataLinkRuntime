@@ -234,6 +234,20 @@ def _validate_runtime_worker(
     return worker
 
 
+def _validate_runtime_worker_assignment(
+    session: Session,
+    worker_id: int,
+    language: str,
+) -> Worker:
+    """Validate a durable fixed assignment without requiring a live heartbeat."""
+
+    worker = session.get(Worker, worker_id)
+    if worker is None:
+        raise domain_error(404, "worker_not_found", "Worker not found")
+    _require_worker_capability(worker, language)
+    return worker
+
+
 def resolve_runtime_worker(session: Session, adapter: Adapter, *, now: datetime) -> Worker:
     """Resolve the deterministic effective-online compatible runtime Worker."""
     if adapter.runtime_worker_id is not None:
@@ -278,11 +292,10 @@ def update_adapter(session: Session, adapter_id: int, data: AdapterUpdate) -> Ad
     if runtime_worker_changed:
         adapter_runtime.require_runtime_unlocked(session, adapter)
         if data.runtime_worker_id is not None:
-            _validate_runtime_worker(
+            _validate_runtime_worker_assignment(
                 session,
                 data.runtime_worker_id,
                 adapter.language,
-                now=worker_availability.current_time(session),
             )
         adapter.runtime_worker_id = data.runtime_worker_id
 
@@ -610,11 +623,18 @@ def save_version(session: Session, adapter_id: int, data: VersionCreate) -> Adap
     _require_not_archived(adapter)
     adapter_runtime.require_runtime_unlocked(session, adapter)
     if adapter.latest_version_id is None and adapter.adapter_type == "task":
-        resolve_runtime_worker(
-            session,
-            adapter,
-            now=worker_availability.current_time(session),
-        )
+        if adapter.runtime_worker_id is None:
+            resolve_runtime_worker(
+                session,
+                adapter,
+                now=worker_availability.current_time(session),
+            )
+        else:
+            _validate_runtime_worker_assignment(
+                session,
+                adapter.runtime_worker_id,
+                adapter.language,
+            )
 
     max_seq = session.scalar(
         select(func.max(AdapterVersion.seq)).where(AdapterVersion.adapter_id == adapter_id)

@@ -1867,7 +1867,8 @@ def run_fault_matrix(root: Path, config: sandbox.SandboxConfig) -> dict[str, obj
 def main() -> int:
     root = Path(
         os.environ.get(
-            "DLR_B3_RUNTIME_ROOT", f"/tmp/dlr-issue130-b3-20260902-real-{os.getpid()}"
+            "DLR_B3_RUNTIME_ROOT",
+            f"/var/lib/dlr/runtime/dlr-issue130-b3-20260902-real-{os.getpid()}",
         )
     )
     # The helper execs the prebuilt runtime after dropping to uid 501. Keep
