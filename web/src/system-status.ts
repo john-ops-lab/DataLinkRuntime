@@ -54,6 +54,16 @@ export const REQUIRED_ISOLATION_CAPABILITIES = [
   "pids_hard_limit",
   "tmpfs_hard_limit",
   "bounded_output",
+  "preflight_passed",
+  "resource_envelope_verified",
+  "cpu_hard_limit",
+  "swap_hard_limit",
+  "nofile_hard_limit",
+  "no_new_privileges",
+  "cgroup_kill",
+  "adapter_control_plane_hidden",
+  "adapter_mount_blocked",
+  "sandbox_cleanup",
 ] as const;
 
 export type RequiredIsolationCapability = (typeof REQUIRED_ISOLATION_CAPABILITIES)[number];
@@ -83,6 +93,16 @@ export function isHealthPayload(value: unknown): value is ControlHealthPayload {
 export function toHealthStatus(payload: ControlHealthPayload): HealthStatus {
   if (!payload.database) {
     return "unreachable";
+  }
+  if (
+    payload.rabbitmq?.enabled === true
+    && (
+      payload.rabbitmq.ready !== true
+      || payload.rabbitmq.status === "degraded"
+      || payload.rabbitmq.ingress?.status === "degraded"
+    )
+  ) {
+    return "degraded";
   }
   if (payload.status === "ok") {
     return "ok";

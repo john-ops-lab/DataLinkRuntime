@@ -28,6 +28,16 @@ function readyWorker(overrides: Partial<Worker> = {}): Worker {
       pids_hard_limit: true,
       tmpfs_hard_limit: true,
       bounded_output: true,
+      preflight_passed: true,
+      resource_envelope_verified: true,
+      cpu_hard_limit: true,
+      swap_hard_limit: true,
+      nofile_hard_limit: true,
+      no_new_privileges: true,
+      cgroup_kill: true,
+      adapter_control_plane_hidden: true,
+      adapter_mount_blocked: true,
+      sandbox_cleanup: true,
     },
     ...overrides,
   };
@@ -43,6 +53,19 @@ describe("system status aggregation", () => {
   it("treats a healthy database with a degraded Control as a warning", () => {
     expect(toHealthStatus({ status: "degraded", database: true })).toBe("degraded");
     expect(toHealthStatus({ status: "degraded", database: false })).toBe("unreachable");
+  });
+
+  it("does not show normal while enabled RabbitMQ ingress is degraded", () => {
+    expect(toHealthStatus({
+      status: "ok",
+      database: true,
+      rabbitmq: {
+        enabled: true,
+        status: "degraded",
+        ready: false,
+        ingress: { enabled: true, status: "degraded", ready: false },
+      },
+    })).toBe("degraded");
   });
 
   it("requires every execution gate instead of trusting the heartbeat", () => {

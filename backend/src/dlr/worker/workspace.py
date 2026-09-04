@@ -162,11 +162,44 @@ def _ensure_private_directory(path: Path) -> None:
             raise WorkspaceError("workspace_cleanup_failed") from error
         else:
             return
-    if info is None or stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISDIR(info.st_mode):
+    if (
+        info is None
+        or stat_module.S_ISLNK(info.st_mode)
+        or not stat_module.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+    ):
         raise WorkspaceError("workspace_cleanup_unknown")
     if info.st_mode & 0o077:
         try:
             path.chmod(0o700)
+        except OSError as error:
+            raise WorkspaceError("workspace_cleanup_failed") from error
+
+
+def ensure_private_directory(path: Path) -> None:
+    """Establish one Worker-owned 0700 directory for runtime state."""
+
+    _ensure_private_directory(Path(path))
+
+
+def ensure_runtime_root(path: Path) -> None:
+    """Establish the owned, non-listable runtime root used by payload caches."""
+
+    path = Path(path)
+    try:
+        path.mkdir(mode=0o711, parents=True, exist_ok=True)
+        info = path.lstat()
+    except OSError as error:
+        raise WorkspaceError("workspace_cleanup_failed") from error
+    if (
+        stat_module.S_ISLNK(info.st_mode)
+        or not stat_module.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+    ):
+        raise WorkspaceError("workspace_cleanup_unknown")
+    if stat_module.S_IMODE(info.st_mode) != 0o711:
+        try:
+            path.chmod(0o711)
         except OSError as error:
             raise WorkspaceError("workspace_cleanup_failed") from error
 

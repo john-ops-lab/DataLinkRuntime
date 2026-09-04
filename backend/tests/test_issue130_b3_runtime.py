@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Iterator
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -174,17 +174,33 @@ def test_payload_temp_bind_mounts_use_attempt_owned_sources(
     for _source, target in targets:
         Path(target).mkdir()
     calls: list[tuple[str | None, str, str | None, int, str | None]] = []
-    monkeypatch.setattr(
-        sandbox,
-        "_filesystem_identity",
-        lambda _uid, _gid: nullcontext(),
-    )
+    identity_depth = 0
+
+    @contextmanager
+    def payload_identity(_uid: int, _gid: int) -> Iterator[None]:
+        nonlocal identity_depth
+        identity_depth += 1
+        try:
+            yield
+        finally:
+            identity_depth -= 1
+
+    monkeypatch.setattr(sandbox, "_filesystem_identity", payload_identity)
+
+    def record_mount(
+        source: str | None,
+        target: str,
+        filesystem: str | None,
+        flags: int,
+        data: str | None,
+    ) -> None:
+        assert identity_depth == 1
+        calls.append((source, target, filesystem, flags, data))
+
     monkeypatch.setattr(
         sandbox,
         "_mount",
-        lambda source, target, filesystem, flags, data: calls.append(
-            (source, target, filesystem, flags, data)
-        ),
+        record_mount,
     )
 
     mounted = sandbox._mount_payload_temp_dirs(
@@ -317,6 +333,87 @@ def test_tmpfs_exhaustion_reads_the_exact_open_descriptor(
 
     monkeypatch.setattr(sandbox.os, "fstatvfs", unavailable)
     assert sandbox._tmpfs_has_no_available_blocks(17) is False
+
+
+def test_resource_usage_uses_private_tmpfs_receipt_not_host_staging(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "host-only.log").write_bytes(b"x" * 4096)
+    attempt = object.__new__(sandbox.AttemptSandbox)
+    attempt.workspace = workspace
+    attempt.cgroup = tmp_path / "missing-cgroup"
+    attempt.limits = sandbox.ResourceLimits(
+        cpu_cores=1.0,
+        memory_bytes=64 * MiB,
+        pids=64,
+        tmp_bytes=1024,
+        nofile=64,
+        execution_timeout_seconds=10,
+    )
+    attempt._usage_read_fd = None
+    attempt._tmpfs_usage = (128, 2, False)
+
+    assert attempt.resource_error_code() is None
+    assert attempt.resource_usage()["tmpfs"] == {
+        "bytes": 128,
+        "files": 2,
+        "limit": 1024,
+        "bounded": True,
+    }
+
+    attempt._tmpfs_usage = (1024, 3, True)
+    assert attempt.resource_error_code() == "resource_exceeded_disk"
+    assert attempt.resource_usage()["tmpfs"]["bounded"] is False
+
+
+def test_v3_worker_config_secures_runtime_roots_for_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o755)
+    monkeypatch.setenv("DLR_WORKER_PROTOCOL_VERSION", "3")
+    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv(
+        "DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT",
+        str(runtime_root / "cleanup-journal"),
+    )
+    monkeypatch.setenv("DLR_ATTEMPT_JOURNAL_ROOT", str(runtime_root / "attempt-journal"))
+
+    config = worker_agent.WorkerConfig()
+    monkeypatch.setattr(
+        worker_agent.sandbox,
+        "read_verified_resource_envelope",
+        lambda *_args, **_kwargs: sandbox.ResourceEnvelope(
+            cpu_cores=8.0,
+            memory_bytes=8 * 1024 * MiB,
+            pids=1024,
+            tmp_bytes=8 * 1024 * MiB,
+            source="delegated_cgroup_v2(test)",
+        ),
+    )
+    monkeypatch.setattr(
+        worker_agent.sandbox,
+        "run_preflight",
+        lambda *_args, **_kwargs: {
+            "capabilities": {key: True for key in worker_agent.ISOLATION_CAPABILITY_KEYS},
+            "details": {"status": "passed"},
+        },
+    )
+    config.run_preflight()
+
+    assert config.runtime_root.is_dir()
+    assert stat.S_IMODE(config.runtime_root.stat().st_mode) == 0o711
+    for private_root in (
+        config.runtime_root / "workspaces",
+        config.workspace_cleanup_journal_root,
+        config.workspace_cleanup_journal_root / "sandbox-recovery",
+        config.attempt_journal_root,
+    ):
+        assert private_root.is_dir()
+        assert stat.S_IMODE(private_root.stat().st_mode) == 0o700
 
 
 def test_dependency_tmpfs_is_discarded_before_adapter_start(

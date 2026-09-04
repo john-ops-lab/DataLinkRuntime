@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -18,11 +19,12 @@ import pika
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import select, update
+from sqlalchemy import event, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings, validate_deployment_configuration
 from dlr.control.models import (
+    Adapter,
     AdapterExecutionAdmission,
     AdapterExecutionSlot,
     Execution,
@@ -45,6 +47,7 @@ from dlr.control.services import attempt as attempt_service
 from dlr.control.services import execution as execution_service
 from dlr.control.services import (
     execution_cancellation,
+    execution_reconciler,
     infrastructure_dlq,
     rabbitmq,
     reliable_execution,
@@ -1497,6 +1500,75 @@ def test_claim_and_cancel_share_adapter_first_lock_order(
     assert results["cancel"].cancel_requested is True
 
 
+def test_claim_blocked_on_adapter_does_not_lock_execution(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove Adapter is the first blocking row lock without scheduler timing."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, "b2-claim-nowait-worker")
+    adapter = _rabbit_adapter(api_client, worker, "b2-claim-nowait-adapter")
+    execution = _canary_execution(api_client, adapter["id"])
+    dispatch = _dispatch(session_factory, execution["id"])
+    engine = session_factory.kw["bind"]
+    adapter_lock_attempted = threading.Event()
+
+    def observe_adapter_lock(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if (
+            threading.current_thread().name == "b2-claim-nowait"
+            and "FROM adapters" in statement
+            and "FOR UPDATE" in statement
+        ):
+            adapter_lock_attempted.set()
+
+    event.listen(engine, "before_cursor_execute", observe_adapter_lock)
+    result: dict[str, Any] = {}
+
+    def claim() -> None:
+        try:
+            result["claim"] = _claim(session_factory, worker["id"], dispatch)
+        except BaseException as error:  # pragma: no cover - surfaced below
+            result["error"] = error
+
+    thread = threading.Thread(target=claim, name="b2-claim-nowait")
+    try:
+        with session_factory() as blocker:
+            assert (
+                blocker.scalar(select(Adapter).where(Adapter.id == adapter["id"]).with_for_update())
+                is not None
+            )
+            thread.start()
+            assert adapter_lock_attempted.wait(timeout=10)
+            with session_factory() as probe:
+                assert (
+                    probe.scalar(
+                        select(Execution)
+                        .where(Execution.id == execution["id"])
+                        .with_for_update(nowait=True)
+                    )
+                    is not None
+                )
+            blocker.rollback()
+        thread.join(timeout=10)
+    finally:
+        event.remove(engine, "before_cursor_execute", observe_adapter_lock)
+        if thread.is_alive():
+            thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert "error" not in result, result.get("error")
+    assert result["claim"].decision == "EXECUTE"
+
+
 def test_retry_dispatch_and_cancel_share_adapter_first_lock_order(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
@@ -1589,6 +1661,85 @@ def test_retry_dispatch_and_cancel_share_adapter_first_lock_order(
     assert "cancel_error" not in results, results.get("cancel_error")
     assert results["retry"] == 1
     assert results["cancel"].status == "cancelled"
+
+
+def test_retry_blocked_on_adapter_does_not_lock_execution(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove Retry also waits at Adapter before touching Execution."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, "b2-retry-nowait-worker")
+    adapter = _rabbit_adapter(api_client, worker, "b2-retry-nowait-adapter")
+    execution = _canary_execution(api_client, adapter["id"])
+    due_at = datetime.now(UTC) - timedelta(seconds=1)
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        row.status = "retry_wait"
+        row.next_attempt_at = due_at
+
+    engine = session_factory.kw["bind"]
+    adapter_lock_attempted = threading.Event()
+
+    def observe_adapter_lock(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if (
+            threading.current_thread().name == "b2-retry-nowait"
+            and "FROM adapters" in statement
+            and "FOR UPDATE" in statement
+        ):
+            adapter_lock_attempted.set()
+
+    event.listen(engine, "before_cursor_execute", observe_adapter_lock)
+    result: dict[str, Any] = {}
+
+    def retry() -> None:
+        try:
+            with session_factory() as session:
+                result["retry"] = attempt_service.retry_dispatcher_once(
+                    session,
+                    now=datetime.now(UTC),
+                )
+        except BaseException as error:  # pragma: no cover - surfaced below
+            result["error"] = error
+
+    thread = threading.Thread(target=retry, name="b2-retry-nowait")
+    try:
+        with session_factory() as blocker:
+            assert (
+                blocker.scalar(select(Adapter).where(Adapter.id == adapter["id"]).with_for_update())
+                is not None
+            )
+            thread.start()
+            assert adapter_lock_attempted.wait(timeout=10)
+            with session_factory() as probe:
+                assert (
+                    probe.scalar(
+                        select(Execution)
+                        .where(Execution.id == execution["id"])
+                        .with_for_update(nowait=True)
+                    )
+                    is not None
+                )
+            blocker.rollback()
+        thread.join(timeout=10)
+    finally:
+        event.remove(engine, "before_cursor_execute", observe_adapter_lock)
+        if thread.is_alive():
+            thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert "error" not in result, result.get("error")
+    assert result["retry"] == 0
 
 
 def test_concurrent_cancel_and_success_result_release_once(
@@ -2183,6 +2334,146 @@ def test_business_dead_letter_replay_releases_admission_and_keeps_generation_aud
         assert replayed.replay_of_execution_id == execution["id"]
 
 
+def test_replay_waits_for_adapter_before_locking_execution(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blocked Replay must not hold Execution and form an AB-BA cycle."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, "b2-replay-lock-worker")
+    adapter = _rabbit_adapter(api_client, worker, "b2-replay-lock-adapter")
+    execution = _canary_execution(api_client, adapter["id"])
+    ended_at = datetime.now(UTC)
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        row.status = "dead_letter"
+        row.ended_at = ended_at
+        attempt_service.admission.release_admission_once(session, row, now=ended_at)
+
+    engine = session_factory.kw["bind"]
+    adapter_lock_attempted = threading.Event()
+
+    def observe_adapter_lock(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if (
+            threading.current_thread().name == "b2-replay-lock-order"
+            and "FROM adapters" in statement
+            and "FOR UPDATE" in statement
+        ):
+            adapter_lock_attempted.set()
+
+    event.listen(engine, "before_cursor_execute", observe_adapter_lock)
+    result: dict[str, Any] = {}
+
+    def replay() -> None:
+        try:
+            with session_factory() as session:
+                result["replay"] = attempt_service.replay_execution(session, execution["id"])
+        except BaseException as error:  # pragma: no cover - surfaced below
+            result["error"] = error
+
+    replay_thread = threading.Thread(target=replay, name="b2-replay-lock-order")
+    try:
+        with session_factory() as blocker:
+            locked_adapter = blocker.scalar(
+                select(Adapter).where(Adapter.id == adapter["id"]).with_for_update()
+            )
+            assert locked_adapter is not None
+            replay_thread.start()
+            assert adapter_lock_attempted.wait(timeout=10)
+
+            # NOWAIT succeeds only if Replay has not taken the Execution lock
+            # while it is blocked behind the canonical Adapter-first lock.
+            with session_factory() as probe:
+                locked_execution = probe.scalar(
+                    select(Execution)
+                    .where(Execution.id == execution["id"])
+                    .with_for_update(nowait=True)
+                )
+                assert locked_execution is not None
+            blocker.rollback()
+        replay_thread.join(timeout=10)
+    finally:
+        event.remove(engine, "before_cursor_execute", observe_adapter_lock)
+        if replay_thread.is_alive():
+            replay_thread.join(timeout=10)
+
+    assert not replay_thread.is_alive()
+    assert "error" not in result, result.get("error")
+    assert result["replay"].replay_of_execution_id == execution["id"]
+
+
+def test_legacy_stale_reconciler_ignores_rabbitmq_running_rows(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attempt leases, not the legacy stale loop, own RabbitMQ running rows."""
+
+    _enable_canary(monkeypatch)
+    worker = _ready_worker(api_client, "b2-stale-backend-worker")
+    rabbit_adapter = _rabbit_adapter(
+        api_client,
+        worker,
+        "b2-stale-rabbit-adapter",
+    )
+    rabbit_execution = _canary_execution(api_client, rabbit_adapter["id"])
+    claimed = _claim(
+        session_factory,
+        worker["id"],
+        _dispatch(session_factory, rabbit_execution["id"]),
+    )
+    assert claimed.decision == "EXECUTE"
+
+    legacy_adapter = _rabbit_adapter(
+        api_client,
+        worker,
+        "b2-stale-legacy-adapter",
+    )
+    legacy_response = api_client.post(
+        f"/api/adapters/{legacy_adapter['id']}/executions",
+        json={},
+    )
+    assert legacy_response.status_code == 202, legacy_response.text
+    legacy_execution_id = int(legacy_response.json()["id"])
+    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
+    stale_started_at = fixed_now - timedelta(days=2)
+    with session_factory.begin() as session:
+        rabbit_row = session.get(Execution, rabbit_execution["id"])
+        legacy_row = session.get(Execution, legacy_execution_id)
+        assert rabbit_row is not None and legacy_row is not None
+        rabbit_row.started_at = stale_started_at
+        rabbit_row.execution_deadline_at = None
+        rabbit_row.timeout_seconds_snapshot = 1
+        rabbit_row.recovery_grace_seconds_snapshot = 60
+        legacy_row.status = "running"
+        legacy_row.worker_id = worker["id"]
+        legacy_row.started_at = stale_started_at
+        legacy_row.execution_deadline_at = None
+        legacy_row.timeout_seconds_snapshot = 1
+        legacy_row.recovery_grace_seconds_snapshot = 60
+
+    with session_factory() as session:
+        report = execution_reconciler.reconcile_stale_executions(session, now=fixed_now)
+
+    assert report.scanned == 1
+    assert report.running_timeout == 1
+    with session_factory() as session:
+        rabbit_row = session.get(Execution, rabbit_execution["id"])
+        legacy_row = session.get(Execution, legacy_execution_id)
+        assert rabbit_row is not None and rabbit_row.status == "running"
+        assert legacy_row is not None and legacy_row.status == "timeout"
+
+
 def test_infrastructure_dlq_mismatch_is_visible_manual_review_not_business_dead_letter(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
@@ -2206,6 +2497,32 @@ def test_infrastructure_dlq_mismatch_is_visible_manual_review_not_business_dead_
         current = session.get(Execution, execution["id"])
         assert incident is not None and incident.status == "open"
         assert current is not None and current.status == "queued"
+
+
+@pytest.mark.parametrize(
+    ("module", "loop_name", "tick_name"),
+    [
+        (attempt_service, "attempt_reconciler_loop", "_attempt_reconcile_tick"),
+        (infrastructure_dlq, "infrastructure_dlq_loop", "_infrastructure_dlq_tick"),
+    ],
+)
+def test_blocking_reconcilers_delegate_each_tick_to_a_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    module: Any,
+    loop_name: str,
+    tick_name: str,
+) -> None:
+    delegated: list[Any] = []
+
+    async def fake_to_thread(function: Any, *args: Any, **kwargs: Any) -> None:
+        delegated.append((function, args, kwargs))
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(module, "_asyncio_to_thread", fake_to_thread)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(getattr(module, loop_name)())
+
+    assert delegated == [(getattr(module, tick_name), (), {})]
 
 
 def test_dark_launch_inventory_and_pending_migration_converge_without_cutover(

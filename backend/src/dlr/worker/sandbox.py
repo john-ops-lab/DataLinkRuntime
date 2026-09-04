@@ -133,6 +133,9 @@ HELPER_DIAGNOSTIC_PATTERN = re.compile(
     r"kind=(?P<kind>os_error|exception) "
     r"errno=(?P<errno>[0-9]+)\Z"
 )
+TMPFS_USAGE_PATTERN = re.compile(
+    rb"\ADLR_SANDBOX_TMPFS_USAGE bytes=([0-9]+) files=([0-9]+) exhausted=([01])\n?\Z"
+)
 STREAM_COPY_CHUNK_BYTES = 64 * 1024
 PAYLOAD_TEMP_MOUNTS = (
     (".dlr-payload-var-tmp", "/var/tmp"),
@@ -783,6 +786,35 @@ def _tmpfs_has_no_available_blocks(descriptor: int) -> bool:
         return False
 
 
+def _tmpfs_usage(descriptor: int, workspace: Path, limit: int) -> tuple[int, int, bool]:
+    """Measure the private per-Attempt tmpfs while its mount is still visible."""
+
+    logical_bytes, files = _workspace_usage(workspace, limit)
+    try:
+        values = os.fstatvfs(descriptor)
+        allocated_bytes = max(0, values.f_blocks - values.f_bfree) * values.f_frsize
+        exhausted = values.f_bavail == 0
+    except OSError:
+        allocated_bytes = 0
+        exhausted = False
+    return max(logical_bytes, allocated_bytes), files, exhausted
+
+
+def _write_tmpfs_usage(
+    descriptor: int,
+    *,
+    used_bytes: int,
+    files: int,
+    exhausted: bool,
+) -> None:
+    line = (
+        f"DLR_SANDBOX_TMPFS_USAGE bytes={max(0, used_bytes)} "
+        f"files={max(0, files)} exhausted={int(exhausted)}\n"
+    ).encode("ascii")
+    with suppress(OSError):
+        os.write(descriptor, line)
+
+
 def _controllers(value: str) -> set[str]:
     return set(value.split())
 
@@ -1212,19 +1244,23 @@ def _mount_payload_temp_dirs(
 
     mounted: list[str] = []
     try:
-        for source_name, target in mounts:
-            if not Path(target).is_dir():
-                raise OSError(errno.ENOENT, "payload temp target is unavailable")
-            source_mount = str(tmpfs_root / source_name)
-            _mount(source_mount, target, None, MS_BIND, None)
-            mounted.append(target)
-            _mount(
-                None,
-                target,
-                None,
-                MS_BIND | MS_REMOUNT | MS_NOSUID | MS_NODEV | MS_NOEXEC,
-                None,
-            )
+        # The private source root is mode 0700 and owned by the payload. The
+        # supervisor intentionally lacks CAP_DAC_OVERRIDE, so retain the
+        # payload filesystem identity while resolving each bind source.
+        with _filesystem_identity(payload_uid, payload_gid):
+            for source_name, target in mounts:
+                if not Path(target).is_dir():
+                    raise OSError(errno.ENOENT, "payload temp target is unavailable")
+                source_mount = str(tmpfs_root / source_name)
+                _mount(source_mount, target, None, MS_BIND, None)
+                mounted.append(target)
+                _mount(
+                    None,
+                    target,
+                    None,
+                    MS_BIND | MS_REMOUNT | MS_NOSUID | MS_NODEV | MS_NOEXEC,
+                    None,
+                )
     except BaseException:
         for target in reversed(mounted):
             with suppress(OSError):
@@ -1373,6 +1409,7 @@ def _helper_child(
     attempt_cgroup: Path,
     ready_fd: int,
     diagnostic_fd: int,
+    usage_fd: int,
 ) -> int:
     """Run in a standalone helper and report fixed syscall evidence."""
 
@@ -1648,7 +1685,18 @@ def _helper_child(
         # preparing/copying the workspace, so its current directory is not a
         # sufficiently strong identity for the resource-exceeded decision.
         assert inner_fd is not None
-        if _tmpfs_has_no_available_blocks(inner_fd):
+        used_bytes, used_files, tmpfs_exhausted = _tmpfs_usage(
+            inner_fd,
+            workspace_relative,
+            tmp_bytes,
+        )
+        _write_tmpfs_usage(
+            usage_fd,
+            used_bytes=used_bytes,
+            files=used_files,
+            exhausted=tmpfs_exhausted,
+        )
+        if tmpfs_exhausted:
             _write_helper_diagnostic(
                 diagnostic_fd,
                 "workspace_tmpfs_usage",
@@ -1753,6 +1801,8 @@ def _helper_child(
                 os.close(original_cwd_fd)
         with suppress(OSError):
             os.close(diagnostic_fd)
+        with suppress(OSError):
+            os.close(usage_fd)
 
 
 def _helper_main(argv: list[str]) -> int:
@@ -1772,6 +1822,7 @@ def _helper_main(argv: list[str]) -> int:
     parser.add_argument("--attempt-cgroup", required=True)
     parser.add_argument("--ready-fd", required=True, type=int)
     parser.add_argument("--diagnostic-fd", required=True, type=int)
+    parser.add_argument("--usage-fd", required=True, type=int)
     args = parser.parse_args(argv)
     if not args.sandbox_child:
         return 125
@@ -1802,6 +1853,7 @@ def _helper_main(argv: list[str]) -> int:
             Path(args.attempt_cgroup),
             args.ready_fd,
             args.diagnostic_fd,
+            args.usage_fd,
         )
     except OSError as error:
         _write_helper_diagnostic(
@@ -1868,6 +1920,8 @@ class AttemptSandbox:
         self._process: subprocess.Popen[bytes] | None = None
         self._payload_pid: int | None = None
         self._diagnostic_read_fd: int | None = None
+        self._usage_read_fd: int | None = None
+        self._tmpfs_usage: tuple[int, int, bool] | None = None
         self._killed = False
         self._unmounted = False
         self._dependency_tmpfs: Path | None = None
@@ -1948,6 +2002,45 @@ class AttemptSandbox:
             return None
         return _parse_helper_diagnostic(b"".join(chunks))
 
+    def _read_tmpfs_usage(self) -> tuple[int, int, bool]:
+        # A few narrow cleanup tests construct the object without __init__;
+        # no helper pipe exists in that state.
+        if not hasattr(self, "_tmpfs_usage") or not hasattr(self, "_usage_read_fd"):
+            return (0, 0, False)
+        if self._tmpfs_usage is not None:
+            return self._tmpfs_usage
+        if self._usage_read_fd is None:
+            return (0, 0, False)
+        if self._process is not None and self._process.poll() is None:
+            return (0, 0, False)
+        read_fd = self._usage_read_fd
+        self._usage_read_fd = None
+        chunks: list[bytes] = []
+        try:
+            os.set_blocking(read_fd, False)
+            while True:
+                try:
+                    chunk = os.read(read_fd, 256)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except OSError:
+            return (0, 0, False)
+        finally:
+            with suppress(OSError):
+                os.close(read_fd)
+        match = TMPFS_USAGE_PATTERN.fullmatch(b"".join(chunks))
+        if match is None:
+            return (0, 0, False)
+        self._tmpfs_usage = (
+            int(match.group(1)),
+            int(match.group(2)),
+            match.group(3) == b"1",
+        )
+        return self._tmpfs_usage
+
     def start(
         self,
         command: list[str],
@@ -1963,8 +2056,10 @@ class AttemptSandbox:
             raise SandboxError("sandbox_mount_prepare_failed") from error
         read_fd, write_fd = os.pipe()
         diagnostic_read_fd, diagnostic_write_fd = os.pipe()
+        usage_read_fd, usage_write_fd = os.pipe()
         os.set_inheritable(read_fd, True)
         os.set_inheritable(diagnostic_write_fd, True)
+        os.set_inheritable(usage_write_fd, True)
         encoded_command = base64.urlsafe_b64encode(
             json.dumps(command, separators=(",", ":")).encode()
         ).decode()
@@ -2010,16 +2105,24 @@ class AttemptSandbox:
                     str(read_fd),
                     "--diagnostic-fd",
                     str(diagnostic_write_fd),
+                    "--usage-fd",
+                    str(usage_write_fd),
                 ],
                 stdout=stdout,
                 stderr=subprocess.STDOUT,
                 cwd=str(self.workspace),
                 env=helper_environment,
-                pass_fds=(read_fd, diagnostic_write_fd),
+                pass_fds=(read_fd, diagnostic_write_fd, usage_write_fd),
                 start_new_session=True,
             )
         except OSError as error:
-            for descriptor in (write_fd, diagnostic_read_fd, diagnostic_write_fd):
+            for descriptor in (
+                write_fd,
+                diagnostic_read_fd,
+                diagnostic_write_fd,
+                usage_read_fd,
+                usage_write_fd,
+            ):
                 with suppress(OSError):
                     os.close(descriptor)
             raise SandboxError("sandbox_process_start_failed") from error
@@ -2027,7 +2130,10 @@ class AttemptSandbox:
             os.close(read_fd)
             with suppress(OSError):
                 os.close(diagnostic_write_fd)
+            with suppress(OSError):
+                os.close(usage_write_fd)
         self._diagnostic_read_fd = diagnostic_read_fd
+        self._usage_read_fd = usage_read_fd
         self._process = process
         try:
             os.write(write_fd, b"1")
@@ -2059,6 +2165,12 @@ class AttemptSandbox:
         try:
             _write(self.cgroup / "cgroup.kill", "1\n")
             self._killed = True
+            if target is not None and target.poll() is None:
+                try:
+                    target.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    with suppress(OSError):
+                        os.killpg(os.getpgid(target.pid), signal.SIGKILL)
         except SandboxError:
             if target is not None and target.poll() is None:
                 with suppress(OSError):
@@ -2129,8 +2241,8 @@ class AttemptSandbox:
         pids = _counter_file(self.cgroup / "pids.events")
         if pids.get("max", 0):
             return "resource_exceeded_pids"
-        used_bytes, _ = _workspace_usage(self.workspace, self.limits.tmp_bytes)
-        if used_bytes > self.limits.tmp_bytes:
+        used_bytes, _, exhausted = self._read_tmpfs_usage()
+        if exhausted or used_bytes > self.limits.tmp_bytes:
             return "resource_exceeded_disk"
         return None
 
@@ -2149,12 +2261,12 @@ class AttemptSandbox:
                 "events": _counter_file(self.cgroup / "pids.events"),
             },
         }
-        used_bytes, file_count = _workspace_usage(self.workspace, self.limits.tmp_bytes)
+        used_bytes, file_count, exhausted = self._read_tmpfs_usage()
         usage["tmpfs"] = {
             "bytes": used_bytes,
             "files": file_count,
             "limit": self.limits.tmp_bytes,
-            "bounded": used_bytes <= self.limits.tmp_bytes,
+            "bounded": not exhausted and used_bytes <= self.limits.tmp_bytes,
         }
         return usage
 
@@ -2247,6 +2359,9 @@ class AttemptSandbox:
                         process.wait(timeout=min(0.05, remaining))
                 else:
                     time.sleep(min(0.05, remaining))
+            # Drain and close the helper-only receipt pipe before returning,
+            # including callers that do not request resource_usage first.
+            self._read_tmpfs_usage()
             if self._dependency_tmpfs is not None:
                 _unmount(str(self._dependency_tmpfs))
                 self._dependency_tmpfs = None
@@ -2717,11 +2832,13 @@ def recover(config: SandboxConfig, recovery_root: Path, *, runtime_root: Path) -
             or stat.S_IMODE(recovery_info.st_mode) != 0o700
             or recovery_info.st_uid != os.geteuid()
             or not stat.S_ISDIR(runtime_info.st_mode)
-            or stat.S_IMODE(runtime_info.st_mode) & 0o077
+            or stat.S_IMODE(runtime_info.st_mode) not in {0o700, 0o711}
             or runtime_info.st_uid != os.geteuid()
         ):
+            logger.warning("sandbox recovery skipped: private runtime roots are invalid")
             return counts
     except OSError:
+        logger.warning("sandbox recovery skipped: private runtime roots are unavailable")
         return counts
     for marker in sorted(recovery_root.iterdir()):
         if not RECOVERY_NAME_PATTERN.fullmatch(marker.name):

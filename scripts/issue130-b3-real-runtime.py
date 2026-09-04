@@ -974,6 +974,15 @@ def _create_actual_pressure_execution(
     if not isinstance(adapter, dict) or not isinstance(adapter.get("id"), int):
         raise AssertionError("Control did not return an Adapter id for the pressure proof")
     adapter_id = int(adapter["id"])
+    # Bind before saving the version so the gate stays deterministic when the
+    # target Compose stack already has another compatible Worker online.
+    selected = _control_api_request(
+        "PATCH",
+        f"/adapters/{adapter_id}",
+        {"runtime_worker_id": worker_id},
+    )
+    if not isinstance(selected, dict) or selected.get("runtime_worker_id") != worker_id:
+        raise AssertionError("Control did not bind the pressure Adapter to the actual Worker")
     version = _control_api_request(
         "POST",
         f"/adapters/{adapter_id}/versions",
@@ -982,13 +991,6 @@ def _create_actual_pressure_execution(
     )
     if not isinstance(version, dict) or not isinstance(version.get("id"), int):
         raise AssertionError("Control did not return a Version id for the pressure proof")
-    selected = _control_api_request(
-        "PATCH",
-        f"/adapters/{adapter_id}",
-        {"runtime_worker_id": worker_id},
-    )
-    if not isinstance(selected, dict) or selected.get("runtime_worker_id") != worker_id:
-        raise AssertionError("Control did not bind the pressure Adapter to the actual Worker")
     execution = _control_api_request(
         "POST",
         f"/adapters/{adapter_id}/executions/canary",

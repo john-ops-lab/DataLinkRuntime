@@ -167,7 +167,7 @@
     "firstSaveHint": "The first save requires a Runtime Worker. View or change it later in Runtime settings.",
     "worker": "Runtime Worker *",
     "workerAria": "Runtime Worker for saving the Adapter",
-    "workerPlaceholder": "Select a Worker that supports the current language (offline Workers can queue)",
+    "workerPlaceholder": "Select a Worker that supports the current language (reliable offline queueing requires RabbitMQ execution)",
     "noWorker": "No Worker supports this language. Register a compatible Worker first."
   }
 }

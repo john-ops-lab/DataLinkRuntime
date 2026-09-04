@@ -918,12 +918,29 @@ def prepare_version_venv(
             )
         except cache.CacheError as error:
             raise DependencyPreparationError("version cache is unavailable", "") from error
-        if build is None and python_path.exists():
-            if dependency_log is not None:
-                for dependency in dependencies:
-                    dependency_log(f"{dependency} 已安装，检查通过")
-            return python_path
-        assert build is not None
+        if build is None:
+            python_path = venv_python(directory)
+            if python_path.is_file():
+                if dependency_log is not None:
+                    for dependency in dependencies:
+                        dependency_log(f"{dependency} 已安装，检查通过")
+                return python_path
+            # A manifest can still match when a cached venv contains a
+            # dangling interpreter symlink.  Remove that unusable entry and
+            # reserve a fresh build instead of escaping through an assertion.
+            try:
+                _version_cache.remove_entry(directory)
+                _version_cache, directory, build = _begin_version_build(
+                    runtime_root,
+                    adapter_id,
+                    version_id,
+                    identity=identity,
+                    dependency_context=dependency_context,
+                )
+            except cache.CacheError as error:
+                raise DependencyPreparationError("version cache is unavailable", "") from error
+        if build is None:  # pragma: no cover - removal above makes this unreachable
+            raise DependencyPreparationError("version cache is unavailable", "")
         if dependency_context is not None:
             dependency_context = dependency_context.with_reservation(
                 build.assert_live, build.lease_lost

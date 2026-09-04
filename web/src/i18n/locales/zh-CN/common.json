@@ -274,7 +274,17 @@
       "memory_hard_limit": "Memory limit",
       "pids_hard_limit": "PID limit",
       "tmpfs_hard_limit": "tmpfs limit",
-      "bounded_output": "Bounded output"
+      "bounded_output": "有界输出",
+      "preflight_passed": "隔离预检通过",
+      "resource_envelope_verified": "资源总预算已验证",
+      "cpu_hard_limit": "CPU 硬限制",
+      "swap_hard_limit": "Swap 硬限制",
+      "nofile_hard_limit": "文件句柄硬限制",
+      "no_new_privileges": "禁止新增权限",
+      "cgroup_kill": "cgroup 强制终止",
+      "adapter_control_plane_hidden": "控制面已隐藏",
+      "adapter_mount_blocked": "Adapter 挂载已阻止",
+      "sandbox_cleanup": "沙箱清理"
     }
   },
   "empty": {

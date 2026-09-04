@@ -34,6 +34,8 @@ from dlr.control.services.input_config import database_now
 
 logger = logging.getLogger("dlr.control.infrastructure_dlq")
 DLQ_POLL_INTERVAL_SECONDS = 5.0
+_asyncio_to_thread = asyncio.to_thread
+_asyncio_sleep = asyncio.sleep
 
 
 @dataclass(frozen=True)
@@ -243,27 +245,33 @@ def drain_once(
     return processed
 
 
+def _infrastructure_dlq_tick() -> int:
+    """Run blocking Broker and database I/O in one worker thread."""
+    if not settings.rabbitmq_url:
+        return 0
+    from dlr.control.db import SessionLocal
+
+    connection = rabbitmq.connect()
+    try:
+        channel = connection.channel()
+        with SessionLocal() as session:
+            return drain_once(session, channel)
+    finally:
+        try:
+            if connection.is_open:
+                connection.close()
+        except Exception:
+            logger.debug("infrastructure DLQ connection close failed", exc_info=True)
+
+
 async def infrastructure_dlq_loop() -> None:
     """Continuously reconcile the shared DLQ with bounded polling."""
 
     while True:
         try:
-            if settings.rabbitmq_url:
-                from dlr.control.db import SessionLocal
-
-                connection = rabbitmq.connect()
-                try:
-                    channel = connection.channel()
-                    with SessionLocal() as session:
-                        drain_once(session, channel)
-                finally:
-                    try:
-                        if connection.is_open:
-                            connection.close()
-                    except Exception:
-                        logger.debug("infrastructure DLQ connection close failed", exc_info=True)
+            await _asyncio_to_thread(_infrastructure_dlq_tick)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("infrastructure DLQ reconciliation failed")
-        await asyncio.sleep(DLQ_POLL_INTERVAL_SECONDS)
+        await _asyncio_sleep(DLQ_POLL_INTERVAL_SECONDS)

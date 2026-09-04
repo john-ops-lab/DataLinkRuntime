@@ -117,7 +117,10 @@ def _stale_query(now: datetime | None, *, batch_size: int) -> Select[tuple[Execu
     )
     return (
         select(Execution)
-        .where(or_(pending_stale, running_stale))
+        .where(
+            Execution.dispatch_backend == "legacy",
+            or_(pending_stale, running_stale),
+        )
         .order_by(Execution.created_at.asc(), Execution.id.asc())
         .with_for_update(skip_locked=True)
         .limit(batch_size)

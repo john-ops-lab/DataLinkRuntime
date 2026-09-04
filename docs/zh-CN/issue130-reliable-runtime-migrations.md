@@ -16,6 +16,11 @@ Cutover 是显式管理员操作，不会在 `alembic upgrade head` 或普通 Co
 
 普通升级只执行 additive migration：
 
+但 additive 不等于无锁或在线无感。`0030` 会回填 `executions` 全表、设置非空约束、
+校验多个约束并重建非并发唯一索引；有存量数据的生产库必须安排停止 Execution 写入的
+维护窗口，并先按实际表大小验证耗时、锁等待、备份与恢复。不得在持续写入时把下面命令
+当作普通滚动升级直接执行。
+
 ```sh
 docker compose run --rm control alembic upgrade head
 docker compose ps

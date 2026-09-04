@@ -191,6 +191,16 @@ class WorkerConfig:
         self.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
         self._verified_resource_envelope = None
         try:
+            # Payload runtimes live below this root, so it must be traversable
+            # but not listable or writable by the payload identity.
+            workspace_manager.ensure_runtime_root(self.runtime_root)
+            for private_root in (
+                self.runtime_root / workspace_manager.WORKSPACES_DIRNAME,
+                self.workspace_cleanup_journal_root,
+                self.workspace_cleanup_journal_root / "sandbox-recovery",
+                self.attempt_journal_root,
+            ):
+                workspace_manager.ensure_private_directory(private_root)
             # The finite deployment envelope is part of v3 eligibility, not a
             # late Consumer construction check.  Validate it before running
             # the disposable probe and before the Agent submits any v3
@@ -414,7 +424,7 @@ class Agent:
         # thread that has not yet established its journal waits here, while
         # already-running tasks remain protected for the whole scan.
         with self._state_lock:
-            sandbox.recover(
+            sandbox_counts = sandbox.recover(
                 self._config.sandbox_config,
                 self._config.workspace_cleanup_journal_root / "sandbox-recovery",
                 runtime_root=self._config.runtime_root,
@@ -426,6 +436,13 @@ class Agent:
                 scan_timeout_seconds=workspace_manager.RECOVERY_SCAN_TIMEOUT_SECONDS,
                 retry_backoff_seconds=workspace_manager.RECOVERY_RETRY_BACKOFF_SECONDS,
                 in_flight_execution_ids=frozenset(self._in_flight_execution_ids),
+            )
+        if sandbox_counts["inspected"] or sandbox_counts["retained"]:
+            logger.info(
+                "sandbox recovery scan inspected %s; completed %s, retained %s",
+                sandbox_counts["inspected"],
+                sandbox_counts["completed"],
+                sandbox_counts["retained"],
             )
         if counts["retained"] or counts["deferred"]:
             logger.info(

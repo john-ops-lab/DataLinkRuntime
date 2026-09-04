@@ -1375,6 +1375,16 @@ def run(
                 emit_dependency_log(
                     i18n.text(locale, "dependency.preparation_failed"), level="ERROR"
                 )
+        except Exception:  # noqa: BLE001 - unexpected faults must still clean the Attempt
+            logger.exception(
+                "unexpected dependency preparation failure for execution %s",
+                execution_id,
+            )
+            preparation_error = venv_manager.DependencyPreparationError(
+                "dependency preparation failed",
+                "",
+                error_code="dependency_preparation_failed",
+            )
     finally:
         if dependency_uploader is not None:
             dependency_uploader.drain(PROGRESS_DRAIN_SECONDS)

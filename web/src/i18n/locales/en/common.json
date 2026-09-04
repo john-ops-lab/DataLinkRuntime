@@ -274,7 +274,17 @@
       "memory_hard_limit": "Memory limit",
       "pids_hard_limit": "PID limit",
       "tmpfs_hard_limit": "tmpfs limit",
-      "bounded_output": "Bounded output"
+      "bounded_output": "Bounded output",
+      "preflight_passed": "Isolation preflight passed",
+      "resource_envelope_verified": "Resource envelope verified",
+      "cpu_hard_limit": "CPU hard limit",
+      "swap_hard_limit": "Swap hard limit",
+      "nofile_hard_limit": "File descriptor hard limit",
+      "no_new_privileges": "No new privileges",
+      "cgroup_kill": "cgroup kill",
+      "adapter_control_plane_hidden": "Control plane hidden",
+      "adapter_mount_blocked": "Adapter mounts blocked",
+      "sandbox_cleanup": "Sandbox cleanup"
     }
   },
   "empty": {

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import dlr.worker.cache as cache_module
+from dlr.worker import venv
 from dlr.worker.cache import CacheError, VerifiedVersionCache
 
 
@@ -194,6 +195,60 @@ def test_promoted_entry_verifies_normal_runtime_symlinks_without_following(
     assert stat.S_IMODE(entry.stat().st_mode) == 0o555
     assert (entry / "runtime-link").is_symlink()
     assert (entry / "runtime-link").readlink() == Path("runtime.bin")
+
+
+def test_verified_venv_with_dangling_python_symlink_is_rebuilt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    version_cache = VerifiedVersionCache(
+        runtime_root / "version-cache",
+        max_bytes=4 * 1024 * 1024,
+        low_watermark_bytes=0,
+    )
+    identity = venv._cache_identity(7, 9, "python", "")
+    staging = version_cache.staging_path("7-9", "broken")
+    (staging / ".venv" / "bin").mkdir(mode=0o700, parents=True)
+    (staging / ".venv" / "bin" / "python").symlink_to("python3")
+    reservation = version_cache.reserve(4096)
+    broken = version_cache.promote(
+        staging,
+        version_cache.entry_path("7-9"),
+        identity=identity,
+        reservation=reservation,
+    )
+    assert version_cache.verify(broken, identity)
+    assert not venv.venv_python(broken).exists()
+
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        _timeout: int,
+        _context: object,
+    ) -> str:
+        commands.append(command)
+        environment = Path(command[2])
+        python = environment / "bin" / "python"
+        python.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        python.write_bytes(b"rebuilt")
+        return ""
+
+    monkeypatch.setattr(venv, "_CACHE_RESERVATION_BYTES", 4096)
+    monkeypatch.setattr(venv, "_run_logged_in_context", fake_run)
+
+    python_path = venv.prepare_version_venv(
+        runtime_root,
+        7,
+        9,
+        "",
+        timeout_seconds=5,
+    )
+
+    assert commands and commands[0][:2] == ["uv", "venv"]
+    assert python_path.is_file()
+    assert python_path.read_bytes() == b"rebuilt"
 
 
 def test_tmpfs_build_rejects_over_budget_before_persistent_promotion(tmp_path: Path) -> None:

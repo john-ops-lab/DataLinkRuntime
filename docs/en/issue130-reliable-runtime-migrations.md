@@ -18,6 +18,13 @@ Historical Executions are deterministically backfilled as
 
 An ordinary upgrade runs additive migrations only:
 
+Additive does not mean lock-free or safe for an online rolling upgrade. Revision
+`0030` backfills the full `executions` table, applies non-null and validating
+constraints, and rebuilds a unique index without `CONCURRENTLY`. Production
+databases with existing rows require a maintenance window that stops Execution
+writes, plus table-size-specific timing, lock-wait, backup, and restore checks.
+Do not run the command below as a normal rolling upgrade while writes continue.
+
 ```sh
 docker compose run --rm control alembic upgrade head
 docker compose ps

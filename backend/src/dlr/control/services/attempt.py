@@ -9,6 +9,7 @@ recovery cannot create a second active run or release a reservation twice.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import random
@@ -68,6 +69,8 @@ TERMINAL_ATTEMPT_STATUSES = frozenset(
 )
 RETRYABLE_ERROR_CLASSES = frozenset({"platform_transient", "worker_lost"})
 ATTEMPT_METRICS: Counter[str] = Counter()
+_asyncio_to_thread = asyncio.to_thread
+_asyncio_sleep = asyncio.sleep
 
 
 def metrics_snapshot() -> dict[str, int]:
@@ -1118,9 +1121,19 @@ def _replay_availability(session: Session, execution: Execution) -> tuple[bool, 
 
 def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
     """Create a new accepted RabbitMQ Execution from a dead-letter snapshot."""
+    identity = session.execute(
+        select(Execution.adapter_id).where(Execution.id == execution_id)
+    ).one_or_none()
+    if identity is None:
+        raise domain_error(404, "execution_not_found", "Execution not found")
+    adapter_id = int(identity[0])
+    if admission.lock_admission_scope(session, adapter_id) is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
     old = session.get(Execution, execution_id, with_for_update=True)
     if old is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
+    if old.adapter_id != adapter_id:
+        raise domain_error(409, "execution_replay_invalid", "Execution cannot be replayed")
     available, reason = _replay_availability(session, old)
     if not available:
         code = (
@@ -1129,7 +1142,7 @@ def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
             else "execution_replay_invalid"
         )
         raise domain_error(409, code, "Execution cannot be replayed")
-    adapter = session.get(Adapter, old.adapter_id, with_for_update=True)
+    adapter = session.get(Adapter, adapter_id)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
     version = session.scalar(
@@ -1264,18 +1277,21 @@ def attempt_reconciler_once(session: Session, *, limit: int = 100) -> dict[str, 
     return {"recovered": recovered, "retry_dispatched": dispatched, "holds_expired": holds}
 
 
-async def attempt_reconciler_loop() -> None:
-    """Run bounded Attempt/Retry/Hold reconciliation in fresh DB sessions."""
-    import asyncio
-
+def _attempt_reconcile_tick() -> dict[str, int]:
+    """Run blocking database reconciliation outside the asyncio event loop."""
     from dlr.control.db import SessionLocal
 
+    with SessionLocal() as session:
+        return attempt_reconciler_once(session)
+
+
+async def attempt_reconciler_loop() -> None:
+    """Run bounded Attempt/Retry/Hold reconciliation in fresh DB sessions."""
     while True:
         try:
-            with SessionLocal() as session:
-                attempt_reconciler_once(session)
+            await _asyncio_to_thread(_attempt_reconcile_tick)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("attempt reconciliation failed")
-        await asyncio.sleep(settings.attempt_reconcile_interval_seconds)
+        await _asyncio_sleep(settings.attempt_reconcile_interval_seconds)
