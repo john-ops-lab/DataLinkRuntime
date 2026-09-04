@@ -400,7 +400,12 @@ public class Adapter {
     result.put("adapter_mount", mountBlocked());
     result.put("nofile", Files.readString(Path.of("/proc/self/limits")).lines().anyMatch(line -> {
       String[] values = line.trim().split("\\s+");
-      return values.length >= 5 && "Max".equals(values[0]) && "open".equals(values[1]) && "files".equals(values[2]) && "64".equals(values[3]) && "64".equals(values[4]);
+      return values.length >= 5
+        && "Max".equals(values[0])
+        && "open".equals(values[1])
+        && "files".equals(values[2])
+        && "64".equals(values[3])
+        && "64".equals(values[4]);
     }));
     result.put("docker_socket_absent", !Files.exists(Path.of("/var/run/docker.sock")));
     result.put("platform_credentials_absent", List.of(
@@ -492,6 +497,7 @@ def handle(context, input):
 """,
     "memory": """
 def handle(context, input):
+    print('DLR_FAULT_MEMORY_STARTED', flush=True)
     blocks = []
     while True:
         blocks.append(bytearray(8 * 1024 * 1024))
@@ -565,6 +571,7 @@ export function handle(context, input) {
 """,
     "memory": """
 export function handle(context, input) {
+  console.log('DLR_FAULT_MEMORY_STARTED');
   const blocks = [];
   while (true) blocks.push(Buffer.alloc(8 * 1024 * 1024));
 }
@@ -619,6 +626,7 @@ def java_fault(kind: str) -> str:
     body = {
         "cpu": "while (true) { }",
         "memory": (
+            'System.out.println("DLR_FAULT_MEMORY_STARTED"); '
             "List<byte[]> blocks = new ArrayList<>(); "
             "while (true) blocks.add(new byte[8 * 1024 * 1024]);"
         ),
@@ -634,16 +642,17 @@ def java_fault(kind: str) -> str:
             "catch (java.io.IOException error) { "
             'if (String.valueOf(error.getMessage()).contains("No space")) '
             'return Map.of("tmpfs_enospc", true, "files", index); throw error; } '
-            'throw new Exception("bounded tmpfs did not reach ENOSPC");'
+            '} throw new Exception("bounded tmpfs did not reach ENOSPC");'
         ),
         "nofile": (
             "List<java.io.FileInputStream> files = new ArrayList<>(); "
             'String code = ""; '
             'try { while (true) files.add(new java.io.FileInputStream("/dev/null")); } '
-            "catch (java.io.IOException error) { code = error.getClass().getSimpleName(); } "
+            "catch (java.io.IOException error) { "
+            'if (!String.valueOf(error.getMessage()).contains("Too many open files")) '
+            "throw error; code = \"EMFILE\"; } "
             "finally { for (java.io.FileInputStream file : files) file.close(); } "
-            'if (!code.contains("Exception") && !code.contains("Error")) '
-            'throw new Exception("expected EMFILE"); '
+            'if (!code.equals("EMFILE")) throw new Exception("expected EMFILE"); '
             'return Map.of("nofile_errno", code, "opened", files.size());'
         ),
         "wall": 'Thread.sleep(30000); return Map.of("wall", true);',
@@ -671,11 +680,17 @@ def fault_code(language: str, kind: str) -> str:
     return java_fault(kind)
 
 
-def fault_profile(kind: str) -> dict[str, object]:
+def fault_profile(kind: str, language: str) -> dict[str, object]:
     if kind == "memory":
-        return profile(timeout=3, memory_bytes=64 * MIB)
+        # javac runs in the same Attempt boundary. Give it enough room to
+        # finish so the marker below proves the Adapter itself reached OOM.
+        memory_bytes = 256 * MIB if language == "java" else 64 * MIB
+        return profile(timeout=3, memory_bytes=memory_bytes)
     if kind == "fork":
-        return profile(timeout=4, pids=32)
+        # Node and Java keep several parent-side descriptors per child. Keep
+        # RLIMIT_NOFILE above that overhead so this case proves pids.max,
+        # rather than accidentally becoming a duplicate FD-limit test.
+        return profile(timeout=4, pids=32, nofile=256)
     if kind == "tmpfs":
         return profile(timeout=8, tmp_bytes=2 * MIB, output_max_bytes=64 * 1024)
     if kind == "nofile":
@@ -713,11 +728,32 @@ def run_dependency_probe(
             nofile=limits.nofile,
             log_max_bytes=limits.stream_max_bytes,
         )
+        state_log = venv_manager._run_logged(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json, os; "
+                    "names = ('HOME', 'XDG_CACHE_HOME', 'UV_CACHE_DIR', "
+                    "'npm_config_cache', 'TMPDIR', 'TMP', 'TEMP'); "
+                    "print(json.dumps({name: os.environ[name] for name in names}))"
+                ),
+            ],
+            timeout_seconds=5,
+            context=context,
+        )
+        package_manager_state = json.loads(state_log)
+        assert all(
+            Path(value).is_relative_to(dependency_tmp)
+            for value in package_manager_state.values()
+        )
         log = venv_manager._run_logged(
             [
                 sys.executable,
                 "-c",
-                "import pathlib, os; print(pathlib.Path('/proc/self/cgroup').read_text(), flush=True); os.write(1, b'x' * 2000000)",
+                "import pathlib, os; "
+                "print(pathlib.Path('/proc/self/cgroup').read_text(), flush=True); "
+                "os.write(1, b'x' * 2000000)",
             ],
             timeout_seconds=5,
             context=context,
@@ -737,6 +773,8 @@ def run_dependency_probe(
             timeout_error = error
         assert timeout_error is not None
         assert timeout_error.error_code == "dependency_timeout"
+        attempt.unmount_dependency_tmpfs()
+        assert not dependency_tmp.exists()
         cleanup = attempt.cleanup()
         assert cleanup.status == "completed" and not cleanup.residue
         workspace_cleanup = workspace_manager.cleanup_workspace(
@@ -747,6 +785,8 @@ def run_dependency_probe(
         assert workspace_cleanup.status == "completed"
         return {
             "bounded": True,
+            "package_manager_state_in_tmpfs": True,
+            "dependency_scratch_discarded": True,
             "log_flood": True,
             "dependency_timeout": timeout_error.error_code,
             "cleanup": cleanup.as_dict()
@@ -840,7 +880,11 @@ def _control_api_request(
     if not token:
         raise AssertionError("actual Agent pressure proof requires the Control admin token")
     base_url = os.environ.get("DLR_CONTROL_URL", "http://control:8000").rstrip("/")
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+    body = (
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        if payload is not None
+        else None
+    )
     request = urllib.request.Request(f"{base_url}/api{path}", data=body, method=method)
     request.add_header("Authorization", f"Bearer {token}")
     if body is not None:
@@ -990,7 +1034,8 @@ def _actual_pressure_specs() -> list[tuple[str, str, str]]:
             "    for block in blocks:\n"
             "        for offset in range(0, len(block), 4096):\n"
             "            block[offset] = 1\n"
-            f"    while time.time() < float(input['pressure_start_unix']) + {ACTUAL_PRESSURE_SUSTAIN_SECONDS!r}:\n"
+            "    while time.time() < float(input['pressure_start_unix']) "
+            f"+ {ACTUAL_PRESSURE_SUSTAIN_SECONDS!r}:\n"
             "        for block in blocks:\n"
             "            for offset in range(0, len(block), 4096):\n"
             "                block[offset] = (block[offset] + 1) % 255\n"
@@ -1271,7 +1316,11 @@ def run_actual_agent_pressure_probe(
             cancel_row is None
             and max_active_attempts_during_limit_pressure >= configured_slots
             and len(
-                [sample for sample in full_pressure_health_samples if _healthy_runtime_sample(sample)]
+                [
+                    sample
+                    for sample in full_pressure_health_samples
+                    if _healthy_runtime_sample(sample)
+                ]
             )
             >= 3
             and len({value for value in full_pressure_heartbeat_values if value is not None}) >= 2
@@ -1734,6 +1783,7 @@ def run_fault_matrix(root: Path, config: sandbox.SandboxConfig) -> dict[str, obj
     results: dict[str, object] = {}
     for language in ("python", "javascript", "java"):
         for kind in ("cpu", "memory", "fork", "tmpfs", "nofile", "wall"):
+            case_profile = fault_profile(kind, language)
             execution_id = 7700 + len(results) + 1
             attempt_id = 8700 + len(results) + 1
             result = run_one(
@@ -1743,31 +1793,60 @@ def run_fault_matrix(root: Path, config: sandbox.SandboxConfig) -> dict[str, obj
                 fault_code(language, kind),
                 execution_id,
                 attempt_id,
-                timeout=int(fault_profile(kind)["execution_timeout_seconds"]),
-                resource_profile=fault_profile(kind),
+                timeout=int(case_profile["execution_timeout_seconds"]),
+                resource_profile=case_profile,
             )
             if kind in {"cpu", "wall"}:
                 assert result["status"] == "timeout", (language, kind, result)
+                assert result.get("error_code") == "execution_timeout", (
+                    language,
+                    kind,
+                    result,
+                )
+            elif kind == "memory":
+                assert "DLR_FAULT_MEMORY_STARTED" in result.get("stdout", ""), (
+                    language,
+                    kind,
+                    result,
+                )
+                assert result["status"] == "resource_exceeded", (
+                    language,
+                    kind,
+                    result,
+                )
+                assert result.get("error_code") == "resource_exceeded_memory", (
+                    language,
+                    kind,
+                    result,
+                )
+            elif kind == "fork":
+                assert result["status"] == "resource_exceeded", (
+                    language,
+                    kind,
+                    result,
+                )
+                assert result.get("error_code") == "resource_exceeded_pids", (
+                    language,
+                    kind,
+                    result,
+                )
+            elif kind == "tmpfs":
+                assert result["status"] == "resource_exceeded", (
+                    language,
+                    kind,
+                    result,
+                )
+                assert result.get("error_code") == "resource_exceeded_disk", (
+                    language,
+                    kind,
+                    result,
+                )
             elif kind == "nofile":
                 assert result["status"] == "succeeded", (language, kind, result)
                 assert result["output"]["nofile_errno"] in {
                     errno.EMFILE,
                     "EMFILE",
-                    "IOException",
-                    "FileNotFoundException",
                 }
-            elif kind == "tmpfs":
-                assert result["status"] in {"resource_exceeded", "failed"}, (
-                    language,
-                    kind,
-                    result,
-                )
-            else:
-                assert result["status"] in {"resource_exceeded", "timeout", "failed"}, (
-                    language,
-                    kind,
-                    result,
-                )
             results[f"{language}:{kind}"] = {
                 "status": result["status"],
                 "error_code": result.get("error_code"),
@@ -1796,9 +1875,9 @@ def main() -> int:
     # workspace and recovery journal remain individually mode 0700.
     root.mkdir(mode=0o711, parents=True, exist_ok=False)
     config = sandbox.SandboxConfig.from_environment()
-    if not all(key in os.environ for key in PLATFORM_ENV_KEYS):
+    if not all(os.environ.get(key) for key in PLATFORM_ENV_KEYS):
         raise AssertionError(
-            "target unit did not provide platform credential probe variables"
+            "target unit did not provide non-empty platform credential probe variables"
         )
     # Docker cannot make CAP_SYS_ADMIN effective for a non-root process while
     # also enforcing NNP. The supervisor is therefore root with only this
@@ -1934,7 +2013,9 @@ def main() -> int:
         root / "bounded" / "log",
         config,
         "python",
-        "def handle(context, input):\n    print('x' * 2000000, end='')\n    return {'bounded': True}\n",
+        "def handle(context, input):\n"
+        "    print('x' * 2000000, end='')\n"
+        "    return {'bounded': True}\n",
         7410,
         8410,
         timeout=8,

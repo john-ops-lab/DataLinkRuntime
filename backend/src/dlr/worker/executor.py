@@ -1379,6 +1379,19 @@ def run(
         if dependency_uploader is not None:
             dependency_uploader.drain(PROGRESS_DRAIN_SECONDS)
 
+    if preparation_error is None and sandbox_attempt is not None:
+        try:
+            # The promoted runtime is now immutable in the verified version
+            # cache. Drop package-manager caches and credential scratch before
+            # the helper copies the ordinary Adapter workspace.
+            sandbox_attempt.unmount_dependency_tmpfs()
+        except sandbox.SandboxError as error:
+            preparation_error = venv_manager.DependencyPreparationError(
+                "dependency scratch cleanup failed",
+                "",
+                error_code=error.code,
+            )
+
     if preparation_error is not None:
         preparation = preparation_error
         safe_install_log = venv_manager.redact_package_index_log(preparation.install_log, index_url)
@@ -1452,7 +1465,11 @@ def run(
             sandbox_limits.stream_max_bytes if sandbox_limits is not None else None,
         )
         result = {
-            "status": "failed",
+            "status": (
+                "resource_exceeded"
+                if preparation.error_code in RESOURCE_ERROR_CODES
+                else "failed"
+            ),
             "error": redact_secrets(result_error, dependency_secret_values),
             "error_code": preparation.error_code,
             "stdout": stdout,

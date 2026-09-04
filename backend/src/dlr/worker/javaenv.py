@@ -153,6 +153,11 @@ def prepare_version_java(
                         encoding="utf-8",
                         prefix="dlr-maven-",
                         suffix=".xml",
+                        dir=(
+                            str(dependency_context.tmpdir)
+                            if dependency_context is not None
+                            else None
+                        ),
                         delete=False,
                     ) as handle:
                         handle.write(settings_xml)
@@ -164,6 +169,11 @@ def prepare_version_java(
                     "-f",
                     str(directory / "pom.xml"),
                 ]
+                if dependency_context is not None:
+                    base.append(
+                        "-Dmaven.repo.local="
+                        f"{dependency_context.tmpdir / '.package-cache' / 'maven'}"
+                    )
                 if settings_path is not None:
                     base.extend(["-s", str(settings_path)])
                 base.extend(["dependency:copy-dependencies", f"-DoutputDirectory={deps}"])

@@ -5,6 +5,7 @@ production. Adapters only use the Python standard library, so no public PyPI
 availability is required (except one deliberate dependency-failure test).
 """
 
+import json
 import subprocess
 import sys
 import threading
@@ -384,6 +385,37 @@ def test_dependency_preparation_uses_attempt_cgroup_and_bounded_log(
     assert len(log.encode()) <= 4096
     assert "truncated dependency log" in log
     assert (cgroup / "cgroup.procs").read_text(encoding="ascii").strip()
+
+
+def test_dependency_context_redirects_package_manager_state_to_tmpfs(
+    tmp_path: object,
+) -> None:
+    root = Path(str(tmp_path))
+    cgroup = root / "attempt"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("", encoding="ascii")
+    (cgroup / "cgroup.kill").write_text("", encoding="ascii")
+    dependency_tmp = root / "dependency-tmp"
+    context = venv_manager.DependencyExecutionContext(
+        cgroup_path=cgroup,
+        tmpdir=dependency_tmp,
+        nofile=64,
+        log_max_bytes=4096,
+    )
+    names = ("HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "npm_config_cache", "TMPDIR")
+    command = [
+        sys.executable,
+        "-c",
+        "import json,os; print(json.dumps({key: os.environ[key] for key in "
+        f"{names!r}}}))",
+    ]
+
+    values = json.loads(venv_manager._run_logged(command, 5, context=context))
+
+    assert values["HOME"] == str(dependency_tmp / ".dependency-home")
+    assert values["TMPDIR"] == str(dependency_tmp)
+    for name in ("XDG_CACHE_HOME", "UV_CACHE_DIR", "npm_config_cache"):
+        assert Path(values[name]).is_relative_to(dependency_tmp)
 
 
 def test_dependency_timeout_is_not_blocked_by_a_partial_pipe_read() -> None:

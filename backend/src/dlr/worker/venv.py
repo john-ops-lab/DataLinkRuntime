@@ -647,8 +647,20 @@ def _run_logged(
     env = _dependency_env()
     if context is not None:
         context.tmpdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        dependency_home = context.tmpdir / ".dependency-home"
+        package_cache = context.tmpdir / ".package-cache"
+        dependency_home.mkdir(mode=0o700, exist_ok=True)
+        package_cache.mkdir(mode=0o700, exist_ok=True)
         env.update(
             {
+                # Keep every ordinary package-manager write in the same
+                # bounded Attempt tmpfs as the build staging tree.  A cache
+                # miss must not grow /root/.cache, /root/.npm or /root/.m2
+                # outside the Resource Profile's disk boundary.
+                "HOME": str(dependency_home),
+                "XDG_CACHE_HOME": str(package_cache / "xdg"),
+                "UV_CACHE_DIR": str(package_cache / "uv"),
+                "npm_config_cache": str(package_cache / "npm"),
                 "TMPDIR": str(context.tmpdir),
                 "TMP": str(context.tmpdir),
                 "TEMP": str(context.tmpdir),

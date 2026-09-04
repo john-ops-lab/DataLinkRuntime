@@ -763,6 +763,15 @@ def _workspace_usage(path: Path, limit: int) -> tuple[int, int]:
     return total, files
 
 
+def _tmpfs_has_no_available_blocks(descriptor: int) -> bool:
+    """Read exhaustion from the exact open per-Attempt tmpfs descriptor."""
+
+    try:
+        return os.fstatvfs(descriptor).f_bavail == 0
+    except OSError:
+        return False
+
+
 def _controllers(value: str) -> set[str]:
     return set(value.split())
 
@@ -1561,11 +1570,12 @@ def _helper_child(
             exit_code = 128 + os.WTERMSIG(status)
         else:
             exit_code = 125
-        try:
-            workspace_stats = os.statvfs(".")
-        except OSError:
-            workspace_stats = None
-        if workspace_stats is not None and workspace_stats.f_bavail == 0:
+        # Bind this check to the descriptor opened from the actual per-Attempt
+        # tmpfs. The helper also traverses the outer staging mount while
+        # preparing/copying the workspace, so its current directory is not a
+        # sufficiently strong identity for the resource-exceeded decision.
+        assert inner_fd is not None
+        if _tmpfs_has_no_available_blocks(inner_fd):
             _write_helper_diagnostic(
                 diagnostic_fd,
                 "workspace_tmpfs_usage",
@@ -2023,6 +2033,19 @@ class AttemptSandbox:
                 target.rmdir()
             raise SandboxError("sandbox_workspace_tmpfs_mount_failed") from error
         self._dependency_tmpfs = target
+
+    def unmount_dependency_tmpfs(self) -> None:
+        """Discard dependency scratch before copying the runtime workspace."""
+
+        target = self._dependency_tmpfs
+        if target is None:
+            return
+        try:
+            _unmount(str(target))
+            target.rmdir()
+        except OSError as error:
+            raise SandboxError("sandbox_workspace_tmpfs_unmount_failed") from error
+        self._dependency_tmpfs = None
 
     def resource_error_code(self) -> str | None:
         """Translate kernel cgroup event counters to stable result codes."""

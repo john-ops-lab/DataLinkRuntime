@@ -133,6 +133,11 @@ def prepare_version_node(
                             encoding="utf-8",
                             prefix="dlr-npm-",
                             suffix=".npmrc",
+                            dir=(
+                                str(dependency_context.tmpdir)
+                                if dependency_context is not None
+                                else None
+                            ),
                             delete=False,
                         ) as handle:
                             handle.write(auth_config)

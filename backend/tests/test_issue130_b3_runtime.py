@@ -25,6 +25,7 @@ import pytest
 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES, isolation_capabilities_ready
 from dlr.worker import agent as worker_agent
 from dlr.worker import executor, sandbox
+from dlr.worker import venv as venv_manager
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
 
 MiB = 1024 * 1024
@@ -191,6 +192,45 @@ def test_helper_diagnostic_keeps_syscall_phase_and_errno_path_free() -> None:
         )
         is None
     )
+
+
+def test_tmpfs_exhaustion_reads_the_exact_open_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[int] = []
+
+    def fake_fstatvfs(descriptor: int) -> SimpleNamespace:
+        observed.append(descriptor)
+        return SimpleNamespace(f_bavail=0)
+
+    monkeypatch.setattr(sandbox.os, "fstatvfs", fake_fstatvfs)
+    assert sandbox._tmpfs_has_no_available_blocks(17) is True
+    assert observed == [17]
+
+    def unavailable(_descriptor: int) -> SimpleNamespace:
+        raise OSError("tmpfs stat unavailable")
+
+    monkeypatch.setattr(sandbox.os, "fstatvfs", unavailable)
+    assert sandbox._tmpfs_has_no_available_blocks(17) is False
+
+
+def test_dependency_tmpfs_is_discarded_before_adapter_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / ".dependency-tmp"
+    target.mkdir()
+    attempt = object.__new__(sandbox.AttemptSandbox)
+    attempt._dependency_tmpfs = target
+    unmounted: list[str] = []
+    monkeypatch.setattr(sandbox, "_unmount", unmounted.append)
+
+    attempt.unmount_dependency_tmpfs()
+    attempt.unmount_dependency_tmpfs()
+
+    assert unmounted == [str(target)]
+    assert not target.exists()
+    assert attempt._dependency_tmpfs is None
 
 
 def test_workspace_command_rewrites_descendants_without_prefix_collisions(tmp_path: Path) -> None:
@@ -1119,6 +1159,18 @@ def _real_target_config() -> sandbox.SandboxConfig:
     return config
 
 
+def _allow_payload_traversal(path: Path) -> None:
+    """Let uid 501 traverse pytest's root-owned temp parent directories."""
+
+    temporary_root = Path("/tmp").resolve()
+    candidate = path.resolve()
+    if not candidate.is_relative_to(temporary_root):
+        pytest.fail("real Linux B3 tests require a disposable /tmp workspace")
+    while candidate != temporary_root:
+        candidate.chmod(stat.S_IMODE(candidate.stat().st_mode) | 0o111)
+        candidate = candidate.parent
+
+
 def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
     config = _real_target_config()
     result = sandbox.run_preflight(config, recovery_root=tmp_path / "sandbox-recovery")
@@ -1152,7 +1204,8 @@ def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
     assert details["cleanup"]["status"] == "completed"
     assert details["cleanup"]["residue"] is False
     assert details["workspace_residue"] is False
-    assert list((tmp_path / "sandbox-recovery").iterdir()) == []
+    recovery_root = tmp_path / "sandbox-recovery"
+    assert not recovery_root.exists() or list(recovery_root.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -1242,6 +1295,7 @@ def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
 )
 def test_real_linux_three_languages_are_sandboxed(tmp_path: Path, language: str, code: str) -> None:
     config = _real_target_config()
+    _allow_payload_traversal(tmp_path)
     payload = _v3_payload(
         language, code, execution_id=7100 + len(language), attempt_id=8100 + len(language)
     )
@@ -1266,20 +1320,69 @@ def test_real_linux_three_languages_are_sandboxed(tmp_path: Path, language: str,
     assert not list((tmp_path / language / "workspaces").glob("**/.dlr-sandbox-mount"))
 
 
+def test_real_linux_dependency_resource_failure_is_classified_and_cleaned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _real_target_config()
+    _allow_payload_traversal(tmp_path)
+
+    def fail_preparation(*_args: object, **kwargs: object) -> Path:
+        context = kwargs.get("dependency_context")
+        assert isinstance(context, venv_manager.DependencyExecutionContext)
+        assert context.tmpdir.is_dir()
+        raise venv_manager.DependencyPreparationError(
+            "dependency process exceeded memory",
+            "",
+            error_code="resource_exceeded_memory",
+        )
+
+    monkeypatch.setattr(venv_manager, "prepare_version_venv", fail_preparation)
+    result = executor.run(
+        _v3_payload(
+            "python",
+            "def handle(context, input): return {}",
+            execution_id=7198,
+            attempt_id=8198,
+        ),
+        executor.RuntimeSettings(
+            runtime_root=tmp_path / "dependency-resource",
+            execution_timeout_seconds=300,
+            dep_install_timeout_seconds=120,
+            workspace_cleanup_journal_root=tmp_path / "dependency-resource-journal",
+            sandbox_config=config,
+        ),
+    )
+
+    assert result["status"] == "resource_exceeded", result
+    assert result["error_code"] == "resource_exceeded_memory", result
+    assert result["cleanup_summary"]["sandbox"]["status"] == "completed"
+    assert result["cleanup_summary"]["sandbox"]["residue"] is False
+    assert not list((tmp_path / "dependency-resource").glob("**/.dependency-tmp"))
+
+
 @pytest.mark.parametrize("outcome", ["cancel", "timeout", "crash"])
 def test_real_linux_cancel_timeout_crash_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     config = _real_target_config()
+    _allow_payload_traversal(tmp_path)
     monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.1)
     if outcome == "crash":
-        code = "def handle(context, input):\n    raise RuntimeError('b3 crash')\n"
+        code = (
+            "def handle(context, input):\n"
+            "    print('DLR_TEST_CRASH_STARTED', flush=True)\n"
+            "    raise RuntimeError('b3 crash')\n"
+        )
         expected = "failed"
         callback = None
         timeout = 20
     else:
-        code = "import time\n"
-        code += "def handle(context, input):\n    time.sleep(30)\n"
+        code = (
+            "import time\n"
+            "def handle(context, input):\n"
+            "    print('DLR_TEST_SLEEP_STARTED', flush=True)\n"
+            "    time.sleep(30)\n"
+        )
         expected = "cancelled" if outcome == "cancel" else "timeout"
         callback = (lambda _stdout, _stderr: True) if outcome == "cancel" else None
         timeout = 1 if outcome == "timeout" else 20
@@ -1302,6 +1405,12 @@ def test_real_linux_cancel_timeout_crash_cleanup(
         progress_callback=callback,
     )
     assert result["status"] == expected, result
+    expected_marker = (
+        "DLR_TEST_CRASH_STARTED" if outcome == "crash" else "DLR_TEST_SLEEP_STARTED"
+    )
+    assert expected_marker in result["stdout"], result
+    if outcome == "crash":
+        assert "b3 crash" in result["stdout"], result
     assert result["cleanup_summary"]["sandbox"]["status"] == "completed"
     assert result["cleanup_summary"]["sandbox"]["residue"] is False
     assert result["workspace_cleanup_status"] == "completed"
