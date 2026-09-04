@@ -17,7 +17,7 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,12 +49,20 @@ class CacheReservation:
     cache: VerifiedVersionCache
     token: str
     amount: int
+    ttl_seconds: int = 900
     _released: bool = False
 
     def release(self) -> None:
         if not self._released:
             self.cache.release(self)
             self._released = True
+
+    def renew(self, *, ttl_seconds: int | None = None) -> None:
+        """Extend this live reservation without changing its byte amount."""
+        if self._released:
+            raise CacheError("cache_reservation_released")
+        lease = self.ttl_seconds if ttl_seconds is None else ttl_seconds
+        self.cache.renew(self, ttl_seconds=lease)
 
     def __enter__(self) -> CacheReservation:
         return self
@@ -253,6 +261,80 @@ def _make_writable_for_removal(root: Path) -> None:
             raise CacheError("cache_staging_cleanup_failed") from error
 
 
+def _copy_tree_bounded(
+    source: Path,
+    target: Path,
+    *,
+    limit: int,
+    available_bytes: Callable[[], int],
+) -> int:
+    """Copy one build tree without following links or exceeding a byte bound."""
+    if limit <= 0:
+        raise CacheError("cache_reservation_invalid")
+    copied = 0
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+
+    def copy_directory(source_dir: Path, target_dir: Path) -> None:
+        nonlocal copied
+        source_info = source_dir.lstat()
+        if not stat.S_ISDIR(source_info.st_mode):
+            raise CacheError("cache_staging_invalid")
+        if target_dir.exists():
+            target_info = target_dir.lstat()
+            if stat.S_ISLNK(target_info.st_mode) or not stat.S_ISDIR(target_info.st_mode):
+                raise CacheError("cache_staging_invalid")
+        else:
+            target_dir.mkdir(mode=stat.S_IMODE(source_info.st_mode))
+        os.chmod(target_dir, stat.S_IMODE(source_info.st_mode), follow_symlinks=False)
+        with os.scandir(source_dir) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name)
+            for entry in entries:
+                source_path = Path(entry.path)
+                target_path = target_dir / entry.name
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    os.symlink(os.readlink(source_path), target_path)
+                    continue
+                if stat.S_ISDIR(info.st_mode):
+                    copy_directory(source_path, target_path)
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    raise CacheError("cache_entry_invalid")
+                source_fd = os.open(source_path, os.O_RDONLY | nofollow | cloexec)
+                destination_fd = -1
+                try:
+                    destination_fd = os.open(
+                        target_path,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | cloexec,
+                        stat.S_IMODE(info.st_mode),
+                    )
+                    while True:
+                        chunk = os.read(source_fd, 64 * 1024)
+                        if not chunk:
+                            break
+                        if copied + len(chunk) > limit:
+                            raise CacheError("cache_reservation_insufficient")
+                        if available_bytes() < len(chunk):
+                            raise CacheError("cache_low_watermark")
+                        offset = 0
+                        while offset < len(chunk):
+                            written = os.write(destination_fd, chunk[offset:])
+                            if written <= 0:
+                                raise OSError("cache promotion write made no progress")
+                            offset += written
+                        copied += len(chunk)
+                    os.fsync(destination_fd)
+                finally:
+                    os.close(source_fd)
+                    if destination_fd >= 0:
+                        os.close(destination_fd)
+                os.chmod(target_path, stat.S_IMODE(info.st_mode), follow_symlinks=False)
+
+    copy_directory(source, target)
+    return copied
+
+
 class VerifiedVersionCache:
     """A bounded cache with read-only verified entries and atomic promotion."""
 
@@ -377,7 +459,32 @@ class VerifiedVersionCache:
             token = uuid.uuid4().hex
             state[token] = {"amount": amount, "expires": time.time() + ttl_seconds}
             _write_json(self._state_path, {"reservations": state})
-        return CacheReservation(self, token, amount)
+        return CacheReservation(self, token, amount, ttl_seconds)
+
+    def _assert_active(self, reservation: CacheReservation) -> None:
+        if reservation.cache is not self or reservation._released:
+            raise CacheError("cache_reservation_invalid")
+        with _thread_lock, self._locked():
+            state = self._state()
+            item = state.get(reservation.token)
+            if item is None or int(item["amount"]) != reservation.amount:
+                raise CacheError("cache_reservation_expired")
+
+    def renew(self, reservation: CacheReservation, *, ttl_seconds: int = 900) -> None:
+        if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or ttl_seconds < 1:
+            raise CacheError("cache_reservation_invalid")
+        if reservation.cache is not self or reservation._released:
+            raise CacheError("cache_reservation_invalid")
+        with _thread_lock, self._locked():
+            state = self._state()
+            item = state.get(reservation.token)
+            if item is None or int(item["amount"]) != reservation.amount:
+                raise CacheError("cache_reservation_expired")
+            state[reservation.token] = {
+                "amount": reservation.amount,
+                "expires": time.time() + ttl_seconds,
+            }
+            _write_json(self._state_path, {"reservations": state})
 
     def release(self, reservation: CacheReservation) -> None:
         with _thread_lock, self._locked():
@@ -426,6 +533,7 @@ class VerifiedVersionCache:
     ) -> Path:
         """Verify staging, publish one ready directory, then release bytes."""
         try:
+            self._assert_active(reservation)
             staging_path = self._direct_entry(staging, staging=True, allow_missing=False)
             target_path = self._direct_entry(target, staging=False, allow_missing=True)
             entries = self.entries.resolve(strict=True)
@@ -451,6 +559,83 @@ class VerifiedVersionCache:
         except OSError as error:
             raise CacheError("cache_promote_failed") from error
         finally:
+            reservation.release()
+
+    def promote_from_tmpfs(
+        self,
+        source: Path,
+        target: Path,
+        *,
+        identity: Mapping[str, Any],
+        reservation: CacheReservation,
+    ) -> Path:
+        """Copy a bounded Attempt-tmpfs build into the cache atomically.
+
+        Dependency construction must never write persistent cache bytes before
+        the Attempt's bounded tmpfs has accepted them. The copy below uses a
+        fresh hidden cache child, checks every chunk against the reservation
+        and low-watermark, then publishes it with one os.replace.
+        """
+        staging_path: Path | None = None
+        try:
+            self._assert_active(reservation)
+            source_path = Path(source)
+            if not source_path.is_absolute() or source_path.is_symlink():
+                raise CacheError("cache_staging_invalid")
+            try:
+                source_resolved = source_path.resolve(strict=True)
+                cache_root = self.root.resolve(strict=True)
+            except OSError as error:
+                raise CacheError("cache_staging_invalid") from error
+            if (
+                not source_resolved.is_dir()
+                or source_resolved == cache_root
+                or source_resolved.is_relative_to(cache_root)
+            ):
+                raise CacheError("cache_staging_invalid")
+            target_path = self._direct_entry(target, staging=False, allow_missing=True)
+            if target_path.exists():
+                if self.verify(target_path, identity):
+                    return target_path
+                raise CacheError("cache_target_conflict")
+
+            _source_digest, source_total, _source_files = _tree_facts(source_resolved)
+            if source_total > reservation.amount:
+                raise CacheError("cache_reservation_insufficient")
+            staging_path = self.staging_path(target_path.name, reservation.token)
+            staging_path.mkdir(mode=0o700)
+
+            def available_copy_bytes() -> int:
+                # Keep the global reservation authoritative for the complete
+                # persistent copy, not only at its final publish check.
+                self._assert_active(reservation)
+                return shutil.disk_usage(self.root).free - self.low_watermark_bytes
+
+            _copy_tree_bounded(
+                source_resolved,
+                staging_path,
+                limit=reservation.amount,
+                available_bytes=available_copy_bytes,
+            )
+            digest, total, files = _tree_facts(staging_path)
+            if total > reservation.amount:
+                raise CacheError("cache_reservation_insufficient")
+            self._assert_active(reservation)
+            _write_json(
+                staging_path / _MANIFEST_NAME,
+                {"bytes": total, "digest": digest, "files": files, "identity": dict(identity)},
+            )
+            _write_ready(staging_path / _READY_NAME)
+            _make_read_only(staging_path, public=True)
+            os.replace(staging_path, target_path)
+            _fsync_directory(self.entries.resolve(strict=True))
+            staging_path = None
+            return target_path
+        except OSError as error:
+            raise CacheError("cache_promote_failed") from error
+        finally:
+            if staging_path is not None:
+                self.remove_staging(staging_path)
             reservation.release()
 
     def remove_staging(self, staging: Path) -> None:

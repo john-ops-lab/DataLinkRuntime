@@ -19,6 +19,8 @@ sudo -n systemd-run \
   --unit="$UNIT" \
   --description='DLR Issue 130 Worker Sandbox' \
   --property=Delegate=yes \
+  --property=CPUQuota=500% \
+  --property=MemoryMax=5G \
   --property=TasksMax=infinity \
   --property='CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID' \
   --property=NoNewPrivileges=yes \
@@ -28,30 +30,32 @@ sudo -n systemd-run \
   /bin/bash -c '
     set -euo pipefail
     CGROUP_REL=$(awk -F: '\''$1 == "0" { print $3; exit }'\'' /proc/self/cgroup)
-    CONTROL_GROUP=/sys/fs/cgroup$CGROUP_REL
-    AGENT="$CONTROL_GROUP/agent"
+    CONTROL_GROUP="$CGROUP_REL"
+    CGROUPFS_ROOT=/sys/fs/cgroup
+    PARENT="$CGROUPFS_ROOT$CONTROL_GROUP"
+    AGENT="$PARENT/agent"
     mkdir -p "$AGENT"
 
     # Move the shell out of the unit parent before enabling domain controllers.
     printf "%s\\n" "$$" > "$AGENT/cgroup.procs"
-    test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"
+    test -z "$(cat "$PARENT/cgroup.procs")"
     grep -qx "$$" "$AGENT/cgroup.procs"
     # The system-manager unit and Docker Worker supervisor are both root;
     # owner access is sufficient with the exact three supervisor capabilities.
     # Do not chmod any broad cgroup path or grant CAP_DAC_OVERRIDE.
-    test -w "$CONTROL_GROUP/cgroup.procs"
+    test -w "$PARENT/cgroup.procs"
 
-    printf "+cpu +memory +pids\\n" > "$CONTROL_GROUP/cgroup.subtree_control"
-    SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_control")
+    printf "+cpu +memory +pids\\n" > "$PARENT/cgroup.subtree_control"
+    SUBTREE_CONTROL=$(cat "$PARENT/cgroup.subtree_control")
     for controller in cpu memory pids; do
       case " $SUBTREE_CONTROL " in
         *" $controller "*) ;;
         *) exit 1 ;;
       esac
     done
-    ATTEMPT="$CONTROL_GROUP/attempt"
+    ATTEMPT="$PARENT/attempt"
     mkdir -p "$ATTEMPT"
-    test "$(dirname "$ATTEMPT")" = "$CONTROL_GROUP"
+    test "$(dirname "$ATTEMPT")" = "$PARENT"
     for interface in cpu.max memory.max memory.swap.max pids.max; do
       test -r "$ATTEMPT/$interface"
       test -w "$ATTEMPT/$interface"
@@ -76,24 +80,40 @@ sudo -n systemd-run \
       sleep 0.05
     done
     grep -qx "$WORKLOAD_PID" "$ATTEMPT/cgroup.procs"
-    test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"
+    test -z "$(cat "$PARENT/cgroup.procs")"
     grep -qx "$$" "$AGENT/cgroup.procs"
     NO_NEW_PRIVS=$(awk '$1 == "NoNewPrivs:" { print $2; exit }' /proc/self/status)
     test "$NO_NEW_PRIVS" = 1
+
+    # The provisioning workload is disposable. Tear it down before handing
+    # this exact delegated parent to Compose; only the keeper remains in
+    # agent, while the parent stays empty for cgroup v2 domain control.
+    kill "$WORKLOAD_PID"
+    wait "$WORKLOAD_PID" || true
+    for _ in $(seq 1 50); do
+      test -z "$(cat "$ATTEMPT/cgroup.procs")" && break
+      sleep 0.05
+    done
+    test -z "$(cat "$ATTEMPT/cgroup.procs")"
+    rmdir "$ATTEMPT"
+    test ! -e "$ATTEMPT"
+    grep -qx "$$" "$AGENT/cgroup.procs"
+    test -z "$(cat "$PARENT/cgroup.procs")"
 
     exec /bin/sleep infinity
   '
 
 CONTROL_GROUP=$(sudo -n systemctl show "$UNIT" -p ControlGroup --value)
 test "$CONTROL_GROUP" = "/system.slice/$UNIT"
-PARENT="$CONTROL_GROUP"
+CGROUPFS_ROOT=/sys/fs/cgroup
+PARENT="$CGROUPFS_ROOT$CONTROL_GROUP"
 KEEPER_PID=$(sudo -n systemctl show "$UNIT" -p MainPID --value)
 test -z "$(cat "$PARENT/cgroup.procs")"
 grep -qx "$KEEPER_PID" "$PARENT/agent/cgroup.procs"
 test "$(stat -c '%u:%g' "$PARENT")" = 0:0
 test "$(stat -c '%u:%g' "$PARENT/cgroup.procs")" = 0:0
 test -w "$PARENT/cgroup.procs"
-test -n "$(cat "$PARENT/attempt/cgroup.procs")"
+test ! -e "$PARENT/attempt"
 SUBTREE_CONTROL=$(cat "$PARENT/cgroup.subtree_control")
 for controller in cpu memory pids; do
   case " $SUBTREE_CONTROL " in
@@ -101,14 +121,16 @@ for controller in cpu memory pids; do
     *) exit 1 ;;
   esac
 done
-for interface in cpu.max memory.max memory.swap.max pids.max; do
-  test -r "$PARENT/attempt/$interface"
-  test -w "$PARENT/attempt/$interface"
-done
 export DLR_SANDBOX_CGROUP_PARENT="$CONTROL_GROUP"
 export DLR_SANDBOX_CGROUP_SOURCE="$PARENT"
 export DLR_SANDBOX_CGROUP_PATH="/run/dlr-cgroup"
 ```
+
+CONTROL_GROUP 是 systemd 返回的逻辑绝对路径（例如 /system.slice/<unit>.service），
+只用于 Compose 的 cgroup_parent。CGROUPFS_ROOT=/sys/fs/cgroup 与
+PARENT="$CGROUPFS_ROOT$CONTROL_GROUP" 才是 host cgroupfs 路径；所有 host
+读取/写入和 DLR_SANDBOX_CGROUP_SOURCE 都必须使用该 PARENT，不能把 cgroupfs
+根拼进逻辑值本身。
 
 `DLR_SANDBOX_CGROUP_PARENT` 与 `DLR_SANDBOX_CGROUP_SOURCE` 必须来自同一个
 `ControlGroup`，不能手写成 `/sys/fs/cgroup`，也不能指向 `app.slice`；
@@ -135,6 +157,14 @@ unit parent 的 `root:root` owner 访问；不通过 chmod、`group_add` 或
 task-owned Attempt child 并实际完成四个 limits 的 write/read；若该验证失败，必须
 保持 v3 gate 关闭，不能复用 provisioning smoke 预建的 `attempt`。不增加
 `CAP_DAC_OVERRIDE`。
+
+v3 多 slot 调度还要求 systemd unit 给出有限的 aggregate envelope：`CPUQuota` 与 `MemoryMax`
+必须是可从 delegated parent 的 `cpu.max`、`memory.max` 读回的有限值；`TasksMax=infinity`
+时记录宿主 `pid_max` 作为可验证的 PID 上界。Worker 启动时读取这些事实，按每个 queued
+Resource Profile 加上 Agent reserve 检查全部 configured slots 是否可容纳；不会再用
+`profile × slots` 伪造 deployment capacity。tmpfs aggregate envelope 保守取
+`memory.max`（tmpfs pages 计入 memory controller）。若 CPU 或 memory envelope 不有限、无法读回
+或不足以留下 Agent reserve，v3 Consumer 必须 fail closed。
 
 ## Docker cgroup driver 与路径检查
 

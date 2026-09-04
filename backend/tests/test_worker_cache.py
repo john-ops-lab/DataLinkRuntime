@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import dlr.worker.cache as cache_module
 from dlr.worker.cache import CacheError, VerifiedVersionCache
 
 
@@ -130,3 +131,69 @@ def test_promoted_entry_verifies_normal_runtime_symlinks_without_following(
     assert stat.S_IMODE(entry.stat().st_mode) == 0o555
     assert (entry / "runtime-link").is_symlink()
     assert (entry / "runtime-link").readlink() == Path("runtime.bin")
+
+
+def test_tmpfs_build_rejects_over_budget_before_persistent_promotion(tmp_path: Path) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=4096, low_watermark_bytes=0)
+    source = tmp_path / "attempt-tmpfs" / "version-build"
+    source.mkdir(mode=0o700, parents=True)
+    (source / "runtime.bin").write_bytes(b"x" * 33)
+    reservation = cache.reserve(32)
+
+    with pytest.raises(CacheError) as error:
+        cache.promote_from_tmpfs(
+            source,
+            cache.entry_path("bounded"),
+            identity={"language": "test", "version": "bounded"},
+            reservation=reservation,
+        )
+
+    assert error.value.code == "cache_reservation_insufficient"
+    assert not cache.entry_path("bounded").exists()
+    assert list(cache.entries.iterdir()) == []
+    assert (source / "runtime.bin").read_bytes() == b"x" * 33
+    (source / "runtime.bin").unlink()
+    source.rmdir()
+    source.parent.rmdir()
+
+
+def test_tmpfs_promotion_is_atomic_and_read_only(tmp_path: Path) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=4096, low_watermark_bytes=0)
+    source = tmp_path / "attempt-tmpfs" / "version-build"
+    source.mkdir(mode=0o700, parents=True)
+    (source / "runtime.bin").write_bytes(b"runtime")
+    (source / "runtime-link").symlink_to("runtime.bin")
+    reservation = cache.reserve(1024)
+
+    entry = cache.promote_from_tmpfs(
+        source,
+        cache.entry_path("atomic"),
+        identity={"language": "test", "version": "atomic"},
+        reservation=reservation,
+    )
+
+    assert cache.verify(entry, {"language": "test", "version": "atomic"})
+    assert stat.S_IMODE(entry.stat().st_mode) == 0o555
+    assert (entry / "runtime.bin").stat().st_mode & 0o222 == 0
+    assert (entry / "runtime-link").is_symlink()
+    assert not any(child.name.startswith(".atomic.staging-") for child in cache.entries.iterdir())
+
+
+def test_live_reservation_renewal_preserves_global_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=4096, low_watermark_bytes=0)
+    now = 1000.0
+    monkeypatch.setattr(cache_module.time, "time", lambda: now)
+    reservation = cache.reserve(3000, ttl_seconds=1)
+
+    now = 1000.5
+    reservation.renew()
+    now = 1001.4
+    with pytest.raises(CacheError) as error:
+        cache.reserve(1097)
+
+    assert error.value.code == "cache_low_watermark"
+    assert sum(int(item["amount"]) for item in cache._state().values()) == 3000
+    reservation.release()
+    assert cache._state() == {}

@@ -294,6 +294,7 @@ class _NativeDeferChannel:
         self.acks = 0
         self.stop_consuming_calls = 0
         self.qos: dict[str, Any] = {}
+        self.consume_callback: Any | None = None
 
     def basic_nack(self, **kwargs: Any) -> None:
         self.nacks.append(kwargs)
@@ -310,8 +311,8 @@ class _NativeDeferChannel:
     def basic_qos(self, **kwargs: Any) -> None:
         self.qos = kwargs
 
-    def basic_consume(self, **_: Any) -> None:
-        return
+    def basic_consume(self, **kwargs: Any) -> None:
+        self.consume_callback = kwargs["on_message_callback"]
 
 
 class _ImmediateCallbackConnection:
@@ -404,6 +405,8 @@ def test_v3_consumer_slots_one_bounds_prefetch_pool_and_saturation() -> None:
         consumer.run()
         channel = connection_holder["connection"].channel_instance
         assert channel.qos == {"prefetch_count": 1, "global_qos": False}
+        assert channel.consume_callback is not None
+        assert channel.consume_callback.args == (connection_holder["connection"],)
         assert channel.stop_consuming_calls == 0
         assert consumer._pool._max_workers == 1
 
@@ -783,6 +786,139 @@ def test_v3_result_cleanup_removes_journal_after_control_accepts_result(
         consumer._pool.shutdown(wait=True, cancel_futures=True)
     assert removed == [(Path("/tmp/dlr-b2-journal"), 41)]
     assert client.cleanup_receipts == [(13, "cleanup-token")]
+
+
+@pytest.mark.parametrize("cancel_channel", ["renew", "progress"])
+def test_v3_consumer_reports_cancel_after_control_ack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cancel_channel: str
+) -> None:
+    """A cancel acknowledgement on either poll path permits the cancelled report."""
+
+    payload_data = _valid_consumer_payload()
+    payload_data.update({"lease_seconds": 10, "renew_seconds": 1})
+    payload = V3TaskPayload.model_validate(payload_data)
+    renewal_seen = threading.Event()
+    progress_seen = threading.Event()
+
+    class CancelClient:
+        def __init__(self) -> None:
+            self.result_body: dict[str, Any] | None = None
+
+        def start_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            _body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            return {"decision": "ACK_NOOP", "reason": "started"}
+
+        def renew_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            _body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            renewal_seen.set()
+            if cancel_channel != "renew":
+                return {
+                    "decision": "ACK_NOOP",
+                    "reason": "renewed",
+                    "attempt_id": payload.attempt_id,
+                    "cancel_requested": False,
+                }
+            return {
+                "decision": "ACK_NOOP",
+                "reason": "cancel_requested",
+                "attempt_id": payload.attempt_id,
+                "cancel_requested": True,
+            }
+
+        def progress_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            _body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            progress_seen.set()
+            if cancel_channel == "progress":
+                return {
+                    "decision": "ACK_NOOP",
+                    "reason": "cancel_requested",
+                    "attempt_id": payload.attempt_id,
+                    "cancel_requested": True,
+                }
+            return {
+                "decision": "ACK_NOOP",
+                "reason": "progressed",
+                "attempt_id": payload.attempt_id,
+                "cancel_requested": False,
+            }
+
+        def result_attempt(
+            self,
+            _worker_id: int,
+            _attempt_id: int,
+            body: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            self.result_body = dict(body)
+            return {"decision": "ACK_NOOP"}
+
+        def report_cleanup_receipt(
+            self,
+            _worker_id: int,
+            _execution_id: int,
+            *,
+            cleanup_token: str,
+        ) -> dict[str, Any]:
+            assert cleanup_token == payload.cleanup_token
+            return {"decision": "ACK_NOOP"}
+
+    removed: list[tuple[Path, int]] = []
+    monkeypatch.setattr(
+        "dlr.worker.consumer.workspace.remove_attempt_journal",
+        lambda root, attempt_id: removed.append((root, attempt_id)) or True,
+    )
+    client = CancelClient()
+
+    def runner(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        progress = kwargs["progress_callback"]
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            if progress("", ""):
+                return {
+                    "status": "succeeded",
+                    "workspace_cleanup_status": "completed",
+                }
+            time.sleep(0.05)
+        raise AssertionError("cancellation was not observed")
+
+    consumer = V3Consumer(
+        ConsumerConfig(
+            worker_id=7,
+            queue="dlr.worker.test.q",
+            execution_slots=1,
+            runtime_root=tmp_path / "runtime",
+            attempt_journal_root=tmp_path / "journal",
+        ),
+        client,  # type: ignore[arg-type]
+        connection_factory=lambda: object(),  # type: ignore[return-value]
+        runtime_settings=SimpleNamespace(),
+        runner=runner,
+    )
+    try:
+        assert consumer._slots.acquire(blocking=False)
+        consumer._run_attempt(payload)
+    finally:
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+    if cancel_channel == "renew":
+        assert renewal_seen.is_set()
+    else:
+        assert progress_seen.is_set()
+    assert client.result_body is not None
+    assert client.result_body["status"] == "cancelled"
+    assert client.result_body["error_code"] == "execution_cancelled"
+    assert removed == [(tmp_path / "journal", payload.attempt_id)]
 
 
 @pytest.mark.parametrize("transition", ["cancel", "lease_recovery"])

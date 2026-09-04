@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from dlr.common.config import settings
-from dlr.worker import executor
+from dlr.worker import cache, executor
 from dlr.worker import venv as venv_manager
 from dlr.worker.client import ControlClient, ControlUnavailableError
 from dlr.worker.executor import RuntimeSettings
@@ -384,6 +384,56 @@ def test_dependency_preparation_uses_attempt_cgroup_and_bounded_log(
     assert len(log.encode()) <= 4096
     assert "truncated dependency log" in log
     assert (cgroup / "cgroup.procs").read_text(encoding="ascii").strip()
+
+
+def test_dependency_build_stages_inside_attempt_tmpfs_until_promotion(tmp_path: object) -> None:
+    root = Path(tmp_path)
+    dependency_tmp = root / "dependency-tmp"
+    dependency_tmp.mkdir()
+    version_cache, _target, build = venv_manager._begin_version_build(
+        root / "runtime",
+        20,
+        21,
+        identity={"language": "python", "version": "tmpfs"},
+        dependency_context=venv_manager.DependencyExecutionContext(
+            cgroup_path=root / "attempt-cgroup",
+            tmpdir=dependency_tmp,
+            nofile=64,
+            log_max_bytes=4096,
+        ),
+    )
+    assert build is not None
+    assert build.staging.is_relative_to(dependency_tmp)
+    assert not build.staging.is_relative_to(version_cache.entries)
+    build.abort()
+    assert not build.staging.exists()
+    assert not any(dependency_tmp.iterdir())
+    assert not any(version_cache.entries.iterdir())
+
+
+def test_live_version_build_renews_global_reservation_until_finish(tmp_path: object) -> None:
+    root = Path(tmp_path)
+    version_cache = cache.VerifiedVersionCache(
+        root / "cache", max_bytes=4096, low_watermark_bytes=0
+    )
+    reservation = version_cache.reserve(3000, ttl_seconds=1)
+    staging = version_cache.staging_path("long-build", reservation.token)
+    staging.mkdir(mode=0o700)
+    build = venv_manager._VersionBuild(
+        version_cache,
+        staging,
+        version_cache.entry_path("long-build"),
+        reservation,
+    )
+    try:
+        time.sleep(1.2)
+        with pytest.raises(cache.CacheError) as error:
+            version_cache.reserve(1097)
+        assert error.value.code == "cache_low_watermark"
+    finally:
+        build.abort()
+    assert not staging.exists()
+    assert version_cache._state() == {}
 
 
 def test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size(

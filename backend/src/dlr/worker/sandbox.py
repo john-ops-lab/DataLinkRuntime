@@ -358,6 +358,90 @@ class ResourceReservation:
     limits: ResourceLimits
 
 
+@dataclass(frozen=True)
+class ResourceEnvelope:
+    """Finite aggregate resources observed from the Worker deployment."""
+
+    cpu_cores: float
+    memory_bytes: int
+    pids: int
+    tmp_bytes: int
+    source: str
+
+    def as_dict(self) -> dict[str, float | int | str]:
+        return {
+            "cpu": self.cpu_cores,
+            "memory": self.memory_bytes,
+            "pids": self.pids,
+            "tmp": self.tmp_bytes,
+            "source": self.source,
+        }
+
+
+def _read_positive_integer(path: Path, *, allow_max: bool = False) -> int | None:
+    value = _read(path)
+    if allow_max and value == "max":
+        return None
+    try:
+        parsed = int(value, 10)
+    except ValueError as error:
+        raise SandboxError("sandbox_resource_envelope_invalid") from error
+    if parsed <= 0:
+        raise SandboxError("sandbox_resource_envelope_invalid")
+    return parsed
+
+
+def read_verified_resource_envelope(config: SandboxConfig) -> ResourceEnvelope:
+    """Read a finite aggregate envelope from the delegated deployment cgroup.
+
+    CPU and memory must be finite limits on the delegated systemd unit.  A
+    unit with either controller set to ``max`` cannot prove that all slots
+    leave an Agent reserve and is therefore rejected by the v3 scheduler.
+    ``TasksMax=infinity`` is part of the provisioning contract, so the
+    kernel's finite ``pid_max`` is recorded as the outer PID envelope.  The
+    tmpfs envelope is conservatively bounded by the same memory envelope:
+    Linux tmpfs pages are charged to the memory controller.
+    """
+
+    parent = validate_delegated_parent(config)
+    try:
+        cpu_parts = _read(parent / "cpu.max").split()
+        if len(cpu_parts) != 2 or cpu_parts[0] == "max":
+            raise SandboxError("sandbox_resource_envelope_unavailable")
+        quota = int(cpu_parts[0], 10)
+        period = int(cpu_parts[1], 10)
+        if quota <= 0 or period <= 0:
+            raise SandboxError("sandbox_resource_envelope_invalid")
+        cpu_cores = quota / period
+        if not math.isfinite(cpu_cores) or cpu_cores <= 0:
+            raise SandboxError("sandbox_resource_envelope_invalid")
+        memory_bytes = _read_positive_integer(parent / "memory.max")
+        if memory_bytes is None:
+            raise SandboxError("sandbox_resource_envelope_unavailable")
+        pids_bytes = _read_positive_integer(parent / "pids.max", allow_max=True)
+        if pids_bytes is None:
+            host_pid_max = _read_positive_integer(Path("/proc/sys/kernel/pid_max"))
+            if host_pid_max is None:
+                raise SandboxError("sandbox_resource_envelope_unavailable")
+            pids_bytes = host_pid_max
+            pids_source = "delegated_cgroup_v2+host_pid_max"
+        else:
+            pids_source = "delegated_cgroup_v2"
+    except SandboxError:
+        raise
+    except (OSError, UnicodeError, ValueError) as error:
+        raise SandboxError("sandbox_resource_envelope_unavailable") from error
+    return ResourceEnvelope(
+        cpu_cores=cpu_cores,
+        memory_bytes=memory_bytes,
+        pids=pids_bytes,
+        # tmpfs pages are charged to memory.max; this is deliberately not a
+        # slot-derived value and leaves the Agent reserve in the same budget.
+        tmp_bytes=memory_bytes,
+        source=f"delegated_cgroup_v2(cpu,memory);{pids_source};tmp=memory.max",
+    )
+
+
 class ResourceBudget:
     """Keep aggregate Attempt reservations below a Worker ceiling.
 
@@ -378,6 +462,7 @@ class ResourceBudget:
         agent_reserve_memory: int,
         agent_reserve_pids: int,
         agent_reserve_tmp: int,
+        envelope_source: str = "slot-derived-compatibility",
     ) -> None:
         if (
             capacity_cpu <= agent_reserve_cpu
@@ -398,12 +483,18 @@ class ResourceBudget:
             "pids": int(agent_reserve_pids),
             "tmp": int(agent_reserve_tmp),
         }
+        self._envelope_source = envelope_source
         self._used: dict[str, float] = {key: 0.0 for key in self._capacity}
         self._reservations: dict[str, ResourceLimits] = {}
         self._lock = threading.RLock()
 
     @classmethod
     def for_worker(cls, config: SandboxConfig, slots: int) -> ResourceBudget:
+        """Compatibility budget for legacy/unit-test callers.
+
+        Production v3 consumers use ``from_verified_envelope`` instead; this
+        helper deliberately remains available to v1/v2 test seams.
+        """
         if slots < 1:
             raise ValueError("resource budget slots must be positive")
         return cls(
@@ -416,6 +507,64 @@ class ResourceBudget:
             agent_reserve_memory=max(64 * 1024 * 1024, config.memory_bytes // 8),
             agent_reserve_pids=max(32, config.pids // 8),
             agent_reserve_tmp=max(16 * 1024 * 1024, config.tmp_bytes // 8),
+        )
+
+    @classmethod
+    def from_verified_envelope(
+        cls,
+        config: SandboxConfig,
+        slots: int,
+        envelope: ResourceEnvelope,
+    ) -> ResourceBudget:
+        """Build a budget from observed deployment capacity, never slot math."""
+
+        if slots < 1:
+            raise SandboxError("sandbox_resource_envelope_invalid")
+        reserve_cpu = max(0.25, config.cpu_cores * 0.25)
+        reserve_memory = max(64 * 1024 * 1024, config.memory_bytes // 8)
+        reserve_pids = max(32, config.pids // 8)
+        reserve_tmp = max(16 * 1024 * 1024, config.tmp_bytes // 8)
+        capacity = {
+            "cpu": envelope.cpu_cores,
+            "memory": envelope.memory_bytes,
+            "pids": envelope.pids,
+            "tmp": envelope.tmp_bytes,
+        }
+        if (
+            not envelope.source
+            or not math.isfinite(capacity["cpu"])
+            or capacity["cpu"] <= reserve_cpu
+            or any(
+                not isinstance(capacity[key], int)
+                or isinstance(capacity[key], bool)
+                or capacity[key]
+                <= {
+                    "memory": reserve_memory,
+                    "pids": reserve_pids,
+                    "tmp": reserve_tmp,
+                }[key]
+                for key in ("memory", "pids", "tmp")
+            )
+        ):
+            raise SandboxError("sandbox_resource_envelope_invalid")
+        minimum = {
+            "cpu": config.cpu_cores * slots + reserve_cpu,
+            "memory": config.memory_bytes * slots + reserve_memory,
+            "pids": config.pids * slots + reserve_pids,
+            "tmp": config.tmp_bytes * slots + reserve_tmp,
+        }
+        if any(capacity[key] < minimum[key] for key in capacity):
+            raise SandboxError("sandbox_resource_envelope_insufficient")
+        return cls(
+            capacity_cpu=float(envelope.cpu_cores),
+            capacity_memory=int(envelope.memory_bytes),
+            capacity_pids=int(envelope.pids),
+            capacity_tmp=int(envelope.tmp_bytes),
+            agent_reserve_cpu=reserve_cpu,
+            agent_reserve_memory=reserve_memory,
+            agent_reserve_pids=reserve_pids,
+            agent_reserve_tmp=reserve_tmp,
+            envelope_source=envelope.source,
         )
 
     def try_reserve(self, limits: ResourceLimits) -> ResourceReservation | None:
@@ -452,6 +601,7 @@ class ResourceBudget:
                 "agent_reserve": dict(self._reserve),
                 "used": dict(self._used),
                 "active_reservations": len(self._reservations),
+                "envelope_source": self._envelope_source,
             }
 
 
@@ -1830,7 +1980,7 @@ class AttemptSandbox:
                     os.killpg(os.getpgid(target.pid), signal.SIGKILL)
             raise
 
-    def mount_dependency_tmpfs(self, path: Path) -> None:
+    def mount_dependency_tmpfs(self, path: Path, *, max_bytes: int | None = None) -> None:
         """Mount one exact task-owned tmpfs for dependency preparation.
 
         Dependency installers are Worker-controlled commands, but their
@@ -1841,6 +1991,9 @@ class AttemptSandbox:
 
         if sys.platform != "linux":
             raise SandboxError("sandbox_linux_target_required")
+        size = self.limits.tmp_bytes if max_bytes is None else min(max_bytes, self.limits.tmp_bytes)
+        if size < 1:
+            raise SandboxError("sandbox_workspace_tmpfs_prepare_failed")
         try:
             workspace_root = self.workspace.resolve(strict=True)
             target = Path(path).resolve(strict=False)
@@ -1861,7 +2014,7 @@ class AttemptSandbox:
                 str(target),
                 "tmpfs",
                 MS_NOSUID | MS_NODEV | MS_NOEXEC,
-                f"size={self.limits.tmp_bytes},mode=0700",
+                f"size={size},mode=0700",
             )
         except OSError as error:
             with suppress(OSError):
@@ -1941,9 +2094,11 @@ class AttemptSandbox:
         killed = self._killed
         if wait_seconds is None:
             wait_seconds = float(self.limits.cleanup_attempt_seconds)
-        if self._process is not None and self._process.poll() is None:
+        total_deadline = time.monotonic() + float(self.limits.cleanup_total_seconds)
+        process = self._process
+        if process is not None and process.poll() is None:
             try:
-                self.kill(self._process)
+                self.kill(process)
                 killed = True
             except SandboxError:
                 self._write_recovery_marker()
@@ -1955,26 +2110,33 @@ class AttemptSandbox:
                     killed=killed,
                     residue=True,
                 )
-        if self._process is not None:
-            try:
-                self._process.wait(timeout=wait_seconds)
-            except subprocess.TimeoutExpired:
-                self._write_recovery_marker()
-                return CleanupResult(
-                    "deferred",
-                    "sandbox_cleanup_failed",
-                    self.cgroup_name,
-                    self.mount_root.name,
-                    killed=killed,
-                    residue=True,
+        if process is not None:
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(
+                    timeout=min(float(wait_seconds), max(0.0, total_deadline - time.monotonic()))
                 )
         try:
-            for _ in range(20):
-                if _is_empty(self.cgroup / "cgroup.procs"):
+            while True:
+                process_alive = process is not None and process.poll() is None
+                if _is_empty(self.cgroup / "cgroup.procs") and not process_alive:
                     break
-                time.sleep(0.05)
-            else:
-                raise SandboxError("sandbox_cleanup_failed")
+                remaining = total_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SandboxError("sandbox_cleanup_failed")
+                # cgroup.kill is deliberately repeated after the helper has
+                # exited as well: a previous timeout can leave a descendant
+                # (or a zombie awaiting the helper's reap) in the Attempt.
+                try:
+                    self.kill(process)
+                    killed = True
+                except SandboxError:
+                    raise
+                if process_alive:
+                    assert process is not None
+                    with suppress(subprocess.TimeoutExpired):
+                        process.wait(timeout=min(0.05, remaining))
+                else:
+                    time.sleep(min(0.05, remaining))
             if self._dependency_tmpfs is not None:
                 _unmount(str(self._dependency_tmpfs))
                 self._dependency_tmpfs = None

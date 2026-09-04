@@ -16,7 +16,12 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import uuid
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -787,32 +792,475 @@ def run_cache_probe(root: Path) -> dict[str, object]:
     }
 
 
-def run_budget_probe(config: sandbox.SandboxConfig) -> dict[str, object]:
-    """Verify two full Worker slots cannot consume the Agent reserve."""
-    budget = sandbox.ResourceBudget.for_worker(config, slots=2)
-    limits = sandbox.validate_resource_profile(
-        profile(
-            memory_bytes=config.memory_bytes,
-            pids=config.pids,
-            tmp_bytes=config.tmp_bytes,
-            nofile=config.nofile,
-        ),
-        config,
+def _control_health_sample() -> dict[str, object]:
+    """Exercise the Control health read path without exposing credentials."""
+    base_url = os.environ.get("DLR_CONTROL_URL", "http://control:8000").rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{base_url}/api/health", timeout=2) as response:
+            body = json.loads(response.read(64 * 1024).decode("utf-8"))
+            return {
+                "http_status": response.status,
+                "status": body.get("status") if isinstance(body, dict) else None,
+                "database": body.get("database") if isinstance(body, dict) else None,
+                "rabbitmq": body.get("rabbitmq") if isinstance(body, dict) else None,
+                "outbox": body.get("outbox") if isinstance(body, dict) else None,
+            }
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError, UnicodeError) as error:
+        return {"http_status": None, "error": type(error).__name__}
+
+
+def _control_api_request(
+    method: str,
+    path: str,
+    payload: object | None = None,
+    *,
+    expected: int = 200,
+    timeout: float = 5,
+) -> object:
+    """Call one authenticated Control API endpoint without exposing tokens."""
+    token = os.environ.get("DLR_ADMIN_TOKEN")
+    if not token:
+        raise AssertionError("actual Agent pressure proof requires the Control admin token")
+    base_url = os.environ.get("DLR_CONTROL_URL", "http://control:8000").rstrip("/")
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(f"{base_url}/api{path}", data=body, method=method)
+    request.add_header("Authorization", f"Bearer {token}")
+    if body is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.status
+            raw = response.read(64 * 1024)
+    except urllib.error.HTTPError as error:
+        status = error.code
+        raw = error.read(64 * 1024)
+    try:
+        result = json.loads(raw.decode("utf-8")) if raw else None
+    except (UnicodeError, ValueError) as error:
+        raise AssertionError(f"Control API returned invalid JSON for {method} {path}") from error
+    if status != expected:
+        raise AssertionError(f"Control API {method} {path} returned HTTP {status}")
+    return result
+
+
+def _healthy_runtime_sample(sample: dict[str, object]) -> bool:
+    """Require DB, RabbitMQ repair/ingress and Outbox health during pressure."""
+    rabbitmq = sample.get("rabbitmq")
+    outbox = sample.get("outbox")
+    if not isinstance(rabbitmq, dict) or not isinstance(outbox, dict):
+        return False
+    repair = rabbitmq.get("repair")
+    ingress = rabbitmq.get("ingress")
+    return (
+        sample.get("http_status") == 200
+        and sample.get("status") == "ok"
+        and sample.get("database") is True
+        and outbox.get("status") == "ok"
+        and isinstance(repair, dict)
+        and repair.get("ready") is True
+        and isinstance(ingress, dict)
+        and ingress.get("ready") is True
     )
-    first = budget.try_reserve(limits)
-    second = budget.try_reserve(limits)
-    third = budget.try_reserve(limits)
-    assert first is not None and second is not None and third is None
-    snapshot = budget.snapshot()
-    assert snapshot["used"]["memory"] == config.memory_bytes * 2
-    assert snapshot["agent_reserve"]["memory"] > 0
-    budget.release(first)
-    budget.release(second)
-    assert budget.snapshot()["active_reservations"] == 0
+
+
+def _wait_for_actual_agent() -> tuple[dict[str, object], dict[str, object]]:
+    """Wait for the actual v3 Agent and complete RabbitMQ topology readiness."""
+    worker_name = os.environ.get("DLR_WORKER_NAME", "worker-1")
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        workers = _control_api_request("GET", "/workers")
+        sample = _control_health_sample()
+        if isinstance(workers, list):
+            for worker in workers:
+                if (
+                    isinstance(worker, dict)
+                    and worker.get("name") == worker_name
+                    and worker.get("status") == "online"
+                    and worker.get("protocol_version") == 3
+                    and worker.get("rabbitmq_execution_v3") is True
+                    and _healthy_runtime_sample(sample)
+                ):
+                    return worker, sample
+        time.sleep(0.5)
+    raise AssertionError("actual Compose Agent/RabbitMQ runtime did not become ready")
+
+
+def _create_actual_pressure_execution(
+    suffix: str,
+    worker_id: int,
+    language: str,
+    code: str,
+) -> tuple[int, int]:
+    """Create one task-owned canary Adapter and its queued v3 Execution."""
+    adapter = _control_api_request(
+        "POST",
+        "/adapters",
+        {
+            "name": f"dlr-b3-f3-{suffix}",
+            "description": "Issue 130 B3 actual Agent pressure proof",
+            "language": language,
+            "adapter_type": "task",
+            "timeout_seconds": 8,
+        },
+        expected=201,
+    )
+    if not isinstance(adapter, dict) or not isinstance(adapter.get("id"), int):
+        raise AssertionError("Control did not return an Adapter id for the pressure proof")
+    adapter_id = int(adapter["id"])
+    version = _control_api_request(
+        "POST",
+        f"/adapters/{adapter_id}/versions",
+        {"code": code, "requirements": "", "runtime_config": {}},
+        expected=201,
+    )
+    if not isinstance(version, dict) or not isinstance(version.get("id"), int):
+        raise AssertionError("Control did not return a Version id for the pressure proof")
+    selected = _control_api_request(
+        "PATCH",
+        f"/adapters/{adapter_id}",
+        {"runtime_worker_id": worker_id},
+    )
+    if not isinstance(selected, dict) or selected.get("runtime_worker_id") != worker_id:
+        raise AssertionError("Control did not bind the pressure Adapter to the actual Worker")
+    execution = _control_api_request(
+        "POST",
+        f"/adapters/{adapter_id}/executions/canary",
+        {"input": {"source": "issue130-b3-f3"}},
+        expected=202,
+    )
+    if not isinstance(execution, dict) or not isinstance(execution.get("id"), int):
+        raise AssertionError("Control did not return an Execution id for the pressure proof")
+    if execution.get("dispatch_backend") != "rabbitmq" or execution.get("status") != "queued":
+        raise AssertionError("actual pressure Execution did not enter the RabbitMQ queue")
+    return adapter_id, int(execution["id"])
+
+
+def run_actual_agent_pressure_probe(
+    root: Path,
+    envelope: dict[str, object],
+    configured_slots: int,
+) -> dict[str, object]:
+    """Drive real Agent Attempts through Control/RabbitMQ under all-slot pressure."""
+    worker, ready_sample = _wait_for_actual_agent()
+    worker_id = worker.get("id")
+    if not isinstance(worker_id, int):
+        raise AssertionError("actual Agent readiness response did not include a Worker id")
+    if configured_slots < 2:
+        raise AssertionError("actual Agent pressure proof requires at least two slots")
+    specs = [
+        ("python", "cpu", PYTHON_FAULTS["cpu"]),
+        ("javascript", "cpu", JAVASCRIPT_FAULTS["cpu"]),
+        (
+            "python",
+            "memory",
+            "import time\ndef handle(context, input):\n"
+            "    blocks = [bytearray(8 * 1024 * 1024) for _ in range(3)]\n"
+            "    for block in blocks:\n"
+            "        for offset in range(0, len(block), 4096): block[offset] = 1\n"
+            "    while True: time.sleep(0.1)\n",
+        ),
+        (
+            "java",
+            "memory",
+            "import java.util.ArrayList;\n"
+            "import java.util.Arrays;\n"
+            "import java.util.List;\n"
+            "public class Adapter {\n"
+            "  public Object handle(Context context, Object input) throws Exception {\n"
+            "    List<byte[]> blocks = new ArrayList<>();\n"
+            "    for (int index = 0; index < 3; index++) {\n"
+            "      byte[] block = new byte[8 * 1024 * 1024];\n"
+            "      Arrays.fill(block, (byte) 1); blocks.add(block);\n"
+            "    }\n"
+            "    while (true) Thread.sleep(100);\n"
+            "  }\n"
+            "}\n",
+        ),
+    ]
+    selected_specs = [specs[index % len(specs)] for index in range(configured_slots)]
+    execution_rows: list[dict[str, object]] = []
+    for index, (language, kind, code) in enumerate(selected_specs, start=1):
+        adapter_id, execution_id = _create_actual_pressure_execution(
+            f"{os.getpid()}-{uuid.uuid4().hex[:10]}-{index}", worker_id, language, code
+        )
+        execution_rows.append(
+            {
+                "adapter_id": adapter_id,
+                "execution_id": execution_id,
+                "language": language,
+                "kind": kind,
+                "status_history": [],
+                "attempt_status_history": [],
+                "lease_expiries": [],
+                "attempt_ids": [],
+                "attempts": [],
+                "resource_profile": None,
+            }
+        )
+
+    health_samples = [ready_sample]
+    heartbeat_values: list[object] = []
+    started_at = time.monotonic()
+    cancel_row: dict[str, object] | None = None
+    cancel_response: dict[str, object] | None = None
+    deadline = started_at + 45
+    terminal_statuses = {
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "worker_lost",
+        "resource_exceeded",
+    }
+    while time.monotonic() < deadline:
+        workers = _control_api_request("GET", "/workers")
+        if isinstance(workers, list):
+            current_worker = next(
+                (
+                    item
+                    for item in workers
+                    if isinstance(item, dict) and item.get("id") == worker_id
+                ),
+                None,
+            )
+            if isinstance(current_worker, dict):
+                heartbeat_values.append(current_worker.get("last_heartbeat"))
+        sample = _control_health_sample()
+        health_samples.append(sample)
+        for row in execution_rows:
+            execution = _control_api_request("GET", f"/executions/{row['execution_id']}")
+            detail = _control_api_request(
+                "GET", f"/executions/{row['execution_id']}/reliable-detail"
+            )
+            if not isinstance(execution, dict) or not isinstance(detail, dict):
+                raise AssertionError("Control returned malformed actual pressure state")
+            status = execution.get("status")
+            if status not in row["status_history"]:
+                row["status_history"].append(status)
+            if row["resource_profile"] is None:
+                row["resource_profile"] = execution.get("resource_profile_snapshot")
+            attempts = detail.get("attempts")
+            if not isinstance(attempts, list):
+                raise AssertionError("reliable detail did not include Attempt rows")
+            for attempt in attempts:
+                if not isinstance(attempt, dict):
+                    continue
+                attempt_id = attempt.get("id")
+                if isinstance(attempt_id, int) and attempt_id not in row["attempt_ids"]:
+                    row["attempt_ids"].append(attempt_id)
+                attempt_status = attempt.get("status")
+                if attempt_status not in row["attempt_status_history"]:
+                    row["attempt_status_history"].append(attempt_status)
+                lease = attempt.get("lease_expires_at")
+                if lease not in row["lease_expiries"]:
+                    row["lease_expiries"].append(lease)
+                if attempt_status in terminal_statuses:
+                    row["attempts"] = attempts
+            if (
+                cancel_row is None
+                and "running" in row["attempt_status_history"]
+                and time.monotonic() - started_at >= 2.0
+            ):
+                cancel_row = row
+                cancel_response = _control_api_request(
+                    "POST", f"/executions/{row['execution_id']}/cancel"
+                )
+        all_terminal = all(
+            row["attempts"]
+            and all(
+                isinstance(attempt, dict) and attempt.get("status") in terminal_statuses
+                for attempt in row["attempts"]
+            )
+            for row in execution_rows
+        )
+        if all_terminal:
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError(
+            {
+                "error": "actual Agent pressure Attempts did not reach terminal cleanup",
+                "attempts": [
+                    {
+                        "execution_id": row["execution_id"],
+                        "language": row["language"],
+                        "kind": row["kind"],
+                        "status_history": row["status_history"],
+                        "attempt_status_history": row["attempt_status_history"],
+                        "attempt_ids": row["attempt_ids"],
+                        "lease_expiry_samples": len(row["lease_expiries"]),
+                    }
+                    for row in execution_rows
+                ],
+                "healthy_samples": sum(
+                    1 for sample in health_samples if _healthy_runtime_sample(sample)
+                ),
+                "heartbeat_samples": len(heartbeat_values),
+            }
+        )
+
+    assert cancel_row is not None and isinstance(cancel_response, dict), {
+        "cancelled": cancel_row,
+        "response": cancel_response,
+    }
+    assert any(
+        "cancelled" in row["attempt_status_history"] for row in execution_rows
+    ), execution_rows
+    assert any(
+        set(row["attempt_status_history"]) & {"timed_out", "resource_exceeded"}
+        for row in execution_rows
+    ), execution_rows
+    running_rows = [
+        row for row in execution_rows if "running" in row["attempt_status_history"]
+    ]
+    assert running_rows and any(
+        len(row["lease_expiries"]) >= 2 for row in running_rows
+    ), execution_rows
+    healthy_samples = [sample for sample in health_samples if _healthy_runtime_sample(sample)]
+    assert len(healthy_samples) >= 3, health_samples
+    unique_heartbeats = {value for value in heartbeat_values if value is not None}
+    assert len(unique_heartbeats) >= 2, heartbeat_values
+    for row in execution_rows:
+        assert row["attempts"], row
+        assert all(
+            isinstance(attempt, dict)
+            and isinstance(attempt.get("cleanup_summary"), dict)
+            and attempt["cleanup_summary"].get("workspace_cleanup_status") == "completed"
+            for attempt in row["attempts"]
+        ), row
+        profile_snapshot = row["resource_profile"]
+        assert isinstance(profile_snapshot, dict), row
+        assert profile_snapshot.get("backend") == "cgroup_v2", row
+    return {
+        "worker_id": worker_id,
+        "configured_slots": configured_slots,
+        "verified_envelope": envelope,
+        "attempts": [
+            {
+                "execution_id": row["execution_id"],
+                "adapter_id": row["adapter_id"],
+                "language": row["language"],
+                "kind": row["kind"],
+                "status_history": row["status_history"],
+                "attempt_status_history": row["attempt_status_history"],
+                "attempt_ids": row["attempt_ids"],
+                "lease_expiry_samples": len(row["lease_expiries"]),
+                "cleanup_completed": True,
+                "resource_profile": row["resource_profile"],
+            }
+            for row in execution_rows
+        ],
+        "heartbeat_samples": len(heartbeat_values),
+        "heartbeat_updates": len(unique_heartbeats) - 1,
+        "control_health_samples": len(health_samples),
+        "healthy_control_database_rabbitmq_outbox_samples": len(healthy_samples),
+        "cancel_requested_and_reported": True,
+        "renewed_and_reported": True,
+        "aggregate_envelope_tied_to_profiles": True,
+    }
+
+
+def run_budget_probe(root: Path, config: sandbox.SandboxConfig) -> dict[str, object]:
+    """Use the observed unit envelope while all configured slots are busy."""
+    slots_raw = os.environ.get("DLR_WORKER_EXECUTION_SLOTS", "4")
+    try:
+        slots = int(slots_raw)
+    except ValueError as error:
+        raise AssertionError("worker execution slots must be an integer") from error
+    if slots < 2:
+        raise AssertionError("all-slots pressure proof requires at least two configured slots")
+    envelope = sandbox.read_verified_resource_envelope(config)
+    budget = sandbox.ResourceBudget.from_verified_envelope(config, slots=slots, envelope=envelope)
+    base_specs = (
+        ("python", "cpu", PYTHON_FAULTS["cpu"], profile(timeout=3)),
+        ("javascript", "cpu", JAVASCRIPT_FAULTS["cpu"], profile(timeout=3)),
+        ("python", "memory", PYTHON_FAULTS["memory"], profile(timeout=5, memory_bytes=64 * MIB)),
+        ("java", "memory", java_fault("memory"), profile(timeout=5, memory_bytes=64 * MIB)),
+    )
+    specs = [base_specs[index % len(base_specs)] for index in range(slots)]
+    reservations: list[sandbox.ResourceReservation] = []
+    reservation_limits: list[sandbox.ResourceLimits] = []
+    for _language, _kind, _code, limits_profile in specs:
+        limits = sandbox.validate_resource_profile(limits_profile, config)
+        reservation = budget.try_reserve(limits)
+        if reservation is None:
+            raise AssertionError("verified envelope rejected a configured slot reservation")
+        reservation_limits.append(limits)
+        reservations.append(reservation)
+    assert budget.try_reserve(reservation_limits[0]) is None
+    pressure_results: list[dict[str, object]] = []
+    health_samples: list[dict[str, object]] = []
+    barrier = threading.Barrier(slots)
+    started = [threading.Event() for _ in specs]
+
+    def execute(index: int, item: tuple[str, str, str, dict[str, object]]) -> dict[str, object]:
+        language, kind, code, limits_profile = item
+        barrier.wait(timeout=10)
+
+        def observe(_stdout: str, _stderr: str) -> bool:
+            started[index].set()
+            return False
+
+        result = run_one(
+            root / "budget" / f"slot-{index + 1}",
+            config,
+            language,
+            code,
+            7810 + index,
+            8810 + index,
+            timeout=int(limits_profile["execution_timeout_seconds"]),
+            progress_callback=observe,
+            resource_profile=limits_profile,
+        )
+        return {
+            "slot": index + 1,
+            "language": language,
+            "kind": kind,
+            "status": result["status"],
+            "error_code": result.get("error_code"),
+            "cleanup": result["cleanup_summary"]["sandbox"],
+        }
+
+    try:
+        with ThreadPoolExecutor(max_workers=slots, thread_name_prefix="b3-budget") as pool:
+            futures = [pool.submit(execute, index, item) for index, item in enumerate(specs)]
+            while not all(future.done() for future in futures):
+                health_samples.append(_control_health_sample())
+                time.sleep(0.1)
+            pressure_results = [future.result() for future in futures]
+    finally:
+        for reservation in reservations:
+            budget.release(reservation)
+    assert all(event.is_set() for event in started), "not every pressure Attempt started"
+    assert all(
+        result["status"] in {"timeout", "resource_exceeded", "failed"}
+        for result in pressure_results
+    ), pressure_results
+    assert health_samples, "Control health was not sampled during pressure"
+    healthy_samples = [
+        sample
+        for sample in health_samples
+        if sample.get("http_status") == 200
+        and sample.get("status") == "ok"
+        and sample.get("database") is True
+    ]
+    assert healthy_samples, health_samples
+    final_snapshot = budget.snapshot()
+    assert final_snapshot["active_reservations"] == 0
+    actual_agent = run_actual_agent_pressure_probe(
+        root / "actual-agent-pressure", envelope.as_dict(), slots
+    )
     return {
         "ResourceBudget": True,
-        "two_slots": True,
-        "agent_reserve": snapshot["agent_reserve"],
+        "verified_envelope": envelope.as_dict(),
+        "configured_slots": slots,
+        "concurrent_pressure_attempts": pressure_results,
+        "all_slots_started": True,
+        "agent_reserve": final_snapshot["agent_reserve"],
+        "control_health_samples": len(health_samples),
+        "control_healthy_during_pressure": len(healthy_samples),
+        "reservations_released": final_snapshot["active_reservations"] == 0,
+        "actual_agent": actual_agent,
     }
 
 
@@ -1103,6 +1551,17 @@ def main() -> int:
         result = run_one(
             root / language, config, language, code, 7300 + offset, 8300 + offset
         )
+        if "output" not in result:
+            raise AssertionError(
+                {
+                    "language": language,
+                    "status": result.get("status"),
+                    "error_code": result.get("error_code"),
+                    "error": result.get("error"),
+                    "stdout": result.get("stdout", ""),
+                    "cleanup": result.get("cleanup_summary"),
+                }
+            )
         output = result["output"]
         assert all(
             output[key] is True
@@ -1198,7 +1657,7 @@ def main() -> int:
 
     dependency = run_dependency_probe(root, config)
     cache = run_cache_probe(root)
-    budget = run_budget_probe(config)
+    budget = run_budget_probe(root, config)
     recovery = run_recovery_probe(root, config)
 
     crash = run_one(

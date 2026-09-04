@@ -710,7 +710,6 @@ def _wait_with_progress(
             kill_callback()
         except Exception:  # noqa: BLE001 - process-group fallback is bounded
             logger.warning("sandbox kill request failed; terminating its process group")
-        if process.poll() is None:
             _kill_process_group(process)
 
     process_stdout = getattr(process, "stdout", None)
@@ -773,7 +772,12 @@ def _wait_with_progress(
             if process.poll() is None:
                 with suppress(subprocess.TimeoutExpired):
                     process.wait(timeout=0.2)
-            if process.poll() is None:
+            # A sandbox callback kills the payload cgroup, not the helper's
+            # process group.  The helper must stay alive long enough to reap
+            # the PID-namespace child, copy bounded output, and unmount its
+            # private filesystems.  Killing the helper here can orphan a
+            # cgroup zombie and make the exact Attempt cleanup impossible.
+            if process.poll() is None and kill_callback is None:
                 _kill_process_group(process)
             drain_ready()
 
@@ -1257,7 +1261,10 @@ def run(
                 recovery_root=cleanup_journal_root / "sandbox-recovery",
             )
             dependency_tmp = layout.temp / ".dependency-tmp"
-            sandbox_attempt.mount_dependency_tmpfs(dependency_tmp)
+            sandbox_attempt.mount_dependency_tmpfs(
+                dependency_tmp,
+                max_bytes=venv_manager.CACHE_RESERVATION_BYTES,
+            )
             dependency_context = venv_manager.DependencyExecutionContext(
                 cgroup_path=sandbox_attempt.cgroup,
                 tmpdir=dependency_tmp,

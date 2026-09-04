@@ -115,6 +115,8 @@ require_runbook_literal() {
 }
 
 require_runbook_literal '--property=Delegate=yes'
+require_runbook_literal '--property=CPUQuota=500%'
+require_runbook_literal '--property=MemoryMax=5G'
 require_runbook_literal '--property=TasksMax=infinity'
 require_runbook_literal "--property='CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID'"
 require_runbook_literal '--expand-environment=no'
@@ -124,18 +126,21 @@ if grep -Fq -- 'AmbientCapabilities=' "$runbook"; then
 fi
 require_runbook_literal 'root:root'
 require_runbook_literal 'owner access is sufficient'
-require_runbook_literal 'AGENT="$CONTROL_GROUP/agent"'
+require_runbook_literal 'CONTROL_GROUP="$CGROUP_REL"'
+require_runbook_literal 'CGROUPFS_ROOT=/sys/fs/cgroup'
+require_runbook_literal 'PARENT="$CGROUPFS_ROOT$CONTROL_GROUP"'
+require_runbook_literal 'AGENT="$PARENT/agent"'
 require_runbook_literal 'mkdir -p "$AGENT"'
 require_runbook_literal 'printf "%s\\n" "$$" > "$AGENT/cgroup.procs"'
-require_runbook_literal 'test -z "$(cat "$CONTROL_GROUP/cgroup.procs")"'
+require_runbook_literal 'test -z "$(cat "$PARENT/cgroup.procs")"'
 require_runbook_literal 'grep -qx "$$" "$AGENT/cgroup.procs"'
-require_runbook_literal 'test -w "$CONTROL_GROUP/cgroup.procs"'
-require_runbook_literal 'printf "+cpu +memory +pids\\n" > "$CONTROL_GROUP/cgroup.subtree_control"'
-require_runbook_literal 'SUBTREE_CONTROL=$(cat "$CONTROL_GROUP/cgroup.subtree_control")'
+require_runbook_literal 'test -w "$PARENT/cgroup.procs"'
+require_runbook_literal 'printf "+cpu +memory +pids\\n" > "$PARENT/cgroup.subtree_control"'
+require_runbook_literal 'SUBTREE_CONTROL=$(cat "$PARENT/cgroup.subtree_control")'
 require_runbook_literal 'for controller in cpu memory pids; do'
-require_runbook_literal 'ATTEMPT="$CONTROL_GROUP/attempt"'
+require_runbook_literal 'ATTEMPT="$PARENT/attempt"'
 require_runbook_literal 'mkdir -p "$ATTEMPT"'
-require_runbook_literal 'test "$(dirname "$ATTEMPT")" = "$CONTROL_GROUP"'
+require_runbook_literal 'test "$(dirname "$ATTEMPT")" = "$PARENT"'
 require_runbook_literal 'for interface in cpu.max memory.max memory.swap.max pids.max; do'
 require_runbook_literal 'test -r "$ATTEMPT/$interface"'
 require_runbook_literal 'test -w "$ATTEMPT/$interface"'
@@ -150,13 +155,17 @@ require_runbook_literal 'test "$(cat "$ATTEMPT/pids.max")" = "64"'
 require_runbook_literal 'printf "%s\\n" "$BASHPID" > "$ATTEMPT/cgroup.procs"'
 require_runbook_literal 'WORKLOAD_PID=$!'
 require_runbook_literal 'grep -qx "$WORKLOAD_PID" "$ATTEMPT/cgroup.procs"'
+require_runbook_literal 'kill "$WORKLOAD_PID"'
+require_runbook_literal 'wait "$WORKLOAD_PID" || true'
+require_runbook_literal 'test -z "$(cat "$ATTEMPT/cgroup.procs")"'
+require_runbook_literal 'rmdir "$ATTEMPT"'
+require_runbook_literal 'test ! -e "$ATTEMPT"'
 require_runbook_literal 'test -z "$(cat "$PARENT/cgroup.procs")"'
 require_runbook_literal 'grep -qx "$KEEPER_PID" "$PARENT/agent/cgroup.procs"'
 require_runbook_literal 'test "$(stat -c '\''%u:%g'\'' "$PARENT")" = 0:0'
 require_runbook_literal 'test "$(stat -c '\''%u:%g'\'' "$PARENT/cgroup.procs")" = 0:0'
 require_runbook_literal 'test -w "$PARENT/cgroup.procs"'
-require_runbook_literal 'test -n "$(cat "$PARENT/attempt/cgroup.procs")"'
-require_runbook_literal 'test -w "$PARENT/attempt/$interface"'
+require_runbook_literal 'test ! -e "$PARENT/attempt"'
 require_runbook_literal 'NO_NEW_PRIVS=$(awk '\''$1 == "NoNewPrivs:" { print $2; exit }'\'' /proc/self/status)'
 require_runbook_literal 'test "$NO_NEW_PRIVS" = 1'
 require_runbook_literal 'docker info --format '\''CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'\'''
@@ -183,10 +192,11 @@ require_runbook_literal 'normpath'
 require_runbook_literal 'runtime_root/workspaces/attempt-<attempt_id>/.dlr-sandbox-mount'
 require_runbook_literal 'runtime_root/dlr-preflight-<nonce>/.dlr-sandbox-mount'
 require_runbook_literal 'mode 为 `0700`'
-require_runbook_literal 'PARENT="$CONTROL_GROUP"'
-
-if grep -Fq 'PARENT=/sys/fs/cgroup$CONTROL_GROUP' "$runbook"; then
-  echo "runbook must not prepend cgroupfs to an already absolute ControlGroup" >&2
+require_runbook_literal '有限的 aggregate envelope'
+require_runbook_literal '`profile × slots` 伪造 deployment capacity'
+require_runbook_literal 'v3 Consumer 必须 fail closed'
+if grep -Eq 'CONTROL_GROUP=/sys/fs/cgroup|^[[:space:]]*PARENT="\$CONTROL_GROUP"$' "$runbook"; then
+  echo "runbook must keep logical ControlGroup separate from the host cgroupfs path" >&2
   exit 1
 fi
 
@@ -221,6 +231,10 @@ require_source_literal 'preflight_identity = cgroup_name or ('
 require_source_literal 'workspace.name'
 require_source_literal 'PREFLIGHT_CGROUP_NAME_PATTERN.fullmatch(preflight_identity)'
 require_source_literal 'CGROUP2_SUPER_MAGIC'
+require_source_literal 'class ResourceEnvelope:'
+require_source_literal 'def read_verified_resource_envelope(config: SandboxConfig) -> ResourceEnvelope:'
+require_source_literal 'def from_verified_envelope('
+require_source_literal 'sandbox_resource_envelope_insufficient'
 require_source_literal 'def _filesystem_magic(path: Path) -> int:'
 require_source_literal 'def _validated_hidden_cgroup_path('
 require_source_literal 'configured cgroup path is required'
@@ -351,6 +365,11 @@ require_runtime_literal 'output_too_large'
 require_runtime_literal 'dependency_timeout'
 require_runtime_literal 'cache_low_watermark'
 require_runtime_literal 'ResourceBudget'
+require_runtime_literal 'read_verified_resource_envelope'
+require_runtime_literal 'concurrent_pressure_attempts'
+require_runtime_literal 'all_slots_started'
+require_runtime_literal 'control_healthy_during_pressure'
+require_runtime_literal 'ThreadPoolExecutor'
 require_runtime_literal 'managed_input_read_only'
 require_runtime_literal 'positive_recovery'
 require_runtime_literal 'forged_marker_rejected'
@@ -367,7 +386,9 @@ require_runtime_literal 'crash'
 for test_name in \
   test_wait_with_progress_caps_the_physical_log_file \
   test_dependency_preparation_uses_attempt_cgroup_and_bounded_log \
-  test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size; do
+  test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size \
+  test_dependency_build_stages_inside_attempt_tmpfs_until_promotion \
+  test_live_version_build_renews_global_reservation_until_finish; do
   if ! grep -Fq -- "$test_name" "$runtime_unit_tests"; then
     echo "missing bounded runtime test: $test_name" >&2
     exit 1
@@ -384,6 +405,8 @@ for test_name in \
 done
 for test_name in \
   test_resource_budget_keeps_agent_reserve_when_all_slots_are_used \
+  test_verified_resource_budget_uses_deployment_envelope_for_all_slots \
+  test_verified_resource_budget_rejects_envelope_that_cannot_leave_all_slot_reserve \
   test_attempt_recovery_marker_removes_only_derived_mount \
   test_preflight_recovery_marker_removes_derived_mount; do
   if ! grep -Fq -- "$test_name" "$runtime_tests"; then
@@ -395,6 +418,16 @@ if ! grep -Fq 'test_dependency_logs_are_unified_and_ready_environments_skip_inst
   echo "missing three-language dependency/cache regression" >&2
   exit 1
 fi
+for test_name in \
+  test_worker_capability_is_hard_scheduling_constraint \
+  test_execution_rejects_workers_without_language_capability \
+  test_worker_registration_rejects_unknown_or_empty_capabilities \
+  test_single_compatible_worker_is_adopted_and_multiple_require_selection; do
+  if ! grep -Fq -- "$test_name" "$multilang_tests"; then
+    echo "missing required PostgreSQL scheduling regression: $test_name" >&2
+    exit 1
+  fi
+done
 
 if grep -Fq 'if exact_cgroup_mount.is_dir()' "$sandbox_source"; then
   echo "exact configured cgroup hide must not silently skip a missing target" >&2

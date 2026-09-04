@@ -256,6 +256,56 @@ def test_resource_budget_keeps_agent_reserve_when_all_slots_are_used() -> None:
     assert budget.snapshot()["used"] == {"cpu": 0, "memory": 0, "pids": 0, "tmp": 0}
 
 
+def test_verified_resource_budget_uses_deployment_envelope_for_all_slots() -> None:
+    config = _worker_config()
+    envelope = sandbox.ResourceEnvelope(
+        cpu_cores=2.25,
+        memory_bytes=2 * 1024 * MiB,
+        pids=300,
+        tmp_bytes=3 * 1024 * MiB,
+        source="delegated_cgroup_v2(cpu,memory);host_pid_max;tmp=memory.max",
+    )
+    budget = sandbox.ResourceBudget.from_verified_envelope(config, slots=2, envelope=envelope)
+    limits = sandbox.ResourceLimits(
+        cpu_cores=1.0,
+        memory_bytes=512 * MiB,
+        pids=128,
+        tmp_bytes=1 * 1024 * MiB,
+        nofile=64,
+        execution_timeout_seconds=20,
+    )
+
+    first = budget.try_reserve(limits)
+    second = budget.try_reserve(limits)
+    assert first is not None and second is not None
+    assert budget.try_reserve(limits) is None
+    snapshot = budget.snapshot()
+    assert snapshot["capacity"] == {
+        "cpu": 2.25,
+        "memory": 2 * 1024 * MiB,
+        "pids": 300,
+        "tmp": 3 * 1024 * MiB,
+    }
+    assert snapshot["envelope_source"] == envelope.source
+    budget.release(first)
+    budget.release(second)
+    assert budget.snapshot()["active_reservations"] == 0
+
+
+def test_verified_resource_budget_rejects_envelope_that_cannot_leave_all_slot_reserve() -> None:
+    config = _worker_config()
+    envelope = sandbox.ResourceEnvelope(
+        cpu_cores=2.0,
+        memory_bytes=2 * 1024 * MiB,
+        pids=300,
+        tmp_bytes=3 * 1024 * MiB,
+        source="delegated_cgroup_v2",
+    )
+    with pytest.raises(sandbox.SandboxError) as error:
+        sandbox.ResourceBudget.from_verified_envelope(config, slots=2, envelope=envelope)
+    assert error.value.code == "sandbox_resource_envelope_insufficient"
+
+
 def test_v3_payload_snapshots_are_required_to_match_the_queued_profile() -> None:
     config = _worker_config()
     profile = _profile()

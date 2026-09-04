@@ -3,7 +3,7 @@
 from collections.abc import Iterator
 from typing import Annotated, Any, BinaryIO
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -261,7 +261,7 @@ def report_cleanup(
 def claim_v3(
     request: Request,
     worker_id: int,
-    payload: Any,
+    payload: Annotated[Any, Body(...)],
     session: DbSession,
 ) -> ClaimDecision:
     """Claim one RabbitMQ delivery through the closed v3 decision contract."""

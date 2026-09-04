@@ -80,6 +80,7 @@ def prepare_version_node(
                 adapter_id,
                 version_id,
                 identity=identity,
+                dependency_context=dependency_context,
             )
         except CacheError as error:
             raise venv.DependencyPreparationError("version cache is unavailable", "") from error

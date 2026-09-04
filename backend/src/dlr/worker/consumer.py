@@ -28,6 +28,17 @@ from dlr.worker.client import ClientError, ControlClient, ControlUnavailableErro
 logger = logging.getLogger("dlr.worker.consumer")
 
 
+def _client_error_code(error: ClientError) -> str:
+    """Extract only a bounded machine code from a Control error response."""
+    try:
+        body = json.loads(error.body)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return "unknown"
+    detail = body.get("detail") if isinstance(body, Mapping) else None
+    code = detail.get("code") if isinstance(detail, Mapping) else None
+    return code if isinstance(code, str) and code else "unknown"
+
+
 def _is_successful_attempt_action(response: object, *, attempt_id: int, reason: str) -> bool:
     """Accept only the exact Control acknowledgement for one action."""
     return (
@@ -36,6 +47,17 @@ def _is_successful_attempt_action(response: object, *, attempt_id: int, reason: 
         and response.get("reason") == reason
         and response.get("attempt_id") == attempt_id
         and response.get("cancel_requested") is False
+    )
+
+
+def _is_cancel_requested_action(response: object, *, attempt_id: int) -> bool:
+    """Recognize Control's cancellation acknowledgement without losing ownership."""
+    return (
+        isinstance(response, Mapping)
+        and response.get("decision") == "ACK_NOOP"
+        and response.get("reason") == "cancel_requested"
+        and response.get("attempt_id") == attempt_id
+        and response.get("cancel_requested") is True
     )
 
 
@@ -74,11 +96,22 @@ class V3Consumer:
         self._pause = threading.Event()
         self._slots = threading.BoundedSemaphore(config.execution_slots)
         sandbox_config = getattr(runtime_settings, "sandbox_config", None)
-        self._resource_budget = (
-            sandbox.ResourceBudget.for_worker(sandbox_config, config.execution_slots)
-            if sandbox_config is not None
-            else None
-        )
+        if sandbox_config is None:
+            self._resource_budget = None
+        elif sandbox_config.cgroup_path is None:
+            # Keep the explicit legacy/unit-test seam.  A production v3
+            # Worker always has a delegated path and must use observed
+            # deployment capacity below.
+            self._resource_budget = sandbox.ResourceBudget.for_worker(
+                sandbox_config, config.execution_slots
+            )
+        else:
+            envelope = sandbox.read_verified_resource_envelope(sandbox_config)
+            self._resource_budget = sandbox.ResourceBudget.from_verified_envelope(
+                sandbox_config,
+                config.execution_slots,
+                envelope,
+            )
         self._pool = ThreadPoolExecutor(
             max_workers=config.execution_slots,
             thread_name_prefix="dlr-v3-attempt",
@@ -104,7 +137,7 @@ class V3Consumer:
                     )
                     channel.basic_consume(
                         queue=self._config.queue,
-                        on_message_callback=partial(self._on_delivery, connection, channel),
+                        on_message_callback=partial(self._on_delivery, connection),
                         auto_ack=False,
                     )
                     backoff = 1.0
@@ -169,7 +202,13 @@ class V3Consumer:
                 decoded = {}
             try:
                 decision = self._client.claim_v3(self._config.worker_id, decoded)
-            except (ControlUnavailableError, ClientError):
+            except (ControlUnavailableError, ClientError) as error:
+                if isinstance(error, ClientError):
+                    logger.warning(
+                        "v3 Claim rejected by Control: status=%s code=%s",
+                        error.status,
+                        _client_error_code(error),
+                    )
                 self._request_pause(connection, channel)
                 return
             kind = decision.get("decision")
@@ -364,6 +403,7 @@ class V3Consumer:
                 return
             renew_stop = threading.Event()
             ownership_lost = threading.Event()
+            cancel_requested = threading.Event()
 
             def renew_loop() -> None:
                 while not renew_stop.wait(payload.renew_seconds):
@@ -382,6 +422,9 @@ class V3Consumer:
                             attempt_id=payload.attempt_id,
                             reason="renewed",
                         ):
+                            if _is_cancel_requested_action(response, attempt_id=payload.attempt_id):
+                                cancel_requested.set()
+                                return
                             ownership_lost.set()
                             return
                     except (ControlUnavailableError, ClientError):
@@ -392,6 +435,8 @@ class V3Consumer:
             renew_thread.start()
 
             def progress(stdout_chunk: str, stderr_chunk: str) -> bool:
+                if cancel_requested.is_set():
+                    return True
                 if ownership_lost.is_set():
                     return True
                 try:
@@ -411,6 +456,9 @@ class V3Consumer:
                         attempt_id=payload.attempt_id,
                         reason="progressed",
                     ):
+                        if _is_cancel_requested_action(result, attempt_id=payload.attempt_id):
+                            cancel_requested.set()
+                            return True
                         ownership_lost.set()
                         return True
                     return False
@@ -445,6 +493,14 @@ class V3Consumer:
                 renew_stop.set()
             if ownership_lost.is_set():
                 return
+            if cancel_requested.is_set() and result.get("status") != "cancelled":
+                result = {
+                    **result,
+                    "status": "cancelled",
+                    "error": "execution cancelled",
+                    "error_code": "execution_cancelled",
+                    "error_class": "cancelled",
+                }
             status = result.get("status")
             if status == "timeout":
                 status = "timed_out"

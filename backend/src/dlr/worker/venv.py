@@ -26,7 +26,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 from urllib import parse as url_parse
@@ -57,7 +57,8 @@ _DEPENDENCY_READ_CHUNK = 64 * 1024
 
 _build_locks: dict[tuple[int, int], threading.Lock] = {}
 _build_locks_guard = threading.Lock()
-_CACHE_RESERVATION_BYTES = 256 * 1024 * 1024
+CACHE_RESERVATION_BYTES = 256 * 1024 * 1024
+_CACHE_RESERVATION_BYTES = CACHE_RESERVATION_BYTES
 
 _URI_USERINFO_PATTERN = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#@]+@")
 
@@ -397,18 +398,79 @@ class _VersionBuild:
     staging: Path
     target: Path
     reservation: CacheReservation
+    staging_root: Path | None = None
+    _lease_stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _lease_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        interval = max(0.05, min(self.reservation.ttl_seconds / 3, 30.0))
+
+        def renew_while_live() -> None:
+            while not self._lease_stop.wait(interval):
+                try:
+                    self.reservation.renew()
+                except cache.CacheError:
+                    logger.warning("version cache reservation lease was lost")
+                    return
+
+        self._lease_thread = threading.Thread(
+            target=renew_while_live,
+            name="dlr-cache-reservation",
+            daemon=True,
+        )
+        self._lease_thread.start()
+
+    def _stop_lease(self) -> None:
+        self._lease_stop.set()
+        if self._lease_thread is not None and self._lease_thread is not threading.current_thread():
+            self._lease_thread.join(timeout=1.0)
+
+    def _remove_tmpfs_staging(self) -> None:
+        if self.staging_root is None:
+            self.cache.remove_staging(self.staging)
+            return
+        try:
+            root = self.staging_root.resolve(strict=True)
+            candidate = self.staging.resolve(strict=False)
+            if (
+                not root.is_dir()
+                or candidate.parent != root
+                or candidate.name.startswith(".")
+                or candidate.is_symlink()
+            ):
+                raise cache.CacheError("cache_staging_invalid")
+            if candidate.exists():
+                shutil.rmtree(candidate)
+            with suppress(OSError):
+                root.rmdir()
+        except cache.CacheError:
+            raise
+        except OSError as error:
+            raise cache.CacheError("cache_staging_cleanup_failed") from error
 
     def finish(self, identity: Mapping[str, object]) -> Path:
-        return self.cache.promote(
-            self.staging,
-            self.target,
-            identity=identity,
-            reservation=self.reservation,
-        )
+        try:
+            if self.staging_root is None:
+                return self.cache.promote(
+                    self.staging,
+                    self.target,
+                    identity=identity,
+                    reservation=self.reservation,
+                )
+            return self.cache.promote_from_tmpfs(
+                self.staging,
+                self.target,
+                identity=identity,
+                reservation=self.reservation,
+            )
+        finally:
+            self._stop_lease()
+            self._remove_tmpfs_staging()
 
     def abort(self) -> None:
+        self._stop_lease()
         try:
-            self.cache.remove_staging(self.staging)
+            self._remove_tmpfs_staging()
         finally:
             self.reservation.release()
 
@@ -419,6 +481,7 @@ def _begin_version_build(
     version_id: int,
     *,
     identity: Mapping[str, object],
+    dependency_context: DependencyExecutionContext | None = None,
 ) -> tuple[VerifiedVersionCache, Path, _VersionBuild | None]:
     version_cache = VerifiedVersionCache(runtime_root / "version-cache")
     target = version_dir(runtime_root, adapter_id, version_id)
@@ -427,13 +490,35 @@ def _begin_version_build(
     if target.exists():
         version_cache.remove_entry(target)
     reservation = version_cache.reserve(_CACHE_RESERVATION_BYTES)
-    staging = version_cache.staging_path(f"{adapter_id}-{version_id}", reservation.token)
+    staging_root: Path | None = None
+    if dependency_context is None:
+        staging = version_cache.staging_path(f"{adapter_id}-{version_id}", reservation.token)
+    else:
+        staging_root = dependency_context.tmpdir / "version-builds"
+        try:
+            staging_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if staging_root.is_symlink():
+                raise OSError("dependency staging root must not be a symlink")
+            staging = staging_root / f"{adapter_id}-{version_id}-{reservation.token}"
+        except OSError as error:
+            reservation.release()
+            raise cache.CacheError("cache_staging_create_failed") from error
     try:
         staging.mkdir(mode=0o700)
     except OSError as error:
         reservation.release()
         raise cache.CacheError("cache_staging_create_failed") from error
-    return version_cache, target, _VersionBuild(version_cache, staging, target, reservation)
+    return (
+        version_cache,
+        target,
+        _VersionBuild(
+            version_cache,
+            staging,
+            target,
+            reservation,
+            staging_root,
+        ),
+    )
 
 
 def venv_python(directory: Path) -> Path:
@@ -658,6 +743,7 @@ def prepare_version_venv(
                 adapter_id,
                 version_id,
                 identity=identity,
+                dependency_context=dependency_context,
             )
         except cache.CacheError as error:
             raise DependencyPreparationError("version cache is unavailable", "") from error
