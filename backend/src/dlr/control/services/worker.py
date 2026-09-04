@@ -589,6 +589,14 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
         session.refresh(cleanup)
         return CleanupTaskPayload(cleanup_id=cleanup.id, adapter_id=cleanup.adapter_id)
 
+    if not settings.legacy_execution_claim_enabled:
+        session.rollback()
+        raise domain_error(
+            409,
+            "legacy_claim_disabled",
+            "Legacy Execution claim is disabled after reliable-runtime Cutover",
+        )
+
     lease_rejected_execution_ids: set[int] = set()
     expired_execution_ids: set[int] = set()
     while True:

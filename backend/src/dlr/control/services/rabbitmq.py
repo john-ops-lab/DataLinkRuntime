@@ -747,6 +747,24 @@ def inspect_topology_policies(worker_id: int) -> None:
     _assert_queue_policy(_fetch_queue_details(INFRASTRUCTURE_DLQ), infrastructure_queue_arguments())
 
 
+def infrastructure_dlq_observation() -> dict[str, int]:
+    """Read bounded, payload-free counters for the shared infrastructure DLQ."""
+
+    payload = _fetch_queue_details(INFRASTRUCTURE_DLQ)
+    _assert_queue_policy(payload, infrastructure_queue_arguments())
+    messages_ready = payload.get("messages_ready")
+    messages_unacknowledged = payload.get("messages_unacknowledged")
+    if not isinstance(messages_ready, int) or not isinstance(messages_unacknowledged, int):
+        raise RabbitMQTopologyError(
+            "RabbitMQ infrastructure DLQ counters are unavailable",
+            code="topology_unavailable",
+        )
+    return {
+        "messages_ready": max(0, messages_ready),
+        "messages_unacknowledged": max(0, messages_unacknowledged),
+    }
+
+
 def _fetch_feature_flags() -> frozenset[str]:
     """Read enabled feature flags through the internal management API."""
 

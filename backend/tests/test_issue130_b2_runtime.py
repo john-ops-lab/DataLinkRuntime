@@ -2052,7 +2052,7 @@ def test_dark_launch_inventory_and_pending_migration_converge_without_cutover(
     assert facts["dark_launch"]["ordinary_new_traffic_backend"] == "legacy"
     assert facts["dark_launch"]["old_active_index_present"] is True
     assert facts["dark_launch"]["legacy_claim_enabled"] is True
-    assert facts["sandbox_readiness"]["sandbox_gate"] == "not_run"
+    assert facts["sandbox_readiness"]["sandbox_gate"] == "not_passed"
     assert facts["sandbox_readiness"]["cutover_ready"] is False
 
     dry_run = api_client.post("/api/admin/reliable-runtime/migration/dry-run")

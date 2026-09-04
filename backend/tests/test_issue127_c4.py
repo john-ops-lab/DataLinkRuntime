@@ -47,7 +47,7 @@ def test_control_c4_settings_default_to_closed_and_bounded(
 @pytest.mark.parametrize(
     ("name", "low", "high"),
     [
-        ("DLR_MIN_WORKER_PROTOCOL_VERSION", 1, 2),
+        ("DLR_MIN_WORKER_PROTOCOL_VERSION", 1, 3),
         ("DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS", 30, 86_400),
         ("DLR_EXECUTION_RECOVERY_GRACE_SECONDS", 10, 3_600),
         ("DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS", 1, 60),
@@ -82,7 +82,7 @@ def test_control_c4_settings_accept_documented_boundaries(
     ("name", "value"),
     [
         ("DLR_MIN_WORKER_PROTOCOL_VERSION", "0"),
-        ("DLR_MIN_WORKER_PROTOCOL_VERSION", "3"),
+        ("DLR_MIN_WORKER_PROTOCOL_VERSION", "4"),
         ("DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS", "29"),
         ("DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS", "86401"),
         ("DLR_EXECUTION_RECOVERY_GRACE_SECONDS", "9"),

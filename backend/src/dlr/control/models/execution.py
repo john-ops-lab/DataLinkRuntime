@@ -13,8 +13,9 @@ M3.2 scheduling and lifecycle fields:
 - ``target_worker_id`` is the desired Worker; ``worker_id`` stays the
   Worker that actually claimed and runs the Execution.
 - ``trigger`` distinguishes ``manual``, ``schedule`` and ``webhook`` runs.
-- The partial unique index guarantees at most one active Execution per
-  Adapter across every trigger type (M5.4.1).
+- During the legacy compatibility window, its partial unique index guarantees
+  at most one active legacy Execution per Adapter. RabbitMQ concurrency is
+  governed by the authoritative Adapter Slot and Attempt records.
 
 M5.2 Schedule Trigger fields:
 
@@ -143,7 +144,8 @@ class Execution(Base):
         CheckConstraint("locale IN ('zh-CN', 'en')", name="ck_executions_locale"),
         # Supports the claim query: pending rows ordered by (created_at, id).
         Index("ix_executions_claim", "status", "created_at", "id"),
-        # One active Execution per Adapter across every trigger source.
+        # Legacy compatibility guard. Final reliable-runtime Cutover retires
+        # this index only after Adapter Slot 0 has passed its database gate.
         Index(
             "uq_executions_active_adapter",
             "adapter_id",
