@@ -160,11 +160,15 @@ task-owned Attempt child 并实际完成四个 limits 的 write/read；若该验
 
 v3 多 slot 调度还要求 systemd unit 给出有限的 aggregate envelope：`CPUQuota` 与 `MemoryMax`
 必须是可从 delegated parent 的 `cpu.max`、`memory.max` 读回的有限值；`TasksMax=infinity`
-时记录宿主 `pid_max` 作为可验证的 PID 上界。Worker 启动时读取这些事实，按每个 queued
-Resource Profile 加上 Agent reserve 检查全部 configured slots 是否可容纳；不会再用
+时记录宿主 `pid_max` 作为可验证的 PID 上界。Worker 在执行 disposable preflight 之前、
+提交 v3 capability registration 之前读取这些事实，并按每个 configured slot 的 queued
+Resource Profile 加上 Agent reserve 检查全部 slots 是否可容纳；不会再用
 `profile × slots` 伪造 deployment capacity。tmpfs aggregate envelope 保守取
 `memory.max`（tmpfs pages 计入 memory controller）。若 CPU 或 memory envelope 不有限、无法读回
-或不足以留下 Agent reserve，v3 Consumer 必须 fail closed。
+或不足以留下 Agent reserve，Worker 必须把 `resource_envelope_verified` 与完整 isolation
+matrix 保持为 false；Control 因此保持 `rabbitmq_execution_v3=false`，不会进入 v3 traffic。
+通过的 finite envelope snapshot 会传入 Consumer，避免 eligibility 与后续第二次 cgroup 读取
+不一致。
 
 ## Docker cgroup driver 与路径检查
 

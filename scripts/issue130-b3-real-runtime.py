@@ -878,6 +878,9 @@ def _wait_for_actual_agent() -> tuple[dict[str, object], dict[str, object]]:
                     and worker.get("status") == "online"
                     and worker.get("protocol_version") == 3
                     and worker.get("rabbitmq_execution_v3") is True
+                    and isinstance(worker.get("isolation_capabilities"), dict)
+                    and worker["isolation_capabilities"].get("resource_envelope_verified")
+                    is True
                     and _healthy_runtime_sample(sample)
                 ):
                     return worker, sample
@@ -994,15 +997,23 @@ def run_actual_agent_pressure_probe(
                 "lease_expiries": [],
                 "attempt_ids": [],
                 "attempts": [],
+                "current_attempts": [],
                 "resource_profile": None,
             }
         )
 
     health_samples = [ready_sample]
     heartbeat_values: list[object] = []
+    pressure_heartbeat_values: list[object] = []
+    pressure_health_samples: list[dict[str, object]] = []
+    active_attempt_counts: list[int] = []
+    max_active_attempts = 0
+    renewed_during_pressure_attempts: list[int] = []
+    result_reports_during_pressure: list[int] = []
     started_at = time.monotonic()
     cancel_row: dict[str, object] | None = None
     cancel_response: dict[str, object] | None = None
+    cancel_requested_at: float | None = None
     deadline = started_at + 45
     terminal_statuses = {
         "succeeded",
@@ -1042,6 +1053,7 @@ def run_actual_agent_pressure_probe(
             attempts = detail.get("attempts")
             if not isinstance(attempts, list):
                 raise AssertionError("reliable detail did not include Attempt rows")
+            row["current_attempts"] = attempts
             for attempt in attempts:
                 if not isinstance(attempt, dict):
                     continue
@@ -1056,15 +1068,57 @@ def run_actual_agent_pressure_probe(
                     row["lease_expiries"].append(lease)
                 if attempt_status in terminal_statuses:
                     row["attempts"] = attempts
-            if (
-                cancel_row is None
-                and "running" in row["attempt_status_history"]
-                and time.monotonic() - started_at >= 2.0
-            ):
-                cancel_row = row
+        active_attempts = sum(
+            1
+            for row in execution_rows
+            for attempt in row["current_attempts"]
+            if isinstance(attempt, dict)
+            and attempt.get("status") in {"claimed", "running"}
+        )
+        active_attempt_counts.append(active_attempts)
+        max_active_attempts = max(max_active_attempts, active_attempts)
+        if active_attempts:
+            pressure_health_samples.append(sample)
+            pressure_heartbeat_values.extend(
+                value
+                for value in heartbeat_values[-1:]
+                if value is not None
+            )
+            for row in execution_rows:
+                if len(set(row["lease_expiries"])) >= 2:
+                    for attempt_id in row["attempt_ids"]:
+                        if attempt_id not in renewed_during_pressure_attempts:
+                            renewed_during_pressure_attempts.append(attempt_id)
+                for attempt in row["current_attempts"]:
+                    if (
+                        isinstance(attempt, dict)
+                        and attempt.get("id") not in result_reports_during_pressure
+                        and attempt.get("ended_at") is not None
+                        and isinstance(attempt.get("cleanup_summary"), dict)
+                        and attempt["cleanup_summary"].get("workspace_cleanup_status")
+                        == "completed"
+                    ):
+                        attempt_id = attempt.get("id")
+                        if isinstance(attempt_id, int):
+                            result_reports_during_pressure.append(attempt_id)
+        if (
+            cancel_row is None
+            and max_active_attempts >= configured_slots
+            and time.monotonic() - started_at >= 2.0
+        ):
+            cancel_row = next(
+                (
+                    row
+                    for row in execution_rows
+                    if "running" in row["attempt_status_history"]
+                ),
+                None,
+            )
+            if cancel_row is not None:
                 cancel_response = _control_api_request(
-                    "POST", f"/executions/{row['execution_id']}/cancel"
+                    "POST", f"/executions/{cancel_row['execution_id']}/cancel"
                 )
+                cancel_requested_at = time.monotonic()
         all_terminal = all(
             row["attempts"]
             and all(
@@ -1096,13 +1150,24 @@ def run_actual_agent_pressure_probe(
                     1 for sample in health_samples if _healthy_runtime_sample(sample)
                 ),
                 "heartbeat_samples": len(heartbeat_values),
+                "pressure_active_attempt_max": max_active_attempts,
+                "pressure_health_samples": len(pressure_health_samples),
             }
         )
 
+    assert max_active_attempts >= configured_slots, {
+        "configured_slots": configured_slots,
+        "active_attempt_counts": active_attempt_counts,
+    }
     assert cancel_row is not None and isinstance(cancel_response, dict), {
         "cancelled": cancel_row,
         "response": cancel_response,
     }
+    assert cancel_requested_at is not None
+    assert (
+        cancel_response.get("cancel_requested") is True
+        or cancel_response.get("status") == "cancelled"
+    ), cancel_response
     assert any(
         "cancelled" in row["attempt_status_history"] for row in execution_rows
     ), execution_rows
@@ -1117,9 +1182,34 @@ def run_actual_agent_pressure_probe(
         len(row["lease_expiries"]) >= 2 for row in running_rows
     ), execution_rows
     healthy_samples = [sample for sample in health_samples if _healthy_runtime_sample(sample)]
-    assert len(healthy_samples) >= 3, health_samples
+    pressure_healthy_samples = [
+        sample for sample in pressure_health_samples if _healthy_runtime_sample(sample)
+    ]
+    assert len(pressure_healthy_samples) >= 3, pressure_health_samples
     unique_heartbeats = {value for value in heartbeat_values if value is not None}
-    assert len(unique_heartbeats) >= 2, heartbeat_values
+    pressure_unique_heartbeats = {
+        value for value in pressure_heartbeat_values if value is not None
+    }
+    assert len(pressure_unique_heartbeats) >= 2, pressure_heartbeat_values
+    renewed_rows = [
+        row for row in execution_rows if len(set(row["lease_expiries"])) >= 2
+    ]
+    assert renewed_rows, execution_rows
+    assert renewed_during_pressure_attempts, execution_rows
+    reported_rows = [
+        row
+        for row in execution_rows
+        if row["attempts"]
+        and all(
+            isinstance(attempt, dict)
+            and attempt.get("ended_at") is not None
+            and isinstance(attempt.get("cleanup_summary"), dict)
+            and attempt["cleanup_summary"].get("workspace_cleanup_status") == "completed"
+            for attempt in row["attempts"]
+        )
+    ]
+    assert len(reported_rows) == len(execution_rows), execution_rows
+    assert result_reports_during_pressure, execution_rows
     for row in execution_rows:
         assert row["attempts"], row
         assert all(
@@ -1133,6 +1223,7 @@ def run_actual_agent_pressure_probe(
         assert profile_snapshot.get("backend") == "cgroup_v2", row
     return {
         "worker_id": worker_id,
+        "worker_isolation_capabilities": worker.get("isolation_capabilities"),
         "configured_slots": configured_slots,
         "verified_envelope": envelope,
         "attempts": [
@@ -1151,12 +1242,32 @@ def run_actual_agent_pressure_probe(
             for row in execution_rows
         ],
         "heartbeat_samples": len(heartbeat_values),
-        "heartbeat_updates": len(unique_heartbeats) - 1,
+        "heartbeat_updates": len(unique_heartbeats),
+        "pressure_heartbeat_samples": len(pressure_heartbeat_values),
+        "pressure_heartbeat_updates": len(pressure_unique_heartbeats),
+        "max_active_attempts": max_active_attempts,
+        "active_attempt_counts": active_attempt_counts,
         "control_health_samples": len(health_samples),
         "healthy_control_database_rabbitmq_outbox_samples": len(healthy_samples),
-        "cancel_requested_and_reported": True,
-        "renewed_and_reported": True,
-        "aggregate_envelope_tied_to_profiles": True,
+        "pressure_health_samples": len(pressure_health_samples),
+        "pressure_healthy_control_database_rabbitmq_outbox_samples": len(
+            pressure_healthy_samples
+        ),
+        "cancel_requested_and_reported": bool(
+            cancel_response.get("cancel_requested") is True
+            or cancel_response.get("status") == "cancelled"
+        ),
+        "cancel_response_status": cancel_response.get("status"),
+        "renewed_and_reported": bool(renewed_rows),
+        "renewed_attempt_ids": renewed_during_pressure_attempts,
+        "result_reports": len(reported_rows),
+        "result_reports_during_pressure": len(result_reports_during_pressure),
+        "result_report_attempt_ids_during_pressure": result_reports_during_pressure,
+        "aggregate_envelope_tied_to_profiles": all(
+            isinstance(row["resource_profile"], dict)
+            and row["resource_profile"].get("backend") == "cgroup_v2"
+            for row in execution_rows
+        ),
     }
 
 
@@ -1171,6 +1282,19 @@ def run_budget_probe(root: Path, config: sandbox.SandboxConfig) -> dict[str, obj
         raise AssertionError("all-slots pressure proof requires at least two configured slots")
     envelope = sandbox.read_verified_resource_envelope(config)
     budget = sandbox.ResourceBudget.from_verified_envelope(config, slots=slots, envelope=envelope)
+    # The real Compose Agent path is the F3 gate.  The local ledger below is
+    # supplemental coverage for reservation arithmetic and must not stand in
+    # for heartbeat, lease renewal, cancellation, reporting, or service
+    # health observed while actual Attempts are under pressure.
+    actual_agent = run_actual_agent_pressure_probe(
+        root / "actual-agent-pressure", envelope.as_dict(), slots
+    )
+    assert actual_agent["max_active_attempts"] >= slots
+    assert actual_agent["pressure_healthy_control_database_rabbitmq_outbox_samples"] >= 3
+    assert actual_agent["pressure_heartbeat_updates"] >= 2
+    assert actual_agent["cancel_requested_and_reported"] is True
+    assert actual_agent["renewed_and_reported"] is True
+    assert actual_agent["result_reports"] == slots
     base_specs = (
         ("python", "cpu", PYTHON_FAULTS["cpu"], profile(timeout=3)),
         ("javascript", "cpu", JAVASCRIPT_FAULTS["cpu"], profile(timeout=3)),
@@ -1237,23 +1361,15 @@ def run_budget_probe(root: Path, config: sandbox.SandboxConfig) -> dict[str, obj
         for result in pressure_results
     ), pressure_results
     assert health_samples, "Control health was not sampled during pressure"
-    healthy_samples = [
-        sample
-        for sample in health_samples
-        if sample.get("http_status") == 200
-        and sample.get("status") == "ok"
-        and sample.get("database") is True
-    ]
+    healthy_samples = [sample for sample in health_samples if _healthy_runtime_sample(sample)]
     assert healthy_samples, health_samples
     final_snapshot = budget.snapshot()
     assert final_snapshot["active_reservations"] == 0
-    actual_agent = run_actual_agent_pressure_probe(
-        root / "actual-agent-pressure", envelope.as_dict(), slots
-    )
     return {
         "ResourceBudget": True,
         "verified_envelope": envelope.as_dict(),
         "configured_slots": slots,
+        "actual_agent_is_f3_gate": True,
         "concurrent_pressure_attempts": pressure_results,
         "all_slots_started": True,
         "agent_reserve": final_snapshot["agent_reserve"],

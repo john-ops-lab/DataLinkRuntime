@@ -17,6 +17,7 @@ REQUIRED_ISOLATION_CAPABILITIES = frozenset(
         "tmpfs_hard_limit",
         "bounded_output",
         "preflight_passed",
+        "resource_envelope_verified",
         "cpu_hard_limit",
         "swap_hard_limit",
         "nofile_hard_limit",

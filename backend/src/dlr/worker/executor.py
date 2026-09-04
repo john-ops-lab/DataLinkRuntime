@@ -110,6 +110,10 @@ class RuntimeSettings:
     # Agent always supplies a real SandboxConfig after its startup preflight;
     # v3 execution never reaches the ordinary subprocess path there.
     sandbox_config: sandbox.SandboxConfig | None = None
+    # The Agent records the finite envelope before registration.  Passing the
+    # same snapshot into the Consumer avoids making eligibility depend on a
+    # second, later cgroup read.
+    resource_envelope: sandbox.ResourceEnvelope | None = None
 
 
 def child_env(secrets: Mapping[str, str] | None = None) -> dict[str, str]:

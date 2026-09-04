@@ -8,6 +8,7 @@ example_parent=/system.slice/dlr-worker-sandbox-example.service
 example_path=/sys/fs/cgroup${example_parent}
 runbook=docs/zh-CN/issue130-sandbox-deployment.md
 sandbox_source=backend/src/dlr/worker/sandbox.py
+agent_source=backend/src/dlr/worker/agent.py
 cache_source=backend/src/dlr/worker/cache.py
 venv_source=backend/src/dlr/worker/venv.py
 workspace_source=backend/src/dlr/worker/workspace.py
@@ -194,7 +195,8 @@ require_runbook_literal 'runtime_root/dlr-preflight-<nonce>/.dlr-sandbox-mount'
 require_runbook_literal 'mode 为 `0700`'
 require_runbook_literal '有限的 aggregate envelope'
 require_runbook_literal '`profile × slots` 伪造 deployment capacity'
-require_runbook_literal 'v3 Consumer 必须 fail closed'
+require_runbook_literal 'Worker 必须把 `resource_envelope_verified`'
+require_runbook_literal 'Control 因此保持 `rabbitmq_execution_v3=false`'
 if grep -Eq 'CONTROL_GROUP=/sys/fs/cgroup|^[[:space:]]*PARENT="\$CONTROL_GROUP"$' "$runbook"; then
   echo "runbook must keep logical ControlGroup separate from the host cgroupfs path" >&2
   exit 1
@@ -291,6 +293,14 @@ if ! grep -Fq 'prevalidated_profile' "$consumer_source" \
   echo "Consumer must validate the raw Resource Profile before Pydantic/model side effects" >&2
   exit 1
 fi
+if ! grep -Fq 'read_verified_resource_envelope(self.sandbox_config)' "$agent_source" \
+  || ! grep -Fq 'ResourceBudget.from_verified_envelope' "$agent_source" \
+  || ! grep -Fq 'resource_envelope_verified' "$agent_source" \
+  || ! grep -Fq 'resource_envelope' "$executor_source" \
+  || ! grep -Fq 'resource_envelope_verified' backend/src/dlr/control/schemas/worker.py; then
+  echo "Worker must verify the finite deployment envelope before v3 registration" >&2
+  exit 1
+fi
 
 require_source_literal 'or profile.output_preview_max_bytes > profile.output_max_bytes'
 require_source_literal 'raise SandboxError("resource_profile_invalid")'
@@ -366,6 +376,19 @@ require_runtime_literal 'dependency_timeout'
 require_runtime_literal 'cache_low_watermark'
 require_runtime_literal 'ResourceBudget'
 require_runtime_literal 'read_verified_resource_envelope'
+require_runtime_literal 'run_actual_agent_pressure_probe('
+require_runtime_literal 'actual_agent_is_f3_gate'
+require_runtime_literal 'worker.get("isolation_capabilities")'
+require_runtime_literal 'resource_envelope_verified'
+require_runtime_literal 'max_active_attempts'
+require_runtime_literal 'pressure_heartbeat_updates'
+require_runtime_literal 'pressure_healthy_control_database_rabbitmq_outbox_samples'
+require_runtime_literal 'renewed_during_pressure_attempts'
+require_runtime_literal 'result_reports_during_pressure'
+require_runtime_literal 'cancel_requested_and_reported'
+require_runtime_literal 'renewed_and_reported'
+require_runtime_literal 'result_reports'
+require_runtime_literal '_healthy_runtime_sample(sample)'
 require_runtime_literal 'concurrent_pressure_attempts'
 require_runtime_literal 'all_slots_started'
 require_runtime_literal 'control_healthy_during_pressure'

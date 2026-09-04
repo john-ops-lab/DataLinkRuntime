@@ -761,6 +761,77 @@ def test_agent_registration_uses_real_preflight_result(
     assert submitted["isolation_capabilities"]["sandbox_cleanup"] is False
 
 
+def test_agent_verifies_finite_envelope_before_v3_registration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DLR_WORKER_PROTOCOL_VERSION", "3")
+    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
+    config = worker_agent.WorkerConfig()
+    config.capabilities = lambda: ["python"]  # type: ignore[method-assign]
+    events: list[str] = []
+    submitted: dict[str, Any] = {}
+
+    def unavailable_envelope(*_args: Any, **_kwargs: Any) -> sandbox.ResourceEnvelope:
+        events.append("envelope")
+        raise sandbox.SandboxError("sandbox_resource_envelope_unavailable")
+
+    def unexpected_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("the disposable probe must not run after envelope failure")
+
+    class Client:
+        def register(self, _name: str, _capabilities: list[str], **kwargs: Any) -> dict[str, Any]:
+            events.append("register")
+            submitted.update(kwargs)
+            return {"id": 43}
+
+    monkeypatch.setattr(
+        worker_agent.sandbox, "read_verified_resource_envelope", unavailable_envelope
+    )
+    monkeypatch.setattr(worker_agent.sandbox, "run_preflight", unexpected_probe)
+    worker = worker_agent.Agent(config, Client())  # type: ignore[arg-type]
+
+    assert worker._register() == 43
+    assert events == ["envelope", "register"]
+    assert submitted["isolation_capabilities"]["resource_envelope_verified"] is False
+    assert submitted["isolation_capabilities"]["preflight_passed"] is False
+
+
+def test_agent_passes_the_verified_envelope_snapshot_to_the_consumer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DLR_WORKER_PROTOCOL_VERSION", "3")
+    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
+    config = worker_agent.WorkerConfig()
+    envelope = sandbox.ResourceEnvelope(
+        cpu_cores=8.0,
+        memory_bytes=8 * 1024 * MiB,
+        pids=1024,
+        tmp_bytes=8 * 1024 * MiB,
+        source="delegated_cgroup_v2(test)",
+    )
+    monkeypatch.setattr(
+        worker_agent.sandbox,
+        "read_verified_resource_envelope",
+        lambda *_args, **_kwargs: envelope,
+    )
+    monkeypatch.setattr(
+        worker_agent.sandbox,
+        "run_preflight",
+        lambda *_args, **_kwargs: {
+            "capabilities": {key: True for key in worker_agent.ISOLATION_CAPABILITY_KEYS},
+            "details": {"status": "passed"},
+        },
+    )
+
+    config.run_preflight()
+
+    assert config.isolation_capabilities["resource_envelope_verified"] is True
+    assert config._verified_resource_envelope is envelope
+    assert config.runtime_settings().resource_envelope is envelope
+
+
 class _PrepareFailureClient:
     def __init__(self) -> None:
         self.body: dict[str, Any] | None = None

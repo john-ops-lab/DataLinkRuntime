@@ -61,6 +61,7 @@ ISOLATION_PASS = {
     "tmpfs_hard_limit": True,
     "bounded_output": True,
     "preflight_passed": True,
+    "resource_envelope_verified": True,
     "cpu_hard_limit": True,
     "swap_hard_limit": True,
     "nofile_hard_limit": True,

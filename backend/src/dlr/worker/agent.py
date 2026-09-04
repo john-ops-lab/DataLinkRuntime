@@ -50,6 +50,7 @@ ISOLATION_CAPABILITY_KEYS = (
     "tmpfs_hard_limit",
     "bounded_output",
     "preflight_passed",
+    "resource_envelope_verified",
     "cpu_hard_limit",
     "swap_hard_limit",
     "nofile_hard_limit",
@@ -139,6 +140,7 @@ class WorkerConfig:
         )
         self.sandbox_config = sandbox.SandboxConfig.from_environment()
         self.isolation_capabilities = self._read_isolation_capabilities()
+        self._verified_resource_envelope: sandbox.ResourceEnvelope | None = None
         self._preflight_completed = False
 
     def _read_isolation_capabilities(self) -> dict[str, bool]:
@@ -175,6 +177,7 @@ class WorkerConfig:
             maven_repository_url=self.maven_repository_url,
             workspace_cleanup_journal_root=self.workspace_cleanup_journal_root,
             sandbox_config=self.sandbox_config,
+            resource_envelope=self._verified_resource_envelope,
         )
 
     def run_preflight(self) -> None:
@@ -186,6 +189,26 @@ class WorkerConfig:
         # the real probe is running.  An absent/malformed receipt is a failed
         # startup gate, never an invitation to register v3 as ready.
         self.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
+        self._verified_resource_envelope = None
+        try:
+            # The finite deployment envelope is part of v3 eligibility, not a
+            # late Consumer construction check.  Validate it before running
+            # the disposable probe and before the Agent submits any v3
+            # capability matrix to Control.
+            envelope = sandbox.read_verified_resource_envelope(self.sandbox_config)
+            sandbox.ResourceBudget.from_verified_envelope(
+                self.sandbox_config,
+                slots=self.execution_slots,
+                envelope=envelope,
+            )
+        except Exception as error:  # noqa: BLE001 - startup gate must fail closed
+            error_code = getattr(error, "code", type(error).__name__)
+            logger.warning(
+                "v3 resource envelope verification failed (%s); RabbitMQ execution "
+                "remains disabled",
+                error_code,
+            )
+            return
         try:
             result = sandbox.run_preflight(
                 self.sandbox_config,
@@ -202,6 +225,8 @@ class WorkerConfig:
                 self.isolation_capabilities = {
                     key: capabilities.get(key) is True for key in ISOLATION_CAPABILITY_KEYS
                 }
+                self.isolation_capabilities["resource_envelope_verified"] = True
+                self._verified_resource_envelope = envelope
             logger.info(
                 "v3 sandbox preflight %s; rabbitmq execution gate=%s",
                 result.get("details", {}).get("status", "failed"),

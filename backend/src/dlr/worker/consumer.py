@@ -106,7 +106,11 @@ class V3Consumer:
                 sandbox_config, config.execution_slots
             )
         else:
-            envelope = sandbox.read_verified_resource_envelope(sandbox_config)
+            envelope = getattr(runtime_settings, "resource_envelope", None)
+            if envelope is None:
+                # Retain the direct Consumer seam for tests and older callers;
+                # the production Agent supplies the pre-registration snapshot.
+                envelope = sandbox.read_verified_resource_envelope(sandbox_config)
             self._resource_budget = sandbox.ResourceBudget.from_verified_envelope(
                 sandbox_config,
                 config.execution_slots,
