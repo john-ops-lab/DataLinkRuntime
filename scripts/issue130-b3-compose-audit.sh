@@ -157,6 +157,8 @@ require_runbook_literal 'test "$(cat "$ATTEMPT/memory.swap.max")" = "0"'
 require_runbook_literal 'test "$(cat "$ATTEMPT/pids.max")" = "64"'
 require_runbook_literal 'printf "%s\\n" "$BASHPID" > "$ATTEMPT/cgroup.procs"'
 require_runbook_literal 'WORKLOAD_PID=$!'
+require_runbook_literal 'cleanup_workload() {'
+require_runbook_literal 'trap cleanup_workload EXIT INT TERM'
 require_runbook_literal 'grep -qx "$WORKLOAD_PID" "$ATTEMPT/cgroup.procs"'
 require_runbook_literal 'kill "$WORKLOAD_PID"'
 require_runbook_literal 'wait "$WORKLOAD_PID" || true'
@@ -286,8 +288,15 @@ require_source_literal 'parser.add_argument("--attempt-cgroup", required=True)'
 require_source_literal 'Path(args.attempt_cgroup)'
 require_source_literal 'self._payload_pid: int | None = None'
 require_source_literal 'return self._payload_pid'
+require_source_literal 'self._cleanup_lock = threading.Lock()'
+require_source_literal 'self._cleanup_result: CleanupResult | None = None'
 require_source_literal 'details["helper_outside_attempt"]'
 require_source_literal 'attempt.payload_pid'
+
+if ! grep -Fq 'primary_error: BaseException | None = None' "$cache_source"; then
+  echo "cache promotion must preserve its primary error across cleanup" >&2
+  exit 1
+fi
 
 if ! grep -Fq 'prevalidated_profile' "$consumer_source" \
   || ! grep -Fq 'raw_payload.get("resource_profile")' "$consumer_source" \
@@ -441,7 +450,9 @@ for test_name in \
   test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size \
   test_dependency_build_stages_inside_attempt_tmpfs_until_promotion \
   test_dependency_command_stops_when_cache_reservation_is_lost \
-  test_live_version_build_renews_global_reservation_until_finish; do
+  test_live_version_build_renews_global_reservation_until_finish \
+  test_version_build_cleanup_is_idempotent_after_failed_tmpfs_promotion \
+  test_version_build_preserves_promotion_error_when_finish_cleanup_fails; do
   if ! grep -Fq -- "$test_name" "$runtime_unit_tests"; then
     echo "missing bounded runtime test: $test_name" >&2
     exit 1
@@ -450,7 +461,8 @@ done
 for test_name in \
   test_promoted_entry_is_verified_read_only_and_tamper_detected \
   test_reservations_are_bounded_across_concurrent_misses \
-  test_cache_rejects_leaf_symlinks_for_verify_and_cleanup; do
+  test_cache_rejects_leaf_symlinks_for_verify_and_cleanup \
+  test_tmpfs_failed_promotion_preserves_primary_error_when_cleanup_fails_once; do
   if ! grep -Fq -- "$test_name" "$cache_tests"; then
     echo "missing verified cache test: $test_name" >&2
     exit 1
@@ -461,7 +473,9 @@ for test_name in \
   test_verified_resource_budget_uses_deployment_envelope_for_all_slots \
   test_verified_resource_budget_rejects_envelope_that_cannot_leave_all_slot_reserve \
   test_attempt_recovery_marker_removes_only_derived_mount \
-  test_preflight_recovery_marker_removes_derived_mount; do
+  test_preflight_recovery_marker_removes_derived_mount \
+  test_timeout_cleanup_is_idempotent_after_helper_termination \
+  test_timeout_cleanup_serializes_concurrent_retries_without_residue; do
   if ! grep -Fq -- "$test_name" "$runtime_tests"; then
     echo "missing B3 recovery/budget test: $test_name" >&2
     exit 1

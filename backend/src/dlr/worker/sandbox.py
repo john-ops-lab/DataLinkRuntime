@@ -1788,6 +1788,8 @@ class AttemptSandbox:
         self._killed = False
         self._unmounted = False
         self._dependency_tmpfs: Path | None = None
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_result: CleanupResult | None = None
 
     @classmethod
     def for_preflight(
@@ -2091,6 +2093,18 @@ class AttemptSandbox:
             logger.warning("sandbox recovery marker could not be persisted")
 
     def cleanup(self, *, wait_seconds: float | None = None) -> CleanupResult:
+        if self._cleanup_result is not None:
+            return self._cleanup_result
+        # Timeout/cancel and error paths can converge on the same Attempt
+        # cleanup. Serialize the terminal transition so a concurrent retry
+        # cannot observe the cgroup between rmdir and result publication and
+        # create a spurious recovery marker.
+        with self._cleanup_lock:
+            if self._cleanup_result is not None:
+                return self._cleanup_result
+            return self._cleanup_once(wait_seconds=wait_seconds)
+
+    def _cleanup_once(self, *, wait_seconds: float | None = None) -> CleanupResult:
         killed = self._killed
         if wait_seconds is None:
             wait_seconds = float(self.limits.cleanup_attempt_seconds)
@@ -2155,7 +2169,7 @@ class AttemptSandbox:
                 unmounted=self._unmounted,
                 residue=True,
             )
-        return CleanupResult(
+        result = CleanupResult(
             "completed",
             None,
             self.cgroup_name,
@@ -2164,6 +2178,8 @@ class AttemptSandbox:
             unmounted=True,
             residue=False,
         )
+        self._cleanup_result = result
+        return result
 
 
 def _profile_from_preflight(config: SandboxConfig) -> ResourceLimits:

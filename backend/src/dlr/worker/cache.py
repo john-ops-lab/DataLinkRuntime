@@ -11,6 +11,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import shutil
 import stat
@@ -32,6 +33,7 @@ _LOCK_NAME = ".dlr-cache-reservations.lock"
 _STATE_FIELDS = frozenset({"reservations"})
 _MANIFEST_FIELDS = frozenset({"bytes", "digest", "files", "identity"})
 _SAFE_KEY = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+logger = logging.getLogger("dlr.worker.cache")
 
 
 class CacheError(Exception):
@@ -581,6 +583,9 @@ class VerifiedVersionCache:
         and low-watermark, then publishes it with one os.replace.
         """
         staging_path: Path | None = None
+        primary_error: BaseException | None = None
+        cleanup_error: CacheError | None = None
+        release_error: CacheError | None = None
         try:
             self._assert_active(reservation)
             source_path = Path(source)
@@ -636,11 +641,37 @@ class VerifiedVersionCache:
             staging_path = None
             return target_path
         except OSError as error:
-            raise CacheError("cache_promote_failed") from error
+            primary_error = CacheError("cache_promote_failed")
+            raise primary_error from error
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
             if staging_path is not None:
-                self.remove_staging(staging_path)
-            reservation.release()
+                try:
+                    self.remove_staging(staging_path)
+                except CacheError as error:
+                    cleanup_error = error
+            try:
+                reservation.release()
+            except CacheError as error:
+                release_error = error
+            if primary_error is not None:
+                if cleanup_error is not None:
+                    logger.warning(
+                        "cache staging cleanup failed after promotion error (%s)",
+                        cleanup_error.code,
+                    )
+                if release_error is not None:
+                    logger.warning(
+                        "cache reservation release failed after promotion error (%s)",
+                        release_error.code,
+                    )
+            else:
+                if cleanup_error is not None:
+                    raise cleanup_error
+                if release_error is not None:
+                    raise release_error
 
     def remove_staging(self, staging: Path) -> None:
         """Remove one exact staging child; never accepts a cache root."""

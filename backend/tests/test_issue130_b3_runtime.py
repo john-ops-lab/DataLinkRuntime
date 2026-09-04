@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
+import threading
 from contextlib import nullcontext
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
@@ -611,6 +613,141 @@ def test_preflight_recovery_marker_requires_private_worker_directory(
     assert marker.exists()
     assert sentinel.read_text(encoding="ascii") == "keep"
     assert mount.is_dir()
+
+
+def test_timeout_cleanup_is_idempotent_after_helper_termination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timeout's later cleanup retry must not recreate a residue marker."""
+
+    cgroup = tmp_path / "attempt"
+    cgroup.mkdir(mode=0o700)
+    stream_path = tmp_path / "stream.log"
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    attempt = object.__new__(sandbox.AttemptSandbox)
+    attempt.limits = sandbox.ResourceLimits(
+        cpu_cores=1.0,
+        memory_bytes=64 * MiB,
+        pids=64,
+        tmp_bytes=1 * MiB,
+        nofile=64,
+        execution_timeout_seconds=1,
+        cleanup_attempt_seconds=1,
+        cleanup_total_seconds=2,
+    )
+    attempt.cgroup_name = "attempt-timeout"
+    attempt.cgroup = cgroup
+    attempt.mount_root = tmp_path / "mount"
+    attempt._process = process
+    attempt._killed = False
+    attempt._unmounted = False
+    attempt._dependency_tmpfs = None
+    attempt._cleanup_lock = threading.Lock()
+    attempt._cleanup_result = None
+
+    def terminate_process(_process: subprocess.Popen[bytes] | None = None) -> None:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        attempt._killed = True
+
+    attempt.kill = terminate_process  # type: ignore[attr-defined]
+    monkeypatch.setattr(sandbox, "_is_empty", lambda _path: process.poll() is not None)
+    try:
+        _returncode, timed_out, _cancelled, _text = executor._wait_with_progress(
+            process,
+            stream_path,
+            timeout=0.05,
+            progress_callback=None,
+            kill_callback=lambda: attempt.kill(process),  # type: ignore[attr-defined]
+        )
+        first = attempt.cleanup()
+        second = attempt.cleanup()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+
+    assert timed_out is True
+    assert first.status == "completed"
+    assert first.residue is False
+    assert second is first
+    assert not cgroup.exists()
+    assert not list(tmp_path.glob("**/*recovery*"))
+
+
+def test_timeout_cleanup_serializes_concurrent_retries_without_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent timeout/error cleanup must publish one terminal result."""
+
+    cgroup = tmp_path / "attempt"
+    cgroup.mkdir(mode=0o700)
+    attempt = object.__new__(sandbox.AttemptSandbox)
+    attempt.limits = sandbox.ResourceLimits(
+        cpu_cores=1.0,
+        memory_bytes=64 * MiB,
+        pids=64,
+        tmp_bytes=1 * MiB,
+        nofile=64,
+        execution_timeout_seconds=1,
+        cleanup_attempt_seconds=1,
+        cleanup_total_seconds=2,
+    )
+    attempt.cgroup_name = "attempt-timeout-concurrent"
+    attempt.cgroup = cgroup
+    attempt.mount_root = tmp_path / "mount"
+    attempt._process = None
+    attempt._killed = False
+    attempt._unmounted = False
+    attempt._dependency_tmpfs = None
+    attempt._cleanup_lock = threading.Lock()
+    attempt._cleanup_result = None
+    monkeypatch.setattr(sandbox, "_is_empty", lambda _path: True)
+
+    real_rmdir = Path.rmdir
+    first_rmdir_entered = threading.Event()
+    release_first_rmdir = threading.Event()
+    rmdir_calls = 0
+    rmdir_lock = threading.Lock()
+
+    def blocking_rmdir(path: Path) -> None:
+        nonlocal rmdir_calls
+        if path == cgroup:
+            with rmdir_lock:
+                rmdir_calls += 1
+                first_call = rmdir_calls == 1
+            if first_call:
+                first_rmdir_entered.set()
+                assert release_first_rmdir.wait(timeout=2)
+        real_rmdir(path)
+
+    monkeypatch.setattr(Path, "rmdir", blocking_rmdir)
+    results: list[sandbox.CleanupResult] = []
+
+    def cleanup() -> None:
+        results.append(attempt.cleanup())
+
+    first = threading.Thread(target=cleanup)
+    second = threading.Thread(target=cleanup)
+    first.start()
+    assert first_rmdir_entered.wait(timeout=2)
+    second.start()
+    release_first_rmdir.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert rmdir_calls == 1
+    assert len(results) == 2
+    assert all(result.status == "completed" and not result.residue for result in results)
+    assert results[0] is results[1]
+    assert not cgroup.exists()
 
 
 def test_configured_cgroup_hide_target_is_cgroup2fs_and_disjoint_from_workspace(

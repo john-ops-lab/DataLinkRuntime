@@ -179,6 +179,51 @@ def test_tmpfs_promotion_is_atomic_and_read_only(tmp_path: Path) -> None:
     assert not any(child.name.startswith(".atomic.staging-") for child in cache.entries.iterdir())
 
 
+def test_tmpfs_failed_promotion_preserves_primary_error_when_cleanup_fails_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=4096, low_watermark_bytes=0)
+    source = tmp_path / "attempt-tmpfs" / "version-build"
+    source.mkdir(mode=0o700, parents=True)
+    (source / "runtime.bin").write_bytes(b"runtime")
+    reservation = cache.reserve(1024)
+    staging = cache.staging_path("cleanup-primary", reservation.token)
+    original_copy = cache_module._copy_tree_bounded
+    original_remove = cache.remove_staging
+    cleanup_calls = 0
+
+    def fail_copy(*args: object, **kwargs: object) -> int:
+        raise CacheError("cache_reservation_insufficient")
+
+    def fail_cleanup_once(path: Path) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls == 1:
+            raise CacheError("cache_staging_cleanup_failed")
+        original_remove(path)
+
+    monkeypatch.setattr(cache_module, "_copy_tree_bounded", fail_copy)
+    monkeypatch.setattr(cache, "remove_staging", fail_cleanup_once)
+    try:
+        with pytest.raises(CacheError) as error:
+            cache.promote_from_tmpfs(
+                source,
+                cache.entry_path("cleanup-primary"),
+                identity={"language": "test", "version": "cleanup-primary"},
+                reservation=reservation,
+            )
+
+        assert error.value.code == "cache_reservation_insufficient"
+        assert cleanup_calls == 1
+        assert staging.is_dir()
+        assert cache._state() == {}
+        cache.remove_staging(staging)
+        assert cleanup_calls == 2
+        assert not staging.exists()
+    finally:
+        monkeypatch.setattr(cache_module, "_copy_tree_bounded", original_copy)
+
+
 def test_live_reservation_renewal_preserves_global_budget(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

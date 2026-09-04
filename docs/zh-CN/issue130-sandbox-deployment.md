@@ -69,7 +69,31 @@ sudo -n systemd-run \
     test "$(cat "$ATTEMPT/memory.swap.max")" = "0"
     test "$(cat "$ATTEMPT/pids.max")" = "64"
 
-    # The workload is a sibling of agent; the keeper remains in agent.
+    # The workload is a sibling of agent; the keeper remains in agent. Keep
+    # its cleanup armed before starting it so a timeout or failed assertion
+    # cannot leave an Attempt child behind while the keeper survives.
+    WORKLOAD_PID=
+    cleanup_workload() {
+      if test -n "${WORKLOAD_PID:-}"; then
+        if kill -0 "$WORKLOAD_PID" 2>/dev/null; then
+          kill "$WORKLOAD_PID" 2>/dev/null || true
+        fi
+        wait "$WORKLOAD_PID" 2>/dev/null || true
+      fi
+      if test -d "$ATTEMPT"; then
+        for _ in $(seq 1 50); do
+          if test -z "$(cat "$ATTEMPT/cgroup.procs" 2>/dev/null || true)"; then
+            break
+          fi
+          sleep 0.05
+        done
+        if test -z "$(cat "$ATTEMPT/cgroup.procs" 2>/dev/null || true)"; then
+          rmdir "$ATTEMPT" 2>/dev/null || true
+        fi
+      fi
+      WORKLOAD_PID=
+    }
+    trap cleanup_workload EXIT INT TERM
     (
       printf "%s\\n" "$BASHPID" > "$ATTEMPT/cgroup.procs"
       exec /bin/sleep infinity
@@ -100,6 +124,7 @@ sudo -n systemd-run \
     grep -qx "$$" "$AGENT/cgroup.procs"
     test -z "$(cat "$PARENT/cgroup.procs")"
 
+    WORKLOAD_PID=
     exec /bin/sleep infinity
   '
 
