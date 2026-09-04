@@ -411,6 +411,77 @@ def test_dependency_build_stages_inside_attempt_tmpfs_until_promotion(tmp_path: 
     assert not any(version_cache.entries.iterdir())
 
 
+def test_version_build_cleanup_is_idempotent_after_failed_tmpfs_promotion(
+    tmp_path: object,
+) -> None:
+    root = Path(tmp_path)
+    version_cache = cache.VerifiedVersionCache(
+        root / "cache", max_bytes=4096, low_watermark_bytes=0
+    )
+    reservation = version_cache.reserve(32)
+    staging_root = root / "attempt-tmpfs" / "version-builds"
+    staging = staging_root / "build"
+    staging.mkdir(mode=0o700, parents=True)
+    (staging / "runtime.bin").write_bytes(b"x" * 33)
+    build = venv_manager._VersionBuild(
+        version_cache,
+        staging,
+        version_cache.entry_path("failed-promotion"),
+        reservation,
+        staging_root,
+    )
+
+    with pytest.raises(cache.CacheError) as error:
+        build.finish({"language": "test", "version": "failed-promotion"})
+
+    assert error.value.code == "cache_reservation_insufficient"
+    build.abort()
+    build.abort()
+    assert not staging.exists()
+    assert not staging_root.exists()
+    assert version_cache._state() == {}
+
+
+def test_version_build_preserves_promotion_error_when_finish_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    root = Path(tmp_path)
+    version_cache = cache.VerifiedVersionCache(
+        root / "cache", max_bytes=4096, low_watermark_bytes=0
+    )
+    reservation = version_cache.reserve(32)
+    staging_root = root / "attempt-tmpfs" / "version-builds"
+    staging = staging_root / "build"
+    staging.mkdir(mode=0o700, parents=True)
+    (staging / "runtime.bin").write_bytes(b"x" * 33)
+    build = venv_manager._VersionBuild(
+        version_cache,
+        staging,
+        version_cache.entry_path("cleanup-error"),
+        reservation,
+        staging_root,
+    )
+    original_cleanup = build._remove_tmpfs_staging
+    cleanup_calls = 0
+
+    def fail_once() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls == 1:
+            raise cache.CacheError("cache_staging_cleanup_failed")
+        original_cleanup()
+
+    monkeypatch.setattr(build, "_remove_tmpfs_staging", fail_once)
+    with pytest.raises(cache.CacheError) as error:
+        build.finish({"language": "test", "version": "cleanup-error"})
+
+    assert error.value.code == "cache_reservation_insufficient"
+    build.abort()
+    assert cleanup_calls == 2
+    assert not staging.exists()
+    assert version_cache._state() == {}
+
+
 def test_live_version_build_renews_global_reservation_until_finish(tmp_path: object) -> None:
     root = Path(tmp_path)
     version_cache = cache.VerifiedVersionCache(

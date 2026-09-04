@@ -413,6 +413,7 @@ class _VersionBuild:
     target: Path
     reservation: CacheReservation
     staging_root: Path | None = None
+    _staging_cleanup_done: bool = field(default=False, init=False, repr=False)
     _lease_stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _lease_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _lease_lost: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
@@ -460,11 +461,20 @@ class _VersionBuild:
             self._lease_thread.join(timeout=1.0)
 
     def _remove_tmpfs_staging(self) -> None:
+        if self._staging_cleanup_done:
+            return
         if self.staging_root is None:
             self.cache.remove_staging(self.staging)
+            self._staging_cleanup_done = True
             return
         try:
-            root = self.staging_root.resolve(strict=True)
+            try:
+                root = self.staging_root.resolve(strict=True)
+            except FileNotFoundError:
+                # ``finish`` may already have removed the staging directory
+                # before a caller's error path invokes ``abort``.
+                self._staging_cleanup_done = True
+                return
             candidate = self.staging.resolve(strict=False)
             if (
                 not root.is_dir()
@@ -477,12 +487,14 @@ class _VersionBuild:
                 shutil.rmtree(candidate)
             with suppress(OSError):
                 root.rmdir()
+            self._staging_cleanup_done = True
         except cache.CacheError:
             raise
         except OSError as error:
             raise cache.CacheError("cache_staging_cleanup_failed") from error
 
     def finish(self, identity: Mapping[str, object]) -> Path:
+        primary_error: BaseException | None = None
         try:
             if self.staging_root is None:
                 return self.cache.promote(
@@ -497,16 +509,35 @@ class _VersionBuild:
                 identity=identity,
                 reservation=self.reservation,
             )
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
             self._stop_lease()
-            self._remove_tmpfs_staging()
+            try:
+                self._remove_tmpfs_staging()
+            except cache.CacheError as error:
+                if primary_error is None:
+                    raise
+                logger.warning(
+                    "version cache staging cleanup failed after primary build error (%s)",
+                    error.code,
+                )
 
     def abort(self) -> None:
         self._stop_lease()
         try:
             self._remove_tmpfs_staging()
+        except cache.CacheError as error:
+            logger.warning("version cache staging cleanup failed during abort (%s)", error.code)
         finally:
-            self.reservation.release()
+            try:
+                self.reservation.release()
+            except cache.CacheError as error:
+                logger.warning(
+                    "version cache reservation release failed during abort (%s)",
+                    error.code,
+                )
 
 
 def _begin_version_build(
