@@ -18,9 +18,9 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 import urllib.error
 import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -32,6 +32,24 @@ from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
 
 MIB = 1024 * 1024
+ACTUAL_PRESSURE_LEAD_SECONDS = 20.0
+ACTUAL_PRESSURE_SUSTAIN_SECONDS = 24.0
+ACTUAL_PRESSURE_TIMEOUT_SECONDS = 60
+ACTUAL_PROFILE_LIMIT_KEYS = (
+    "cpu_cores",
+    "memory_bytes",
+    "pids",
+    "tmp_bytes",
+    "nofile",
+    "execution_timeout_seconds",
+    "claim_timeout_seconds",
+    "recovery_grace_seconds",
+    "workspace_cleanup_attempt_timeout_seconds",
+    "workspace_cleanup_total_timeout_seconds",
+    "stream_max_bytes",
+    "output_max_bytes",
+    "output_preview_max_bytes",
+)
 PLATFORM_ENV_KEYS = (
     "DLR_WORKER_TOKEN",
     "DLR_ADMIN_TOKEN",
@@ -893,6 +911,8 @@ def _create_actual_pressure_execution(
     worker_id: int,
     language: str,
     code: str,
+    *,
+    pressure_start_unix: float,
 ) -> tuple[int, int]:
     """Create one task-owned canary Adapter and its queued v3 Execution."""
     adapter = _control_api_request(
@@ -903,7 +923,7 @@ def _create_actual_pressure_execution(
             "description": "Issue 130 B3 actual Agent pressure proof",
             "language": language,
             "adapter_type": "task",
-            "timeout_seconds": 8,
+            "timeout_seconds": ACTUAL_PRESSURE_TIMEOUT_SECONDS,
         },
         expected=201,
     )
@@ -928,7 +948,12 @@ def _create_actual_pressure_execution(
     execution = _control_api_request(
         "POST",
         f"/adapters/{adapter_id}/executions/canary",
-        {"input": {"source": "issue130-b3-f3"}},
+        {
+            "input": {
+                "source": "issue130-b3-f3",
+                "pressure_start_unix": pressure_start_unix,
+            }
+        },
         expected=202,
     )
     if not isinstance(execution, dict) or not isinstance(execution.get("id"), int):
@@ -936,6 +961,132 @@ def _create_actual_pressure_execution(
     if execution.get("dispatch_backend") != "rabbitmq" or execution.get("status") != "queued":
         raise AssertionError("actual pressure Execution did not enter the RabbitMQ queue")
     return adapter_id, int(execution["id"])
+
+
+def _actual_pressure_specs() -> list[tuple[str, str, str]]:
+    wait_for_pressure = (
+        "    while time.time() < float(input['pressure_start_unix']):\n        time.sleep(0.02)\n"
+    )
+    return [
+        (
+            "python",
+            "cpu",
+            "import os\nimport time\n"
+            "def handle(context, input):\n"
+            f"{wait_for_pressure}"
+            "    for _ in range(4):\n"
+            "        if os.fork() == 0:\n"
+            "            while True:\n"
+            "                pass\n"
+            "    while True:\n"
+            "        pass\n",
+        ),
+        (
+            "python",
+            "memory",
+            "import time\ndef handle(context, input):\n"
+            f"{wait_for_pressure}"
+            "    blocks = [bytearray(4 * 1024 * 1024) for _ in range(2)]\n"
+            "    for block in blocks:\n"
+            "        for offset in range(0, len(block), 4096):\n"
+            "            block[offset] = 1\n"
+            f"    while time.time() < float(input['pressure_start_unix']) + {ACTUAL_PRESSURE_SUSTAIN_SECONDS!r}:\n"
+            "        for block in blocks:\n"
+            "            for offset in range(0, len(block), 4096):\n"
+            "                block[offset] = (block[offset] + 1) % 255\n"
+            "        time.sleep(0.02)\n"
+            "    while True:\n"
+            "        block = bytearray(4 * 1024 * 1024)\n"
+            "        for offset in range(0, len(block), 4096):\n"
+            "            block[offset] = 1\n"
+            "        blocks.append(block)\n"
+            "        time.sleep(0.05)\n",
+        ),
+    ]
+
+
+def _actual_positive_counter(value: object, key: str) -> int:
+    if not isinstance(value, dict):
+        raise AssertionError(f"resource usage did not include {key} counters")
+    counter = value.get(key)
+    if not isinstance(counter, int) or isinstance(counter, bool) or counter <= 0:
+        raise AssertionError(f"resource counter {key} did not prove pressure")
+    return counter
+
+
+def _actual_resource_evidence(
+    execution_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    observed_kinds: set[str] = set()
+    for row in execution_rows:
+        attempts = row["attempts"]
+        if not isinstance(attempts, list) or len(attempts) != 1:
+            raise AssertionError("pressure Execution did not have exactly one terminal Attempt")
+        attempt = attempts[0]
+        profile_snapshot = row["resource_profile"]
+        if not isinstance(attempt, dict) or not isinstance(profile_snapshot, dict):
+            raise AssertionError("pressure Attempt or Resource Profile was malformed")
+        usage = attempt.get("resource_usage_json")
+        if not isinstance(usage, dict):
+            raise AssertionError("terminal Attempt did not preserve cgroup resource usage")
+        limits = usage.get("limits")
+        if not isinstance(limits, dict) or any(
+            limits.get(key) != profile_snapshot.get(key) for key in ACTUAL_PROFILE_LIMIT_KEYS
+        ):
+            raise AssertionError("resource usage limits did not match the queued profile snapshot")
+        tmpfs = usage.get("tmpfs")
+        if (
+            not isinstance(tmpfs, dict)
+            or tmpfs.get("bounded") is not True
+            or tmpfs.get("limit") != profile_snapshot.get("tmp_bytes")
+        ):
+            raise AssertionError("Attempt tmpfs usage was not bounded by its snapshot")
+
+        kind = str(row["kind"])
+        observed_kinds.add(kind)
+        if kind == "cpu":
+            cpu = usage.get("cpu")
+            counters = {
+                "usage_usec": _actual_positive_counter(cpu, "usage_usec"),
+                "nr_periods": _actual_positive_counter(cpu, "nr_periods"),
+                "nr_throttled": _actual_positive_counter(cpu, "nr_throttled"),
+                "throttled_usec": _actual_positive_counter(cpu, "throttled_usec"),
+            }
+            if attempt.get("status") not in {"cancelled", "timed_out"}:
+                raise AssertionError("CPU pressure Attempt had an unexpected terminal status")
+            evidence.append({"kind": kind, "cgroup_cpu": counters})
+        elif kind == "memory":
+            memory = usage.get("memory")
+            if not isinstance(memory, dict):
+                raise AssertionError("memory pressure did not include cgroup memory usage")
+            events = memory.get("events")
+            if not isinstance(events, dict) or not any(
+                isinstance(events.get(key), int)
+                and not isinstance(events.get(key), bool)
+                and int(events[key]) > 0
+                for key in ("oom", "oom_kill", "oom_group_kill")
+            ):
+                raise AssertionError("memory pressure did not trigger a cgroup OOM event")
+            if (
+                attempt.get("status") != "resource_exceeded"
+                or attempt.get("error_code") != "resource_exceeded_memory"
+            ):
+                raise AssertionError("memory pressure did not map to the stable resource error")
+            evidence.append(
+                {
+                    "kind": kind,
+                    "cgroup_memory": {
+                        "peak": memory.get("peak"),
+                        "events": events,
+                    },
+                }
+            )
+        else:
+            raise AssertionError("unknown pressure kind")
+    if observed_kinds != {"cpu", "memory"}:
+        raise AssertionError("pressure proof must exercise both CPU and Memory limits")
+    return evidence
 
 
 def run_actual_agent_pressure_probe(
@@ -950,41 +1101,14 @@ def run_actual_agent_pressure_probe(
         raise AssertionError("actual Agent readiness response did not include a Worker id")
     if configured_slots < 2:
         raise AssertionError("actual Agent pressure proof requires at least two slots")
-    specs = [
-        ("python", "cpu", PYTHON_FAULTS["cpu"]),
-        ("javascript", "cpu", JAVASCRIPT_FAULTS["cpu"]),
-        (
-            "python",
-            "memory",
-            "import time\ndef handle(context, input):\n"
-            "    blocks = [bytearray(8 * 1024 * 1024) for _ in range(3)]\n"
-            "    for block in blocks:\n"
-            "        for offset in range(0, len(block), 4096): block[offset] = 1\n"
-            "    while True: time.sleep(0.1)\n",
-        ),
-        (
-            "java",
-            "memory",
-            "import java.util.ArrayList;\n"
-            "import java.util.Arrays;\n"
-            "import java.util.List;\n"
-            "public class Adapter {\n"
-            "  public Object handle(Context context, Object input) throws Exception {\n"
-            "    List<byte[]> blocks = new ArrayList<>();\n"
-            "    for (int index = 0; index < 3; index++) {\n"
-            "      byte[] block = new byte[8 * 1024 * 1024];\n"
-            "      Arrays.fill(block, (byte) 1); blocks.add(block);\n"
-            "    }\n"
-            "    while (true) Thread.sleep(100);\n"
-            "  }\n"
-            "}\n",
-        ),
-    ]
+    specs = _actual_pressure_specs()
     selected_specs = [specs[index % len(specs)] for index in range(configured_slots)]
+    pressure_start_unix = time.time() + ACTUAL_PRESSURE_LEAD_SECONDS
     execution_rows: list[dict[str, object]] = []
     for index, (language, kind, code) in enumerate(selected_specs, start=1):
         adapter_id, execution_id = _create_actual_pressure_execution(
-            f"{os.getpid()}-{uuid.uuid4().hex[:10]}-{index}", worker_id, language, code
+            f"{os.getpid()}-{uuid.uuid4().hex[:10]}-{index}", worker_id, language, code,
+            pressure_start_unix=pressure_start_unix,
         )
         execution_rows.append(
             {
@@ -1005,16 +1129,20 @@ def run_actual_agent_pressure_probe(
     health_samples = [ready_sample]
     heartbeat_values: list[object] = []
     pressure_heartbeat_values: list[object] = []
+    full_pressure_heartbeat_values: list[object] = []
     pressure_health_samples: list[dict[str, object]] = []
+    full_pressure_health_samples: list[dict[str, object]] = []
     active_attempt_counts: list[int] = []
     max_active_attempts = 0
+    max_active_attempts_during_limit_pressure = 0
     renewed_during_pressure_attempts: list[int] = []
+    renewed_during_full_pressure_attempts: list[int] = []
     result_reports_during_pressure: list[int] = []
     started_at = time.monotonic()
     cancel_row: dict[str, object] | None = None
     cancel_response: dict[str, object] | None = None
     cancel_requested_at: float | None = None
-    deadline = started_at + 45
+    deadline = started_at + 150
     terminal_statuses = {
         "succeeded",
         "failed",
@@ -1064,7 +1192,7 @@ def run_actual_agent_pressure_probe(
                 if attempt_status not in row["attempt_status_history"]:
                     row["attempt_status_history"].append(attempt_status)
                 lease = attempt.get("lease_expires_at")
-                if lease not in row["lease_expiries"]:
+                if lease is not None and lease not in row["lease_expiries"]:
                     row["lease_expiries"].append(lease)
                 if attempt_status in terminal_statuses:
                     row["attempts"] = attempts
@@ -1077,7 +1205,12 @@ def run_actual_agent_pressure_probe(
         )
         active_attempt_counts.append(active_attempts)
         max_active_attempts = max(max_active_attempts, active_attempts)
-        if active_attempts:
+        limit_pressure_started = time.time() >= pressure_start_unix
+        if limit_pressure_started:
+            max_active_attempts_during_limit_pressure = max(
+                max_active_attempts_during_limit_pressure, active_attempts
+            )
+        if active_attempts and limit_pressure_started:
             pressure_health_samples.append(sample)
             pressure_heartbeat_values.extend(
                 value
@@ -1101,16 +1234,37 @@ def run_actual_agent_pressure_probe(
                         attempt_id = attempt.get("id")
                         if isinstance(attempt_id, int):
                             result_reports_during_pressure.append(attempt_id)
+        all_slots_under_pressure = (
+            limit_pressure_started and active_attempts == configured_slots
+        )
+        if all_slots_under_pressure:
+            full_pressure_health_samples.append(sample)
+            full_pressure_heartbeat_values.extend(
+                value
+                for value in heartbeat_values[-1:]
+                if value is not None
+            )
+            for row in execution_rows:
+                if len(set(row["lease_expiries"])) >= 2:
+                    for attempt_id in row["attempt_ids"]:
+                        if attempt_id not in renewed_during_full_pressure_attempts:
+                            renewed_during_full_pressure_attempts.append(attempt_id)
         if (
             cancel_row is None
-            and max_active_attempts >= configured_slots
-            and time.monotonic() - started_at >= 2.0
+            and max_active_attempts_during_limit_pressure >= configured_slots
+            and len(
+                [sample for sample in full_pressure_health_samples if _healthy_runtime_sample(sample)]
+            )
+            >= 3
+            and len({value for value in full_pressure_heartbeat_values if value is not None}) >= 2
+            and renewed_during_full_pressure_attempts
         ):
             cancel_row = next(
                 (
                     row
                     for row in execution_rows
-                    if "running" in row["attempt_status_history"]
+                    if row["kind"] == "cpu"
+                    and "running" in row["attempt_status_history"]
                 ),
                 None,
             )
@@ -1159,6 +1313,11 @@ def run_actual_agent_pressure_probe(
         "configured_slots": configured_slots,
         "active_attempt_counts": active_attempt_counts,
     }
+    assert max_active_attempts_during_limit_pressure >= configured_slots, {
+        "configured_slots": configured_slots,
+        "active_attempt_counts": active_attempt_counts,
+        "pressure_start_unix": pressure_start_unix,
+    }
     assert cancel_row is not None and isinstance(cancel_response, dict), {
         "cancelled": cancel_row,
         "response": cancel_response,
@@ -1185,17 +1344,26 @@ def run_actual_agent_pressure_probe(
     pressure_healthy_samples = [
         sample for sample in pressure_health_samples if _healthy_runtime_sample(sample)
     ]
+    full_pressure_healthy_samples = [
+        sample for sample in full_pressure_health_samples if _healthy_runtime_sample(sample)
+    ]
     assert len(pressure_healthy_samples) >= 3, pressure_health_samples
+    assert len(full_pressure_healthy_samples) >= 3, full_pressure_health_samples
     unique_heartbeats = {value for value in heartbeat_values if value is not None}
     pressure_unique_heartbeats = {
         value for value in pressure_heartbeat_values if value is not None
     }
+    full_pressure_unique_heartbeats = {
+        value for value in full_pressure_heartbeat_values if value is not None
+    }
     assert len(pressure_unique_heartbeats) >= 2, pressure_heartbeat_values
+    assert len(full_pressure_unique_heartbeats) >= 2, full_pressure_heartbeat_values
     renewed_rows = [
         row for row in execution_rows if len(set(row["lease_expiries"])) >= 2
     ]
     assert renewed_rows, execution_rows
     assert renewed_during_pressure_attempts, execution_rows
+    assert renewed_during_full_pressure_attempts, execution_rows
     reported_rows = [
         row
         for row in execution_rows
@@ -1221,6 +1389,7 @@ def run_actual_agent_pressure_probe(
         profile_snapshot = row["resource_profile"]
         assert isinstance(profile_snapshot, dict), row
         assert profile_snapshot.get("backend") == "cgroup_v2", row
+    resource_evidence = _actual_resource_evidence(execution_rows)
     return {
         "worker_id": worker_id,
         "worker_isolation_capabilities": worker.get("isolation_capabilities"),
@@ -1238,6 +1407,7 @@ def run_actual_agent_pressure_probe(
                 "lease_expiry_samples": len(row["lease_expiries"]),
                 "cleanup_completed": True,
                 "resource_profile": row["resource_profile"],
+                "terminal_attempt": row["attempts"][0],
             }
             for row in execution_rows
         ],
@@ -1245,13 +1415,18 @@ def run_actual_agent_pressure_probe(
         "heartbeat_updates": len(unique_heartbeats),
         "pressure_heartbeat_samples": len(pressure_heartbeat_values),
         "pressure_heartbeat_updates": len(pressure_unique_heartbeats),
+        "full_pressure_heartbeat_updates": len(full_pressure_unique_heartbeats),
         "max_active_attempts": max_active_attempts,
+        "max_active_attempts_during_limit_pressure": max_active_attempts_during_limit_pressure,
         "active_attempt_counts": active_attempt_counts,
         "control_health_samples": len(health_samples),
         "healthy_control_database_rabbitmq_outbox_samples": len(healthy_samples),
         "pressure_health_samples": len(pressure_health_samples),
         "pressure_healthy_control_database_rabbitmq_outbox_samples": len(
             pressure_healthy_samples
+        ),
+        "full_pressure_healthy_control_database_rabbitmq_outbox_samples": len(
+            full_pressure_healthy_samples
         ),
         "cancel_requested_and_reported": bool(
             cancel_response.get("cancel_requested") is True
@@ -1260,9 +1435,12 @@ def run_actual_agent_pressure_probe(
         "cancel_response_status": cancel_response.get("status"),
         "renewed_and_reported": bool(renewed_rows),
         "renewed_attempt_ids": renewed_during_pressure_attempts,
+        "renewed_during_full_pressure_attempt_ids": renewed_during_full_pressure_attempts,
         "result_reports": len(reported_rows),
         "result_reports_during_pressure": len(result_reports_during_pressure),
         "result_report_attempt_ids_during_pressure": result_reports_during_pressure,
+        "resource_limits_proven": ["cpu", "memory"],
+        "resource_evidence": resource_evidence,
         "aggregate_envelope_tied_to_profiles": all(
             isinstance(row["resource_profile"], dict)
             and row["resource_profile"].get("backend") == "cgroup_v2"
@@ -1290,11 +1468,13 @@ def run_budget_probe(root: Path, config: sandbox.SandboxConfig) -> dict[str, obj
         root / "actual-agent-pressure", envelope.as_dict(), slots
     )
     assert actual_agent["max_active_attempts"] >= slots
+    assert actual_agent["max_active_attempts_during_limit_pressure"] >= slots
     assert actual_agent["pressure_healthy_control_database_rabbitmq_outbox_samples"] >= 3
     assert actual_agent["pressure_heartbeat_updates"] >= 2
     assert actual_agent["cancel_requested_and_reported"] is True
     assert actual_agent["renewed_and_reported"] is True
     assert actual_agent["result_reports"] == slots
+    assert actual_agent["resource_limits_proven"] == ["cpu", "memory"]
     base_specs = (
         ("python", "cpu", PYTHON_FAULTS["cpu"], profile(timeout=3)),
         ("javascript", "cpu", JAVASCRIPT_FAULTS["cpu"], profile(timeout=3)),

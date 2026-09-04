@@ -386,6 +386,22 @@ def test_dependency_preparation_uses_attempt_cgroup_and_bounded_log(
     assert (cgroup / "cgroup.procs").read_text(encoding="ascii").strip()
 
 
+def test_dependency_timeout_is_not_blocked_by_a_partial_pipe_read() -> None:
+    started_at = time.monotonic()
+    with pytest.raises(venv_manager.DependencyPreparationError) as error:
+        venv_manager._run_logged(
+            [
+                sys.executable,
+                "-c",
+                "import os,time; os.write(1,b'x'); time.sleep(4)",
+            ],
+            timeout_seconds=1,
+        )
+
+    assert error.value.error_code == "dependency_timeout"
+    assert time.monotonic() - started_at < 2.5
+
+
 def test_dependency_build_stages_inside_attempt_tmpfs_until_promotion(tmp_path: object) -> None:
     root = Path(tmp_path)
     dependency_tmp = root / "dependency-tmp"
@@ -530,7 +546,7 @@ def test_dependency_command_stops_when_cache_reservation_is_lost(tmp_path: objec
     def release_after_start() -> None:
         nonlocal checks
         checks += 1
-        if checks == 2:
+        if checks == 3:
             reservation.release()
         build.assert_live()
 
@@ -540,18 +556,20 @@ def test_dependency_command_stops_when_cache_reservation_is_lost(tmp_path: objec
         nofile=64,
         log_max_bytes=4096,
     ).with_reservation(release_after_start, build.lease_lost)
+    started_at = time.monotonic()
     try:
         with pytest.raises(venv_manager.DependencyPreparationError) as error:
             venv_manager._run_logged(
                 [
                     sys.executable,
                     "-c",
-                    "import time; print('started', flush=True); time.sleep(30)",
+                    "import time; print('started', flush=True); time.sleep(4)",
                 ],
                 timeout_seconds=5,
                 context=context,
             )
         assert error.value.error_code == "dependency_cache_reservation_expired"
+        assert time.monotonic() - started_at < 2.5
         assert (cgroup / "cgroup.kill").read_text(encoding="ascii") == "1\n"
     finally:
         build.abort()

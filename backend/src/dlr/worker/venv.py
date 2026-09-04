@@ -759,7 +759,13 @@ def _run_logged(
                     error_code="dependency_timeout",
                 )
             for key, _ in selector.select(min(0.25, remaining)):
-                chunk = cast(Any, key.fileobj).read(_DEPENDENCY_READ_CHUNK)
+                stream = cast(Any, key.fileobj)
+                reader = getattr(stream, "read1", None)
+                chunk = (
+                    cast(bytes, reader(_DEPENDENCY_READ_CHUNK))
+                    if callable(reader)
+                    else os.read(stream.fileno(), _DEPENDENCY_READ_CHUNK)
+                )
                 if chunk:
                     append_output(chunk)
                 else:

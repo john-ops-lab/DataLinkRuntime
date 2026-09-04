@@ -25,6 +25,24 @@ TERMINAL_STATUSES = {
     "worker_lost",
     "resource_exceeded",
 }
+PRESSURE_LEAD_SECONDS = 20.0
+PRESSURE_SUSTAIN_SECONDS = 24.0
+ATTEMPT_TIMEOUT_SECONDS = 60
+PROFILE_LIMIT_KEYS = (
+    "cpu_cores",
+    "memory_bytes",
+    "pids",
+    "tmp_bytes",
+    "nofile",
+    "execution_timeout_seconds",
+    "claim_timeout_seconds",
+    "recovery_grace_seconds",
+    "workspace_cleanup_attempt_timeout_seconds",
+    "workspace_cleanup_total_timeout_seconds",
+    "stream_max_bytes",
+    "output_max_bytes",
+    "output_preview_max_bytes",
+)
 
 
 def _api_request(
@@ -120,7 +138,14 @@ def _wait_for_agent() -> tuple[dict[str, object], dict[str, object]]:
     raise AssertionError("real Compose Worker Agent did not pass the v3 registration gate")
 
 
-def _create_canary(worker_id: int, suffix: str, language: str, code: str) -> tuple[int, int]:
+def _create_canary(
+    worker_id: int,
+    suffix: str,
+    language: str,
+    code: str,
+    *,
+    pressure_start_unix: float,
+) -> tuple[int, int]:
     adapter = _api_request(
         "POST",
         "/adapters",
@@ -129,7 +154,7 @@ def _create_canary(worker_id: int, suffix: str, language: str, code: str) -> tup
             "description": "Issue 130 B3 real Worker Agent pressure proof",
             "language": language,
             "adapter_type": "task",
-            "timeout_seconds": 8,
+            "timeout_seconds": ATTEMPT_TIMEOUT_SECONDS,
         },
         expected=201,
     )
@@ -150,7 +175,12 @@ def _create_canary(worker_id: int, suffix: str, language: str, code: str) -> tup
     execution = _api_request(
         "POST",
         f"/adapters/{adapter_id}/executions/canary",
-        {"input": {"source": "issue130-b3-real-agent"}},
+        {
+            "input": {
+                "source": "issue130-b3-real-agent",
+                "pressure_start_unix": pressure_start_unix,
+            }
+        },
         expected=202,
     )
     if not isinstance(execution, dict) or not isinstance(execution.get("id"), int):
@@ -161,44 +191,127 @@ def _create_canary(worker_id: int, suffix: str, language: str, code: str) -> tup
 
 
 def _pressure_specs() -> list[tuple[str, str, str]]:
+    wait_for_pressure = (
+        "    while time.time() < float(input['pressure_start_unix']):\n        time.sleep(0.02)\n"
+    )
     return [
         (
             "python",
             "cpu",
-            "def handle(context, input):\n    while True:\n        pass\n",
-        ),
-        (
-            "javascript",
-            "cpu",
-            "export function handle(context, input) {\n  while (true) {}\n}\n",
+            "import os\nimport time\n"
+            "def handle(context, input):\n"
+            f"{wait_for_pressure}"
+            "    for _ in range(4):\n"
+            "        if os.fork() == 0:\n"
+            "            while True:\n"
+            "                pass\n"
+            "    while True:\n"
+            "        pass\n",
         ),
         (
             "python",
             "memory",
             "import time\ndef handle(context, input):\n"
-            "    blocks = [bytearray(8 * 1024 * 1024) for _ in range(3)]\n"
+            f"{wait_for_pressure}"
+            "    blocks = [bytearray(4 * 1024 * 1024) for _ in range(2)]\n"
             "    for block in blocks:\n"
-            "        for offset in range(0, len(block), 4096): block[offset] = 1\n"
-            "    while True: time.sleep(0.1)\n",
-        ),
-        (
-            "java",
-            "memory",
-            "import java.util.ArrayList;\n"
-            "import java.util.Arrays;\n"
-            "import java.util.List;\n"
-            "public class Adapter {\n"
-            "  public Object handle(Context context, Object input) throws Exception {\n"
-            "    List<byte[]> blocks = new ArrayList<>();\n"
-            "    for (int index = 0; index < 3; index++) {\n"
-            "      byte[] block = new byte[8 * 1024 * 1024];\n"
-            "      Arrays.fill(block, (byte) 1); blocks.add(block);\n"
-            "    }\n"
-            "    while (true) Thread.sleep(100);\n"
-            "  }\n"
-            "}\n",
+            "        for offset in range(0, len(block), 4096):\n"
+            "            block[offset] = 1\n"
+            f"    while time.time() < float(input['pressure_start_unix']) + {PRESSURE_SUSTAIN_SECONDS!r}:\n"
+            "        for block in blocks:\n"
+            "            for offset in range(0, len(block), 4096):\n"
+            "                block[offset] = (block[offset] + 1) % 255\n"
+            "        time.sleep(0.02)\n"
+            "    while True:\n"
+            "        block = bytearray(4 * 1024 * 1024)\n"
+            "        for offset in range(0, len(block), 4096):\n"
+            "            block[offset] = 1\n"
+            "        blocks.append(block)\n"
+            "        time.sleep(0.05)\n",
         ),
     ]
+
+
+def _positive_counter(value: object, key: str) -> int:
+    if not isinstance(value, dict):
+        raise AssertionError(f"resource usage did not include {key} counters")
+    counter = value.get(key)
+    if not isinstance(counter, int) or isinstance(counter, bool) or counter <= 0:
+        raise AssertionError(f"resource counter {key} did not prove pressure")
+    return counter
+
+
+def _resource_evidence(rows: list[dict[str, Any]]) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    observed_kinds: set[str] = set()
+    for row in rows:
+        attempts = row["attempts"]
+        if not isinstance(attempts, list) or len(attempts) != 1:
+            raise AssertionError("pressure Execution did not have exactly one terminal Attempt")
+        attempt = attempts[0]
+        profile = row["resource_profile"]
+        if not isinstance(attempt, dict) or not isinstance(profile, dict):
+            raise AssertionError("pressure Attempt or Resource Profile was malformed")
+        usage = attempt.get("resource_usage_json")
+        if not isinstance(usage, dict):
+            raise AssertionError("terminal Attempt did not preserve cgroup resource usage")
+        limits = usage.get("limits")
+        if not isinstance(limits, dict) or any(
+            limits.get(key) != profile.get(key) for key in PROFILE_LIMIT_KEYS
+        ):
+            raise AssertionError("resource usage limits did not match the queued profile snapshot")
+        tmpfs = usage.get("tmpfs")
+        if (
+            not isinstance(tmpfs, dict)
+            or tmpfs.get("bounded") is not True
+            or tmpfs.get("limit") != profile.get("tmp_bytes")
+        ):
+            raise AssertionError("Attempt tmpfs usage was not bounded by its snapshot")
+
+        kind = row["kind"]
+        observed_kinds.add(str(kind))
+        if kind == "cpu":
+            cpu = usage.get("cpu")
+            counters = {
+                "usage_usec": _positive_counter(cpu, "usage_usec"),
+                "nr_periods": _positive_counter(cpu, "nr_periods"),
+                "nr_throttled": _positive_counter(cpu, "nr_throttled"),
+                "throttled_usec": _positive_counter(cpu, "throttled_usec"),
+            }
+            if attempt.get("status") not in {"cancelled", "timed_out"}:
+                raise AssertionError("CPU pressure Attempt had an unexpected terminal status")
+            evidence.append({"kind": kind, "cgroup_cpu": counters})
+        elif kind == "memory":
+            memory = usage.get("memory")
+            if not isinstance(memory, dict):
+                raise AssertionError("memory pressure did not include cgroup memory usage")
+            events = memory.get("events")
+            if not isinstance(events, dict) or not any(
+                isinstance(events.get(key), int)
+                and not isinstance(events.get(key), bool)
+                and int(events[key]) > 0
+                for key in ("oom", "oom_kill", "oom_group_kill")
+            ):
+                raise AssertionError("memory pressure did not trigger a cgroup OOM event")
+            if (
+                attempt.get("status") != "resource_exceeded"
+                or attempt.get("error_code") != "resource_exceeded_memory"
+            ):
+                raise AssertionError("memory pressure did not map to the stable resource error")
+            evidence.append(
+                {
+                    "kind": kind,
+                    "cgroup_memory": {
+                        "peak": memory.get("peak"),
+                        "events": events,
+                    },
+                }
+            )
+        else:
+            raise AssertionError("unknown pressure kind")
+    if observed_kinds != {"cpu", "memory"}:
+        raise AssertionError("pressure proof must exercise both CPU and Memory limits")
+    return evidence
 
 
 def _record_attempt(row: dict[str, Any], execution: dict[str, Any], detail: dict[str, Any]) -> None:
@@ -221,7 +334,7 @@ def _record_attempt(row: dict[str, Any], execution: dict[str, Any], detail: dict
         if attempt_status not in row["attempt_status_history"]:
             row["attempt_status_history"].append(attempt_status)
         lease = attempt.get("lease_expires_at")
-        if lease not in row["lease_expiries"]:
+        if lease is not None and lease not in row["lease_expiries"]:
             row["lease_expiries"].append(lease)
     if attempts and all(
         isinstance(attempt, dict) and attempt.get("status") in TERMINAL_STATUSES
@@ -252,11 +365,16 @@ def run_pressure() -> dict[str, object]:
     if not isinstance(worker_id, int):
         raise AssertionError("real Agent readiness response did not include a Worker id")
     specs = _pressure_specs()
+    pressure_start_unix = time.time() + PRESSURE_LEAD_SECONDS
     rows: list[dict[str, Any]] = []
     for index in range(slots):
         language, kind, code = specs[index % len(specs)]
         adapter_id, execution_id = _create_canary(
-            worker_id, f"{os.getpid()}-{uuid.uuid4().hex[:10]}-{index + 1}", language, code
+            worker_id,
+            f"{os.getpid()}-{uuid.uuid4().hex[:10]}-{index + 1}",
+            language,
+            code,
+            pressure_start_unix=pressure_start_unix,
         )
         rows.append(
             {
@@ -276,16 +394,21 @@ def run_pressure() -> dict[str, object]:
 
     heartbeat_values: list[object] = []
     pressure_heartbeat_values: list[object] = []
+    full_pressure_heartbeat_values: list[object] = []
     health_samples = [ready_sample]
     pressure_health_samples: list[dict[str, object]] = []
+    full_pressure_health_samples: list[dict[str, object]] = []
     active_attempt_counts: list[int] = []
     max_active_attempts = 0
+    max_active_attempts_during_limit_pressure = 0
     renewed_attempt_ids: list[int] = []
+    renewed_during_full_pressure_attempt_ids: list[int] = []
     reported_attempt_ids: list[int] = []
+    reported_during_pressure_attempt_ids: list[int] = []
     cancel_row: dict[str, Any] | None = None
     cancel_response: dict[str, Any] | None = None
     started_at = time.monotonic()
-    deadline = started_at + 60
+    deadline = started_at + 150
     while time.monotonic() < deadline:
         workers = _api_request("GET", "/workers")
         if isinstance(workers, list):
@@ -329,18 +452,44 @@ def run_pressure() -> dict[str, object]:
         )
         active_attempt_counts.append(active)
         max_active_attempts = max(max_active_attempts, active)
-        if active:
+        limit_pressure_started = time.time() >= pressure_start_unix
+        if limit_pressure_started:
+            max_active_attempts_during_limit_pressure = max(
+                max_active_attempts_during_limit_pressure, active
+            )
+        if active and limit_pressure_started:
             pressure_health_samples.append(sample)
             pressure_heartbeat_values.extend(
                 value for value in heartbeat_values[-1:] if value is not None
             )
+            for attempt_id in reported_attempt_ids:
+                if attempt_id not in reported_during_pressure_attempt_ids:
+                    reported_during_pressure_attempt_ids.append(attempt_id)
+        all_slots_under_pressure = limit_pressure_started and active == slots
+        if all_slots_under_pressure:
+            full_pressure_health_samples.append(sample)
+            full_pressure_heartbeat_values.extend(
+                value for value in heartbeat_values[-1:] if value is not None
+            )
+            for row in rows:
+                if len(row["lease_expiries"]) >= 2:
+                    for attempt_id in row["attempt_ids"]:
+                        if attempt_id not in renewed_during_full_pressure_attempt_ids:
+                            renewed_during_full_pressure_attempt_ids.append(attempt_id)
         if (
             cancel_row is None
-            and max_active_attempts >= slots
-            and time.monotonic() - started_at >= 2
+            and max_active_attempts_during_limit_pressure >= slots
+            and len([sample for sample in full_pressure_health_samples if _healthy(sample)]) >= 3
+            and len({value for value in full_pressure_heartbeat_values if value is not None}) >= 2
+            and renewed_during_full_pressure_attempt_ids
         ):
             cancel_row = next(
-                (row for row in rows if "running" in row["attempt_status_history"]), None
+                (
+                    row
+                    for row in rows
+                    if row["kind"] == "cpu" and "running" in row["attempt_status_history"]
+                ),
+                None,
             )
             if cancel_row is not None:
                 response = _api_request("POST", f"/executions/{cancel_row['execution_id']}/cancel")
@@ -377,11 +526,24 @@ def run_pressure() -> dict[str, object]:
         )
 
     healthy_pressure = [sample for sample in pressure_health_samples if _healthy(sample)]
+    healthy_full_pressure = [
+        sample for sample in full_pressure_health_samples if _healthy(sample)
+    ]
     heartbeat_updates = len({value for value in heartbeat_values if value is not None})
     pressure_heartbeat_updates = len(
         {value for value in pressure_heartbeat_values if value is not None}
     )
-    if max_active_attempts < slots or len(healthy_pressure) < 3 or pressure_heartbeat_updates < 2:
+    full_pressure_heartbeat_updates = len(
+        {value for value in full_pressure_heartbeat_values if value is not None}
+    )
+    if (
+        max_active_attempts < slots
+        or max_active_attempts_during_limit_pressure < slots
+        or len(healthy_pressure) < 3
+        or len(healthy_full_pressure) < 3
+        or pressure_heartbeat_updates < 2
+        or full_pressure_heartbeat_updates < 2
+    ):
         raise AssertionError("Agent heartbeat/health evidence was insufficient during pressure")
     if cancel_row is None or cancel_response is None:
         raise AssertionError("real Agent cancel was not exercised")
@@ -398,11 +560,16 @@ def run_pressure() -> dict[str, object]:
         raise AssertionError("real Agent pressure did not exercise a bounded terminal result")
     if not renewed_attempt_ids:
         raise AssertionError("real Agent did not renew an Attempt during pressure")
+    if not renewed_during_full_pressure_attempt_ids:
+        raise AssertionError("real Agent did not renew while every slot was under pressure")
     if len(reported_attempt_ids) < slots:
         raise AssertionError("real Agent result reports/cleanup were not observed for every slot")
+    if not reported_during_pressure_attempt_ids:
+        raise AssertionError("real Agent did not report a result while pressure remained active")
     for row in rows:
         if not row["resource_profile"] or row["resource_profile"].get("backend") != "cgroup_v2":
             raise AssertionError("queued Resource Profile snapshot was not observed")
+    resource_evidence = _resource_evidence(rows)
     return {
         "driver_role": "external_control_rabbitmq_pressure_driver",
         "driver_not_worker_exec": True,
@@ -416,20 +583,29 @@ def run_pressure() -> dict[str, object]:
         "verified_envelope": envelope,
         "configured_slots": slots,
         "max_active_attempts": max_active_attempts,
+        "max_active_attempts_during_limit_pressure": max_active_attempts_during_limit_pressure,
         "active_attempt_counts": active_attempt_counts,
         "heartbeat_samples": len(heartbeat_values),
         "heartbeat_updates": heartbeat_updates,
         "pressure_heartbeat_updates": pressure_heartbeat_updates,
+        "full_pressure_heartbeat_updates": full_pressure_heartbeat_updates,
         "healthy_control_database_rabbitmq_outbox_samples": sum(
             1 for sample in health_samples if _healthy(sample)
         ),
         "pressure_healthy_control_database_rabbitmq_outbox_samples": len(healthy_pressure),
+        "full_pressure_healthy_control_database_rabbitmq_outbox_samples": len(
+            healthy_full_pressure
+        ),
         "renewed_and_reported": bool(renewed_attempt_ids),
         "renewed_attempt_ids": renewed_attempt_ids,
+        "renewed_during_full_pressure_attempt_ids": renewed_during_full_pressure_attempt_ids,
         "cancel_requested_and_reported": True,
         "cancel_response_status": cancel_response.get("status"),
         "result_reports": len(reported_attempt_ids),
-        "result_reports_during_pressure": len(reported_attempt_ids),
+        "result_reports_during_pressure": len(reported_during_pressure_attempt_ids),
+        "result_report_attempt_ids_during_pressure": reported_during_pressure_attempt_ids,
+        "resource_limits_proven": ["cpu", "memory"],
+        "resource_evidence": resource_evidence,
         "attempts": [
             {
                 "execution_id": row["execution_id"],
@@ -440,6 +616,7 @@ def run_pressure() -> dict[str, object]:
                 "attempt_status_history": row["attempt_status_history"],
                 "lease_expiry_samples": len(row["lease_expiries"]),
                 "resource_profile": row["resource_profile"],
+                "terminal_attempt": row["attempts"][0],
                 "cleanup_completed": True,
             }
             for row in rows

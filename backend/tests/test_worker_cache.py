@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 import threading
 from pathlib import Path
@@ -65,6 +66,68 @@ def test_reservations_are_bounded_across_concurrent_misses(tmp_path: Path) -> No
     assert sum(int(item["amount"]) for item in cache._state().values()) == 3000
     reservations[0].release()
     assert sum(int(item["amount"]) for item in cache._state().values()) == 0
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        b"{not-json\n",
+        b"[]\n",
+        json.dumps({"reservations": {"token": {"amount": "3000", "expires": 9999999999}}}).encode(
+            "ascii"
+        ),
+    ],
+)
+def test_corrupt_reservation_ledger_fails_closed(tmp_path: Path, state: bytes) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=4096, low_watermark_bytes=0)
+    cache._state_path.write_bytes(state)
+
+    with pytest.raises(CacheError) as error:
+        cache.reserve(1024)
+
+    assert error.value.code == "cache_state_invalid"
+    assert cache._state_path.read_bytes() == state
+
+
+def test_unreadable_reservation_ledger_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=4096, low_watermark_bytes=0)
+    cache._state_path.write_text('{"reservations":{}}\n', encoding="ascii")
+    original_read_text = Path.read_text
+
+    def deny_state_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == cache._state_path:
+            raise PermissionError("denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", deny_state_read)
+    with pytest.raises(CacheError) as error:
+        cache.reserve(1024)
+
+    assert error.value.code == "cache_state_unavailable"
+
+
+def test_unreadable_committed_entry_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = VerifiedVersionCache(tmp_path / "cache", max_bytes=4096, low_watermark_bytes=0)
+    entry = cache.entries / "committed"
+    entry.mkdir()
+    payload = entry / "runtime.bin"
+    payload.write_bytes(b"occupied")
+    original_lstat = Path.lstat
+
+    def deny_payload_lstat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == payload:
+            raise PermissionError("denied")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", deny_payload_lstat)
+    with pytest.raises(CacheError) as error:
+        cache.reserve(1024)
+
+    assert error.value.code == "cache_accounting_failed"
 
 
 def test_failed_read_only_staging_can_be_removed_without_broad_cleanup(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import stat
@@ -31,6 +32,7 @@ _READY_NAME = ".ready"
 _RESERVATIONS_NAME = ".dlr-cache-reservations.json"
 _LOCK_NAME = ".dlr-cache-reservations.lock"
 _STATE_FIELDS = frozenset({"reservations"})
+_RESERVATION_FIELDS = frozenset({"amount", "expires"})
 _MANIFEST_FIELDS = frozenset({"bytes", "digest", "files", "identity"})
 _SAFE_KEY = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 logger = logging.getLogger("dlr.worker.cache")
@@ -119,10 +121,18 @@ def _fsync_directory(path: Path) -> None:
 
 def _read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="ascii"))
-    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        raw = path.read_text(encoding="ascii")
+    except FileNotFoundError:
         return default
-    return value if isinstance(value, dict) else default
+    except (OSError, UnicodeError) as error:
+        raise CacheError("cache_state_unavailable") from error
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise CacheError("cache_state_invalid") from error
+    if not isinstance(value, dict):
+        raise CacheError("cache_state_invalid")
+    return value
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -412,39 +422,56 @@ class VerifiedVersionCache:
 
     def _state(self) -> dict[str, dict[str, int | float]]:
         value = _read_json(self._state_path, {"reservations": {}})
+        if set(value) != _STATE_FIELDS:
+            raise CacheError("cache_state_invalid")
         reservations = value.get("reservations")
         if not isinstance(reservations, dict):
-            return {}
+            raise CacheError("cache_state_invalid")
         now = time.time()
         valid: dict[str, dict[str, int | float]] = {}
         for token, item in reservations.items():
             if not isinstance(token, str) or not isinstance(item, dict):
-                continue
+                raise CacheError("cache_state_invalid")
+            try:
+                _safe_key(token)
+            except CacheError as error:
+                raise CacheError("cache_state_invalid") from error
+            if set(item) != _RESERVATION_FIELDS:
+                raise CacheError("cache_state_invalid")
             amount = item.get("amount")
             expires = item.get("expires")
+            if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+                raise CacheError("cache_state_invalid")
             if (
-                isinstance(amount, int)
-                and not isinstance(amount, bool)
-                and amount > 0
-                and isinstance(expires, (int, float))
-                and expires > now
+                not isinstance(expires, (int, float))
+                or isinstance(expires, bool)
+                or not math.isfinite(float(expires))
+                or expires <= 0
             ):
+                raise CacheError("cache_state_invalid")
+            if expires > now:
                 valid[token] = {"amount": amount, "expires": expires}
         return valid
 
     def _committed_bytes(self) -> int:
         total = 0
-        for entry in self.entries.iterdir():
-            try:
+        try:
+            for entry in self.entries.iterdir():
                 entry_info = entry.lstat()
-                if entry.name.startswith(".") or not stat.S_ISDIR(entry_info.st_mode):
+                if entry.name.startswith("."):
                     continue
+                if not stat.S_ISDIR(entry_info.st_mode):
+                    raise CacheError("cache_accounting_failed")
                 for path in entry.rglob("*"):
                     info = path.lstat()
                     if stat.S_ISREG(info.st_mode):
                         total += info.st_size
-            except OSError:
-                continue
+                    elif not stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                        raise CacheError("cache_accounting_failed")
+        except CacheError:
+            raise
+        except OSError as error:
+            raise CacheError("cache_accounting_failed") from error
         return total
 
     def reserve(self, amount: int, *, ttl_seconds: int = 900) -> CacheReservation:

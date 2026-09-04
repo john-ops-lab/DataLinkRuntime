@@ -327,11 +327,19 @@ for literal in \
   'driver_not_worker_exec' \
   'rabbitmq_execution_v3' \
   'resource_envelope_verified_before_registration' \
+  'max_active_attempts_during_limit_pressure' \
+  'full_pressure_heartbeat_updates' \
+  'full_pressure_healthy_control_database_rabbitmq_outbox_samples' \
   'pressure_heartbeat_updates' \
   'pressure_healthy_control_database_rabbitmq_outbox_samples' \
   'renewed_and_reported' \
+  'renewed_during_full_pressure_attempt_ids' \
   'cancel_requested_and_reported' \
-  'result_reports'; do
+  'result_reports' \
+  'resource_limits_proven' \
+  'resource_usage_json' \
+  'nr_throttled' \
+  'oom_kill'; do
   if ! grep -Fq -- "$literal" "$agent_pressure_driver"; then
     echo "actual Agent pressure driver is missing evidence field: $literal" >&2
     exit 1
@@ -419,13 +427,21 @@ require_runtime_literal 'actual_agent_is_f3_gate'
 require_runtime_literal 'worker.get("isolation_capabilities")'
 require_runtime_literal 'resource_envelope_verified'
 require_runtime_literal 'max_active_attempts'
+require_runtime_literal 'max_active_attempts_during_limit_pressure'
+require_runtime_literal 'full_pressure_heartbeat_updates'
+require_runtime_literal 'full_pressure_healthy_control_database_rabbitmq_outbox_samples'
 require_runtime_literal 'pressure_heartbeat_updates'
 require_runtime_literal 'pressure_healthy_control_database_rabbitmq_outbox_samples'
 require_runtime_literal 'renewed_during_pressure_attempts'
+require_runtime_literal 'renewed_during_full_pressure_attempts'
 require_runtime_literal 'result_reports_during_pressure'
 require_runtime_literal 'cancel_requested_and_reported'
 require_runtime_literal 'renewed_and_reported'
 require_runtime_literal 'result_reports'
+require_runtime_literal 'resource_limits_proven'
+require_runtime_literal 'resource_usage_json'
+require_runtime_literal 'nr_throttled'
+require_runtime_literal 'oom_kill'
 require_runtime_literal '_healthy_runtime_sample(sample)'
 require_runtime_literal 'concurrent_pressure_attempts'
 require_runtime_literal 'all_slots_started'
@@ -447,6 +463,7 @@ require_runtime_literal 'crash'
 for test_name in \
   test_wait_with_progress_caps_the_physical_log_file \
   test_dependency_preparation_uses_attempt_cgroup_and_bounded_log \
+  test_dependency_timeout_is_not_blocked_by_a_partial_pipe_read \
   test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size \
   test_dependency_build_stages_inside_attempt_tmpfs_until_promotion \
   test_dependency_command_stops_when_cache_reservation_is_lost \
@@ -461,6 +478,9 @@ done
 for test_name in \
   test_promoted_entry_is_verified_read_only_and_tamper_detected \
   test_reservations_are_bounded_across_concurrent_misses \
+  test_corrupt_reservation_ledger_fails_closed \
+  test_unreadable_reservation_ledger_fails_closed \
+  test_unreadable_committed_entry_fails_closed \
   test_cache_rejects_leaf_symlinks_for_verify_and_cleanup \
   test_tmpfs_failed_promotion_preserves_primary_error_when_cleanup_fails_once; do
   if ! grep -Fq -- "$test_name" "$cache_tests"; then
