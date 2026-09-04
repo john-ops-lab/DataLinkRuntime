@@ -1415,10 +1415,13 @@ def run(
                 "runtime.unavailable",
                 runtime=runtime_name,
             )
+        elif preparation.no_source:
+            # ``no_source`` is the env manager's explicit machine contract.
+            # Do not let incidental text in an offline tool log (for example
+            # a stale cached authentication diagnostic) override it.
+            failure_message = i18n.text(locale, f"dependency.no_source_{language}")
         elif hint is not None:
             failure_message = f"{failure_message}: {hint}"
-        elif preparation.no_source:
-            failure_message = i18n.text(locale, f"dependency.no_source_{language}")
         # The env managers raise DLR-generated English summaries ("uv pip
         # install failed") that are internal diagnostics, not user-facing
         # copy; the error field carries only Execution-locale DLR text. The
@@ -1466,9 +1469,7 @@ def run(
         )
         result = {
             "status": (
-                "resource_exceeded"
-                if preparation.error_code in RESOURCE_ERROR_CODES
-                else "failed"
+                "resource_exceeded" if preparation.error_code in RESOURCE_ERROR_CODES else "failed"
             ),
             "error": redact_secrets(result_error, dependency_secret_values),
             "error_code": preparation.error_code,

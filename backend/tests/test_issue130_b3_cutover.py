@@ -25,6 +25,7 @@ from dlr.control.models import (
 from dlr.control.schemas.reliable_runtime import AttemptResultBody, ClaimDecision
 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
 from dlr.control.services import attempt as attempt_service
+from dlr.control.services import migration as migration_service
 from dlr.control.services import rabbitmq
 from test_adapters import create_adapter, save_version
 
@@ -375,6 +376,14 @@ def test_preflight_is_read_only_and_fails_closed_until_every_worker_and_gate_pas
         "backup_restore_gate_not_attested",
         "worker_v3_isolation_not_ready",
     }
+    assert first_body["index_retirement"]["status"] == "blocked"
+    assert {
+        "backup_restore_gate_not_attested",
+        "slot_gate_not_attested",
+        "rabbitmq_ingress_not_enabled",
+        "minimum_worker_protocol_not_v3",
+        "worker_v3_isolation_not_ready",
+    }.issubset(first_body["index_retirement"]["blockers"])
     assert _index_present(session_factory) is True
 
     upgraded = _register_worker(api_client, "b3-preflight-v2", protocol_version=3)
@@ -391,6 +400,15 @@ def test_preflight_is_read_only_and_fails_closed_until_every_worker_and_gate_pas
     assert second.status_code == 200, second.text
     assert second.json()["status"] == "ready"
     assert second.json()["blockers"] == []
+    assert second.json()["index_retirement"] == {
+        "status": "blocked",
+        "blockers": [
+            "slot_gate_not_attested",
+            "rabbitmq_ingress_not_enabled",
+            "minimum_worker_protocol_not_v3",
+            "rabbitmq_ingress_not_ready",
+        ],
+    }
     assert _index_present(session_factory) is True
 
 
@@ -483,6 +501,12 @@ def test_cutover_sequence_and_slot_authority_hold_before_and_after_index_retirem
     assert _index_present(session_factory) is True
 
     monkeypatch.setattr(settings, "cutover_slot_gate_passed", True)
+    retirement_preflight = api_client.get("/api/admin/reliable-runtime/cutover/preflight")
+    assert retirement_preflight.status_code == 200, retirement_preflight.text
+    assert retirement_preflight.json()["index_retirement"] == {
+        "status": "ready",
+        "blockers": [],
+    }
     mismatch = api_client.post(
         "/api/admin/reliable-runtime/cutover/retire-legacy-index",
         json=_retire_body("wrong_revision"),
@@ -519,6 +543,12 @@ def test_cutover_sequence_and_slot_authority_hold_before_and_after_index_retirem
             "after-index",
         )
         monkeypatch.setattr(settings, "legacy_execution_claim_enabled", False)
+        repeated_after_claim_close = api_client.post(
+            "/api/admin/reliable-runtime/cutover/retire-legacy-index",
+            json=_retire_body(schema_revision),
+        )
+        assert repeated_after_claim_close.status_code == 200, repeated_after_claim_close.text
+        assert repeated_after_claim_close.json()["changed"] is False
         first = api_client.get("/api/admin/reliable-runtime/cutover/invariants")
         second = api_client.get("/api/admin/reliable-runtime/cutover/invariants")
         assert first.status_code == 200, first.text
@@ -540,6 +570,63 @@ def test_cutover_sequence_and_slot_authority_hold_before_and_after_index_retirem
         assert historical.json()["status"] == "succeeded"
     finally:
         _restore_legacy_index(test_engine)
+
+
+def test_index_retirement_rechecks_all_preconditions_after_table_lock(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema_revision = api_client.get("/api/admin/reliable-runtime/inventory").json()[
+        "schema_revision"
+    ]
+    checks = 0
+
+    def changing_preconditions(_session: Session) -> list[str]:
+        nonlocal checks
+        checks += 1
+        return [] if checks == 1 else ["worker_v3_isolation_not_ready"]
+
+    monkeypatch.setattr(
+        migration_service,
+        "_cutover_mutation_blockers",
+        changing_preconditions,
+    )
+    response = api_client.post(
+        "/api/admin/reliable-runtime/cutover/retire-legacy-index",
+        json=_retire_body(schema_revision),
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "cutover_precondition_failed",
+        "message": "Reliable-runtime Cutover preconditions changed while acquiring the lock",
+        "params": {"blockers": ["worker_v3_isolation_not_ready"]},
+    }
+    assert checks == 2
+    assert _index_present(session_factory) is True
+
+
+@pytest.mark.parametrize(
+    ("messages_ready", "messages_unacknowledged"),
+    ((True, 0), (-1, 0), (0, False), (0, -1), (None, 0), (0, "1")),
+)
+def test_infrastructure_dlq_observation_rejects_invalid_counters(
+    monkeypatch: pytest.MonkeyPatch,
+    messages_ready: object,
+    messages_unacknowledged: object,
+) -> None:
+    monkeypatch.setattr(
+        rabbitmq,
+        "_fetch_queue_details",
+        lambda _queue: {
+            "messages_ready": messages_ready,
+            "messages_unacknowledged": messages_unacknowledged,
+        },
+    )
+    monkeypatch.setattr(rabbitmq, "_assert_queue_policy", lambda *_args: None)
+    with pytest.raises(rabbitmq.RabbitMQTopologyError) as error:
+        rabbitmq.infrastructure_dlq_observation()
+    assert error.value.code == "topology_unavailable"
 
 
 def test_post_cutover_invariants_report_bounded_non_sensitive_corruption(

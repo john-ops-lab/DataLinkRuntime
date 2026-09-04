@@ -454,7 +454,7 @@ def _structural_invariant_violations(session: Session) -> list[dict[str, object]
 
 
 def cutover_preflight(session: Session) -> dict[str, object]:
-    """Read-only database/Broker readiness before any Cutover mutation."""
+    """Report both migration-stage and index-retirement readiness without writes."""
 
     facts = inventory(session)
     blockers: list[str] = []
@@ -480,11 +480,16 @@ def cutover_preflight(session: Session) -> dict[str, object]:
         blockers.append("outbox_backlog_degraded")
     if not bool(dark_launch["old_active_index_present"]):
         blockers.append("legacy_active_index_already_retired")
+    retirement_blockers = _cutover_mutation_blockers(session)
     return {
         "status": "ready" if not blockers else "blocked",
         "read_only": True,
         "backup_restore_evidence_required": True,
         "blockers": blockers,
+        "index_retirement": {
+            "status": "ready" if not retirement_blockers else "blocked",
+            "blockers": retirement_blockers,
+        },
         "inventory": facts,
     }
 
@@ -529,7 +534,7 @@ def retire_legacy_active_index(
     expected_schema_revision: str,
     backup_restore_evidence_id: str,
 ) -> dict[str, object]:
-    """Run the explicit, guarded Cutover schema migration exactly once."""
+    """Run the explicit, guarded Cutover schema change idempotently."""
 
     if not expected_schema_revision or not backup_restore_evidence_id:
         raise domain_error(
@@ -551,6 +556,21 @@ def retire_legacy_active_index(
                 else None,
             },
         )
+    if not _old_active_index_present(session):
+        session.rollback()
+        logger.info(
+            "Reliable-runtime Cutover index already retired; schema_revision=%s "
+            "backup_restore_evidence_id=%s",
+            expected_schema_revision,
+            backup_restore_evidence_id,
+        )
+        return {
+            "status": "completed",
+            "schema_revision": expected_schema_revision,
+            "backup_restore_evidence_id": backup_restore_evidence_id,
+            "old_active_index_present": False,
+            "changed": False,
+        }
     blockers = _cutover_mutation_blockers(session)
     if blockers:
         session.rollback()
@@ -561,14 +581,14 @@ def retire_legacy_active_index(
             {"blockers": blockers},
         )
     session.execute(text("LOCK TABLE executions IN SHARE ROW EXCLUSIVE MODE"))
-    locked_violations = _structural_invariant_violations(session)
-    if locked_violations:
+    locked_blockers = _cutover_mutation_blockers(session)
+    if locked_blockers:
         session.rollback()
         raise domain_error(
             409,
             "cutover_precondition_failed",
             "Reliable-runtime Cutover preconditions changed while acquiring the lock",
-            {"blockers": [str(item["code"]) for item in locked_violations]},
+            {"blockers": locked_blockers},
         )
     if not _old_active_index_present(session):
         session.rollback()

@@ -1405,9 +1405,7 @@ def test_real_linux_cancel_timeout_crash_cleanup(
         progress_callback=callback,
     )
     assert result["status"] == expected, result
-    expected_marker = (
-        "DLR_TEST_CRASH_STARTED" if outcome == "crash" else "DLR_TEST_SLEEP_STARTED"
-    )
+    expected_marker = "DLR_TEST_CRASH_STARTED" if outcome == "crash" else "DLR_TEST_SLEEP_STARTED"
     assert expected_marker in result["stdout"], result
     if outcome == "crash":
         assert "b3 crash" in result["stdout"], result

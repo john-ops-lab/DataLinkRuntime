@@ -1,5 +1,7 @@
 # Issue #130 Batch 3 Sandbox 部署
 
+**简体中文** · [English](../en/issue130-sandbox-deployment.md)
+
 本文描述 Linux cgroup v2 的 Worker host/Compose 前置和 v3 Sandbox 运行期合同；默认
 Compose 路径仍是 legacy/诊断路径，不会因为本 override 自动把普通流量切到 v3。真实
 Sandbox Gate 必须在 Linux 上完成；macOS、Docker Desktop 等环境不能用静态配置代替

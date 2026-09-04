@@ -8,26 +8,30 @@
 ```text
 ┌──────────────┐  HTTP/JSON + SSE  ┌─────────────────────────────┐
 │ web (React)  │ ─────────────────► │ control (FastAPI)           │
-└──────────────┘                    │ Adapter / Execution / AI API│
-                                    │ Schedule poller / Webhook   │
-                                    │ PostgreSQL                  │
-                                    └──────────────┬──────────────┘
-                                                   │ Worker long polls actively
-                                    ┌──────────────▼──────────────┐
-                                    │ worker (multi-runtime agent)│
-                                    │ Python / Node.js / Java     │
-                                    └─────────────────────────────┘
+└──────────────┘                    │ API / Schedule / Webhook    │
+                                    └──────┬──────────────┬───────┘
+                              transaction │              │ bounded publish
+                                    ┌──────▼──────┐ ┌────▼──────────────┐
+                                    │ PostgreSQL  │ │ RabbitMQ 4.3      │
+                                    │ authority   │ │ Quorum Queue      │
+                                    └──────▲──────┘ └────┬──────────────┘
+                                           │ Claim/renew │ dispatch
+                                    ┌──────┴─────────────▼──────────────┐
+                                    │ worker v3 (Python/Node.js/Java)  │
+                                    └───────────────────────────────────┘
 ```
 
 | Component | Responsibility | Runs user code |
 |-----------|----------------|----------------|
 | web | Catalog, Workbench, Monaco, run control, live logs and history | No |
 | control | API, transactional gates, scheduling, Webhook routing, log SSE, thin AI Provider adapter | No |
-| postgres | Adapter, Revision, Execution, Worker, Trigger and Credential | No |
-| worker | Claims tasks, prepares dependencies, executes in separate sub-processes, reports incrementally | Yes |
+| postgres | Adapter, Execution, Admission, Outbox, Attempt, Slot, Lease, and audit authority | No |
+| rabbitmq | Bounded dispatch, delayed retry, and Infrastructure DLQ; one node is not HA | No |
+| worker | Consumes dispatch, Claims through Control, prepares dependencies, runs Sandboxes, reports incrementally | Yes |
 
-The Worker only connects to Control actively; Control never connects back to the
-Worker. Every trigger mode executes user code on a Worker.
+Worker only makes outbound connections to RabbitMQ and Control; Control never
+connects back to Worker. Every trigger mode executes user code on Worker, and Worker
+never accesses PostgreSQL directly.
 
 ## 2. Authentication and Sensitive Data
 
@@ -80,14 +84,17 @@ so a later save never changes an already running Execution.
 | `worker_id / target_worker_id` | the claiming node / the requested run node |
 | `trigger` | `manual / schedule / webhook` |
 | `scheduled_for` | the Schedule plan point; NULL for other triggers |
-| `status` | `pending / running / succeeded / failed / timeout / cancelled` |
+| `dispatch_backend / dispatch_generation` | the `legacy` or `rabbitmq` responsibility boundary and current message generation |
+| `status` | legacy `pending/running/...`, or RabbitMQ `queued/running/retry_wait/dead_letter/...` |
 | `input / output / stdout / stderr` | input, result and logs |
 | `cancel_requested` | the cancellation request while running |
 
-A partial unique database index guarantees at most one `pending / running` Execution
-per Adapter at a time; Manual, Schedule and Webhook share the same constraint. Every
-service entry uses the unified Adapter row-lock order, with the database constraint
-as the final concurrency defense.
+During compatibility, a partial unique index permits at most one legacy
+`pending/running` Execution per Adapter. The RabbitMQ backend may keep multiple valid
+`queued/retry_wait` Executions, while `adapter_execution_slots(adapter_id,
+slot_no=0)` plus the active-Attempt unique constraint permits at most one physical
+execution per Adapter. Manual, Schedule, and Webhook share Admission, Outbox,
+Attempt, and Slot contracts.
 
 ### 3.4 Worker
 
@@ -100,8 +107,10 @@ AND clock_timestamp() - last_heartbeat <= heartbeat_timeout
 ```
 
 The timeout must be positive and strictly larger than the Worker heartbeat interval.
-Every run entry requires the node to be effective-online and its capability to cover
-the Adapter language.
+RabbitMQ ingress requires the fixed Worker to exist and have compatible language,
+protocol v3, and isolation capabilities. A temporarily offline target may still
+receive bounded `queued` responsibility and waits for that same Worker; it is never
+silently rerouted.
 
 ### 3.5 Credential and Bindings
 
@@ -118,30 +127,34 @@ the Adapter language.
 ```text
 POST /api/adapters/{id}/executions
 → lock the Adapter
-→ validate the latest Revision, run node and the unified run lock
-→ create a trigger=manual Execution
-→ Worker claim / run / report
+→ snapshot the latest Revision, input, Credential references and target Worker
+→ atomically create Execution + Admission + Outbox in PostgreSQL
+→ Relay publishes a RabbitMQ dispatch
+→ Worker v3 Claim / journal / ACK / Sandbox / report
 ```
 
-Cancellation reuses `POST /api/executions/{id}/cancel`. A pending Execution can go
-straight to cancelled; a running one sets the cancel request and the Worker
-terminates the process group and reports the terminal state.
+Cancellation reuses `POST /api/executions/{id}/cancel`. Legacy pending and RabbitMQ
+queued/retry_wait work can go straight to cancelled; a running Execution sets the
+cancel request and Worker terminates the Sandbox process under the current Attempt
+fence before reporting terminal state.
 
 ### 4.2 Schedule
 
 `adapter_schedules` is the per-Task-Adapter singleton configuration: enabled, cron,
-timezone, input, next_run_at.
+timezone, next_run_at, one of `coalesce_latest / queue_every_occurrence /
+skip_while_busy`, and bounded catch-up settings. Input comes from the unified saved
+InputConfig.
 
 Control uses PostgreSQL as the only scheduling state source and polls due rows in
 short transactions; multiple Control instances divide work with
 `FOR UPDATE SKIP LOCKED`. Every tick evaluates due-ness with `clock_timestamp()`,
 evaluates the Cron in the configured timezone, and stores the result in UTC.
 
-Enabling a Schedule locks the run configuration. At the due point an Execution with
-`trigger=schedule` is created from the latest Revision, the current run node and the
-configured Input. Offline Workers or busy Adapters are not queued; at most the most
-recent missed plan point is caught up once conditions recover. Disabling or changing
-the configuration re-bases the cursor to the next future point.
+Enabling a Schedule locks its run configuration. Every crossed plan point has an
+`enqueued/coalesced/skipped/expired` audit outcome. The saved policy decides whether
+to queue every occurrence, coalesce to the latest point, or skip while busy.
+Admission failures retain or explicitly consume responsibility according to policy;
+processing does not hot-loop or jump past the first unowned point.
 
 ## 5. Webhook
 
@@ -161,14 +174,15 @@ Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
-Validation covers body size, enabled route, Bearer Token, JSON contract, run node and
-the unified run lock in order. On success an Execution with `trigger=webhook` is
-created from the latest Revision, the current run node and the full JSON body, and
-`202` is returned immediately; Control does not wait for the Worker to finish.
+Validation covers body size, enabled route, Bearer Token, JSON contract, fixed run
+node, and Admission in order. On success it atomically snapshots the latest Revision,
+Credential references, and complete JSON body as immutable JSON input, creates the
+`trigger=webhook` Execution plus Outbox, and returns `202` immediately. Control does
+not wait for Worker completion.
 
-Every successful reception is one call record. Retention keeps the most recent 100
-terminal Webhook Executions per Adapter, never deletes active Executions, and never
-touches Task / Schedule history.
+Every successful reception is one call record. Retention governs terminal history in
+bounded batches using deployment-configured days and per-Adapter limits per trigger;
+it never deletes active Executions or rows still needed for recovery.
 
 ## 6. Clone and Deletion
 
@@ -226,6 +240,12 @@ incrementally and redacted; over-limit content is truncated per configuration.
 Oversized input is rejected outright without creating an Execution; oversized output
 keeps only the size, truncation flag and preview, never storing corrupted JSON.
 
+The v3 order is `dispatch → durable Control Claim → private journal → ACK →
+Sandbox`. ACK never waits for business completion; a post-ACK crash is recovered by
+database Attempt Lease/Fencing, Recovery, and a new generation. For every Attempt,
+the Sandbox applies hard CPU, memory, PID, tmpfs, and output bounds inside an exact
+delegated Linux cgroup v2 subtree. A non-Linux or incomplete preflight fails closed.
+
 ## 9. AI Assistant
 
 The browser explicitly submits the current Working Copy, user instructions and a
@@ -246,12 +266,16 @@ reasoning, Prompts and raw Responses never enter ordinary logs or persistence.
 
 ## 10. Deployment and Configuration
 
-Docker Compose runs four services: `web / control / postgres / worker`. Key
-configuration includes:
+Docker Compose runs six services: `web / account-web / control / postgres / rabbitmq
+/ worker`. Defaults keep ordinary RabbitMQ ingress off, legacy Claim on, and all
+three Cutover attestations off. Key configuration includes:
 
 - `DLR_ADMIN_TOKEN`, `DLR_WORKER_TOKEN`, `DLR_MASTER_KEY`;
 - `DLR_WORKER_HEARTBEAT_SECONDS` and `DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS`;
 - `DLR_SCHEDULE_POLL_SECONDS`;
+- finite RabbitMQ Queue/Outbox/Admission/Attempt/Dead Letter bounds;
+- `DLR_MIN_WORKER_PROTOCOL_VERSION`, `DLR_LEGACY_EXECUTION_CLAIM_ENABLED`, and the
+  three `DLR_CUTOVER_*_GATE_PASSED` attestations;
 - Execution large-field, log, timeout and Worker concurrency limits.
 
 The AI Provider is an external deployment dependency and never enters the formal
@@ -293,12 +317,37 @@ only.
 - Database: fresh Alembic install and upgrade from the current main schema;
 - Integration: isolated Compose smoke with real three-language Task, Schedule,
   Webhook, Clone URL handover and run-lock runs;
+- Reliable Runtime: real broker outage/restart, Confirm ambiguity, Worker/Control
+  crash, Slot pressure, DLQ/Replay, post-Cutover invariants, and bounded resources;
+- Sandbox: only real target Linux cgroup v2 + host cgroup namespace + exact delegated
+  subtree Compose evidence counts; macOS or static configuration does not;
 - UI: real-browser verification of bottom/fullscreen logs, run lock, Clone/Delete
   and the Task / Webhook main paths.
 
 ## 13. Explicit Boundaries
 
-Currently absent: MQ, request queue, automatic retry, synchronous Webhook, URL
-takeover, resident process model, RBAC, generic plugin system, workflow
-orchestration, a separate log system, AI auto-execution loop, user-level language
-preference, machine translation of user content, or a third language.
+Currently absent: synchronous Webhook, URL takeover, resident process model, RBAC,
+generic plugin system, workflow orchestration, a separate log system, AI
+auto-execution loop, user-level language preference, machine translation of user
+content, a third language, or a multi-node RabbitMQ HA cluster. Bounded Retry/Recovery
+for one Execution does not expand into workflow retry.
+
+## 14. Reliable Runtime Cutover and Rollback
+
+### 14.1 Non-interchangeable Cutover
+
+The order is fixed: prove backup/restore → inventory/preflight → drain legacy running
+and migrate pending → Worker v3 plus Sandbox → ordinary RabbitMQ ingress → Slot
+pressure test → minimum protocol 3 → retire the legacy active index → close legacy
+Claim only after legacy active reaches zero. All mutation endpoints require admin
+authentication; inventory, preflight, and post-Cutover invariants are read-only.
+
+### 14.2 Compatible Recovery Boundary
+
+Before Cutover, new ingress can be closed while legacy continues. Once the old index
+is retired or RabbitMQ rows exist, rollback must preserve the additive schema and use
+the current compatible Control to drain/repair Outbox, Attempt, Slot, and Incident
+responsibility. Never start an old binary against new rows, run a destructive schema
+downgrade, or simply disable ingress so new requests fall toward an already-closed
+legacy Claim. See [Reliable Runtime migration notes](issue130-reliable-runtime-migrations.md)
+for the operational sequence and API.

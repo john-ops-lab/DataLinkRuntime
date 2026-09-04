@@ -1,6 +1,6 @@
 # DLR（DataLinkRuntime）产品定义
 
-> 当前基线：`v0.1.1`（包含 Issue #117 手工测试问题修复）。
+> 当前源码基线包含 Issue #130 Reliable Runtime；发布、Hosted CI、独立 Review 与用户验收仍是分开的状态。
 > 本文档描述当前已经实现的产品模型；历史决策见 `docs/specs/README.md`、历史 Specs 与数据库迁移记录。新任务的目标以当前明确授权的 GitHub Issue 为准。
 
 ## 1. 产品定位
@@ -21,8 +21,9 @@ DLR 是一个轻量的数据适配运行平台，用于 CMDB 等系统的数据�
 |------|----------|
 | Adapter | 一个独立的数据处理单元，类型为 Task 或 Webhook |
 | Revision | 每次保存产生的不可变代码、依赖和运行参数快照；属于内部审计事实 |
-| Execution | 一次具体执行，记录 input、output、stdout、stderr、状态与耗时 |
-| Worker | 实际运行用户代码的节点，按语言 capability 参与调度 |
+| Execution | 一次逻辑执行，固定 input、Revision、目标 Worker、backend、generation、状态与结果 |
+| Attempt / Slot | RabbitMQ Execution 的一次实际执行，以及每个 Adapter `Slot 0` 的并发权威 |
+| Worker | 实际运行用户代码的节点，按语言、协议和 isolation capability 参与调度 |
 | Credential | 加密保存的凭据；浏览器永远拿不到真值 |
 
 用户只执行“保存”。系统在后台创建不可变 Revision，并让后续运行固定使用最新已保存内容。
@@ -54,7 +55,9 @@ Authorization: Bearer <token>
 ```
 
 用户配置可读 path、Token Credential 与运行节点，并使用 `开启接收` / `停止接收`。
-请求通过校验后异步创建 Execution 并返回 `202 + execution_id`；同一 Adapter 忙时不排队。
+请求通过校验和 Admission 后异步创建 Execution 并返回 `202 + execution_id`。RabbitMQ
+backend 可保留多个不可变 `queued/retry_wait` Execution，但同一 Adapter 仍只有一个
+active Attempt；legacy backend 在兼容期继续使用原单活跃门禁。
 
 页面信息架构固定为：
 
@@ -78,15 +81,20 @@ Adapter 数量上限分批清理；`pending` / `running` 永不由 retention 删
 
 ## 5. 统一运行锁
 
-一个 Adapter 同时最多只有一个 `pending / running` Execution。Task 手动运行、Schedule 与 Webhook 共用这一把锁。
+legacy backend 的一个 Adapter 同时最多一个 `pending/running` Execution。RabbitMQ
+backend 允许有界排队，但数据库 `Slot 0` 同时最多绑定一个 active Attempt。Task
+手动运行、Schedule 与 Webhook 共用相同的 Admission、快照和 Slot 规则。
 
-运行中或入口已启用时禁止：
+Schedule/Webhook 已启用、存在 legacy active Execution，或存在 RabbitMQ active Attempt
+时禁止：
 
 - 修改代码、依赖、运行参数、Credential binding；
 - 修改 Worker、Task 运行方式、Cron、Webhook path 或 Token；
 - 保存与删除 Adapter。
 
-名称和描述仍可修改。前端必须解释禁用原因，后端继续以稳定 409 错误作为最终门禁。
+纯 `queued/retry_wait` 已固定自己的不可变快照，不会单独锁住当前 InputConfig；后续
+保存只影响新 Execution。名称和描述仍可修改。前端必须解释禁用原因，后端继续以
+稳定 409 错误作为最终门禁。
 
 ## 6. 实时日志与历史
 
@@ -134,6 +142,11 @@ Input → handle(context, input) → Output
 - `context.secrets.get(key)` 提供绑定凭据；
 - `context.logger` 输出实时日志。
 
+RabbitMQ v3 路径的状态包括 `queued / running / retry_wait / dead_letter` 与既有终态。
+Worker 在 Control durable Claim commit 和私有 journal 原子落盘后 ACK，再进入资源
+Sandbox；ACK 后崩溃由 Attempt Lease/Fencing 与新 generation 恢复，不能依赖原消息
+重投。Adapter 对外部系统产生的副作用仍应使用业务幂等键。
+
 Task Starter Code 输出“任务开始 / 任务结束”；Webhook Starter Code 输出“收到 Webhook 请求 / 处理完 Webhook 请求”。新建 Adapter 时 Starter Code 的注释与示例平台日志跟随当前系统语言（`zh-CN` 中文 / `en` 英文）；已存在 Adapter 的代码不因切换语言而改写，也不创建新 Revision。
 
 ## 10. AI Assistant 边界
@@ -146,7 +159,9 @@ AI Assistant 可以读取当前 Working Copy 和最小非敏感上下文，返�
 - Credential 真值不返回浏览器、不写日志、不进入 AI Prompt；
 - Webhook Bearer Token 使用 constant-time compare；
 - Runtime 日志按已注入 Secret 集合脱敏；
-- v1 是可信管理员代码模型，子进程隔离不构成安全沙箱。
+- DLR 仍是可信管理员代码模型；Linux cgroup v2 Sandbox 约束资源和进程，但不构成
+  面向不可信租户的安全边界；
+- 默认单节点 RabbitMQ 不是 HA，Quorum Queue 持久化不能替代多节点容灾。
 
 ## 12. 系统语言与显示名称
 
@@ -161,7 +176,10 @@ AI Assistant 可以读取当前 Working Copy 和最小非敏感上下文，返�
 
 ## 13. 当前不做
 
-不实现 Adapter 串联、DAG、同步 Webhook invoke、请求队列、自动重试、URL takeover、常驻 Adapter、RBAC、AI 自动执行循环、通用插件框架、统一 Sink、用户级语言偏好、机器自动翻译用户内容或第三语言。
+不实现 Adapter 串联、DAG、同步 Webhook invoke、URL takeover、常驻 Adapter、RBAC、
+AI 自动执行循环、通用插件框架、统一 Sink、用户级语言偏好、机器自动翻译用户内容、
+第三语言或 RabbitMQ 集群 HA。Reliable Runtime 的重试是单个 Execution 的有界恢复
+合同，不是通用工作流编排。
 
 ## 14. 当前完成判据
 
@@ -177,3 +195,16 @@ Task / Webhook 创建
 → Clone 升级
 → 删除旧 Adapter
 ```
+
+## 15. Reliable Runtime 运维边界
+
+- 默认部署保持 RabbitMQ 普通 ingress 关闭、legacy Claim 开启和三个 Cutover attestation
+  关闭；普通安装不会自动进入最终切换。
+- Final Cutover 是管理员分阶段操作：备份恢复实测、legacy drain/migrate、Worker v3 +
+  Linux Sandbox、普通流量、Slot 压力、minimum protocol 3、退役旧索引，最后关闭
+  legacy Claim。顺序不可交换。
+- Cutover 后的回滚使用理解 additive schema 的兼容 Control drain/repair。不得启动旧
+  二进制解释新 row，也不得把生产 `alembic downgrade` 当作恢复方案。
+- 详细配置、只读 inventory/preflight/invariant API 和故障处理见
+  [Reliable Runtime 迁移说明](issue130-reliable-runtime-migrations.md)；Linux 部署前置见
+  [Sandbox 部署说明](issue130-sandbox-deployment.md)。

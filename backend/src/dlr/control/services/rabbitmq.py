@@ -754,14 +754,21 @@ def infrastructure_dlq_observation() -> dict[str, int]:
     _assert_queue_policy(payload, infrastructure_queue_arguments())
     messages_ready = payload.get("messages_ready")
     messages_unacknowledged = payload.get("messages_unacknowledged")
-    if not isinstance(messages_ready, int) or not isinstance(messages_unacknowledged, int):
+    if (
+        isinstance(messages_ready, bool)
+        or not isinstance(messages_ready, int)
+        or messages_ready < 0
+        or isinstance(messages_unacknowledged, bool)
+        or not isinstance(messages_unacknowledged, int)
+        or messages_unacknowledged < 0
+    ):
         raise RabbitMQTopologyError(
             "RabbitMQ infrastructure DLQ counters are unavailable",
             code="topology_unavailable",
         )
     return {
-        "messages_ready": max(0, messages_ready),
-        "messages_unacknowledged": max(0, messages_unacknowledged),
+        "messages_ready": messages_ready,
+        "messages_unacknowledged": messages_unacknowledged,
     }
 
 

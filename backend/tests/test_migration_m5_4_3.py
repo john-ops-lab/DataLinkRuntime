@@ -10,10 +10,14 @@ from alembic.config import Config
 from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine, make_url
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
+from dlr.control.models import Worker
 from dlr.control.schemas.webhook import WebhookUpsert
+from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
+from dlr.control.services import migration as migration_service
+from dlr.control.services import rabbitmq
 from dlr.control.services.webhook import upsert_webhook
 
 MIGRATION_DATABASE = "dlr_test_migration_m5_4_3"
@@ -110,6 +114,81 @@ def _reliable_schema_tables(connection) -> set[str]:
     }
 
 
+def _exercise_explicit_cutover(
+    engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove the guarded operation on either additive Alembic input path."""
+
+    factory = sessionmaker(engine, expire_on_commit=False)
+    with factory.begin() as session:
+        worker = Worker(
+            name=f"cutover-{engine.url.database}",
+            status="online",
+            capabilities=["python", "javascript", "java"],
+            protocol_version=3,
+            isolation_capabilities={name: True for name in REQUIRED_ISOLATION_CAPABILITIES},
+            isolation_preflight_status="passed",
+            rabbitmq_execution_v3=True,
+        )
+        session.add(worker)
+        session.flush()
+        worker_id = worker.id
+
+    for name, value in {
+        "rabbitmq_execution_enabled": True,
+        "rabbitmq_url": "amqp://rabbitmq:5672",
+        "rabbitmq_vhost": "/",
+        "rabbitmq_management_url": "http://rabbitmq:15672",
+        "min_worker_protocol_version": 3,
+        "legacy_execution_claim_enabled": True,
+        "cutover_backup_restore_gate_passed": True,
+        "cutover_sandbox_gate_passed": True,
+        "cutover_slot_gate_passed": True,
+    }.items():
+        monkeypatch.setattr(settings, name, value)
+    runtime_values: dict[str, object] = {
+        "status": "ready",
+        "last_error_code": None,
+        "worker_count": 1,
+        "capability_verified": True,
+        "configuration_fingerprint": rabbitmq.configuration_fingerprint([worker_id]),
+        "verified_worker_ids": frozenset([worker_id]),
+        "broker_observations": {},
+    }
+    for name, value in runtime_values.items():
+        monkeypatch.setitem(rabbitmq._runtime_status, name, value)
+    monkeypatch.setattr(
+        rabbitmq,
+        "infrastructure_dlq_observation",
+        lambda: {"messages_ready": 0, "messages_unacknowledged": 0},
+    )
+
+    with factory() as session:
+        preflight = migration_service.cutover_preflight(session)
+        assert preflight["status"] == "ready"
+        assert preflight["blockers"] == []
+        assert preflight["index_retirement"] == {"status": "ready", "blockers": []}
+        revision = str(preflight["inventory"]["schema_revision"])
+        retired = migration_service.retire_legacy_active_index(
+            session,
+            expected_schema_revision=revision,
+            backup_restore_evidence_id=f"test-restore-{engine.url.database}",
+        )
+        assert retired["changed"] is True
+
+    monkeypatch.setattr(settings, "legacy_execution_claim_enabled", False)
+    with factory() as session:
+        first = migration_service.post_cutover_invariants(session)
+        second = migration_service.post_cutover_invariants(session)
+        assert first == second
+        assert first["status"] == "passed"
+        assert first["violations"] == []
+        inventory = migration_service.inventory(session)
+        assert inventory["schema_revision"] == FINAL_REVISION
+        assert inventory["dark_launch"]["old_active_index_present"] is False
+
+
 def test_fresh_postgresql_upgrade_reaches_issue130_head(
     fresh_issue130_engine: Engine,
 ) -> None:
@@ -126,6 +205,13 @@ def test_fresh_postgresql_upgrade_reaches_issue130_head(
         "execution_outbox",
         "global_execution_admission",
     }
+
+
+def test_fresh_postgresql_path_completes_explicit_cutover(
+    fresh_issue130_engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _exercise_explicit_cutover(fresh_issue130_engine, monkeypatch)
 
 
 def test_current_main_0029_snapshot_upgrades_to_issue130_head_and_backfills_legacy(
@@ -205,6 +291,17 @@ def test_current_main_0029_snapshot_upgrades_to_issue130_head_and_backfills_lega
     assert backfilled.resource_class == "legacy"
     assert backfilled.target_worker_id_snapshot is None
     assert backfilled.admission_released_at is not None
+
+
+def test_current_main_postgresql_path_completes_explicit_cutover(
+    current_main_issue130_engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _upgrade(
+        _alembic_config(_base_url().set(database=CURRENT_MAIN_ISSUE130_DATABASE)),
+        "head",
+    )
+    _exercise_explicit_cutover(current_main_issue130_engine, monkeypatch)
 
 
 def test_legacy_path_survives_upgrade_and_remains_stoppable_and_restartable(

@@ -1,6 +1,7 @@
 # DLR（DataLinkRuntime）Product Definition
 
-> Current baseline: `v0.1.1` (including the Issue #117 manual-test fixes).
+> The current source baseline includes the Issue #130 Reliable Runtime. Release,
+> Hosted CI, independent Review, and user acceptance remain separate states.
 > This document describes the currently implemented product model. Historical decisions live in `docs/specs/README.md`, historical Specs and the database migration history. New work is governed by the currently authorized GitHub Issue.
 
 ## 1. Product Positioning
@@ -25,8 +26,9 @@ Core goals:
 |--------|--------------------|
 | Adapter | An independent data processing unit of type Task or Webhook |
 | Revision | The immutable code, dependency and run-parameter snapshot produced by each save; an internal audit fact |
-| Execution | One concrete run, recording input, output, stdout, stderr, status and duration |
-| Worker | The node that actually runs user code, participating in scheduling by language capability |
+| Execution | One logical run, fixing input, Revision, target Worker, backend, generation, state and result |
+| Attempt / Slot | One physical RabbitMQ execution attempt and the per-Adapter `Slot 0` concurrency authority |
+| Worker | The node that runs user code, selected by language, protocol and isolation capability |
 | Credential | An encrypted credential; the browser never receives its true value |
 
 Users only perform “Save”. The system creates an immutable Revision in the background
@@ -61,8 +63,10 @@ Authorization: Bearer <token>
 
 Users configure a readable path, a Token Credential and the run node, and use
 `Start Receiving` / `Stop Receiving`. After validation the request asynchronously
-creates an Execution and returns `202 + execution_id`; requests are not queued when
-the same Adapter is busy.
+creates an Execution and returns `202 + execution_id`. The RabbitMQ backend may keep
+multiple immutable `queued/retry_wait` Executions, while one Adapter still has only
+one active Attempt. The legacy backend keeps its original single-active gate during
+the compatibility window.
 
 The page information architecture is fixed as:
 
@@ -89,17 +93,22 @@ using deployment-configured age and per-Adapter count limits. `pending` and
 
 ## 5. Unified Run Lock
 
-An Adapter has at most one `pending / running` Execution at a time. Task manual runs,
-Schedule and Webhook share this single lock.
+The legacy backend permits at most one `pending/running` Execution per Adapter. The
+RabbitMQ backend permits bounded queueing, while database `Slot 0` binds at most one
+active Attempt. Task manual runs, Schedule, and Webhook share the same Admission,
+snapshot, and Slot rules.
 
-While running or an entry is enabled, the following are forbidden:
+When a Schedule/Webhook entry is enabled, a legacy active Execution exists, or a
+RabbitMQ active Attempt exists, the following are forbidden:
 
 - changing code, dependencies, run parameters or Credential bindings;
 - changing the Worker, Task run mode, Cron, Webhook path or Token;
 - saving and deleting the Adapter.
 
-Name and description remain editable. The frontend must explain the disabled reason;
-the backend keeps the stable 409 error as the final gate.
+A plain `queued/retry_wait` Execution already owns an immutable snapshot and does not
+by itself lock the current InputConfig; later saves affect only new Executions. Name
+and description remain editable. The frontend must explain the disabled reason; the
+backend keeps the stable 409 error as the final gate.
 
 ## 6. Live Logs and History
 
@@ -157,6 +166,13 @@ Input → handle(context, input) → Output
 - `context.secrets.get(key)` provides bound credentials;
 - `context.logger` emits live logs.
 
+The RabbitMQ v3 path adds `queued / running / retry_wait / dead_letter` to the
+existing terminal states. Worker ACKs after the durable Control Claim commits and
+its private journal is atomically persisted, then enters the resource Sandbox. A
+post-ACK crash is recovered through Attempt Lease/Fencing and a new generation, not
+by relying on the original message redelivery. Adapter side effects against external
+systems still need business idempotency keys.
+
 The Task Starter Code logs “Task started / Task finished” and the Webhook Starter
 Code logs “Webhook request received / Webhook request processed” (in `zh-CN`:
 “任务开始 / 任务结束” and “收到 Webhook 请求 / 处理完 Webhook 请求”). When a new
@@ -184,8 +200,10 @@ conversations are never persisted.
   into AI Prompts;
 - Webhook Bearer Tokens are compared in constant time;
 - Runtime logs are redacted against the injected Secret set;
-- v1 is a trusted-administrator code model; sub-process isolation is not a security
-  sandbox.
+- DLR remains a trusted-administrator code model. The Linux cgroup v2 Sandbox bounds
+  resources and processes but is not a security boundary for untrusted tenants;
+- the default single-node RabbitMQ deployment is not HA; Quorum Queue durability is
+  not a substitute for multi-node disaster tolerance.
 
 ## 12. System Language and Display Names
 
@@ -211,10 +229,11 @@ default `zh-CN`, switchable to `en`:
 
 ## 13. Explicitly Not Implemented
 
-No Adapter chaining, DAG, synchronous Webhook invoke, request queue, automatic retry,
-URL takeover, resident Adapter, RBAC, AI auto-execution loop, generic plugin
-framework, unified Sink, user-level language preference, machine translation of user
-content, or a third language.
+No Adapter chaining, DAG, synchronous Webhook invoke, URL takeover, resident Adapter,
+RBAC, AI auto-execution loop, generic plugin framework, unified Sink, user-level
+language preference, machine translation of user content, a third language, or a
+RabbitMQ HA cluster. Reliable Runtime retry is a bounded recovery contract for one
+Execution, not general workflow orchestration.
 
 ## 14. Current Completion Criteria
 
@@ -231,3 +250,19 @@ Task / Webhook creation
 → Clone upgrade
 → delete the old Adapter
 ```
+
+## 15. Reliable Runtime Operational Boundary
+
+- Defaults keep ordinary RabbitMQ ingress off, legacy Claim on, and all three
+  Cutover attestations off. An ordinary install never performs Final Cutover
+  automatically.
+- Final Cutover is a staged administrator operation: prove backup/restore, drain or
+  migrate legacy work, require Worker v3 plus the Linux Sandbox, enable ordinary
+  traffic, pressure-test Slot authority, require minimum protocol 3, retire the old
+  index, and only then close legacy Claim. The order is not interchangeable.
+- Post-Cutover rollback uses a compatible Control that understands the additive
+  schema to drain and repair. Never start an old binary against new rows or treat a
+  production `alembic downgrade` as recovery.
+- See [Reliable Runtime migration notes](issue130-reliable-runtime-migrations.md) for
+  configuration, read-only inventory/preflight/invariant APIs, and failure handling;
+  see [Sandbox deployment](issue130-sandbox-deployment.md) for Linux prerequisites.

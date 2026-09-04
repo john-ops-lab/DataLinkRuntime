@@ -406,8 +406,7 @@ def test_dependency_context_redirects_package_manager_state_to_tmpfs(
     command = [
         sys.executable,
         "-c",
-        "import json,os; print(json.dumps({key: os.environ[key] for key in "
-        f"{names!r}}}))",
+        f"import json,os; print(json.dumps({{key: os.environ[key] for key in {names!r}}}))",
     ]
 
     values = json.loads(venv_manager._run_logged(command, 5, context=context))

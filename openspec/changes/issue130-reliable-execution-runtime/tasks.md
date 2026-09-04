@@ -125,30 +125,30 @@
 
 ## 14. Batch 3 — Final Cutover
 
-- [ ] 14.1 记录数据库backup/restore实测、schema、legacy pending/running、Worker protocol/isolation、Rabbit/Outbox readiness；验证：任一preflight不明或restore未证明则Cutover fail closed
-- [ ] 14.2 drain legacy running并对legacy pending逐条选择drain或幂等migrate；验证：running不转换、pending迁移可重跑且最终legacy active为0
-- [ ] 14.3 仅在全部Worker v3+isolation后开启普通Manual/Schedule/Webhook RabbitMQ新流量；验证：新Execution全为rabbitmq，legacy Claim查询永不读取它们
-- [ ] 14.4 运行同Adapter高并发Claim/Result/Recovery验证Slot0权威；验证：active Attempt始终≤1、不同Adapter可并行、无counter/slot泄漏
-- [ ] 14.5 Slot防线PASS后把minimum protocol设为3并验证v1/v2明确拒绝；验证：没有silent fallback或需要继续服务的旧Worker
-- [ ] 14.6 使用单独Cutover migration退役 `uq_executions_active_adapter`，并在precondition不满足时拒绝执行；验证：索引删除前后并发不变量均由Slot数据库测试证明
-- [ ] 14.7 legacy pending/running清零后关闭legacy execution Claim入口但保留历史读取/兼容恢复代码；验证：旧端点明确不可领取、新历史API不回归
-- [ ] 14.8 运行Post-cutover invariant工具两次；验证：legacy active=0、queued有generation+Outbox/Incident、running恰一Attempt+Slot、无双backend/orphan Outbox/无主DLQ且二次结果稳定
-- [ ] 14.9 演练Cutover前关gate与Cutover后兼容Control drain/repair回滚；验证：不使用旧二进制解释新row、不执行破坏性schema downgrade
+- [x] 14.1 记录数据库backup/restore实测、schema、legacy pending/running、Worker protocol/isolation、Rabbit/Outbox readiness；验证：任一preflight不明或restore未证明则Cutover fail closed
+- [x] 14.2 drain legacy running并对legacy pending逐条选择drain或幂等migrate；验证：running不转换、pending迁移可重跑且最终legacy active为0
+- [x] 14.3 仅在全部Worker v3+isolation后开启普通Manual/Schedule/Webhook RabbitMQ新流量；验证：新Execution全为rabbitmq，legacy Claim查询永不读取它们
+- [x] 14.4 运行同Adapter高并发Claim/Result/Recovery验证Slot0权威；验证：active Attempt始终≤1、不同Adapter可并行、无counter/slot泄漏
+- [x] 14.5 Slot防线PASS后把minimum protocol设为3并验证v1/v2明确拒绝；验证：没有silent fallback或需要继续服务的旧Worker
+- [x] 14.6 使用单独Cutover migration退役 `uq_executions_active_adapter`，并在precondition不满足时拒绝执行；验证：索引删除前后并发不变量均由Slot数据库测试证明
+- [x] 14.7 legacy pending/running清零后关闭legacy execution Claim入口但保留历史读取/兼容恢复代码；验证：旧端点明确不可领取、新历史API不回归
+- [x] 14.8 运行Post-cutover invariant工具两次；验证：legacy active=0、queued有generation+Outbox/Incident、running恰一Attempt+Slot、无双backend/orphan Outbox/无主DLQ且二次结果稳定
+- [x] 14.9 演练Cutover前关gate与Cutover后兼容Control drain/repair回滚；验证：不使用旧二进制解释新row、不执行破坏性schema downgrade
 
 ## 15. 最终文档、全量回归与 OpenSpec Gate
 
-- [ ] 15.1 同步README、zh-CN/en产品/架构/部署/API、`.env.example`与故障runbook，明确RabbitMQ单节点非HA、ACK-on-claim、Sandbox Linux边界和rollback；验证：docs链接/双语成对检查通过且无本机绝对路径/真实凭据
-- [ ] 15.2 运行Backend `uv sync --frozen`、Ruff、format check、Mypy与full pytest；验证：全部退出0并记录精确Candidate SHA
-- [ ] 15.3 运行Web `npm ci`、lint、typecheck、full Vitest与production build；验证：全部退出0，React/AntD/ProComponents版本未漂移
-- [ ] 15.4 从fresh与current-main数据库运行完整Alembic/Cutover路径，并做幂等inventory/reconciler/retention；验证：迁移、约束、回滚边界与数据计数全PASS
-- [ ] 15.5 在隔离Linux Compose运行Broker outage/restart/overflow/Confirm ambiguity、Control/Worker crash、三语言Task/Schedule/Webhook/managed-files/replay与post-cutover smoke；验证：已接受任务不丢、所有资源/队列有界
-- [ ] 15.6 使用真实浏览器验证zh-CN/en和1280/1440/1680/1920的Queue/Schedule/Dead Letter/Worker capability主路径；验证：无raw key/横向溢出，键盘与disabled原因可达，保留应用供人工验收
-- [ ] 15.7 运行密钥/敏感路径扫描与Git差异审计；验证：公开可达文件不含Token、Secret、Rabbit URL userinfo、日志/数据库/本机路径或无关生成物
-- [ ] 15.8 更新所有已真实完成任务复选框并运行 `openspec validate --specs` 与 `openspec validate issue130-reliable-execution-runtime --type change --strict --no-interactive`；验证：两条命令全绿，未验证/人工任务保持未勾选
+- [x] 15.1 同步README、zh-CN/en产品/架构/部署/API、`.env.example`与故障runbook，明确RabbitMQ单节点非HA、ACK-on-claim、Sandbox Linux边界和rollback；验证：docs链接/双语成对检查通过且无本机绝对路径/真实凭据
+- [x] 15.2 运行Backend `uv sync --frozen`、Ruff、format check、Mypy与full pytest；验证：全部退出0并记录精确Candidate SHA
+- [x] 15.3 运行Web `npm ci`、lint、typecheck、full Vitest与production build；验证：全部退出0，React/AntD/ProComponents版本未漂移
+- [x] 15.4 从fresh与current-main数据库运行完整Alembic/Cutover路径，并做幂等inventory/reconciler/retention；验证：迁移、约束、回滚边界与数据计数全PASS
+- [x] 15.5 在隔离Linux Compose运行Broker outage/restart/overflow/Confirm ambiguity、Control/Worker crash、三语言Task/Schedule/Webhook/managed-files/replay与post-cutover smoke；验证：已接受任务不丢、所有资源/队列有界
+- [x] 15.6 使用真实浏览器验证zh-CN/en和1280/1440/1680/1920的Queue/Schedule/Dead Letter/Worker capability主路径；验证：无raw key/横向溢出，键盘与disabled原因可达，保留应用供人工验收
+- [x] 15.7 运行密钥/敏感路径扫描与Git差异审计；验证：公开可达文件不含Token、Secret、Rabbit URL userinfo、日志/数据库/本机路径或无关生成物
+- [x] 15.8 更新所有已真实完成任务复选框并运行 `openspec validate --specs` 与 `openspec validate issue130-reliable-execution-runtime --type change --strict --no-interactive`；验证：两条命令全绿，未验证/人工任务保持未勾选
 
 ## 16. 唯一 PR、Hosted CI 与 AO 官方 Review
 
-- [ ] 16.1 在所有本地Gate PASS后形成最终Candidate commit并停止修改；验证：工作区干净、diff范围正确、测试/审计/OpenSpec证据绑定同一HEAD/tree
+- [x] 16.1 在所有本地Gate PASS后形成最终Candidate commit并停止修改；验证：工作区干净、diff范围正确、测试/审计/OpenSpec证据绑定同一HEAD/tree
 - [ ] 16.2 fetch远端并核对origin/main、open PR与分支无漂移后只push `codex/issue130-reliable-runtime`；验证：远端branch SHA等于最终Candidate且没有第二个Issue130 PR
 - [ ] 16.3 创建唯一非Draft `REMOTE_RELEASE` PR并完整填写Issue/OpenSpec、B1/B2/B3证据、迁移/rollback和剩余人工验收；验证：PR base/head、文件树与公开安全检查正确
 - [ ] 16.4 等待Hosted CI针对精确PR head全部完成；验证：任何失败均修复或明确BLOCKED，修复产生新SHA后重跑受影响本地Gate与Hosted CI
