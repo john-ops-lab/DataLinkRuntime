@@ -1,0 +1,8 @@
+# Optional isolated development-only management exposure.  The default
+# docker-compose.yml intentionally publishes no RabbitMQ host ports.
+services:
+  rabbitmq:
+    profiles:
+      - management
+    ports:
+      - "127.0.0.1:${DLR_RABBITMQ_MANAGEMENT_HOST_PORT:-15672}:15672"

@@ -25,6 +25,8 @@ if [ "$DLR_PLATFORM_LOG_ROOT" = "$SMOKE_PLATFORM_LOG_ROOT" ]; then
 fi
 export DLR_ADMIN_TOKEN=${DLR_ADMIN_TOKEN:-smoke-admin-token-$$}
 export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
+export DLR_RABBITMQ_USER=${DLR_RABBITMQ_USER:-dlr_smoke}
+export DLR_RABBITMQ_PASSWORD=${DLR_RABBITMQ_PASSWORD:-smoke-rabbitmq-password-$$}
 export DLR_SECRET_SMOKE=${DLR_SECRET_SMOKE:-smoke-env-secret-$$}
 export DLR_MASTER_KEY=${DLR_MASTER_KEY:-smoke-master-key-$$}
 export SMOKE_STORED_SECRET=${SMOKE_STORED_SECRET:-smoke-stored-secret-$$}
@@ -113,7 +115,7 @@ if ! docker compose --env-file "$env_example_check/.env" -f docker-compose.yml c
 fi
 rm -rf "$env_example_check"
 docker compose build
-docker compose up -d
+docker compose up -d postgres rabbitmq
 
 echo "==> waiting for PostgreSQL"
 elapsed=0
@@ -134,7 +136,11 @@ while true; do
 done
 
 echo "==> applying Alembic head to a fresh database"
-docker compose run --rm control alembic upgrade head
+docker compose run --rm --no-deps control alembic upgrade head
+
+# Start Control only after the schema exists.  Web and Worker require a
+# healthy Control, whose health endpoint queries the migrated runtime tables.
+docker compose up -d
 
 echo "==> waiting for all services"
 elapsed=0

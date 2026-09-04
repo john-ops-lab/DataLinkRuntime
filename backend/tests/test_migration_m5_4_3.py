@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 from alembic import command
@@ -9,15 +10,22 @@ from alembic.config import Config
 from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine, make_url
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
+from dlr.control.models import Worker
 from dlr.control.schemas.webhook import WebhookUpsert
+from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
+from dlr.control.services import migration as migration_service
+from dlr.control.services import rabbitmq
 from dlr.control.services.webhook import upsert_webhook
 
 MIGRATION_DATABASE = "dlr_test_migration_m5_4_3"
+FRESH_ISSUE130_DATABASE = "dlr_test_issue130_fresh"
+CURRENT_MAIN_ISSUE130_DATABASE = "dlr_test_issue130_0029"
 LEGACY_REVISION = "0010_m5_4_2_task_run_mode"
-FINAL_REVISION = "0029_issue127_c0_exec_lease"
+CURRENT_MAIN_REVISION = "0029_issue127_c0_exec_lease"
+FINAL_REVISION = "0031_issue130_b2_runtime"
 LEGACY_PUBLIC_ID = "Legacy_Path_ABC123"
 
 
@@ -41,25 +49,259 @@ def _upgrade(config: Config, revision: str) -> None:
             os.environ["DATABASE_URL"] = saved_database_url
 
 
+@contextmanager
+def _migration_engine(database: str, revision: str) -> Iterator[Engine]:
+    """Create one isolated PostgreSQL database and upgrade it to a revision."""
+    url = _base_url().set(database=database)
+    maintenance = create_engine(_base_url().set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        with maintenance.connect() as connection:
+            connection.execute(text(f"DROP DATABASE IF EXISTS {database} WITH (FORCE)"))
+            connection.execute(text(f"CREATE DATABASE {database}"))
+    finally:
+        maintenance.dispose()
+
+    engine: Engine | None = None
+    try:
+        _upgrade(_alembic_config(url), revision)
+        engine = create_engine(url)
+        yield engine
+    finally:
+        if engine is not None:
+            engine.dispose()
+        maintenance = create_engine(
+            _base_url().set(database="postgres"), isolation_level="AUTOCOMMIT"
+        )
+        try:
+            with maintenance.connect() as connection:
+                connection.execute(text(f"DROP DATABASE IF EXISTS {database} WITH (FORCE)"))
+        finally:
+            maintenance.dispose()
+
+
 @pytest.fixture()
 def legacy_webhook_engine() -> Iterator[Engine]:
     """A dedicated database upgraded only to the pre-M5.4.3 revision."""
-    url = _base_url().set(database=MIGRATION_DATABASE)
-    maintenance = create_engine(_base_url().set(database="postgres"), isolation_level="AUTOCOMMIT")
-    with maintenance.connect() as connection:
-        connection.execute(text(f"DROP DATABASE IF EXISTS {MIGRATION_DATABASE} WITH (FORCE)"))
-        connection.execute(text(f"CREATE DATABASE {MIGRATION_DATABASE}"))
-    maintenance.dispose()
+    with _migration_engine(MIGRATION_DATABASE, LEGACY_REVISION) as engine:
+        yield engine
 
-    _upgrade(_alembic_config(url), LEGACY_REVISION)
-    engine = create_engine(url)
-    yield engine
-    engine.dispose()
 
-    maintenance = create_engine(_base_url().set(database="postgres"), isolation_level="AUTOCOMMIT")
-    with maintenance.connect() as connection:
-        connection.execute(text(f"DROP DATABASE IF EXISTS {MIGRATION_DATABASE} WITH (FORCE)"))
-    maintenance.dispose()
+@pytest.fixture()
+def fresh_issue130_engine() -> Iterator[Engine]:
+    """A clean PostgreSQL database upgraded directly through Alembic ``head``."""
+    with _migration_engine(FRESH_ISSUE130_DATABASE, "head") as engine:
+        yield engine
+
+
+@pytest.fixture()
+def current_main_issue130_engine() -> Iterator[Engine]:
+    """A current-main schema snapshot stopped immediately before migration 0030."""
+    with _migration_engine(CURRENT_MAIN_ISSUE130_DATABASE, CURRENT_MAIN_REVISION) as engine:
+        yield engine
+
+
+def _reliable_schema_tables(connection) -> set[str]:
+    return {
+        str(table_name)
+        for table_name in connection.scalars(
+            text(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' "
+                "AND table_name IN ('execution_outbox', 'execution_attempts', "
+                "'adapter_execution_slots', 'global_execution_admission')"
+            )
+        )
+    }
+
+
+def _exercise_explicit_cutover(
+    engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove the guarded operation on either additive Alembic input path."""
+
+    factory = sessionmaker(engine, expire_on_commit=False)
+    with factory.begin() as session:
+        worker = Worker(
+            name=f"cutover-{engine.url.database}",
+            status="online",
+            capabilities=["python", "javascript", "java"],
+            protocol_version=3,
+            isolation_capabilities={name: True for name in REQUIRED_ISOLATION_CAPABILITIES},
+            isolation_preflight_status="passed",
+            rabbitmq_execution_v3=True,
+        )
+        session.add(worker)
+        session.flush()
+        worker_id = worker.id
+
+    for name, value in {
+        "rabbitmq_execution_enabled": True,
+        "rabbitmq_url": "amqp://rabbitmq:5672",
+        "rabbitmq_vhost": "/",
+        "rabbitmq_management_url": "http://rabbitmq:15672",
+        "min_worker_protocol_version": 3,
+        "legacy_execution_claim_enabled": True,
+        "cutover_backup_restore_gate_passed": True,
+        "cutover_sandbox_gate_passed": True,
+        "cutover_slot_gate_passed": True,
+    }.items():
+        monkeypatch.setattr(settings, name, value)
+    runtime_values: dict[str, object] = {
+        "status": "ready",
+        "last_error_code": None,
+        "worker_count": 1,
+        "capability_verified": True,
+        "configuration_fingerprint": rabbitmq.configuration_fingerprint([worker_id]),
+        "verified_worker_ids": frozenset([worker_id]),
+        "broker_observations": {},
+    }
+    for name, value in runtime_values.items():
+        monkeypatch.setitem(rabbitmq._runtime_status, name, value)
+    monkeypatch.setattr(
+        rabbitmq,
+        "infrastructure_dlq_observation",
+        lambda: {"messages_ready": 0, "messages_unacknowledged": 0},
+    )
+
+    with factory() as session:
+        preflight = migration_service.cutover_preflight(session)
+        assert preflight["status"] == "ready"
+        assert preflight["blockers"] == []
+        assert preflight["index_retirement"] == {"status": "ready", "blockers": []}
+        revision = str(preflight["inventory"]["schema_revision"])
+        retired = migration_service.retire_legacy_active_index(
+            session,
+            expected_schema_revision=revision,
+            backup_restore_evidence_id=f"test-restore-{engine.url.database}",
+        )
+        assert retired["changed"] is True
+
+    monkeypatch.setattr(settings, "legacy_execution_claim_enabled", False)
+    with factory() as session:
+        first = migration_service.post_cutover_invariants(session)
+        second = migration_service.post_cutover_invariants(session)
+        assert first == second
+        assert first["status"] == "passed"
+        assert first["violations"] == []
+        inventory = migration_service.inventory(session)
+        assert inventory["schema_revision"] == FINAL_REVISION
+        assert inventory["dark_launch"]["old_active_index_present"] is False
+
+
+def test_fresh_postgresql_upgrade_reaches_issue130_head(
+    fresh_issue130_engine: Engine,
+) -> None:
+    """The independent empty database follows the real fresh ``upgrade head`` path."""
+    assert fresh_issue130_engine.url.database == FRESH_ISSUE130_DATABASE
+    with fresh_issue130_engine.connect() as connection:
+        revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        tables = _reliable_schema_tables(connection)
+
+    assert revision == FINAL_REVISION
+    assert tables == {
+        "adapter_execution_slots",
+        "execution_attempts",
+        "execution_outbox",
+        "global_execution_admission",
+    }
+
+
+def test_fresh_postgresql_path_completes_explicit_cutover(
+    fresh_issue130_engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _exercise_explicit_cutover(fresh_issue130_engine, monkeypatch)
+
+
+def test_current_main_0029_snapshot_upgrades_to_issue130_head_and_backfills_legacy(
+    current_main_issue130_engine: Engine,
+) -> None:
+    """A real 0029 snapshot upgrades to head and makes old rows explicitly legacy."""
+    assert current_main_issue130_engine.url.database == CURRENT_MAIN_ISSUE130_DATABASE
+    with current_main_issue130_engine.begin() as connection:
+        before = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        assert before == CURRENT_MAIN_REVISION
+        assert _reliable_schema_tables(connection) == set()
+        adapter_id = int(
+            connection.scalar(
+                text(
+                    "INSERT INTO adapters "
+                    "(name, language, adapter_type, run_mode) "
+                    "VALUES ('issue130-0029-adapter', 'python', 'task', 'manual') "
+                    "RETURNING id"
+                )
+            )
+        )
+        version_id = int(
+            connection.scalar(
+                text(
+                    "INSERT INTO adapter_versions (adapter_id, seq, code) "
+                    "VALUES (:adapter_id, 1, 'print(1)') RETURNING id"
+                ),
+                {"adapter_id": adapter_id},
+            )
+        )
+        connection.execute(
+            text("UPDATE adapters SET latest_version_id = :version_id WHERE id = :adapter_id"),
+            {"version_id": version_id, "adapter_id": adapter_id},
+        )
+        execution_id = int(
+            connection.scalar(
+                text(
+                    "INSERT INTO executions "
+                    "(adapter_id, version_id, trigger, status, input, "
+                    "input_source_type, input_config_revision, input_snapshot) "
+                    "VALUES (:adapter_id, :version_id, 'manual', 'succeeded', '{}'::jsonb, "
+                    '\'json\', 1, \'{"source_type": "json", "revision": 1}\'::jsonb) '
+                    "RETURNING id"
+                ),
+                {"adapter_id": adapter_id, "version_id": version_id},
+            )
+        )
+
+    _upgrade(
+        _alembic_config(_base_url().set(database=CURRENT_MAIN_ISSUE130_DATABASE)),
+        "head",
+    )
+
+    with current_main_issue130_engine.connect() as connection:
+        revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        backfilled = connection.execute(
+            text(
+                "SELECT dispatch_backend, dispatch_generation, attempt_count, "
+                "max_attempts_snapshot, resource_class, target_worker_id_snapshot, "
+                "admission_released_at FROM executions WHERE id = :execution_id"
+            ),
+            {"execution_id": execution_id},
+        ).one()
+        tables = _reliable_schema_tables(connection)
+
+    assert revision == FINAL_REVISION
+    assert tables == {
+        "adapter_execution_slots",
+        "execution_attempts",
+        "execution_outbox",
+        "global_execution_admission",
+    }
+    assert backfilled.dispatch_backend == "legacy"
+    assert backfilled.dispatch_generation == 0
+    assert backfilled.attempt_count == 0
+    assert backfilled.max_attempts_snapshot == 1
+    assert backfilled.resource_class == "legacy"
+    assert backfilled.target_worker_id_snapshot is None
+    assert backfilled.admission_released_at is not None
+
+
+def test_current_main_postgresql_path_completes_explicit_cutover(
+    current_main_issue130_engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _upgrade(
+        _alembic_config(_base_url().set(database=CURRENT_MAIN_ISSUE130_DATABASE)),
+        "head",
+    )
+    _exercise_explicit_cutover(current_main_issue130_engine, monkeypatch)
 
 
 def test_legacy_path_survives_upgrade_and_remains_stoppable_and_restartable(

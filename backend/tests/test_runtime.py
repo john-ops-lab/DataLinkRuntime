@@ -5,6 +5,7 @@ production. Adapters only use the Python standard library, so no public PyPI
 availability is required (except one deliberate dependency-failure test).
 """
 
+import json
 import subprocess
 import sys
 import threading
@@ -15,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from dlr.common.config import settings
-from dlr.worker import executor
+from dlr.worker import cache, executor
 from dlr.worker import venv as venv_manager
 from dlr.worker.client import ControlClient, ControlUnavailableError
 from dlr.worker.executor import RuntimeSettings
@@ -331,6 +332,321 @@ def test_executor_truncates_large_stdout_keeping_tail(
     assert len(result["stdout"].encode()) <= 64 * 1024
     assert "END-MARKER" in result["stdout"], "traceback tails must stay visible"
     assert "truncated" in result["stdout"]
+
+
+def test_wait_with_progress_caps_the_physical_log_file(
+    tmp_path: object,
+) -> None:
+    stream_path = Path(tmp_path) / "bounded.log"
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import os; os.write(1, b'x' * 2000000)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        returncode, timed_out, cancelled, final_text = executor._wait_with_progress(
+            process,
+            stream_path,
+            timeout=5,
+            progress_callback=None,
+            max_bytes=4096,
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    assert returncode == 0
+    assert timed_out is False
+    assert cancelled is False
+    assert stream_path.stat().st_size <= 4096
+    assert len(final_text.encode()) <= 4096
+    assert "truncated" in final_text
+
+
+def test_dependency_preparation_uses_attempt_cgroup_and_bounded_log(
+    tmp_path: object,
+) -> None:
+    cgroup = Path(tmp_path) / "attempt"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("", encoding="ascii")
+    (cgroup / "cgroup.kill").write_text("", encoding="ascii")
+    dependency_tmp = Path(tmp_path) / "dependency-tmp"
+    context = venv_manager.DependencyExecutionContext(
+        cgroup_path=cgroup,
+        tmpdir=dependency_tmp,
+        nofile=64,
+        log_max_bytes=4096,
+    )
+    command = [sys.executable, "-c", "import os; os.write(1, b'x' * 200000)"]
+
+    log = venv_manager._run_logged(command, timeout_seconds=5, context=context)
+
+    assert len(log.encode()) <= 4096
+    assert "truncated dependency log" in log
+    assert (cgroup / "cgroup.procs").read_text(encoding="ascii").strip()
+
+
+def test_dependency_context_redirects_package_manager_state_to_tmpfs(
+    tmp_path: object,
+) -> None:
+    root = Path(str(tmp_path))
+    cgroup = root / "attempt"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("", encoding="ascii")
+    (cgroup / "cgroup.kill").write_text("", encoding="ascii")
+    dependency_tmp = root / "dependency-tmp"
+    context = venv_manager.DependencyExecutionContext(
+        cgroup_path=cgroup,
+        tmpdir=dependency_tmp,
+        nofile=64,
+        log_max_bytes=4096,
+    )
+    names = ("HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "npm_config_cache", "TMPDIR")
+    command = [
+        sys.executable,
+        "-c",
+        f"import json,os; print(json.dumps({{key: os.environ[key] for key in {names!r}}}))",
+    ]
+
+    values = json.loads(venv_manager._run_logged(command, 5, context=context))
+
+    assert values["HOME"] == str(dependency_tmp / ".dependency-home")
+    assert values["TMPDIR"] == str(dependency_tmp)
+    for name in ("XDG_CACHE_HOME", "UV_CACHE_DIR", "npm_config_cache"):
+        assert Path(values[name]).is_relative_to(dependency_tmp)
+
+
+def test_dependency_timeout_is_not_blocked_by_a_partial_pipe_read() -> None:
+    started_at = time.monotonic()
+    with pytest.raises(venv_manager.DependencyPreparationError) as error:
+        venv_manager._run_logged(
+            [
+                sys.executable,
+                "-c",
+                "import os,time; os.write(1,b'x'); time.sleep(4)",
+            ],
+            timeout_seconds=1,
+        )
+
+    assert error.value.error_code == "dependency_timeout"
+    assert time.monotonic() - started_at < 2.5
+
+
+def test_dependency_build_stages_inside_attempt_tmpfs_until_promotion(tmp_path: object) -> None:
+    root = Path(tmp_path)
+    dependency_tmp = root / "dependency-tmp"
+    dependency_tmp.mkdir()
+    version_cache, _target, build = venv_manager._begin_version_build(
+        root / "runtime",
+        20,
+        21,
+        identity={"language": "python", "version": "tmpfs"},
+        dependency_context=venv_manager.DependencyExecutionContext(
+            cgroup_path=root / "attempt-cgroup",
+            tmpdir=dependency_tmp,
+            nofile=64,
+            log_max_bytes=4096,
+        ),
+    )
+    assert build is not None
+    assert build.staging.is_relative_to(dependency_tmp)
+    assert not build.staging.is_relative_to(version_cache.entries)
+    build.abort()
+    assert not build.staging.exists()
+    assert not any(dependency_tmp.iterdir())
+    assert not any(version_cache.entries.iterdir())
+
+
+def test_version_build_cleanup_is_idempotent_after_failed_tmpfs_promotion(
+    tmp_path: object,
+) -> None:
+    root = Path(tmp_path)
+    version_cache = cache.VerifiedVersionCache(
+        root / "cache", max_bytes=4096, low_watermark_bytes=0
+    )
+    reservation = version_cache.reserve(32)
+    staging_root = root / "attempt-tmpfs" / "version-builds"
+    staging = staging_root / "build"
+    staging.mkdir(mode=0o700, parents=True)
+    (staging / "runtime.bin").write_bytes(b"x" * 33)
+    build = venv_manager._VersionBuild(
+        version_cache,
+        staging,
+        version_cache.entry_path("failed-promotion"),
+        reservation,
+        staging_root,
+    )
+
+    with pytest.raises(cache.CacheError) as error:
+        build.finish({"language": "test", "version": "failed-promotion"})
+
+    assert error.value.code == "cache_reservation_insufficient"
+    build.abort()
+    build.abort()
+    assert not staging.exists()
+    assert not staging_root.exists()
+    assert version_cache._state() == {}
+
+
+def test_version_build_preserves_promotion_error_when_finish_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    root = Path(tmp_path)
+    version_cache = cache.VerifiedVersionCache(
+        root / "cache", max_bytes=4096, low_watermark_bytes=0
+    )
+    reservation = version_cache.reserve(32)
+    staging_root = root / "attempt-tmpfs" / "version-builds"
+    staging = staging_root / "build"
+    staging.mkdir(mode=0o700, parents=True)
+    (staging / "runtime.bin").write_bytes(b"x" * 33)
+    build = venv_manager._VersionBuild(
+        version_cache,
+        staging,
+        version_cache.entry_path("cleanup-error"),
+        reservation,
+        staging_root,
+    )
+    original_cleanup = build._remove_tmpfs_staging
+    cleanup_calls = 0
+
+    def fail_once() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls == 1:
+            raise cache.CacheError("cache_staging_cleanup_failed")
+        original_cleanup()
+
+    monkeypatch.setattr(build, "_remove_tmpfs_staging", fail_once)
+    with pytest.raises(cache.CacheError) as error:
+        build.finish({"language": "test", "version": "cleanup-error"})
+
+    assert error.value.code == "cache_reservation_insufficient"
+    build.abort()
+    assert cleanup_calls == 2
+    assert not staging.exists()
+    assert version_cache._state() == {}
+
+
+def test_live_version_build_renews_global_reservation_until_finish(tmp_path: object) -> None:
+    root = Path(tmp_path)
+    version_cache = cache.VerifiedVersionCache(
+        root / "cache", max_bytes=4096, low_watermark_bytes=0
+    )
+    reservation = version_cache.reserve(3000, ttl_seconds=1)
+    staging = version_cache.staging_path("long-build", reservation.token)
+    staging.mkdir(mode=0o700)
+    build = venv_manager._VersionBuild(
+        version_cache,
+        staging,
+        version_cache.entry_path("long-build"),
+        reservation,
+    )
+    try:
+        time.sleep(1.2)
+        with pytest.raises(cache.CacheError) as error:
+            version_cache.reserve(1097)
+        assert error.value.code == "cache_low_watermark"
+    finally:
+        build.abort()
+    assert not staging.exists()
+    assert version_cache._state() == {}
+
+
+def test_dependency_command_stops_when_cache_reservation_is_lost(tmp_path: object) -> None:
+    root = Path(tmp_path)
+    version_cache = cache.VerifiedVersionCache(
+        root / "cache", max_bytes=4096, low_watermark_bytes=0
+    )
+    reservation = version_cache.reserve(3000, ttl_seconds=60)
+    staging = version_cache.staging_path("lease-loss", reservation.token)
+    staging.mkdir(mode=0o700)
+    build = venv_manager._VersionBuild(
+        version_cache,
+        staging,
+        version_cache.entry_path("lease-loss"),
+        reservation,
+    )
+    cgroup = root / "attempt-cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.procs").write_text("", encoding="ascii")
+    (cgroup / "cgroup.kill").write_text("", encoding="ascii")
+    checks = 0
+
+    def release_after_start() -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            reservation.release()
+        build.assert_live()
+
+    context = venv_manager.DependencyExecutionContext(
+        cgroup_path=cgroup,
+        tmpdir=root / "dependency-tmp",
+        nofile=64,
+        log_max_bytes=4096,
+    ).with_reservation(release_after_start, build.lease_lost)
+    started_at = time.monotonic()
+    try:
+        with pytest.raises(venv_manager.DependencyPreparationError) as error:
+            venv_manager._run_logged(
+                [
+                    sys.executable,
+                    "-c",
+                    "import time; print('started', flush=True); time.sleep(4)",
+                ],
+                timeout_seconds=5,
+                context=context,
+            )
+        assert error.value.error_code == "dependency_cache_reservation_expired"
+        assert time.monotonic() - started_at < 2.5
+        assert (cgroup / "cgroup.kill").read_text(encoding="ascii") == "1\n"
+    finally:
+        build.abort()
+    assert not staging.exists()
+    assert version_cache._state() == {}
+
+
+def test_sandbox_output_copy_is_prefix_bounded_and_preserves_original_size(
+    tmp_path: object,
+) -> None:
+    source = Path(tmp_path) / "tmpfs-output.json"
+    destination = Path(tmp_path) / "host-output.json"
+    metadata = Path(tmp_path) / ".dlr-output-meta"
+    source.write_bytes(b"0123456789" * 100)
+
+    from dlr.worker import sandbox
+
+    sandbox._copy_bounded_output(source, destination, metadata, 17)
+
+    expected_prefix = (b"0123456789" * 100)[:17]
+    assert destination.read_bytes() == expected_prefix
+    assert destination.stat().st_size == 17
+    assert executor._read_bounded_file(destination, 17) == (
+        expected_prefix,
+        17,
+        False,
+    )
+    assert executor._read_output_metadata(metadata) == (1000, True)
+
+
+def test_sandbox_output_copy_replaces_symlink_without_following_it(tmp_path: object) -> None:
+    source = Path(tmp_path) / "tmpfs-output.json"
+    destination = Path(tmp_path) / "host-output.json"
+    metadata = Path(tmp_path) / ".dlr-output-meta"
+    outside = Path(tmp_path) / "unrelated.txt"
+    source.write_bytes(b"safe-output")
+    outside.write_text("must-survive", encoding="ascii")
+    destination.symlink_to(outside)
+
+    from dlr.worker import sandbox
+
+    sandbox._copy_bounded_output(source, destination, metadata, 1024)
+
+    assert not destination.is_symlink()
+    assert destination.read_bytes() == b"safe-output"
+    assert outside.read_text(encoding="ascii") == "must-survive"
 
 
 # --- credential isolation --------------------------------------------------------

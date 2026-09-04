@@ -39,7 +39,15 @@ export function userErrorMessage(
       : fallback ??
         translatedDomainError(error, locale) ??
         i18n.getFixedT(locale, "common")("errors.unknown");
+  const retryAfter = error.params.retry_after;
+  const retryHint =
+    (error.status === 429 || error.status === 503) &&
+    typeof retryAfter === "number" &&
+    Number.isSafeInteger(retryAfter) &&
+    retryAfter > 0
+      ? ` ${i18n.getFixedT(locale, "common")("errors.retry_after", { seconds: retryAfter })}`
+      : "";
   return locale === "en"
-    ? `${primary} (Error code: ${error.code})`
-    : `${primary}（错误码：${error.code}）`;
+    ? `${primary}${retryHint} (Error code: ${error.code})`
+    : `${primary}${retryHint}（错误码：${error.code}）`;
 }

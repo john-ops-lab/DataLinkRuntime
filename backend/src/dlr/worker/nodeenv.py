@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib import parse as url_parse
 
 from dlr.worker import venv
+from dlr.worker.cache import CacheError
 
 _locks: dict[tuple[int, int], threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -65,29 +66,61 @@ def prepare_version_node(
     timeout_seconds: int,
     registry_url: str | None,
     dependency_log: venv.DependencyLogCallback | None = None,
+    dependency_context: venv.DependencyExecutionContext | None = None,
 ) -> Path:
     directory = venv.version_dir(runtime_root, adapter_id, version_id)
     dependencies = parse_requirements(requirements)
     with _lock_for(adapter_id, version_id):
-        if (directory / ".ready").exists() and (directory / "adapter.mjs").exists():
+        identity = venv._cache_identity(
+            adapter_id, version_id, "javascript", f"{code}\0{requirements}"
+        )
+        try:
+            _version_cache, directory, build = venv._begin_version_build(
+                runtime_root,
+                adapter_id,
+                version_id,
+                identity=identity,
+                dependency_context=dependency_context,
+            )
+        except CacheError as error:
+            raise venv.DependencyPreparationError("version cache is unavailable", "") from error
+        if build is None and (directory / "adapter.mjs").exists():
             if dependency_log is not None:
                 for name, version in dependencies.items():
                     dependency_log(f"{name}@{version} 已安装，检查通过")
             return directory
+        assert build is not None
+        if dependency_context is not None:
+            dependency_context = dependency_context.with_reservation(
+                build.assert_live, build.lease_lost
+            )
+        try:
+            build.assert_live()
+        except CacheError as error:
+            build.abort()
+            raise venv.DependencyPreparationError(
+                "dependency cache reservation is no longer active",
+                "",
+                error_code="dependency_cache_reservation_expired",
+            ) from error
+        directory = build.staging
         if shutil.which("node") is None:
+            build.abort()
             raise venv.DependencyPreparationError("Node.js Runtime is unavailable", "")
-        if directory.exists():
-            shutil.rmtree(directory, ignore_errors=True)
-        directory.mkdir(parents=True, exist_ok=True)
         dependencies = parse_requirements(requirements)
-        (directory / "adapter.mjs").write_text(code, encoding="utf-8")
-        package = {"private": True, "type": "module", "dependencies": dependencies}
-        (directory / "package.json").write_text(
-            json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        (directory / "node_modules").mkdir(exist_ok=True)
+        try:
+            (directory / "adapter.mjs").write_text(code, encoding="utf-8")
+            package = {"private": True, "type": "module", "dependencies": dependencies}
+            (directory / "package.json").write_text(
+                json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (directory / "node_modules").mkdir(exist_ok=True)
+        except OSError as error:
+            build.abort()
+            raise venv.DependencyPreparationError("version cache staging failed", "") from error
         if dependencies:
             if shutil.which("npm") is None:
+                build.abort()
                 raise venv.DependencyPreparationError("npm Runtime is unavailable", "")
             clean_registry = None
             npmrc = None
@@ -100,6 +133,11 @@ def prepare_version_node(
                             encoding="utf-8",
                             prefix="dlr-npm-",
                             suffix=".npmrc",
+                            dir=(
+                                str(dependency_context.tmpdir)
+                                if dependency_context is not None
+                                else None
+                            ),
                             delete=False,
                         ) as handle:
                             handle.write(auth_config)
@@ -120,7 +158,9 @@ def prepare_version_node(
                     for name, version in dependencies.items():
                         dependency_log(f"{name}@{version} 未安装，开始安装")
                 try:
-                    venv._run_install_logged(command + ["--offline"], timeout_seconds)
+                    venv._run_install_logged_in_context(
+                        command + ["--offline"], timeout_seconds, dependency_context
+                    )
                 except venv.DependencyPreparationError as offline_error:
                     if not registry_url:
                         raise venv.DependencyPreparationError(
@@ -132,11 +172,14 @@ def prepare_version_node(
                                 offline_error.install_log,
                             ),
                             no_source=True,
+                            error_code=offline_error.error_code,
                         ) from offline_error
                     assert clean_registry is not None
                     try:
-                        venv._run_install_logged(
-                            command + ["--registry", clean_registry], timeout_seconds
+                        venv._run_install_logged_in_context(
+                            command + ["--registry", clean_registry],
+                            timeout_seconds,
+                            dependency_context,
                         )
                     except venv.DependencyPreparationError as source_error:
                         combined_log = offline_error.install_log + source_error.install_log
@@ -147,15 +190,19 @@ def prepare_version_node(
                                 (f"{name}@{version}" for name, version in dependencies.items()),
                                 combined_log,
                             ),
+                            error_code=source_error.error_code,
                         ) from source_error
                 if dependency_log is not None:
                     for name, version in dependencies.items():
                         dependency_log(f"{name}@{version} 安装成功")
             except venv.DependencyPreparationError:
-                shutil.rmtree(directory, ignore_errors=True)
+                build.abort()
                 raise
             finally:
                 if npmrc is not None:
                     npmrc.unlink(missing_ok=True)
-        (directory / ".ready").write_text("ready", encoding="utf-8")
-        return directory
+        try:
+            return build.finish(identity)
+        except CacheError as error:
+            build.abort()
+            raise venv.DependencyPreparationError("version cache promotion failed", "") from error

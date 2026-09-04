@@ -86,6 +86,23 @@ export default function LiveLogWorkspace(props: Props) {
               description={t("live.connectionLostDescription")}
             />
           )}
+          {execution.status === "queued" && (
+            <Alert
+              type="info"
+              showIcon
+              data-testid="live-queued-notice"
+              message={t("history.waitingForWorker")}
+              description={t("live.queuedDescription")}
+            />
+          )}
+          {execution.status === "retry_wait" && (
+            <Alert
+              type="warning"
+              showIcon
+              data-testid="live-retry-notice"
+              message={t("live.retryDescription")}
+            />
+          )}
           <Tabs
             className="live-log-tabs"
             defaultActiveKey="log"

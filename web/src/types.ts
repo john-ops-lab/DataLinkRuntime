@@ -92,6 +92,20 @@ export interface Execution {
   /** M5.2: the planned point for trigger=schedule; null for other triggers. */
   scheduled_for: string | null;
   status: ExecutionStatus;
+  /** Issue #130: backend facts are additive and absent on legacy responses. */
+  dispatch_backend?: "legacy" | "rabbitmq";
+  dispatch_generation?: number;
+  queued_at?: string | null;
+  next_attempt_at?: string | null;
+  attempt_count?: number;
+  max_attempts_snapshot?: number;
+  retry_policy_snapshot?: Record<string, unknown>;
+  resource_profile_snapshot?: Record<string, unknown>;
+  resource_class?: string | null;
+  last_error_code?: string | null;
+  /** Server-provided replay decision; B2 endpoints may add this later. */
+  replay_available?: boolean;
+  replay_unavailable_reason?: string | null;
   input: unknown;
   /** Issue #127: immutable input source and configuration revision at creation. */
   input_source_type?: InputSourceType;
@@ -128,10 +142,14 @@ export interface Execution {
 export type ExecutionStatus =
   | "pending"
   | "running"
+  | "queued"
+  | "retry_wait"
   | "succeeded"
   | "failed"
   | "timeout"
-  | "cancelled";
+  | "cancelled"
+  | "dead_letter"
+  | "expired";
 
 export type WorkspaceCleanupStatus = "pending" | "completed" | "deferred";
 
@@ -172,6 +190,8 @@ export interface ExecutionSummary {
   /** M5.2: the planned point for trigger=schedule; null for other triggers. */
   scheduled_for: string | null;
   status: ExecutionStatus;
+  dispatch_backend?: "legacy" | "rabbitmq";
+  queued_at?: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -184,7 +204,69 @@ export interface ExecutionHistoryPage {
   next_before_id: number | null;
 }
 
+/** Safe Attempt facts returned by the B2 reliable-runtime detail endpoint. */
+export interface AttemptSummary {
+  id: number;
+  execution_id: number;
+  adapter_id: number;
+  attempt_no: number;
+  worker_id: number;
+  fencing_token: number;
+  lease_expires_at: string;
+  status: string;
+  claimed_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+  error_code: string | null;
+  resource_usage_json: Record<string, unknown> | null;
+  output_summary: Record<string, unknown> | null;
+  cleanup_summary: Record<string, unknown> | null;
+}
+
+export interface ReliableExecutionIncident {
+  id: number;
+  kind: string;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface ReliableExecutionDetail {
+  execution_id: number;
+  dispatch_backend: "legacy" | "rabbitmq";
+  status: string;
+  attempts: AttemptSummary[];
+  incidents: ReliableExecutionIncident[];
+  replay_available: boolean;
+  replay_reason: string | null;
+}
+
+export interface ReplayResponse {
+  execution_id: number;
+  replay_of_execution_id: number;
+}
+
 // --- M5.2: Schedule Trigger --------------------------------------------------
+
+export type ScheduleMisfirePolicy =
+  | "coalesce_latest"
+  | "queue_every_occurrence"
+  | "skip_while_busy";
+
+export type ScheduleOutcome = "enqueued" | "coalesced" | "skipped" | "expired";
+
+export interface ScheduleDispatchOutcome {
+  id: number;
+  first_scheduled_for: string;
+  last_scheduled_for: string;
+  occurrence_count: number;
+  outcome: ScheduleOutcome;
+  reason: string | null;
+  cron_snapshot?: string;
+  timezone_snapshot?: string;
+}
 
 /** Singleton Schedule configuration of one Adapter (GET/PUT response body). */
 export interface AdapterSchedule {
@@ -195,6 +277,14 @@ export interface AdapterSchedule {
   input: unknown;
   /** Scheduler cursor (UTC); null while disabled. */
   next_run_at: string | null;
+  last_blocked_reason?: string | null;
+  last_blocked_detail?: Record<string, unknown> | null;
+  last_blocked_at?: string | null;
+  last_processed_due_at?: string | null;
+  misfire_policy?: ScheduleMisfirePolicy;
+  max_catchup_count?: number;
+  max_catchup_age_seconds?: number;
+  recent_outcomes?: ScheduleDispatchOutcome[];
   updated_at: string;
 }
 
@@ -204,6 +294,9 @@ export interface AdapterScheduleDraft {
   timezone: string;
   /** Legacy mirror only; new Web input edits use AdapterInputConfig. */
   input?: unknown;
+  misfire_policy?: ScheduleMisfirePolicy;
+  max_catchup_count?: number;
+  max_catchup_age_seconds?: number;
 }
 
 export interface InputRetention {
@@ -369,6 +462,10 @@ export interface Worker {
   capabilities: string[];
   /** Protocol negotiated by the Worker registration boundary. */
   protocol_version?: number;
+  isolation_capabilities?: Record<string, boolean>;
+  isolation_preflight_status?: "unknown" | "passed" | "failed" | string;
+  isolation_preflight_at?: string | null;
+  rabbitmq_execution_v3?: boolean;
 }
 
 // --- M3.2/M3.3: Secret Store credentials and dependency sources -----------

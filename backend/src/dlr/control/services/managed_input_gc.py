@@ -24,6 +24,7 @@ from dlr.control.models import (
     AdapterInputConfig,
     ArtifactDeletionJob,
     Execution,
+    ExecutionArtifactHold,
     ExecutionInputArtifactLease,
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
@@ -154,9 +155,17 @@ def has_active_artifact_lease(session: Session, artifact_id: int) -> bool:
             .join(Execution, Execution.id == ExecutionInputArtifactLease.execution_id)
             .where(
                 ExecutionInputArtifactLease.artifact_id == int(artifact_id),
-                Execution.status.in_(("pending", "running")),
+                Execution.status.in_(("pending", "queued", "running", "retry_wait")),
             )
             .limit(1)
+        )
+        is not None
+        or session.scalar(
+            select(ExecutionArtifactHold.id).where(
+                ExecutionArtifactHold.artifact_id == int(artifact_id),
+                ExecutionArtifactHold.purged_at.is_(None),
+                ExecutionArtifactHold.expires_at > utcnow(),
+            )
         )
         is not None
     )

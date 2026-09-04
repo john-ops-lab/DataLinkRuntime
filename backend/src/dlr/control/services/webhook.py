@@ -41,6 +41,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
+from dlr.common.jcs import CanonicalizationInputError, canonicalize
 from dlr.control.models import Adapter, Credential, Execution, Worker
 from dlr.control.models.webhook import AdapterWebhook
 from dlr.control.schemas.webhook import (
@@ -50,6 +51,7 @@ from dlr.control.schemas.webhook import (
 )
 from dlr.control.security import _bearer_token
 from dlr.control.services import adapter_runtime, worker_availability
+from dlr.control.services import idempotency as idempotency_service
 from dlr.control.services.adapter import (
     _require_not_archived,
     domain_error,
@@ -59,6 +61,7 @@ from dlr.control.services.execution import (
     compact_json_bytes,
     integrity_constraint_name,
 )
+from dlr.control.services.reliable_execution import accept_execution, resolve_queue_target_worker
 from dlr.control.services.secrets import decrypt_fields
 
 logger = logging.getLogger("dlr.control.webhook")
@@ -73,16 +76,19 @@ def _reject_non_standard_constant(name: str) -> float:
 
     ``json.loads`` accepts these constants by default, but the Execution
     input contract is standard JSON; persisting them would surface as a
-    JSONB error instead of a stable 400.
+    JSONB error instead of a stable 400.  This hook runs during parsing, so
+    use ``ValueError`` rather than the post-parse JCS domain error.
     """
-    raise ValueError(f"non-standard JSON constant: {name}")
+    del name
+    raise ValueError("non-standard JSON number")
 
 
 def _parse_finite_float(text: str) -> float:
     """Reject numeric overflow (e.g. ``1e309`` parses to inf by default)."""
     value = float(text)
     if not math.isfinite(value):
-        raise ValueError(f"non-finite number: {text}")
+        del text
+        raise ValueError("non-finite JSON number")
     return value
 
 
@@ -310,7 +316,12 @@ def _require_bearer(session: Session, webhook: AdapterWebhook, authorization: st
 
 
 def receive_webhook(
-    session: Session, public_id: str, authorization: str | None, body: bytes
+    session: Session,
+    public_id: str,
+    authorization: str | None,
+    body: bytes,
+    *,
+    idempotency_key: str | None = None,
 ) -> Execution:
     """Validate one external Webhook request and create its Execution.
 
@@ -357,19 +368,21 @@ def receive_webhook(
         raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
     if adapter.latest_version_id is None or adapter.runtime_worker_id is None:
         raise domain_error(409, "adapter_not_ready", "Save the Adapter and choose a runtime Worker")
-    worker = session.get(Worker, adapter.runtime_worker_id)
-    if worker is None or not worker_availability.is_effectively_online(
-        worker, now=worker_availability.current_time(session)
-    ):
-        raise domain_error(409, "worker_offline", "The runtime Worker is offline")
-    if adapter.language not in worker.capabilities:
-        raise domain_error(
-            409,
-            "worker_capability_missing",
-            f"The runtime Worker does not support {adapter.language}",
-        )
-    if adapter_runtime.active_execution(session, adapter.id) is not None:
-        raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
+    worker: Worker | None = None
+    if not settings.rabbitmq_execution_enabled:
+        worker = session.get(Worker, adapter.runtime_worker_id)
+        if worker is None or not worker_availability.is_effectively_online(
+            worker, now=worker_availability.current_time(session)
+        ):
+            raise domain_error(409, "worker_offline", "The runtime Worker is offline")
+        if adapter.language not in worker.capabilities:
+            raise domain_error(
+                409,
+                "worker_capability_missing",
+                f"The runtime Worker does not support {adapter.language}",
+            )
+        if adapter_runtime.active_execution(session, adapter.id) is not None:
+            raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
 
     # --- body contract: raw size, then JSON, then normalized size ------------
     # The raw byte cap is the ingress memory protection; the compact JSON
@@ -390,8 +403,16 @@ def receive_webhook(
             parse_float=_parse_finite_float,
         )
         _require_jsonb_persistable(payload)
+        canonicalize(payload)
+    except CanonicalizationInputError:
+        raise domain_error(
+            422,
+            "input_invalid",
+            "Request input is outside the canonical JSON number domain",
+        ) from None
     except (UnicodeDecodeError, ValueError) as error:
-        raise domain_error(400, "webhook_body_invalid_json", "Body must be valid JSON") from error
+        del error
+        raise domain_error(400, "webhook_body_invalid_json", "Body must be valid JSON") from None
     if len(compact_json_bytes(payload)) > settings.execution_input_max_bytes:
         raise domain_error(
             413,
@@ -400,10 +421,48 @@ def receive_webhook(
             {"max_bytes": settings.execution_input_max_bytes},
         )
 
+    if settings.rabbitmq_execution_enabled:
+        lookup = idempotency_service.lookup(
+            session,
+            adapter.id,
+            "webhook",
+            payload,
+            idempotency_key,
+        )
+        if lookup.record is not None:
+            existing = session.get(Execution, lookup.record.execution_id)
+            if existing is None:
+                raise domain_error(
+                    409,
+                    "idempotency_record_invalid",
+                    "Idempotency record is unavailable",
+                )
+            session.commit()
+            session.refresh(existing)
+            return existing
+        worker = resolve_queue_target_worker(session, adapter)
+        execution = accept_execution(
+            session,
+            adapter,
+            trigger="webhook",
+            runtime_input=payload,
+            input_source_type="json",
+            input_config_revision=1,
+            input_snapshot={"source_type": "json", "revision": 1},
+            idempotency_key=idempotency_key,
+            idempotency_body=payload,
+            idempotency_lookup=lookup,
+        )
+        session.commit()
+        session.refresh(execution)
+        logger.info("webhook accepted: adapter=%s execution=%s", adapter.id, execution.id)
+        return execution
+
     # Retention is a unified periodic service, not an inline side effect of
     # accepting a request.  This keeps receipt latency bounded and lets a
     # failed cleanup retry in small batches without touching active work.
     try:
+        assert worker is not None
         execution = _create_pending_execution_locked(
             session,
             adapter,

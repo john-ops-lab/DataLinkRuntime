@@ -784,7 +784,7 @@ def test_c1_invalid_v2_envelope_rejects_before_all_local_side_effects(
 
 @pytest.mark.parametrize(
     "protocol_version",
-    [0, 3, "1", "2", "not-a-version", 1.0, 1.5, 2.0, 2.9, True],
+    [0, 4, "1", "2", "not-a-version", 1.0, 1.5, 2.0, 2.9, True],
 )
 def test_c1_unknown_protocol_rejects_before_all_local_side_effects(
     tmp_path: Path,

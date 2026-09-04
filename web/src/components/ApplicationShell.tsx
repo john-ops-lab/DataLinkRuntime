@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Avatar, Button, Dropdown, Tooltip, type MenuProps } from "antd";
+import { Avatar, Badge, Button, Dropdown, type MenuProps } from "antd";
 import {
   DownOutlined,
   LogoutOutlined,
@@ -9,22 +9,20 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
-import type { AccountPrincipal, Worker } from "../types";
-import WorkerStatus from "./WorkerStatus";
+import { systemStatusBadgeStatus, type SystemStatusLevel } from "../system-status";
+import type { AccountPrincipal } from "../types";
 
 /** Retained as a compatibility type for callers that still describe the old view state. */
 export type ShellSection = "adapters" | "workbench";
 
 interface ApplicationShellProps {
-  healthText: string;
-  healthDotClass: string;
-  workers: Worker[];
-  workersLoading: boolean;
-  workersError: string | null;
+  systemStatusLevel: SystemStatusLevel;
+  systemStatusText: string;
   canManageUsers: boolean;
   accountPrincipal?: AccountPrincipal;
   onOpenUserManagement?: () => void;
   onOpenSystemSettings?: () => void;
+  onOpenSystemStatus?: () => void;
   onOpenAccountProfile?: () => void;
   onAccountLogout?: () => Promise<void>;
   /** Deprecated view props are ignored; the Adapter catalog is the only left navigation. */
@@ -35,15 +33,13 @@ interface ApplicationShellProps {
 }
 
 function TopBar({
-  healthText,
-  healthDotClass,
-  workers,
-  workersLoading,
-  workersError,
+  systemStatusLevel,
+  systemStatusText,
   canManageUsers,
   accountPrincipal,
   onOpenUserManagement,
   onOpenSystemSettings,
+  onOpenSystemStatus,
   onOpenAccountProfile,
   onAccountLogout,
 }: Omit<ApplicationShellProps, "selectedAdapterName" | "section" | "onSectionChange" | "children">) {
@@ -84,7 +80,11 @@ function TopBar({
   const principalLabel = accountPrincipal === undefined
     ? t("auth.superadmin")
     : `${accountPrincipal.username} · ${t(`auth.role.${accountPrincipal.role}`)}`;
-  const healthIsAlert = healthDotClass === "health-dot-degraded" || healthDotClass === "health-dot-unreachable";
+  const statusContent = (
+    <span className="system-status-summary-content" aria-live="polite">
+      <Badge status={systemStatusBadgeStatus(systemStatusLevel)} text={systemStatusText} />
+    </span>
+  );
 
   return (
     <header className="app-header" data-testid="app-header">
@@ -93,17 +93,25 @@ function TopBar({
         <span className="app-header-product">{t("product.name")}</span>
       </div>
       <div className="app-header-status">
-        <Tooltip title={healthText} trigger={["hover", "focus"]}>
-          <span
-            className={`health-status${healthIsAlert ? " health-status-alert" : ""}`}
-            data-testid="control-status"
-            aria-live="polite"
+        {canManageUsers && onOpenSystemStatus ? (
+          <Button
+            type="text"
+            size="small"
+            className={`system-status-summary system-status-summary-${systemStatusLevel}`}
+            data-testid="system-status-summary"
+            aria-label={t("systemStatus.open", { status: systemStatusText })}
+            onClick={onOpenSystemStatus}
           >
-            <span className={`health-dot ${healthDotClass}`.trim()} aria-hidden="true" />
-            <span className="health-status-label">{healthText}</span>
+            {statusContent}
+          </Button>
+        ) : (
+          <span
+            className={`system-status-summary system-status-summary-${systemStatusLevel}`}
+            data-testid="system-status-summary"
+          >
+            {statusContent}
           </span>
-        </Tooltip>
-        <WorkerStatus workers={workers} loading={workersLoading} error={workersError} />
+        )}
         {menuItems.length > 0 && (
           <Dropdown
             trigger={["click"]}
@@ -134,15 +142,13 @@ function TopBar({
 
 export default function ApplicationShell(props: ApplicationShellProps) {
   const {
-    healthText,
-    healthDotClass,
-    workers,
-    workersLoading,
-    workersError,
+    systemStatusLevel,
+    systemStatusText,
     canManageUsers,
     accountPrincipal,
     onOpenUserManagement,
     onOpenSystemSettings,
+    onOpenSystemStatus,
     onOpenAccountProfile,
     onAccountLogout,
     children,
@@ -151,15 +157,13 @@ export default function ApplicationShell(props: ApplicationShellProps) {
   return (
     <div className="dlr-app-layout">
       <TopBar
-        healthText={healthText}
-        healthDotClass={healthDotClass}
-        workers={workers}
-        workersLoading={workersLoading}
-        workersError={workersError}
+        systemStatusLevel={systemStatusLevel}
+        systemStatusText={systemStatusText}
         canManageUsers={canManageUsers}
         accountPrincipal={accountPrincipal}
         onOpenUserManagement={onOpenUserManagement}
         onOpenSystemSettings={onOpenSystemSettings}
+        onOpenSystemStatus={onOpenSystemStatus}
         onOpenAccountProfile={onOpenAccountProfile}
         onAccountLogout={onAccountLogout}
       />

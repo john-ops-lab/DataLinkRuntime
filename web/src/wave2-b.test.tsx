@@ -250,7 +250,7 @@ it("switches the whole Task Console between zh-CN and en immediately without rel
   expect(screen.getByRole("tab", { name: "执行记录" })).toBeTruthy();
   expect(screen.getByRole("tab", { name: "实时日志" })).toBeTruthy();
   expect(screen.getByTestId("header-task-schedule-toggle").textContent).toBe("启用定时");
-  expect(screen.getByTestId("control-status").textContent).toBe("控制服务正常");
+  expect(screen.getByTestId("system-status-summary").textContent).toBe("系统异常");
   expect(screen.getByTestId("adapter-catalog").textContent).toContain("定时运行");
 
   // Switch to English: the same mounted console must update in place.
@@ -260,7 +260,7 @@ it("switches the whole Task Console between zh-CN and en immediately without rel
   expect(screen.getByRole("tab", { name: "Executions" })).toBeTruthy();
   expect(screen.getByRole("tab", { name: "Live logs" })).toBeTruthy();
   await waitFor(() => expect(screen.getByTestId("header-task-schedule-toggle").textContent).toBe("Enable schedule"));
-  await waitFor(() => expect(screen.getByTestId("control-status").textContent).toBe("Control service healthy"));
+  await waitFor(() => expect(screen.getByTestId("system-status-summary").textContent).toBe("System abnormal"));
   await waitFor(() => expect(screen.getByTestId("adapter-catalog").textContent).toContain("Scheduled"));
 
   // And back.
@@ -609,8 +609,8 @@ it("reflects the backend locale across refresh without mutating anything", async
   // authenticated Console session.
   window.localStorage.setItem(LOGIN_LOCALE_STORAGE_KEY, "zh-CN");
   const first = render(<App />);
-  await screen.findByTestId("control-status");
-  expect(screen.getByTestId("control-status").textContent).toBe("Control service healthy");
+  await screen.findByTestId("system-status-summary");
+  expect(screen.getByTestId("system-status-summary").textContent).toBe("System abnormal");
   first.unmount();
 
   const mutations = fetchMock.mock.calls.filter(

@@ -368,7 +368,7 @@ def test_no_source_failure_uses_localized_message_without_dependency_label(
             "package source is configured; ask the platform admin to add "
             "a package source in System Settings (or set DLR_PYPI_INDEX_URL "
             "on the Worker)",
-            "ERROR: package not cached",
+            "ERROR: 401 Unauthorized from a stale cached source\nERROR: package not cached",
             no_source=True,
         )
 

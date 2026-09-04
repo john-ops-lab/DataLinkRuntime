@@ -18,6 +18,11 @@ dependencies = [
     "cryptography>=43",
     "croniter>=6",
     "tzdata>=2024",
+    # Issue #130 B1: the tested RabbitMQ client and RFC 8785/JCS canonicalizer
+    # are pinned to the dependency-gate versions.  Do not silently substitute
+    # an approximate JSON sort or an unbounded client upgrade.
+    "pika==1.3.2",
+    "rfc8785==0.1.4",
     # Legacy BIFF .xls fallback stays in memory; xlrd is the maintained,
     # pure-Python parser for the historical Excel format.
     "xlrd>=2.0.2,<3",
@@ -62,7 +67,7 @@ packages = ["dlr"]
 
 [[tool.mypy.overrides]]
 # croniter ships no type annotations.
-module = ["croniter", "xlrd"]
+module = ["croniter", "xlrd", "pika"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

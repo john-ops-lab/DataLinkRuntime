@@ -295,7 +295,7 @@ def test_large_finite_heartbeat_timeout_does_not_overflow(
     assert is_effectively_online(worker, now=FIXED_NOW) is True
 
 
-def test_adapter_settings_reject_stale_or_stored_offline_worker(
+def test_adapter_settings_allow_stale_or_stored_offline_worker_assignment(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -319,7 +319,7 @@ def test_adapter_settings_reject_stale_or_stored_offline_worker(
         json={"runtime_worker_id": offline["id"]},
     )
 
-    assert stale_response.status_code == 409
-    assert stale_response.json()["detail"]["code"] == "worker_offline"
-    assert offline_response.status_code == 409
-    assert offline_response.json()["detail"]["code"] == "worker_offline"
+    assert stale_response.status_code == 200
+    assert stale_response.json()["runtime_worker_id"] == stale["id"]
+    assert offline_response.status_code == 200
+    assert offline_response.json()["runtime_worker_id"] == offline["id"]

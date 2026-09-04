@@ -7,6 +7,7 @@
     "unsavedChanges": "Discard unsaved changes and leave Settings?"
   },
   "categories": {
+    "systemStatus": "System Status",
     "general": "General",
     "credentials": "Credentials",
     "packageSources": "Package sources",
@@ -15,6 +16,7 @@
     "managedInput": "Managed Input"
   },
   "descriptions": {
+    "systemStatus": "Inspect the current authoritative Control, reliable-runtime, and Worker state. Future self-monitoring details belong here too.",
     "general": "Manage deployment defaults; existing browser preferences take precedence.",
     "credentials": "Manage credential references; Secret values are hidden.",
     "packageSources": "Configure package sources and optional credentials.",
@@ -27,6 +29,47 @@
     "en": "English"
   },
   "localeUpdateFailed": "Language setting was not updated. Try again.",
+  "systemStatus": {
+    "snapshotHint": "This current snapshot reuses the health and Worker APIs; it does not add history or alert configuration.",
+    "refresh": "Refresh status",
+    "loading": "Checking Control status…",
+    "controlUnavailable": "Control status is unreachable or returned an invalid response.",
+    "noRuntimeFacts": "No reliable-runtime facts are available.",
+    "controlTitle": "Control node",
+    "runtimeTitle": "Reliable runtime",
+    "workersTitle": "Runtime Workers",
+    "service": "Service",
+    "controlStatus": "Control status",
+    "database": "PostgreSQL",
+    "checkedAt": "Last checked",
+    "notChecked": "No completed check yet",
+    "rabbitmq": "RabbitMQ",
+    "ingress": "New-execution ingress",
+    "repair": "Accepted-work repair",
+    "lastErrorCode": "RabbitMQ error code",
+    "queueMessageHeadroom": "Message headroom / limit",
+    "queueByteHeadroom": "Byte headroom / limit",
+    "headroomValue": "{{available}} / {{limit}}",
+    "brokerAlerts": "Broker alerts",
+    "outbox": "Transactional Outbox",
+    "outboxPendingCount": "Pending rows",
+    "outboxPendingBytes": "Pending bytes",
+    "outboxOldestAge": "Oldest pending age",
+    "outboxErrorCode": "Outbox error code",
+    "seconds": "seconds",
+    "states": {
+      "ok": "Normal",
+      "ready": "Ready",
+      "degraded": "Degraded",
+      "disabled": "Disabled",
+      "waitingForWorker": "Waiting for Worker",
+      "unavailable": "Unavailable",
+      "failed": "Failed",
+      "unknown": "Unknown",
+      "normal": "Normal",
+      "abnormal": "Abnormal"
+    }
+  },
   "managedInput": {
     "title": "Managed Input",
     "upload": "Upload file",

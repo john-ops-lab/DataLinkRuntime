@@ -40,6 +40,8 @@ import type {
   PackageSource,
   PackageSourceDefaults,
   ReachabilityResult,
+  ReliableExecutionDetail,
+  ReplayResponse,
   SystemLocaleResponse,
   VersionDetail,
   VersionSummary,
@@ -122,6 +124,12 @@ async function parseError(response: Response): Promise<ApiError> {
     } else if (response.status === 504) {
       code = "ai_gateway_timeout";
     }
+  }
+  // Keep compatibility with the lightweight response stubs used by the UI
+  // tests while preserving the real Response header path in production.
+  const retryAfter = response.headers?.get?.("Retry-After") ?? null;
+  if (retryAfter !== null && /^\d+$/.test(retryAfter.trim())) {
+    params = { ...params, retry_after: Number(retryAfter.trim()) };
   }
   return new ApiError(response.status, code, message, params);
 }
@@ -377,6 +385,12 @@ export const api = {
 
   getExecution: (executionId: number): Promise<Execution> =>
     request(`/api/executions/${executionId}`),
+
+  getReliableExecutionDetail: (executionId: number): Promise<ReliableExecutionDetail> =>
+    request(`/api/executions/${executionId}/reliable-detail`),
+
+  replayExecution: (executionId: number): Promise<ReplayResponse> =>
+    request(`/api/executions/${executionId}/replay`, { method: "POST" }),
 
   cancelExecution: (executionId: number): Promise<Execution> =>
     request(`/api/executions/${executionId}/cancel`, { method: "POST" }),

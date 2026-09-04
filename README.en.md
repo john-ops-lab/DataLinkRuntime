@@ -239,6 +239,23 @@ Use real random secrets and never commit `.env`.
 
 The local default uses `./platform-logs` inside the repository:
 
+`DLR_PLATFORM_LOG_ROOT=./platform-logs` is the writable local default; use
+`/var/lib/dlr/platform-logs` for Linux production. Compose uses a bind mount for
+`control/`, `worker/`, `web/`, `account-web/`, and `postgres/`; the `postgres/`
+directory must be writable by the PostgreSQL container user. Configure log
+rotation and redaction, and never write credentials to logs. Do not use `chmod 777`
+to bypass permission problems. The root is precisely ignored by
+`.gitignore`.
+
+AI Assist uses `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS=150` as its total deadline.
+Tool-call audit metadata is written to `control/ai-tool-audit.jsonl` and rotated
+in-process with `DLR_AI_TOOL_AUDIT_MAX_BYTES=10485760` and
+`DLR_AI_TOOL_AUDIT_BACKUP_COUNT=10`, for a default maximum footprint of 110 MiB.
+Other `*.log` files remain subject to the platform rotation and redaction policy.
+For rollback to an older Control/Web that does not recognize these settings,
+remove the three variables together and retain existing redacted audit files for
+operator handling.
+
 ```bash
 mkdir -p ./platform-logs/control \
   ./platform-logs/worker \
@@ -257,12 +274,32 @@ docker compose up -d postgres
 docker compose run --rm control alembic upgrade head
 ```
 
+See [Reliable Runtime migration notes](docs/en/issue130-reliable-runtime-migrations.md)
+for the Issue #130 fresh/current-main migration, non-destructive rollback, Cutover
+API, and old-binary fail-closed boundary. See
+[Sandbox deployment](docs/en/issue130-sandbox-deployment.md) for the Linux cgroup v2
+host prerequisites and exact delegated subtree.
+
 ### 4. Start DLR
 
 ```bash
 docker compose up -d --build
 docker compose ps
 ```
+
+The RabbitMQ management listener stays inside the Compose network by default. For
+isolated local inspection only, enable the localhost-bound profile explicitly:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.management.yml \
+  --profile management up -d rabbitmq
+```
+
+`DLR_RABBITMQ_VHOST` is the one raw vhost value shared by RabbitMQ, Control, and
+Worker; Control and Worker encode it when building the AMQP URL. Ordinary RabbitMQ
+ingress remains disabled and legacy Claim remains enabled by default. Never skip the
+backup/restore, Worker v3/Sandbox, Slot-concurrency, and migration preflight gates by
+flipping a single setting.
 
 Once all services are healthy:
 
@@ -281,8 +318,10 @@ Use `DLR_ADMIN_TOKEN` from `.env` for the first Web Console login.
 ```mermaid
 flowchart LR
     U["Web Workbench<br/>React + Monaco"] -->|"HTTP / JSON / SSE"| C["Control<br/>FastAPI"]
-    C --> P[("PostgreSQL<br/>State / History")]
-    C -->|"Poll / Claim"| W["Worker Runtime"]
+    C -->|"Transaction + Outbox"| P[("PostgreSQL<br/>Authority / History")]
+    C -->|"Bounded publish"| Q["RabbitMQ 4.3<br/>Quorum Queue"]
+    Q -->|"Dispatch"| W["Worker v3 Runtime"]
+    W -->|"Claim / renew / result"| C
     W --> A["Adapter<br/>Python / JavaScript / Java"]
     A --> X["External Systems"]
 ```
@@ -309,6 +348,26 @@ See [Architecture](docs/en/architecture.md) for the detailed contracts.
 | **Execution** | One concrete run with status, duration, Input / Output, and logs |
 | **Worker** | Node that actually executes Adapters according to runtime capability |
 | **Credential** | Encrypted secret material; secret values are never returned to the browser |
+| **Attempt / Slot** | One physical RabbitMQ execution attempt and the database concurrency authority for an Adapter |
+
+---
+
+## Reliable execution and runtime boundaries
+
+- PostgreSQL is the business authority for Execution, Admission, Outbox, Attempt,
+  Lease, Fencing, and Slot state. RabbitMQ carries bounded dispatch only; it does not
+  replace database correctness.
+- Worker v3 ACKs a message after durable Claim and private-journal persistence, before
+  Sandbox execution. This is **ACK-on-claim**, not ACK-on-completion. Lease Recovery
+  creates a new generation after a post-ACK crash.
+- One Adapter may have multiple valid `queued/retry_wait` Executions, while database
+  `Slot 0` permits at most one active Attempt. Different Adapters may run in parallel.
+- The default Compose deployment uses one RabbitMQ node. Quorum Queue durability is
+  **not HA** with one node. PostgreSQL Outbox retains accepted responsibility during
+  a broker outage and relays it after recovery.
+- The v3 Sandbox requires a correctly delegated Linux cgroup v2 host and bounds CPU,
+  memory, PIDs, temporary storage, and output. It does not turn DLR into an
+  untrusted-tenant arbitrary-code service.
 
 ---
 
@@ -319,6 +378,8 @@ DLR currently uses a **trusted administrator code model**.
 Important boundaries:
 
 - Adapter subprocess isolation is **not a security sandbox**;
+- the Linux cgroup v2 Sandbox is a resource/process boundary, not a tenant security
+  boundary, and non-Linux environments cannot satisfy the production Sandbox Gate;
 - do not allow untrusted users to execute arbitrary code on Workers;
 - credential secret values are never returned to the browser;
 - secrets are injected only for the target Execution and are included in platform log redaction;
@@ -379,6 +440,8 @@ The smoke test uses an isolated local environment and a fake AI provider; it doe
 
 - [Product definition](docs/en/product.md)
 - [Architecture](docs/en/architecture.md)
+- [Reliable Runtime migration, Cutover API & failure handling](docs/en/issue130-reliable-runtime-migrations.md)
+- [Issue #130 Linux Sandbox deployment](docs/en/issue130-sandbox-deployment.md)
 - [Specs index and precedence](docs/specs/README.md)
 - [Platform logs & deployment](docs/deployment/platform-logs.md)
 - [GitHub Issues](https://github.com/john-ops-lab/DataLinkRuntime/issues)

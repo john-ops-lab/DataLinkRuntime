@@ -13,8 +13,9 @@ M3.2 scheduling and lifecycle fields:
 - ``target_worker_id`` is the desired Worker; ``worker_id`` stays the
   Worker that actually claimed and runs the Execution.
 - ``trigger`` distinguishes ``manual``, ``schedule`` and ``webhook`` runs.
-- The partial unique index guarantees at most one active Execution per
-  Adapter across every trigger type (M5.4.1).
+- During the legacy compatibility window, its partial unique index guarantees
+  at most one active legacy Execution per Adapter. RabbitMQ concurrency is
+  governed by the authoritative Adapter Slot and Attempt records.
 
 M5.2 Schedule Trigger fields:
 
@@ -56,7 +57,7 @@ class Worker(Base):
     __tablename__ = "workers"
     __table_args__ = (
         CheckConstraint("status IN ('online', 'offline')", name="ck_workers_status"),
-        CheckConstraint("protocol_version BETWEEN 1 AND 2", name="ck_workers_protocol_version"),
+        CheckConstraint("protocol_version BETWEEN 1 AND 3", name="ck_workers_protocol_version"),
         Index("ix_workers_protocol_version", "protocol_version"),
     )
 
@@ -72,6 +73,25 @@ class Worker(Base):
     protocol_version: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=1, server_default=text("1")
     )
+    # The matrix is an observed Worker capability fact, never inferred from
+    # protocol_version alone.  An empty/default matrix intentionally keeps
+    # v3 diagnostics fail-closed until a later Linux preflight proves the
+    # resource-isolation contract.
+    isolation_capabilities: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    isolation_preflight_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default=text("'unknown'")
+    )
+    isolation_preflight_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # This is deliberately a persisted gate rather than a computed
+    # ``protocol_version == 3`` shortcut.  Batch 2 records the fact and keeps
+    # it false on hosts that have not passed the Batch 3 sandbox probe.
+    rabbitmq_execution_v3: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -86,8 +106,36 @@ class Execution(Base):
     __tablename__ = "executions"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'failed', 'timeout', 'cancelled')",
+            "status IN ('pending', 'queued', 'running', 'retry_wait', 'succeeded', "
+            "'failed', 'timeout', 'dead_letter', 'cancelled', 'expired')",
             name="ck_executions_status",
+        ),
+        CheckConstraint(
+            "dispatch_backend = 'legacy' AND status IN "
+            "('pending', 'running', 'succeeded', 'failed', 'timeout', 'cancelled') "
+            "OR dispatch_backend = 'rabbitmq' AND status IN "
+            "('queued', 'running', 'retry_wait', 'succeeded', 'dead_letter', "
+            "'cancelled', 'expired')",
+            name="ck_executions_backend_status",
+        ),
+        CheckConstraint(
+            "dispatch_backend IN ('legacy', 'rabbitmq')",
+            name="ck_executions_dispatch_backend",
+        ),
+        CheckConstraint(
+            "dispatch_generation >= 0 AND "
+            "(dispatch_backend = 'legacy' OR dispatch_generation >= 1)",
+            name="ck_executions_dispatch_generation",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_executions_attempt_count_nonnegative"),
+        CheckConstraint(
+            "max_attempts_snapshot BETWEEN 1 AND 100",
+            name="ck_executions_max_attempts_snapshot",
+        ),
+        CheckConstraint("logical_input_bytes >= 0", name="ck_executions_logical_input_bytes"),
+        CheckConstraint(
+            "resource_class IS NULL OR length(resource_class) BETWEEN 1 AND 64",
+            name="ck_executions_resource_class",
         ),
         CheckConstraint(
             "trigger IN ('manual', 'schedule', 'webhook')",
@@ -96,12 +144,15 @@ class Execution(Base):
         CheckConstraint("locale IN ('zh-CN', 'en')", name="ck_executions_locale"),
         # Supports the claim query: pending rows ordered by (created_at, id).
         Index("ix_executions_claim", "status", "created_at", "id"),
-        # One active Execution per Adapter across every trigger source.
+        # Legacy compatibility guard. Final reliable-runtime Cutover retires
+        # this index only after Adapter Slot 0 has passed its database gate.
         Index(
             "uq_executions_active_adapter",
             "adapter_id",
             unique=True,
-            postgresql_where=text("status IN ('pending', 'running')"),
+            postgresql_where=text(
+                "dispatch_backend = 'legacy' AND status IN ('pending', 'running')"
+            ),
         ),
         # M5.2: one planned point yields at most one Schedule Execution;
         # the final defense against duplicate creation across Control
@@ -161,6 +212,19 @@ class Execution(Base):
         ),
         Index("ix_executions_claim_deadline_at", "status", "claim_deadline_at"),
         Index("ix_executions_execution_deadline_at", "status", "execution_deadline_at"),
+        Index(
+            "ix_executions_backend_status_created",
+            "dispatch_backend",
+            "status",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_executions_next_attempt_at",
+            "dispatch_backend",
+            "status",
+            "next_attempt_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -196,6 +260,66 @@ class Execution(Base):
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    # Explicit backend disambiguates legacy rows from the additive RabbitMQ
+    # state machine.  B1 keeps the default on the legacy path.
+    dispatch_backend: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="legacy", server_default=text("'legacy'")
+    )
+    dispatch_generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts_snapshot: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    retry_policy_snapshot: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    resource_profile_snapshot: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    # Private immutable references used to resolve the credentials selected at
+    # acceptance time.  This contains IDs and binding metadata only, never
+    # ciphertext or plaintext secret values.
+    credential_bindings_snapshot: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    # Only Schedule-triggered rows carry this closed policy snapshot; other
+    # triggers keep it NULL rather than exposing current Schedule settings.
+    schedule_policy_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    resource_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_worker_id_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    logical_input_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    idempotency_record_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "execution_idempotency_records.id",
+            use_alter=True,
+            ondelete="SET NULL",
+            name="fk_executions_idempotency_record_id",
+        ),
+        nullable=True,
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    admission_released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    replay_of_execution_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "executions.id",
+            use_alter=True,
+            ondelete="SET NULL",
+            name="fk_executions_replay_of_execution_id",
+        ),
+        nullable=True,
     )
     # Set by an admin cancel request; the Worker observes it through the
     # progress response and terminates the subprocess.

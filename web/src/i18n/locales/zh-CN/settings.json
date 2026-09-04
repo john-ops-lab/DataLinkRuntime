@@ -7,6 +7,7 @@
     "unsavedChanges": "放弃未保存修改并离开设置？"
   },
   "categories": {
+    "systemStatus": "系统状态",
     "general": "常规",
     "credentials": "凭据",
     "packageSources": "依赖源",
@@ -15,6 +16,7 @@
     "managedInput": "文件托管"
   },
   "descriptions": {
+    "systemStatus": "查看 Control、可靠运行时和 Worker 的当前权威状态；后续自监控详情也集中在这里。",
     "general": "管理部署默认值；不覆盖浏览器已有偏好。",
     "credentials": "管理凭据引用；不显示 Secret。",
     "packageSources": "配置依赖源和可选凭据。",
@@ -27,6 +29,47 @@
     "en": "English"
   },
   "localeUpdateFailed": "语言设置未更新，请重试",
+  "systemStatus": {
+    "snapshotHint": "当前快照来自既有健康与 Worker 接口，不包含历史趋势或告警配置。",
+    "refresh": "刷新状态",
+    "loading": "正在检查 Control 状态…",
+    "controlUnavailable": "Control 状态不可达或响应无效。",
+    "noRuntimeFacts": "没有可显示的可靠运行时状态。",
+    "controlTitle": "控制节点",
+    "runtimeTitle": "可靠运行时",
+    "workersTitle": "运行节点",
+    "service": "服务",
+    "controlStatus": "Control 状态",
+    "database": "PostgreSQL",
+    "checkedAt": "最近检查",
+    "notChecked": "尚未完成检查",
+    "rabbitmq": "RabbitMQ",
+    "ingress": "新任务入口",
+    "repair": "存量责任修复",
+    "lastErrorCode": "RabbitMQ 错误码",
+    "queueMessageHeadroom": "消息余量 / 上限",
+    "queueByteHeadroom": "字节余量 / 上限",
+    "headroomValue": "{{available}} / {{limit}}",
+    "brokerAlerts": "Broker 告警数",
+    "outbox": "Transactional Outbox",
+    "outboxPendingCount": "待发布条数",
+    "outboxPendingBytes": "待发布字节",
+    "outboxOldestAge": "最老待发布年龄",
+    "outboxErrorCode": "Outbox 错误码",
+    "seconds": "秒",
+    "states": {
+      "ok": "正常",
+      "ready": "就绪",
+      "degraded": "降级",
+      "disabled": "已停用",
+      "waitingForWorker": "等待 Worker",
+      "unavailable": "不可用",
+      "failed": "失败",
+      "unknown": "未知",
+      "normal": "正常",
+      "abnormal": "异常"
+    }
+  },
   "managedInput": {
     "title": "文件托管",
     "upload": "上传文件",

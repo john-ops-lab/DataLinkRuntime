@@ -22,6 +22,19 @@ const worker = {
   status: "online",
   last_heartbeat: "2026-01-01T00:00:00Z",
   capabilities: ["python", "javascript", "java"],
+  protocol_version: 3,
+  isolation_preflight_status: "passed",
+  isolation_preflight_at: "2026-01-01T00:00:00Z",
+  rabbitmq_execution_v3: true,
+  isolation_capabilities: {
+    cgroup_v2: true,
+    mount_namespace: true,
+    pid_namespace: true,
+    memory_hard_limit: true,
+    pids_hard_limit: true,
+    tmpfs_hard_limit: true,
+    bounded_output: true,
+  },
 };
 
 const adapters = Array.from({ length: 24 }, (_, index) => ({
@@ -173,6 +186,17 @@ async function installRoutes(
       await fulfillJson(route, [worker]);
       return;
     }
+    if (path === "/api/system/managed-input-capability" && method === "GET") {
+      await fulfillJson(route, {
+        managed_files_enabled: false,
+        ready: false,
+        default_retention_seconds: 86_400,
+        max_custom_retention_seconds: 2_592_000,
+        allow_manual_delete: true,
+        allowed_extensions: [".xlsx", ".xls", ".csv", ".log", ".txt", ".json"],
+      });
+      return;
+    }
     if (path === "/api/adapters" && method === "GET") {
       await fulfillJson(route, mode === "account"
         ? adapters.map((adapter) => ({ ...adapter, access_level: "read" }))
@@ -197,6 +221,19 @@ async function installRoutes(
     }
     if (path === "/api/adapters/1/credential-options" && method === "GET") {
       await fulfillJson(route, []);
+      return;
+    }
+    if (path === "/api/adapters/1/input-config" && method === "GET") {
+      await fulfillJson(route, {
+        adapter_id: 1,
+        revision: 1,
+        source_type: "none",
+        json_value: null,
+        retention: { mode: "system_default", seconds: null },
+        artifacts: [],
+        valid_for_run: true,
+        invalid_reason: null,
+      });
       return;
     }
     if (path === "/api/auth/admin/verify" && method === "GET" && mode === "token") {
@@ -329,9 +366,9 @@ async function chooseLoginLocale(page: Page, locale: Locale): Promise<void> {
 }
 
 async function loginToken(page: Page, locale: Locale): Promise<void> {
-  await expect(page.getByRole("heading", { name: headingFor(locale, "token") })).toBeVisible();
   await expect(page.getByTestId("login-locale-select")).toBeVisible();
   await chooseLoginLocale(page, locale);
+  await expect(page.getByRole("heading", { name: headingFor(locale, "token") })).toBeVisible();
   await page.getByTestId("admin-token-input").fill("FAKE_ADMIN_TOKEN");
   await page.getByTestId("admin-token-submit").click();
   await expect(page.getByTestId("adapter-catalog")).toBeVisible();
@@ -822,8 +859,8 @@ for (const locale of LOCALES) {
 
       await page.goto("/");
       await loginToken(page, locale);
-      await expect(page.getByTestId("control-status")).toHaveText(
-        locale === "zh-CN" ? "控制服务正常" : "Control service healthy",
+      await expect(page.getByTestId("system-status-summary")).toHaveText(
+        locale === "zh-CN" ? "系统正常" : "System normal",
       );
       await page.getByTestId("adapter-item").first().click();
       await expect(page.getByTestId("workbench-header")).toBeVisible();

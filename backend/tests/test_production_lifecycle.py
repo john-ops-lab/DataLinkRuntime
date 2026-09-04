@@ -94,7 +94,9 @@ def test_first_save_requires_explicit_worker_when_multiple_are_compatible(
     assert api_client.post(path, json=payload).status_code == 201
 
 
-def test_runtime_worker_must_be_online_and_language_compatible(api_client: TestClient) -> None:
+def test_runtime_worker_assignment_requires_language_but_allows_offline(
+    api_client: TestClient,
+) -> None:
     incompatible_response = api_client.post(
         "/api/workers/register",
         json={"name": "javascript-only", "capabilities": ["javascript"]},
@@ -118,12 +120,17 @@ def test_runtime_worker_must_be_online_and_language_compatible(api_client: TestC
     )
     assert mismatch.status_code == 409
     assert mismatch.json()["detail"]["code"] == "worker_capability_missing"
-    unavailable = api_client.patch(
+    assigned = api_client.patch(
         f"/api/adapters/{adapter['id']}",
         json={"runtime_worker_id": offline["id"]},
     )
-    assert unavailable.status_code == 409
-    assert unavailable.json()["detail"]["code"] == "worker_offline"
+    assert assigned.status_code == 200
+    assert assigned.json()["runtime_worker_id"] == offline["id"]
+    saved = api_client.post(
+        f"/api/adapters/{adapter['id']}/versions",
+        json={"code": "def handle(context, input):\n    return input\n"},
+    )
+    assert saved.status_code == 201
 
 
 def test_active_execution_locks_runtime_writes_but_allows_metadata(

@@ -241,6 +241,18 @@ DLR_MASTER_KEY
 
 本地默认使用仓库内的 `./platform-logs`：
 
+`DLR_PLATFORM_LOG_ROOT=./platform-logs` 是本地可写默认值；Linux 生产部署建议使用
+`/var/lib/dlr/platform-logs`。Compose 通过 bind mount 分别挂载 `control/`、`worker/`、
+`web/`、`account-web/` 和 `postgres/`，其中 `postgres/` 必须对容器内 PostgreSQL 用户可写。
+请配置日志轮转（rotation）和脱敏（redaction），不得把凭据（credential）写入日志；
+不要使用 `chmod 777` 绕过权限问题。根目录已在 `.gitignore` 中精确忽略。
+
+AI Assist 的总超时由 `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS=150` 控制；工具调用审计写入
+`control/ai-tool-audit.jsonl`，并由 `DLR_AI_TOOL_AUDIT_MAX_BYTES=10485760` 与
+`DLR_AI_TOOL_AUDIT_BACKUP_COUNT=10` 做应用内轮转，默认最大占用为 110 MiB。其他
+`*.log` 仍遵循平台日志轮转和脱敏要求。回滚到不识别这些配置的旧版 Control/Web 时，
+同时移除这三个新增变量，但保留已有且已脱敏的审计文件供运维处置。
+
 ```bash
 mkdir -p ./platform-logs/control \
   ./platform-logs/worker \
@@ -259,12 +271,31 @@ docker compose up -d postgres
 docker compose run --rm control alembic upgrade head
 ```
 
+Issue #130 的 fresh/current-main migration、非破坏回滚和旧二进制 fail-closed
+边界见 [Reliable Runtime 迁移说明](docs/zh-CN/issue130-reliable-runtime-migrations.md)。
+Linux cgroup v2 的部署前置、精确 delegated subtree 与故障矩阵见
+[Sandbox 部署说明](docs/zh-CN/issue130-sandbox-deployment.md)。
+
 ### 4. 启动 DLR
 
 ```bash
 docker compose up -d --build
 docker compose ps
 ```
+
+RabbitMQ 的 management listener 默认只在 Compose 服务网络内可用，不发布到宿主机。
+隔离开发需要查看 management API 时，显式启用仅绑定 localhost 的 profile：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.management.yml \
+  --profile management up -d rabbitmq
+```
+
+`DLR_RABBITMQ_VHOST` 是 Broker、Control 和 Worker 共用的唯一原始 vhost 配置；
+Control/Worker 在建立 AMQP 连接时负责安全 URL 编码，不能另行维护 URL path。
+默认配置仍关闭 RabbitMQ 普通流量，并保留 legacy Claim；不要只修改一个开关就跳过
+备份恢复、Worker v3/Sandbox、Slot 并发和迁移 preflight。完整、不可交换的 Cutover
+顺序见上面的迁移说明。
 
 服务健康后：
 
@@ -285,8 +316,10 @@ docker compose ps
 ```mermaid
 flowchart LR
     U["Web Workbench<br/>React + Monaco"] -->|"HTTP / JSON / SSE"| C["Control<br/>FastAPI"]
-    C --> P[("PostgreSQL<br/>State / History")]
-    C -->|"Poll / Claim"| W["Worker Runtime"]
+    C -->|"Transaction + Outbox"| P[("PostgreSQL<br/>Authority / History")]
+    C -->|"Bounded publish"| Q["RabbitMQ 4.3<br/>Quorum Queue"]
+    Q -->|"Dispatch"| W["Worker v3 Runtime"]
+    W -->|"Claim / renew / result"| C
     W --> A["Adapter<br/>Python / JavaScript / Java"]
     A --> X["External Systems"]
 ```
@@ -313,6 +346,23 @@ flowchart LR
 | **Execution** | 一次具体运行，记录状态、耗时、Input / Output 与日志 |
 | **Worker** | 实际执行 Adapter 的节点，按 Runtime capability 参与调度 |
 | **Credential** | 加密保存的凭据；浏览器不会获得 Secret 真值 |
+| **Attempt / Slot** | RabbitMQ Execution 的一次实际执行及每个 Adapter 的数据库并发权威 |
+
+---
+
+## 可靠执行与运行边界
+
+- PostgreSQL 是 Execution、Admission、Outbox、Attempt、Lease、Fencing 与 Slot 的业务
+  权威；RabbitMQ 只承载有界 dispatch，不替代数据库正确性。
+- Worker v3 在 durable Claim 与私有 journal 成功后 ACK 消息，再进入 Sandbox 执行；
+  因此这是 **ACK-on-claim**，不是执行完成后 ACK。ACK 后崩溃由 Lease Recovery 创建
+  新 generation 恢复。
+- 同一 Adapter 可以存在多个合法 `queued/retry_wait` Execution，但数据库 `Slot 0`
+  保证同一时刻最多一个 active Attempt；不同 Adapter 可以并行。
+- 默认 Compose 使用单节点 RabbitMQ。Quorum Queue 提供持久化语义，但单节点仍然
+  **不是 HA**；Broker 故障期间 PostgreSQL Outbox 保留已接受责任，恢复后补发。
+- v3 Sandbox 仅在满足部署前置的 Linux cgroup v2 环境成立，用于限制 CPU、内存、
+  PID、临时磁盘与输出；它不把 DLR 变成面向不可信租户的任意代码平台。
 
 ---
 
@@ -323,6 +373,8 @@ DLR 当前采用 **可信管理员代码模型**。
 请特别注意：
 
 - Adapter 子进程隔离 **不等同于安全沙箱**；
+- Linux cgroup v2 Sandbox 是资源与进程边界，不是租户安全边界；非 Linux 环境不能
+  声称通过生产 Sandbox Gate；
 - 不应允许不可信用户在 Worker 上执行任意代码；
 - Credential 真值不会返回浏览器；
 - Secret 仅按目标 Execution 注入，并参与平台日志脱敏；
@@ -383,6 +435,8 @@ Smoke Test 使用隔离的本地环境和 fake AI Provider，不会访问公网 
 
 - [产品定义](docs/zh-CN/product.md)
 - [总体架构](docs/zh-CN/architecture.md)
+- [Reliable Runtime 迁移、Cutover API 与故障处理](docs/zh-CN/issue130-reliable-runtime-migrations.md)
+- [Issue #130 Linux Sandbox 部署](docs/zh-CN/issue130-sandbox-deployment.md)
 - [Specs 索引与冲突优先级](docs/specs/README.md)
 - [平台日志与部署](docs/deployment/platform-logs.md)
 - [GitHub Issues](https://github.com/john-ops-lab/DataLinkRuntime/issues)

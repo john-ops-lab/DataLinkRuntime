@@ -10,6 +10,7 @@ import type {
   AdapterSchedule,
   Execution,
   TaskRunMode,
+  Worker,
 } from "../types";
 import TaskRunSettingsPanel, { type TaskRunSettingsHandle } from "./TaskRunSettingsPanel";
 
@@ -55,7 +56,7 @@ function makeSchedule(): AdapterSchedule {
   };
 }
 
-function makeExecution(): Execution {
+function makeExecution(overrides: Partial<Execution> = {}): Execution {
   return {
     id: 31,
     adapter_id: 7,
@@ -79,6 +80,7 @@ function makeExecution(): Execution {
     started_at: null,
     ended_at: null,
     duration_ms: null,
+    ...overrides,
   };
 }
 
@@ -90,6 +92,9 @@ function renderPanel(
     onError?: ReturnType<typeof vi.fn>;
     inputLoadError?: unknown;
     managedFilesEnabled?: boolean;
+    workers?: Worker[];
+    onAdapterChange?: ReturnType<typeof vi.fn>;
+    onExecutionStarted?: ReturnType<typeof vi.fn>;
   } = {},
 ) {
   const getInputConfig = vi.spyOn(api, "getInputConfig");
@@ -114,7 +119,7 @@ function renderPanel(
     <TaskRunSettingsPanel
       ref={runtimeRef}
       adapter={makeAdapter(options.runMode)}
-      workers={[
+      workers={options.workers ?? [
         {
           id: 3,
           name: "fixture-worker",
@@ -127,8 +132,8 @@ function renderPanel(
       workersError={null}
       execution={null}
       dirty={false}
-      onAdapterChange={vi.fn()}
-      onExecutionStarted={vi.fn()}
+      onAdapterChange={options.onAdapterChange ?? vi.fn()}
+      onExecutionStarted={options.onExecutionStarted ?? vi.fn()}
       onRuntimeStateChange={options.onRuntimeStateChange ?? vi.fn()}
       onError={onError}
     />,
@@ -329,6 +334,67 @@ describe("Task Input Object A2", () => {
     runtimeRef.current?.runOnce();
     await waitFor(() => expect(createExecution).toHaveBeenCalledTimes(1));
     expect(createExecution).toHaveBeenCalledWith(7);
+  });
+
+  it("keeps an offline compatible Worker selectable and preserves a queued run while refreshing state", async () => {
+    const queued = makeExecution({
+      status: "queued",
+      dispatch_backend: "rabbitmq",
+      target_worker_id: 3,
+      worker_id: null,
+    });
+    const refreshed = makeAdapter();
+    const createExecution = vi.spyOn(api, "createExecution").mockResolvedValue(queued);
+    const getAdapter = vi.spyOn(api, "getAdapter").mockResolvedValue(refreshed);
+    const onAdapterChange = vi.fn();
+    const onExecutionStarted = vi.fn();
+    const runtimeRef = renderPanel(makeInputConfig(), {
+      workers: [{
+        id: 3,
+        name: "offline-worker",
+        status: "offline",
+        last_heartbeat: "2026-08-26T00:00:00Z",
+        capabilities: ["python"],
+      }, {
+        id: 8,
+        name: "incompatible-worker",
+        status: "online",
+        last_heartbeat: "2026-08-26T00:00:00Z",
+        capabilities: ["javascript"],
+      }],
+      onAdapterChange,
+      onExecutionStarted,
+    });
+
+    await screen.findByTestId("task-input-config");
+    const select = screen.getByTestId("task-runtime-worker");
+    fireEvent.mouseDown(select.querySelector(".ant-select-selector") ?? select);
+    const dropdown = await waitFor(() => {
+      const open = Array.from(document.querySelectorAll<HTMLElement>(".ant-select-dropdown"))
+        .find((candidate) => !candidate.classList.contains("ant-select-dropdown-hidden"));
+      expect(open).not.toBeUndefined();
+      return open as HTMLElement;
+    });
+    const optionContent = Array.from(
+      dropdown.querySelectorAll<HTMLElement>(".ant-select-item-option-content"),
+    ).find((option) => option.textContent === "offline-worker（离线）");
+    expect(
+      Array.from(dropdown.querySelectorAll<HTMLElement>(".ant-select-item-option-content"))
+        .map((option) => option.textContent),
+    ).toEqual(["offline-worker（离线）"]);
+    expect(optionContent).not.toBeUndefined();
+    if (optionContent === undefined) {
+      throw new Error("offline compatible Worker option was not rendered");
+    }
+    const option = optionContent.closest(".ant-select-item-option");
+    expect(option?.classList.contains("ant-select-item-option-disabled")).toBe(false);
+    fireEvent.click(option ?? optionContent);
+
+    runtimeRef.current?.runOnce();
+    await waitFor(() => expect(createExecution).toHaveBeenCalledWith(7));
+    expect(onExecutionStarted).toHaveBeenCalledWith(queued);
+    await waitFor(() => expect(getAdapter).toHaveBeenCalled());
+    expect(onAdapterChange).toHaveBeenCalledWith(refreshed);
   });
 
   it("serializes the new Execution request with an empty JSON body", async () => {

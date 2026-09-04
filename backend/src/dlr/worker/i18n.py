@@ -52,6 +52,8 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
         "execution.process_exited": "适配器进程以退出码 {returncode} 结束",
         "execution.no_output": "适配器未生成 output.json",
         "execution.invalid_output": "output.json 无法解析：{detail}",
+        "execution.resource_exceeded": "执行超出资源限制",
+        "execution.output_too_large": "适配器输出超过大小限制，已保留预览",
     },
     "en": {
         "dependency.log_prefix": "[Dependency check]",
@@ -108,6 +110,10 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
         "execution.process_exited": "The Adapter process exited with code {returncode}",
         "execution.no_output": "The Adapter did not produce output.json",
         "execution.invalid_output": "output.json is invalid: {detail}",
+        "execution.resource_exceeded": "The execution exceeded its resource limit",
+        "execution.output_too_large": (
+            "The Adapter output exceeded its size limit; a preview was retained"
+        ),
     },
 }
 

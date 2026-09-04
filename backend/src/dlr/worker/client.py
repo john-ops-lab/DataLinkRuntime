@@ -80,7 +80,12 @@ class ControlClient:
         return raw
 
     def register(
-        self, name: str, capabilities: list[str], *, protocol_version: int = 1
+        self,
+        name: str,
+        capabilities: list[str],
+        *,
+        protocol_version: int = 1,
+        isolation_capabilities: Mapping[str, bool] | None = None,
     ) -> dict[str, Any]:
         raw = self._expect(
             "POST",
@@ -89,13 +94,24 @@ class ControlClient:
                 "name": name,
                 "capabilities": capabilities,
                 "protocol_version": protocol_version,
+                "isolation_capabilities": dict(isolation_capabilities or {}),
             },
         )
         body: dict[str, Any] = json.loads(raw)
         return body
 
-    def heartbeat(self, worker_id: int) -> None:
-        self._expect("POST", f"/api/workers/{worker_id}/heartbeat", expected=204)
+    def heartbeat(
+        self,
+        worker_id: int,
+        *,
+        isolation_capabilities: Mapping[str, bool] | None = None,
+    ) -> None:
+        payload = (
+            {"isolation_capabilities": dict(isolation_capabilities)}
+            if isolation_capabilities is not None
+            else None
+        )
+        self._expect("POST", f"/api/workers/{worker_id}/heartbeat", payload, expected=204)
 
     def mark_offline(self, worker_id: int) -> None:
         self._expect("POST", f"/api/workers/{worker_id}/offline", expected=204)
@@ -224,3 +240,59 @@ class ControlClient:
             {"success": success},
             expected=204,
         )
+
+    def claim_v3(self, worker_id: int, dispatch: Mapping[str, Any]) -> dict[str, Any]:
+        """Submit only the small dispatch body; Control owns all DB reads."""
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/v3/claim",
+            dict(dispatch),
+            timeout=self._timeout_seconds,
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            raise ClientError(502, "v3 claim response is not an object")
+        return body
+
+    def _attempt_request(
+        self,
+        worker_id: int,
+        attempt_id: int,
+        action: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        raw = self._expect(
+            "POST",
+            f"/api/workers/{worker_id}/attempts/{attempt_id}/{action}",
+            dict(payload),
+            timeout=self._timeout_seconds,
+        )
+        body = json.loads(raw)
+        if not isinstance(body, dict):
+            raise ClientError(502, "v3 attempt response is not an object")
+        return body
+
+    def start_attempt(
+        self, worker_id: int, attempt_id: int, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return self._attempt_request(worker_id, attempt_id, "start", payload)
+
+    def renew_attempt(
+        self, worker_id: int, attempt_id: int, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return self._attempt_request(worker_id, attempt_id, "renew", payload)
+
+    def progress_attempt(
+        self, worker_id: int, attempt_id: int, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return self._attempt_request(worker_id, attempt_id, "progress", payload)
+
+    def result_attempt(
+        self, worker_id: int, attempt_id: int, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return self._attempt_request(worker_id, attempt_id, "result", payload)
+
+    def prepare_failed_attempt(
+        self, worker_id: int, attempt_id: int, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return self._attempt_request(worker_id, attempt_id, "prepare-failed", payload)

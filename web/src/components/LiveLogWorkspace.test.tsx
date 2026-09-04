@@ -96,6 +96,20 @@ it("renders the unified log tab without an internal Execution #N", () => {
   expect(screen.getByText("统一日志")).toBeTruthy();
 });
 
+it("shows a queued Execution as waiting for its fixed Worker rather than failed", () => {
+  renderWorkspace({
+    execution: makeExecution({
+      status: "queued",
+      worker_id: null,
+      target_worker_id: 2,
+      dispatch_backend: "rabbitmq",
+    }),
+  });
+
+  expect(screen.getByTestId("live-queued-notice").textContent).toContain("等待目标 Worker");
+  expect(screen.getByTestId("live-queued-notice").textContent).toContain("暂时离线不会被视为失败");
+});
+
 it("scopes the shared toolbar contrast contract to history and live LogView controls", async () => {
   render(
     <>

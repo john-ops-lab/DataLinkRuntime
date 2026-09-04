@@ -66,10 +66,13 @@ import type {
   PackageSource,
   PackageSourceDefaults,
   SystemLocale,
+  Worker,
 } from "../types";
 import { userErrorMessage } from "../user-message";
 import AiModelSettingsPanel from "./AiModelSettingsPanel";
 import type { SettingsCategory } from "../settings-route";
+import type { ControlHealthPayload, HealthStatus, SystemStatusLevel } from "../system-status";
+import SystemStatusPanel from "./SystemStatusPanel";
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
@@ -1457,6 +1460,15 @@ interface SystemSettingsDrawerProps {
   adapters?: Adapter[];
   /** Return false when the caller's own dirty/busy guard keeps navigation open. */
   onSelectAdapter?: (adapterId: number) => boolean;
+  systemStatusLevel?: SystemStatusLevel;
+  healthStatus?: HealthStatus;
+  healthPayload?: ControlHealthPayload | null;
+  healthCheckedAt?: string | null;
+  workers?: Worker[];
+  workersLoading?: boolean;
+  workersError?: string | null;
+  systemStatusRefreshing?: boolean;
+  onRefreshSystemStatus?: () => Promise<void>;
 }
 
 // Settings panels render their own persistent alert next to the failed action.
@@ -2121,6 +2133,7 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
   }
 
   const categoryItems: { key: SettingsCategory; label: string }[] = [
+    { key: "system-status", label: t("categories.systemStatus") },
     { key: "general", label: t("categories.general") },
     { key: "credentials", label: t("categories.credentials") },
     { key: "package-sources", label: t("categories.packageSources") },
@@ -2129,6 +2142,7 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
     { key: "managed-input", label: t("categories.managedInput") },
   ];
   const categoryCopy: Record<SettingsCategory, { title: string; description: string }> = {
+    "system-status": { title: t("categories.systemStatus"), description: t("descriptions.systemStatus") },
     general: { title: t("categories.general"), description: t("descriptions.general") },
     credentials: { title: t("categories.credentials"), description: t("descriptions.credentials") },
     "package-sources": { title: t("categories.packageSources"), description: t("descriptions.packageSources") },
@@ -2194,6 +2208,19 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
             </header>
             {standalone && activeCategory !== "general" && <SystemLocaleControl />}
             {activeCategory === "general" && <SystemLocaleControl />}
+            {activeCategory === "system-status" && (
+              <SystemStatusPanel
+                level={props.systemStatusLevel ?? "checking"}
+                health={props.healthStatus ?? "loading"}
+                healthPayload={props.healthPayload ?? null}
+                healthCheckedAt={props.healthCheckedAt ?? null}
+                workers={props.workers ?? []}
+                workersLoading={props.workersLoading ?? true}
+                workersError={props.workersError ?? null}
+                refreshing={props.systemStatusRefreshing ?? false}
+                onRefresh={props.onRefreshSystemStatus ?? (() => Promise.resolve())}
+              />
+            )}
             {activeCategory === "credentials" && (
               <CredentialsPanel onError={keepErrorInline} onSaved={() => setDirty(false)} />
             )}

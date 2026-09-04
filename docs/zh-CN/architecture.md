@@ -8,25 +8,29 @@
 ```text
 ┌──────────────┐  HTTP/JSON + SSE  ┌─────────────────────────────┐
 │ web (React)  │ ─────────────────► │ control (FastAPI)           │
-└──────────────┘                    │ Adapter / Execution / AI API│
-                                    │ Schedule poller / Webhook   │
-                                    │ PostgreSQL                  │
-                                    └──────────────┬──────────────┘
-                                                   │ Worker 主动长轮询
-                                    ┌──────────────▼──────────────┐
-                                    │ worker (multi-runtime agent)│
-                                    │ Python / Node.js / Java     │
-                                    └─────────────────────────────┘
+└──────────────┘                    │ API / Schedule / Webhook    │
+                                    └──────┬──────────────┬───────┘
+                              transaction │              │ bounded publish
+                                    ┌──────▼──────┐ ┌────▼──────────────┐
+                                    │ PostgreSQL  │ │ RabbitMQ 4.3      │
+                                    │ 业务权威    │ │ Quorum Queue      │
+                                    └──────▲──────┘ └────┬──────────────┘
+                                           │ Claim/renew │ dispatch
+                                    ┌──────┴─────────────▼──────────────┐
+                                    │ worker v3 (Python/Node.js/Java)  │
+                                    └───────────────────────────────────┘
 ```
 
 | 组件 | 职责 | 运行用户代码 |
 |------|------|--------------|
 | web | Catalog、Workbench、Monaco、运行控制、实时日志与历史 | 否 |
 | control | API、事务门禁、调度、Webhook 路由、日志 SSE、AI Provider 薄适配 | 否 |
-| postgres | Adapter、Revision、Execution、Worker、Trigger 与 Credential | 否 |
-| worker | 领任务、准备依赖、独立子进程执行、增量上报 | 是 |
+| postgres | Adapter、Execution、Admission、Outbox、Attempt、Slot、Lease 与审计权威 | 否 |
+| rabbitmq | 有界 dispatch、延迟重试与 Infrastructure DLQ；单节点非 HA | 否 |
+| worker | 消费 dispatch、向 Control Claim、准备依赖、Sandbox 执行与增量上报 | 是 |
 
-Worker 只主动连接 Control；Control 不反向连接 Worker。所有触发方式都在 Worker 执行用户代码。
+Worker 只主动连接 RabbitMQ 与 Control；Control 不反向连接 Worker。所有触发方式都在
+Worker 执行用户代码，Worker 不直接访问 PostgreSQL。
 
 ## 2. 认证与敏感数据
 
@@ -70,11 +74,16 @@ API 响应附带 `runtime_locked` 与 `running_execution_id`，供 Web 直接展
 | `worker_id / target_worker_id` | 实际领取节点 / 指定运行节点 |
 | `trigger` | `manual / schedule / webhook` |
 | `scheduled_for` | Schedule 计划点；其他 trigger 为 NULL |
-| `status` | `pending / running / succeeded / failed / timeout / cancelled` |
+| `dispatch_backend / dispatch_generation` | `legacy` 或 `rabbitmq` 责任边界及当前消息 generation |
+| `status` | legacy 的 `pending/running/...`，或 RabbitMQ 的 `queued/running/retry_wait/dead_letter/...` |
 | `input / output / stdout / stderr` | 输入、结果与日志 |
 | `cancel_requested` | 运行中取消请求 |
 
-数据库部分唯一索引保证每个 Adapter 同时最多一个 `pending / running` Execution；Manual、Schedule、Webhook 共用同一约束。服务层所有入口使用统一 Adapter 行锁顺序，数据库约束作为并发最终防线。
+legacy 兼容期由部分唯一索引保证每个 Adapter 同时最多一个 `pending/running`
+Execution。RabbitMQ backend 可有多个合法 `queued/retry_wait` Execution，但数据库
+`adapter_execution_slots(adapter_id, slot_no=0)` 与 active Attempt 唯一约束保证同一
+Adapter 同时最多一个实际执行。Manual、Schedule、Webhook 共用 Admission、Outbox、
+Attempt 与 Slot 合同。
 
 ### 3.4 Worker
 
@@ -85,7 +94,9 @@ status == online
 AND clock_timestamp() - last_heartbeat <= heartbeat_timeout
 ```
 
-超时值必须为正且严格大于 Worker 心跳间隔。所有运行入口都要求节点 effective-online 且 capability 包含 Adapter language。
+超时值必须为正且严格大于 Worker 心跳间隔。RabbitMQ ingress 要求固定 Worker 存在且
+语言、protocol v3 与 isolation capability 兼容；节点暂时 offline 时仍可在 Admission
+允许范围内创建 `queued` Execution，等待同一目标 Worker 恢复，不自动 reroute。
 
 ### 3.5 Credential 与绑定
 
@@ -101,20 +112,28 @@ AND clock_timestamp() - last_heartbeat <= heartbeat_timeout
 ```text
 POST /api/adapters/{id}/executions
 → 锁 Adapter
-→ 校验最新 Revision、运行节点与统一运行锁
-→ 创建 trigger=manual Execution
-→ Worker claim / run / report
+→ 固定最新 Revision、输入、Credential 与目标 Worker 快照
+→ 在 PostgreSQL 事务中创建 Execution + Admission + Outbox
+→ Relay 发布 RabbitMQ dispatch
+→ Worker v3 Claim / journal / ACK / Sandbox / report
 ```
 
-取消复用 `POST /api/executions/{id}/cancel`。pending 可直接进入 cancelled；running 设置取消请求，由 Worker 终止进程组并上报终态。
+取消复用 `POST /api/executions/{id}/cancel`。legacy pending 或 RabbitMQ queued/retry_wait
+可直接进入 cancelled；running 设置取消请求，由 Worker 终止 Sandbox 进程并按当前
+Attempt fence 上报终态。
 
 ### 4.2 Schedule
 
-`adapter_schedules` 是每个 Task Adapter 的单例配置：enabled、cron、timezone、input、next_run_at。
+`adapter_schedules` 是每个 Task Adapter 的单例配置：enabled、cron、timezone、
+next_run_at，以及 `coalesce_latest / queue_every_occurrence / skip_while_busy` 三种
+misfire policy 和有界 catch-up 参数。Input 来自统一已保存 InputConfig。
 
 Control 使用 PostgreSQL 作为唯一调度状态源，以短事务轮询到期行；多个 Control 实例通过 `FOR UPDATE SKIP LOCKED` 分工。每个 tick 使用 `clock_timestamp()` 判定到期，Cron 在配置时区求值，最终以 UTC 保存。
 
-启用 Schedule 后运行配置锁定。到点时以最新 Revision、当前运行节点和配置 Input 创建 `trigger=schedule` Execution。Worker 离线或 Adapter busy 时不排队；条件恢复后至多补最近一次计划点。停用或修改配置后游标重基准到下一个未来点。
+启用 Schedule 后运行配置锁定。每个跨过的计划点都有
+`enqueued/coalesced/skipped/expired` 审计结果；是否逐点排队、合并最新或忙时跳过由已
+保存 policy 决定。Admission 不可用时按 policy 保留或明确消费责任，不热循环，也不
+越过第一个未承担计划点。
 
 ## 5. Webhook
 
@@ -130,9 +149,13 @@ Authorization: Bearer <token>
 Content-Type: application/json
 ```
 
-校验顺序覆盖 body 大小、启用路由、Bearer Token、JSON 合同、运行节点与统一运行锁。成功后以最新 Revision、当前运行节点与完整 JSON Body 创建 `trigger=webhook` Execution，并立即返回 202；Control 不等待 Worker 完成。
+校验顺序覆盖 body 大小、启用路由、Bearer Token、JSON 合同、固定运行节点与
+Admission。成功后原子固定最新 Revision、Credential 引用和完整 JSON Body 的不可变
+JSON input snapshot，创建 `trigger=webhook` Execution 与 Outbox 并立即返回 202；Control 不
+等待 Worker 完成。
 
-每次成功接收等于一条调用记录。Retention 按 Adapter 独立保留最新 100 条终态 Webhook Execution，永不删除 active Execution，也不处理 Task/Schedule 历史。
+每次成功接收等于一条调用记录。Retention 按 trigger 的部署天数和每 Adapter 数量
+上限分批治理终态历史，永不删除 active Execution 或恢复仍需的责任行。
 
 ## 6. Clone 与删除
 
@@ -173,6 +196,11 @@ Workbench 层只有一个当前实时 watcher：
 
 依赖准备统一 offline-first。stdout/stderr 增量上传并脱敏；超限按配置截断。input 超限直接拒绝且不创建 Execution；output 超限只保留大小、截断标记与 preview，不保存破坏的 JSON。
 
+v3 正常顺序固定为 `dispatch → Control durable Claim → 私有 journal → ACK → Sandbox`。
+ACK 不等待业务终态；ACK 后崩溃由数据库 Attempt Lease/Fencing、Recovery 和新 generation
+恢复。Sandbox 在 exact delegated Linux cgroup v2 subtree 内为每个 Attempt 建立 CPU、
+memory、pids、tmpfs 与 output 硬限制；非 Linux 或 preflight 不完整时 fail closed。
+
 ## 9. AI Assistant
 
 浏览器显式提交当前 Working Copy、用户指令与有限最近对话。Control 补充服务端 language、基准 Revision 元数据、Runtime Contract 和 Secret env key 名称。Provider final answer 必须通过 Candidate Schema 校验。
@@ -183,11 +211,16 @@ Candidate Apply 只改浏览器 Working Copy；stale Candidate 需要再次明�
 
 ## 10. 部署与配置
 
-Docker Compose 运行 `web / control / postgres / worker` 四个服务。关键配置包括：
+Docker Compose 运行 `web / account-web / control / postgres / rabbitmq / worker` 六个
+服务。默认 RabbitMQ 普通 ingress 关闭、legacy Claim 开启，三个 Cutover attestation
+均关闭。关键配置包括：
 
 - `DLR_ADMIN_TOKEN`、`DLR_WORKER_TOKEN`、`DLR_MASTER_KEY`；
 - `DLR_WORKER_HEARTBEAT_SECONDS` 与 `DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS`；
 - `DLR_SCHEDULE_POLL_SECONDS`；
+- RabbitMQ Queue/Outbox/Admission/Attempt/Dead Letter 的有限上限；
+- `DLR_MIN_WORKER_PROTOCOL_VERSION`、`DLR_LEGACY_EXECUTION_CLAIM_ENABLED` 与三个
+  `DLR_CUTOVER_*_GATE_PASSED`；
 - Execution 大字段、日志、超时与 Worker 并发限制。
 
 AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smoke 只在隔离网络启动本地 fake Provider。
@@ -218,8 +251,31 @@ AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smo
   一致性检查）、production build；
 - Database：fresh Alembic install 与从当前 main schema upgrade；
 - Integration：隔离 Compose smoke，真实运行三语言 Task、Schedule、Webhook、Clone URL 交接与运行锁；
+- Reliable Runtime：真实 Broker outage/restart、Confirm ambiguity、Worker/Control crash、
+  Slot 压力、DLQ/Replay、post-cutover invariant 与资源有界性；
+- Sandbox：只接受目标 Linux cgroup v2 + host cgroup namespace + exact delegated subtree
+  的真实 Compose 证据；macOS/静态配置不计入；
 - UI：真实浏览器验证底部/全屏日志、运行锁、Clone/Delete 与 Task/Webhook 主路径。
 
 ## 13. 明确边界
 
-当前不引入 MQ、请求队列、自动重试、同步 Webhook、URL takeover、常驻进程模型、RBAC、通用插件系统、工作流编排、独立日志系统、AI 自动执行循环、用户级语言偏好、机器自动翻译用户内容或第三语言。
+当前不引入同步 Webhook、URL takeover、常驻进程模型、RBAC、通用插件系统、工作流
+编排、独立日志系统、AI 自动执行循环、用户级语言偏好、机器自动翻译用户内容、第三
+语言或 RabbitMQ 多节点 HA。单 Execution 的有界 Retry/Recovery 不扩张为工作流重试。
+
+## 14. Reliable Runtime Cutover 与回滚
+
+### 14.1 不可交换的 Cutover
+
+顺序固定为：backup/restore 实测 → inventory/preflight → legacy running drain 与 pending
+migrate → Worker v3 + Sandbox → 普通 RabbitMQ ingress → Slot 压力验证 → minimum
+protocol 3 → 退役 legacy active index → legacy active 清零后关闭 legacy Claim。所有
+写操作均需管理员认证；inventory、preflight 与 post-cutover invariant 为只读操作。
+
+### 14.2 兼容恢复边界
+
+Cutover 前可关闭新 ingress 并继续 legacy。旧索引退役或新 RabbitMQ row 已存在后，
+回滚必须保留 additive schema，由当前兼容 Control drain/repair Outbox、Attempt、Slot
+与 Incident；不得启动旧二进制解释新 row，不得执行破坏性 schema downgrade，也不应
+简单关掉 ingress 把新请求导向已经关闭的 legacy Claim。操作步骤和 API 见
+[Reliable Runtime 迁移说明](issue130-reliable-runtime-migrations.md)。

@@ -28,6 +28,7 @@ from dlr.control.api import (
     knowledge_sources,
     locale,
     managed_input,
+    migration,
     package_sources,
     schedules,
     users,
@@ -36,8 +37,13 @@ from dlr.control.api import (
 )
 from dlr.control.security import require_csrf
 from dlr.control.services import accounts as account_service
+from dlr.control.services.admission import admission_reconciler_loop
+from dlr.control.services.attempt import attempt_reconciler_loop
 from dlr.control.services.execution_reconciler import stale_execution_reconciler_loop
+from dlr.control.services.infrastructure_dlq import infrastructure_dlq_loop
 from dlr.control.services.managed_input_gc import artifact_gc_loop, orphan_audit_loop
+from dlr.control.services.outbox import outbox_relay_loop
+from dlr.control.services.rabbitmq import topology_bootstrap_loop
 from dlr.control.services.retention import retention_loop
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
@@ -83,15 +89,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     artifact_gc_task = asyncio.create_task(artifact_gc_loop())
     orphan_audit_task = asyncio.create_task(orphan_audit_loop())
     stale_execution_task = asyncio.create_task(stale_execution_reconciler_loop())
+    admission_task = asyncio.create_task(admission_reconciler_loop())
+    attempt_task = asyncio.create_task(attempt_reconciler_loop())
+    infrastructure_dlq_task = asyncio.create_task(infrastructure_dlq_loop())
+    rabbitmq_tasks: tuple[asyncio.Task[None], ...] = ()
+    if settings.rabbitmq_url:
+        rabbitmq_tasks = (
+            asyncio.create_task(topology_bootstrap_loop()),
+            asyncio.create_task(outbox_relay_loop()),
+        )
     try:
         yield
     finally:
-        task.cancel()
-        bootstrap_task.cancel()
-        retention_task.cancel()
-        artifact_gc_task.cancel()
-        orphan_audit_task.cancel()
-        stale_execution_task.cancel()
+        for background_task in (
+            task,
+            bootstrap_task,
+            retention_task,
+            artifact_gc_task,
+            orphan_audit_task,
+            stale_execution_task,
+            admission_task,
+            attempt_task,
+            infrastructure_dlq_task,
+            *rabbitmq_tasks,
+        ):
+            background_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         with contextlib.suppress(asyncio.CancelledError):
@@ -104,6 +126,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await orphan_audit_task
         with contextlib.suppress(asyncio.CancelledError):
             await stale_execution_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await admission_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await attempt_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await infrastructure_dlq_task
+        for background_task in rabbitmq_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await background_task
 
 
 def create_app() -> FastAPI:
@@ -221,6 +252,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(adapters.router)
     app.include_router(input_configs.router)
+    app.include_router(migration.router)
     app.include_router(managed_input.router)
     app.include_router(managed_input.capability_router)
     app.include_router(managed_input.upload_router)

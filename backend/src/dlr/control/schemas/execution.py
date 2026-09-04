@@ -33,6 +33,21 @@ class ExecutionResponse(BaseModel):
     # M5.2: the planned point for trigger=schedule; null for other triggers.
     scheduled_for: datetime | None
     status: str
+    dispatch_backend: Literal["legacy", "rabbitmq"] = "legacy"
+    dispatch_generation: int = 0
+    queued_at: datetime | None = None
+    next_attempt_at: datetime | None = None
+    attempt_count: int = 0
+    max_attempts_snapshot: int = 1
+    retry_policy_snapshot: dict[str, Any] = Field(default_factory=dict)
+    resource_profile_snapshot: dict[str, Any] = Field(default_factory=dict)
+    resource_class: str | None = None
+    target_worker_id_snapshot: int | None = None
+    logical_input_bytes: int = 0
+    idempotency_record_id: int | None = None
+    last_error_code: str | None = None
+    admission_released_at: datetime | None = None
+    replay_of_execution_id: int | None = None
     cancel_requested: bool
     input: Any
     input_source_type: str

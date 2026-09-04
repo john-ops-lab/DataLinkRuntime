@@ -41,6 +41,19 @@ const worker = {
   status: "online",
   last_heartbeat: "2026-01-01T00:00:00Z",
   capabilities: ["python", "javascript", "java"],
+  protocol_version: 3,
+  isolation_preflight_status: "passed",
+  isolation_preflight_at: "2026-01-01T00:00:00Z",
+  rabbitmq_execution_v3: true,
+  isolation_capabilities: {
+    cgroup_v2: true,
+    mount_namespace: true,
+    pid_namespace: true,
+    memory_hard_limit: true,
+    pids_hard_limit: true,
+    tmpfs_hard_limit: true,
+    bounded_output: true,
+  },
 };
 
 interface BaselineRecord {
@@ -117,6 +130,17 @@ async function installRoutes(
       await fulfillJson(route, [worker]);
       return;
     }
+    if (path === "/api/system/managed-input-capability" && method === "GET") {
+      await fulfillJson(route, {
+        managed_files_enabled: false,
+        ready: false,
+        default_retention_seconds: 86_400,
+        max_custom_retention_seconds: 2_592_000,
+        allow_manual_delete: true,
+        allowed_extensions: [".xlsx", ".xls", ".csv", ".log", ".txt", ".json"],
+      });
+      return;
+    }
     if (path === "/api/adapters" && method === "GET") {
       await fulfillJson(route, [{
         ...adapter,
@@ -138,6 +162,19 @@ async function installRoutes(
     }
     if (path === "/api/adapters/1/credential-options" && method === "GET") {
       await fulfillJson(route, []);
+      return;
+    }
+    if (path === "/api/adapters/1/input-config" && method === "GET") {
+      await fulfillJson(route, {
+        adapter_id: 1,
+        revision: 1,
+        source_type: "none",
+        json_value: null,
+        retention: { mode: "system_default", seconds: null },
+        artifacts: [],
+        valid_for_run: true,
+        invalid_reason: null,
+      });
       return;
     }
     if (path === "/api/auth/admin/verify" && method === "GET" && scenario === "token") {
@@ -195,6 +232,15 @@ function headingFor(locale: BaselineLocale, scenario: BaselineScenario): string 
   return locale === "zh-CN" ? "欢迎登录 DLR 控制台" : "Welcome to the DLR Console";
 }
 
+async function chooseLoginLocale(page: Page, locale: BaselineLocale): Promise<void> {
+  await page.getByTestId("login-locale-select").click();
+  const dropdown = page.locator(".ant-select-dropdown:visible");
+  await expect(dropdown).toBeVisible();
+  await dropdown.locator(".ant-select-item-option").filter({
+    hasText: locale === "zh-CN" ? "简体中文" : "English",
+  }).click();
+}
+
 async function collectErrors(page: Page): Promise<{ consoleErrors: string[]; pageErrors: string[] }> {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
@@ -229,6 +275,7 @@ async function runScenario(
   const visibleCheckpoints: Record<string, boolean> = {};
 
   await page.goto("/");
+  await chooseLoginLocale(page, locale);
   const loginHeading = page.getByRole("heading", { name: headingFor(locale, scenario) });
   await expect(loginHeading).toBeVisible();
   visibleCheckpoints.login = await loginHeading.isVisible();
@@ -244,10 +291,10 @@ async function runScenario(
 
   await expect(page.getByTestId("adapter-catalog")).toBeVisible();
   visibleCheckpoints.adapter_catalog = await page.getByTestId("adapter-catalog").isVisible();
-  await expect(page.getByTestId("control-status")).toHaveText(
-    locale === "zh-CN" ? "控制服务正常" : "Control service healthy",
+  await expect(page.getByTestId("system-status-summary")).toHaveText(
+    locale === "zh-CN" ? "系统正常" : "System normal",
   );
-  visibleCheckpoints.control_status = await page.getByTestId("control-status").isVisible();
+  visibleCheckpoints.system_status = await page.getByTestId("system-status-summary").isVisible();
 
   if (scenario === "account-read") {
     await expect(page.getByTestId("account-principal")).toContainText("reader-user");

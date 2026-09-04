@@ -1,9 +1,9 @@
 """Worker-internal endpoints of the Control Node (Worker Token protected)."""
 
 from collections.abc import Iterator
-from typing import Annotated, BinaryIO
+from typing import Annotated, Any, BinaryIO
 
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -16,8 +16,22 @@ from dlr.control.schemas.execution import (
     ProgressReport,
     WorkspaceCleanupReceipt,
 )
-from dlr.control.schemas.worker import CleanupResult, WorkerRegister, WorkerResponse
+from dlr.control.schemas.reliable_runtime import (
+    AttemptPrepareFailedBody,
+    AttemptProgressBody,
+    AttemptRenewBody,
+    AttemptResultBody,
+    AttemptStartBody,
+    ClaimDecision,
+)
+from dlr.control.schemas.worker import (
+    CleanupResult,
+    WorkerHeartbeat,
+    WorkerRegister,
+    WorkerResponse,
+)
 from dlr.control.security import require_business_principal, require_worker_token
+from dlr.control.services import attempt as attempt_service
 from dlr.control.services import execution as execution_service
 from dlr.control.services import worker as worker_service
 from dlr.control.services import worker_availability
@@ -73,8 +87,16 @@ def register_worker(payload: WorkerRegister, session: DbSession) -> WorkerRespon
 
 
 @router.post("/api/workers/{worker_id}/heartbeat", status_code=204)
-def heartbeat(worker_id: int, session: DbSession) -> Response:
-    worker_service.heartbeat(session, worker_id)
+def heartbeat(
+    worker_id: int,
+    session: DbSession,
+    payload: WorkerHeartbeat | None = None,
+) -> Response:
+    worker_service.heartbeat(
+        session,
+        worker_id,
+        payload.isolation_capabilities if payload is not None else None,
+    )
     return Response(status_code=204)
 
 
@@ -230,6 +252,96 @@ def report_cleanup(
     """Acknowledge adapter-private filesystem cleanup without raw errors."""
     worker_service.apply_cleanup_result(session, worker_id, cleanup_id, payload)
     return Response(status_code=204)
+
+
+@router.post(
+    "/api/workers/{worker_id}/v3/claim",
+    response_model=ClaimDecision,
+)
+def claim_v3(
+    request: Request,
+    worker_id: int,
+    payload: Annotated[Any, Body(...)],
+    session: DbSession,
+) -> ClaimDecision:
+    """Claim one RabbitMQ delivery through the closed v3 decision contract."""
+    _reject_query_tokens(request, error_code="worker_protocol_payload_invalid")
+    return attempt_service.claim_dispatch(session, worker_id, payload)
+
+
+@router.post(
+    "/api/workers/{worker_id}/attempts/{attempt_id}/start",
+    response_model=ClaimDecision,
+)
+def start_attempt(
+    request: Request,
+    worker_id: int,
+    attempt_id: int,
+    payload: AttemptStartBody,
+    session: DbSession,
+) -> ClaimDecision:
+    _reject_query_tokens(request, error_code="attempt_token_invalid")
+    return attempt_service.start_attempt(session, worker_id, attempt_id, payload)
+
+
+@router.post(
+    "/api/workers/{worker_id}/attempts/{attempt_id}/renew",
+    response_model=ClaimDecision,
+)
+def renew_attempt(
+    request: Request,
+    worker_id: int,
+    attempt_id: int,
+    payload: AttemptRenewBody,
+    session: DbSession,
+) -> ClaimDecision:
+    _reject_query_tokens(request, error_code="attempt_token_invalid")
+    return attempt_service.renew_attempt(session, worker_id, attempt_id, payload)
+
+
+@router.post(
+    "/api/workers/{worker_id}/attempts/{attempt_id}/progress",
+    response_model=ClaimDecision,
+)
+def progress_attempt(
+    request: Request,
+    worker_id: int,
+    attempt_id: int,
+    payload: AttemptProgressBody,
+    session: DbSession,
+) -> ClaimDecision:
+    _reject_query_tokens(request, error_code="attempt_token_invalid")
+    return attempt_service.progress_attempt(session, worker_id, attempt_id, payload)
+
+
+@router.post(
+    "/api/workers/{worker_id}/attempts/{attempt_id}/result",
+    response_model=ClaimDecision,
+)
+def result_attempt(
+    request: Request,
+    worker_id: int,
+    attempt_id: int,
+    payload: AttemptResultBody,
+    session: DbSession,
+) -> ClaimDecision:
+    _reject_query_tokens(request, error_code="attempt_token_invalid")
+    return attempt_service.finish_attempt(session, worker_id, attempt_id, payload)
+
+
+@router.post(
+    "/api/workers/{worker_id}/attempts/{attempt_id}/prepare-failed",
+    response_model=ClaimDecision,
+)
+def prepare_failed_attempt(
+    request: Request,
+    worker_id: int,
+    attempt_id: int,
+    payload: AttemptPrepareFailedBody,
+    session: DbSession,
+) -> ClaimDecision:
+    _reject_query_tokens(request, error_code="attempt_token_invalid")
+    return attempt_service.prepare_failed(session, worker_id, attempt_id, payload)
 
 
 @admin_router.get("/api/workers", response_model=list[WorkerResponse])

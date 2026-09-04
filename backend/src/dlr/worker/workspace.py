@@ -31,6 +31,7 @@ logger = logging.getLogger("dlr.worker.workspace")
 
 WORKSPACES_DIRNAME = "workspaces"
 JOURNAL_SUFFIX = ".json"
+ATTEMPT_JOURNAL_SUFFIX = ".attempt.json"
 MARKER_FILENAME = ".dlr-execution-workspace"
 MANIFEST_FILENAME = "input_manifest.json"
 INPUT_DIRNAME = "input"
@@ -38,6 +39,10 @@ TEMP_DIRNAME = "temp"
 OUTPUT_DIRNAME = "output"
 WORKSPACE_NAME_PATTERN = re.compile(r"dlr-exec-([1-9][0-9]*)\Z")
 JOURNAL_NAME_PATTERN = re.compile(r"([1-9][0-9]*)\.json\Z")
+ATTEMPT_CLEANUP_JOURNAL_NAME_PATTERN = re.compile(
+    r"execution-([1-9][0-9]*)-attempt-([1-9][0-9]*)\.cleanup\.json\Z"
+)
+ATTEMPT_JOURNAL_NAME_PATTERN = re.compile(r"attempt-([1-9][0-9]*)\.attempt\.json\Z")
 MOUNT_NAME_PATTERN = re.compile(
     rf"input-([0-9]{{2}})(?:\.(?:{MANAGED_INPUT_FILE_EXTENSION_ALTERNATION}))?\Z"
 )
@@ -56,14 +61,28 @@ MANIFEST_FIELDS = frozenset(
 
 # Recovery runs in the claim loop, so one scan must not monopolize the loop
 # behind a slow filesystem or Control response.  Retry timing is kept in the
-# journal inode metadata rather than its schema, which must remain the exact
-# four recovery fields below.
+# journal inode metadata rather than its schema. v2 keeps the exact four
+# recovery fields; v3 adds its immutable Attempt identity.
 RECOVERY_SCAN_TIMEOUT_SECONDS = 5.0
 RECOVERY_RETRY_BACKOFF_SECONDS = 60.0
 
 # Keep this list deliberately small.  A journal must never become a general
 # task snapshot or a convenient place to retain user data.
 JOURNAL_FIELDS = frozenset({"execution_id", "protocol_version", "workspace_path", "cleanup_token"})
+V3_JOURNAL_FIELDS = JOURNAL_FIELDS | {"attempt_id"}
+ATTEMPT_JOURNAL_FIELDS = frozenset(
+    {
+        "execution_id",
+        "attempt_id",
+        "attempt_no",
+        "fencing_token",
+        "lease_expires_at",
+        "protocol_version",
+        "workspace_path",
+        "claim_token",
+        "cleanup_token",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -143,11 +162,44 @@ def _ensure_private_directory(path: Path) -> None:
             raise WorkspaceError("workspace_cleanup_failed") from error
         else:
             return
-    if info is None or stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISDIR(info.st_mode):
+    if (
+        info is None
+        or stat_module.S_ISLNK(info.st_mode)
+        or not stat_module.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+    ):
         raise WorkspaceError("workspace_cleanup_unknown")
     if info.st_mode & 0o077:
         try:
             path.chmod(0o700)
+        except OSError as error:
+            raise WorkspaceError("workspace_cleanup_failed") from error
+
+
+def ensure_private_directory(path: Path) -> None:
+    """Establish one Worker-owned 0700 directory for runtime state."""
+
+    _ensure_private_directory(Path(path))
+
+
+def ensure_runtime_root(path: Path) -> None:
+    """Establish the owned, non-listable runtime root used by payload caches."""
+
+    path = Path(path)
+    try:
+        path.mkdir(mode=0o711, parents=True, exist_ok=True)
+        info = path.lstat()
+    except OSError as error:
+        raise WorkspaceError("workspace_cleanup_failed") from error
+    if (
+        stat_module.S_ISLNK(info.st_mode)
+        or not stat_module.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+    ):
+        raise WorkspaceError("workspace_cleanup_unknown")
+    if stat_module.S_IMODE(info.st_mode) != 0o711:
+        try:
+            path.chmod(0o711)
         except OSError as error:
             raise WorkspaceError("workspace_cleanup_failed") from error
 
@@ -203,21 +255,166 @@ def _write_json(path: Path, value: Mapping[str, Any], *, mode: int) -> None:
         raise
 
 
-def workspace_path(runtime_root: Path, execution_id: int) -> Path:
-    """Return the only Workspace path accepted for an Execution."""
-    if execution_id <= 0:
+def workspace_path(runtime_root: Path, execution_id: int, attempt_id: int | None = None) -> Path:
+    """Return the only Workspace path accepted for one Execution/Attempt.
+
+    Legacy/v2 callers retain the historical Execution-scoped path. v3 puts
+    each Attempt below a private Attempt directory while keeping the leaf
+    name compatible with the existing workspace marker and language harnesses.
+    """
+    if execution_id <= 0 or (
+        attempt_id is not None
+        and (not isinstance(attempt_id, int) or isinstance(attempt_id, bool) or attempt_id <= 0)
+    ):
         raise WorkspaceError("workspace_cleanup_unknown")
     root = Path(runtime_root)
     if not root.is_absolute():
         raise WorkspaceError("workspace_cleanup_unknown")
-    return root / WORKSPACES_DIRNAME / f"dlr-exec-{execution_id}"
+    workspaces = root / WORKSPACES_DIRNAME
+    if attempt_id is not None:
+        return workspaces / f"attempt-{attempt_id}" / f"dlr-exec-{execution_id}"
+    return workspaces / f"dlr-exec-{execution_id}"
 
 
-def journal_path(journal_root: Path, execution_id: int) -> Path:
-    """Return the only journal filename accepted for an Execution."""
-    if execution_id <= 0 or not Path(journal_root).is_absolute():
+def journal_path(journal_root: Path, execution_id: int, attempt_id: int | None = None) -> Path:
+    """Return the v2 or Attempt-scoped v3 cleanup journal path."""
+    if (
+        execution_id <= 0
+        or not Path(journal_root).is_absolute()
+        or (
+            attempt_id is not None
+            and (not isinstance(attempt_id, int) or isinstance(attempt_id, bool) or attempt_id <= 0)
+        )
+    ):
         raise WorkspaceError("workspace_cleanup_unknown")
+    if attempt_id is not None:
+        return (
+            Path(journal_root)
+            / f"execution-{execution_id}-attempt-{attempt_id}.cleanup{JOURNAL_SUFFIX}"
+        )
     return Path(journal_root) / f"{execution_id}{JOURNAL_SUFFIX}"
+
+
+def attempt_journal_path(journal_root: Path, attempt_id: int) -> Path:
+    """Return the private v3 Attempt journal path."""
+    if attempt_id <= 0 or not Path(journal_root).is_absolute():
+        raise WorkspaceError("attempt_journal_invalid")
+    return Path(journal_root) / f"attempt-{attempt_id}{ATTEMPT_JOURNAL_SUFFIX}"
+
+
+def write_attempt_journal(
+    journal_root: Path,
+    *,
+    execution_id: int,
+    attempt_id: int,
+    attempt_no: int,
+    fencing_token: int,
+    lease_expires_at: str,
+    workspace: Path,
+    claim_token: str,
+    cleanup_token: str,
+) -> Path:
+    """Durably persist the v3 recovery hand-off before any Adapter side effect."""
+    if (
+        any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in (execution_id, attempt_id, attempt_no, fencing_token)
+        )
+        or not isinstance(lease_expires_at, str)
+        or not lease_expires_at
+        or not isinstance(claim_token, str)
+        or not claim_token
+        or not isinstance(cleanup_token, str)
+        or not cleanup_token
+        or not Path(journal_root).is_absolute()
+        or not workspace.is_absolute()
+    ):
+        raise WorkspaceError("attempt_journal_invalid")
+    root = Path(journal_root)
+    target = attempt_journal_path(root, attempt_id)
+    existing = _lstat(target)
+    if existing is not None:
+        loaded = load_attempt_journal(root, attempt_id)
+        if loaded is None:
+            raise WorkspaceError("attempt_journal_invalid")
+        if loaded["execution_id"] != execution_id or loaded["fencing_token"] != fencing_token:
+            raise WorkspaceError("attempt_journal_conflict")
+        return target
+    _write_json(
+        target,
+        {
+            "attempt_id": attempt_id,
+            "attempt_no": attempt_no,
+            "claim_token": claim_token,
+            "cleanup_token": cleanup_token,
+            "execution_id": execution_id,
+            "fencing_token": fencing_token,
+            "lease_expires_at": lease_expires_at,
+            "protocol_version": 3,
+            "workspace_path": str(workspace),
+        },
+        mode=0o600,
+    )
+    return target
+
+
+def load_attempt_journal(journal_root: Path, attempt_id: int) -> dict[str, Any] | None:
+    """Read and validate only the exact v3 Attempt journal shape."""
+    try:
+        target = attempt_journal_path(Path(journal_root), attempt_id)
+    except WorkspaceError:
+        return None
+    info = _lstat(target)
+    if (
+        info is None
+        or stat_module.S_ISLNK(info.st_mode)
+        or not stat_module.S_ISREG(info.st_mode)
+        or stat_module.S_IMODE(info.st_mode) != 0o600
+    ):
+        return None
+    value = _read_json(target)
+    if not isinstance(value, Mapping) or set(value) != ATTEMPT_JOURNAL_FIELDS:
+        return None
+    positive = ("execution_id", "attempt_id", "attempt_no", "fencing_token")
+    if any(
+        not isinstance(value[key], int) or isinstance(value[key], bool) or value[key] <= 0
+        for key in positive
+    ):
+        return None
+    if (
+        value["attempt_id"] != attempt_id
+        or value["protocol_version"] != 3
+        or not isinstance(value["lease_expires_at"], str)
+        or not isinstance(value["workspace_path"], str)
+        or not Path(value["workspace_path"]).is_absolute()
+        or not isinstance(value["claim_token"], str)
+        or not value["claim_token"]
+        or not isinstance(value["cleanup_token"], str)
+        or not value["cleanup_token"]
+    ):
+        return None
+    return dict(value)
+
+
+def remove_attempt_journal(journal_root: Path, attempt_id: int) -> bool:
+    """Remove one exact v3 journal after terminal cleanup is acknowledged."""
+    try:
+        target = attempt_journal_path(Path(journal_root), attempt_id)
+    except WorkspaceError:
+        return False
+    info = _lstat(target)
+    if info is None:
+        return True
+    if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISREG(info.st_mode):
+        return False
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    _sync_directory(target.parent)
+    return True
 
 
 def write_cleanup_journal(
@@ -227,9 +424,16 @@ def write_cleanup_journal(
     cleanup_token: str,
     *,
     protocol_version: int = 2,
+    attempt_id: int | None = None,
 ) -> Path:
-    """Persist the v2 cleanup hand-off before touching a Workspace."""
-    if protocol_version < 2 or not isinstance(cleanup_token, str) or not cleanup_token:
+    """Persist the v2/v3 cleanup hand-off before touching a Workspace."""
+    if (
+        protocol_version not in {2, 3}
+        or not isinstance(cleanup_token, str)
+        or not cleanup_token
+        or (protocol_version == 3 and attempt_id is None)
+        or (protocol_version == 2 and attempt_id is not None)
+    ):
         raise WorkspaceError("workspace_cleanup_failed")
     if not Path(journal_root).is_absolute():
         raise WorkspaceError("workspace_cleanup_unknown")
@@ -239,7 +443,7 @@ def write_cleanup_journal(
     if root == planned_workspace or planned_workspace in root.parents:
         raise WorkspaceError("workspace_cleanup_unknown")
     _ensure_private_directory(root)
-    target = journal_path(root, execution_id)
+    target = journal_path(root, execution_id, attempt_id=attempt_id)
     if _lstat(target) is not None:
         raise WorkspaceError("workspace_cleanup_unknown")
     try:
@@ -250,6 +454,7 @@ def write_cleanup_journal(
                 "execution_id": execution_id,
                 "protocol_version": protocol_version,
                 "workspace_path": str(planned_workspace),
+                **({"attempt_id": attempt_id} if protocol_version == 3 else {}),
             },
             mode=0o600,
         )
@@ -270,9 +475,11 @@ def write_cleanup_journal(
     return target
 
 
-def remove_cleanup_journal(journal_root: Path, execution_id: int) -> bool:
-    """Remove one journal only after Control accepted its cleanup receipt."""
-    target = journal_path(Path(journal_root), execution_id)
+def remove_cleanup_journal(
+    journal_root: Path, execution_id: int, attempt_id: int | None = None
+) -> bool:
+    """Remove one v2 or Attempt-scoped v3 journal after receipt acceptance."""
+    target = journal_path(Path(journal_root), execution_id, attempt_id=attempt_id)
     info = _lstat(target)
     if info is None:
         return True
@@ -292,11 +499,12 @@ def create_workspace(
     runtime_root: Path,
     execution_id: int,
     *,
+    attempt_id: int | None = None,
     attempt_timeout_seconds: float = 5.0,
     total_timeout_seconds: float = 20.0,
 ) -> WorkspaceLayout:
     """Create a new controlled Workspace after the journal is durable."""
-    root = workspace_path(runtime_root, execution_id)
+    root = workspace_path(runtime_root, execution_id, attempt_id=attempt_id)
     _ensure_private_directory(root.parent)
     if _lstat(root) is not None:
         raise WorkspaceError("workspace_cleanup_unknown")
@@ -861,7 +1069,11 @@ def _valid_workspace_triple(workspace: Path, execution_id: int) -> bool:
     return isinstance(files, list)
 
 
-def _load_journal(path: Path, expected_execution_id: int) -> dict[str, Any] | None:
+def _load_journal(
+    path: Path,
+    expected_execution_id: int,
+    expected_attempt_id: int | None = None,
+) -> dict[str, Any] | None:
     info = _lstat(path)
     if (
         info is None
@@ -871,15 +1083,27 @@ def _load_journal(path: Path, expected_execution_id: int) -> dict[str, Any] | No
     ):
         return None
     value = _read_json(path)
-    if not isinstance(value, Mapping) or set(value) != JOURNAL_FIELDS:
+    if not isinstance(value, Mapping):
+        return None
+    raw_protocol_version = value.get("protocol_version")
+    if not isinstance(raw_protocol_version, int) or isinstance(raw_protocol_version, bool):
+        return None
+    fields = V3_JOURNAL_FIELDS if raw_protocol_version == 3 else JOURNAL_FIELDS
+    if set(value) != fields:
         return None
     if not all(isinstance(value[field], str) for field in ("workspace_path", "cleanup_token")):
         return None
     if not isinstance(value["execution_id"], int) or isinstance(value["execution_id"], bool):
         return None
-    if not isinstance(value["protocol_version"], int) or isinstance(
-        value["protocol_version"], bool
+    if raw_protocol_version == 3 and (
+        expected_attempt_id is None
+        or not isinstance(value["attempt_id"], int)
+        or isinstance(value["attempt_id"], bool)
+        or value["attempt_id"] <= 0
+        or value["attempt_id"] != expected_attempt_id
     ):
+        return None
+    if raw_protocol_version == 2 and expected_attempt_id is not None:
         return None
     try:
         execution_id = int(value["execution_id"])
@@ -890,7 +1114,7 @@ def _load_journal(path: Path, expected_execution_id: int) -> dict[str, Any] | No
         return None
     if (
         execution_id != expected_execution_id
-        or protocol_version != 2
+        or protocol_version not in {2, 3}
         or not cleanup_token
         or not Path(workspace).is_absolute()
     ):
@@ -900,6 +1124,7 @@ def _load_journal(path: Path, expected_execution_id: int) -> dict[str, Any] | No
         "protocol_version": protocol_version,
         "workspace_path": workspace,
         "cleanup_token": cleanup_token,
+        **({"attempt_id": int(value["attempt_id"])} if protocol_version == 3 else {}),
     }
 
 
@@ -946,7 +1171,7 @@ def recover_cleanup_journals(
         return {"inspected": 0, "completed": 0, "deferred": 0, "retained": 0}
     counts = {"inspected": 0, "completed": 0, "deferred": 0, "retained": 0}
     try:
-        candidates = list(root.iterdir())
+        candidates = sorted(root.iterdir(), key=lambda path: path.name)
     except OSError:
         return counts
     for candidate in candidates:
@@ -954,17 +1179,26 @@ def recover_cleanup_journals(
             budget_exhausted = True
             break
         match = JOURNAL_NAME_PATTERN.fullmatch(candidate.name)
-        if match is None or not _is_regular(candidate):
+        attempt_match = ATTEMPT_CLEANUP_JOURNAL_NAME_PATTERN.fullmatch(candidate.name)
+        if (match is None and attempt_match is None) or not _is_regular(candidate):
             continue
-        execution_id = int(match.group(1))
+        if attempt_match is not None:
+            execution_id = int(attempt_match.group(1))
+            attempt_id: int | None = int(attempt_match.group(2))
+        else:
+            assert match is not None
+            execution_id = int(match.group(1))
+            attempt_id = None
         counts["inspected"] += 1
         if in_flight_execution_ids is not None and execution_id in in_flight_execution_ids:
             counts["retained"] += 1
             logger.info("skipped cleanup journal for in-flight execution %s", execution_id)
             continue
-        record = _load_journal(candidate, execution_id)
+        record = _load_journal(candidate, execution_id, expected_attempt_id=attempt_id)
         try:
-            expected_workspace = workspace_path(Path(runtime_root), execution_id)
+            expected_workspace = workspace_path(
+                Path(runtime_root), execution_id, attempt_id=attempt_id
+            )
         except WorkspaceError:
             counts["retained"] += 1
             logger.warning("retained invalid cleanup journal for execution %s", execution_id)
@@ -1024,7 +1258,7 @@ def recover_cleanup_journals(
             str(record["cleanup_token"]),
             remaining,
         )
-        if receipt_accepted and remove_cleanup_journal(root, execution_id):
+        if receipt_accepted and remove_cleanup_journal(root, execution_id, attempt_id=attempt_id):
             counts["completed"] += 1
         else:
             counts["deferred"] += 1
