@@ -26,7 +26,7 @@ TERMINAL_STATUSES = {
     "resource_exceeded",
 }
 PRESSURE_LEAD_SECONDS = 20.0
-PRESSURE_SUSTAIN_SECONDS = 24.0
+PRESSURE_SUSTAIN_SECONDS = 30.0
 ATTEMPT_TIMEOUT_SECONDS = 60
 PROFILE_LIMIT_KEYS = (
     "cpu_cores",
@@ -395,6 +395,8 @@ def run_pressure() -> dict[str, object]:
     heartbeat_values: list[object] = []
     pressure_heartbeat_values: list[object] = []
     full_pressure_heartbeat_values: list[object] = []
+    full_pressure_heartbeat_baseline: object | None = None
+    full_pressure_heartbeat_initialized = False
     health_samples = [ready_sample]
     pressure_health_samples: list[dict[str, object]] = []
     full_pressure_health_samples: list[dict[str, object]] = []
@@ -403,6 +405,7 @@ def run_pressure() -> dict[str, object]:
     max_active_attempts_during_limit_pressure = 0
     renewed_attempt_ids: list[int] = []
     renewed_during_full_pressure_attempt_ids: list[int] = []
+    full_pressure_lease_baselines: dict[int, object] = {}
     reported_attempt_ids: list[int] = []
     reported_during_pressure_attempt_ids: list[int] = []
     cancel_row: dict[str, Any] | None = None
@@ -410,6 +413,7 @@ def run_pressure() -> dict[str, object]:
     started_at = time.monotonic()
     deadline = started_at + 150
     while time.monotonic() < deadline:
+        current_heartbeat: object | None = None
         workers = _api_request("GET", "/workers")
         if isinstance(workers, list):
             current = next(
@@ -421,7 +425,8 @@ def run_pressure() -> dict[str, object]:
                 None,
             )
             if isinstance(current, dict):
-                heartbeat_values.append(current.get("last_heartbeat"))
+                current_heartbeat = current.get("last_heartbeat")
+                heartbeat_values.append(current_heartbeat)
         sample = _health_sample()
         health_samples.append(sample)
         for row in rows:
@@ -468,20 +473,35 @@ def run_pressure() -> dict[str, object]:
         all_slots_under_pressure = limit_pressure_started and active == slots
         if all_slots_under_pressure:
             full_pressure_health_samples.append(sample)
-            full_pressure_heartbeat_values.extend(
-                value for value in heartbeat_values[-1:] if value is not None
-            )
+            if not full_pressure_heartbeat_initialized:
+                full_pressure_heartbeat_baseline = current_heartbeat
+                full_pressure_heartbeat_initialized = True
+            elif (
+                current_heartbeat is not None
+                and current_heartbeat != full_pressure_heartbeat_baseline
+            ):
+                full_pressure_heartbeat_values.append(current_heartbeat)
+                full_pressure_heartbeat_baseline = current_heartbeat
             for row in rows:
-                if len(row["lease_expiries"]) >= 2:
-                    for attempt_id in row["attempt_ids"]:
+                for attempt in row["current_attempts"]:
+                    if not isinstance(attempt, dict):
+                        continue
+                    attempt_id = attempt.get("id")
+                    lease = attempt.get("lease_expires_at")
+                    if not isinstance(attempt_id, int) or lease is None:
+                        continue
+                    if attempt_id not in full_pressure_lease_baselines:
+                        full_pressure_lease_baselines[attempt_id] = lease
+                    elif lease != full_pressure_lease_baselines[attempt_id]:
                         if attempt_id not in renewed_during_full_pressure_attempt_ids:
                             renewed_during_full_pressure_attempt_ids.append(attempt_id)
+                        full_pressure_lease_baselines[attempt_id] = lease
         if (
             cancel_row is None
             and max_active_attempts_during_limit_pressure >= slots
             and len([sample for sample in full_pressure_health_samples if _healthy(sample)]) >= 3
             and len({value for value in full_pressure_heartbeat_values if value is not None}) >= 2
-            and renewed_during_full_pressure_attempt_ids
+            and len(renewed_during_full_pressure_attempt_ids) >= slots
         ):
             cancel_row = next(
                 (
@@ -560,8 +580,8 @@ def run_pressure() -> dict[str, object]:
         raise AssertionError("real Agent pressure did not exercise a bounded terminal result")
     if not renewed_attempt_ids:
         raise AssertionError("real Agent did not renew an Attempt during pressure")
-    if not renewed_during_full_pressure_attempt_ids:
-        raise AssertionError("real Agent did not renew while every slot was under pressure")
+    if len(renewed_during_full_pressure_attempt_ids) < slots:
+        raise AssertionError("real Agent did not renew every Attempt during full-slot pressure")
     if len(reported_attempt_ids) < slots:
         raise AssertionError("real Agent result reports/cleanup were not observed for every slot")
     if not reported_during_pressure_attempt_ids:

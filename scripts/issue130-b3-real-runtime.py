@@ -33,7 +33,7 @@ from dlr.worker import workspace as workspace_manager
 
 MIB = 1024 * 1024
 ACTUAL_PRESSURE_LEAD_SECONDS = 20.0
-ACTUAL_PRESSURE_SUSTAIN_SECONDS = 24.0
+ACTUAL_PRESSURE_SUSTAIN_SECONDS = 30.0
 ACTUAL_PRESSURE_TIMEOUT_SECONDS = 60
 ACTUAL_PROFILE_LIMIT_KEYS = (
     "cpu_cores",
@@ -1130,6 +1130,8 @@ def run_actual_agent_pressure_probe(
     heartbeat_values: list[object] = []
     pressure_heartbeat_values: list[object] = []
     full_pressure_heartbeat_values: list[object] = []
+    full_pressure_heartbeat_baseline: object | None = None
+    full_pressure_heartbeat_initialized = False
     pressure_health_samples: list[dict[str, object]] = []
     full_pressure_health_samples: list[dict[str, object]] = []
     active_attempt_counts: list[int] = []
@@ -1137,6 +1139,7 @@ def run_actual_agent_pressure_probe(
     max_active_attempts_during_limit_pressure = 0
     renewed_during_pressure_attempts: list[int] = []
     renewed_during_full_pressure_attempts: list[int] = []
+    full_pressure_lease_baselines: dict[int, object] = {}
     result_reports_during_pressure: list[int] = []
     started_at = time.monotonic()
     cancel_row: dict[str, object] | None = None
@@ -1152,6 +1155,7 @@ def run_actual_agent_pressure_probe(
         "resource_exceeded",
     }
     while time.monotonic() < deadline:
+        current_heartbeat: object | None = None
         workers = _control_api_request("GET", "/workers")
         if isinstance(workers, list):
             current_worker = next(
@@ -1163,7 +1167,8 @@ def run_actual_agent_pressure_probe(
                 None,
             )
             if isinstance(current_worker, dict):
-                heartbeat_values.append(current_worker.get("last_heartbeat"))
+                current_heartbeat = current_worker.get("last_heartbeat")
+                heartbeat_values.append(current_heartbeat)
         sample = _control_health_sample()
         health_samples.append(sample)
         for row in execution_rows:
@@ -1239,16 +1244,29 @@ def run_actual_agent_pressure_probe(
         )
         if all_slots_under_pressure:
             full_pressure_health_samples.append(sample)
-            full_pressure_heartbeat_values.extend(
-                value
-                for value in heartbeat_values[-1:]
-                if value is not None
-            )
+            if not full_pressure_heartbeat_initialized:
+                full_pressure_heartbeat_baseline = current_heartbeat
+                full_pressure_heartbeat_initialized = True
+            elif (
+                current_heartbeat is not None
+                and current_heartbeat != full_pressure_heartbeat_baseline
+            ):
+                full_pressure_heartbeat_values.append(current_heartbeat)
+                full_pressure_heartbeat_baseline = current_heartbeat
             for row in execution_rows:
-                if len(set(row["lease_expiries"])) >= 2:
-                    for attempt_id in row["attempt_ids"]:
+                for attempt in row["current_attempts"]:
+                    if not isinstance(attempt, dict):
+                        continue
+                    attempt_id = attempt.get("id")
+                    lease = attempt.get("lease_expires_at")
+                    if not isinstance(attempt_id, int) or lease is None:
+                        continue
+                    if attempt_id not in full_pressure_lease_baselines:
+                        full_pressure_lease_baselines[attempt_id] = lease
+                    elif lease != full_pressure_lease_baselines[attempt_id]:
                         if attempt_id not in renewed_during_full_pressure_attempts:
                             renewed_during_full_pressure_attempts.append(attempt_id)
+                        full_pressure_lease_baselines[attempt_id] = lease
         if (
             cancel_row is None
             and max_active_attempts_during_limit_pressure >= configured_slots
@@ -1257,7 +1275,7 @@ def run_actual_agent_pressure_probe(
             )
             >= 3
             and len({value for value in full_pressure_heartbeat_values if value is not None}) >= 2
-            and renewed_during_full_pressure_attempts
+            and len(renewed_during_full_pressure_attempts) >= configured_slots
         ):
             cancel_row = next(
                 (
@@ -1363,7 +1381,7 @@ def run_actual_agent_pressure_probe(
     ]
     assert renewed_rows, execution_rows
     assert renewed_during_pressure_attempts, execution_rows
-    assert renewed_during_full_pressure_attempts, execution_rows
+    assert len(renewed_during_full_pressure_attempts) >= configured_slots, execution_rows
     reported_rows = [
         row
         for row in execution_rows
