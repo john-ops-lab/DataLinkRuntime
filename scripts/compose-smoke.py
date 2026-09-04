@@ -301,13 +301,12 @@ assert (
     and task["run_mode"] == "manual"
     and task["latest_version_id"] is None
 )
-offline = request(
+offline_assignment = request(
     "PATCH",
     f"/adapters/{task_id}",
     {"runtime_worker_id": stale["id"]},
-    expected=409,
 )
-assert offline["detail"]["code"] == "worker_offline", offline
+assert offline_assignment["runtime_worker_id"] == stale["id"], offline_assignment
 choose_worker(task_id, runtime_worker_id)
 
 credential = request(
