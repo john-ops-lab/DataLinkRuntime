@@ -1396,6 +1396,13 @@ def _replace_workspace(command: list[str], source: Path, target: Path) -> list[s
     return replaced
 
 
+def _isolate_payload_control_fds(diagnostic_fd: int, usage_fd: int) -> None:
+    """Keep helper-only control channels out of the Adapter process."""
+
+    os.close(usage_fd)
+    os.set_inheritable(diagnostic_fd, False)
+
+
 def _helper_child(
     command: list[str],
     host_workspace: Path,
@@ -1558,11 +1565,11 @@ def _helper_child(
                 # procfs descriptor.  The stable path is still task-owned,
                 # private to this mount namespace, and contains no host path.
                 os.chdir(payload_root / host_workspace.name / host_workspace.name)
-                # The diagnostic channel belongs to the helper, not the
-                # Adapter.  CLOEXEC keeps the payload from discovering or
-                # writing the supervisor's private control channel.
+                # Both channels belong to the helper, not the Adapter. Close
+                # the usage writer immediately; keep the diagnostic writer
+                # only until exec so setup failures can still be reported.
                 stage = "payload_fd_setup"
-                os.set_inheritable(diagnostic_fd, False)
+                _isolate_payload_control_fds(diagnostic_fd, usage_fd)
                 stage = "payload_environment"
                 adapter_environment = {
                     key: value
@@ -2533,9 +2540,17 @@ def run_preflight(
         "assert cap_inh==0\n"
         "assert cap_amb==0\n"
         "assert field('Groups') == ''\n"
+        "control_pipe_fds=[]\n"
+        "for raw_fd in os.listdir('/proc/self/fd'):\n"
+        "    fd=int(raw_fd)\n"
+        "    if fd <= 2: continue\n"
+        "    try: target=os.readlink('/proc/self/fd/'+raw_fd)\n"
+        "    except OSError: continue\n"
+        "    if target.startswith('pipe:['): control_pipe_fds.append(fd)\n"
+        "assert control_pipe_fds == []\n"
         "adapter_mount=mount_blocked()\n"
         "hidden_paths={'/sys/fs/cgroup':inaccessible(pathlib.Path('/sys/fs/cgroup')),str(hidden_target):inaccessible(hidden_target)}\n"
-        "pathlib.Path('output.json').write_text(json.dumps({'ok':True,'identity':{'uid':os.getuid(),'gid':os.getgid(),'Groups':field('Groups'),'CapPrm':field('CapPrm'),'CapEff':field('CapEff'),'CapInh':field('CapInh'),'CapBnd':cap_bnd,'CapAmb':field('CapAmb'),'NoNewPrivs':field('NoNewPrivs')},'adapter_mount':adapter_mount,'hidden_cgroup_paths':hidden_paths}))\n"
+        "pathlib.Path('output.json').write_text(json.dumps({'ok':True,'identity':{'uid':os.getuid(),'gid':os.getgid(),'Groups':field('Groups'),'CapPrm':field('CapPrm'),'CapEff':field('CapEff'),'CapInh':field('CapInh'),'CapBnd':cap_bnd,'CapAmb':field('CapAmb'),'NoNewPrivs':field('NoNewPrivs')},'adapter_mount':adapter_mount,'hidden_cgroup_paths':hidden_paths,'control_pipe_fds':control_pipe_fds}))\n"
         "saw=False\n"
         "for index in range(1,5):\n"
         "    try:\n"
@@ -2633,6 +2648,7 @@ def run_preflight(
             error.code if isinstance(error, SandboxError) else "sandbox_preflight_probe_failed"
         )
     finally:
+        cleanup_completed = attempt is None
         if attempt is not None:
             cleanup = attempt.cleanup()
             helper_diagnostic = attempt.read_helper_diagnostic()
@@ -2645,7 +2661,8 @@ def run_preflight(
                 "mount_name": cleanup.mount_name,
                 "residue": cleanup.residue,
             }
-            capabilities["sandbox_cleanup"] = cleanup.status == "completed" and not cleanup.residue
+            cleanup_completed = cleanup.status == "completed" and not cleanup.residue
+            capabilities["sandbox_cleanup"] = cleanup_completed
             try:
                 receipt = json.loads((workspace / "output.json").read_text(encoding="ascii"))
             except (OSError, UnicodeError, TypeError, ValueError):
@@ -2653,7 +2670,9 @@ def run_preflight(
             if isinstance(receipt, dict):
                 details["adapter_identity"] = receipt.get("identity")
                 hidden_paths = receipt.get("hidden_cgroup_paths")
+                control_pipe_fds = receipt.get("control_pipe_fds")
                 details["adapter_hidden_cgroup_paths"] = hidden_paths
+                details["adapter_control_pipe_fds"] = control_pipe_fds
                 capabilities["adapter_control_plane_hidden"] = (
                     isinstance(hidden_paths, dict)
                     and set(hidden_paths) == {"/sys/fs/cgroup", str(config.cgroup_path)}
@@ -2663,6 +2682,7 @@ def run_preflight(
                         and value.get("write_blocked") is True
                         for value in hidden_paths.values()
                     )
+                    and control_pipe_fds == []
                 )
                 adapter_mount = receipt.get("adapter_mount")
                 details["adapter_mount"] = adapter_mount
@@ -2673,9 +2693,14 @@ def run_preflight(
                 )
             if helper_diagnostic is not None and details.get("status") != "passed":
                 details["error_code"] = helper_diagnostic.error_code
-        try:
-            shutil.rmtree(temp_root)
-        except OSError:
+        if cleanup_completed:
+            try:
+                shutil.rmtree(temp_root)
+            except OSError:
+                details["workspace_residue"] = True
+        else:
+            # Recovery authenticates a preflight marker through this exact
+            # private parent. Preserve it until the marker is consumed.
             details["workspace_residue"] = True
     required: tuple[str, ...] = (
         "cgroup_v2",

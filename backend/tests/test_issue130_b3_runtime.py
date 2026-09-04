@@ -460,6 +460,161 @@ def test_workspace_command_rewrites_descendants_without_prefix_collisions(tmp_pa
     )
 
 
+def test_payload_fd_setup_closes_helper_usage_pipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, int, bool | None]] = []
+
+    monkeypatch.setattr(
+        sandbox.os,
+        "close",
+        lambda descriptor: calls.append(("close", descriptor, None)),
+    )
+    monkeypatch.setattr(
+        sandbox.os,
+        "set_inheritable",
+        lambda descriptor, inheritable: calls.append(("set_inheritable", descriptor, inheritable)),
+    )
+
+    sandbox._isolate_payload_control_fds(17, 23)
+
+    assert calls == [("close", 23, None), ("set_inheritable", 17, False)]
+
+
+def test_preflight_preserves_recovery_parent_until_marker_is_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sandbox,
+        "_filesystem_magic",
+        lambda _path: sandbox.CGROUP2_SUPER_MAGIC,
+    )
+    parent = tmp_path / "delegated"
+    parent.mkdir(mode=0o700)
+    (parent / "cgroup.controllers").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.subtree_control").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.procs").write_text("", encoding="ascii")
+    (parent / "cgroup.kill").write_text("", encoding="ascii")
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    recovery_root = runtime_root / "sandbox-recovery"
+    preflight_name = "dlr-preflight-" + "d" * 32
+    process = SimpleNamespace(pid=91_001, returncode=None)
+    process.poll = lambda: process.returncode
+
+    class DeferredAttempt:
+        cgroup_name = preflight_name
+        cgroup = parent / preflight_name
+        payload_pid = 91_002
+        limits_readback = {
+            "cpu.max": "100000 100000",
+            "memory.max": "67108864",
+            "memory.swap.max": "0",
+            "pids.max": "64",
+        }
+
+        def __init__(self, workspace: Path) -> None:
+            self.workspace = workspace
+            self.cgroup.mkdir(mode=0o700)
+            (self.cgroup / "cgroup.procs").write_text("91002\n", encoding="ascii")
+
+        def start(
+            self,
+            _command: list[str],
+            *,
+            stdout: Any,
+            environment: dict[str, str],
+        ) -> Any:
+            del environment
+            (self.workspace / "output.json").write_text(
+                json.dumps(
+                    {
+                        "identity": {},
+                        "hidden_cgroup_paths": {},
+                        "adapter_mount": {},
+                        "control_pipe_fds": [],
+                    }
+                ),
+                encoding="ascii",
+            )
+            stdout.write(b"DLR_SANDBOX_PREFLIGHT_READY\n")
+            stdout.flush()
+            return process
+
+        def kill(self, _process: Any) -> None:
+            process.returncode = -9
+            (self.cgroup / "cgroup.procs").write_text("", encoding="ascii")
+
+        @staticmethod
+        def read_helper_diagnostic() -> None:
+            return None
+
+        def cleanup(self) -> sandbox.CleanupResult:
+            shutil.rmtree(self.cgroup)
+            mount = self.workspace / ".dlr-sandbox-mount"
+            mount.mkdir(mode=0o700)
+            recovery_root.mkdir(mode=0o700)
+            marker = recovery_root / f"sandbox-{preflight_name}.json"
+            marker.write_text(
+                json.dumps(
+                    {
+                        "cgroup_name": preflight_name,
+                        "execution_id": 1,
+                        "mount_name": mount.name,
+                        "mount_path": str(mount),
+                    }
+                )
+                + "\n",
+                encoding="ascii",
+            )
+            marker.chmod(0o600)
+            return sandbox.CleanupResult(
+                "deferred",
+                "sandbox_cleanup_failed",
+                preflight_name,
+                mount.name,
+                residue=True,
+            )
+
+    monkeypatch.setattr(sandbox, "_new_preflight_identity", lambda: preflight_name)
+    monkeypatch.setattr(
+        sandbox.AttemptSandbox,
+        "for_preflight",
+        staticmethod(
+            lambda _config, *, workspace, recovery_root, tmp_bytes, cgroup_name: DeferredAttempt(
+                workspace
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "_pid_is_in_child",
+        lambda pid, _cgroup: pid == DeferredAttempt.payload_pid,
+    )
+
+    result = sandbox.run_preflight(
+        _worker_config(cgroup_path=parent),
+        recovery_root=recovery_root,
+        runtime_root=runtime_root,
+    )
+
+    preflight_directory = runtime_root / preflight_name
+    marker = recovery_root / f"sandbox-{preflight_name}.json"
+    assert result["details"]["status"] == "failed"
+    assert result["details"]["cleanup"]["status"] == "deferred"
+    assert result["details"]["workspace_residue"] is True
+    assert preflight_directory.is_dir()
+    assert marker.is_file()
+
+    recovered = sandbox.recover(
+        _worker_config(cgroup_path=parent),
+        recovery_root,
+        runtime_root=runtime_root,
+    )
+    assert recovered == {"inspected": 1, "completed": 1, "retained": 0}
+    assert not marker.exists()
+    assert not (preflight_directory / ".dlr-sandbox-mount").exists()
+
+
 def test_supervisor_capability_mask_is_exactly_the_approved_three() -> None:
     assert sandbox.SUPERVISOR_CAPABILITY_MASK == 0x2000C0
     assert (
@@ -1413,6 +1568,7 @@ def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
     assert int(identity["CapBnd"], 16) >= 0
     assert details["adapter_mount"]["blocked"] is True
     assert details["adapter_mount"]["errno"] in {1, 13}
+    assert details["adapter_control_pipe_fds"] == []
     assert details["limits_readback"] == {
         "cpu.max": "100000 100000",
         "memory.max": "67108864",
