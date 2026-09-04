@@ -115,7 +115,7 @@ if ! docker compose --env-file "$env_example_check/.env" -f docker-compose.yml c
 fi
 rm -rf "$env_example_check"
 docker compose build
-docker compose up -d
+docker compose up -d postgres rabbitmq
 
 echo "==> waiting for PostgreSQL"
 elapsed=0
@@ -136,7 +136,11 @@ while true; do
 done
 
 echo "==> applying Alembic head to a fresh database"
-docker compose run --rm control alembic upgrade head
+docker compose run --rm --no-deps control alembic upgrade head
+
+# Start Control only after the schema exists.  Web and Worker require a
+# healthy Control, whose health endpoint queries the migrated runtime tables.
+docker compose up -d
 
 echo "==> waiting for all services"
 elapsed=0
