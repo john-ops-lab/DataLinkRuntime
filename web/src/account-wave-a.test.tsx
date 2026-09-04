@@ -190,7 +190,7 @@ it("shows the current Principal on the protected account console and logs out", 
   await screen.findByTestId("account-principal");
   expect(screen.getByTestId("account-principal").textContent).toContain("admin");
   expect(screen.getByTestId("account-principal").textContent).toContain("管理员");
-  await waitFor(() => expect(screen.getByTestId("control-status").textContent).toContain("控制服务正常"));
+  await waitFor(() => expect(screen.getByTestId("system-status-summary").textContent).toContain("系统异常"));
   expect(requests.some((request) => request.url === "/api/adapters")).toBe(true);
   expect(requests.some((request) => request.init?.headers && "Authorization" in (request.init.headers as Record<string, string>))).toBe(false);
 

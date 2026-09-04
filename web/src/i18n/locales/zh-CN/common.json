@@ -236,6 +236,15 @@
     "degraded": "控制服务降级",
     "unreachable": "控制服务不可达"
   },
+  "systemStatus": {
+    "summary": {
+      "checking": "状态检查中",
+      "normal": "系统正常",
+      "warning": "系统预警",
+      "error": "系统异常"
+    },
+    "open": "打开系统状态：{{status}}"
+  },
   "worker": {
     "title": "运行节点",
     "online": "在线",
@@ -244,8 +253,13 @@
     "unknownStatus": "状态未知",
     "empty": "暂无已注册运行节点",
     "lastHeartbeat": "最近心跳：{{time}}",
+    "isolationPreflightAt": "隔离预检时间：{{time}}",
     "onlineSummary": "{{online}}/{{total}} 在线",
-    "hint": "在线状态已结合最近心跳和超时阈值判定；最近心跳时间用于排障。",
+    "executionSummary": "{{ready}}/{{total}} 个运行节点可执行 v3 任务",
+    "executionReady": "可执行",
+    "executionUnavailable": "不可执行",
+    "languages": "语言：{{languages}}",
+    "hint": "可执行状态同时检查心跳、协议 v3、隔离预检、硬隔离能力和服务端切流门禁；最近心跳时间仅用于排障。",
     "option": "{{name}}（{{status}}）",
     "protocol": "协议 v{{version}}",
     "isolationPreflightPassed": "隔离预检通过",

@@ -26,6 +26,7 @@ import type {
   ExecutionSummary,
   VersionDetail,
   VersionSummary,
+  Worker,
 } from "./types";
 
 // The Monaco editor is replaced by a plain textarea so tests exercise the DLR
@@ -323,6 +324,36 @@ function makeAdapter(overrides: Partial<Adapter> = {}): Adapter {
     ...overrides,
   };
 }
+
+function makeReadyWorker(overrides: Partial<Worker> = {}): Worker {
+  return {
+    id: 1,
+    name: "worker-a",
+    status: "online",
+    last_heartbeat: "2026-09-04T00:00:00Z",
+    capabilities: ["python", "javascript", "java"],
+    protocol_version: 3,
+    isolation_preflight_status: "passed",
+    isolation_preflight_at: "2026-09-04T00:00:00Z",
+    rabbitmq_execution_v3: true,
+    isolation_capabilities: {
+      cgroup_v2: true,
+      mount_namespace: true,
+      pid_namespace: true,
+      memory_hard_limit: true,
+      pids_hard_limit: true,
+      tmpfs_hard_limit: true,
+      bounded_output: true,
+    },
+    ...overrides,
+  };
+}
+
+const readyWorkerRoute: Route = {
+  method: "GET",
+  match: "/api/workers",
+  respond: () => ({ body: [makeReadyWorker()] }),
+};
 
 function makeVersion(overrides: Partial<VersionDetail> = {}): VersionDetail {
   return {
@@ -1066,13 +1097,14 @@ it("enters the console after a valid token is verified", async () => {
     },
     healthRoute({ status: "ok", database: true }),
     emptyAdaptersRoute,
+    readyWorkerRoute,
   ]);
   render(<App />);
   fireEvent.change(screen.getByTestId("admin-token-input"), {
     target: { value: "correct-token" },
   });
   fireEvent.click(screen.getByTestId("admin-token-submit"));
-  await screen.findByTestId("control-status");
+  await screen.findByTestId("system-status-summary");
   expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBe("correct-token");
 });
 
@@ -1132,31 +1164,33 @@ it("clears the session token and returns to login after a 401", async () => {
   expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
 });
 
-// --- Control health indicator (kept from M0) --------------------------------
+// --- Aggregate system status -------------------------------------------------
 
-it("shows ok when control health is ok", async () => {
+it("shows normal only when Control and every Worker are execution-ready", async () => {
   stubFetch([
     healthRoute({ status: "ok", database: true }),
     emptyAdaptersRoute,
+    readyWorkerRoute,
   ]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("control-status").textContent).toBe("控制服务正常");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常");
   });
 });
 
-it("shows degraded when control returns 503 with a valid health payload", async () => {
+it("shows a warning when Control is degraded but the database remains available", async () => {
   stubFetch([
-    healthRoute({ status: "degraded", database: false }, 503),
+    healthRoute({ status: "degraded", database: true }, 503),
     emptyAdaptersRoute,
+    readyWorkerRoute,
   ]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("control-status").textContent).toBe("控制服务降级");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统预警");
   });
 });
 
-it("shows unreachable when the health request fails", async () => {
+it("shows abnormal when the health request fails", async () => {
   stubFetch([
     {
       method: "GET",
@@ -1166,18 +1200,57 @@ it("shows unreachable when the health request fails", async () => {
       },
     },
     emptyAdaptersRoute,
+    readyWorkerRoute,
   ]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("control-status").textContent).toBe("控制服务不可达");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统异常");
   });
 });
 
 it("does not show ok for the contradictory payload {status: ok, database: false}", async () => {
-  stubFetch([healthRoute({ status: "ok", database: false }), emptyAdaptersRoute]);
+  stubFetch([healthRoute({ status: "ok", database: false }), emptyAdaptersRoute, readyWorkerRoute]);
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("control-status").textContent).toBe("控制服务不可达");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统异常");
+  });
+});
+
+it("opens the administrator System Status page and refreshes both existing sources", async () => {
+  let healthCalls = 0;
+  let workerCalls = 0;
+  stubFetch([
+    {
+      method: "GET",
+      match: "/api/health",
+      respond: () => {
+        healthCalls += 1;
+        return { body: { status: "ok", database: true } };
+      },
+    },
+    emptyAdaptersRoute,
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => {
+        workerCalls += 1;
+        return { body: [makeReadyWorker()] };
+      },
+    },
+  ]);
+  render(<App />);
+  await waitFor(() => {
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常");
+  });
+
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  await screen.findByTestId("system-status-panel");
+  expect(window.location.pathname).toBe("/settings/system-status");
+  fireEvent.click(screen.getByTestId("system-status-refresh"));
+
+  await waitFor(() => {
+    expect(healthCalls).toBe(2);
+    expect(workerCalls).toBe(2);
   });
 });
 
@@ -2728,35 +2801,29 @@ it("never shows a stale detail when executions are clicked in quick succession",
   expect(screen.getByText("执行详情")).toBeTruthy();
 });
 
-it("shows the worker badge by online presence, not by registration count", async () => {
-  const offlineWorker = {
-    id: 1,
-    name: "worker-a",
-    status: "offline",
-    last_heartbeat: "2026-08-11T00:00:00Z",
-    capabilities: ["python"],
-  };
+it("keeps Worker details off the homepage and uses execution readiness for severity", async () => {
+  const offlineWorker = makeReadyWorker({ status: "offline" });
   stubFetch([
     healthRoute({ status: "ok", database: true }),
     emptyAdaptersRoute,
     { method: "GET", match: "/api/workers", respond: () => ({ body: [offlineWorker] }) },
   ]);
   const { unmount } = render(<App />);
-  fireEvent.click(await screen.findByTestId("worker-status"));
+  await waitFor(() => {
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统异常");
+  });
+  expect(screen.queryByTestId("worker-item")).toBeNull();
+  fireEvent.click(screen.getByTestId("system-status-summary"));
   const [offlineItem] = await screen.findAllByTestId("worker-item");
   expect(within(offlineItem).getByText("离线")).toBeTruthy();
   expect(
-    screen.getByText("在线状态已结合最近心跳和超时阈值判定；最近心跳时间用于排障。"),
-  ).toBeTruthy();
-  expect(screen.queryByText(/平台不做心跳超时判定/)).toBeNull();
-  expect(
-    screen.getByTestId("worker-status").querySelector(".ant-badge-status-error"),
+    screen.getByText("可执行状态同时检查心跳、协议 v3、隔离预检、硬隔离能力和服务端切流门禁；最近心跳时间仅用于排障。"),
   ).toBeTruthy();
   expect(
-    screen.getByTestId("worker-status").querySelector(".ant-badge-status-success"),
-  ).toBeNull();
-  expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+    screen.getByTestId("system-status-summary").querySelector(".ant-badge-status-error"),
+  ).toBeTruthy();
   unmount();
+  window.history.replaceState(null, "", "/adapters");
 
   stubFetch([
     healthRoute({ status: "ok", database: true }),
@@ -2765,17 +2832,15 @@ it("shows the worker badge by online presence, not by registration count", async
       method: "GET",
       match: "/api/workers",
       respond: () => ({
-        body: [offlineWorker, { ...offlineWorker, id: 2, name: "worker-b", status: "online" }],
+        body: [offlineWorker, makeReadyWorker({ id: 2, name: "worker-b" })],
       }),
     },
   ]);
   render(<App />);
-  fireEvent.click(await screen.findByTestId("worker-status"));
-  await screen.findAllByTestId("worker-item");
-  expect(screen.getByTestId("worker-status").textContent).toContain("1/2 在线");
-  expect(
-    screen.getByTestId("worker-status").querySelector(".ant-badge-status-success"),
-  ).toBeTruthy();
+  await waitFor(() => {
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统预警");
+  });
+  expect(screen.getByTestId("system-status-summary").querySelector(".ant-badge-status-warning")).toBeTruthy();
 });
 
 it("refreshes the shared effective Worker status on focus without a page reload", async () => {
@@ -2783,12 +2848,7 @@ it("refreshes the shared effective Worker status on focus without a page reload"
     latest_version_id: 10,
     runtime_worker_id: 1,
   });
-  const worker = {
-    id: 1,
-    name: "worker-a",
-    last_heartbeat: "2026-08-13T00:00:00Z",
-    capabilities: ["python"],
-  };
+  const worker = makeReadyWorker();
   let workerCalls = 0;
   stubFetch([
     ...consoleWithVersionRoutes(adapter, makeVersion()),
@@ -2807,12 +2867,12 @@ it("refreshes the shared effective Worker status on focus without a page reload"
   render(<App />);
   await selectFirstAdapter();
   await waitFor(() => {
-    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常");
   });
   window.dispatchEvent(new Event("focus"));
   await waitFor(() => {
     expect(workerCalls).toBe(2);
-    expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统异常");
   });
   expect(
     screen.getByTestId("adapter-item").querySelector(".catalog-item-attention")?.textContent,
@@ -2821,7 +2881,7 @@ it("refreshes the shared effective Worker status on focus without a page reload"
   window.dispatchEvent(new Event("focus"));
   await waitFor(() => {
     expect(workerCalls).toBe(3);
-    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常");
   });
   expect(
     screen.getByTestId("adapter-item").querySelector(".catalog-item-attention"),
@@ -2830,13 +2890,7 @@ it("refreshes the shared effective Worker status on focus without a page reload"
 
 it("refreshes the shared Worker collection in the background without returning to loading", async () => {
   WORKER_REFRESH_POLICY.pollIntervalMs = 50;
-  const offlineWorker = {
-    id: 1,
-    name: "worker-a",
-    status: "offline",
-    last_heartbeat: "2026-08-13T00:00:00Z",
-    capabilities: ["python"],
-  };
+  const offlineWorker = makeReadyWorker({ status: "offline" });
   let workerCalls = 0;
   let releaseOnline!: () => void;
   const onlineResponse = new Promise<RouteResponse>((resolve) => {
@@ -2857,17 +2911,17 @@ it("refreshes the shared Worker collection in the background without returning t
 
   render(<App />);
   await waitFor(() => {
-    expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统异常");
   });
   await waitFor(() => {
     expect(workerCalls).toBe(2);
   });
-  expect(screen.getByTestId("worker-status").textContent).toContain("0/1 在线");
-  expect(screen.getByTestId("worker-status").textContent).not.toContain("加载中");
+  expect(screen.getByTestId("system-status-summary").textContent).toBe("系统异常");
+  expect(screen.getByTestId("system-status-summary").textContent).not.toContain("状态检查中");
 
   releaseOnline();
   await waitFor(() => {
-    expect(screen.getByTestId("worker-status").textContent).toContain("1/1 在线");
+    expect(screen.getByTestId("system-status-summary").textContent).toBe("系统正常");
   });
 });
 

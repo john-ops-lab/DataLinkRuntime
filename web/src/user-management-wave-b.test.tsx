@@ -37,6 +37,7 @@ const users = [
 ] as const;
 
 beforeEach(() => {
+  window.history.replaceState(null, "", "/adapters");
   window.__DLR_ENTRY_MODE__ = "token";
   document.cookie = "dlr_account_csrf=csrf-test-token; path=/";
   window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
@@ -45,6 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  window.history.replaceState(null, "", "/adapters");
   window.__DLR_ENTRY_MODE__ = "token";
   document.cookie = "dlr_account_csrf=; Max-Age=0; path=/";
   window.localStorage.removeItem(LOGIN_LOCALE_STORAGE_KEY);
@@ -127,9 +129,13 @@ it("shows the ACL-scoped business console while keeping system management hidden
   }));
 
   window.__DLR_ENTRY_MODE__ = "account";
+  window.history.replaceState(null, "", "/settings/system-status");
   render(<App />);
   await screen.findByTestId("account-principal");
-  await waitFor(() => expect(screen.getByTestId("control-status").textContent).toContain("Control service healthy"));
+  await waitFor(() => expect(window.location.pathname).toBe("/adapters"));
+  await waitFor(() => expect(screen.getByTestId("system-status-summary").textContent).toContain("System abnormal"));
+  expect(screen.getByTestId("system-status-summary").tagName).toBe("SPAN");
+  expect(screen.queryByTestId("system-status-panel")).toBeNull();
   expect(screen.queryByTestId("account-profile")).toBeNull();
   expect(screen.queryByTestId("user-management")).toBeNull();
   expect(screen.queryByTestId("system-settings")).toBeNull();

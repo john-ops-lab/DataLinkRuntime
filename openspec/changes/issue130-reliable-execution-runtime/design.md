@@ -376,6 +376,10 @@ API响应新增字段保持additive；旧legacy状态继续返回。新错误统
 
 普通Execution列表保持轻量，Attempt timeline/Incident/Retry详情只在detail加载。SSE watcher遇到queued/retry_wait先展示状态，进入running后复用日志流；Worker offline不是失败。
 
+首页运行状态收敛为一个带文字的系统汇总，不再从首页Popover暴露Control/Worker细节。汇总按Control与Worker fleet已确认事实取最严重级别：Control请求失败、响应非法或database false为异常，status degraded为预警；Worker API失败、无已注册Worker或全部Worker不可执行为异常，部分可执行为预警，全部可执行才正常。Worker“可执行”同时要求online、protocol v3、isolation preflight passed、服务端`rabbitmq_execution_v3=true`且页面所列硬隔离capability全为true，不能只看heartbeat。任一维度仍在加载或未知且尚无更严重事实时显示中性灰，不提前报绿。
+
+完整状态进入管理员“系统设置 / 系统状态”，复用现有`/api/health`与`/api/workers`响应，展示Control数据库、Rabbit ingress/repair/broker、Outbox和每个Worker的协议/预检/隔离能力；非管理员只看到首页汇总且不能进入该设置页。本次只提供当前快照与手动刷新，不新增时序存储、图表、告警规则或新的监控后端，未来自监控内容继续在该页面扩展。
+
 Ant Design实现前必须使用仓库 `.agents/skills/antd/SKILL.md` 并查询精确5.29.3 API/token/semantic snapshot。所有新增zh-CN/en keys、插值、键盘可达性与1280/1440/1680/1920视口进入自动Gate。
 
 ### 13. 可观测性与安全

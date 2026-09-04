@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import ApplicationShell from "./components/ApplicationShell";
 import DlrDesignSystemProvider from "./design-system";
@@ -18,11 +18,8 @@ function renderShell(overrides: Partial<ComponentProps<typeof ApplicationShell>>
   return render(
     <DlrDesignSystemProvider>
       <ApplicationShell
-        healthText="控制服务正常"
-        healthDotClass="health-dot-ok"
-        workers={[]}
-        workersLoading={false}
-        workersError={null}
+        systemStatusLevel="normal"
+        systemStatusText="系统正常"
         canManageUsers
         onOpenUserManagement={() => undefined}
         onOpenSystemSettings={() => undefined}
@@ -66,5 +63,20 @@ it("keeps account actions in the avatar menu with accessible names", async () =>
   expect(await screen.findByRole("menuitem", { name: "系统设置" })).toBeTruthy();
   expect(await screen.findByRole("menuitem", { name: "账号资料" })).toBeTruthy();
   expect(await screen.findByRole("menuitem", { name: "退出登录" })).toBeTruthy();
-  expect((await screen.findByTestId("control-status")).getAttribute("aria-live")).toBe("polite");
+  expect((await screen.findByTestId("system-status-summary")).textContent).toContain("系统正常");
+  expect(document.querySelector(".system-status-summary-content")?.getAttribute("aria-live")).toBe("polite");
+});
+
+it("lets administrators open System Status while keeping the ordinary-user summary read-only", () => {
+  const openSystemStatus = vi.fn();
+  const first = renderShell({ onOpenSystemStatus: openSystemStatus });
+  expect(screen.getByTestId("system-status-summary").tagName).toBe("BUTTON");
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  expect(openSystemStatus).toHaveBeenCalledTimes(1);
+  first.unmount();
+
+  renderShell({ canManageUsers: false, onOpenSystemStatus: openSystemStatus });
+  expect(screen.getByTestId("system-status-summary").tagName).toBe("SPAN");
+  fireEvent.click(screen.getByTestId("system-status-summary"));
+  expect(openSystemStatus).toHaveBeenCalledTimes(1);
 });

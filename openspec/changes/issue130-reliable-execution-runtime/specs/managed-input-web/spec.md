@@ -61,12 +61,28 @@ Web SHALL 根据服务端 `replay_available` 与稳定 reason 显示 Replay；�
 - **WHEN** 用户对可重放 dead_letter 执行 Replay且 Admission 接受
 - **THEN** 页面展示新的 queued Execution，旧详情保留 replay relation 与原 Attempt timeline
 
-### Requirement: Isolation Capability 状态不得夸大
-系统设置/Worker 状态 SHALL 展示 protocol v3 与 cgroup/memory/pids/tmpfs/bounded-output capability 及 preflight 结果；不支持环境必须显示 fail-closed/不可切流，不得用“Worker 在线”冒充 Resource Sandbox 通过。
+### Requirement: 系统状态入口与严重度不得夸大
+首页 SHALL 只展示一个同时包含颜色与文字的系统汇总状态，不再展示 Control/Worker 详情 Popover。管理员“系统设置 / 系统状态” SHALL 复用既有 health 与 Worker API 展示 Control 数据库、Rabbit ingress/repair/broker、Outbox，以及每个 Worker 的 protocol v3、cgroup/memory/pids/tmpfs/bounded-output capability 与 preflight 结果；非管理员不得进入该设置页。
+
+系统汇总 SHALL 对 Control 与 Worker fleet 的已确认事实取最严重级别：Control 请求失败、响应非法或 database false 为异常，degraded 为预警；Worker API 失败、无已注册 Worker 或全部 Worker 不可执行为异常，部分可执行为预警，全部可执行才正常。Worker 可执行 MUST 同时满足 online、protocol v3、isolation preflight passed、服务端 `rabbitmq_execution_v3=true` 且页面所列硬隔离 capability 全为 true；不得用“Worker 在线”冒充 Resource Sandbox 通过。尚在加载或未知且没有更严重事实时 MUST 使用中性状态，不得提前显示绿色。
+
+该页面 SHALL 只提供当前快照与手动刷新，不新增时序存储、告警规则或监控后端；后续自监控详情在该页面扩展。
+
+#### Scenario: 首页状态正常
+- **WHEN** Control status为ok且database true，并且全部已注册Worker均满足v3执行条件
+- **THEN** 首页只显示带“系统正常”文字的绿色汇总，管理员可进入系统状态页查看详情
+
+#### Scenario: 部分Worker不可执行
+- **WHEN** 至少一个Worker可执行且至少一个Worker offline或未通过v3隔离门禁
+- **THEN** 首页显示带“系统预警”文字的黄色汇总，系统状态页指出具体Worker及不满足项
+
+#### Scenario: 状态仍未知
+- **WHEN** health或Worker事实仍在加载，且没有已确认的预警或异常事实
+- **THEN** 首页显示中性灰的“状态检查中”，不得显示绿色正常
 
 #### Scenario: Worker 在线但 Tmpfs 能力缺失
 - **WHEN** heartbeat 正常但 isolation matrix 缺少 tmpfs hard limit
-- **THEN** 页面显示 v3 execution unavailable与稳定原因，运行入口以服务端 gate 为准
+- **THEN** 系统状态页显示 v3 execution unavailable与稳定原因，首页不得显示系统正常，运行入口以服务端 gate 为准
 
 ### Requirement: 新增交互遵守既有版本与视口边界
 新增 Queue/Schedule/Replay/Capability UI SHALL 使用 React 19、Ant Design 5.29.3 与 ProComponents 2.8.10 的既有项目版本，不引入第二套通用 UI 框架；zh-CN/en 在 1280/1440/1680/1920 宽度 MUST 无关键操作遮挡或横向溢出。

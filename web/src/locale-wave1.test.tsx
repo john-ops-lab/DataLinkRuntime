@@ -159,7 +159,7 @@ it("re-reads the backend locale after administrator login", async () => {
   fireEvent.change(screen.getByTestId("admin-token-input"), { target: { value: "admin" } });
   fireEvent.click(screen.getByTestId("admin-token-submit"));
 
-  await screen.findByTestId("control-status");
+  await screen.findByTestId("system-status-summary");
   expect(localeReads).toBe(2);
   expect(currentSystemLocale()).toBe("en");
 });
@@ -193,7 +193,7 @@ it("uses the cached system locale when its post-login refresh fails", async () =
   fireEvent.change(screen.getByTestId("admin-token-input"), { target: { value: "admin" } });
   fireEvent.click(screen.getByTestId("admin-token-submit"));
 
-  await screen.findByTestId("control-status");
+  await screen.findByTestId("system-status-summary");
   expect(currentSystemLocale()).toBe("en");
 });
 

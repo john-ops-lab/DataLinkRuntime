@@ -10,6 +10,7 @@ DLR 现有 PostgreSQL 长轮询与“每个 Adapter 最多一个 `pending/runnin
 - 新增显式 Schedule misfire policy、bounded catch-up 与逐点或可验证聚合的审计结果。
 - 新增 Linux cgroup v2 + namespace + bounded tmpfs 的 Resource Sandbox，并把 log/output/workspace/dependency preparation 变为运行期有界；能力不足时 fail closed。
 - 修改现有输入、文件 Lease、Worker 协议、Web 与兼容发布合同，使 v1/v2 legacy Execution 与 v3 RabbitMQ Execution 在迁移期可共存且互不误 Claim。
+- 收敛运行状态的信息架构：首页只显示绿/黄/红的系统汇总（加载或未知为中性灰），Control 与 Worker 的协议、隔离、队列和预检详情移入管理员“系统设置 / 系统状态”，复用既有健康与 Worker API，不新增监控存储或告警框架。
 - **BREAKING**：最终 Cutover 后新 Execution 使用 `queued/running/retry_wait/succeeded/dead_letter/cancelled/expired` 状态、Worker minimum protocol 提升为 3，并在新 Adapter Slot 防线验证后退役 legacy Claim 与 `uq_executions_active_adapter`；历史 legacy 行及其旧终态继续兼容读取。
 - 采用一个功能分支与一个最终非 Draft PR；B1/B2/B3 只形成串行 checkpoint，最终 PR head 才运行 Hosted CI 与 AO 官方 Claude Review。
 

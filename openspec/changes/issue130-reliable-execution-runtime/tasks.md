@@ -145,6 +145,10 @@
 - [x] 15.6 使用真实浏览器验证zh-CN/en和1280/1440/1680/1920的Queue/Schedule/Dead Letter/Worker capability主路径；验证：无raw key/横向溢出，键盘与disabled原因可达，保留应用供人工验收
 - [x] 15.7 运行密钥/敏感路径扫描与Git差异审计；验证：公开可达文件不含Token、Secret、Rabbit URL userinfo、日志/数据库/本机路径或无关生成物
 - [x] 15.8 更新所有已真实完成任务复选框并运行 `openspec validate --specs` 与 `openspec validate issue130-reliable-execution-runtime --type change --strict --no-interactive`；验证：两条命令全绿，未验证/人工任务保持未勾选
+- [x] 15.9 固化验收修复的信息架构、三级严重度、未知中性态与管理员权限；验证：OpenSpec明确首页无详情Popover、Worker可执行不等于online且不新增监控后端
+- [x] 15.10 实现首页系统汇总与“系统设置 / 系统状态”详情；验证：Control、Rabbit/Outbox、Worker协议/预检/隔离事实来自既有API，支持手动刷新
+- [x] 15.11 补齐zh-CN/en、聚合判定单测、组件交互与真实浏览器视口验证；验证：颜色不是唯一提示，非管理员不可进入详情，未知不误报绿色
+- [x] 15.12 修复Hosted compose-smoke发现的平台日志README一致性；验证：中英文README明确`DLR_PLATFORM_LOG_ROOT`、本地/生产路径与安全边界，文档检查退出0
 
 ## 16. 唯一 PR、Hosted CI 与 AO 官方 Review
 

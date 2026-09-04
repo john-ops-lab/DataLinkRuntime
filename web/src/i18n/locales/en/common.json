@@ -236,6 +236,15 @@
     "degraded": "Control service degraded",
     "unreachable": "Control service unreachable"
   },
+  "systemStatus": {
+    "summary": {
+      "checking": "Checking status",
+      "normal": "System normal",
+      "warning": "System warning",
+      "error": "System abnormal"
+    },
+    "open": "Open System Status: {{status}}"
+  },
   "worker": {
     "title": "Runtime Worker",
     "online": "Online",
@@ -244,8 +253,13 @@
     "unknownStatus": "Status unknown",
     "empty": "No registered Runtime Workers",
     "lastHeartbeat": "Last heartbeat: {{time}}",
+    "isolationPreflightAt": "Isolation preflight: {{time}}",
     "onlineSummary": "{{online}}/{{total}} online",
-    "hint": "Online status combines the latest heartbeat with the timeout threshold; the heartbeat time helps with troubleshooting.",
+    "executionSummary": "{{ready}}/{{total}} Runtime Workers can execute v3 jobs",
+    "executionReady": "Execution ready",
+    "executionUnavailable": "Execution unavailable",
+    "languages": "Languages: {{languages}}",
+    "hint": "Execution readiness checks heartbeat, protocol v3, isolation preflight, hard-isolation capabilities, and the server cutover gate. The heartbeat time is diagnostic only.",
     "option": "{{name}} ({{status}})",
     "protocol": "Protocol v{{version}}",
     "isolationPreflightPassed": "Isolation preflight passed",

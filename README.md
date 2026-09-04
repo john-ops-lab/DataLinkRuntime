@@ -241,6 +241,18 @@ DLR_MASTER_KEY
 
 本地默认使用仓库内的 `./platform-logs`：
 
+`DLR_PLATFORM_LOG_ROOT=./platform-logs` 是本地可写默认值；Linux 生产部署建议使用
+`/var/lib/dlr/platform-logs`。Compose 通过 bind mount 分别挂载 `control/`、`worker/`、
+`web/`、`account-web/` 和 `postgres/`，其中 `postgres/` 必须对容器内 PostgreSQL 用户可写。
+请配置日志轮转（rotation）和脱敏（redaction），不得把凭据（credential）写入日志；
+不要使用 `chmod 777` 绕过权限问题。根目录已在 `.gitignore` 中精确忽略。
+
+AI Assist 的总超时由 `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS=150` 控制；工具调用审计写入
+`control/ai-tool-audit.jsonl`，并由 `DLR_AI_TOOL_AUDIT_MAX_BYTES=10485760` 与
+`DLR_AI_TOOL_AUDIT_BACKUP_COUNT=10` 做应用内轮转，默认最大占用为 110 MiB。其他
+`*.log` 仍遵循平台日志轮转和脱敏要求。回滚到不识别这些配置的旧版 Control/Web 时，
+同时移除这三个新增变量，但保留已有且已脱敏的审计文件供运维处置。
+
 ```bash
 mkdir -p ./platform-logs/control \
   ./platform-logs/worker \

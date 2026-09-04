@@ -41,6 +41,13 @@ import { currentEntryMode } from "./entry-mode";
 import DlrDesignSystemProvider from "./design-system";
 import { applyLoginLocalePreference } from "./login-locale";
 import { settingsCategoryFromPath, settingsPath, type SettingsCategory } from "./settings-route";
+import {
+  aggregateSystemStatus,
+  isHealthPayload,
+  toHealthStatus,
+  type ControlHealthPayload,
+  type HealthStatus,
+} from "./system-status";
 export { ANT_DESIGN_LOCALES } from "./design-system";
 import {
   dependencyNoteFor,
@@ -80,35 +87,6 @@ const INITIAL_WEBHOOK_RUNTIME_STATE: WebhookRuntimeState = {
   changingState: false,
   startBlockedReason: null,
 };
-
-type HealthStatus = "loading" | "ok" | "degraded" | "unreachable";
-
-interface HealthPayload {
-  status: string;
-  database: boolean;
-}
-
-// Runtime contract check: only accept objects with a string status and a
-// boolean database flag; anything else is treated as an invalid payload.
-function isHealthPayload(value: unknown): value is HealthPayload {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const candidate = value as Record<string, unknown>;
-  return typeof candidate.status === "string" && typeof candidate.database === "boolean";
-}
-
-// Only the two consistent combinations map to a real state; missing fields,
-// wrong types or contradictory combinations are treated as unreachable.
-function toHealthStatus(payload: HealthPayload): HealthStatus {
-  if (payload.status === "ok" && payload.database === true) {
-    return "ok";
-  }
-  if (payload.status === "degraded" && payload.database === false) {
-    return "degraded";
-  }
-  return "unreachable";
-}
 
 interface EditorSnapshot {
   code: string;
@@ -269,6 +247,12 @@ export function AdapterConsole({
   const { t } = useTranslation(["common", "adapter", "runtime"]);
   const [messageApi, messageContextHolder] = message.useMessage();
   const [health, setHealth] = useState<HealthStatus>("loading");
+  const [healthPayload, setHealthPayload] = useState<ControlHealthPayload | null>(null);
+  const [healthCheckedAt, setHealthCheckedAt] = useState<string | null>(null);
+  const [systemStatusRefreshing, setSystemStatusRefreshing] = useState(false);
+  const healthRefreshRef = useRef<(() => Promise<void>) | null>(null);
+  const workerRefreshRef = useRef<(() => Promise<void>) | null>(null);
+  const systemStatusRefreshInFlight = useRef(false);
 
   const [adapters, setAdapters] = useState<Adapter[]>([]);
   const [selected, setSelected] = useState<Adapter | null>(null);
@@ -533,24 +517,47 @@ export function AdapterConsole({
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight: Promise<void> | null = null;
 
-    async function checkHealth() {
-      try {
-        const response = await fetch("/api/health");
-        const body: unknown = await response.json();
-        if (!cancelled) {
-          setHealth(isHealthPayload(body) ? toHealthStatus(body) : "unreachable");
-        }
-      } catch {
-        if (!cancelled) {
-          setHealth("unreachable");
-        }
+    function checkHealth(): Promise<void> {
+      if (inFlight !== null) {
+        return inFlight;
       }
+      inFlight = (async () => {
+        try {
+          const response = await fetch("/api/health");
+          const body: unknown = await response.json();
+          if (!cancelled) {
+            if (isHealthPayload(body)) {
+              setHealthPayload(body);
+              setHealth(toHealthStatus(body));
+            } else {
+              setHealthPayload(null);
+              setHealth("unreachable");
+            }
+          }
+        } catch {
+          if (!cancelled) {
+            setHealthPayload(null);
+            setHealth("unreachable");
+          }
+        } finally {
+          inFlight = null;
+          if (!cancelled) {
+            setHealthCheckedAt(new Date().toISOString());
+          }
+        }
+      })();
+      return inFlight;
     }
 
+    healthRefreshRef.current = checkHealth;
     void checkHealth();
     return () => {
       cancelled = true;
+      if (healthRefreshRef.current === checkHealth) {
+        healthRefreshRef.current = null;
+      }
     };
   }, []);
 
@@ -675,35 +682,39 @@ export function AdapterConsole({
   // no component performs its own request and no Adapter row causes N+1.
   useEffect(() => {
     let cancelled = false;
-    let inFlight = false;
+    let inFlight: Promise<void> | null = null;
 
-    async function loadWorkers(initial = false) {
-      if (inFlight) {
-        return;
+    function loadWorkers(initial = false): Promise<void> {
+      if (inFlight !== null) {
+        return inFlight;
       }
-      inFlight = true;
       if (initial) {
         setWorkersLoading(true);
         setWorkersError(null);
       }
-      try {
-        const list = await api.listWorkers();
-        if (!cancelled) {
-          setWorkers(list);
-          setWorkersError(null);
+      inFlight = (async () => {
+        try {
+          const list = await api.listWorkers();
+          if (!cancelled) {
+            setWorkers(list);
+            setWorkersError(null);
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setWorkersError(errorMessage(err));
+          }
+        } finally {
+          inFlight = null;
+          if (!cancelled) {
+            setWorkersLoading(false);
+          }
         }
-      } catch (err) {
-        if (!cancelled) {
-          setWorkersError(errorMessage(err));
-        }
-      } finally {
-        inFlight = false;
-        if (!cancelled) {
-          setWorkersLoading(false);
-        }
-      }
+      })();
+      return inFlight;
     }
 
+    const refreshWorkers = () => loadWorkers();
+    workerRefreshRef.current = refreshWorkers;
     const handleFocus = () => void loadWorkers();
     const intervalId = window.setInterval(
       () => void loadWorkers(),
@@ -713,6 +724,9 @@ export function AdapterConsole({
     void loadWorkers(true);
     return () => {
       cancelled = true;
+      if (workerRefreshRef.current === refreshWorkers) {
+        workerRefreshRef.current = null;
+      }
       window.clearInterval(intervalId);
       window.removeEventListener("focus", handleFocus);
     };
@@ -796,6 +810,33 @@ export function AdapterConsole({
     }
     return selected?.adapter_type !== "task"
       || taskRuntimeRef.current?.confirmLeave() !== false;
+  }
+
+  async function refreshSystemStatus(): Promise<void> {
+    if (systemStatusRefreshInFlight.current) {
+      return;
+    }
+    systemStatusRefreshInFlight.current = true;
+    setSystemStatusRefreshing(true);
+    try {
+      await Promise.all([
+        healthRefreshRef.current?.() ?? Promise.resolve(),
+        workerRefreshRef.current?.() ?? Promise.resolve(),
+      ]);
+    } finally {
+      systemStatusRefreshInFlight.current = false;
+      setSystemStatusRefreshing(false);
+    }
+  }
+
+  function openSystemStatus(): void {
+    if (settingsCategory !== null) {
+      return;
+    }
+    pushBrowserLocation(settingsPath("system-status"), {
+      dlrSettings: true,
+      from: browserLocation,
+    });
   }
 
   function openSystemSettings(): void {
@@ -1380,14 +1421,13 @@ export function AdapterConsole({
     }
   }
 
-  const healthText =
-    health === "loading"
-      ? t("health.loading")
-      : health === "ok"
-        ? t("health.ok")
-        : health === "degraded"
-          ? t("health.degraded")
-          : t("health.unreachable");
+  const systemStatusLevel = aggregateSystemStatus(
+    health,
+    workers,
+    workersLoading,
+    workersError,
+  );
+  const systemStatusText = t(`systemStatus.summary.${systemStatusLevel}`);
 
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? null;
   const selectedRuntimeWorker = selected?.runtime_worker_id == null
@@ -1397,26 +1437,15 @@ export function AdapterConsole({
     ? liveWatcher.execution
     : null;
 
-  const healthDotClass =
-    health === "ok"
-      ? "health-dot-ok"
-      : health === "degraded"
-        ? "health-dot-degraded"
-        : health === "unreachable"
-          ? "health-dot-unreachable"
-          : "";
-
   return (
     <ApplicationShell
-      healthText={healthText}
-      healthDotClass={healthDotClass}
-      workers={workers}
-      workersLoading={workersLoading}
-      workersError={workersError}
+      systemStatusLevel={systemStatusLevel}
+      systemStatusText={systemStatusText}
       canManageUsers={canManageUsers}
       accountPrincipal={accountPrincipal}
       onOpenUserManagement={() => setUserManagementOpen(true)}
       onOpenSystemSettings={openSystemSettings}
+      onOpenSystemStatus={settingsCategory === null ? openSystemStatus : undefined}
       onOpenAccountProfile={onOpenAccountProfile}
       onAccountLogout={onAccountLogout}
     >
@@ -1426,6 +1455,15 @@ export function AdapterConsole({
           category={settingsCategory}
           canManageManagedInput={canManageUsers}
           adapters={adapters}
+          systemStatusLevel={systemStatusLevel}
+          healthStatus={health}
+          healthPayload={healthPayload}
+          healthCheckedAt={healthCheckedAt}
+          workers={workers}
+          workersLoading={workersLoading}
+          workersError={workersError}
+          systemStatusRefreshing={systemStatusRefreshing}
+          onRefreshSystemStatus={refreshSystemStatus}
           onSelectAdapter={handleSettingsSelectAdapter}
           onCategoryChange={changeSystemSettingsCategory}
           onClose={closeSystemSettings}

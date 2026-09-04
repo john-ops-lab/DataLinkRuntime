@@ -122,38 +122,45 @@ body {
   flex: 0 0 auto;
 }
 
-.health-status {
+.system-status-summary {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  min-height: 28px;
+  padding: 2px 8px;
+  border-radius: 4px;
   color: var(--dlr-text-secondary);
   white-space: nowrap;
-  opacity: 0.75;
 }
 
-.health-status-alert {
-  color: #a8071a;
+.system-status-summary.ant-btn {
+  height: auto;
+}
+
+.system-status-summary-content,
+.system-status-summary-content .ant-badge {
+  display: inline-flex;
+  align-items: center;
+}
+
+.system-status-summary .ant-badge-status-text {
+  color: inherit;
+  font-size: 0.8rem;
+}
+
+.system-status-summary-warning {
+  color: #874d00;
+  background: rgba(250, 173, 20, 0.1);
   font-weight: 600;
-  opacity: 1;
 }
 
-.health-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--dlr-text-weak);
+.system-status-summary-error {
+  color: #a8071a;
+  background: rgba(255, 77, 79, 0.08);
+  font-weight: 600;
 }
 
-.health-dot-ok {
-  background: #52c41a;
-}
-
-.health-dot-degraded {
-  background: #faad14;
-}
-
-.health-dot-unreachable {
-  background: #ff4d4f;
+.system-status-summary-normal {
+  color: #237804;
 }
 
 .app-user-menu {
@@ -3027,6 +3034,10 @@ body {
   width: min(100%, 720px);
 }
 
+.settings-content-system-status {
+  width: 100%;
+}
+
 .settings-category-header {
   margin-bottom: 20px;
 }
@@ -3554,19 +3565,104 @@ body {
   flex-wrap: wrap;
 }
 
-/* --- Worker 弹层 --------------------------------------------------------- */
+/* --- 系统状态 ------------------------------------------------------------ */
 
-.worker-popover {
-  max-width: 320px;
+.system-status-panel,
+.worker-status-details {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  min-width: 0;
+}
+
+.system-status-overview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--dlr-border);
+  border-left-width: 4px;
+  background: var(--dlr-workspace-bg);
+}
+
+.system-status-overview-normal {
+  border-left-color: #52c41a;
+}
+
+.system-status-overview-warning {
+  border-left-color: #faad14;
+}
+
+.system-status-overview-error {
+  border-left-color: #ff4d4f;
+}
+
+.system-status-overview-checking {
+  border-left-color: var(--dlr-text-weak);
+}
+
+.system-status-overview-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.system-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.system-status-card {
+  min-width: 0;
+}
+
+.system-status-card .ant-card-head-title,
+.system-status-card .ant-descriptions-item-content,
+.system-status-card .ant-descriptions-item-label {
+  overflow-wrap: anywhere;
+}
+
+.system-status-workers {
+  grid-column: 1 / -1;
+}
+
+.system-status-loading,
+.worker-title-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.worker-execution-summary {
+  display: block;
 }
 
 .worker-hint {
   margin: 0;
   color: var(--dlr-text-weak);
   font-size: 0.75rem;
+}
+
+@media (max-width: 900px) {
+  .system-status-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .system-status-workers {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .system-status-overview {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 /* --- M5.11 Wave A：Token / 账号共用登录壳层 ------------------------------ */

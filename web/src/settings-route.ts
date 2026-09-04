@@ -1,4 +1,5 @@
 export const SETTINGS_CATEGORIES = [
+  "system-status",
   "general",
   "credentials",
   "package-sources",

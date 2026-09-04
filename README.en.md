@@ -239,6 +239,23 @@ Use real random secrets and never commit `.env`.
 
 The local default uses `./platform-logs` inside the repository:
 
+`DLR_PLATFORM_LOG_ROOT=./platform-logs` is the writable local default; use
+`/var/lib/dlr/platform-logs` for Linux production. Compose uses a bind mount for
+`control/`, `worker/`, `web/`, `account-web/`, and `postgres/`; the `postgres/`
+directory must be writable by the PostgreSQL container user. Configure log
+rotation and redaction, and never write credentials to logs. Do not use `chmod 777`
+to bypass permission problems. The root is precisely ignored by
+`.gitignore`.
+
+AI Assist uses `DLR_AI_ASSIST_TOTAL_TIMEOUT_SECONDS=150` as its total deadline.
+Tool-call audit metadata is written to `control/ai-tool-audit.jsonl` and rotated
+in-process with `DLR_AI_TOOL_AUDIT_MAX_BYTES=10485760` and
+`DLR_AI_TOOL_AUDIT_BACKUP_COUNT=10`, for a default maximum footprint of 110 MiB.
+Other `*.log` files remain subject to the platform rotation and redaction policy.
+For rollback to an older Control/Web that does not recognize these settings,
+remove the three variables together and retain existing redacted audit files for
+operator handling.
+
 ```bash
 mkdir -p ./platform-logs/control \
   ./platform-logs/worker \

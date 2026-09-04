@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { applyUiLocale } from "../i18n";
@@ -32,10 +32,10 @@ afterEach(async () => {
 describe("Issue #130 B2 Worker capability facts", () => {
   it("shows isolation preflight and keeps the v3 gate visibly paused", () => {
     render(<WorkerStatus workers={[worker]} loading={false} error={null} />);
-    fireEvent.click(screen.getByTestId("worker-status"));
 
     expect(screen.getByText("隔离预检通过")).toBeTruthy();
     expect(screen.getByText("Worker v3 已暂停")).toBeTruthy();
+    expect(screen.getByText("不可执行")).toBeTruthy();
     expect(screen.getByText(/cgroup v2/)).toBeTruthy();
   });
 
@@ -45,7 +45,6 @@ describe("Issue #130 B2 Worker capability facts", () => {
       isolation_preflight_status: "failed",
       isolation_capabilities: {},
     }]} loading={false} error={null} />);
-    fireEvent.click(screen.getByTestId("worker-status"));
 
     expect(screen.getByText("隔离预检失败")).toBeTruthy();
     expect(screen.queryByText("隔离预检通过")).toBeNull();
