@@ -125,6 +125,68 @@ it("keeps the current configuration summary in the primary flow and collapses cu
   expect(customSection?.className).not.toContain("ant-collapse-item-active");
 });
 
+it("preserves rapid primary-setting and custom-provider draft updates", async () => {
+  mockLoad(modelSetting());
+  const onDirtyChange = vi.fn();
+  const updateSetting = vi
+    .spyOn(api, "updateAiSetting")
+    .mockImplementation(async (draft: AiModelSettingDraft) => modelSetting(draft));
+  const createCustomProvider = vi.spyOn(api, "createAiCustomProvider").mockResolvedValue({
+    id: 42,
+    name: "Draft gateway",
+    protocol: "openai_compatible",
+    base_url: "https://gateway.example.com/v1",
+    credential_id: null,
+    credential_name: null,
+    images_native: false,
+    files_native: false,
+    tools_supported: false,
+    referenced: false,
+    created_at: "2026-09-05T00:00:00Z",
+    updated_at: "2026-09-05T00:00:00Z",
+  });
+
+  render(
+    <AiModelSettingsPanel
+      onError={vi.fn()}
+      onDirtyChange={onDirtyChange}
+    />,
+  );
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.click(screen.getByText("自定义模型服务"));
+  const customName = await screen.findByTestId("ai-custom-name");
+  act(() => {
+    fireEvent.change(customName, {
+      target: { value: "Draft gateway" },
+    });
+    fireEvent.change(screen.getByTestId("ai-custom-base-url"), {
+      target: { value: "https://gateway.example.com/v1" },
+    });
+    fireEvent.change(screen.getByTestId("ai-base-url"), {
+      target: { value: "https://updated-models.example.com/v1" },
+    });
+    fireEvent.change(screen.getByTestId("ai-model-input"), {
+      target: { value: "updated-model" },
+    });
+  });
+  expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+  fireEvent.click(screen.getByTestId("ai-save-settings"));
+  await waitFor(() => expect(updateSetting).toHaveBeenCalledTimes(1));
+  expect(updateSetting).toHaveBeenLastCalledWith(expect.objectContaining({
+    base_url: "https://updated-models.example.com/v1",
+    model: "updated-model",
+  }));
+  await screen.findByTestId("ai-settings-notice");
+  // Saving the primary setting must not clear the unsaved custom-provider draft.
+  expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+  fireEvent.click(screen.getByTestId("ai-custom-save"));
+  await waitFor(() => expect(createCustomProvider).toHaveBeenCalledTimes(1));
+  // Once the remaining draft is persisted, the aggregate becomes clean.
+  expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+});
+
 it("locks the AI model form while a request is in flight so stale responses cannot overwrite edits", async () => {
   mockLoad(modelSetting({ reasoning_mode: "enabled", reasoning_effort: "high" }));
   let resolveSave: ((setting: AiModelSetting) => void) | undefined;

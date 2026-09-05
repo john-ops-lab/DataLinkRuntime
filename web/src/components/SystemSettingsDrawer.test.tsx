@@ -437,6 +437,106 @@ it("保存失败时仍保留未保存更改确认", async () => {
   expect(onClose).not.toHaveBeenCalled();
 });
 
+it("取消新建凭据后清除已丢弃的表单 dirty 状态", async () => {
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  const onClose = vi.fn();
+  render(<SystemSettingsDrawer open onClose={onClose} />);
+
+  await screen.findByTestId("credentials-panel");
+  fireEvent.click(screen.getByTestId("new-credential"));
+  fireEvent.change(screen.getByTestId("credential-name"), {
+    target: { value: "discarded-credential" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("credential-form")).toBeNull());
+
+  fireEvent.click(screen.getByTestId("new-credential"));
+  expect((screen.getByTestId("credential-name") as HTMLInputElement).value).toBe("");
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("credential-form")).toBeNull());
+
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByTestId("settings-back"));
+  expect(confirm).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("取消新建包源后清除已丢弃的表单 dirty 状态", async () => {
+  vi.spyOn(api, "listPackageSources").mockResolvedValue([]);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  const onClose = vi.fn();
+  render(
+    <SystemSettingsDrawer
+      open
+      category="package-sources"
+      onClose={onClose}
+    />,
+  );
+
+  await screen.findByTestId("package-sources-panel");
+  fireEvent.click(screen.getByTestId("new-package-source"));
+  fireEvent.change(screen.getByTestId("package-source-name"), {
+    target: { value: "discarded-package-source" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("package-source-form")).toBeNull());
+
+  fireEvent.click(screen.getByTestId("new-package-source"));
+  expect((screen.getByTestId("package-source-name") as HTMLInputElement).value).toBe("");
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("package-source-form")).toBeNull());
+
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByTestId("settings-back"));
+  expect(confirm).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("取消凭据子表单不会误清其他设置草稿的 dirty 状态", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  const onClose = vi.fn();
+  const { rerender } = render(
+    <SystemSettingsDrawer open category="ai-model" onClose={onClose} />,
+  );
+
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.change(screen.getByTestId("ai-base-url"), {
+    target: { value: "https://draft.example.com/v1" },
+  });
+
+  rerender(<SystemSettingsDrawer open category="credentials" onClose={onClose} />);
+  await screen.findByTestId("credentials-panel");
+  fireEvent.click(screen.getByTestId("new-credential"));
+  fireEvent.change(screen.getByTestId("credential-name"), {
+    target: { value: "discarded-child-form" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("credential-form")).toBeNull());
+
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByTestId("settings-back"));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it("Ant Design Select 变更也会标记系统设置为未保存", async () => {
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  const onClose = vi.fn();
+  render(<SystemSettingsDrawer open onClose={onClose} />);
+
+  fireEvent.click(screen.getByRole("menuitem", { name: "AI 模型" }));
+  await screen.findByTestId("ai-model-settings-panel");
+  clickOption(await openSelect("ai-provider"), "DeepSeek");
+
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByTestId("settings-back"));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(onClose).not.toHaveBeenCalled();
+});
+
 it("新建凭据提交前有一次性明文提醒，取消则不创建", async () => {
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
   vi.spyOn(api, "listPackageSources").mockResolvedValue([]);

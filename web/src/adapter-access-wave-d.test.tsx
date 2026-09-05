@@ -37,6 +37,7 @@ it("removes task write, run, stop and schedule controls for read-only shares", (
         activeExecution: false,
         canRun: false,
         scheduleEnableBlockedReason: null,
+        mutationInFlight: false,
       }}
       dirty={false}
       busy={false}
@@ -69,6 +70,7 @@ it("removes Webhook save and receiving controls for read-only shares", () => {
         runtimeLocked: false,
         changingState: false,
         startBlockedReason: null,
+        mutationInFlight: false,
       }}
       busy={false}
       contentReady

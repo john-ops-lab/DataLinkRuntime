@@ -28,6 +28,56 @@ DLR 是一个轻量的数据适配运行平台，用于 CMDB 等系统的数据�
 
 用户只执行“保存”。系统在后台创建不可变 Revision，并让后续运行固定使用最新已保存内容。
 
+### 2.1 模板广场与 Recipe 实例化
+
+模板广场是与“适配器”并列的一级入口。首期目录随 DLR 版本静态发布，精确包含 5 个
+Theme、17 个 Scenario，以及每个场景各一份 Python、JavaScript、Java 实现，共 51 个
+Variant。用户可以按主题、关键词、厂家、Adapter 类型、协议、语言和成熟度查找场景；
+详情只在选定语言后加载该 Variant 的代码、合同、依赖建议和来源。
+
+用户选择语言、填写名称并确认后，系统在一个事务中创建独立 Adapter、Slot 0、类型所需
+的最小禁用配置和 Revision 1，然后 Web 自动进入新 Adapter 的编辑页。它不是普通 Clone：
+新 Adapter 默认停止且没有 Worker、Credential Binding、已安装 Dependency、Schedule、
+Managed File、Execution 或历史；模板后续升级不会回写用户代码。用户必须在运行前自行
+审阅和修改代码、选择兼容 Worker、安装精确依赖并完成输入配置。
+
+Recipe 的非敏感参数进入 `context.config` 或 Execution Input；密码、Token、私钥等值只
+能通过 Credential Binding 注入 `context.secrets`。外部 Endpoint 是管理员审核的运行
+配置，不得携带认证 Query，也不会因复制模板自动获得可信身份。Recipe 的 HTTPS、同源
+跳转、超时和上限检查不构成平台级 SSRF 或出网隔离；生产部署仍需用网络策略限制 Worker
+可访问的地址。
+
+7 个云与 CMDB Scenario 提供只读 `preview`；其规范化结果和 Adapter Output 受页数、
+记录数、字节数与请求总时限约束。可选 `sync` 面向外部 `dlr-cmdb-upsert/v1` 目标合同，
+必须从不可变 Execution Input 获得稳定的 `scan_id` 与 `source_scope`；同一次逻辑 Execution
+的所有 Attempt 必须复用二者，任一来源或批次失败时不得调用 finish。阿里云 3 个 Scenario
+使用的 Alibaba Cloud SDK `callApi` 尚不能证明原始传输响应受字节上限约束，因此这里的
+有界承诺不包含其源 HTTP 响应。下面只是身份字段片段，不代替具体 Variant 的完整输入合同：
+
+```json
+{
+  "mode": "sync",
+  "scan_id": "123e4567-e89b-42d3-a456-426614174000",
+  "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1"
+}
+```
+
+上面的 UUID 仅为可复制的匿名示例；新的业务扫描应换用新值，同一业务扫描的重试必须复用
+原值。
+
+`DLR_MANAGED_FILES_ENABLED=false` 不影响 5/17/51 目录的浏览、代码查看或复制，包括 CSV
+与 Excel；复制也不会创建文件、Artifact、Lease 或绑定。运行时如何提供内容或文件，应
+以所选 Variant 的输入合同和部署能力为准。
+
+成熟度按 `scenario + version + language + source_sha256` 独立展示：
+`reference-generated / syntax-verified / fixture-verified / live-verified`。每个标签由匹配
+源码哈希的 Receipt 约束；`reference-generated` 表示尚无满足下一等级全部门禁且匹配当前
+源码哈希的 Receipt，允许存在不构成升级证据的窄 smoke 或安全 canary。语法/编译通过只可
+证明 `syntax-verified`，不能冒充完整 fixture 或真实外部服务。详细操作与边界见
+[Template Recipe 使用与安全边界](../templates/recipe-usage-security.md)、
+[CMDB Upsert v1 合同](../templates/cmdb-upsert-v1.md)和
+[成熟度与 Receipt](../templates/maturity-receipts.md)。
+
 ## 3. Adapter 类型
 
 ### 3.1 Task Adapter
@@ -194,6 +244,16 @@ Task / Webhook 创建
 → 停止
 → Clone 升级
 → 删除旧 Adapter
+```
+
+也可以从模板开始：
+
+```text
+模板广场选择场景与语言
+→ 复制并命名
+→ 自动进入独立 Adapter 编辑页
+→ 配置 Worker / Dependency / Input / Credential / Endpoint
+→ 保存、预览并按成熟度证据决定是否投入使用
 ```
 
 ## 15. Reliable Runtime 运维边界

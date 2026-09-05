@@ -1,6 +1,6 @@
 # DLR（DataLinkRuntime）总体架构
 
-> 当前基线：`v0.1.1`（包含 Issue #117 手工测试问题修复）。
+> 本变更实现基线：`v0.3.0` / `d28daabfe9e70a5d5db23fb62613c5c39222764b`（已包含 Issue #130）。
 > 本文档描述当前已经实现的架构；历史阶段合同见 `docs/specs/README.md`、历史 Specs 与 Alembic migration。新任务的目标以当前明确授权的 GitHub Issue 为准。
 
 ## 1. 组件总览
@@ -23,8 +23,8 @@
 
 | 组件 | 职责 | 运行用户代码 |
 |------|------|--------------|
-| web | Catalog、Workbench、Monaco、运行控制、实时日志与历史 | 否 |
-| control | API、事务门禁、调度、Webhook 路由、日志 SSE、AI Provider 薄适配 | 否 |
+| web | Adapter Catalog、Template Gallery、Workbench、Monaco、运行控制、实时日志与历史 | 否 |
+| control | API、模板静态目录与实例化、事务门禁、调度、Webhook 路由、日志 SSE、AI Provider 薄适配 | 否 |
 | postgres | Adapter、Execution、Admission、Outbox、Attempt、Slot、Lease 与审计权威 | 否 |
 | rabbitmq | 有界 dispatch、延迟重试与 Infrastructure DLQ；单节点非 HA | 否 |
 | worker | 消费 dispatch、向 Control Claim、准备依赖、Sandbox 执行与增量上报 | 是 |
@@ -56,6 +56,7 @@ Credential 使用部署级 `DLR_MASTER_KEY` 派生的 Fernet key 加密。浏览
 | `run_mode` | Task 的 `manual / schedule`；Webhook 不使用 |
 | `latest_version_id` | 最新已保存不可变 Revision |
 | `runtime_worker_id` | 当前运行节点 |
+| `template_scenario_slug / template_version` | 可空、成对只读的模板来源；普通 Adapter 均为空 |
 | `archived_at` | 内部软删除标记；当前 Web UI 只展示活跃 Adapter |
 
 API 响应附带 `runtime_locked` 与 `running_execution_id`，供 Web 直接展示权威运行锁和当前 Execution，不使用浏览器时间或本地推断替代服务端事实。
@@ -104,6 +105,38 @@ AND clock_timestamp() - last_heartbeat <= heartbeat_timeout
 - `adapter_credential_bindings`：`env_key → credential.field`；
 - `package_sources`：Python / npm / Maven 依赖源，可绑定 Credential；
 - Webhook 只允许绑定 `token` 类型 Credential。
+
+### 3.6 Template Catalog、Variant 与实例化
+
+模板不是数据库中的隐藏 Adapter。Control wheel/镜像携带只读 package resources：5 个
+Theme、17 个 Scenario、51 个 Python/JavaScript/Java Variant，以及 JSON Schema、来源
+记录和逐语言成熟度 Receipt。启动校验按稳定 slug、版本、语言、Logo key、交叉引用和
+源码 SHA-256 fail closed；场景列表与详情只读元数据，只有下面的单语言接口读取并有界
+缓存对应源码：
+
+```text
+GET  /api/templates/themes
+GET  /api/templates/scenarios
+GET  /api/templates/scenarios/{scenario_slug}
+GET  /api/templates/scenarios/{scenario_slug}/variants/{language}
+POST /api/templates/scenarios/{scenario_slug}/variants/{language}/instantiate
+```
+
+实例化 POST 使用用户已查看的 `expected_template_version` 防止滚动发布漂移，并在一个
+事务中写入 Adapter、Slot 0、最小禁用类型配置、Revision 1 和 latest pointer。它不走
+普通 Clone，不创建 Credential/Binding、已安装 Dependency、Managed File/Artifact/Lease、
+Worker、Schedule、额外 ACL、Execution、Admission、Outbox、Attempt 或历史。新 Adapter
+默认停止且与模板解耦；Web 成功后刷新 Adapter 列表、加载 Revision 1 并进入该 Adapter
+编辑页。
+
+`DLR_MANAGED_FILES_ENABLED=false` 只关闭对应运行能力，不影响全部模板（包括 CSV/Excel）
+的发现、单语言源码读取或复制，也不会在实例化时伪造文件绑定。
+
+成熟度绑定 `scenario_slug + version + language + source_sha256`。`syntax-verified` Receipt
+必须证明精确依赖可解析且对应语言语法/编译通过；只有直接执行同一发布源码的固定 fixture
+才能标 `fixture-verified`，受控真实外部服务的只读执行才能标 `live-verified`。静态目录、
+另一语言或辅助实现的成功均不能替代这些证据。`reference-generated` 表示尚无满足下一等级
+全部门禁且匹配当前源码哈希的 Receipt；窄 smoke 或安全 canary 不构成成熟度升级证据。
 
 ## 4. Task 执行
 
@@ -201,6 +234,21 @@ ACK 不等待业务终态；ACK 后崩溃由数据库 Attempt Lease/Fencing、Re
 恢复。Sandbox 在 exact delegated Linux cgroup v2 subtree 内为每个 Attempt 建立 CPU、
 memory、pids、tmpfs 与 output 硬限制；非 Linux 或 preflight 不完整时 fail closed。
 
+### 8.1 Template Recipe 的外部调用边界
+
+Recipe 复制后就是普通用户 Adapter，继续服从上述 Worker、Revision、Credential 和
+Execution 合同。非敏感 Endpoint/上限进入 Revision runtime config 或不可变 Execution
+Input；Secret 只由 Credential Binding 注入。URL scheme、同源重定向、超时和大小限制
+只是单个 Recipe 的防误用措施，不构成平台级 SSRF、DNS rebinding 或出网隔离防线；可信
+管理员必须在部署层用防火墙、DNS/代理策略和目标白名单限制 Worker 出网。
+
+7 个云/CMDB Recipe 的 `preview` 只读来源；规范化 `dlr-asset-snapshot/v1` 与最终 Adapter
+Output 有界。`sync` 写入的是管理员配置的外部 `dlr-cmdb-upsert/v1` 目标，不是 DLR Control
+API；它要求不可变 Input 中稳定的 `scan_id` 与 `source_scope`，使同一 Execution 的新
+Attempt 重用 begin/batch/finish 幂等身份。任一来源或批次失败必须返回 `partial=true` 并
+跳过 finish，避免不完整扫描触发目标侧失效清理。阿里云 3 个 Recipe 使用的 Alibaba Cloud
+SDK `callApi` 尚不能证明原始传输响应受字节上限约束，因此输出有界不等于源 HTTP 传输有界。
+
 ## 9. AI Assistant
 
 浏览器显式提交当前 Working Copy、用户指令与有限最近对话。Control 补充服务端 language、基准 Revision 元数据、Runtime Contract 和 Secret env key 名称。Provider final answer 必须通过 Candidate Schema 校验。
@@ -237,7 +285,7 @@ AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smo
   系统语言不改变该 Execution 后续平台消息语言；
 - Control / Worker 自己生成的平台消息通过内置中英文模板输出；用户代码的
   stdout / stderr、Traceback 与第三方工具原始输出不进入翻译层；
-- Web 使用 i18next 本地资源（`common / adapter / runtime / settings / ai` 五个
+- Web 使用 i18next 本地资源（`common / adapter / runtime / settings / ai / template` 六个
   namespace），zh-CN / en key 集一致，缺失 key 回退到安全占位文案，不把 raw key
   直接展示给用户；
 - 切换语言不修改任何 Adapter code / Revision、Credential 真值或已有 Execution
@@ -247,14 +295,17 @@ AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smo
 
 - Backend：Ruff、format check、Mypy、full pytest（含 README / 关键 docs 双语成对、
   互链与相对链接解析检查，以及 zh-CN / en 翻译资源 key 与占位符一致性检查）；
+- Template：精确 5/17/51、Schema/来源/许可证/源码哈希、wheel/镜像 package resources、
+  requirements parser 与逐语言 Receipt 门禁；语法检查、fixture 和 live 证据分层记录；
 - Web：ESLint、TypeScript、Vitest（含 locale namespace / leaf key / 插值占位符
   一致性检查）、production build；
 - Database：fresh Alembic install 与从当前 main schema upgrade；
 - Integration：隔离 Compose smoke，真实运行三语言 Task、Schedule、Webhook、Clone URL 交接与运行锁；
 - Reliable Runtime：真实 Broker outage/restart、Confirm ambiguity、Worker/Control crash、
   Slot 压力、DLQ/Replay、post-cutover invariant 与资源有界性；
-- Sandbox：只接受目标 Linux cgroup v2 + host cgroup namespace + exact delegated subtree
-  的真实 Compose 证据；macOS/静态配置不计入；
+- Sandbox：只接受目标 Linux cgroup v2 + private cgroup namespace + exact delegated
+  subtree 的真实 Compose 证据；host cgroup namespace 为 `NO_COUNT`，macOS/静态配置
+  也不计入；
 - UI：真实浏览器验证底部/全屏日志、运行锁、Clone/Delete 与 Task/Webhook 主路径。
 
 ## 13. 明确边界

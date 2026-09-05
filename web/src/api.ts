@@ -43,10 +43,36 @@ import type {
   ReliableExecutionDetail,
   ReplayResponse,
   SystemLocaleResponse,
+  TemplateInstantiatePayload,
+  TemplateScenarioDetail,
+  TemplateScenarioListResponse,
+  TemplateScenarioQuery,
+  TemplateTheme,
+  TemplateVariant,
   VersionDetail,
   VersionSummary,
   Worker,
 } from "./types";
+
+const templateVariantCache = new Map<string, Promise<TemplateVariant>>();
+
+export function clearTemplateVariantCache(): void {
+  templateVariantCache.clear();
+}
+
+export function templateScenarioQueryString(query: TemplateScenarioQuery): string {
+  const search = new URLSearchParams();
+  search.set("theme", query.theme);
+  if (query.q?.trim()) search.set("q", query.q.trim());
+  if (query.vendor) search.set("vendor", query.vendor);
+  if (query.adapter_type) search.set("adapter_type", query.adapter_type);
+  if (query.protocol) search.set("protocol", query.protocol);
+  if (query.language) search.set("language", query.language);
+  if (query.maturity) search.set("maturity", query.maturity);
+  search.set("page", String(query.page ?? 1));
+  search.set("page_size", String(query.page_size ?? 12));
+  return search.toString();
+}
 
 // M2 minimal Token UX: the admin token lives only in memory plus the
 // browser's sessionStorage (managed by App). Every request automatically
@@ -228,6 +254,63 @@ export const api = {
     }),
 
   listAdapters: (): Promise<Adapter[]> => request("/api/adapters"),
+
+  // --- Issue #132 Template Gallery ---------------------------------------
+
+  listTemplateThemes: (): Promise<TemplateTheme[]> => request("/api/templates/themes"),
+
+  listTemplateScenarios: (
+    query: TemplateScenarioQuery,
+    signal?: AbortSignal,
+  ): Promise<TemplateScenarioListResponse> =>
+    request(`/api/templates/scenarios?${templateScenarioQueryString(query)}`, { signal }),
+
+  getTemplateScenario: (scenarioSlug: string, signal?: AbortSignal): Promise<TemplateScenarioDetail> =>
+    request(`/api/templates/scenarios/${encodeURIComponent(scenarioSlug)}`, { signal }),
+
+  getTemplateVariant: (
+    scenarioSlug: string,
+    templateVersion: string,
+    language: AdapterLanguage,
+  ): Promise<TemplateVariant> => {
+    const key = `${scenarioSlug}\u0000${templateVersion}\u0000${language}`;
+    const cached = templateVariantCache.get(key);
+    if (cached !== undefined) return cached;
+    const pending = request<TemplateVariant>(
+      `/api/templates/scenarios/${encodeURIComponent(scenarioSlug)}/variants/${encodeURIComponent(language)}`,
+    ).then((response) => {
+      if (
+        response.scenario_slug !== scenarioSlug ||
+        response.template_version !== templateVersion ||
+        response.language !== language
+      ) {
+        throw new ApiError(
+          409,
+          "template_variant_mismatch",
+          "Template variant identity does not match the requested catalog version",
+          {
+            expected_scenario_slug: scenarioSlug,
+            expected_template_version: templateVersion,
+            expected_language: language,
+          },
+        );
+      }
+      return response;
+    });
+    templateVariantCache.set(key, pending);
+    void pending.catch(() => templateVariantCache.delete(key));
+    return pending;
+  },
+
+  instantiateTemplate: (
+    scenarioSlug: string,
+    language: AdapterLanguage,
+    payload: TemplateInstantiatePayload,
+  ): Promise<Adapter> =>
+    request(
+      `/api/templates/scenarios/${encodeURIComponent(scenarioSlug)}/variants/${encodeURIComponent(language)}/instantiate`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
 
   createAdapter: (payload: {
     name: string;

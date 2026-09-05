@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dlr:schema:asset-snapshot:v1",
+  "title": "DLR Asset Snapshot v1",
+  "description": "Bounded preview envelope. Producers sort assets by external_key and relationships by (from,type,to), remove exact duplicates, and never invent unobserved values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "assets",
+    "relationships",
+    "summary",
+    "partial",
+    "checkpoint"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "dlr-asset-snapshot/v1"
+    },
+    "assets": {
+      "type": "array",
+      "maxItems": 50000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "maxItems": 100000,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/relationship"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assets",
+        "relationships",
+        "pages",
+        "failures"
+      ],
+      "properties": {
+        "assets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 50000
+        },
+        "relationships": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "pages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "failures": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "region",
+                  "resource",
+                  "error"
+                ],
+                "properties": {
+                  "region": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "resource": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "error": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "partial": {
+      "type": "boolean"
+    },
+    "checkpoint": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "failed": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "region",
+                      "resource",
+                      "error"
+                    ],
+                    "properties": {
+                      "region": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "resource": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "error": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "limit_reached": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "external_key",
+        "class",
+        "provider_type",
+        "name",
+        "account",
+        "region",
+        "zone",
+        "status",
+        "tags",
+        "attributes"
+      ],
+      "properties": {
+        "external_key": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 512,
+          "pattern": "^[a-z0-9][a-z0-9._-]*:[^:\\s]+:(?:[^:\\s]+|-):[a-z0-9][a-z0-9._-]*:[^:\\s]+$",
+          "description": "provider:account:region-or-global:type:id; producers use the literal 'global' for unscoped resources and preserve source identifier case after escaping ':' and '%'. A '-' region remains accepted for backward-compatible consumers only."
+        },
+        "class": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "provider_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "account": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "zone": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "tags": {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": {
+            "maxLength": 256
+          },
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 512,
+          "additionalProperties": true
+        }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "type",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 512,
+          "pattern": "^[a-z0-9][a-z0-9._-]*:[^:\\s]+:(?:[^:\\s]+|-):[a-z0-9][a-z0-9._-]*:[^:\\s]+$",
+          "description": "provider:account:region-or-global:type:id; producers use the literal 'global' for unscoped resources and preserve source identifier case after escaping ':' and '%'. A '-' region remains accepted for backward-compatible consumers only."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "located_in",
+            "attached_to",
+            "protected_by",
+            "member_of",
+            "serves",
+            "routes_to"
+          ]
+        },
+        "to": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 512,
+          "pattern": "^[a-z0-9][a-z0-9._-]*:[^:\\s]+:(?:[^:\\s]+|-):[a-z0-9][a-z0-9._-]*:[^:\\s]+$",
+          "description": "provider:account:region-or-global:type:id; producers use the literal 'global' for unscoped resources and preserve source identifier case after escaping ':' and '%'. A '-' region remains accepted for backward-compatible consumers only."
+        }
+      }
+    }
+  }
+}

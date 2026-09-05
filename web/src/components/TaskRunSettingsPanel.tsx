@@ -38,12 +38,14 @@ export interface TaskRuntimeState {
   scheduleEnableBlockedReason: string | null;
   /** Optional for callers that construct the state outside this component. */
   runBlockedReason?: string | null;
+  mutationInFlight: boolean;
 }
 
 export interface TaskRunSettingsHandle {
   runOnce: () => void;
   stopExecution: () => void;
   toggleSchedule: () => void;
+  hasUnsavedChanges: () => boolean;
   confirmLeave: () => boolean;
 }
 
@@ -382,18 +384,6 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   useEffect(() => {
     void loadManagedInput();
   }, [loadManagedInput]);
-
-  useEffect(() => {
-    if (stagedArtifacts.length === 0) {
-      return;
-    }
-    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = t("task.input.stagedLeaveWarning");
-    };
-    window.addEventListener("beforeunload", warnBeforeLeaving);
-    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
-  }, [stagedArtifacts.length, t]);
 
   const loadSchedule = useCallback(async () => {
     setLoadingSchedule(true);
@@ -739,7 +729,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
         // 此时 PUT 会静默冲掉线上真实配置，必须跳过并明确提示。
         const scheduleUnknown =
           schedule === null && (loadingSchedule || scheduleLoadFailed);
-        const shouldPutSchedule = scheduleTouched || (schedule === null && !scheduleUnknown);
+        const shouldPutSchedule = scheduleTouched || schedulePolicyTouched
+          || (schedule === null && !scheduleUnknown);
         if (shouldPutSchedule) {
           const saved = await api.putSchedule(adapterId, {
             enabled: schedule?.enabled === true,
@@ -881,7 +872,8 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     runMode !== props.adapter.run_mode ||
     workerId !== (props.adapter.runtime_worker_id ?? null) ||
     effectiveTimeoutSeconds !== (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) ||
-    scheduleTouched;
+    scheduleTouched ||
+    schedulePolicyTouched;
 
   const inputDirty = inputConfig !== null && (
     inputSourceDraft !== inputConfig.source_type ||
@@ -892,6 +884,21 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       retentionDraft.seconds !== inputConfig.retention.seconds
     ))
   );
+  const hasUnsavedChanges = runtimeConfigDirty || inputDirty || stagedArtifacts.length > 0;
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      return;
+    }
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = stagedArtifacts.length > 0
+        ? t("task.input.stagedLeaveWarning")
+        : t("confirm.discardChanges", { ns: "common" });
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [hasUnsavedChanges, stagedArtifacts.length, t]);
   const managedFilenameConflict = inputSourceDraft === "managed_files" && hasManagedFilenameConflict(managedFilesDraft);
   const managedDraftIds = new Set(managedFilesDraft.map((artifact) => artifact.id));
   const overflowStagedArtifacts = stagedArtifacts.filter(
@@ -1039,6 +1046,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
   }
 
   useEffect(() => {
+    const mutationInFlight = savingRuntime
+      || savingInput
+      || savingSchedule
+      || submitting
+      || cancelling
+      || uploadProgress.length > 0
+      || deletingArtifactId !== null;
     onRuntimeStateChange({
       scheduleEnabled,
       loading: loadingInput || loadingSchedule || savingRuntime || savingInput || savingSchedule || submitting || cancelling,
@@ -1046,11 +1060,13 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
       canRun,
       scheduleEnableBlockedReason,
       runBlockedReason,
+      mutationInFlight,
     });
   }, [
     activeExecution,
     canRun,
     cancelling,
+    deletingArtifactId,
     loadingInput,
     loadingSchedule,
     onRuntimeStateChange,
@@ -1061,13 +1077,19 @@ const TaskRunSettingsPanel = forwardRef<TaskRunSettingsHandle, TaskRunSettingsPa
     scheduleEnableBlockedReason,
     scheduleEnabled,
     submitting,
+    uploadProgress.length,
   ]);
 
   useImperativeHandle(ref, () => ({
     runOnce: () => void runOnce(),
     stopExecution: () => void stopExecution(),
     toggleSchedule: () => void saveSchedule(!scheduleEnabled),
-    confirmLeave: () => stagedArtifacts.length === 0 || window.confirm(t("task.input.stagedLeaveWarning")),
+    hasUnsavedChanges: () => hasUnsavedChanges,
+    confirmLeave: () => !hasUnsavedChanges || window.confirm(
+      stagedArtifacts.length > 0
+        ? t("task.input.stagedLeaveWarning")
+        : t("confirm.discardChanges", { ns: "common" }),
+    ),
   }));
 
   const scheduleVisible = runMode === "schedule";

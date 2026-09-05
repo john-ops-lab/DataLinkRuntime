@@ -12,9 +12,17 @@ interface Props {
   adapterId: number;
   ownerLabel: string;
   onChanged?: () => void;
+  onMutationStart?: () => void;
+  onMutationEnd?: () => void;
 }
 
-export default function AdapterPermissionsPanel({ adapterId, ownerLabel, onChanged }: Props) {
+export default function AdapterPermissionsPanel({
+  adapterId,
+  ownerLabel,
+  onChanged,
+  onMutationStart,
+  onMutationEnd,
+}: Props) {
   const { t } = useTranslation(["adapter", "common"]);
   const [permissions, setPermissions] = useState<AdapterPermission[]>([]);
   const [candidates, setCandidates] = useState<AdapterPermissionCandidate[]>([]);
@@ -59,6 +67,7 @@ export default function AdapterPermissionsPanel({ adapterId, ownerLabel, onChang
     if (saving) {
       return;
     }
+    onMutationStart?.();
     setSaving(true);
     setError(null);
     try {
@@ -70,6 +79,7 @@ export default function AdapterPermissionsPanel({ adapterId, ownerLabel, onChang
       setError(userErrorMessage(err, t("sharing.saveFailed")));
     } finally {
       setSaving(false);
+      onMutationEnd?.();
     }
   }
 
@@ -77,6 +87,7 @@ export default function AdapterPermissionsPanel({ adapterId, ownerLabel, onChang
     if (saving) {
       return;
     }
+    onMutationStart?.();
     setSaving(true);
     setError(null);
     try {
@@ -87,6 +98,7 @@ export default function AdapterPermissionsPanel({ adapterId, ownerLabel, onChang
       setError(userErrorMessage(err, t("sharing.revokeFailed")));
     } finally {
       setSaving(false);
+      onMutationEnd?.();
     }
   }
 

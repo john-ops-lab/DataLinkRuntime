@@ -19,6 +19,7 @@ import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
 import LiveLogWorkspace from "./components/LiveLogWorkspace";
 import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
+import TemplateGalleryPage, { type TemplateCopyRequest } from "./components/TemplateGalleryPage";
 import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
 import type { TaskRunSettingsHandle, TaskRuntimeState } from "./components/TaskRunSettingsPanel";
 import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
@@ -39,8 +40,21 @@ import {
 } from "./i18n";
 import { currentEntryMode } from "./entry-mode";
 import DlrDesignSystemProvider from "./design-system";
+import {
+  appRouteFromPath,
+  backBrowserLocation,
+  browserLocationSnapshot,
+  notifyBrowserLocation,
+  pushBrowserLocation,
+  replaceBrowserLocation,
+  setBrowserLocationBlocker,
+  subscribeToBrowserLocation,
+  templatePath,
+  type PrimarySection,
+} from "./history-route";
 import { applyLoginLocalePreference } from "./login-locale";
-import { settingsCategoryFromPath, settingsPath, type SettingsCategory } from "./settings-route";
+import type { PageLeaveGuardHandle } from "./page-leave-guard";
+import { settingsPath, type SettingsCategory } from "./settings-route";
 import {
   aggregateSystemStatus,
   isHealthPayload,
@@ -78,6 +92,7 @@ const INITIAL_TASK_RUNTIME_STATE: TaskRuntimeState = {
   activeExecution: false,
   canRun: false,
   scheduleEnableBlockedReason: null,
+  mutationInFlight: false,
 };
 
 const INITIAL_WEBHOOK_RUNTIME_STATE: WebhookRuntimeState = {
@@ -86,6 +101,7 @@ const INITIAL_WEBHOOK_RUNTIME_STATE: WebhookRuntimeState = {
   runtimeLocked: false,
   changingState: false,
   startBlockedReason: null,
+  mutationInFlight: false,
 };
 
 interface EditorSnapshot {
@@ -217,26 +233,8 @@ interface AdapterConsoleProps {
   onOpenAccountProfile?: () => void;
 }
 
-function subscribeToBrowserLocation(callback: () => void): () => void {
-  window.addEventListener("popstate", callback);
-  return () => window.removeEventListener("popstate", callback);
-}
-
-function browserLocationSnapshot(): string {
-  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
-}
-
 function useBrowserLocation(): string {
   return useSyncExternalStore(subscribeToBrowserLocation, browserLocationSnapshot, () => "/");
-}
-
-function notifyBrowserLocation(): void {
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
-
-function pushBrowserLocation(path: string, state?: unknown): void {
-  window.history.pushState(state ?? null, "", path);
-  notifyBrowserLocation();
 }
 
 export function AdapterConsole({
@@ -256,6 +254,7 @@ export function AdapterConsole({
 
   const [adapters, setAdapters] = useState<Adapter[]>([]);
   const [selected, setSelected] = useState<Adapter | null>(null);
+  const selectedAdapterIdRef = useRef<number | null>(null);
   const [versions, setVersions] = useState<VersionSummary[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
 
@@ -290,7 +289,10 @@ export function AdapterConsole({
   const [historyExecutionId, setHistoryExecutionId] = useState<number | null>(null);
   const [userManagementOpen, setUserManagementOpen] = useState(false);
   const browserLocation = useBrowserLocation();
-  const requestedSettingsCategory = settingsCategoryFromPath(browserLocation.split("?", 1)[0].split("#", 1)[0]);
+  const appRoute = appRouteFromPath(browserLocation.split("?", 1)[0].split("#", 1)[0]);
+  const activeSection: PrimarySection = appRoute.section;
+  const templateScenarioSlug = appRoute.section === "templates" ? appRoute.scenarioSlug : null;
+  const requestedSettingsCategory = appRoute.section === "adapters" ? appRoute.settingsCategory : null;
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [aiCandidateDiff, setAiCandidateDiff] = useState<AiCandidateDiffModalState | null>(null);
   const handleAiCandidateDiffChange = useCallback((next: AiCandidateDiffModalState | null) => {
@@ -434,11 +436,30 @@ export function AdapterConsole({
   const [webhookRuntimeState, setWebhookRuntimeState] = useState<WebhookRuntimeState>(INITIAL_WEBHOOK_RUNTIME_STATE);
   const taskRuntimeRef = useRef<TaskRunSettingsHandle>(null);
   const webhookRuntimeRef = useRef<WebhookTriggerHandle>(null);
+  const systemSettingsLeaveGuardRef = useRef<PageLeaveGuardHandle>(null);
+  const adapterSettingsLeaveGuardRef = useRef<PageLeaveGuardHandle>(null);
+  useLayoutEffect(() => setBrowserLocationBlocker(() => {
+    if (busy) {
+      return false;
+    }
+    return systemSettingsLeaveGuardRef.current?.confirmLeave() !== false
+      && adapterSettingsLeaveGuardRef.current?.confirmLeave() !== false;
+  }), [busy]);
   const [waitingForWebhook, setWaitingForWebhook] = useState(false);
   const [saveWorkerPromptOpen, setSaveWorkerPromptOpen] = useState(false);
   const [saveWorkerId, setSaveWorkerId] = useState<number | null>(null);
   const [cloneSource, setCloneSource] = useState<Adapter | null>(null);
   const [cloneName, setCloneName] = useState("");
+  const closePagePortals = useCallback((): void => {
+    setSettingsOpen(false);
+    setUserManagementOpen(false);
+    setAiPanelOpen(false);
+    setAiCandidateDiff(null);
+    setDiffView(null);
+    setCloneSource(null);
+    setSaveWorkerPromptOpen(false);
+    webhookRuntimeRef.current?.closeTransientUi();
+  }, []);
   // Known version-id -> seq values, cached once a version list has loaded and
   // kept up to date on save. Unvisited Catalog rows keep internal Revision ids
   // secondary, so this cache never causes extra list requests.
@@ -462,6 +483,10 @@ export function AdapterConsole({
   // Monotonic guard: only the newest content-loading request may commit state, so
   // rapid adapter switches cannot mix state or save one adapter's snapshot into another.
   const requestGeneration = useRef(0);
+  // Adapter list requests can overlap during startup and template instantiation.
+  // Only the newest response may replace the Catalog so a late bootstrap response
+  // cannot hide the Adapter that was just created.
+  const adapterListGeneration = useRef(0);
   // A no-version Adapter still has a browser-only starter snapshot. Keep the
   // locale chosen when it was first created/loaded so navigation cannot rewrite
   // that Working Copy after a system-locale switch.
@@ -477,6 +502,14 @@ export function AdapterConsole({
     snapshot.requirements !== baseline.requirements ||
     snapshot.runtimeConfigText !== baseline.runtimeConfigText;
   const selectedAdapterId = selected?.id ?? null;
+  useLayoutEffect(() => {
+    selectedAdapterIdRef.current = selectedAdapterId;
+  }, [selectedAdapterId]);
+  const selectedRuntimeMutationInFlight = selected?.adapter_type === "task"
+    ? taskRuntimeState.mutationInFlight
+    : selected?.adapter_type === "webhook"
+      ? webhookRuntimeState.mutationInFlight
+      : false;
   const activeExecutionId = selected?.running_execution_id ?? null;
   const selectedTriggerLocked = selected?.runtime_locked === true;
   const canManageUsers = accountPrincipal === undefined || accountPrincipal.role === "admin";
@@ -487,6 +520,34 @@ export function AdapterConsole({
   const selectedCanManage = canManageAdapter(selectedAccessLevel);
   const selectedCanUseAi = selectedCanEdit;
   const settingsCategory = canManageUsers ? requestedSettingsCategory : null;
+
+  useEffect(() => {
+    if (!dirty) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = t("confirm.discardChanges");
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [dirty, t]);
+
+  useEffect(() => subscribeToBrowserLocation(() => {
+    const nextRoute = appRouteFromPath(window.location.pathname);
+    if (nextRoute.section === "templates") {
+      closePagePortals();
+    }
+  }), [closePagePortals]);
+
+  useLayoutEffect(() => {
+    if (activeSection !== "adapters" || settingsCategory !== null) return;
+    const layout = () => editorRef.current?.layout();
+    const frame = window.requestAnimationFrame?.(layout);
+    if (frame === undefined) {
+      const timeout = window.setTimeout(layout, 0);
+      return () => window.clearTimeout(timeout);
+    }
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSection, settingsCategory]);
 
   useEffect(() => {
     if (requestedSettingsCategory !== null && !canManageUsers) {
@@ -733,8 +794,11 @@ export function AdapterConsole({
   }, []);
 
   const refreshAdapters = useCallback(async (): Promise<Adapter[]> => {
+    const generation = ++adapterListGeneration.current;
     const list = await api.listAdapters();
-    setAdapters(list);
+    if (generation === adapterListGeneration.current) {
+      setAdapters(list);
+    }
     return list;
   }, []);
 
@@ -745,7 +809,10 @@ export function AdapterConsole({
     );
   }, []);
 
-  const handleExecutionStarted = useCallback((execution: Execution) => {
+  const handleExecutionStarted = useCallback((adapterId: number, execution: Execution) => {
+    if (selectedAdapterIdRef.current !== adapterId || execution.adapter_id !== adapterId) {
+      return;
+    }
     // M5.5.10：用户手动触发的运行直接切换到「实时日志」Tab。
     refreshedTerminalExecutionId.current = null;
     liveWatchRef.current(execution);
@@ -754,21 +821,25 @@ export function AdapterConsole({
     setActiveTabKey("live");
   }, []);
 
-  const handleWebhookReceivingChange = useCallback((enabled: boolean) => {
+  const handleWebhookReceivingChange = useCallback((adapterId: number, enabled: boolean) => {
+    if (selectedAdapterIdRef.current !== adapterId) {
+      return;
+    }
     setWaitingForWebhook(enabled);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    const generation = ++adapterListGeneration.current;
 
     async function loadAdapters() {
       try {
         const list = await api.listAdapters();
-        if (!cancelled) {
+        if (!cancelled && generation === adapterListGeneration.current) {
           setAdapters(list);
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && generation === adapterListGeneration.current) {
           setError(errorMessage(err));
         }
       }
@@ -805,11 +876,20 @@ export function AdapterConsole({
   }
 
   function confirmWorkspaceLeave(): boolean {
-    if (!confirmDiscard()) {
-      return false;
+    const taskHasDraft = selected?.adapter_type === "task"
+      && taskRuntimeRef.current?.hasUnsavedChanges() === true;
+    const webhookHasDraft = selected?.adapter_type === "webhook"
+      && webhookRuntimeRef.current?.hasUnsavedChanges() === true;
+    if (!dirty && !taskHasDraft && !webhookHasDraft) {
+      return true;
     }
-    return selected?.adapter_type !== "task"
-      || taskRuntimeRef.current?.confirmLeave() !== false;
+    if (taskHasDraft) {
+      return taskRuntimeRef.current?.confirmLeave() !== false;
+    }
+    if (webhookHasDraft) {
+      return webhookRuntimeRef.current?.confirmLeave() !== false;
+    }
+    return confirmDiscard();
   }
 
   async function refreshSystemStatus(): Promise<void> {
@@ -871,14 +951,14 @@ export function AdapterConsole({
       ? window.history.state.from
       : null;
     if (typeof from === "string" && from !== "") {
-      window.history.back();
+      backBrowserLocation();
       return;
     }
     pushBrowserLocation("/adapters");
   }
 
   function handleSettingsSelectAdapter(adapterId: number): boolean {
-    if (busy) {
+    if (busy || systemSettingsLeaveGuardRef.current?.confirmLeave() === false) {
       return false;
     }
     const adapter = adapters.find((item) => item.id === adapterId);
@@ -895,7 +975,7 @@ export function AdapterConsole({
     } else {
       setActiveTabKey("runtime");
     }
-    closeSystemSettings();
+    replaceBrowserLocation("/adapters");
     return true;
   }
 
@@ -903,10 +983,11 @@ export function AdapterConsole({
     adapter: Adapter,
     starterLocaleOverride?: ReturnType<typeof currentSystemLocale>,
     targetTab: WorkbenchTabKey = "edit",
-  ) {
+  ): Promise<boolean> {
     const generation = ++requestGeneration.current;
     // Reset content state synchronously so the previous adapter's snapshot can never
     // appear (or be saved) under the newly selected adapter.
+    selectedAdapterIdRef.current = adapter.id;
     setSelected(adapter);
     setName(adapter.name);
     setDescription(adapter.description);
@@ -936,7 +1017,7 @@ export function AdapterConsole({
     try {
       const list = await api.listVersions(adapter.id);
       if (generation !== requestGeneration.current) {
-        return;
+        return false;
       }
       setVersions(list);
       recordVersionSeqs(list);
@@ -953,20 +1034,79 @@ export function AdapterConsole({
           runtimeConfigText: "{}",
         });
         setContentReady(true);
-        return;
+        return true;
       }
       const detail = await api.getVersion(adapter.id, adapter.latest_version_id);
       if (generation !== requestGeneration.current) {
-        return;
+        return false;
       }
       setSelectedVersionId(detail.id);
       applySnapshot(versionSnapshot(detail));
       setContentReady(true);
+      return true;
     } catch (err) {
       if (generation !== requestGeneration.current) {
-        return;
+        return false;
       }
       setError(errorMessage(err));
+      return false;
+    }
+  }
+
+  function handlePrimarySectionChange(section: PrimarySection): void {
+    if (
+      busy
+      || systemSettingsLeaveGuardRef.current?.confirmLeave() === false
+      || adapterSettingsLeaveGuardRef.current?.confirmLeave() === false
+    ) {
+      return;
+    }
+    closePagePortals();
+    if (section === "templates") {
+      pushBrowserLocation(templatePath());
+    } else {
+      pushBrowserLocation("/adapters");
+    }
+  }
+
+  async function handleInstantiateTemplate(request: TemplateCopyRequest): Promise<boolean> {
+    if (busy || selectedRuntimeMutationInFlight || !confirmWorkspaceLeave()) return false;
+    if (activeNameConflict(adapters, request.name, null)) {
+      throw new ApiError(409, "adapter_name_conflict", "Adapter name already exists");
+    }
+
+    setBusy(true);
+    try {
+      setError(null);
+      const created = await api.instantiateTemplate(request.scenarioSlug, request.language, {
+        name: request.name,
+        description: request.description,
+        expected_template_version: request.expected_template_version,
+      });
+      let target = created;
+      let refreshFailure: string | null = null;
+      try {
+        const list = await refreshAdapters();
+        target = list.find((adapter) => adapter.id === created.id) ?? created;
+      } catch (refreshError) {
+        setAdapters((current) => current.some((adapter) => adapter.id === created.id)
+          ? current
+          : [created, ...current]);
+        refreshFailure = errorMessage(refreshError);
+      }
+      const contentLoaded = await loadAdapterContent(target, undefined, "edit");
+      closePagePortals();
+      pushBrowserLocation("/adapters");
+      window.requestAnimationFrame?.(() => {
+        editorRef.current?.layout();
+        editorRef.current?.focus();
+      });
+      if (refreshFailure !== null && contentLoaded) {
+        setError(refreshFailure);
+      }
+      return true;
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1398,6 +1538,7 @@ export function AdapterConsole({
       }
       starterLocaleByAdapter.current.delete(selected.id);
       requestGeneration.current += 1;
+      selectedAdapterIdRef.current = null;
       setSelected(null);
       setSelectedVersionId(null);
       setVersions([]);
@@ -1448,9 +1589,13 @@ export function AdapterConsole({
       onOpenSystemStatus={settingsCategory === null ? openSystemStatus : undefined}
       onOpenAccountProfile={onOpenAccountProfile}
       onAccountLogout={onAccountLogout}
+      activeSection={activeSection}
+      navigationDisabled={busy}
+      onPrimarySectionChange={handlePrimarySectionChange}
     >
       {settingsCategory !== null ? (
         <SystemSettingsDrawer
+          ref={systemSettingsLeaveGuardRef}
           open
           category={settingsCategory}
           canManageManagedInput={canManageUsers}
@@ -1471,20 +1616,25 @@ export function AdapterConsole({
       ) : (
         <>
           {messageContextHolder}
-          <div className="app-global-feedback">
-            {error && (
-              <Alert
-                type="error"
-                showIcon
-                role="alert"
-                data-testid="error-banner"
-                message={error}
-              />
-            )}
-          </div>
+          <section
+            className="adapter-surface"
+            data-testid="adapter-surface"
+            hidden={activeSection !== "adapters"}
+          >
+            <div className="app-global-feedback">
+              {error && (
+                <Alert
+                  type="error"
+                  showIcon
+                  role="alert"
+                  data-testid="error-banner"
+                  message={error}
+                />
+              )}
+            </div>
 
-          <div className="console-body">
-            <AdapterCatalog
+            <div className="console-body">
+            {activeSection === "adapters" && <AdapterCatalog
               adapters={adapters}
               selectedId={selected?.id ?? null}
               busy={busy}
@@ -1502,7 +1652,7 @@ export function AdapterConsole({
                 }
               }}
               accountPrincipal={accountPrincipal}
-            />
+            />}
 
         {/*
           M5.5.4：AI 助手放在 Workbench 之前的 DOM 位置，视觉上仍通过 flex
@@ -1749,7 +1899,7 @@ export function AdapterConsole({
                             execution={liveExecution}
                             dirty={dirty}
                             onAdapterChange={handleTaskAdapterChange}
-                            onExecutionStarted={handleExecutionStarted}
+                            onExecutionStarted={(execution) => handleExecutionStarted(selected.id, execution)}
                             onRuntimeStateChange={handleTaskRuntimeStateChange}
                             onError={setError}
                             readOnly={!selectedCanEdit}
@@ -1769,7 +1919,7 @@ export function AdapterConsole({
                             workersLoading={workersLoading}
                             workersError={workersError}
                             onAdapterChange={handleTaskAdapterChange}
-                            onReceivingChange={handleWebhookReceivingChange}
+                            onReceivingChange={(enabled) => handleWebhookReceivingChange(selected.id, enabled)}
                             onRuntimeStateChange={handleWebhookRuntimeStateChange}
                             onError={setError}
                             readOnly={!selectedCanEdit}
@@ -1783,7 +1933,7 @@ export function AdapterConsole({
                     label: selected.adapter_type === "webhook" ? t("labels.callHistory") : t("labels.history"),
                     // antd Tabs render lazily: the history API is only called
                     // after this tab is activated for the first time.
-                    children: (
+                    children: activeSection === "adapters" ? (
                       <ExecutionHistoryPanel
                         key={selected.id}
                         adapterId={selected.id}
@@ -1792,7 +1942,7 @@ export function AdapterConsole({
                         autoOpenExecutionId={historyExecutionId}
                         onAutoOpenHandled={() => setHistoryExecutionId(null)}
                       />
-                    ),
+                    ) : null,
                   },
                   {
                     // M5.5.10：Task/Webhook 共用的独立「实时日志」Tab；forceRender
@@ -1827,11 +1977,28 @@ export function AdapterConsole({
             </section>
           )}
         </main>
-          </div>
+            </div>
+          </section>
+          {activeSection === "templates" && (
+            <TemplateGalleryPage
+              scenarioSlug={templateScenarioSlug}
+              busy={busy || selectedRuntimeMutationInFlight}
+              onOpenScenario={(slug) => pushBrowserLocation(templatePath(slug))}
+              onBackToGallery={(useBrowserBack) => {
+                if (useBrowserBack) {
+                  backBrowserLocation();
+                } else {
+                  replaceBrowserLocation(templatePath());
+                }
+              }}
+              onInstantiate={handleInstantiateTemplate}
+            />
+          )}
         </>
       )}
 
       <AdapterSettingsDrawer
+        ref={adapterSettingsLeaveGuardRef}
         open={settingsOpen}
         adapter={selected}
         name={name}

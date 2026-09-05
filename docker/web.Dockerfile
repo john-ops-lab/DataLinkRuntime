@@ -12,12 +12,17 @@ RUN printf 'Installing locked web dependencies for %s (%s)\n' "$TARGETPLATFORM" 
     && node --input-type=module -e 'import("rollup").then(() => console.log("Rollup native binding resolved"))'
 
 COPY web/ ./
-RUN npm run build
+# Monaco's language workers are emitted as separate production chunks. Vite's
+# transform graph exceeds Node's default ~2 GiB old-space limit in this Alpine
+# build stage, so raise only the build-process heap (the nginx runtime is
+# unaffected).
+RUN NODE_OPTIONS=--max-old-space-size=4096 npm run build
 
 FROM nginx:alpine
 
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker/nginx-account.conf /etc/nginx/nginx-account.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+COPY THIRD_PARTY_NOTICES.md /usr/share/nginx/html/THIRD_PARTY_NOTICES.md
 
 EXPOSE 80

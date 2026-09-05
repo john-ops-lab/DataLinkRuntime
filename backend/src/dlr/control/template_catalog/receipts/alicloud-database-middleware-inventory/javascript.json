@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "alicloud-database-middleware-inventory",
+  "version": "1.0.0",
+  "language": "javascript",
+  "source_sha256": "f779eea8938256241cb1de192047ebb75300ab2d9bf877b9b3525f79c00c7a1e",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

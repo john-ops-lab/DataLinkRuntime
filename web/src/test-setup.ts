@@ -44,7 +44,11 @@ afterEach(() => {
   // App tests share jsdom's history within a worker. Reset the Wave A
   // settings route so a test that opened the center cannot hide the next
   // test's Adapter console.
-  if (window.location.pathname.startsWith("/settings")) {
+  if (
+    window.location.pathname.startsWith("/settings") ||
+    window.location.pathname.startsWith("/templates") ||
+    window.location.pathname === "/adapters"
+  ) {
     window.history.replaceState(null, "", "/");
   }
 });

@@ -25,7 +25,8 @@ FRESH_ISSUE130_DATABASE = "dlr_test_issue130_fresh"
 CURRENT_MAIN_ISSUE130_DATABASE = "dlr_test_issue130_0029"
 LEGACY_REVISION = "0010_m5_4_2_task_run_mode"
 CURRENT_MAIN_REVISION = "0029_issue127_c0_exec_lease"
-FINAL_REVISION = "0031_issue130_b2_runtime"
+ISSUE130_REVISION = "0031_issue130_b2_runtime"
+HEAD_REVISION = "0032_issue132_templates"
 LEGACY_PUBLIC_ID = "Legacy_Path_ABC123"
 
 
@@ -185,7 +186,7 @@ def _exercise_explicit_cutover(
         assert first["status"] == "passed"
         assert first["violations"] == []
         inventory = migration_service.inventory(session)
-        assert inventory["schema_revision"] == FINAL_REVISION
+        assert inventory["schema_revision"] == HEAD_REVISION
         assert inventory["dark_launch"]["old_active_index_present"] is False
 
 
@@ -198,7 +199,7 @@ def test_fresh_postgresql_upgrade_reaches_issue130_head(
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
         tables = _reliable_schema_tables(connection)
 
-    assert revision == FINAL_REVISION
+    assert revision == HEAD_REVISION
     assert tables == {
         "adapter_execution_slots",
         "execution_attempts",
@@ -277,7 +278,7 @@ def test_current_main_0029_snapshot_upgrades_to_issue130_head_and_backfills_lega
         ).one()
         tables = _reliable_schema_tables(connection)
 
-    assert revision == FINAL_REVISION
+    assert revision == HEAD_REVISION
     assert tables == {
         "adapter_execution_slots",
         "execution_attempts",
@@ -362,9 +363,10 @@ def test_legacy_path_survives_upgrade_and_remains_stoppable_and_restartable(
             },
         )
 
-    _upgrade(_alembic_config(_base_url().set(database=MIGRATION_DATABASE)), FINAL_REVISION)
+    _upgrade(_alembic_config(_base_url().set(database=MIGRATION_DATABASE)), ISSUE130_REVISION)
 
     with legacy_webhook_engine.connect() as connection:
+        revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
         lease_created_at = connection.execute(
             text(
                 "SELECT is_nullable, column_default FROM information_schema.columns "
@@ -379,9 +381,15 @@ def test_legacy_path_survives_upgrade_and_remains_stoppable_and_restartable(
                 "WHERE conname = 'ck_executions_workspace_cleanup_status'"
             )
         )
+    assert revision == ISSUE130_REVISION
     assert lease_created_at[0] == "NO"
     assert lease_created_at[1] is not None and "now()" in lease_created_at[1]
     assert cleanup_status_check is not None and "pending" in cleanup_status_check
+
+    # The Issue130 assertions above deliberately stop at 0031. Upgrade to the
+    # current head before exercising runtime ORM code that includes later
+    # additive Adapter columns.
+    _upgrade(_alembic_config(_base_url().set(database=MIGRATION_DATABASE)), HEAD_REVISION)
 
     with Session(legacy_webhook_engine) as session:
         stopped = upsert_webhook(

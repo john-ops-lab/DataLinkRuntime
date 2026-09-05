@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "rest-paginated-collection",
+  "version": "1.0.0",
+  "language": "java",
+  "source_sha256": "b2a3476c429ae5abdb6ca49041218ad8d399f5ff17106c70ecb0c8f1438301a5",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

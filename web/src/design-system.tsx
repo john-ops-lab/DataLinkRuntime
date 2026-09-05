@@ -13,6 +13,13 @@ import { resolveSystemLocale } from "./i18n";
 export const DLR_ANT_DESIGN_THEME = {
   token: {
     colorBgLayout: "#f5f6f8",
+    // Ant Design's default blue and error text miss WCAG AA contrast for
+    // normal-sized text on their default light surfaces. Keep the same visual
+    // families while using the darker, documented palette stops.
+    colorPrimary: "#0958d9",
+    colorLink: "#0958d9",
+    colorInfo: "#0958d9",
+    colorError: "#cf1322",
     borderRadius: 4,
   },
 } satisfies ThemeConfig;

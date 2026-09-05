@@ -11,6 +11,7 @@
   "shell": {
     "console": "Console",
     "adapters": "Adapters",
+    "templates": "Template Gallery",
     "workbench": "Workbench",
     "navigation": "Console navigation",
     "workspaceTitle": "Adapter workspace",

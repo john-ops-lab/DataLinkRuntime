@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "postgresql-readonly-snapshot",
+  "version": "1.0.0",
+  "language": "javascript",
+  "source_sha256": "37f23c98823bc045196dce7714be353e70478f36eb381a0381ee7822ca356980",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

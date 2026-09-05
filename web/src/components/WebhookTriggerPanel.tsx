@@ -127,10 +127,14 @@ export interface WebhookRuntimeState {
   runtimeLocked: boolean;
   changingState: boolean;
   startBlockedReason: string | null;
+  mutationInFlight: boolean;
 }
 
 export interface WebhookTriggerHandle {
   toggleReceiving: () => void;
+  hasUnsavedChanges: () => boolean;
+  confirmLeave: () => boolean;
+  closeTransientUi: () => void;
 }
 
 const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function WebhookTriggerPanel(props, ref) {
@@ -274,12 +278,23 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     props.workers.find((worker) => worker.id === workerId)?.name ?? t("labels.notSelected", { ns: "common" });
 
   useEffect(() => {
+    if (!dirty) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = t("confirm.discardChanges", { ns: "common" });
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [dirty, t]);
+
+  useEffect(() => {
     onRuntimeStateChange({
       loaded: !loading && saved !== null,
       enabled,
       runtimeLocked,
       changingState,
       startBlockedReason,
+      mutationInFlight: saving || changingState,
     });
   }, [
     changingState,
@@ -287,6 +302,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     loading,
     onRuntimeStateChange,
     runtimeLocked,
+    saving,
     saved,
     startBlockedReason,
   ]);
@@ -308,6 +324,9 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
 
   useImperativeHandle(ref, () => ({
     toggleReceiving: () => void handleToggleReceiving(),
+    hasUnsavedChanges: () => dirty,
+    confirmLeave: () => !dirty || window.confirm(t("confirm.discardChanges", { ns: "common" })),
+    closeTransientUi: () => setStopDialogOpen(false),
   }));
 
   function resolveTimeoutSeconds(): number | null {

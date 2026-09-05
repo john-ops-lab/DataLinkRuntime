@@ -9,7 +9,7 @@ import App, {
   EDITOR_THEME_STORAGE_KEY,
   TOKEN_STORAGE_KEY,
 } from "./App";
-import { setAuthToken } from "./api";
+import { clearTemplateVariantCache, setAuthToken } from "./api";
 import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
 import type { TaskRunSettingsHandle } from "./components/TaskRunSettingsPanel";
 import TaskWorkbenchHeader from "./components/TaskWorkbenchHeader";
@@ -24,6 +24,9 @@ import type {
   AiCandidate,
   Execution,
   ExecutionSummary,
+  TemplateScenarioDetail,
+  TemplateTheme,
+  TemplateVariant,
   VersionDetail,
   VersionSummary,
   Worker,
@@ -140,6 +143,7 @@ vi.mock("@monaco-editor/react", () => ({
           monacoHarness.recordSelection(selection);
         },
         layout: () => monacoHarness.recordLayout(),
+        focus: () => undefined,
         onDidChangeCursorSelection: (listener: () => void) =>
           monacoHarness.subscribe(listener),
         onDidScrollChange: (listener: () => void) =>
@@ -389,6 +393,15 @@ function valueOf(testId: string): string {
   return (screen.getByTestId(testId) as HTMLInputElement).value;
 }
 
+async function waitForCodeEditorValue(expected: string): Promise<void> {
+  await waitFor(() => {
+    const values = screen
+      .getAllByTestId("code-editor")
+      .map((element) => (element as HTMLTextAreaElement).value);
+    expect(values).toContain(expected);
+  });
+}
+
 // Most tests exercise the authenticated console: seed the sessionStorage token
 // the App reads on mount. Auth-specific tests clear it explicitly.
 beforeEach(() => {
@@ -399,6 +412,7 @@ afterEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   setAuthToken(null);
+  clearTemplateVariantCache();
   monacoHarness.reset();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -2314,6 +2328,106 @@ it("runs a Task from the Workbench header and follows it in the 实时日志 tab
   ).toBe(true);
 });
 
+it("ignores a late Task execution callback after another Adapter is selected", async () => {
+  const adapterA = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  const adapterB = makeAdapter({
+    id: 2,
+    name: "adapter-b",
+    latest_version_id: 20,
+    runtime_worker_id: 1,
+  });
+  const versionA = makeVersion({ id: 10, adapter_id: 1, code: "code-a" });
+  const versionB = makeVersion({ id: 20, adapter_id: 2, code: "code-b" });
+  let resolveExecution: ((response: RouteResponse) => void) | undefined;
+  const pendingExecution = new Promise<RouteResponse>((resolve) => {
+    resolveExecution = resolve;
+  });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapterA, adapterB] }) },
+    readyWorkerRoute,
+    ...consoleWithVersionRoutes(adapterA, versionA).filter((route) => (
+      route.match !== "/api/health" && route.match !== "/api/adapters"
+    )),
+    {
+      method: "GET",
+      match: "/api/adapters/2/versions",
+      respond: () => ({
+        body: [{ id: 20, adapter_id: 2, seq: 1, created_at: versionB.created_at }],
+      }),
+    },
+    { method: "GET", match: "/api/adapters/2/versions/20", respond: () => ({ body: versionB }) },
+    { method: "POST", match: "/api/adapters/1/executions", respond: () => pendingExecution },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapterA }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => expect(
+    (screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled,
+  ).toBe(false));
+  fireEvent.click(screen.getByTestId("header-task-run-once"));
+  await waitFor(() => expect(fetchMock.mock.calls.some(
+    ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+  )).toBe(true));
+
+  const items = screen.getAllByTestId("adapter-item");
+  fireEvent.click(items[1]);
+  await screen.findByRole("heading", { name: "adapter-b" });
+  await waitFor(() => expect(valueOf("code-editor")).toBe("code-b"));
+
+  await act(async () => {
+    resolveExecution?.({ status: 201, body: makeExecution({ adapter_id: 1 }) });
+    await pendingExecution;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(screen.getByRole("heading", { name: "adapter-b" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
+  expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/executions/5/events")).toBe(false);
+});
+
+it("keeps Template copy disabled while a hidden Task mutation is in flight", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
+  let resolveExecution: ((response: RouteResponse) => void) | undefined;
+  const pendingExecution = new Promise<RouteResponse>((resolve) => {
+    resolveExecution = resolve;
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    readyWorkerRoute,
+    ...templateGalleryRoutes(),
+    { method: "POST", match: "/api/adapters/1/executions", respond: () => pendingExecution },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
+    {
+      method: "GET",
+      match: "/api/executions/5/events",
+      respond: () => ({ stream: "" }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => expect(
+    (screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled,
+  ).toBe(false));
+  fireEvent.click(screen.getByTestId("header-task-run-once"));
+  await waitFor(() => expect(fetchMock.mock.calls.some(
+    ([url, init]) => String(url) === "/api/adapters/1/executions" && init?.method === "POST",
+  )).toBe(true));
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  const copyButton = await screen.findByRole("button", { name: "复制为 Adapter" }) as HTMLButtonElement;
+  expect(copyButton.disabled).toBe(true);
+
+  await act(async () => {
+    resolveExecution?.({ status: 201, body: makeExecution({ adapter_id: 1 }) });
+    await pendingExecution;
+  });
+  await waitFor(() => expect(copyButton.disabled).toBe(false));
+});
+
 it("reopens the same server log after closing the live-to-history drawer", async () => {
   const adapter = makeAdapter({ latest_version_id: 10, runtime_worker_id: 1 });
   const pending = makeExecution();
@@ -2540,6 +2654,7 @@ it("keeps Schedule disablement separate from cancelling the current Execution", 
         activeExecution: true,
         canRun: false,
         scheduleEnableBlockedReason: null,
+        mutationInFlight: false,
       }}
     />,
   );
@@ -2562,6 +2677,7 @@ it("keeps Schedule disablement separate from cancelling the current Execution", 
         activeExecution: true,
         canRun: false,
         scheduleEnableBlockedReason: null,
+        mutationInFlight: false,
       }}
     />,
   );
@@ -2588,6 +2704,7 @@ it("keeps Schedule disablement separate from cancelling the current Execution", 
         activeExecution: false,
         canRun: true,
         scheduleEnableBlockedReason: null,
+        mutationInFlight: false,
       }}
     />,
   );
@@ -3807,6 +3924,69 @@ it("opens Runtime settings when a managed-input usage link selects the same or a
   await waitFor(() => expect(runtimeTab().getAttribute("aria-selected")).toBe("true"));
 });
 
+it("opens a managed-input Adapter from Gallery-origin Settings without hiding it again", async () => {
+  window.history.replaceState(null, "", "/templates");
+  window.history.pushState(
+    { dlrSettings: true, from: "/templates" },
+    "",
+    "/settings/managed-input",
+  );
+  const adapter = makeAdapter({ latest_version_id: null, name: "usage-adapter" });
+  const managedSettings = {
+    default_retention_seconds: 86_400,
+    max_file_bytes: 100 * 1024 * 1024,
+    platform_quota_bytes: 10 * 1024 * 1024 * 1024,
+    adapter_quota_bytes: 1024 * 1024 * 1024,
+    allow_manual_delete: true,
+    max_custom_retention_seconds: 2_592_000,
+    min_free_space_bytes: 1024 * 1024 * 1024,
+    staged_ttl_seconds: 3_600,
+    usage: {
+      platform_actual_bytes: 0,
+      platform_reserved_bytes: 0,
+      platform_total_bytes: 0,
+      adapters: [{
+        adapter_id: adapter.id,
+        actual_bytes: 0,
+        reserved_bytes: 0,
+        total_bytes: 0,
+        quota_bytes: 1024 * 1024 * 1024,
+        over_quota: false,
+      }],
+    },
+    over_quota: false,
+    platform_over_quota: false,
+    adapter_over_quota: [],
+    created_at: "2026-09-05T00:00:00Z",
+    updated_at: "2026-09-05T00:00:00Z",
+  };
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    readyWorkerRoute,
+    {
+      method: "GET",
+      match: "/api/system/managed-input-settings",
+      respond: () => ({ body: managedSettings }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
+    ...templateGalleryRoutes(),
+  ]);
+
+  render(<App />);
+  await screen.findByTestId("managed-input-settings-save");
+  fireEvent.click(screen.getByTestId("managed-input-adapter-1"));
+
+  await screen.findByRole("heading", { name: "usage-adapter" });
+  expect(window.location.pathname).toBe("/adapters");
+  expect(screen.queryByTestId("system-settings-center")).toBeNull();
+  expect(screen.getByRole("tab", { name: /运行设置|Runtime settings/ }).getAttribute("aria-selected")).toBe("true");
+
+  act(() => window.history.back());
+  await screen.findByTestId("template-gallery");
+  expect(window.location.pathname).toBe("/templates");
+});
+
 // --- M4 AI Editor -----------------------------------------------------------
 
 const AI_CANDIDATE: AiCandidate = {
@@ -4636,6 +4816,86 @@ it("shows the Webhook starter and only 编辑 / 运行设置 / 调用记录 / �
   expect(document.body.textContent).not.toMatch(/Publish|Published|Production|测试运行|触发器|Cron|Timezone/);
 });
 
+it("ignores a late Webhook start callback after another Adapter is selected", async () => {
+  const adapterA = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+    name: "hook-a",
+  });
+  const adapterB = makeAdapter({
+    id: 2,
+    adapter_type: "webhook",
+    latest_version_id: 20,
+    runtime_worker_id: 3,
+    name: "hook-b",
+  });
+  const versionA = makeVersion({ id: 10, adapter_id: 1 });
+  const versionB = makeVersion({ id: 20, adapter_id: 2 });
+  const webhookA = makeWebhook();
+  const webhookB = makeWebhook({
+    adapter_id: 2,
+    public_id: "hook-b-path",
+    hook_path: "/api/hooks/hook-b-path",
+  });
+  let resolveStart: ((response: RouteResponse) => void) | undefined;
+  const pendingStart = new Promise<RouteResponse>((resolve) => {
+    resolveStart = resolve;
+  });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapterA, adapterB] }) },
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({ body: [{
+        id: 3,
+        name: "hook-worker",
+        status: "online",
+        last_heartbeat: "",
+        capabilities: ["python"],
+      }] }),
+    },
+    {
+      method: "GET",
+      match: "/api/credentials",
+      respond: () => ({ body: [{ id: 7, name: "hook-token", type: "token", created_at: "", updated_at: "" }] }),
+    },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [{ id: 10, adapter_id: 1, seq: 1, created_at: versionA.created_at }] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: versionA }) },
+    { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [{ id: 20, adapter_id: 2, seq: 1, created_at: versionB.created_at }] }) },
+    { method: "GET", match: "/api/adapters/2/versions/20", respond: () => ({ body: versionB }) },
+    { method: "GET", match: "/api/adapters/1/webhook", respond: () => ({ body: webhookA }) },
+    { method: "GET", match: "/api/adapters/2/webhook", respond: () => ({ body: webhookB }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapterA }) },
+    { method: "GET", match: "/api/adapters/2", respond: () => ({ body: adapterB }) },
+    { method: "PUT", match: "/api/adapters/1/webhook", respond: () => pendingStart },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => expect(
+    (screen.getByTestId("header-webhook-toggle") as HTMLButtonElement).disabled,
+  ).toBe(false));
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+
+  const items = screen.getAllByTestId("adapter-item");
+  fireEvent.click(items[1]);
+  await screen.findByRole("heading", { name: "hook-b" });
+  await waitFor(() => expect(valueOf("code-editor")).toBe(versionB.code));
+
+  await act(async () => {
+    resolveStart?.({ body: { ...webhookA, enabled: true } });
+    await pendingStart;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(screen.getByRole("heading", { name: "hook-b" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  expect(screen.getByTestId("live-log-workspace").textContent).not.toContain("等待 Webhook 请求");
+});
+
 it("keeps an offline compatible Webhook Worker selectable and shows its status", async () => {
   const adapter = makeAdapter({ adapter_type: "webhook", runtime_worker_id: 3 });
   stubFetch(webhookConsoleRoutes(adapter, makeWebhook(), [{
@@ -5309,7 +5569,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
   const { rerender } = render(
     <WebhookWorkbenchHeader
       {...commonProps}
-      runtimeState={{ loaded: true, enabled: true, runtimeLocked: true, changingState: false, startBlockedReason: null }}
+      runtimeState={{ loaded: true, enabled: true, runtimeLocked: true, changingState: false, startBlockedReason: null, mutationInFlight: false }}
     />,
   );
   expect(screen.getByTestId("header-webhook-toggle").textContent).toBe("停止接收");
@@ -5317,7 +5577,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
   rerender(
     <WebhookWorkbenchHeader
       {...commonProps}
-      runtimeState={{ loaded: true, enabled: false, runtimeLocked: true, changingState: false, startBlockedReason: null }}
+      runtimeState={{ loaded: true, enabled: false, runtimeLocked: true, changingState: false, startBlockedReason: null, mutationInFlight: false }}
     />,
   );
   const lockedStart = screen.getByTestId("header-webhook-toggle") as HTMLButtonElement;
@@ -5331,7 +5591,7 @@ it("keeps Webhook receive disabled until the active call reaches a terminal stat
     <WebhookWorkbenchHeader
       {...commonProps}
       adapter={{ ...adapter, runtime_locked: false, running_execution_id: null }}
-      runtimeState={{ loaded: true, enabled: false, runtimeLocked: false, changingState: false, startBlockedReason: null }}
+      runtimeState={{ loaded: true, enabled: false, runtimeLocked: false, changingState: false, startBlockedReason: null, mutationInFlight: false }}
     />,
   );
   expect((screen.getByTestId("header-webhook-toggle") as HTMLButtonElement).disabled).toBe(false);
@@ -6096,4 +6356,749 @@ it("shows the M5.5.13 credential guidance copy and the quiet assistant header", 
   expect(appStyles).toMatch(
     /\.ai-assistant-header\s*\{[^}]*background\s*:\s*var\(--dlr-workspace-bg\)[^}]*border-top\s*:\s*2px solid #1677ff/s,
   );
+});
+
+// --- Issue #132 Template Gallery navigation and editor handoff ------------
+
+const templateThemesFixture: TemplateTheme[] = [
+  {
+    slug: "api-events",
+    name: { "zh-CN": "API 与事件", en: "API & Events" },
+    description: { "zh-CN": "API 模板", en: "API recipes" },
+    sort_order: 10,
+    scenario_count: 1,
+  },
+];
+
+const templateDetailFixture: TemplateScenarioDetail = {
+  slug: "rest-single-request",
+  theme_slug: "api-events",
+  title: { "zh-CN": "REST 单次请求", en: "Single REST request" },
+  summary: { "zh-CN": "调用一个受控 REST API。", en: "Call one controlled REST API." },
+  details: { "zh-CN": "用于单次有界请求。", en: "For a single bounded request." },
+  input_summary: { "zh-CN": "请求配置", en: "Request configuration" },
+  output_summary: { "zh-CN": "规范化响应", en: "Normalized response" },
+  risk: { "zh-CN": "禁止跨源重定向。", en: "Cross-origin redirects are rejected." },
+  vendor: "DLR",
+  adapter_type: "task",
+  protocols: ["HTTP", "JSON"],
+  tags: ["REST"],
+  logo_key: "rest-request",
+  template_version: "1.0.0",
+  updated_at: "2026-09-05",
+  variants: [
+    { language: "python", available: true, maturity: "syntax-verified" },
+    { language: "javascript", available: true, maturity: "reference-generated" },
+    { language: "java", available: true, maturity: "reference-generated" },
+  ],
+  modes: ["request"],
+  sources: [{
+    id: "http-semantics",
+    url: "https://www.rfc-editor.org/rfc/rfc9110",
+    revision: "RFC 9110",
+    reference: "HTTP Semantics",
+    license: "RFC Trust",
+    license_evidence: "RFC page",
+    use_mode: "official-api",
+    checked_at: "2026-09-05",
+  }],
+};
+
+const templateVariantFixture: TemplateVariant = {
+  scenario_slug: "rest-single-request",
+  theme_slug: "api-events",
+  title: templateDetailFixture.title,
+  language: "python",
+  adapter_type: "task",
+  template_version: "1.0.0",
+  behavior_contract_version: "dlr-recipe/v1",
+  maturity: "syntax-verified",
+  code: "def handle(context, input):\n    return {\"copied\": True}\n",
+  requirements: "httpx==0.28.1",
+  install_notes: { "zh-CN": "安装固定依赖。", en: "Install the pinned dependency." },
+  input_skeleton: { url: "https://example.com/api" },
+  input_contract: { type: "object" },
+  output_contract: { type: "object" },
+  runtime_config: {},
+  runtime_guidance: { "zh-CN": "配置真实凭据后运行。", en: "Configure real credentials before running." },
+  sources: templateDetailFixture.sources,
+};
+
+function templateGalleryRoutes(items = [templateDetailFixture]): Route[] {
+  return [
+    { method: "GET", match: "/api/templates/themes", respond: () => ({ body: templateThemesFixture }) },
+    {
+      method: "GET",
+      match: /^\/api\/templates\/scenarios\?/,
+      respond: () => ({ body: { items, page: 1, page_size: 12, total: items.length } }),
+    },
+    {
+      method: "GET",
+      match: "/api/templates/scenarios/rest-single-request",
+      respond: () => ({ body: templateDetailFixture }),
+    },
+    {
+      method: "GET",
+      match: "/api/templates/scenarios/rest-single-request/variants/python",
+      respond: () => ({ body: templateVariantFixture }),
+    },
+  ];
+}
+
+it("keeps a dirty Adapter mounted while browsing the Gallery and guards page unload", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const confirmSpy = vi.spyOn(window, "confirm");
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    readyWorkerRoute,
+    ...templateGalleryRoutes(),
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "dirty editor draft" } });
+  const layoutCallsBefore = monacoHarness.getLayoutCalls();
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  await screen.findByTestId("template-gallery");
+  expect(window.location.pathname).toBe("/templates");
+  expect(screen.getByTestId("adapter-surface").hasAttribute("hidden")).toBe(true);
+  expect(confirmSpy).not.toHaveBeenCalled();
+
+  const beforeUnload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(beforeUnload);
+  expect(beforeUnload.defaultPrevented).toBe(true);
+
+  fireEvent.click(screen.getByRole("link", { name: "适配器" }));
+  expect(window.location.pathname).toBe("/adapters");
+  expect(screen.getByTestId("adapter-surface").hasAttribute("hidden")).toBe(false);
+  expect(valueOf("code-editor")).toBe("dirty editor draft");
+  await waitFor(() => expect(monacoHarness.getLayoutCalls()).toBeGreaterThan(layoutCallsBefore));
+  expect(confirmSpy).not.toHaveBeenCalled();
+});
+
+it("closes Adapter portals when browser history returns to the Gallery", async () => {
+  window.history.replaceState(null, "", "/templates");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    readyWorkerRoute,
+    ...templateGalleryRoutes(),
+  ]);
+
+  render(<App />);
+  await screen.findByTestId("template-gallery");
+  fireEvent.click(screen.getByRole("link", { name: "适配器" }));
+  await screen.findByTestId("adapter-catalog");
+  fireEvent.click(screen.getByTestId("show-create-form"));
+  await screen.findByTestId("new-adapter-name");
+
+  act(() => window.history.back());
+  await screen.findByTestId("template-gallery");
+  await waitFor(() => expect(screen.queryByTestId("new-adapter-name")).toBeNull());
+  expect(window.location.pathname).toBe("/templates");
+});
+
+it("uses browser Back from a Gallery-opened detail so Back does not reopen it", async () => {
+  window.history.replaceState(null, "", "/adapters");
+  window.history.pushState(null, "", "/templates");
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    readyWorkerRoute,
+    ...templateGalleryRoutes(),
+  ]);
+
+  render(<App />);
+  await screen.findByTestId("template-gallery");
+  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  await screen.findByTestId("template-detail");
+  expect(window.location.pathname).toBe("/templates/rest-single-request");
+
+  fireEvent.click(screen.getByRole("button", { name: "返回模板广场" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/templates"));
+  expect(screen.getByTestId("template-gallery").hidden).toBe(false);
+
+  act(() => window.history.back());
+  await waitFor(() => expect(window.location.pathname).toBe("/adapters"));
+  expect(screen.queryByTestId("template-detail")).toBeNull();
+});
+
+it("replaces a directly opened detail with the Gallery so Back leaves Templates", async () => {
+  window.history.replaceState(null, "", "/adapters");
+  window.history.pushState(null, "", "/templates/rest-single-request");
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    readyWorkerRoute,
+    ...templateGalleryRoutes(),
+  ]);
+
+  render(<App />);
+  await screen.findByTestId("template-detail");
+  fireEvent.click(screen.getByRole("button", { name: "返回模板广场" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/templates"));
+
+  act(() => window.history.back());
+  await waitFor(() => expect(window.location.pathname).toBe("/adapters"));
+  expect(screen.queryByTestId("template-detail")).toBeNull();
+});
+
+it("copies the reviewed Variant and automatically opens the new Adapter Edit page", async () => {
+  window.history.replaceState(null, "", "/templates/rest-single-request");
+  const copied = makeAdapter({
+    id: 42,
+    name: "生产 REST 同步",
+    language: "python",
+    adapter_type: "task",
+    run_mode: "manual",
+    runtime_worker_id: null,
+    latest_version_id: 77,
+    template_scenario_slug: "rest-single-request",
+    template_version: "1.0.0",
+  });
+  const copiedVersion = makeVersion({
+    id: 77,
+    adapter_id: 42,
+    code: templateVariantFixture.code,
+    requirements: templateVariantFixture.requirements,
+  });
+  let committed = false;
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    readyWorkerRoute,
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: committed ? [copied] : [] }),
+    },
+    ...templateGalleryRoutes(),
+    {
+      method: "POST",
+      match: "/api/templates/scenarios/rest-single-request/variants/python/instantiate",
+      respond: () => {
+        committed = true;
+        return { status: 201, body: copied };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/42/versions",
+      respond: () => ({ body: [{ id: 77, adapter_id: 42, seq: 1, created_at: copiedVersion.created_at }] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/42/versions/77",
+      respond: () => ({ body: copiedVersion }),
+    },
+  ]);
+
+  render(<App />);
+  await waitFor(() => expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+    "/api/templates/scenarios/rest-single-request/variants/python",
+  ));
+  await waitForCodeEditorValue(templateVariantFixture.code);
+  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Adapter 名称" }), {
+    target: { value: " 生产 REST 同步 " },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
+
+  await screen.findByRole("heading", { name: "生产 REST 同步" });
+  await waitFor(() => expect(valueOf("code-editor")).toBe(templateVariantFixture.code));
+  expect(window.location.pathname).toBe("/adapters");
+  expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
+  expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(true);
+
+  const instantiateCall = fetchMock.mock.calls.find(
+    ([url, init]) => String(url).endsWith("/instantiate") && init?.method === "POST",
+  );
+  expect(instantiateCall).toBeTruthy();
+  expect(JSON.parse(String(instantiateCall?.[1]?.body))).toEqual({
+    name: "生产 REST 同步",
+    expected_template_version: "1.0.0",
+  });
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes("clone"))).toBe(false);
+});
+
+it("does not let a late bootstrap Adapter list hide the newly instantiated Adapter", async () => {
+  window.history.replaceState(null, "", "/templates/rest-single-request");
+  const copied = makeAdapter({
+    id: 42,
+    name: "竞态安全副本",
+    language: "python",
+    latest_version_id: 77,
+    template_scenario_slug: "rest-single-request",
+    template_version: "1.0.0",
+  });
+  const copiedVersion = makeVersion({ id: 77, adapter_id: 42, code: templateVariantFixture.code });
+  let listCalls = 0;
+  let resolveBootstrap: ((value: RouteResponse) => void) | undefined;
+  const bootstrapList = new Promise<RouteResponse>((resolve) => { resolveBootstrap = resolve; });
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    readyWorkerRoute,
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => {
+        listCalls += 1;
+        return listCalls === 1 ? bootstrapList : { body: [copied] };
+      },
+    },
+    ...templateGalleryRoutes(),
+    {
+      method: "POST",
+      match: "/api/templates/scenarios/rest-single-request/variants/python/instantiate",
+      respond: () => ({ status: 201, body: copied }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/42/versions",
+      respond: () => ({ body: [{ id: 77, adapter_id: 42, seq: 1, created_at: copiedVersion.created_at }] }),
+    },
+    { method: "GET", match: "/api/adapters/42/versions/77", respond: () => ({ body: copiedVersion }) },
+  ]);
+
+  render(<App />);
+  await waitFor(() => expect(listCalls).toBe(1));
+  await waitForCodeEditorValue(templateVariantFixture.code);
+  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Adapter 名称" }), {
+    target: { value: copied.name },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
+  await screen.findByRole("heading", { name: copied.name });
+  expect(listCalls).toBe(2);
+
+  await act(async () => {
+    resolveBootstrap?.({ body: [] });
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("heading", { name: copied.name })).toBeTruthy();
+  expect(screen.getAllByTestId("adapter-item").some((item) => item.textContent?.includes(copied.name))).toBe(true);
+});
+
+it("keeps the created Adapter selected and reports a real error when its Revision cannot load", async () => {
+  window.history.replaceState(null, "", "/templates/rest-single-request");
+  const copied = makeAdapter({
+    id: 42,
+    name: "已创建但内容加载失败",
+    language: "python",
+    adapter_type: "task",
+    run_mode: "manual",
+    runtime_worker_id: null,
+    latest_version_id: 77,
+    template_scenario_slug: "rest-single-request",
+    template_version: "1.0.0",
+  });
+  let committed = false;
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    readyWorkerRoute,
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: committed ? [copied] : [] }),
+    },
+    ...templateGalleryRoutes(),
+    {
+      method: "POST",
+      match: "/api/templates/scenarios/rest-single-request/variants/python/instantiate",
+      respond: () => {
+        committed = true;
+        return { status: 201, body: copied };
+      },
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/42/versions",
+      respond: () => ({
+        status: 500,
+        body: { detail: { code: "version_load_failed", message: "Revision 加载失败" } },
+      }),
+    },
+  ]);
+
+  render(<App />);
+  await waitForCodeEditorValue(templateVariantFixture.code);
+  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Adapter 名称" }), {
+    target: { value: copied.name },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
+
+  await screen.findByRole("heading", { name: copied.name });
+  expect(window.location.pathname).toBe("/adapters");
+  expect((await screen.findByTestId("error-banner")).textContent).toContain("Revision 加载失败");
+  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("does not POST when the user cancels leaving a dirty Adapter for instantiation", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    readyWorkerRoute,
+    ...templateGalleryRoutes(),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "do not discard" } });
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  await waitFor(() => expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+    "/api/templates/scenarios/rest-single-request/variants/python",
+  ));
+  await waitForCodeEditorValue(templateVariantFixture.code);
+  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
+  const nameInput = screen.getByRole("textbox", { name: "Adapter 名称" });
+  fireEvent.change(nameInput, { target: { value: "保留输入" } });
+  vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
+
+  await waitFor(() => expect((nameInput as HTMLInputElement).value).toBe("保留输入"));
+  expect(window.location.pathname).toBe("/templates/rest-single-request");
+  expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/instantiate") && init?.method === "POST")).toBe(false);
+  fireEvent.click(screen.getByRole("link", { name: "适配器" }));
+  expect(valueOf("code-editor")).toBe("do not discard");
+});
+
+it("does not POST when the user cancels leaving an unsaved Task input draft", async () => {
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    readyWorkerRoute,
+    ...templateGalleryRoutes(),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("task-input-source-json");
+  fireEvent.click(screen.getByTestId("task-input-source-json"));
+  fireEvent.change(await screen.findByTestId("task-input-json"), {
+    target: { value: '{"unsaved":"task-input"}' },
+  });
+  const beforeUnload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(beforeUnload);
+  expect(beforeUnload.defaultPrevented).toBe(true);
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  await waitForCodeEditorValue(templateVariantFixture.code);
+  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
+  const nameInput = screen.getByRole("textbox", { name: "Adapter 名称" });
+  fireEvent.change(nameInput, { target: { value: "保留 Task 草稿" } });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
+
+  await waitFor(() => expect((nameInput as HTMLInputElement).value).toBe("保留 Task 草稿"));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/instantiate") && init?.method === "POST")).toBe(false);
+  fireEvent.click(screen.getByRole("link", { name: "适配器" }));
+  expect((screen.getByTestId("task-input-json") as HTMLTextAreaElement).value).toBe('{"unsaved":"task-input"}');
+});
+
+it("does not POST when the user cancels leaving an unsaved Webhook runtime draft", async () => {
+  const adapter = makeAdapter({
+    adapter_type: "webhook",
+    name: "hook-with-draft",
+    runtime_worker_id: 3,
+  });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter),
+    ...templateGalleryRoutes(),
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  fireEvent.change(screen.getByTestId("webhook-public-id"), {
+    target: { value: "unsaved-hook-path" },
+  });
+  const beforeUnload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(beforeUnload);
+  expect(beforeUnload.defaultPrevented).toBe(true);
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
+  await waitForCodeEditorValue(templateVariantFixture.code);
+  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
+  const nameInput = screen.getByRole("textbox", { name: "Adapter 名称" });
+  fireEvent.change(nameInput, { target: { value: "保留 Webhook 草稿" } });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
+
+  await waitFor(() => expect((nameInput as HTMLInputElement).value).toBe("保留 Webhook 草稿"));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/instantiate") && init?.method === "POST")).toBe(false);
+  fireEvent.click(screen.getByRole("link", { name: "适配器" }));
+  expect((screen.getByTestId("webhook-public-id") as HTMLInputElement).value).toBe("unsaved-hook-path");
+});
+
+it("navigates to the Gallery without a discard prompt after cancelling a new credential", async () => {
+  window.history.replaceState(null, "", "/adapters");
+  window.history.pushState(
+    { dlrSettings: true, from: "/adapters" },
+    "",
+    "/settings/credentials",
+  );
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    { method: "GET", match: "/api/credentials", respond: () => ({ body: [] }) },
+    ...templateGalleryRoutes(),
+  ]);
+  const confirm = vi.spyOn(window, "confirm");
+
+  render(<App />);
+  await screen.findByTestId("credentials-panel");
+  fireEvent.click(screen.getByTestId("new-credential"));
+  fireEvent.change(screen.getByTestId("credential-name"), {
+    target: { value: "discarded-navigation-draft" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /取\s*消/ }));
+  await waitFor(() => expect(screen.queryByTestId("credential-form")).toBeNull());
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  await screen.findByTestId("template-gallery");
+  expect(window.location.pathname).toBe("/templates");
+  expect(confirm).not.toHaveBeenCalled();
+});
+
+it("keeps a dirty System Settings draft until primary navigation is confirmed", async () => {
+  window.history.replaceState(null, "", "/adapters");
+  window.history.pushState(
+    { dlrSettings: true, from: "/adapters" },
+    "",
+    "/settings/ai-model",
+  );
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    { method: "GET", match: "/api/credentials", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/ai/settings", respond: () => ({ body: null }) },
+    ...templateGalleryRoutes(),
+  ]);
+  const confirm = vi.spyOn(window, "confirm")
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+
+  render(<App />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.change(screen.getByTestId("ai-base-url"), {
+    target: { value: "https://draft.example.com/v1" },
+  });
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(window.location.pathname).toBe("/settings/ai-model");
+  expect(valueOf("ai-base-url")).toBe("https://draft.example.com/v1");
+  expect(screen.getByTestId("system-settings-center")).toBeTruthy();
+
+  act(() => window.history.back());
+  await waitFor(() => expect(confirm).toHaveBeenCalledTimes(2));
+  expect(window.location.pathname).toBe("/settings/ai-model");
+  expect(valueOf("ai-base-url")).toBe("https://draft.example.com/v1");
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  await screen.findByTestId("template-gallery");
+  expect(confirm).toHaveBeenCalledTimes(3);
+  expect(window.location.pathname).toBe("/templates");
+  expect(screen.queryByTestId("system-settings-center")).toBeNull();
+});
+
+it("keeps a dirty Adapter Settings draft until primary navigation is confirmed", async () => {
+  window.history.replaceState(null, "", "/templates");
+  window.history.pushState(null, "", "/adapters");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    readyWorkerRoute,
+    ...templateGalleryRoutes(),
+  ]);
+  const confirm = vi.spyOn(window, "confirm")
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  await screen.findByTestId("adapter-description");
+  fireEvent.change(screen.getByTestId("adapter-description"), {
+    target: { value: "metadata draft" },
+  });
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(window.location.pathname).toBe("/adapters");
+  expect(valueOf("adapter-description")).toBe("metadata draft");
+
+  act(() => window.history.back());
+  await waitFor(() => expect(confirm).toHaveBeenCalledTimes(2));
+  expect(window.location.pathname).toBe("/adapters");
+  expect(valueOf("adapter-description")).toBe("metadata draft");
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  await screen.findByTestId("template-gallery");
+  expect(confirm).toHaveBeenCalledTimes(3);
+  expect(window.location.pathname).toBe("/templates");
+  await waitFor(() => expect(screen.queryByTestId("adapter-description")).toBeNull());
+});
+
+it("blocks primary navigation while a System Settings mutation is in flight", async () => {
+  window.history.replaceState(null, "", "/adapters");
+  window.history.pushState(
+    { dlrSettings: true, from: "/adapters" },
+    "",
+    "/settings/ai-model",
+  );
+  let resolveSave: ((response: RouteResponse) => void) | undefined;
+  const pendingSave = new Promise<RouteResponse>((resolve) => {
+    resolveSave = resolve;
+  });
+  const fetchMock = stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    emptyAdaptersRoute,
+    { method: "GET", match: "/api/credentials", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/ai/settings", respond: () => ({ body: null }) },
+    { method: "PUT", match: "/api/ai/settings", respond: () => pendingSave },
+    ...templateGalleryRoutes(),
+  ]);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  render(<App />);
+  await screen.findByTestId("ai-model-settings-panel");
+  fireEvent.change(screen.getByTestId("ai-base-url"), {
+    target: { value: "https://models.example.com/v1" },
+  });
+  fireEvent.change(screen.getByTestId("ai-model-input"), {
+    target: { value: "model-with-pending-save" },
+  });
+  fireEvent.click(screen.getByTestId("ai-save-settings"));
+  await waitFor(() => expect(fetchMock.mock.calls.some(
+    ([url, init]) => String(url) === "/api/ai/settings" && init?.method === "PUT",
+  )).toBe(true));
+
+  const blockedLegacyPopstate = new Promise<void>((resolve) => {
+    let count = 0;
+    const listener = () => {
+      count += 1;
+      if (count === 1) {
+        window.removeEventListener("popstate", listener);
+        resolve();
+      }
+    };
+    window.addEventListener("popstate", listener);
+  });
+  await act(async () => {
+    window.history.back();
+    await blockedLegacyPopstate;
+  });
+  expect(window.location.pathname).toBe("/settings/ai-model");
+  expect(screen.getByTestId("system-settings-center")).toBeTruthy();
+  expect(confirm).not.toHaveBeenCalled();
+
+  await act(async () => {
+    resolveSave?.({
+      body: {
+        id: 1,
+        provider: "openai",
+        custom_provider_id: null,
+        base_url: "https://models.example.com/v1",
+        model: "model-with-pending-save",
+        credential_id: null,
+        credential_name: null,
+        reasoning_mode: "default",
+        reasoning_effort: null,
+        created_at: "2026-09-05T00:00:00Z",
+        updated_at: "2026-09-05T00:00:00Z",
+      },
+    });
+    await pendingSave;
+  });
+  await screen.findByTestId("ai-settings-notice");
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  await screen.findByTestId("template-gallery");
+  expect(window.location.pathname).toBe("/templates");
+  expect(confirm).not.toHaveBeenCalled();
+});
+
+it("blocks primary navigation while an Adapter permission mutation is in flight", async () => {
+  window.history.replaceState(null, "", "/adapters");
+  const adapter = makeAdapter({ latest_version_id: 10 });
+  let resolveGrant: ((response: RouteResponse) => void) | undefined;
+  const pendingGrant = new Promise<RouteResponse>((resolve) => {
+    resolveGrant = resolve;
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(adapter, makeVersion()),
+    readyWorkerRoute,
+    {
+      method: "GET",
+      match: "/api/adapters/1/permissions",
+      respond: () => ({ body: [] }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/permission-candidates",
+      respond: () => ({
+        body: [{ id: 9, username: "bob", role: "user", enabled: true }],
+      }),
+    },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/permissions/9",
+      respond: () => pendingGrant,
+    },
+    ...templateGalleryRoutes(),
+  ]);
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByTestId("adapter-settings"));
+  fireEvent.click(await screen.findByTestId("open-adapter-permissions"));
+  await screen.findByTestId("adapter-permissions");
+  const accountSelect = screen.getByTestId("adapter-permission-account");
+  fireEvent.mouseDown(accountSelect.querySelector(".ant-select-selector") ?? accountSelect);
+  let accountOption: HTMLElement | undefined;
+  await waitFor(() => {
+    const dropdown = Array.from(document.querySelectorAll<HTMLElement>(".ant-select-dropdown"))
+      .find((candidate) => !candidate.classList.contains("ant-select-dropdown-hidden"));
+    accountOption = Array.from(
+      dropdown?.querySelectorAll<HTMLElement>(".ant-select-item-option-content") ?? [],
+    ).find((candidate) => candidate.textContent === "bob");
+    expect(accountOption).toBeDefined();
+  });
+  fireEvent.click(accountOption?.closest(".ant-select-item-option") ?? accountOption as HTMLElement);
+  await waitFor(() => expect(
+    (screen.getByTestId("grant-adapter-permission") as HTMLButtonElement).disabled,
+  ).toBe(false));
+  fireEvent.click(screen.getByTestId("grant-adapter-permission"));
+  await waitFor(() => expect(fetchMock.mock.calls.some(
+    ([url, init]) => String(url) === "/api/adapters/1/permissions/9" && init?.method === "PUT",
+  )).toBe(true));
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  expect(window.location.pathname).toBe("/adapters");
+  expect(screen.getByTestId("adapter-permissions")).toBeTruthy();
+  expect(confirm).not.toHaveBeenCalled();
+
+  await act(async () => {
+    resolveGrant?.({
+      body: { user_id: 9, username: "bob", enabled: true, permission: "read" },
+    });
+    await pendingGrant;
+  });
+  await waitFor(() => expect(
+    screen.getByTestId("adapter-permission-account").classList.contains("ant-select-disabled"),
+  ).toBe(false));
+
+  fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
+  await screen.findByTestId("template-gallery");
+  expect(window.location.pathname).toBe("/templates");
+  expect(confirm).not.toHaveBeenCalled();
 });

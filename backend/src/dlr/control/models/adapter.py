@@ -47,6 +47,11 @@ class Adapter(Base):
             "timeout_seconds BETWEEN 1 AND 86400",
             name="ck_adapters_timeout_seconds",
         ),
+        CheckConstraint(
+            "(template_scenario_slug IS NULL AND template_version IS NULL) "
+            "OR (template_scenario_slug IS NOT NULL AND template_version IS NOT NULL)",
+            name="ck_adapters_template_provenance_pair",
+        ),
         # M5.5.9 compatibility: legacy archived rows do not block names. New
         # Adapter deletion is permanent; this partial index remains the final
         # defense for any pre-Wave-C archived rows and concurrent create/rename.
@@ -102,6 +107,11 @@ class Adapter(Base):
         ForeignKey("workers.id", ondelete="SET NULL", name="fk_adapters_runtime_worker_id"),
         nullable=True,
     )
+    # Read-only provenance for an Adapter instantiated from one immutable
+    # Gallery Recipe. Ordinary create/clone rows keep both values NULL; there
+    # is intentionally no FK from user data to the static catalog.
+    template_scenario_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    template_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Legacy soft-delete marker; new Wave C deletes remove the row entirely.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

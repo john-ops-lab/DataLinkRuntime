@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "json-mapping-cleaning",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "1b88926a8a6fe10c9dd725e34d7f578bbdc9ae8805296736eec58b856577bd0a",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

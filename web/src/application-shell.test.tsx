@@ -42,7 +42,30 @@ it("renders the compact shell with one Adapter navigation surface", async () => 
   expect(document.querySelector(".ant-pro-layout")).toBeNull();
   expect(document.querySelector(".ant-pro-page-container")).toBeNull();
   expect(document.querySelector(".app-header-product")?.textContent).toBe("DataLinkRuntime");
+  expect(screen.getByRole("link", { name: "适配器" }).getAttribute("href")).toBe("/adapters");
+  expect(screen.getByRole("link", { name: "模板广场" }).getAttribute("href")).toBe("/templates");
+  expect(screen.getByRole("link", { name: "适配器" }).getAttribute("aria-current")).toBe("page");
   expect(await screen.findByTestId("shell-child")).toBeTruthy();
+});
+
+it("uses SPA navigation and exposes the selected page", () => {
+  const onPrimarySectionChange = vi.fn();
+  renderShell({ activeSection: "templates", onPrimarySectionChange });
+
+  const templates = screen.getByRole("link", { name: "模板广场" });
+  expect(templates.getAttribute("aria-current")).toBe("page");
+  fireEvent.click(screen.getByRole("link", { name: "适配器" }));
+  expect(onPrimarySectionChange).toHaveBeenCalledWith("adapters");
+});
+
+it("blocks conflicting navigation while a management action is busy", () => {
+  const onPrimarySectionChange = vi.fn();
+  renderShell({ navigationDisabled: true, onPrimarySectionChange });
+
+  const templates = screen.getByRole("link", { name: "模板广场" });
+  expect(templates.getAttribute("aria-disabled")).toBe("true");
+  fireEvent.click(templates);
+  expect(onPrimarySectionChange).not.toHaveBeenCalled();
 });
 
 it("keeps account actions in the avatar menu with accessible names", async () => {

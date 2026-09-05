@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "mysql-readonly-snapshot",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "0e9fdc4bcc13b55c4d9a45575b35ccab3d7c773ee239ecc7d9589c9e667c5dfb",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

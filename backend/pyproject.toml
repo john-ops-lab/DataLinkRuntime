@@ -34,6 +34,9 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "httpx>=0.27",
+    # Issue #132 validates the published Draft 2020-12 schemas as an actual
+    # test gate instead of silently skipping them when the validator is absent.
+    "jsonschema>=4.23,<5",
 ]
 
 [build-system]
@@ -64,6 +67,10 @@ python_version = "3.13"
 strict = true
 mypy_path = "src"
 packages = ["dlr"]
+# Published Recipe variants are static catalog resources rather than importable
+# Control-plane modules. Their schema, compilation, receipt, and hash gates are
+# exercised separately by the template-catalog test suite.
+exclude = ["^src/dlr/control/template_catalog/variants/"]
 
 [[tool.mypy.overrides]]
 # croniter ships no type annotations.

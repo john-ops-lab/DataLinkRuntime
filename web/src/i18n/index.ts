@@ -6,11 +6,13 @@ import commonEn from "./locales/en/common.json";
 import adapterEn from "./locales/en/adapter.json";
 import runtimeEn from "./locales/en/runtime.json";
 import settingsEn from "./locales/en/settings.json";
+import templateEn from "./locales/en/template.json";
 import aiZhCN from "./locales/zh-CN/ai.json";
 import commonZhCN from "./locales/zh-CN/common.json";
 import adapterZhCN from "./locales/zh-CN/adapter.json";
 import runtimeZhCN from "./locales/zh-CN/runtime.json";
 import settingsZhCN from "./locales/zh-CN/settings.json";
+import templateZhCN from "./locales/zh-CN/template.json";
 import {
   cacheSystemLocale,
   DEFAULT_SYSTEM_LOCALE,
@@ -27,6 +29,7 @@ export const resources = {
     runtime: runtimeZhCN,
     settings: settingsZhCN,
     ai: aiZhCN,
+    template: templateZhCN,
   },
   en: {
     common: commonEn,
@@ -34,6 +37,7 @@ export const resources = {
     runtime: runtimeEn,
     settings: settingsEn,
     ai: aiEn,
+    template: templateEn,
   },
 } as const;
 
@@ -43,7 +47,7 @@ void i18n.use(initReactI18next).init({
   lng: readCachedSystemLocale(),
   fallbackLng: DEFAULT_SYSTEM_LOCALE,
   supportedLngs: ["zh-CN", "en"],
-  ns: ["common", "adapter", "runtime", "settings", "ai"],
+  ns: ["common", "adapter", "runtime", "settings", "ai", "template"],
   defaultNS: "common",
   resources,
   interpolation: { escapeValue: false },

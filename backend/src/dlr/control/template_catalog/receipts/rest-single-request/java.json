@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "rest-single-request",
+  "version": "1.0.0",
+  "language": "java",
+  "source_sha256": "512ae4de9fe7e3713a059044d302cd3e90b7bf4f95db4228d74213964fdf83d9",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

@@ -1,6 +1,6 @@
 /** Adapter settings, sharing and lifecycle actions (M5.11 Wave C). */
 
-import { useState } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -23,6 +23,7 @@ import { useTranslation } from "react-i18next";
 
 import { canEditAdapter, canManageAdapter } from "../adapter-access";
 import { LANGUAGE_LABELS } from "../languages";
+import type { PageLeaveGuardHandle } from "../page-leave-guard";
 import type { Adapter, AdapterAccessLevel } from "../types";
 import ActionWithReason from "./ActionWithReason";
 import AdapterPermissionsPanel from "./AdapterPermissionsPanel";
@@ -47,30 +48,36 @@ interface Props {
   onPermissionsChanged?: () => void;
 }
 
-export default function AdapterSettingsDrawer(props: Props) {
-  const adapterKey = props.adapter?.id ?? "none";
-  const formKey = `${props.open ? "open" : "closed"}:${adapterKey}:${props.name}:${props.description}`;
-  return <AdapterSettingsDrawerContent key={formKey} {...props} />;
-}
-
-function AdapterSettingsDrawerContent(props: Props) {
+const AdapterSettingsDrawerContent = forwardRef<PageLeaveGuardHandle, Props>(function AdapterSettingsDrawerContent(props, ref) {
   const { t } = useTranslation(["adapter", "common"]);
   const [form] = Form.useForm<SettingsValues>();
   const adapter = props.adapter;
   const [view, setView] = useState<"settings" | "permissions">("settings");
   const [formDirty, setFormDirty] = useState(false);
   const [formValid, setFormValid] = useState(true);
+  const permissionMutationCount = useRef(0);
   const archived = !!adapter?.archived_at;
   const accessLevel = adapter === null ? "read" : props.accessLevel ?? "admin";
   const canEdit = canEditAdapter(accessLevel);
   const canManage = canManageAdapter(accessLevel);
 
-  function requestClose() {
-    if (formDirty && !window.confirm(t("settings.unsavedClose"))) {
-      return;
+  function confirmLeave(): boolean {
+    if (!props.open) {
+      return true;
     }
-    props.onClose();
+    if (props.busy || permissionMutationCount.current > 0) {
+      return false;
+    }
+    return !formDirty || window.confirm(t("settings.unsavedClose"));
   }
+
+  function requestClose() {
+    if (confirmLeave()) {
+      props.onClose();
+    }
+  }
+
+  useImperativeHandle(ref, () => ({ confirmLeave }));
 
   async function submit(values: SettingsValues) {
     if (!formDirty || props.busy || !props.contentReady || archived || !canEdit) {
@@ -140,6 +147,12 @@ function AdapterSettingsDrawerContent(props: Props) {
           adapterId={adapter.id}
           ownerLabel={adapter.owner_username ?? t("access.systemOwner")}
           onChanged={props.onPermissionsChanged}
+          onMutationStart={() => {
+            permissionMutationCount.current += 1;
+          }}
+          onMutationEnd={() => {
+            permissionMutationCount.current = Math.max(0, permissionMutationCount.current - 1);
+          }}
         />
       )}
 
@@ -324,4 +337,12 @@ function AdapterSettingsDrawerContent(props: Props) {
       )}
     </Drawer>
   );
-}
+});
+
+const AdapterSettingsDrawer = forwardRef<PageLeaveGuardHandle, Props>(function AdapterSettingsDrawer(props, ref) {
+  const adapterKey = props.adapter?.id ?? "none";
+  const formKey = `${props.open ? "open" : "closed"}:${adapterKey}:${props.name}:${props.description}`;
+  return <AdapterSettingsDrawerContent ref={ref} key={formKey} {...props} />;
+});
+
+export default AdapterSettingsDrawer;

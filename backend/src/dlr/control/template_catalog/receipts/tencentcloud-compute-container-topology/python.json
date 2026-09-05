@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "tencentcloud-compute-container-topology",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "e4c3e39c64ee51a4b3f30c4070b4b74c51fe50113761449833b7d284881cb509",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

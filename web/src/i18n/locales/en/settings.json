@@ -2,6 +2,7 @@
   "title": "System settings",
   "language": "Language",
   "backToAdapters": "Back to adapters",
+  "back": "Back",
   "categoryNavigation": "Settings categories",
   "confirm": {
     "unsavedChanges": "Discard unsaved changes and leave Settings?"

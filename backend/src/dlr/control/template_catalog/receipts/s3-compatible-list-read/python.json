@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "s3-compatible-list-read",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "1952dd5644f22ef39f717f7df22af6ca626f42f1074c3034db2a0ab90a45fe5a",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}
