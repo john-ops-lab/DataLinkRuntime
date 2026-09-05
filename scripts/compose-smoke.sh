@@ -70,6 +70,10 @@ ACCOUNT_STALE_COOKIE_FILE=""
 SMOKE_SANDBOX_UNIT=""
 
 cleanup() {
+  smoke_status=$?
+  if [ "$smoke_status" -ne 0 ]; then
+    docker compose -p "$COMPOSE_PROJECT_NAME" logs --no-color --tail 100 control worker >&2 || true
+  fi
   if [ -n "$AI_FAKE_CONTAINER_ID" ]; then
     docker rm -f "$AI_FAKE_CONTAINER_ID" >/dev/null 2>&1 || true
   fi
