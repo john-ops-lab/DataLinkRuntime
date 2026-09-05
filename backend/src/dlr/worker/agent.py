@@ -8,6 +8,7 @@ When the Control Node is unavailable the agent keeps registering /
 heartbeating with capped backoff instead of crashing.
 """
 
+import json
 import logging
 import os
 import re
@@ -218,6 +219,10 @@ class WorkerConfig:
                 result.get("details", {}).get("status", "failed"),
                 self.isolation_capabilities.get("preflight_passed", False),
             )
+            if isinstance(details, Mapping) and details.get("status") != "passed":
+                # This receipt contains only the disposable synthetic probe's
+                # isolation checks, never Worker credentials or Adapter data.
+                logger.warning("sandbox preflight receipt: %s", json.dumps(dict(details)))
         except Exception:  # noqa: BLE001 - startup gate must fail closed
             self.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
             logger.warning("sandbox preflight failed; RabbitMQ execution remains disabled")

@@ -73,6 +73,11 @@ cleanup() {
   smoke_status=$?
   if [ "$smoke_status" -ne 0 ]; then
     docker compose -p "$COMPOSE_PROJECT_NAME" logs --no-color --tail 100 control worker >&2 || true
+    worker_id=$(docker compose -p "$COMPOSE_PROJECT_NAME" ps -aq worker)
+    if [ -n "$worker_id" ]; then
+      # Whitelist isolation configuration; never dump Env or credentials.
+      docker inspect --format 'Worker isolation: cgroupns={{.HostConfig.CgroupnsMode}} parent={{.HostConfig.CgroupParent}} caps={{json .HostConfig.CapAdd}} dropped={{json .HostConfig.CapDrop}} security={{json .HostConfig.SecurityOpt}} apparmor={{.AppArmorProfile}}' "$worker_id" >&2 || true
+    fi
   fi
   if [ -n "$AI_FAKE_CONTAINER_ID" ]; then
     docker rm -f "$AI_FAKE_CONTAINER_ID" >/dev/null 2>&1 || true
