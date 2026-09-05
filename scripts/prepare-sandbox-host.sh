@@ -33,6 +33,7 @@ expected_group="/system.slice/$unit"
 parent="/sys/fs/cgroup$expected_group"
 
 if [ "$keeper" = true ]; then
+  trap 'printf "Sandbox keeper failed at line %s\n" "$LINENO" >&2' ERR
   actual_group=$(awk -F: '$1 == "0" { print $3; exit }' /proc/self/cgroup)
   [ "$actual_group" = "$expected_group" ] || fail 'Keeper is outside its named systemd unit'
   mkdir "$parent/agent"
@@ -110,10 +111,16 @@ for ((attempt=0; attempt<100; attempt++)); do
       && [ "$(<"/proc/$main_pid/comm")" = sleep ]; then
     break
   fi
-  [ "$(systemctl show "$unit" -p ActiveState --value)" != failed ] || fail 'Sandbox host probe failed; inspect journalctl for this exact unit'
+  if [ "$(systemctl show "$unit" -p ActiveState --value)" = failed ]; then
+    journalctl --unit "$unit" --no-pager -n 30 >&2 || true
+    fail 'Sandbox host probe failed; inspect the unit log above'
+  fi
   sleep 0.05
 done
-[ "$(systemctl show "$unit" -p ActiveState --value)" = active ] || fail 'Sandbox unit did not become active'
+if [ "$(systemctl show "$unit" -p ActiveState --value)" != active ]; then
+  journalctl --unit "$unit" --no-pager -n 30 >&2 || true
+  fail 'Sandbox unit did not become active'
+fi
 [ "$(systemctl show "$unit" -p Delegate --value)" = yes ] || fail 'systemd did not delegate the unit'
 [ "$(systemctl show "$unit" -p ControlGroup --value)" = "$expected_group" ] || fail 'Unexpected systemd ControlGroup'
 [ "$main_pid" != 0 ] && [ "$(<"/proc/$main_pid/comm")" = sleep ] || fail 'Sandbox host probe did not finish'

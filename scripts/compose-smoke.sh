@@ -83,7 +83,9 @@ cleanup() {
   fi
   docker compose -p "$COMPOSE_PROJECT_NAME" down --volumes --remove-orphans
   if [ -n "$SMOKE_SANDBOX_UNIT" ]; then
-    sudo -n systemctl stop "$SMOKE_SANDBOX_UNIT"
+    # --collect may already have removed a failed transient unit. Preserve
+    # the original smoke failure rather than replacing it with stop exit 5.
+    sudo -n systemctl stop "$SMOKE_SANDBOX_UNIT" || true
   fi
   if [ "$DLR_PLATFORM_LOG_ROOT" = "$SMOKE_PLATFORM_LOG_ROOT" ]; then
     rm -rf "$DLR_PLATFORM_LOG_ROOT"
