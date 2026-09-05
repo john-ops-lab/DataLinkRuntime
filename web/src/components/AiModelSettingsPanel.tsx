@@ -1,6 +1,6 @@
 /** One global active AI model setting (M4); Credential values never enter this component. */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   AutoComplete,
@@ -39,6 +39,9 @@ import { userErrorMessage } from "../user-message";
 interface AiModelSettingsPanelProps {
   onError: (message: string) => void;
   onSaved?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  onMutationStart?: () => void;
+  onMutationEnd?: () => void;
 }
 
 const DEFAULT_SETTING: AiModelSettingDraft = {
@@ -154,10 +157,32 @@ function normalizeSetting(setting: AiModelSetting | null): AiModelSettingDraft {
   };
 }
 
+function sameSettingDraft(left: AiModelSettingDraft, right: AiModelSettingDraft): boolean {
+  return left.provider === right.provider
+    && (left.custom_provider_id ?? null) === (right.custom_provider_id ?? null)
+    && left.base_url === right.base_url
+    && left.model === right.model
+    && (left.credential_id ?? null) === (right.credential_id ?? null)
+    && left.reasoning_mode === right.reasoning_mode
+    && (left.reasoning_effort ?? null) === (right.reasoning_effort ?? null);
+}
+
+function sameCustomDraft(left: AiCustomProviderDraft, right: AiCustomProviderDraft): boolean {
+  return left.name === right.name
+    && left.protocol === right.protocol
+    && left.base_url === right.base_url
+    && (left.credential_id ?? null) === (right.credential_id ?? null)
+    && left.images_native === right.images_native
+    && left.files_native === right.files_native
+    && left.tools_supported === right.tools_supported;
+}
+
 export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const { t } = useTranslation(["ai", "common"]);
-  const { onError, onSaved } = props;
+  const { onError, onSaved, onDirtyChange, onMutationStart, onMutationEnd } = props;
   const [form, setForm] = useState<AiModelSettingDraft>({ ...DEFAULT_SETTING });
+  const settingBaselineRef = useRef<AiModelSettingDraft>({ ...DEFAULT_SETTING });
+  const settingDirtyRef = useRef(false);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [providerCatalog, setProviderCatalog] = useState<AiProviderCapability[]>([]);
@@ -165,6 +190,8 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const [customDraft, setCustomDraft] = useState<AiCustomProviderDraft>({
     ...DEFAULT_CUSTOM_PROVIDER,
   });
+  const customBaselineRef = useRef<AiCustomProviderDraft>({ ...DEFAULT_CUSTOM_PROVIDER });
+  const customDirtyRef = useRef(false);
   const [editingCustomId, setEditingCustomId] = useState<number | null>(null);
   const [customBusy, setCustomBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -201,6 +228,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     providerSelectOptions.find((option) => option.value === selectedProviderCandidate)?.label ??
     t("model.provider.legacyCustom");
   const hasLegacyProviderValue = selectedProviderValue === undefined;
+
+  function publishDirtyState(): void {
+    onDirtyChange?.(settingDirtyRef.current || customDirtyRef.current);
+  }
   const selectedCredentialName = credentials.find(
     (credential) => credential.id === form.credential_id,
   )?.name;
@@ -234,6 +265,8 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
 
     if (settingResult.status === "fulfilled") {
       const normalized = normalizeSetting(settingResult.value);
+      settingBaselineRef.current = normalized;
+      settingDirtyRef.current = false;
       setForm(normalized);
       setAdvancedOpen(normalized.reasoning_mode !== "default");
     } else if (
@@ -256,8 +289,11 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     if (customResult.status === "fulfilled") {
       setCustomProviders(customResult.value.providers);
     }
+    customBaselineRef.current = { ...DEFAULT_CUSTOM_PROVIDER };
+    customDirtyRef.current = false;
+    onDirtyChange?.(false);
     setLoading(false);
-  }, [fail]);
+  }, [fail, onDirtyChange]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- tab mount intentionally loads global settings
@@ -271,10 +307,18 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     [loadCredentials],
   );
 
-  function editForm(updater: (current: AiModelSettingDraft) => AiModelSettingDraft) {
+  function editForm(
+    updater: (current: AiModelSettingDraft) => AiModelSettingDraft,
+    markDirty = true,
+  ) {
     setPanelError(null);
     setNotice(null);
-    setForm(updater);
+    const next = updater(form);
+    if (markDirty) {
+      settingDirtyRef.current = !sameSettingDraft(next, settingBaselineRef.current);
+      publishDirtyState();
+    }
+    setForm(next);
   }
 
   function editModel(model: string): void {
@@ -365,17 +409,22 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     if (payload === null) {
       return;
     }
+    onMutationStart?.();
     setSaving(true);
     try {
       const saved = await api.updateAiSetting(payload);
       const normalized = normalizeSetting(saved);
+      settingBaselineRef.current = normalized;
+      settingDirtyRef.current = false;
       setForm(normalized);
-       setNotice(t("model.saveNotice"));
+      publishDirtyState();
+      setNotice(t("model.saveNotice"));
       onSaved?.();
     } catch (error) {
       fail(errorMessage(error, t("model.requestFailed")));
     } finally {
       setSaving(false);
+      onMutationEnd?.();
     }
   }
 
@@ -411,12 +460,15 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   function editCustomDraft(updater: (current: AiCustomProviderDraft) => AiCustomProviderDraft) {
     setPanelError(null);
     setNotice(null);
-    setCustomDraft(updater);
+    const next = updater(customDraft);
+    customDirtyRef.current = !sameCustomDraft(next, customBaselineRef.current);
+    publishDirtyState();
+    setCustomDraft(next);
   }
 
   function startCustomEdit(provider: AiCustomProvider) {
     setEditingCustomId(provider.id);
-    setCustomDraft({
+    const nextDraft = {
       name: provider.name,
       protocol: provider.protocol,
       base_url: provider.base_url,
@@ -424,14 +476,22 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       images_native: provider.images_native,
       files_native: provider.files_native,
       tools_supported: provider.tools_supported,
-    });
+    };
+    customBaselineRef.current = nextDraft;
+    customDirtyRef.current = false;
+    setCustomDraft(nextDraft);
+    publishDirtyState();
     setPanelError(null);
     setNotice(null);
   }
 
   function resetCustomEditor() {
     setEditingCustomId(null);
-    setCustomDraft({ ...DEFAULT_CUSTOM_PROVIDER });
+    const nextDraft = { ...DEFAULT_CUSTOM_PROVIDER };
+    customBaselineRef.current = nextDraft;
+    customDirtyRef.current = false;
+    setCustomDraft(nextDraft);
+    publishDirtyState();
   }
 
   async function handleCustomSave() {
@@ -442,6 +502,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       fail(t("model.customRequired"));
       return;
     }
+    onMutationStart?.();
     setCustomBusy(true);
     setPanelError(null);
     setNotice(null);
@@ -464,7 +525,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           custom_provider_id: saved.id,
           base_url: saved.base_url,
           credential_id: saved.credential_id,
-        }));
+        }), false);
       }
       setNotice(t("model.customSaved"));
       resetCustomEditor();
@@ -472,6 +533,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       fail(errorMessage(error, t("model.requestFailed")));
     } finally {
       setCustomBusy(false);
+      onMutationEnd?.();
     }
   }
 
@@ -501,6 +563,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     if (actionBusy) {
       return;
     }
+    onMutationStart?.();
     setCustomBusy(true);
     setPanelError(null);
     setNotice(null);
@@ -514,7 +577,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
           custom_provider_id: null,
           base_url: "",
           credential_id: null,
-        }));
+        }), false);
       }
       if (editingCustomId === provider.id) {
         resetCustomEditor();
@@ -524,6 +587,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       fail(errorMessage(error, t("model.requestFailed")));
     } finally {
       setCustomBusy(false);
+      onMutationEnd?.();
     }
   }
 

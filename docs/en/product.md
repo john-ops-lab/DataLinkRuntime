@@ -34,6 +34,67 @@ Core goals:
 Users only perform “Save”. The system creates an immutable Revision in the background
 and pins later runs to the latest saved content.
 
+### 2.1 Template Gallery and Recipe Instantiation
+
+Template Gallery is a top-level destination alongside Adapters. Its initial static,
+release-versioned catalog contains exactly 5 Themes, 17 Scenarios, and one Python,
+JavaScript, and Java implementation per scenario: 51 Variants in total. Users can
+search by theme, keyword, vendor, Adapter type, protocol, language, and maturity. A
+detail view loads code, contracts, dependency guidance, and provenance only for the
+selected language Variant.
+
+After the user selects a language, enters a name, and confirms, one transaction creates
+an independent Adapter, Slot 0, the minimum disabled type configuration, and Revision 1.
+The Web then opens that Adapter in the editor. This is not ordinary Clone behavior: the
+new Adapter starts stopped and has no Worker, Credential Binding, installed Dependency,
+Schedule, Managed File, Execution, or history. Later template releases never overwrite
+the copied code. Before running, the user must review or edit it, choose a compatible
+Worker, install exact dependencies, and configure input.
+
+Non-secret Recipe settings belong in `context.config` or Execution Input. Passwords,
+Tokens, private keys, and similar values are supplied only through Credential Binding
+and `context.secrets`. External endpoints are administrator-reviewed runtime settings;
+copying a template does not make them trusted, and authentication query values must not
+be embedded in them. Recipe HTTPS, same-origin redirect, timeout, and limit checks are
+not a platform-level SSRF or egress-isolation boundary. Production deployments still
+need network policy around Worker destinations.
+
+Seven cloud/CMDB Scenarios provide a read-only `preview` whose normalized result and
+Adapter Output are bounded by page, record, byte, and total-request-time limits. Optional
+`sync` targets the external `dlr-cmdb-upsert/v1` contract and obtains stable `scan_id`
+and `source_scope` values from immutable Execution Input. Every Attempt of one logical
+Execution must reuse both values, and any source or batch failure must skip finish. The
+Alibaba Cloud SDK `callApi` transport used by three Alibaba Scenarios does not yet have
+a proven source-response byte bound, so its raw HTTP response is outside this bounded-
+output claim. This is only the identity fragment, not a complete Variant input contract:
+
+```json
+{
+  "mode": "sync",
+  "scan_id": "123e4567-e89b-42d3-a456-426614174000",
+  "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1"
+}
+```
+
+The UUID above is an anonymous, copyable example. Use a new value for a new business
+scan and reuse the original value for every retry of that same scan.
+
+`DLR_MANAGED_FILES_ENABLED=false` does not affect browsing, source viewing, or copying
+the 5/17/51 catalog, including CSV and Excel. Copying does not create a file, Artifact,
+Lease, or binding. At runtime, provide direct content or a file only as allowed by the
+selected Variant contract and deployment capability.
+
+Maturity is independent for each `scenario + version + language + source_sha256`:
+`reference-generated / syntax-verified / fixture-verified / live-verified`. A matching
+Receipt constrains every label. `reference-generated` means there is no Receipt that
+both matches the current source hash and satisfies every gate for the next level;
+narrow smoke or security-canary execution may exist without being promotion evidence.
+Syntax or compilation proves at most `syntax-verified`; it is never complete fixture or
+live-service evidence. See [Template Recipe usage and security boundaries](../templates/recipe-usage-security.en.md),
+the [CMDB Upsert v1 contract (Simplified Chinese)](../templates/cmdb-upsert-v1.md), and
+[maturity Receipts (Simplified Chinese)](../templates/maturity-receipts.md) for the
+detailed contracts.
+
 ## 3. Adapter Types
 
 ### 3.1 Task Adapter
@@ -249,6 +310,16 @@ Task / Webhook creation
 → stop
 → Clone upgrade
 → delete the old Adapter
+```
+
+Alternatively, start from a Recipe:
+
+```text
+choose a scenario and language in Template Gallery
+→ name and copy it
+→ edit the independent Adapter immediately
+→ configure Worker / Dependency / Input / Credential / Endpoint
+→ save, preview, and decide on use from the actual maturity evidence
 ```
 
 ## 15. Reliable Runtime Operational Boundary

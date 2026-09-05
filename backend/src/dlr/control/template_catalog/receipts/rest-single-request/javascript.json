@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "rest-single-request",
+  "version": "1.0.0",
+  "language": "javascript",
+  "source_sha256": "ebaab28af5f9bd13d52dc763c74688ce825689671f5ec0973f5e740c0ae43d64",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

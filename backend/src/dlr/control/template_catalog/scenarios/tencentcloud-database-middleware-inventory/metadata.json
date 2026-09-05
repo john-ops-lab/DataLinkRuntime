@@ -1,0 +1,566 @@
+{
+  "slug": "tencentcloud-database-middleware-inventory",
+  "theme_slug": "cloud-cmdb",
+  "title": {
+    "zh-CN": "腾讯云数据库与中间件清单",
+    "en": "Tencent Cloud Database & Middleware Inventory"
+  },
+  "summary": {
+    "zh-CN": "有界盘点 TencentDB、消息、存储、身份、日志、WAF 与证书资源。",
+    "en": "Boundedly inventory TencentDB, messaging, storage, identity, logs, WAF and certificates."
+  },
+  "details": {
+    "zh-CN": "执行表仅包含已核对的 CDB、PostgreSQL、Redis、MongoDB、SQL Server、MariaDB、Elasticsearch、CKafka、CFS、CAM、CLS、WAF 和 SSL API。TDSQL-C、COS 与推断应用依赖只在来源矩阵中列为 gap，不会被 Recipe 请求。",
+    "en": "The executable table contains only checked APIs for CDB, PostgreSQL, Redis, MongoDB, SQL Server, MariaDB, Elasticsearch, CKafka, CFS, CAM, CLS, WAF, and SSL. TDSQL-C, COS, and inferred application dependencies remain source-matrix gaps and are not requested by the Recipe."
+  },
+  "input_summary": {
+    "zh-CN": "账号、地域、产品资源族、模式与 sync 稳定标识。",
+    "en": "Account, regions, product resource families, mode and stable sync identity."
+  },
+  "output_summary": {
+    "zh-CN": "确定性清单预览或不回传完整资产的同步摘要。",
+    "en": "Deterministic inventory preview or sync summary without full asset payload."
+  },
+  "risk": {
+    "zh-CN": "开源覆盖缺口由官方 API 事实补齐，但没有实连证据；部分失败不会 finish。",
+    "en": "Open-source gaps are filled by official API facts without live evidence; partial failure never finishes."
+  },
+  "vendor": "Tencent Cloud",
+  "adapter_type": "task",
+  "protocols": [
+    "HTTPS",
+    "Tencent Cloud API"
+  ],
+  "tags": [
+    "TencentDB",
+    "CKafka",
+    "COS",
+    "security"
+  ],
+  "logo_key": "tencentcloud-data",
+  "version": "1.0.0",
+  "updated_at": "2026-09-05",
+  "featured_rank": 60,
+  "modes": [
+    "preview",
+    "sync"
+  ],
+  "provenance_ids": [
+    "steampipe-tencentcloud-d3a0a66",
+    "tencentcloud-api-2026-09-05",
+    "open-c3-039b9a4",
+    "cloudexplorer-aede557"
+  ],
+  "variants": [
+    {
+      "language": "python",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/tencentcloud-database-middleware-inventory/python.py",
+      "code_sha256": "55432ce24ab273449efb4051ab737512d33faf6546c01b197d4cc69ed323a373",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "mode": "preview",
+        "account": "EXAMPLE_ACCOUNT",
+        "regions": [
+          "example-region-1"
+        ],
+        "max_pages": 50,
+        "max_records": 5000,
+        "max_bytes": 8388608,
+        "page_size": 100,
+        "timeout_seconds": 30,
+        "batch_size": 200,
+        "source_scope": "tencentcloud:EXAMPLE_ACCOUNT:example-region-1",
+        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "mode",
+          "account",
+          "regions"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "preview",
+              "sync"
+            ]
+          },
+          "account": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 256
+          },
+          "regions": {
+            "type": "array",
+            "min_items": 1,
+            "max_items": 32,
+            "unique_items": true,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 128
+            }
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 16777216
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "source_scope": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "scan_id": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "fixture_pages": {
+            "type": "object",
+            "testing_only": true,
+            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
+          }
+        },
+        "conditional_required": {
+          "sync": [
+            "source_scope",
+            "scan_id"
+          ]
+        },
+        "secret_bindings": [
+          "TENCENTCLOUD_SECRET_ID",
+          "TENCENTCLOUD_SECRET_KEY",
+          "TENCENTCLOUD_TOKEN",
+          "CMDB_TOKEN"
+        ],
+        "invariants": [
+          "preview never calls the target CMDB",
+          "sync validates source_scope and scan_id before begin_scan",
+          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
+        ]
+      },
+      "output_contract": {
+        "schema": "dlr-asset-snapshot/v1",
+        "preview_required": [
+          "schema_version",
+          "assets",
+          "relationships",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "sync_required": [
+          "mode",
+          "scan_id",
+          "source_scope",
+          "summary",
+          "partial",
+          "failed",
+          "checkpoint"
+        ],
+        "sync_excludes": [
+          "assets",
+          "relationships",
+          "secrets",
+          "raw_third_party_response"
+        ],
+        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
+        "relation_types": [
+          "located_in",
+          "attached_to",
+          "protected_by",
+          "member_of",
+          "serves",
+          "routes_to"
+        ]
+      },
+      "runtime_config": {
+        "cmdb_base_url": "https://cmdb.example"
+      },
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：TENCENTCLOUD_SECRET_ID、TENCENTCLOUD_SECRET_KEY、CMDB_TOKEN。使用最小只读 CAM 权限；明确显示未启用服务和权限缺口。",
+        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: TENCENTCLOUD_SECRET_ID, TENCENTCLOUD_SECRET_KEY, CMDB_TOKEN. Use least-privilege read-only CAM permissions and surface disabled services and permission gaps."
+      },
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "receipt_resource": "receipts/tencentcloud-database-middleware-inventory/python.json"
+    },
+    {
+      "language": "javascript",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/tencentcloud-database-middleware-inventory/javascript.mjs",
+      "code_sha256": "b6289e04d58e4b5cdc801fe24bba36edc08c9ce0c168395ebc417181d57af092",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "mode": "preview",
+        "account": "EXAMPLE_ACCOUNT",
+        "regions": [
+          "example-region-1"
+        ],
+        "max_pages": 50,
+        "max_records": 5000,
+        "max_bytes": 8388608,
+        "page_size": 100,
+        "timeout_seconds": 30,
+        "batch_size": 200,
+        "source_scope": "tencentcloud:EXAMPLE_ACCOUNT:example-region-1",
+        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "mode",
+          "account",
+          "regions"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "preview",
+              "sync"
+            ]
+          },
+          "account": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 256
+          },
+          "regions": {
+            "type": "array",
+            "min_items": 1,
+            "max_items": 32,
+            "unique_items": true,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 128
+            }
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 16777216
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "source_scope": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "scan_id": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "fixture_pages": {
+            "type": "object",
+            "testing_only": true,
+            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
+          }
+        },
+        "conditional_required": {
+          "sync": [
+            "source_scope",
+            "scan_id"
+          ]
+        },
+        "secret_bindings": [
+          "TENCENTCLOUD_SECRET_ID",
+          "TENCENTCLOUD_SECRET_KEY",
+          "TENCENTCLOUD_TOKEN",
+          "CMDB_TOKEN"
+        ],
+        "invariants": [
+          "preview never calls the target CMDB",
+          "sync validates source_scope and scan_id before begin_scan",
+          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
+        ]
+      },
+      "output_contract": {
+        "schema": "dlr-asset-snapshot/v1",
+        "preview_required": [
+          "schema_version",
+          "assets",
+          "relationships",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "sync_required": [
+          "mode",
+          "scan_id",
+          "source_scope",
+          "summary",
+          "partial",
+          "failed",
+          "checkpoint"
+        ],
+        "sync_excludes": [
+          "assets",
+          "relationships",
+          "secrets",
+          "raw_third_party_response"
+        ],
+        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
+        "relation_types": [
+          "located_in",
+          "attached_to",
+          "protected_by",
+          "member_of",
+          "serves",
+          "routes_to"
+        ]
+      },
+      "runtime_config": {
+        "cmdb_base_url": "https://cmdb.example"
+      },
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：TENCENTCLOUD_SECRET_ID、TENCENTCLOUD_SECRET_KEY、CMDB_TOKEN。使用最小只读 CAM 权限；明确显示未启用服务和权限缺口。",
+        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: TENCENTCLOUD_SECRET_ID, TENCENTCLOUD_SECRET_KEY, CMDB_TOKEN. Use least-privilege read-only CAM permissions and surface disabled services and permission gaps."
+      },
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "receipt_resource": "receipts/tencentcloud-database-middleware-inventory/javascript.json"
+    },
+    {
+      "language": "java",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/tencentcloud-database-middleware-inventory/java.java",
+      "code_sha256": "a61026847b8513d88159b561ab378e5e4427b3c85d250a127c97e6c068e9d7ae",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "mode": "preview",
+        "account": "EXAMPLE_ACCOUNT",
+        "regions": [
+          "example-region-1"
+        ],
+        "max_pages": 50,
+        "max_records": 5000,
+        "max_bytes": 8388608,
+        "page_size": 100,
+        "timeout_seconds": 30,
+        "batch_size": 200,
+        "source_scope": "tencentcloud:EXAMPLE_ACCOUNT:example-region-1",
+        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "mode",
+          "account",
+          "regions"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "preview",
+              "sync"
+            ]
+          },
+          "account": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 256
+          },
+          "regions": {
+            "type": "array",
+            "min_items": 1,
+            "max_items": 32,
+            "unique_items": true,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 128
+            }
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 16777216
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "source_scope": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "scan_id": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "fixture_pages": {
+            "type": "object",
+            "testing_only": true,
+            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
+          }
+        },
+        "conditional_required": {
+          "sync": [
+            "source_scope",
+            "scan_id"
+          ]
+        },
+        "secret_bindings": [
+          "TENCENTCLOUD_SECRET_ID",
+          "TENCENTCLOUD_SECRET_KEY",
+          "TENCENTCLOUD_TOKEN",
+          "CMDB_TOKEN"
+        ],
+        "invariants": [
+          "preview never calls the target CMDB",
+          "sync validates source_scope and scan_id before begin_scan",
+          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
+        ]
+      },
+      "output_contract": {
+        "schema": "dlr-asset-snapshot/v1",
+        "preview_required": [
+          "schema_version",
+          "assets",
+          "relationships",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "sync_required": [
+          "mode",
+          "scan_id",
+          "source_scope",
+          "summary",
+          "partial",
+          "failed",
+          "checkpoint"
+        ],
+        "sync_excludes": [
+          "assets",
+          "relationships",
+          "secrets",
+          "raw_third_party_response"
+        ],
+        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
+        "relation_types": [
+          "located_in",
+          "attached_to",
+          "protected_by",
+          "member_of",
+          "serves",
+          "routes_to"
+        ]
+      },
+      "runtime_config": {
+        "cmdb_base_url": "https://cmdb.example"
+      },
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：TENCENTCLOUD_SECRET_ID、TENCENTCLOUD_SECRET_KEY、CMDB_TOKEN。使用最小只读 CAM 权限；明确显示未启用服务和权限缺口。",
+        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: TENCENTCLOUD_SECRET_ID, TENCENTCLOUD_SECRET_KEY, CMDB_TOKEN. Use least-privilege read-only CAM permissions and surface disabled services and permission gaps."
+      },
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "receipt_resource": "receipts/tencentcloud-database-middleware-inventory/java.json"
+    }
+  ]
+}

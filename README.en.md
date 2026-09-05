@@ -143,11 +143,58 @@ Saving creates an immutable runtime snapshot, and Executions always run from sav
 
 ---
 
+## Start from the Template Gallery
+
+The top-level **Template Gallery** provides official Recipe starting points shipped
+with each DLR release. The initial catalog is fixed at **5 themes, 17 scenarios, and
+51 language Variants**. Every scenario has Python, JavaScript, and Java implementations
+and shows the selected language's input/output contracts, suggested dependencies,
+provenance, and maturity.
+
+```text
+Template Gallery → choose a scenario and language → name and copy → automatically edit the new Adapter
+```
+
+A copy creates an independent Adapter and Revision 1, not a live reference to the
+template. It starts stopped, with no Worker, Credential Binding, installed dependency,
+Schedule, or run history. Later template releases never overwrite the copied code.
+Before running it, choose a compatible Worker, install the exact declared dependencies,
+configure non-secret Runtime values, and supply declared secrets through Credential
+Binding. Administrators must review external endpoints; never put passwords, Tokens,
+or authentication query values in a URL or source code.
+
+Disabling Managed Input Store does not prevent browsing, viewing, or copying any
+template, including CSV and Excel, and copying never creates a file binding. Seven
+cloud/CMDB scenarios provide a read-only `preview` whose normalized result and Adapter
+Output are bounded by page, record, byte, and total-time limits, plus an optional `sync`
+against the external `dlr-cmdb-upsert/v1` contract. Sync requires stable `scan_id` and
+`source_scope` values in immutable Execution Input, reused by every retry of that
+Execution. The Alibaba Cloud SDK `callApi` transport used by three Alibaba scenarios
+does not yet provide a proven source-response byte bound, so that raw HTTP transport is
+outside the bounded-output claim.
+
+Maturity is tracked per scenario, version, language, and source hash and is backed by
+a Receipt. `reference-generated` means experimental and unverified: there is no Receipt
+that both matches the current source hash and satisfies every gate for the next level.
+Narrow smoke or security-canary execution is allowed but is not complete fixture or
+live-service evidence. See [Template Recipe usage and security boundaries](docs/templates/recipe-usage-security.en.md),
+the [CMDB Upsert v1 contract (Simplified Chinese)](docs/templates/cmdb-upsert-v1.md), and
+[maturity Receipts (Simplified Chinese)](docs/templates/maturity-receipts.md) for the
+precise contracts.
+
+> Recipe URL checks, same-origin redirects, timeouts, and resource limits are not a
+> platform-level SSRF or egress-isolation boundary. DLR retains its trusted-admin code
+> model; production deployments must restrict Worker egress with firewalls, DNS/proxy
+> policy, and destination allowlists.
+
+---
+
 ## Key capabilities
 
 | | Capability | Description |
 |---|---|---|
 | 🧩 | **Code-first Adapters** | Code remains the final asset: readable, editable, testable, and versionable |
+| 🧰 | **Template Gallery** | Browse three-language Recipes by theme and scenario, then copy directly into an independent Adapter editor |
 | 🖥️ | **Web Workbench** | Create, edit, save, clone, and manage Adapters in the browser |
 | ⚡ | **Multi-language Runtime** | Python, JavaScript, and Java share a consistent Input / Output / Log model |
 | ⏱️ | **Task & Schedule** | Run manually or schedule with Cron + Timezone |
@@ -440,6 +487,8 @@ The smoke test uses an isolated local environment and a fake AI provider; it doe
 
 - [Product definition](docs/en/product.md)
 - [Architecture](docs/en/architecture.md)
+- [Template Recipe usage and security boundaries](docs/templates/recipe-usage-security.en.md)
+- [Template provenance, CMDB contract, and maturity docs (Simplified Chinese)](docs/templates/README.md)
 - [Reliable Runtime migration, Cutover API & failure handling](docs/en/issue130-reliable-runtime-migrations.md)
 - [Issue #130 Linux Sandbox deployment](docs/en/issue130-sandbox-deployment.md)
 - [Specs index and precedence](docs/specs/README.md)

@@ -1,6 +1,14 @@
 /** 系统设置抽屉：凭据、依赖源与 Managed Input 策略（全局平台配置）。 */
 
-import { useCallback, useEffect, useState, type ChangeEvent } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from "react";
 import {
   Alert,
   Button,
@@ -55,6 +63,7 @@ import {
   resolveSystemLocale,
 } from "../i18n";
 import { packageSourceKindLabel, packageSourcePresetLabel } from "../package-source-catalog";
+import type { PageLeaveGuardHandle } from "../page-leave-guard";
 import type {
   Adapter,
   Credential,
@@ -76,6 +85,13 @@ import SystemStatusPanel from "./SystemStatusPanel";
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
+}
+
+interface MutationTrackingProps {
+  onDirty?: () => void;
+  onDirtyClear?: () => void;
+  onMutationStart?: () => void;
+  onMutationEnd?: () => void;
 }
 
 // --- 凭据管理 ---------------------------------------------------------------
@@ -115,9 +131,9 @@ function emptyForm(): CredentialFormState {
 function CredentialsPanel(props: {
   onError: (message: string) => void;
   onSaved?: () => void;
-}) {
+} & MutationTrackingProps) {
   const { t } = useTranslation(["settings", "common"]);
-  const { onError, onSaved } = props;
+  const { onError, onSaved, onMutationStart, onMutationEnd } = props;
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
@@ -172,6 +188,11 @@ function CredentialsPanel(props: {
     setFormOpen(true);
   }
 
+  function closeForm() {
+    setFormOpen(false);
+    props.onDirtyClear?.();
+  }
+
   function handleTypeChange(type: CredentialType) {
     setForm((current) => ({ ...current, type, fields: {} }));
   }
@@ -206,6 +227,7 @@ function CredentialsPanel(props: {
         return false;
       }
     }
+    onMutationStart?.();
     setNotice(null);
     setSubmitting(true);
     try {
@@ -232,6 +254,7 @@ function CredentialsPanel(props: {
       return false;
     } finally {
       setSubmitting(false);
+      onMutationEnd?.();
     }
   }
 
@@ -239,6 +262,7 @@ function CredentialsPanel(props: {
     if (!window.confirm(t("confirm.deleteCredential", { name: credential.name, ns: "common" }))) {
       return;
     }
+    onMutationStart?.();
     try {
       setPanelError(null);
       setNotice(null);
@@ -252,6 +276,8 @@ function CredentialsPanel(props: {
       notifyCredentialCatalogChanged();
     } catch (error) {
       fail(errorMessage(error));
+    } finally {
+      onMutationEnd?.();
     }
   }
 
@@ -364,7 +390,7 @@ function CredentialsPanel(props: {
         title={form.editingId === null ? t("credentials.submitCreate") : t("credentials.submitUpdate")}
         open={formOpen}
         initialValues={{ name: form.name, type: form.type, fields: form.fields }}
-        modalProps={{ destroyOnHidden: true, onCancel: () => setFormOpen(false) }}
+        modalProps={{ destroyOnHidden: true, onCancel: closeForm }}
         submitter={{
           render: () => [
             <Button
@@ -382,12 +408,13 @@ function CredentialsPanel(props: {
             >
               {form.editingId === null ? t("credentials.submitCreate") : t("credentials.submitUpdate")}
             </Button>,
-            <Button key="cancel" onClick={() => setFormOpen(false)} disabled={submitting}>
+            <Button key="cancel" onClick={closeForm} disabled={submitting}>
               {t("credentials.cancel")}
             </Button>,
           ],
         }}
         onValuesChange={(changed, values) => {
+          props.onDirty?.();
           const nextType = values.type ?? form.type;
           setForm((current) => ({
             ...current,
@@ -401,7 +428,11 @@ function CredentialsPanel(props: {
         }}
         onFinish={handleSubmit}
       >
-        <div className="settings-inline-form" data-testid="credential-form">
+        <div
+          className="settings-inline-form"
+          data-settings-subform="true"
+          data-testid="credential-form"
+        >
           <Form.Item name="name" noStyle>
             <Input
               data-testid="credential-name"
@@ -555,9 +586,9 @@ const EMPTY_SOURCE_FORM: PackageSourceFormState = {
 function PackageSourcesPanel(props: {
   onError: (message: string) => void;
   onSaved?: () => void;
-}) {
+} & MutationTrackingProps) {
   const { t } = useTranslation(["settings", "common"]);
-  const { onError, onSaved } = props;
+  const { onError, onSaved, onMutationStart, onMutationEnd } = props;
   const [sources, setSources] = useState<PackageSource[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [defaults, setDefaults] = useState<PackageSourceDefaults | null>(null);
@@ -625,6 +656,12 @@ function PackageSourcesPanel(props: {
     [fail],
   );
 
+  function closeForm() {
+    setFormOpen(false);
+    setForm(EMPTY_SOURCE_FORM);
+    props.onDirtyClear?.();
+  }
+
   async function handleSubmit(): Promise<boolean> {
     if (submitting) {
       return false;
@@ -635,6 +672,7 @@ function PackageSourcesPanel(props: {
       fail(t("packageSources.nameAndUrlRequired"));
       return false;
     }
+    onMutationStart?.();
     setNotice(null);
     setSubmitting(true);
     try {
@@ -660,6 +698,7 @@ function PackageSourcesPanel(props: {
       return false;
     } finally {
       setSubmitting(false);
+      onMutationEnd?.();
     }
   }
 
@@ -667,6 +706,7 @@ function PackageSourcesPanel(props: {
     if (settingDefaultId !== null || source.is_default) {
       return;
     }
+    onMutationStart?.();
     setSettingDefaultId(source.id);
     try {
       setPanelError(null);
@@ -681,6 +721,7 @@ function PackageSourcesPanel(props: {
       fail(errorMessage(error));
     } finally {
       setSettingDefaultId(null);
+      onMutationEnd?.();
     }
   }
 
@@ -688,6 +729,7 @@ function PackageSourcesPanel(props: {
     if (!window.confirm(t("confirm.deletePackageSource", { name: source.name, ns: "common" }))) {
       return;
     }
+    onMutationStart?.();
     try {
       setPanelError(null);
       setNotice(null);
@@ -699,6 +741,8 @@ function PackageSourcesPanel(props: {
       }
     } catch (error) {
       fail(errorMessage(error));
+    } finally {
+      onMutationEnd?.();
     }
   }
 
@@ -763,6 +807,7 @@ function PackageSourcesPanel(props: {
     ) {
       return;
     }
+    onMutationStart?.();
     setRestoring(kind);
     setPanelError(null);
     setNotice(null);
@@ -777,6 +822,7 @@ function PackageSourcesPanel(props: {
       fail(errorMessage(error));
     } finally {
       setRestoring(null);
+      onMutationEnd?.();
     }
   }
 
@@ -1063,7 +1109,7 @@ function PackageSourcesPanel(props: {
         title={t("packageSources.new")}
         open={formOpen}
         initialValues={form}
-        modalProps={{ destroyOnHidden: true, onCancel: () => setFormOpen(false) }}
+        modalProps={{ destroyOnHidden: true, onCancel: closeForm }}
         submitter={{
           render: (submitterProps) => [
             <Button
@@ -1075,12 +1121,13 @@ function PackageSourcesPanel(props: {
             >
               {t("actions.create", { ns: "common" })}
             </Button>,
-            <Button key="cancel" onClick={() => setFormOpen(false)} disabled={submitting}>
+            <Button key="cancel" onClick={closeForm} disabled={submitting}>
               {t("actions.cancel", { ns: "common" })}
             </Button>,
           ],
         }}
         onValuesChange={(changed, values) => {
+          props.onDirty?.();
           const kindChanged = changed.kind !== undefined && values.kind !== form.kind;
           if (kindChanged) {
             sourceForm.setFieldValue("credential_id", null);
@@ -1101,7 +1148,11 @@ function PackageSourcesPanel(props: {
         }}
         onFinish={handleSubmit}
       >
-        <div className="settings-inline-form" data-testid="package-source-form">
+        <div
+          className="settings-inline-form"
+          data-settings-subform="true"
+          data-testid="package-source-form"
+        >
           <Form.Item name="name" noStyle>
             <Input
               data-testid="package-source-name"
@@ -1190,9 +1241,9 @@ function KnowledgeSourcesPanel(props: {
   active: boolean;
   onError: (message: string) => void;
   onSaved?: () => void;
-}) {
+} & MutationTrackingProps) {
   const { t } = useTranslation(["settings", "common"]);
-  const { active, onError, onSaved } = props;
+  const { active, onError, onSaved, onMutationStart, onMutationEnd } = props;
   const [source, setSource] = useState<KnowledgeSource | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [form, setForm] = useState<KnowledgeSourceFormState>(EMPTY_KNOWLEDGE_SOURCE_FORM);
@@ -1262,6 +1313,7 @@ function KnowledgeSourcesPanel(props: {
     if (saving || source === null) {
       return false;
     }
+    onMutationStart?.();
     setSaving(true);
     setPanelError(null);
     setNotice(null);
@@ -1283,6 +1335,7 @@ function KnowledgeSourcesPanel(props: {
       return false;
     } finally {
       setSaving(false);
+      onMutationEnd?.();
     }
   }
 
@@ -1357,6 +1410,7 @@ function KnowledgeSourcesPanel(props: {
                 data-testid="knowledge-source-enabled"
                 checked={form.enabled}
                 onChange={(event) => {
+                  props.onDirty?.();
                   setForm((current) => ({ ...current, enabled: event.target.checked }));
                   setTestStatus(null);
                   setTestErrorCode(null);
@@ -1377,6 +1431,7 @@ function KnowledgeSourcesPanel(props: {
                   .filter((credential) => credential.type === "access_key")
                   .map((credential) => ({ label: credential.name, value: credential.id }))}
                 onChange={(value) => {
+                  props.onDirty?.();
                   setForm((current) => ({ ...current, credential_id: value ?? null }));
                   setTestStatus(null);
                   setTestErrorCode(null);
@@ -1476,7 +1531,7 @@ interface SystemSettingsDrawerProps {
 // Console banner while the Drawer is open.
 function keepErrorInline(): void {}
 
-function SystemLocaleControl() {
+function SystemLocaleControl(props: MutationTrackingProps) {
   const { i18n, t } = useTranslation("settings");
   const currentUiLocale = resolveSystemLocale(i18n.resolvedLanguage ?? i18n.language);
   const deploymentLocale = readCachedSystemLocale();
@@ -1487,6 +1542,7 @@ function SystemLocaleControl() {
     if (updating || nextLocale === deploymentLocale) {
       return;
     }
+    props.onMutationStart?.();
     setUpdating(true);
     setError(null);
     try {
@@ -1499,6 +1555,7 @@ function SystemLocaleControl() {
       setError(userErrorMessage(err, t("localeUpdateFailed"), currentUiLocale));
     } finally {
       setUpdating(false);
+      props.onMutationEnd?.();
     }
   }
 
@@ -1612,9 +1669,9 @@ function ManagedInputSettingsPanel(props: {
   onSaved?: () => void;
   adapters: Adapter[];
   onSelectAdapter?: (adapterId: number) => boolean;
-}) {
+} & MutationTrackingProps) {
   const { t } = useTranslation(["settings", "common"]);
-  const { onError, onSaved } = props;
+  const { onError, onSaved, onMutationStart, onMutationEnd } = props;
   const [settings, setSettings] = useState<ManagedInputSettings | null>(null);
   const [draft, setDraft] = useState<ManagedInputSettingsUpdate | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1683,6 +1740,7 @@ function ManagedInputSettingsPanel(props: {
     if (saving || draft === null) {
       return;
     }
+    onMutationStart?.();
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -1716,6 +1774,7 @@ function ManagedInputSettingsPanel(props: {
       fail(value);
     } finally {
       setSaving(false);
+      onMutationEnd?.();
     }
   }
 
@@ -1733,6 +1792,7 @@ function ManagedInputSettingsPanel(props: {
 
   const updateNumber = (key: keyof ManagedInputSettingsUpdate, value: number | null) => {
     if (value !== null && Number.isFinite(value)) {
+      props.onDirty?.();
       setDraft((current) => current === null ? current : { ...current, [key]: Math.trunc(value) });
     }
   };
@@ -2019,10 +2079,13 @@ function ManagedInputSettingsPanel(props: {
             <Checkbox
               data-testid="managed-input-allow-manual-delete"
               checked={draft.allow_manual_delete}
-              onChange={(event) => setDraft((current) => current === null ? current : {
-                ...current,
-                allow_manual_delete: event.target.checked,
-              })}
+              onChange={(event) => {
+                props.onDirty?.();
+                setDraft((current) => current === null ? current : {
+                  ...current,
+                  allow_manual_delete: event.target.checked,
+                });
+              }}
             >
               {t("managedInput.allowManualDelete")}
             </Checkbox>
@@ -2095,23 +2158,41 @@ function ManagedInputSettingsPanel(props: {
   );
 }
 
-export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
+const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDrawerProps>(function SystemSettingsDrawer(props, ref) {
   const { t } = useTranslation("settings");
   const standalone = props.category === undefined;
   const canManageManagedInput = props.canManageManagedInput !== false;
   const [localActiveCategory, setLocalActiveCategory] = useState<SettingsCategory>(props.category ?? "credentials");
   const [dirty, setDirty] = useState(false);
+  const [subformDirty, setSubformDirty] = useState(false);
+  const mutationCount = useRef(0);
   const activeCategory = props.category ?? localActiveCategory;
 
-  if (!props.open || !canManageManagedInput) {
-    return null;
-  }
-
   function confirmLeave(): boolean {
-    if (!dirty) {
+    if (!props.open || !canManageManagedInput) {
+      return true;
+    }
+    if (mutationCount.current > 0) {
+      return false;
+    }
+    if (!dirty && !subformDirty) {
       return true;
     }
     return window.confirm(t("confirm.unsavedChanges"));
+  }
+
+  useImperativeHandle(ref, () => ({ confirmLeave }));
+
+  const beginMutation = useCallback(() => {
+    mutationCount.current += 1;
+  }, []);
+  const endMutation = useCallback(() => {
+    mutationCount.current = Math.max(0, mutationCount.current - 1);
+  }, []);
+  const markSettingsDirty = useCallback(() => setDirty(true), []);
+
+  if (!props.open || !canManageManagedInput) {
+    return null;
   }
 
   function selectCategory(nextCategory: SettingsCategory): void {
@@ -2122,12 +2203,15 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
       return;
     }
     setDirty(false);
+    setSubformDirty(false);
     setLocalActiveCategory(nextCategory);
     props.onCategoryChange?.(nextCategory);
   }
 
   function close(): void {
     if (confirmLeave()) {
+      setDirty(false);
+      setSubformDirty(false);
       props.onClose();
     }
   }
@@ -2156,11 +2240,12 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
     const target = event.target as HTMLElement;
     if (
       target.closest("[data-testid=system-locale-select]") ||
-      target.closest("[data-settings-filter=true]")
+      target.closest("[data-settings-filter=true]") ||
+      target.closest("[data-settings-subform=true]")
     ) {
       return;
     }
-    setDirty(true);
+    markSettingsDirty();
   }
 
   return (
@@ -2170,10 +2255,10 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
           type="link"
           icon={<ArrowLeftOutlined aria-hidden="true" />}
           data-testid="settings-back"
-          aria-label={t("backToAdapters")}
+          aria-label={t("back")}
           onClick={close}
         >
-          {t("backToAdapters")}
+          {t("back")}
         </Button>
         <Typography.Title id="system-settings-title" level={2} className="settings-center-title">
           {t("title")}
@@ -2206,8 +2291,12 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
               <Typography.Title id="settings-category-title" level={3}>{copy.title}</Typography.Title>
               <Typography.Paragraph type="secondary">{copy.description}</Typography.Paragraph>
             </header>
-            {standalone && activeCategory !== "general" && <SystemLocaleControl />}
-            {activeCategory === "general" && <SystemLocaleControl />}
+            {standalone && activeCategory !== "general" && (
+              <SystemLocaleControl onMutationStart={beginMutation} onMutationEnd={endMutation} />
+            )}
+            {activeCategory === "general" && (
+              <SystemLocaleControl onMutationStart={beginMutation} onMutationEnd={endMutation} />
+            )}
             {activeCategory === "system-status" && (
               <SystemStatusPanel
                 level={props.systemStatusLevel ?? "checking"}
@@ -2222,16 +2311,42 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
               />
             )}
             {activeCategory === "credentials" && (
-              <CredentialsPanel onError={keepErrorInline} onSaved={() => setDirty(false)} />
+              <CredentialsPanel
+                onError={keepErrorInline}
+                onSaved={() => setSubformDirty(false)}
+                onDirty={() => setSubformDirty(true)}
+                onDirtyClear={() => setSubformDirty(false)}
+                onMutationStart={beginMutation}
+                onMutationEnd={endMutation}
+              />
             )}
             {activeCategory === "package-sources" && (
-              <PackageSourcesPanel onError={keepErrorInline} onSaved={() => setDirty(false)} />
+              <PackageSourcesPanel
+                onError={keepErrorInline}
+                onSaved={() => setSubformDirty(false)}
+                onDirty={() => setSubformDirty(true)}
+                onDirtyClear={() => setSubformDirty(false)}
+                onMutationStart={beginMutation}
+                onMutationEnd={endMutation}
+              />
             )}
             {activeCategory === "ai-model" && (
-              <AiModelSettingsPanel onError={keepErrorInline} onSaved={() => setDirty(false)} />
+              <AiModelSettingsPanel
+                onError={keepErrorInline}
+                onDirtyChange={setDirty}
+                onMutationStart={beginMutation}
+                onMutationEnd={endMutation}
+              />
             )}
             {activeCategory === "knowledge-sources" && (
-              <KnowledgeSourcesPanel active onError={keepErrorInline} onSaved={() => setDirty(false)} />
+              <KnowledgeSourcesPanel
+                active
+                onError={keepErrorInline}
+                onSaved={() => setDirty(false)}
+                onDirty={markSettingsDirty}
+                onMutationStart={beginMutation}
+                onMutationEnd={endMutation}
+              />
             )}
             {activeCategory === "managed-input" && (
               <ManagedInputSettingsPanel
@@ -2248,6 +2363,9 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
                 }}
                 onError={keepErrorInline}
                 onSaved={() => setDirty(false)}
+                onDirty={markSettingsDirty}
+                onMutationStart={beginMutation}
+                onMutationEnd={endMutation}
               />
             )}
           </div>
@@ -2255,4 +2373,6 @@ export default function SystemSettingsDrawer(props: SystemSettingsDrawerProps) {
       </div>
     </section>
   );
-}
+});
+
+export default SystemSettingsDrawer;

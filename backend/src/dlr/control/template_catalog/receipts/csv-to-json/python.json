@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "csv-to-json",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "10ad41e250a547dc6c75fa68d02eca6b93df0af55b055db3eec288d070c992b4",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

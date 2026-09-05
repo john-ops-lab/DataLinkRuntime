@@ -72,7 +72,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0031_issue130_b2_runtime"
+    assert revision == "0032_issue132_templates"
     assert {
         "adapter_type",
         "run_mode",

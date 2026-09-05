@@ -1,0 +1,475 @@
+{
+  "slug": "webhook-json-normalization",
+  "theme_slug": "api-events",
+  "title": {
+    "zh-CN": "Webhook JSON 校验与标准化",
+    "en": "Webhook JSON Validation & Normalization"
+  },
+  "summary": {
+    "zh-CN": "校验必填字段、重命名嵌套值并把时间统一为 ISO-8601 UTC。",
+    "en": "Validate required fields, rename nested values and normalize timestamps to ISO-8601 UTC."
+  },
+  "details": {
+    "zh-CN": "使用有限的点分隔路径读取，不提供表达式 DSL，不访问外部系统，也不提供 sync。",
+    "en": "Uses limited dotted paths without an expression DSL, external calls or sync mode."
+  },
+  "input_summary": {
+    "zh-CN": "Webhook payload、必填路径、字段映射和时间字段列表。",
+    "en": "Webhook payload, required paths, field map and timestamp fields."
+  },
+  "output_summary": {
+    "zh-CN": "标准化对象和字段级验证错误。",
+    "en": "Normalized object and field-level validation errors."
+  },
+  "risk": {
+    "zh-CN": "无效路径或时间明确报错；不会静默丢弃必填字段。",
+    "en": "Invalid paths or timestamps produce explicit errors; required fields are never silently dropped."
+  },
+  "vendor": "DLR",
+  "adapter_type": "webhook",
+  "protocols": [
+    "JSON",
+    "Webhook"
+  ],
+  "tags": [
+    "webhook",
+    "validation",
+    "normalization",
+    "UTC"
+  ],
+  "logo_key": "webhook-normalize",
+  "version": "1.0.0",
+  "updated_at": "2026-09-05",
+  "featured_rank": 30,
+  "modes": [
+    "transform"
+  ],
+  "provenance_ids": [
+    "http-rfc9110-9112"
+  ],
+  "variants": [
+    {
+      "language": "python",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/webhook-json-normalization/python.py",
+      "code_sha256": "1e8e21fb333269d7d3b92fdfe7ff49ded11631851acaf46c8168d8c28cc02633",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "payload": {
+          "event_id": "EXAMPLE_EVENT",
+          "occurred_at": "2026-01-01T00:00:00Z"
+        },
+        "required": [
+          "event_id"
+        ],
+        "mappings": [
+          {
+            "source": "event_id",
+            "target": "id",
+            "required": true
+          },
+          {
+            "source": "occurred_at",
+            "target": "timestamp",
+            "type": "datetime",
+            "required": true
+          }
+        ],
+        "max_fields": 200,
+        "max_input_bytes": 1048576,
+        "max_output_bytes": 2097152,
+        "max_depth": 32
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "type": "object"
+          },
+          "required": {
+            "type": "array",
+            "max_items": 1000,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 256
+            }
+          },
+          "mappings": {
+            "type": "array",
+            "max_items": 1000,
+            "fields": [
+              "source",
+              "target",
+              "type",
+              "default",
+              "required"
+            ],
+            "source_and_target": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 256
+            },
+            "required_field_type": "boolean"
+          },
+          "max_fields": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "max_input_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8388608
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 128,
+            "maximum": 8388608
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          }
+        },
+        "path_contract": {
+          "syntax": "dot-separated ASCII segments matching [A-Za-z0-9_-]+",
+          "max_length": 256,
+          "max_segments": 32,
+          "max_segment_length": 64,
+          "target_forbidden_segments": [
+            "__proto__",
+            "prototype",
+            "constructor"
+          ]
+        },
+        "conversions": [
+          "datetime"
+        ],
+        "excluded": [
+          "expression evaluation",
+          "external calls",
+          "sync"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "valid",
+          "data",
+          "errors",
+          "partial"
+        ],
+        "errors": {
+          "max_items": "max_fields",
+          "fields": [
+            "field",
+            "code"
+          ],
+          "field_semantics": "stable configuration locator; supplied paths are never echoed"
+        },
+        "timestamp_format": "ISO-8601 UTC ending in Z",
+        "byte_limit_handling": "max_output_bytes covers the complete serialized envelope including data, errors and partial; errors are truncated with partial=true when required"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。该模板会创建禁用的 Webhook 配置和全新 public id；请配置 Worker 后再人工开启接收。",
+        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: none. This template creates a disabled Webhook configuration with a fresh public id; configure a Worker before manually enabling reception."
+      },
+      "provenance_ids": [
+        "http-rfc9110-9112"
+      ],
+      "receipt_resource": "receipts/webhook-json-normalization/python.json"
+    },
+    {
+      "language": "javascript",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/webhook-json-normalization/javascript.mjs",
+      "code_sha256": "4fad2becfaafff77df2fc9319753b378953fe16f462b5a67c3f617f513b4da79",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "payload": {
+          "event_id": "EXAMPLE_EVENT",
+          "occurred_at": "2026-01-01T00:00:00Z"
+        },
+        "required": [
+          "event_id"
+        ],
+        "mappings": [
+          {
+            "source": "event_id",
+            "target": "id",
+            "required": true
+          },
+          {
+            "source": "occurred_at",
+            "target": "timestamp",
+            "type": "datetime",
+            "required": true
+          }
+        ],
+        "max_fields": 200,
+        "max_input_bytes": 1048576,
+        "max_output_bytes": 2097152,
+        "max_depth": 32
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "type": "object"
+          },
+          "required": {
+            "type": "array",
+            "max_items": 1000,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 256
+            }
+          },
+          "mappings": {
+            "type": "array",
+            "max_items": 1000,
+            "fields": [
+              "source",
+              "target",
+              "type",
+              "default",
+              "required"
+            ],
+            "source_and_target": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 256
+            },
+            "required_field_type": "boolean"
+          },
+          "max_fields": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "max_input_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8388608
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 128,
+            "maximum": 8388608
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          }
+        },
+        "path_contract": {
+          "syntax": "dot-separated ASCII segments matching [A-Za-z0-9_-]+",
+          "max_length": 256,
+          "max_segments": 32,
+          "max_segment_length": 64,
+          "target_forbidden_segments": [
+            "__proto__",
+            "prototype",
+            "constructor"
+          ]
+        },
+        "conversions": [
+          "datetime"
+        ],
+        "excluded": [
+          "expression evaluation",
+          "external calls",
+          "sync"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "valid",
+          "data",
+          "errors",
+          "partial"
+        ],
+        "errors": {
+          "max_items": "max_fields",
+          "fields": [
+            "field",
+            "code"
+          ],
+          "field_semantics": "stable configuration locator; supplied paths are never echoed"
+        },
+        "timestamp_format": "ISO-8601 UTC ending in Z",
+        "byte_limit_handling": "max_output_bytes covers the complete serialized envelope including data, errors and partial; errors are truncated with partial=true when required"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。该模板会创建禁用的 Webhook 配置和全新 public id；请配置 Worker 后再人工开启接收。",
+        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: none. This template creates a disabled Webhook configuration with a fresh public id; configure a Worker before manually enabling reception."
+      },
+      "provenance_ids": [
+        "http-rfc9110-9112"
+      ],
+      "receipt_resource": "receipts/webhook-json-normalization/javascript.json"
+    },
+    {
+      "language": "java",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/webhook-json-normalization/java.java",
+      "code_sha256": "76a8bb744183a10c81fcc71c5211f189316798b7e70fc781045b7528673827b8",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "payload": {
+          "event_id": "EXAMPLE_EVENT",
+          "occurred_at": "2026-01-01T00:00:00Z"
+        },
+        "required": [
+          "event_id"
+        ],
+        "mappings": [
+          {
+            "source": "event_id",
+            "target": "id",
+            "required": true
+          },
+          {
+            "source": "occurred_at",
+            "target": "timestamp",
+            "type": "datetime",
+            "required": true
+          }
+        ],
+        "max_fields": 200,
+        "max_input_bytes": 1048576,
+        "max_output_bytes": 2097152,
+        "max_depth": 32
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "payload"
+        ],
+        "properties": {
+          "payload": {
+            "type": "object"
+          },
+          "required": {
+            "type": "array",
+            "max_items": 1000,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 256
+            }
+          },
+          "mappings": {
+            "type": "array",
+            "max_items": 1000,
+            "fields": [
+              "source",
+              "target",
+              "type",
+              "default",
+              "required"
+            ],
+            "source_and_target": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 256
+            },
+            "required_field_type": "boolean"
+          },
+          "max_fields": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "max_input_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8388608
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 128,
+            "maximum": 8388608
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          }
+        },
+        "path_contract": {
+          "syntax": "dot-separated ASCII segments matching [A-Za-z0-9_-]+",
+          "max_length": 256,
+          "max_segments": 32,
+          "max_segment_length": 64,
+          "target_forbidden_segments": [
+            "__proto__",
+            "prototype",
+            "constructor"
+          ]
+        },
+        "conversions": [
+          "datetime"
+        ],
+        "excluded": [
+          "expression evaluation",
+          "external calls",
+          "sync"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "valid",
+          "data",
+          "errors",
+          "partial"
+        ],
+        "errors": {
+          "max_items": "max_fields",
+          "fields": [
+            "field",
+            "code"
+          ],
+          "field_semantics": "stable configuration locator; supplied paths are never echoed"
+        },
+        "timestamp_format": "ISO-8601 UTC ending in Z",
+        "byte_limit_handling": "max_output_bytes covers the complete serialized envelope including data, errors and partial; errors are truncated with partial=true when required"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。该模板会创建禁用的 Webhook 配置和全新 public id；请配置 Worker 后再人工开启接收。",
+        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: none. This template creates a disabled Webhook configuration with a fresh public id; configure a Worker before manually enabling reception."
+      },
+      "provenance_ids": [
+        "http-rfc9110-9112"
+      ],
+      "receipt_resource": "receipts/webhook-json-normalization/java.json"
+    }
+  ]
+}

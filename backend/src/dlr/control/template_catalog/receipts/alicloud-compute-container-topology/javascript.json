@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "alicloud-compute-container-topology",
+  "version": "1.0.0",
+  "language": "javascript",
+  "source_sha256": "677a73d9874d0db075b9422ed06609e7f369c2f84a017ef91201fd4e4286729e",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

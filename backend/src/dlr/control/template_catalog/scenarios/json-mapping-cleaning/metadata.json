@@ -1,0 +1,517 @@
+{
+  "slug": "json-mapping-cleaning",
+  "theme_slug": "file-data",
+  "title": {
+    "zh-CN": "JSON 字段映射与清洗",
+    "en": "JSON Mapping & Cleaning"
+  },
+  "summary": {
+    "zh-CN": "用 RFC 6901 JSON Pointer 做有限映射、转换、过滤、排序与去重。",
+    "en": "Use RFC 6901 JSON Pointer for limited mapping, conversion, filtering, sorting and deduplication."
+  },
+  "details": {
+    "zh-CN": "支持字段选择、重命名、默认值、有限类型转换、等值或存在性过滤、稳定排序与保留首项去重，不执行任意表达式。",
+    "en": "Supports field selection, renaming, defaults, limited type conversion, equality or existence filters, stable sorting and keep-first deduplication without arbitrary expressions."
+  },
+  "input_summary": {
+    "zh-CN": "records、映射规则、过滤、排序与去重字段。",
+    "en": "Records, mapping rules, filters, sort and deduplication fields."
+  },
+  "output_summary": {
+    "zh-CN": "确定性 records、输入输出计数、丢弃数与 partial 状态。",
+    "en": "Deterministic records, input/output counts, dropped count and partial state."
+  },
+  "risk": {
+    "zh-CN": "转换失败按字段报错；不提供 JSONata、JQ 或表达式求值。",
+    "en": "Conversion failures are field-specific; JSONata, JQ and expression evaluation are excluded."
+  },
+  "vendor": "DLR",
+  "adapter_type": "task",
+  "protocols": [
+    "JSON",
+    "RFC 6901"
+  ],
+  "tags": [
+    "JSON",
+    "mapping",
+    "cleaning",
+    "RFC6901"
+  ],
+  "logo_key": "data-json",
+  "version": "1.0.0",
+  "updated_at": "2026-09-05",
+  "featured_rank": 30,
+  "modes": [
+    "transform"
+  ],
+  "provenance_ids": [
+    "json-pointer-rfc6901"
+  ],
+  "variants": [
+    {
+      "language": "python",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/json-mapping-cleaning/python.py",
+      "code_sha256": "1b88926a8a6fe10c9dd725e34d7f578bbdc9ae8805296736eec58b856577bd0a",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "records": [
+          {
+            "id": "1",
+            "profile": {
+              "name": "example"
+            }
+          }
+        ],
+        "mappings": [
+          {
+            "pointer": "/profile/name",
+            "target": "name",
+            "type": "string",
+            "default": ""
+          },
+          {
+            "pointer": "/id",
+            "target": "id",
+            "type": "string"
+          }
+        ],
+        "filters": [],
+        "sort": {
+          "field": "name",
+          "direction": "asc"
+        },
+        "dedupe_by": "id",
+        "max_records": 10000,
+        "max_fields": 200,
+        "max_output_bytes": 4194304
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "records",
+          "mappings"
+        ],
+        "properties": {
+          "records": {
+            "type": "array"
+          },
+          "mappings": {
+            "type": "array",
+            "max_items": 1000,
+            "fields": [
+              "pointer",
+              "target",
+              "type",
+              "default"
+            ],
+            "pointer_max_utf8_bytes": 1024,
+            "target_max_utf8_bytes": 256
+          },
+          "filters": {
+            "type": "array",
+            "max_items": "max_fields",
+            "operators": [
+              "equals",
+              "exists"
+            ],
+            "equals_semantics": "recursive JSON equality; booleans are distinct from numbers"
+          },
+          "sort": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "fields": [
+              "field",
+              "direction"
+            ],
+            "direction_enum": [
+              "asc",
+              "desc"
+            ],
+            "field_max_utf8_bytes": 256
+          },
+          "dedupe_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "meaning": "mapped output field name",
+            "max_utf8_bytes": 256
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "max_fields": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          }
+        },
+        "pointer_contract": {
+          "standard": "RFC 6901 including strict ~0 and ~1 escapes and decimal array indexes",
+          "max_utf8_bytes": 1024,
+          "max_tokens": 64,
+          "max_decoded_token_utf8_bytes": 256
+        },
+        "conversions": [
+          "string",
+          "integer",
+          "number",
+          "boolean",
+          "datetime"
+        ],
+        "excluded": [
+          "JSONata",
+          "JQ",
+          "arbitrary expressions"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "records",
+          "count",
+          "partial",
+          "checkpoint"
+        ],
+        "order": "stable canonical JSON lexical sort with source-order ties; object keys are recursively sorted",
+        "filter_equality": "recursive JSON equality with booleans distinct from numbers",
+        "conversion_error": "conversion_failed without echoing a supplied target",
+        "deduplication": "keep first occurrence",
+        "byte_limit_handling": "construct each record field-by-field and stop before max_output_bytes would be exceeded"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。先用小样本确认 Pointer 与转换结果；超限时保留语法完整的 JSON。",
+        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: none. Validate pointers and conversions with a small sample first; limit handling preserves syntactically complete JSON."
+      },
+      "provenance_ids": [
+        "json-pointer-rfc6901"
+      ],
+      "receipt_resource": "receipts/json-mapping-cleaning/python.json"
+    },
+    {
+      "language": "javascript",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/json-mapping-cleaning/javascript.mjs",
+      "code_sha256": "0d8d8c4a95542f61d727ba741df1d0595c2f55980722917d28f256f5e6c55546",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "records": [
+          {
+            "id": "1",
+            "profile": {
+              "name": "example"
+            }
+          }
+        ],
+        "mappings": [
+          {
+            "pointer": "/profile/name",
+            "target": "name",
+            "type": "string",
+            "default": ""
+          },
+          {
+            "pointer": "/id",
+            "target": "id",
+            "type": "string"
+          }
+        ],
+        "filters": [],
+        "sort": {
+          "field": "name",
+          "direction": "asc"
+        },
+        "dedupe_by": "id",
+        "max_records": 10000,
+        "max_fields": 200,
+        "max_output_bytes": 4194304
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "records",
+          "mappings"
+        ],
+        "properties": {
+          "records": {
+            "type": "array"
+          },
+          "mappings": {
+            "type": "array",
+            "max_items": 1000,
+            "fields": [
+              "pointer",
+              "target",
+              "type",
+              "default"
+            ],
+            "pointer_max_utf8_bytes": 1024,
+            "target_max_utf8_bytes": 256
+          },
+          "filters": {
+            "type": "array",
+            "max_items": "max_fields",
+            "operators": [
+              "equals",
+              "exists"
+            ],
+            "equals_semantics": "recursive JSON equality; booleans are distinct from numbers"
+          },
+          "sort": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "fields": [
+              "field",
+              "direction"
+            ],
+            "direction_enum": [
+              "asc",
+              "desc"
+            ],
+            "field_max_utf8_bytes": 256
+          },
+          "dedupe_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "meaning": "mapped output field name",
+            "max_utf8_bytes": 256
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "max_fields": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          }
+        },
+        "pointer_contract": {
+          "standard": "RFC 6901 including strict ~0 and ~1 escapes and decimal array indexes",
+          "max_utf8_bytes": 1024,
+          "max_tokens": 64,
+          "max_decoded_token_utf8_bytes": 256
+        },
+        "conversions": [
+          "string",
+          "integer",
+          "number",
+          "boolean",
+          "datetime"
+        ],
+        "excluded": [
+          "JSONata",
+          "JQ",
+          "arbitrary expressions"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "records",
+          "count",
+          "partial",
+          "checkpoint"
+        ],
+        "order": "stable canonical JSON lexical sort with source-order ties; object keys are recursively sorted",
+        "filter_equality": "recursive JSON equality with booleans distinct from numbers",
+        "conversion_error": "conversion_failed without echoing a supplied target",
+        "deduplication": "keep first occurrence",
+        "byte_limit_handling": "construct each record field-by-field and stop before max_output_bytes would be exceeded"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。先用小样本确认 Pointer 与转换结果；超限时保留语法完整的 JSON。",
+        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: none. Validate pointers and conversions with a small sample first; limit handling preserves syntactically complete JSON."
+      },
+      "provenance_ids": [
+        "json-pointer-rfc6901"
+      ],
+      "receipt_resource": "receipts/json-mapping-cleaning/javascript.json"
+    },
+    {
+      "language": "java",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/json-mapping-cleaning/java.java",
+      "code_sha256": "4746cf7184d0c8b6f99ce11eb0fd176c19e7be5cb4bdee10d6f4e8d9c54268a7",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "records": [
+          {
+            "id": "1",
+            "profile": {
+              "name": "example"
+            }
+          }
+        ],
+        "mappings": [
+          {
+            "pointer": "/profile/name",
+            "target": "name",
+            "type": "string",
+            "default": ""
+          },
+          {
+            "pointer": "/id",
+            "target": "id",
+            "type": "string"
+          }
+        ],
+        "filters": [],
+        "sort": {
+          "field": "name",
+          "direction": "asc"
+        },
+        "dedupe_by": "id",
+        "max_records": 10000,
+        "max_fields": 200,
+        "max_output_bytes": 4194304
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "records",
+          "mappings"
+        ],
+        "properties": {
+          "records": {
+            "type": "array"
+          },
+          "mappings": {
+            "type": "array",
+            "max_items": 1000,
+            "fields": [
+              "pointer",
+              "target",
+              "type",
+              "default"
+            ],
+            "pointer_max_utf8_bytes": 1024,
+            "target_max_utf8_bytes": 256
+          },
+          "filters": {
+            "type": "array",
+            "max_items": "max_fields",
+            "operators": [
+              "equals",
+              "exists"
+            ],
+            "equals_semantics": "recursive JSON equality; booleans are distinct from numbers"
+          },
+          "sort": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "fields": [
+              "field",
+              "direction"
+            ],
+            "direction_enum": [
+              "asc",
+              "desc"
+            ],
+            "field_max_utf8_bytes": 256
+          },
+          "dedupe_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "meaning": "mapped output field name",
+            "max_utf8_bytes": 256
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "max_fields": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          }
+        },
+        "pointer_contract": {
+          "standard": "RFC 6901 including strict ~0 and ~1 escapes and decimal array indexes",
+          "max_utf8_bytes": 1024,
+          "max_tokens": 64,
+          "max_decoded_token_utf8_bytes": 256
+        },
+        "conversions": [
+          "string",
+          "integer",
+          "number",
+          "boolean",
+          "datetime"
+        ],
+        "excluded": [
+          "JSONata",
+          "JQ",
+          "arbitrary expressions"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "records",
+          "count",
+          "partial",
+          "checkpoint"
+        ],
+        "order": "stable canonical JSON lexical sort with source-order ties; object keys are recursively sorted",
+        "filter_equality": "recursive JSON equality with booleans distinct from numbers",
+        "conversion_error": "conversion_failed without echoing a supplied target",
+        "deduplication": "keep first occurrence",
+        "byte_limit_handling": "construct each record field-by-field and stop before max_output_bytes would be exceeded"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。先用小样本确认 Pointer 与转换结果；超限时保留语法完整的 JSON。",
+        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: none. Validate pointers and conversions with a small sample first; limit handling preserves syntactically complete JSON."
+      },
+      "provenance_ids": [
+        "json-pointer-rfc6901"
+      ],
+      "receipt_resource": "receipts/json-mapping-cleaning/java.json"
+    }
+  ]
+}

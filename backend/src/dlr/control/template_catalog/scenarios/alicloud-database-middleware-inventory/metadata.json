@@ -1,0 +1,566 @@
+{
+  "slug": "alicloud-database-middleware-inventory",
+  "theme_slug": "cloud-cmdb",
+  "title": {
+    "zh-CN": "阿里云数据库与中间件清单",
+    "en": "Alibaba Cloud Database & Middleware Inventory"
+  },
+  "summary": {
+    "zh-CN": "为已核对的数据库、中间件、文件存储、身份与安全操作生成字节有界的规范化预览。",
+    "en": "Produce a byte-bounded normalized preview for checked database, middleware, file-storage, identity, and security operations."
+  },
+  "details": {
+    "zh-CN": "执行表仅分页读取已核对的 RDS、Redis、MongoDB、NAS、RAM、KMS、ActionTrail 和安全中心资源。Elasticsearch、OSS、SLS 与推断应用依赖只在来源矩阵中列为 gap，不会被 Recipe 请求。",
+    "en": "The executable table pages only checked RDS, Redis, MongoDB, NAS, RAM, KMS, ActionTrail, and Security Center operations. Elasticsearch, OSS, SLS, and inferred application dependencies remain source-matrix gaps and are not requested by the Recipe."
+  },
+  "input_summary": {
+    "zh-CN": "账号、区域、产品资源族、模式与 sync 稳定标识。",
+    "en": "Account, regions, product resource families, mode and stable sync identity."
+  },
+  "output_summary": {
+    "zh-CN": "确定性排序去重的资产快照，或有界同步摘要。",
+    "en": "Deterministically sorted and deduplicated asset snapshot, or bounded sync summary."
+  },
+  "risk": {
+    "zh-CN": "不猜测应用依赖；未授权产品会标记 partial 且不会触发失效清扫。当前 Alibaba Cloud SDK callApi 的传输层响应无法证明受字节上限约束；max_bytes 只限制规范化输出与 fixture 处理，本 Variant 仍为 reference-generated。",
+    "en": "Does not infer application dependencies; unauthorized products are partial and never trigger stale cleanup. The transport response from Alibaba Cloud SDK callApi is not proven byte-bounded; max_bytes limits normalized output and fixture processing only, and this Variant remains reference-generated."
+  },
+  "vendor": "Alibaba Cloud",
+  "adapter_type": "task",
+  "protocols": [
+    "HTTPS",
+    "Alibaba Cloud OpenAPI"
+  ],
+  "tags": [
+    "RDS",
+    "Redis",
+    "OSS",
+    "security"
+  ],
+  "logo_key": "alicloud-data",
+  "version": "1.0.0",
+  "updated_at": "2026-09-05",
+  "featured_rank": 30,
+  "modes": [
+    "preview",
+    "sync"
+  ],
+  "provenance_ids": [
+    "steampipe-alicloud-d619a9d",
+    "alicloud-openapi-2026-09-05",
+    "open-c3-039b9a4",
+    "cloudexplorer-aede557"
+  ],
+  "variants": [
+    {
+      "language": "python",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/alicloud-database-middleware-inventory/python.py",
+      "code_sha256": "3295b4f1d87639b98924d21a82743150274922a50d5b07c9ecc05620b8df568e",
+      "requirements": "alibabacloud-tea-openapi==0.4.6",
+      "install_notes": {
+        "zh-CN": "建议依赖：alibabacloud-tea-openapi==0.4.6。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
+        "en": "Suggested dependency: alibabacloud-tea-openapi==0.4.6. Copying the template does not install it; first select a compatible Worker, then install through the platform dependency flow and verify the source."
+      },
+      "input_skeleton": {
+        "mode": "preview",
+        "account": "EXAMPLE_ACCOUNT",
+        "regions": [
+          "example-region-1"
+        ],
+        "max_pages": 50,
+        "max_records": 5000,
+        "max_bytes": 8388608,
+        "page_size": 100,
+        "timeout_seconds": 30,
+        "batch_size": 200,
+        "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1",
+        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "mode",
+          "account",
+          "regions"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "preview",
+              "sync"
+            ]
+          },
+          "account": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 256
+          },
+          "regions": {
+            "type": "array",
+            "min_items": 1,
+            "max_items": 32,
+            "unique_items": true,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 128
+            }
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 16777216
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "source_scope": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "scan_id": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "fixture_pages": {
+            "type": "object",
+            "testing_only": true,
+            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
+          }
+        },
+        "conditional_required": {
+          "sync": [
+            "source_scope",
+            "scan_id"
+          ]
+        },
+        "secret_bindings": [
+          "ALICLOUD_ACCESS_KEY_ID",
+          "ALICLOUD_ACCESS_KEY_SECRET",
+          "ALICLOUD_SECURITY_TOKEN",
+          "CMDB_TOKEN"
+        ],
+        "invariants": [
+          "preview never calls the target CMDB",
+          "sync validates source_scope and scan_id before begin_scan",
+          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
+        ]
+      },
+      "output_contract": {
+        "schema": "dlr-asset-snapshot/v1",
+        "preview_required": [
+          "schema_version",
+          "assets",
+          "relationships",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "sync_required": [
+          "mode",
+          "scan_id",
+          "source_scope",
+          "summary",
+          "partial",
+          "failed",
+          "checkpoint"
+        ],
+        "sync_excludes": [
+          "assets",
+          "relationships",
+          "secrets",
+          "raw_third_party_response"
+        ],
+        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
+        "relation_types": [
+          "located_in",
+          "attached_to",
+          "protected_by",
+          "member_of",
+          "serves",
+          "routes_to"
+        ]
+      },
+      "runtime_config": {
+        "cmdb_base_url": "https://cmdb.example"
+      },
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：ALICLOUD_ACCESS_KEY_ID、ALICLOUD_ACCESS_KEY_SECRET、CMDB_TOKEN。使用最小只读 RAM 权限；对未启用产品和权限拒绝保持显式。",
+        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: ALICLOUD_ACCESS_KEY_ID, ALICLOUD_ACCESS_KEY_SECRET, CMDB_TOKEN. Use least-privilege read-only RAM permissions and keep disabled-product or access-denied gaps explicit."
+      },
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "receipt_resource": "receipts/alicloud-database-middleware-inventory/python.json"
+    },
+    {
+      "language": "javascript",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/alicloud-database-middleware-inventory/javascript.mjs",
+      "code_sha256": "f779eea8938256241cb1de192047ebb75300ab2d9bf877b9b3525f79c00c7a1e",
+      "requirements": "@alicloud/openapi-client@0.4.15",
+      "install_notes": {
+        "zh-CN": "建议依赖：@alicloud/openapi-client@0.4.15。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
+        "en": "Suggested dependency: @alicloud/openapi-client@0.4.15. Copying the template does not install it; first select a compatible Worker, then install through the platform dependency flow and verify the source."
+      },
+      "input_skeleton": {
+        "mode": "preview",
+        "account": "EXAMPLE_ACCOUNT",
+        "regions": [
+          "example-region-1"
+        ],
+        "max_pages": 50,
+        "max_records": 5000,
+        "max_bytes": 8388608,
+        "page_size": 100,
+        "timeout_seconds": 30,
+        "batch_size": 200,
+        "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1",
+        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "mode",
+          "account",
+          "regions"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "preview",
+              "sync"
+            ]
+          },
+          "account": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 256
+          },
+          "regions": {
+            "type": "array",
+            "min_items": 1,
+            "max_items": 32,
+            "unique_items": true,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 128
+            }
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 16777216
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "source_scope": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "scan_id": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "fixture_pages": {
+            "type": "object",
+            "testing_only": true,
+            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
+          }
+        },
+        "conditional_required": {
+          "sync": [
+            "source_scope",
+            "scan_id"
+          ]
+        },
+        "secret_bindings": [
+          "ALICLOUD_ACCESS_KEY_ID",
+          "ALICLOUD_ACCESS_KEY_SECRET",
+          "ALICLOUD_SECURITY_TOKEN",
+          "CMDB_TOKEN"
+        ],
+        "invariants": [
+          "preview never calls the target CMDB",
+          "sync validates source_scope and scan_id before begin_scan",
+          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
+        ]
+      },
+      "output_contract": {
+        "schema": "dlr-asset-snapshot/v1",
+        "preview_required": [
+          "schema_version",
+          "assets",
+          "relationships",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "sync_required": [
+          "mode",
+          "scan_id",
+          "source_scope",
+          "summary",
+          "partial",
+          "failed",
+          "checkpoint"
+        ],
+        "sync_excludes": [
+          "assets",
+          "relationships",
+          "secrets",
+          "raw_third_party_response"
+        ],
+        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
+        "relation_types": [
+          "located_in",
+          "attached_to",
+          "protected_by",
+          "member_of",
+          "serves",
+          "routes_to"
+        ]
+      },
+      "runtime_config": {
+        "cmdb_base_url": "https://cmdb.example"
+      },
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：ALICLOUD_ACCESS_KEY_ID、ALICLOUD_ACCESS_KEY_SECRET、CMDB_TOKEN。使用最小只读 RAM 权限；对未启用产品和权限拒绝保持显式。",
+        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: ALICLOUD_ACCESS_KEY_ID, ALICLOUD_ACCESS_KEY_SECRET, CMDB_TOKEN. Use least-privilege read-only RAM permissions and keep disabled-product or access-denied gaps explicit."
+      },
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "receipt_resource": "receipts/alicloud-database-middleware-inventory/javascript.json"
+    },
+    {
+      "language": "java",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/alicloud-database-middleware-inventory/java.java",
+      "code_sha256": "36fb29abd6778d698a3d565303e95211301ce620541cf2480f743ab462c1234b",
+      "requirements": "com.aliyun:tea-openapi:0.3.15",
+      "install_notes": {
+        "zh-CN": "建议依赖：com.aliyun:tea-openapi:0.3.15。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
+        "en": "Suggested dependency: com.aliyun:tea-openapi:0.3.15. Copying the template does not install it; first select a compatible Worker, then install through the platform dependency flow and verify the source."
+      },
+      "input_skeleton": {
+        "mode": "preview",
+        "account": "EXAMPLE_ACCOUNT",
+        "regions": [
+          "example-region-1"
+        ],
+        "max_pages": 50,
+        "max_records": 5000,
+        "max_bytes": 8388608,
+        "page_size": 100,
+        "timeout_seconds": 30,
+        "batch_size": 200,
+        "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1",
+        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "mode",
+          "account",
+          "regions"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "preview",
+              "sync"
+            ]
+          },
+          "account": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 256
+          },
+          "regions": {
+            "type": "array",
+            "min_items": 1,
+            "max_items": 32,
+            "unique_items": true,
+            "items": {
+              "type": "string",
+              "min_length": 1,
+              "max_length": 128
+            }
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 16777216
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "source_scope": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "scan_id": {
+            "type": "string",
+            "min_length": 1,
+            "max_length": 128
+          },
+          "fixture_pages": {
+            "type": "object",
+            "testing_only": true,
+            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
+          }
+        },
+        "conditional_required": {
+          "sync": [
+            "source_scope",
+            "scan_id"
+          ]
+        },
+        "secret_bindings": [
+          "ALICLOUD_ACCESS_KEY_ID",
+          "ALICLOUD_ACCESS_KEY_SECRET",
+          "ALICLOUD_SECURITY_TOKEN",
+          "CMDB_TOKEN"
+        ],
+        "invariants": [
+          "preview never calls the target CMDB",
+          "sync validates source_scope and scan_id before begin_scan",
+          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
+        ]
+      },
+      "output_contract": {
+        "schema": "dlr-asset-snapshot/v1",
+        "preview_required": [
+          "schema_version",
+          "assets",
+          "relationships",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "sync_required": [
+          "mode",
+          "scan_id",
+          "source_scope",
+          "summary",
+          "partial",
+          "failed",
+          "checkpoint"
+        ],
+        "sync_excludes": [
+          "assets",
+          "relationships",
+          "secrets",
+          "raw_third_party_response"
+        ],
+        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
+        "relation_types": [
+          "located_in",
+          "attached_to",
+          "protected_by",
+          "member_of",
+          "serves",
+          "routes_to"
+        ]
+      },
+      "runtime_config": {
+        "cmdb_base_url": "https://cmdb.example"
+      },
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：ALICLOUD_ACCESS_KEY_ID、ALICLOUD_ACCESS_KEY_SECRET、CMDB_TOKEN。使用最小只读 RAM 权限；对未启用产品和权限拒绝保持显式。",
+        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: ALICLOUD_ACCESS_KEY_ID, ALICLOUD_ACCESS_KEY_SECRET, CMDB_TOKEN. Use least-privilege read-only RAM permissions and keep disabled-product or access-denied gaps explicit."
+      },
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "receipt_resource": "receipts/alicloud-database-middleware-inventory/java.json"
+    }
+  ]
+}

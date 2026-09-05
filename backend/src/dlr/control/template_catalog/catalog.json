@@ -1,0 +1,153 @@
+{
+  "catalog_version": "1.0.0",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "themes": [
+    {
+      "slug": "cloud-cmdb",
+      "name": {
+        "zh-CN": "云与 CMDB",
+        "en": "Cloud & CMDB"
+      },
+      "description": {
+        "zh-CN": "以只读、可追溯方式预览云资源或 CMDB CI，并可选择幂等同步。",
+        "en": "Preview cloud resources or CMDB CIs through bounded read-only recipes, with optional idempotent synchronization."
+      },
+      "sort_order": 10
+    },
+    {
+      "slug": "api-events",
+      "name": {
+        "zh-CN": "API 与事件",
+        "en": "API & Events"
+      },
+      "description": {
+        "zh-CN": "调用 REST API、遍历分页集合或规范化 Webhook 事件。",
+        "en": "Call REST APIs, traverse paginated collections, or normalize webhook events."
+      },
+      "sort_order": 20
+    },
+    {
+      "slug": "file-data",
+      "name": {
+        "zh-CN": "文件与数据",
+        "en": "Files & Data"
+      },
+      "description": {
+        "zh-CN": "在明确资源上限内解析 CSV、Excel，并映射清洗 JSON。",
+        "en": "Parse CSV and Excel files and map JSON within explicit resource bounds."
+      },
+      "sort_order": 30
+    },
+    {
+      "slug": "databases",
+      "name": {
+        "zh-CN": "数据库",
+        "en": "Databases"
+      },
+      "description": {
+        "zh-CN": "使用数据库侧只读账号执行单条参数化 SELECT 快照。",
+        "en": "Run one parameterized SELECT snapshot with a database-enforced read-only account."
+      },
+      "sort_order": 40
+    },
+    {
+      "slug": "storage-transfer",
+      "name": {
+        "zh-CN": "存储与传输",
+        "en": "Storage & Transfer"
+      },
+      "description": {
+        "zh-CN": "有界列出和读取 S3 兼容对象或受信任 SFTP 路径。",
+        "en": "List and read bounded S3-compatible objects or trusted SFTP paths."
+      },
+      "sort_order": 50
+    }
+  ],
+  "scenarios": [
+    {
+      "slug": "alicloud-compute-container-topology",
+      "theme_slug": "cloud-cmdb",
+      "metadata_resource": "scenarios/alicloud-compute-container-topology/metadata.json"
+    },
+    {
+      "slug": "alicloud-network-ingress-topology",
+      "theme_slug": "cloud-cmdb",
+      "metadata_resource": "scenarios/alicloud-network-ingress-topology/metadata.json"
+    },
+    {
+      "slug": "alicloud-database-middleware-inventory",
+      "theme_slug": "cloud-cmdb",
+      "metadata_resource": "scenarios/alicloud-database-middleware-inventory/metadata.json"
+    },
+    {
+      "slug": "tencentcloud-compute-container-topology",
+      "theme_slug": "cloud-cmdb",
+      "metadata_resource": "scenarios/tencentcloud-compute-container-topology/metadata.json"
+    },
+    {
+      "slug": "tencentcloud-network-ingress-topology",
+      "theme_slug": "cloud-cmdb",
+      "metadata_resource": "scenarios/tencentcloud-network-ingress-topology/metadata.json"
+    },
+    {
+      "slug": "tencentcloud-database-middleware-inventory",
+      "theme_slug": "cloud-cmdb",
+      "metadata_resource": "scenarios/tencentcloud-database-middleware-inventory/metadata.json"
+    },
+    {
+      "slug": "servicenow-cmdb-ci-snapshot",
+      "theme_slug": "cloud-cmdb",
+      "metadata_resource": "scenarios/servicenow-cmdb-ci-snapshot/metadata.json"
+    },
+    {
+      "slug": "rest-single-request",
+      "theme_slug": "api-events",
+      "metadata_resource": "scenarios/rest-single-request/metadata.json"
+    },
+    {
+      "slug": "rest-paginated-collection",
+      "theme_slug": "api-events",
+      "metadata_resource": "scenarios/rest-paginated-collection/metadata.json"
+    },
+    {
+      "slug": "webhook-json-normalization",
+      "theme_slug": "api-events",
+      "metadata_resource": "scenarios/webhook-json-normalization/metadata.json"
+    },
+    {
+      "slug": "csv-to-json",
+      "theme_slug": "file-data",
+      "metadata_resource": "scenarios/csv-to-json/metadata.json"
+    },
+    {
+      "slug": "excel-to-json",
+      "theme_slug": "file-data",
+      "metadata_resource": "scenarios/excel-to-json/metadata.json"
+    },
+    {
+      "slug": "json-mapping-cleaning",
+      "theme_slug": "file-data",
+      "metadata_resource": "scenarios/json-mapping-cleaning/metadata.json"
+    },
+    {
+      "slug": "postgresql-readonly-snapshot",
+      "theme_slug": "databases",
+      "metadata_resource": "scenarios/postgresql-readonly-snapshot/metadata.json"
+    },
+    {
+      "slug": "mysql-readonly-snapshot",
+      "theme_slug": "databases",
+      "metadata_resource": "scenarios/mysql-readonly-snapshot/metadata.json"
+    },
+    {
+      "slug": "s3-compatible-list-read",
+      "theme_slug": "storage-transfer",
+      "metadata_resource": "scenarios/s3-compatible-list-read/metadata.json"
+    },
+    {
+      "slug": "sftp-list-read",
+      "theme_slug": "storage-transfer",
+      "metadata_resource": "scenarios/sftp-list-read/metadata.json"
+    }
+  ]
+}

@@ -145,11 +145,48 @@ Create → Edit → Save → Run / Schedule → Observe
 
 ---
 
+## 从模板广场开始
+
+顶栏的“模板广场”提供随 DLR 版本发布的官方 Recipe 起点。首期目录固定为 **5 个主题、
+17 个场景和 51 个语言 Variant**；每个场景各有 Python、JavaScript、Java 三份实现，
+并展示当前语言的输入输出合同、建议依赖、来源和成熟度。
+
+```text
+模板广场 → 选择场景与语言 → 复制为 Adapter 并命名 → 自动进入新 Adapter 的编辑页
+```
+
+复制产生的是独立 Adapter 和 Revision 1，不是对模板的动态引用。它默认停止、没有
+Worker、Credential Binding、已安装依赖、Schedule 或运行历史；模板以后升级也不会
+覆盖用户已经复制和修改的内容。运行前需要选择兼容 Worker、按说明安装精确依赖、
+配置非敏感 Runtime 参数，并通过 Credential Binding 提供源码声明的 Secret。外部
+Endpoint 由管理员审核和配置，不应把密码、Token 或认证 Query 放入 URL 或代码。
+
+关闭 Managed Input Store 不影响浏览、查看或复制任何模板，CSV/Excel 也不会在复制时
+自动创建文件绑定。7 个云与 CMDB 场景提供只读 `preview`，其规范化结果和 Adapter
+Output 受页数、记录数、字节数与总时限约束，并可按外部 `dlr-cmdb-upsert/v1` 合同执行
+`sync`；sync 必须在不可变 Execution Input 中提供稳定的 `scan_id` 和 `source_scope`，
+同一次 Execution 的重试必须复用它们。阿里云 3 个场景使用的 Alibaba Cloud SDK
+`callApi` 尚不能证明原始传输响应受字节上限约束，因此该有界承诺不包含其源 HTTP 响应。
+
+成熟度按“场景 + 版本 + 语言 + 源码哈希”分别记录，并由 Receipt 约束。
+`reference-generated` 表示实验/未验证，即尚无满足下一等级全部门禁且匹配当前源码哈希的
+Receipt；允许存在窄 smoke 或安全 canary，但它们不能冒充完整 fixture 或真实外部服务
+验证。详情见 [Template Recipe 使用与安全边界](docs/templates/recipe-usage-security.md)、
+[CMDB Upsert v1 合同](docs/templates/cmdb-upsert-v1.md)和
+[成熟度与 Receipt](docs/templates/maturity-receipts.md)。
+
+> Recipe 的 URL 校验、同源跳转、超时和资源上限不是平台级 SSRF 或出网隔离。DLR
+> 仍采用可信管理员代码模型；生产环境必须另行使用防火墙、DNS/代理策略和目标白名单
+> 限制 Worker 出网。
+
+---
+
 ## 核心能力
 
 | | 能力 | 说明 |
 |---|---|---|
 | 🧩 | **Code-first Adapter** | Adapter 是最终资产，可直接阅读、修改、测试和版本化 |
+| 🧰 | **模板广场** | 按主题和场景浏览三语言 Recipe，复制后直接进入独立 Adapter 编辑页 |
 | 🖥️ | **Web Workbench** | 在浏览器中创建、编辑、保存、Clone 和管理 Adapter |
 | ⚡ | **多语言 Runtime** | Python、JavaScript、Java 使用一致的 Input / Output / Log 模型 |
 | ⏱️ | **Task & Schedule** | 手动运行，或通过 Cron + Timezone 定时执行 |
@@ -435,6 +472,8 @@ Smoke Test 使用隔离的本地环境和 fake AI Provider，不会访问公网 
 
 - [产品定义](docs/zh-CN/product.md)
 - [总体架构](docs/zh-CN/architecture.md)
+- [Template Recipe 使用与安全边界](docs/templates/recipe-usage-security.md)
+- [Template 来源、CMDB 合同与成熟度文档](docs/templates/README.md)
 - [Reliable Runtime 迁移、Cutover API 与故障处理](docs/zh-CN/issue130-reliable-runtime-migrations.md)
 - [Issue #130 Linux Sandbox 部署](docs/zh-CN/issue130-sandbox-deployment.md)
 - [Specs 索引与冲突优先级](docs/specs/README.md)

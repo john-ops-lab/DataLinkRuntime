@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dlr:schema:cmdb-upsert:v1",
+  "title": "DLR CMDB Upsert v1",
+  "description": "Request-body contract for begin_scan, ordered asset/relationship batches and finish_scan. The Idempotency-Key header must equal body.idempotency_key. Replaying one key with a different canonical body is a conflict.",
+  "oneOf": [
+    {
+      "allOf": [{ "$ref": "#/$defs/common" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["provider", "catalog_version"],
+      "properties": {
+        "operation": { "const": "begin_scan" },
+        "provider": {
+          "type": "string",
+          "enum": ["alicloud", "tencentcloud", "servicenow"]
+        },
+        "catalog_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      }
+    },
+    {
+      "allOf": [{ "$ref": "#/$defs/common" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["batch_id", "batch_index", "assets"],
+      "properties": {
+        "operation": { "const": "upsert_assets" },
+        "batch_id": { "$ref": "#/$defs/batch_id" },
+        "batch_index": { "type": "integer", "minimum": 0 },
+        "assets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/asset" }
+        }
+      }
+    },
+    {
+      "allOf": [{ "$ref": "#/$defs/common" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["batch_id", "batch_index", "relationships"],
+      "properties": {
+        "operation": { "const": "upsert_relationships" },
+        "batch_id": { "$ref": "#/$defs/batch_id" },
+        "batch_index": { "type": "integer", "minimum": 0 },
+        "relationships": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/relationship" }
+        }
+      }
+    },
+    {
+      "allOf": [{ "$ref": "#/$defs/common" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "required": ["complete", "summary"],
+      "properties": {
+        "operation": { "const": "finish_scan" },
+        "complete": { "const": true },
+        "summary": { "$ref": "#/$defs/summary" }
+      }
+    }
+  ],
+  "$defs": {
+    "common": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "source_scope",
+        "scan_id",
+        "operation",
+        "idempotency_key"
+      ],
+      "properties": {
+        "schema_version": { "const": "dlr-cmdb-upsert/v1" },
+        "source_scope": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
+        },
+        "scan_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
+        },
+        "operation": { "type": "string" },
+        "idempotency_key": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "batch_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]*$"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assets", "relationships", "pages", "failures"],
+      "properties": {
+        "assets": { "type": "integer", "minimum": 0, "maximum": 50000 },
+        "relationships": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "pages": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "failures": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "$ref": "#/$defs/failure" }
+        }
+      }
+    },
+    "failure": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 128 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["region", "resource", "error"],
+          "properties": {
+            "region": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "resource": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "error": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        }
+      ]
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "external_key", "class", "provider_type", "name", "account",
+        "region", "zone", "status", "tags", "attributes"
+      ],
+      "properties": {
+        "external_key": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 512,
+          "pattern": "^[a-z0-9][a-z0-9._-]*:[^:\\s]+:(?:[^:\\s]+|-):[a-z0-9][a-z0-9._-]*:[^:\\s]+$"
+        },
+        "class": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "provider_type": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "name": { "type": ["string", "null"], "maxLength": 512 },
+        "account": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "region": { "type": ["string", "null"], "maxLength": 128 },
+        "zone": { "type": ["string", "null"], "maxLength": 128 },
+        "status": { "type": ["string", "null"], "maxLength": 128 },
+        "tags": {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": { "maxLength": 256 },
+          "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 512,
+          "additionalProperties": true
+        }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "type", "to"],
+      "properties": {
+        "from": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 512,
+          "pattern": "^[a-z0-9][a-z0-9._-]*:[^:\\s]+:(?:[^:\\s]+|-):[a-z0-9][a-z0-9._-]*:[^:\\s]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "located_in", "attached_to", "protected_by",
+            "member_of", "serves", "routes_to"
+          ]
+        },
+        "to": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 512,
+          "pattern": "^[a-z0-9][a-z0-9._-]*:[^:\\s]+:(?:[^:\\s]+|-):[a-z0-9][a-z0-9._-]*:[^:\\s]+$"
+        }
+      }
+    }
+  }
+}

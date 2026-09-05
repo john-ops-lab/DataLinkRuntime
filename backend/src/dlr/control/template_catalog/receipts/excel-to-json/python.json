@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "excel-to-json",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "98c7a121e8bf1d9a1cb017d66754d3e1f742006cbf62810717086e0ecf29a1ff",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

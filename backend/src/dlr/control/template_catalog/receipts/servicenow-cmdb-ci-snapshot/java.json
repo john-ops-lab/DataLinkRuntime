@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "servicenow-cmdb-ci-snapshot",
+  "version": "1.0.0",
+  "language": "java",
+  "source_sha256": "3b4ed7f60e41dbde7f72dc3842a228ea3abe83c43ed81e183c276ab8dcee599d",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

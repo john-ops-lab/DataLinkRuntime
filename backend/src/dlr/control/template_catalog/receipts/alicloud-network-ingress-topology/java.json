@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "alicloud-network-ingress-topology",
+  "version": "1.0.0",
+  "language": "java",
+  "source_sha256": "d23930a5798457b219bc997f2db78c99a2ebd9f676fd34c2da89b6ae200459e4",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

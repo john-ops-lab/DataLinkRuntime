@@ -1,0 +1,418 @@
+{
+  "slug": "s3-compatible-list-read",
+  "theme_slug": "storage-transfer",
+  "title": {
+    "zh-CN": "S3 兼容清单与受限读取",
+    "en": "S3-Compatible List & Bounded Read"
+  },
+  "summary": {
+    "zh-CN": "分页列出对象元数据，并只对受控对象执行有界 Range 读取。",
+    "en": "Page object metadata and perform bounded Range reads only for selected objects."
+  },
+  "details": {
+    "zh-CN": "支持 endpoint、region、bucket、prefix 与 continuation；同时限制对象数、单对象原始字节和最终 JSON 总字节。",
+    "en": "Supports endpoint, region, bucket, prefix and continuation while limiting object count, per-object raw bytes and total final JSON bytes."
+  },
+  "input_summary": {
+    "zh-CN": "兼容端点、region、bucket、prefix、continuation 与可选读取 key。",
+    "en": "Compatible endpoint, region, bucket, prefix, continuation and optional keys to read."
+  },
+  "output_summary": {
+    "zh-CN": "对象元数据、受限内容、计数、partial 与 continuation checkpoint。",
+    "en": "Object metadata, bounded content, counts, partial state and continuation checkpoint."
+  },
+  "risk": {
+    "zh-CN": "无 Artifact 合同时不会读取任意大对象；base64、清单元数据和 checkpoint 均计入最终 JSON 上限，认证 Query 或签名不得回显。",
+    "en": "Without an Artifact contract, arbitrary large objects are not read; base64, listing metadata and checkpoints count toward the final JSON cap, and authentication query values and signatures are never echoed."
+  },
+  "vendor": "S3 Compatible",
+  "adapter_type": "task",
+  "protocols": [
+    "HTTPS",
+    "S3"
+  ],
+  "tags": [
+    "S3",
+    "object storage",
+    "list",
+    "range"
+  ],
+  "logo_key": "storage-s3",
+  "version": "1.0.0",
+  "updated_at": "2026-09-05",
+  "featured_rank": 10,
+  "modes": [
+    "preview"
+  ],
+  "provenance_ids": [
+    "s3-api-2006-03-01"
+  ],
+  "variants": [
+    {
+      "language": "python",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/s3-compatible-list-read/python.py",
+      "code_sha256": "1952dd5644f22ef39f717f7df22af6ca626f42f1074c3034db2a0ab90a45fe5a",
+      "requirements": "boto3==1.40.21",
+      "install_notes": {
+        "zh-CN": "建议依赖：boto3==1.40.21。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
+        "en": "Suggested dependencies: boto3==1.40.21. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
+      },
+      "input_skeleton": {
+        "endpoint": "https://storage.example",
+        "region": "example-region-1",
+        "bucket": "example-bucket",
+        "prefix": "exports/",
+        "continuation_token": null,
+        "object_offset": 0,
+        "read_keys": [],
+        "force_path_style": true,
+        "max_pages": 20,
+        "max_objects": 1000,
+        "max_object_bytes": 1048576,
+        "max_total_bytes": 4194304
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "bucket"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "scheme": "https; http is accepted only for loopback fixtures"
+          },
+          "region": {
+            "type": "string"
+          },
+          "bucket": {
+            "type": "string",
+            "min_length": 1
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "continuation_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "min_length": 1
+          },
+          "object_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "read_keys": {
+            "type": "array",
+            "max_items": 1000
+          },
+          "force_path_style": {
+            "type": "boolean"
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "max_objects": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "max_object_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8388608
+          },
+          "max_total_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 16777216
+          }
+        },
+        "secret_bindings": [
+          "S3_ACCESS_KEY_ID",
+          "S3_SECRET_ACCESS_KEY",
+          "S3_SESSION_TOKEN"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "objects",
+          "contents",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "object_fields": [
+          "key",
+          "size",
+          "etag",
+          "lastModified"
+        ],
+        "oversize": "metadata plus explicit limit_exceeded status",
+        "byte_budget": "max_total_bytes bounds the complete compact JSON UTF-8 envelope, including objects, contents, base64, status, summary and checkpoint",
+        "checkpoint_rule": "a bounded mid-page checkpoint contains the request continuation_token and the zero-based object_offset of the first unprocessed item"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：S3_ACCESS_KEY_ID、S3_SECRET_ACCESS_KEY、S3_SESSION_TOKEN。仅配置可信 S3 兼容 endpoint，并为账号授予所需 bucket 的只读权限。",
+        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN. Configure only a trusted S3-compatible endpoint and grant read-only access to the required bucket."
+      },
+      "provenance_ids": [
+        "s3-api-2006-03-01"
+      ],
+      "receipt_resource": "receipts/s3-compatible-list-read/python.json"
+    },
+    {
+      "language": "javascript",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/s3-compatible-list-read/javascript.mjs",
+      "code_sha256": "d7c3f572c870fed143ed0b9410350d0045b1cdf53f8cf6b785bdbb62a59a3d51",
+      "requirements": "@aws-sdk/client-s3@3.883.0",
+      "install_notes": {
+        "zh-CN": "建议依赖：@aws-sdk/client-s3@3.883.0。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
+        "en": "Suggested dependencies: @aws-sdk/client-s3@3.883.0. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
+      },
+      "input_skeleton": {
+        "endpoint": "https://storage.example",
+        "region": "example-region-1",
+        "bucket": "example-bucket",
+        "prefix": "exports/",
+        "continuation_token": null,
+        "object_offset": 0,
+        "read_keys": [],
+        "force_path_style": true,
+        "max_pages": 20,
+        "max_objects": 1000,
+        "max_object_bytes": 1048576,
+        "max_total_bytes": 4194304
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "bucket"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "scheme": "https; http is accepted only for loopback fixtures"
+          },
+          "region": {
+            "type": "string"
+          },
+          "bucket": {
+            "type": "string",
+            "min_length": 1
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "continuation_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "min_length": 1
+          },
+          "object_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "read_keys": {
+            "type": "array",
+            "max_items": 1000
+          },
+          "force_path_style": {
+            "type": "boolean"
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "max_objects": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "max_object_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8388608
+          },
+          "max_total_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 16777216
+          }
+        },
+        "secret_bindings": [
+          "S3_ACCESS_KEY_ID",
+          "S3_SECRET_ACCESS_KEY",
+          "S3_SESSION_TOKEN"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "objects",
+          "contents",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "object_fields": [
+          "key",
+          "size",
+          "etag",
+          "lastModified"
+        ],
+        "oversize": "metadata plus explicit limit_exceeded status",
+        "byte_budget": "max_total_bytes bounds the complete compact JSON UTF-8 envelope, including objects, contents, base64, status, summary and checkpoint",
+        "checkpoint_rule": "a bounded mid-page checkpoint contains the request continuation_token and the zero-based object_offset of the first unprocessed item"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：S3_ACCESS_KEY_ID、S3_SECRET_ACCESS_KEY、S3_SESSION_TOKEN。仅配置可信 S3 兼容 endpoint，并为账号授予所需 bucket 的只读权限。",
+        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN. Configure only a trusted S3-compatible endpoint and grant read-only access to the required bucket."
+      },
+      "provenance_ids": [
+        "s3-api-2006-03-01"
+      ],
+      "receipt_resource": "receipts/s3-compatible-list-read/javascript.json"
+    },
+    {
+      "language": "java",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/s3-compatible-list-read/java.java",
+      "code_sha256": "50118a249778a8ceabf94cbdee4a0a251d72c108052a13106dd60d55fec7465c",
+      "requirements": "software.amazon.awssdk:s3:2.32.27",
+      "install_notes": {
+        "zh-CN": "建议依赖：software.amazon.awssdk:s3:2.32.27。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
+        "en": "Suggested dependencies: software.amazon.awssdk:s3:2.32.27. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
+      },
+      "input_skeleton": {
+        "endpoint": "https://storage.example",
+        "region": "example-region-1",
+        "bucket": "example-bucket",
+        "prefix": "exports/",
+        "continuation_token": null,
+        "object_offset": 0,
+        "read_keys": [],
+        "force_path_style": true,
+        "max_pages": 20,
+        "max_objects": 1000,
+        "max_object_bytes": 1048576,
+        "max_total_bytes": 4194304
+      },
+      "input_contract": {
+        "type": "object",
+        "required": [
+          "bucket"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "scheme": "https; http is accepted only for loopback fixtures"
+          },
+          "region": {
+            "type": "string"
+          },
+          "bucket": {
+            "type": "string",
+            "min_length": 1
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "continuation_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "min_length": 1
+          },
+          "object_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "read_keys": {
+            "type": "array",
+            "max_items": 1000
+          },
+          "force_path_style": {
+            "type": "boolean"
+          },
+          "max_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "max_objects": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "max_object_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8388608
+          },
+          "max_total_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 16777216
+          }
+        },
+        "secret_bindings": [
+          "S3_ACCESS_KEY_ID",
+          "S3_SECRET_ACCESS_KEY",
+          "S3_SESSION_TOKEN"
+        ]
+      },
+      "output_contract": {
+        "required": [
+          "objects",
+          "contents",
+          "summary",
+          "partial",
+          "checkpoint"
+        ],
+        "object_fields": [
+          "key",
+          "size",
+          "etag",
+          "lastModified"
+        ],
+        "oversize": "metadata plus explicit limit_exceeded status",
+        "byte_budget": "max_total_bytes bounds the complete compact JSON UTF-8 envelope, including objects, contents, base64, status, summary and checkpoint",
+        "checkpoint_rule": "a bounded mid-page checkpoint contains the request continuation_token and the zero-based object_offset of the first unprocessed item"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：S3_ACCESS_KEY_ID、S3_SECRET_ACCESS_KEY、S3_SESSION_TOKEN。仅配置可信 S3 兼容 endpoint，并为账号授予所需 bucket 的只读权限。",
+        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN. Configure only a trusted S3-compatible endpoint and grant read-only access to the required bucket."
+      },
+      "provenance_ids": [
+        "s3-api-2006-03-01"
+      ],
+      "receipt_resource": "receipts/s3-compatible-list-read/java.json"
+    }
+  ]
+}

@@ -1,0 +1,352 @@
+{
+  "slug": "csv-to-json",
+  "theme_slug": "file-data",
+  "title": {
+    "zh-CN": "CSV 转 JSON",
+    "en": "CSV to JSON"
+  },
+  "summary": {
+    "zh-CN": "在行、列、字段和总输出上限内解析 CSV 内容。",
+    "en": "Parse CSV content within row, column, field and total-output bounds."
+  },
+  "details": {
+    "zh-CN": "支持编码、UTF BOM、表头、分隔符、引号内换行和空行策略；可直接使用执行输入，不要求 Managed Input Store。",
+    "en": "Supports encoding, UTF BOM, headers, delimiters, quoted newlines and blank-line policy; direct execution input works without Managed Input Store."
+  },
+  "input_summary": {
+    "zh-CN": "受限 CSV 内容、编码、分隔符、表头和空行策略。",
+    "en": "Bounded CSV content, encoding, delimiter, header and blank-line policy."
+  },
+  "output_summary": {
+    "zh-CN": "完整 JSON rows（表头模式下每行是字段对象）、计数、partial/checkpoint、解码编码与分隔符。",
+    "en": "Complete JSON rows (field objects in header mode), count, partial/checkpoint state, decoded encoding and delimiter."
+  },
+  "risk": {
+    "zh-CN": "超限前停止并返回完整 JSON 或明确错误，不返回损坏片段。",
+    "en": "Stops before limits with complete JSON or an explicit error, never a corrupt fragment."
+  },
+  "vendor": "DLR",
+  "adapter_type": "task",
+  "protocols": [
+    "CSV",
+    "Text"
+  ],
+  "tags": [
+    "CSV",
+    "JSON",
+    "file",
+    "transform"
+  ],
+  "logo_key": "file-csv",
+  "version": "1.0.0",
+  "updated_at": "2026-09-05",
+  "featured_rank": 10,
+  "modes": [
+    "transform"
+  ],
+  "provenance_ids": [
+    "csv-rfc4180"
+  ],
+  "variants": [
+    {
+      "language": "python",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/csv-to-json/python.py",
+      "code_sha256": "10ad41e250a547dc6c75fa68d02eca6b93df0af55b055db3eec288d070c992b4",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "content": "name,value\nexample,1\n",
+        "encoding": "utf-8-sig",
+        "delimiter": ",",
+        "header": true,
+        "skip_empty": true,
+        "max_input_bytes": 2097152,
+        "max_output_bytes": 4194304,
+        "max_rows": 10000,
+        "max_columns": 200,
+        "max_field_bytes": 65536
+      },
+      "input_contract": {
+        "type": "object",
+        "one_of_required": [
+          "content",
+          "execution input file"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "delimiter": {
+            "type": "string",
+            "length": 1
+          },
+          "header": {
+            "type": "boolean"
+          },
+          "headers": {
+            "type": "array",
+            "items": "string"
+          },
+          "skip_empty": {
+            "type": "boolean"
+          },
+          "max_input_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "max_columns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "max_field_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576
+          }
+        },
+        "managed_input_required": false
+      },
+      "output_contract": {
+        "required": [
+          "rows",
+          "count",
+          "partial",
+          "checkpoint",
+          "encoding",
+          "delimiter"
+        ],
+        "row_order": "source order",
+        "error": "stable limit or parse category"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。默认可从普通执行输入读取；如部署支持 Managed Input，可在复制后自行配置引用。",
+        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: none. Direct execution input works by default; if Managed Input is available, configure a reference after copying."
+      },
+      "provenance_ids": [
+        "csv-rfc4180"
+      ],
+      "receipt_resource": "receipts/csv-to-json/python.json"
+    },
+    {
+      "language": "javascript",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/csv-to-json/javascript.mjs",
+      "code_sha256": "a04740d1c68e226182792362fceb991988d11c9a03d4812b0bf48757a5f8cf51",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "content": "name,value\nexample,1\n",
+        "encoding": "utf-8-sig",
+        "delimiter": ",",
+        "header": true,
+        "skip_empty": true,
+        "max_input_bytes": 2097152,
+        "max_output_bytes": 4194304,
+        "max_rows": 10000,
+        "max_columns": 200,
+        "max_field_bytes": 65536
+      },
+      "input_contract": {
+        "type": "object",
+        "one_of_required": [
+          "content",
+          "execution input file"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "delimiter": {
+            "type": "string",
+            "length": 1
+          },
+          "header": {
+            "type": "boolean"
+          },
+          "headers": {
+            "type": "array",
+            "items": "string"
+          },
+          "skip_empty": {
+            "type": "boolean"
+          },
+          "max_input_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "max_columns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "max_field_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576
+          }
+        },
+        "managed_input_required": false
+      },
+      "output_contract": {
+        "required": [
+          "rows",
+          "count",
+          "partial",
+          "checkpoint",
+          "encoding",
+          "delimiter"
+        ],
+        "row_order": "source order",
+        "error": "stable limit or parse category"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。默认可从普通执行输入读取；如部署支持 Managed Input，可在复制后自行配置引用。",
+        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: none. Direct execution input works by default; if Managed Input is available, configure a reference after copying."
+      },
+      "provenance_ids": [
+        "csv-rfc4180"
+      ],
+      "receipt_resource": "receipts/csv-to-json/javascript.json"
+    },
+    {
+      "language": "java",
+      "maturity": "reference-generated",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/csv-to-json/java.java",
+      "code_sha256": "db146cfd0c93017d4f35d079dc26482058502da32f747b5b782f8969a2a4eb9d",
+      "requirements": "",
+      "install_notes": {
+        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
+        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
+      },
+      "input_skeleton": {
+        "content": "name,value\nexample,1\n",
+        "encoding": "utf-8-sig",
+        "delimiter": ",",
+        "header": true,
+        "skip_empty": true,
+        "max_input_bytes": 2097152,
+        "max_output_bytes": 4194304,
+        "max_rows": 10000,
+        "max_columns": 200,
+        "max_field_bytes": 65536
+      },
+      "input_contract": {
+        "type": "object",
+        "one_of_required": [
+          "content",
+          "execution input file"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "delimiter": {
+            "type": "string",
+            "length": 1
+          },
+          "header": {
+            "type": "boolean"
+          },
+          "headers": {
+            "type": "array",
+            "items": "string"
+          },
+          "skip_empty": {
+            "type": "boolean"
+          },
+          "max_input_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16777216
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "max_columns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "max_field_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576
+          }
+        },
+        "managed_input_required": false
+      },
+      "output_contract": {
+        "required": [
+          "rows",
+          "count",
+          "partial",
+          "checkpoint",
+          "encoding",
+          "delimiter"
+        ],
+        "row_order": "source order",
+        "error": "stable limit or parse category"
+      },
+      "runtime_config": {},
+      "runtime_guidance": {
+        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。默认可从普通执行输入读取；如部署支持 Managed Input，可在复制后自行配置引用。",
+        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: none. Direct execution input works by default; if Managed Input is available, configure a reference after copying."
+      },
+      "provenance_ids": [
+        "csv-rfc4180"
+      ],
+      "receipt_resource": "receipts/csv-to-json/java.json"
+    }
+  ]
+}

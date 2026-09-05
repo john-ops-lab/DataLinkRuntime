@@ -48,9 +48,119 @@ export interface Adapter {
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;
   archived_at?: string | null;
+  /** Immutable provenance set only by the template-instantiation endpoint. */
+  template_scenario_slug?: string | null;
+  template_version?: string | null;
   running_execution_id?: number | null;
   created_at: string;
   updated_at: string;
+}
+
+// --- Issue #132: immutable Template Gallery catalog ------------------------
+
+export interface LocalizedText {
+  "zh-CN": string;
+  en: string;
+}
+
+export type TemplateMaturity =
+  | "reference-generated"
+  | "syntax-verified"
+  | "fixture-verified"
+  | "live-verified";
+
+export interface TemplateTheme {
+  slug: string;
+  name: LocalizedText;
+  description: LocalizedText;
+  sort_order: number;
+  scenario_count: number;
+}
+
+export interface TemplateVariantSummary {
+  language: AdapterLanguage;
+  available: boolean;
+  maturity: TemplateMaturity;
+}
+
+export interface TemplateSource {
+  id: string;
+  url: string;
+  revision: string;
+  reference: string;
+  license: string;
+  license_evidence: string;
+  use_mode: "adaptation-allowed" | "behavior-research-only" | "official-api";
+  checked_at: string;
+}
+
+export interface TemplateScenarioSummary {
+  slug: string;
+  theme_slug: string;
+  title: LocalizedText;
+  summary: LocalizedText;
+  vendor: string;
+  adapter_type: AdapterType;
+  protocols: string[];
+  tags: string[];
+  logo_key: string;
+  template_version: string;
+  updated_at: string;
+  variants: TemplateVariantSummary[];
+}
+
+export interface TemplateScenarioListResponse {
+  items: TemplateScenarioSummary[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface TemplateScenarioDetail extends TemplateScenarioSummary {
+  details: LocalizedText;
+  input_summary: LocalizedText;
+  output_summary: LocalizedText;
+  risk: LocalizedText;
+  modes: ("preview" | "sync" | "transform" | "request")[];
+  sources: TemplateSource[];
+}
+
+export interface TemplateVariant {
+  scenario_slug: string;
+  theme_slug: string;
+  title: LocalizedText;
+  language: AdapterLanguage;
+  adapter_type: AdapterType;
+  template_version: string;
+  behavior_contract_version: string;
+  maturity: TemplateMaturity;
+  code: string;
+  requirements: string;
+  install_notes: LocalizedText;
+  input_skeleton: Record<string, unknown>;
+  input_contract: Record<string, unknown>;
+  output_contract: Record<string, unknown>;
+  runtime_config: Record<string, unknown>;
+  runtime_guidance: LocalizedText;
+  sources: TemplateSource[];
+}
+
+export interface TemplateScenarioQuery {
+  theme: string;
+  q?: string;
+  vendor?: string;
+  adapter_type?: AdapterType;
+  protocol?: string;
+  language?: AdapterLanguage;
+  maturity?: TemplateMaturity;
+  page?: number;
+  page_size?: number;
+}
+
+export interface TemplateInstantiatePayload {
+  name: string;
+  description?: string;
+  expected_template_version: string;
 }
 
 export interface AdapterPermission {

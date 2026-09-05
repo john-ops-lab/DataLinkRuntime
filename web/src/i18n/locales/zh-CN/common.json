@@ -11,6 +11,7 @@
   "shell": {
     "console": "控制台",
     "adapters": "适配器",
+    "templates": "模板广场",
     "workbench": "工作台",
     "navigation": "控制台导航",
     "workspaceTitle": "适配器工作区",

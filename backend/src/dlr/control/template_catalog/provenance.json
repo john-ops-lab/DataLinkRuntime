@@ -1,0 +1,2055 @@
+{
+  "schema_version": "1.0.0",
+  "checked_at": "2026-09-05",
+  "sources": [
+    {
+      "id": "open-c3-039b9a4",
+      "url": "https://github.com/open-c3/open-c3",
+      "revision": "039b9a42fdc80f31520ec0918000b8c7a05162e5",
+      "reference": "Repository-level behavior survey only; no exact source file was used for adaptation, so file-level evidence remains an explicit gap",
+      "license": "GPL-2.0",
+      "license_evidence": "Repository LICENSE at the frozen revision",
+      "use_mode": "behavior-research-only",
+      "pagination": "Behavioral comparison only; no pagination code copied",
+      "relationship_evidence": "Behavioral comparison only; no relationship code copied",
+      "sdk": {
+        "python": null,
+        "javascript": null,
+        "java": null
+      },
+      "fixture": "not-run; no repository fixture is redistributed",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "cloudexplorer-aede557",
+      "url": "https://github.com/1Panel-dev/CloudExplorer",
+      "revision": "aede557444bcf9d8daa49f5bb13e19cfaa43ce5f",
+      "reference": "Repository-level product-vocabulary survey only; no exact source file was used for adaptation, so file-level evidence remains an explicit gap",
+      "license": "GPL-3.0",
+      "license_evidence": "Repository LICENSE at the frozen revision",
+      "use_mode": "behavior-research-only",
+      "pagination": "Behavioral comparison only; no pagination code copied",
+      "relationship_evidence": "Behavioral comparison only; no relationship code copied",
+      "sdk": {
+        "python": null,
+        "javascript": null,
+        "java": null
+      },
+      "fixture": "not-run; no repository fixture is redistributed",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "steampipe-alicloud-d619a9d",
+      "url": "https://github.com/turbot/steampipe-plugin-alicloud",
+      "revision": "d619a9d57505ae99aa5329aad3f4802ee94fde56",
+      "reference": "Exact files: alicloud/table_alicloud_ecs_instance.go, table_alicloud_vpc.go, table_alicloud_vpc_route_table.go, table_alicloud_vpc_route_entry.go, table_alicloud_rds_instance.go, table_alicloud_oss_bucket.go, table_alicloud_ram_user.go, table_alicloud_kms_key.go, table_alicloud_action_trail.go and table_alicloud_security_center_asset.go",
+      "license": "Apache-2.0",
+      "license_evidence": "Repository LICENSE at the frozen revision",
+      "use_mode": "adaptation-allowed",
+      "pagination": "Go table hydrate/list functions document provider pagination and supplemental calls",
+      "relationship_evidence": "Table columns expose only explicit identifiers used as relationship evidence",
+      "sdk": {
+        "python": "alibabacloud-tea-openapi==0.4.6",
+        "javascript": "@alicloud/openapi-client@0.4.15",
+        "java": "com.aliyun:tea-openapi:0.3.15"
+      },
+      "fixture": "not-run; planned sanitized Alibaba Cloud OpenAPI fixtures",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "steampipe-tencentcloud-d3a0a66",
+      "url": "https://github.com/TencentCloud/steampipe-plugin-tencentcloud",
+      "revision": "d3a0a66fc6f67dd6ce805417efe3bc83a80bb587",
+      "reference": "Exact files under tencentcloud/modules: cvm/table_tencentcloud_cvm_instance.go, tke/table_tencentcloud_tke_cluster.go, vpc/table_tencentcloud_vpc.go, vpc/table_tencentcloud_vpc_subnet.go, clb/table_tencentcloud_clb_instance.go, clb/table_tencentcloud_clb_listener.go, clb/table_tencentcloud_clb_target_group.go, cos/table_tencentcloud_cos_bucket.go, cam/table_tencentcloud_cam_user.go, cls/table_tencentcloud_cls_logset.go, waf/table_tencentcloud_waf_domain.go and ssl/table_tencentcloud_ssl_certificate.go",
+      "license": "Apache-2.0 (repository LICENSE); GitHub API reported NOASSERTION",
+      "license_evidence": "Repository LICENSE text at the frozen revision; SPDX/API discrepancy retained",
+      "use_mode": "adaptation-allowed",
+      "pagination": "Go table list functions document request offsets, limits and supplemental calls",
+      "relationship_evidence": "Table columns expose explicit network and load-balancer identifiers",
+      "sdk": {
+        "python": "stdlib HTTPS only in this release",
+        "javascript": "Node.js built-ins only in this release",
+        "java": "JDK HttpClient only in this release"
+      },
+      "fixture": "not-run; planned sanitized Tencent Cloud API fixtures",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "dlt-3efddd6",
+      "url": "https://github.com/dlt-hub/dlt",
+      "revision": "3efddd61b9f85592bc71879ad0ede8a82d2de3d6",
+      "reference": "Exact files: dlt/sources/helpers/rest_client/client.py and dlt/sources/helpers/rest_client/paginators.py; tests/sources/helpers/rest_client/test_paginators.py used as behavioral evidence",
+      "license": "Apache-2.0",
+      "license_evidence": "Repository LICENSE at the frozen revision",
+      "use_mode": "adaptation-allowed",
+      "pagination": "Behavioral comparison for page, offset, cursor and link pagination",
+      "relationship_evidence": "not applicable",
+      "sdk": {
+        "python": null,
+        "javascript": null,
+        "java": null
+      },
+      "fixture": "not-run; DLR uses independent local HTTP fixtures",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "airbyte-6f59bc9",
+      "url": "https://github.com/airbytehq/airbyte",
+      "revision": "6f59bc9217670d69e4904adb4910b870e3eaf67c",
+      "reference": "Repository-level connector vocabulary only; no exact source file was used and no Airbyte code was adapted, an explicit file-level evidence gap",
+      "license": "Elastic License 2.0",
+      "license_evidence": "Root LICENSE at the frozen revision",
+      "use_mode": "behavior-research-only",
+      "pagination": "Behavioral comparison only; no connector code copied",
+      "relationship_evidence": "Behavioral comparison only; no connector code copied",
+      "sdk": {
+        "python": null,
+        "javascript": null,
+        "java": null
+      },
+      "fixture": "not-run; no Airbyte fixture is redistributed",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "servicenow-cmdb-mcp-9f0fe8f",
+      "url": "https://github.com/yvain13/ServiceNow-CMDB-MCP",
+      "revision": "9f0fe8fd4792c6ee0e78fa3c74f40ddbe72feb61",
+      "reference": "Exact file: server.py; behavior research only and no source code adapted",
+      "license": "No repository license found",
+      "license_evidence": "No LICENSE file found at the frozen revision",
+      "use_mode": "behavior-research-only",
+      "pagination": "Behavioral comparison only; no source code copied",
+      "relationship_evidence": "Behavioral comparison only; cmdb_rel_ci remains excluded",
+      "sdk": {
+        "python": null,
+        "javascript": null,
+        "java": null
+      },
+      "fixture": "not-run; no project fixture is redistributed",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "alicloud-openapi-2026-09-05",
+      "url": "https://github.com/aliyun/aliyun-openapi-meta",
+      "revision": "96914d57f79fe2228efe501bc40148715fcb1f77",
+      "reference": "Pinned canonical operation metadata for all 20 supported calls; exact service/version/operation paths and links are enumerated in docs/templates/source-coverage-matrix.md",
+      "license": "Apache-2.0",
+      "license_evidence": "Repository LICENSE at the frozen revision; no NOTICE file is present",
+      "use_mode": "official-api",
+      "pagination": "Operation-specific NextToken/MaxResults, PageNumber/PageSize, Marker/MaxItems, CurrentPage/ShowSize, or one-request behavior, with bounded termination implemented per operation",
+      "relationship_evidence": "Only identifiers explicitly returned by an operation may form relationships",
+      "sdk": {
+        "python": "alibabacloud-tea-openapi==0.4.6",
+        "javascript": "@alicloud/openapi-client@0.4.15",
+        "java": "com.aliyun:tea-openapi:0.3.15"
+      },
+      "fixture": "direct SDK-stub query-shape and termination tests run across the three published languages; no live Alibaba Cloud account was used",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "tencentcloud-api-2026-09-05",
+      "url": "https://www.tencentcloud.com/document/product/",
+      "revision": "mutable official docs; snapshot checked 2026-09-05; not a pinned revision",
+      "reference": "Mutable official product API index checked 2026-09-05; coverage records exact operation names, but no operation-specific URL or recoverable page snapshot is pinned (explicit evidence gap)",
+      "license": "Tencent Cloud documentation terms",
+      "license_evidence": "Official product documentation, checked 2026-09-05",
+      "use_mode": "official-api",
+      "pagination": "Operation-specific Offset/Limit, PageNumber/PageSize, Marker or continuation parameters",
+      "relationship_evidence": "Only identifiers explicitly returned by an operation may form relationships",
+      "sdk": {
+        "python": "stdlib urllib.request; signed REST",
+        "javascript": "Node.js built-ins; signed HTTPS",
+        "java": "JDK HttpClient; signed HTTPS"
+      },
+      "fixture": "not-run; planned sanitized official response fixtures",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "servicenow-table-api-2026-09-05",
+      "url": "https://www.servicenow.com/docs/bundle/zurich-api-reference/page/integrate/inbound-rest/concept/c_TableAPI.html",
+      "revision": "Zurich-docs-2026-09-05",
+      "reference": "Table API GET records: sysparm_query, sysparm_fields, sysparm_display_value, sysparm_limit and sysparm_offset",
+      "license": "ServiceNow documentation terms",
+      "license_evidence": "Official ServiceNow Table API documentation",
+      "use_mode": "official-api",
+      "pagination": "sysparm_offset plus sysparm_limit; bounded by max_pages and max_records",
+      "relationship_evidence": "cmdb_rel_ci is intentionally not requested in the first release",
+      "sdk": {
+        "python": "stdlib urllib.request",
+        "javascript": "Node.js built-in fetch/HTTPS",
+        "java": "JDK HttpClient"
+      },
+      "fixture": "not-run; planned local Table API fixture",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "http-rfc9110-9112",
+      "url": "https://www.rfc-editor.org/info/rfc9110",
+      "revision": "RFC 9110 and RFC 9112 (June 2022)",
+      "reference": "HTTP semantics, methods, redirects, status handling and message framing",
+      "license": "IETF Trust Legal Provisions",
+      "license_evidence": "RFC boilerplate and IETF Trust terms",
+      "use_mode": "official-api",
+      "pagination": "Application behavior defines bounded page traversal independently",
+      "relationship_evidence": "not applicable",
+      "sdk": {
+        "python": "Python standard library",
+        "javascript": "Node.js built-ins",
+        "java": "JDK HttpClient"
+      },
+      "fixture": "not-run; planned local echo, redirect and error fixtures",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "csv-rfc4180",
+      "url": "https://www.rfc-editor.org/info/rfc4180",
+      "revision": "RFC 4180 (October 2005)",
+      "reference": "CSV record, field, quoting and CRLF behavior",
+      "license": "IETF Trust Legal Provisions",
+      "license_evidence": "RFC boilerplate and IETF Trust terms",
+      "use_mode": "official-api",
+      "pagination": "not applicable",
+      "relationship_evidence": "not applicable",
+      "sdk": {
+        "python": "Python csv standard library",
+        "javascript": "independent bounded parser",
+        "java": "independent bounded parser"
+      },
+      "fixture": "narrow direct-source fixtures ran bounded rows/output and strict invalid-byte decoding; complete BOM and quoted-newline cross-language gate not run",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "excel-formats-and-libraries-2026-09-05",
+      "url": "https://ecma-international.org/publications-and-standards/standards/ecma-376/",
+      "revision": "ECMA-376 5th edition plus library releases checked 2026-09-05",
+      "reference": "Office Open XML package safety constraints and selected XLS/XLSX parser APIs",
+      "license": "ECMA copyright for the standard; libraries use their respective published licenses",
+      "license_evidence": "ECMA publication page plus package registry and Maven Central metadata",
+      "use_mode": "official-api",
+      "pagination": "not applicable",
+      "relationship_evidence": "external relationships, formulas and macros are rejected or ignored; never followed",
+      "sdk": {
+        "python": [
+          "openpyxl==3.1.5",
+          "xlrd==2.0.2"
+        ],
+        "javascript": [
+          "@e965/xlsx@0.20.3"
+        ],
+        "java": [
+          "org.apache.poi:poi-ooxml:5.4.1",
+          "org.apache.poi:poi:5.4.1"
+        ]
+      },
+      "fixture": "the same real XLSX fixture ran in openpyxl 3.1.5, @e965/xlsx 0.20.3 and Apache POI 5.4.1 for exact-N/N+1, range, checkpoint, date, duplicate-header and invalid-range behavior; no real legacy XLS fixture ran",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "json-pointer-rfc6901",
+      "url": "https://www.rfc-editor.org/info/rfc6901",
+      "revision": "RFC 6901 (April 2013)",
+      "reference": "JSON Pointer syntax, array indexes and ~0/~1 escaping",
+      "license": "IETF Trust Legal Provisions",
+      "license_evidence": "RFC boilerplate and IETF Trust terms",
+      "use_mode": "official-api",
+      "pagination": "not applicable",
+      "relationship_evidence": "not applicable",
+      "sdk": {
+        "python": "standard library",
+        "javascript": "language built-ins",
+        "java": "JDK plus DLR Runtime JSON values"
+      },
+      "fixture": "not-run; planned cross-language deterministic mapping fixture",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "postgresql-17-docs",
+      "url": "https://www.postgresql.org/docs/17/sql-select.html",
+      "revision": "PostgreSQL 17 documentation, checked 2026-09-05",
+      "reference": "SELECT, read-only transactions, statement timeout and driver parameter binding",
+      "license": "PostgreSQL documentation license",
+      "license_evidence": "PostgreSQL documentation legal notice",
+      "use_mode": "official-api",
+      "pagination": "Driver fetchmany/fetch-size batches",
+      "relationship_evidence": "not applicable",
+      "sdk": {
+        "python": "psycopg[binary]==3.2.9",
+        "javascript": "pg@8.16.3",
+        "java": "org.postgresql:postgresql:42.7.7"
+      },
+      "fixture": "a local PostgreSQL 16 probe ran the three published variants with parameterized SELECT, cursor/batch, exact-N/N+1 and numeric/temporal/UUID/binary normalization; read-only-role enforcement and the full failure matrix did not run",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "mysql-9-docs",
+      "url": "https://dev.mysql.com/doc/refman/9.4/en/select.html",
+      "revision": "MySQL 9.4 documentation, checked 2026-09-05",
+      "reference": "SELECT, read-only transaction, timeout, prepared parameters and disabled multi-statements",
+      "license": "Oracle MySQL documentation terms",
+      "license_evidence": "Official MySQL Reference Manual legal notice",
+      "use_mode": "official-api",
+      "pagination": "Driver cursor/fetch batches",
+      "relationship_evidence": "not applicable",
+      "sdk": {
+        "python": "PyMySQL==1.1.1",
+        "javascript": "mysql2@3.14.3",
+        "java": "com.mysql:mysql-connector-j:9.4.0"
+      },
+      "fixture": "not-run; temporary read-only MySQL fixture required",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "s3-api-2006-03-01",
+      "url": "https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectsV2.html",
+      "revision": "Amazon S3 API 2006-03-01, checked 2026-09-05",
+      "reference": "ListObjectsV2, continuation token, HeadObject and bounded ranged GetObject",
+      "license": "AWS documentation terms",
+      "license_evidence": "Official Amazon S3 API Reference legal notice",
+      "use_mode": "official-api",
+      "pagination": "ContinuationToken and NextContinuationToken",
+      "relationship_evidence": "not applicable",
+      "sdk": {
+        "python": "boto3==1.40.21",
+        "javascript": "@aws-sdk/client-s3@3.883.0",
+        "java": "software.amazon.awssdk:s3:2.32.27"
+      },
+      "fixture": "not-run; MinIO list/range fixture required",
+      "checked_at": "2026-09-05"
+    },
+    {
+      "id": "sftp-v3-openssh",
+      "url": "https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02",
+      "revision": "SFTP version 3 draft plus package releases checked 2026-09-05",
+      "reference": "REALPATH, OPENDIR, READDIR, LSTAT and READ with mandatory host-key verification",
+      "license": "IETF Trust Legal Provisions; libraries use their published licenses",
+      "license_evidence": "Internet-Draft boilerplate plus package registry metadata",
+      "use_mode": "official-api",
+      "pagination": "READDIR iteration bounded by max_files",
+      "relationship_evidence": "Canonical paths and symlink targets must remain under base_directory",
+      "sdk": {
+        "python": "paramiko==4.0.0",
+        "javascript": "ssh2-sftp-client@12.0.1",
+        "java": "com.github.mwiede:jsch:0.2.24"
+      },
+      "fixture": "not-run; local SFTP host-key and path-escape fixture required",
+      "checked_at": "2026-09-05"
+    }
+  ],
+  "coverage": [
+    {
+      "scenario_slug": "alicloud-compute-container-topology",
+      "resource_family": "ECS instances",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeInstances"
+      ],
+      "pagination": "NextToken + MaxResults (10..100); stop on missing token and reject repeated tokens; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:ecs_instance:source-id",
+      "relationships": [
+        "located_in",
+        "protected_by"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；仅输出响应中存在的标识关系。",
+        "en": "Public read-only operation checked; relationships require explicit response identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-compute-container-topology",
+      "resource_family": "cloud disks",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDisks"
+      ],
+      "pagination": "NextToken + MaxResults (10..100); stop on missing token and reject repeated tokens; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:ecs_disk:source-id",
+      "relationships": [
+        "attached_to"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；仅输出响应中存在的标识关系。",
+        "en": "Public read-only operation checked; relationships require explicit response identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-compute-container-topology",
+      "resource_family": "elastic network interfaces",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeNetworkInterfaces"
+      ],
+      "pagination": "NextToken + MaxResults (10..100); stop on missing token and reject repeated tokens; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:ecs_eni:source-id",
+      "relationships": [
+        "attached_to",
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；仅输出响应中存在的标识关系。",
+        "en": "Public read-only operation checked; relationships require explicit response identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-compute-container-topology",
+      "resource_family": "images",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeImages"
+      ],
+      "pagination": "PageNumber + PageSize (1..100); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:ecs_image:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；仅输出响应中存在的标识关系。",
+        "en": "Public read-only operation checked; relationships require explicit response identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-compute-container-topology",
+      "resource_family": "Auto Scaling groups",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeScalingGroups"
+      ],
+      "pagination": "PageNumber + PageSize (1..50); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:ess_scaling_group:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；仅输出响应中存在的标识关系。",
+        "en": "Public read-only operation checked; relationships require explicit response identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-compute-container-topology",
+      "resource_family": "ACK clusters",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeClustersV1"
+      ],
+      "pagination": "not implemented; pagination not claimed",
+      "external_key": "alicloud:account:region:ack_cluster:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "DescribeClustersV1 requires an operation-specific ROA path; the current generic RPC entry is reference-only and not claimed runnable."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-compute-container-topology",
+      "resource_family": "inferred workload topology",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [],
+      "pagination": "not applicable",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "首期不推断未被 API 观测的工作负载或跨产品关系。",
+        "en": "The first release does not infer unobserved workload or cross-product relationships."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "VPC",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeVpcs"
+      ],
+      "pagination": "PageNumber + PageSize (1..50); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:vpc:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用仍受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "VSwitch",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeVSwitches"
+      ],
+      "pagination": "PageNumber + PageSize (1..50); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:vswitch:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用仍受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "elastic IP",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeEipAddresses"
+      ],
+      "pagination": "PageNumber + PageSize (1..100); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:eip:source-id",
+      "relationships": [
+        "attached_to"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用仍受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "NAT gateway",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeNatGateways"
+      ],
+      "pagination": "PageNumber + PageSize (1..50); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:nat_gateway:source-id",
+      "relationships": [
+        "member_of",
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用仍受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "route tables and routes",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeRouteTableList"
+      ],
+      "pagination": "not implemented; pagination not claimed",
+      "external_key": "alicloud:account:region:route_table:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "The current entry reads route tables only; route-entry discovery is an explicit first-release gap."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "network ACL",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeNetworkAcls"
+      ],
+      "pagination": "PageNumber + PageSize (1..50); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:network_acl:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用仍受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "VPN gateway",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeVpnGateways"
+      ],
+      "pagination": "PageNumber + PageSize (1..50); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:vpn_gateway:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用仍受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "SLB",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeLoadBalancers"
+      ],
+      "pagination": "not implemented; pagination not claimed",
+      "external_key": "alicloud:account:region:slb:source-id",
+      "relationships": [
+        "member_of",
+        "located_in"
+      ],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "The current entry reads the load-balancer list only; attribute/listener discovery is an explicit first-release gap."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "DNS domains and records",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDomains"
+      ],
+      "pagination": "not implemented; pagination not claimed",
+      "external_key": "alicloud:account:region:dns_domain:source-id",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "The current entry reads domains only; per-domain record discovery is an explicit first-release gap."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "certificates",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "ListUserCertificateOrder"
+      ],
+      "pagination": "CurrentPage + ShowSize (1..50); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:certificate:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用仍受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-network-ingress-topology",
+      "resource_family": "inferred traffic paths",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [],
+      "pagination": "not applicable",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "不根据名称或标签猜测端到端流量路径。",
+        "en": "End-to-end traffic paths are not guessed from names or tags."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "RDS",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDBInstances"
+      ],
+      "pagination": "NextToken + MaxResults (1..100); stop on missing token and reject repeated tokens; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:rds:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只声明已核对的清单操作；跨产品关系需要响应中的直接标识。",
+        "en": "Only checked inventory operations are claimed; cross-product relationships require direct identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "Redis",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeInstances"
+      ],
+      "pagination": "PageNumber + PageSize (1..50); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:redis:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只声明已核对的清单操作；跨产品关系需要响应中的直接标识。",
+        "en": "Only checked inventory operations are claimed; cross-product relationships require direct identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "MongoDB",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDBInstances"
+      ],
+      "pagination": "PageNumber + fixed PageSize 30; stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:mongodb:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只声明已核对的清单操作；跨产品关系需要响应中的直接标识。",
+        "en": "Only checked inventory operations are claimed; cross-product relationships require direct identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "Elasticsearch",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "ListInstance"
+      ],
+      "pagination": "not implemented; pagination not claimed",
+      "external_key": "alicloud:account:region:elasticsearch:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "ListInstance requires an operation-specific request style that is not implemented or live-verified here."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "OSS buckets",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "ListBuckets"
+      ],
+      "pagination": "not implemented; pagination not claimed",
+      "external_key": "alicloud:account:region:oss_bucket:source-id",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "OSS uses its signed XML REST API; the generic RPC reference entry is not claimed runnable."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "NAS file systems",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeFileSystems"
+      ],
+      "pagination": "PageNumber + PageSize (1..100); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:nas:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只声明已核对的清单操作；跨产品关系需要响应中的直接标识。",
+        "en": "Only checked inventory operations are claimed; cross-product relationships require direct identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "RAM users",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "ListUsers"
+      ],
+      "pagination": "Marker + MaxItems (1..100); stop on missing marker and reject repeated markers; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:ram_user:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只声明已核对的清单操作；跨产品关系需要响应中的直接标识。",
+        "en": "Only checked inventory operations are claimed; cross-product relationships require direct identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "KMS keys",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "ListKeys"
+      ],
+      "pagination": "PageNumber + PageSize (1..100); stop on a short page; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:kms_key:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只声明已核对的清单操作；跨产品关系需要响应中的直接标识。",
+        "en": "Only checked inventory operations are claimed; cross-product relationships require direct identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "ActionTrail trails",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeTrails"
+      ],
+      "pagination": "No pagination parameters; one request per region/resource scope; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:actiontrail:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只声明已核对的清单操作；跨产品关系需要响应中的直接标识。",
+        "en": "Only checked inventory operations are claimed; cross-product relationships require direct identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "SLS projects",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "ListProject"
+      ],
+      "pagination": "not implemented; pagination not claimed",
+      "external_key": "alicloud:account:region:sls_project:source-id",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "ListProject requires an operation-specific REST request that is not implemented or live-verified here."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "Security Center assets",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeCloudCenterInstances"
+      ],
+      "pagination": "UseNextToken=true + NextToken + PageSize (1..20); continue from PageInfo.NextToken, stop when missing, and reject repeated tokens; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "alicloud:account:region:security_center_asset:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只声明已核对的清单操作；跨产品关系需要响应中的直接标识。",
+        "en": "Only checked inventory operations are claimed; cross-product relationships require direct identifiers."
+      }
+    },
+    {
+      "scenario_slug": "alicloud-database-middleware-inventory",
+      "resource_family": "inferred application dependencies",
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [],
+      "pagination": "not applicable",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "首期不推断数据库或中间件之间的应用依赖。",
+        "en": "Application dependencies between data services are not inferred."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-compute-container-topology",
+      "resource_family": "CVM instances",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeInstances"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:cvm_instance:source-id",
+      "relationships": [
+        "located_in",
+        "protected_by"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；关系只来自显式资源标识。",
+        "en": "Public read-only operation checked; relationships use explicit resource identifiers only."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-compute-container-topology",
+      "resource_family": "CBS volumes",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDisks"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:cbs_disk:source-id",
+      "relationships": [
+        "attached_to"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；关系只来自显式资源标识。",
+        "en": "Public read-only operation checked; relationships use explicit resource identifiers only."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-compute-container-topology",
+      "resource_family": "images",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeImages"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:cvm_image:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；关系只来自显式资源标识。",
+        "en": "Public read-only operation checked; relationships use explicit resource identifiers only."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-compute-container-topology",
+      "resource_family": "dedicated hosts",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeHosts"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:dedicated_host:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；关系只来自显式资源标识。",
+        "en": "Public read-only operation checked; relationships use explicit resource identifiers only."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-compute-container-topology",
+      "resource_family": "Auto Scaling groups",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeAutoScalingGroups"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:autoscaling_group:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；关系只来自显式资源标识。",
+        "en": "Public read-only operation checked; relationships use explicit resource identifiers only."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-compute-container-topology",
+      "resource_family": "TKE clusters",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeClusters"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:tke_cluster:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "已核对公开只读操作；关系只来自显式资源标识。",
+        "en": "Public read-only operation checked; relationships use explicit resource identifiers only."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-compute-container-topology",
+      "resource_family": "inferred workload topology",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [],
+      "pagination": "not applicable",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "首期不推断未被 API 观测的工作负载或跨产品关系。",
+        "en": "The first release does not infer unobserved workload or cross-product relationships."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "VPC",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeVpcs"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:vpc:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "subnets",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeSubnets"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:subnet:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "elastic network interfaces",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeNetworkInterfaces"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:eni:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "elastic IP",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeAddresses"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:eip:source-id",
+      "relationships": [
+        "attached_to"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "NAT gateway",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeNatGateways"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:nat_gateway:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "route tables and routes",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeRouteTables"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:route_table:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "network ACL",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeNetworkAcls"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:network_acl:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "CCN",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeCcns"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:ccn:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "VPN gateway",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeVpnGateways"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:vpn_gateway:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "CLB",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeLoadBalancers"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:clb:source-id",
+      "relationships": [
+        "member_of",
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "listeners",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeListeners"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:clb_listener:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "DescribeListeners requires parent load-balancer discovery and per-parent requests; this remains an explicit gap."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "target groups",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeTargetGroups"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:clb_target_group:source-id",
+      "relationships": [
+        "member_of"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "公开 API 与分页入口已核对；补充调用受总请求时限约束。",
+        "en": "Public API and pagination entry checked; supplemental calls remain within the total request deadline."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-network-ingress-topology",
+      "resource_family": "inferred traffic paths",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [],
+      "pagination": "not applicable",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "不根据名称或标签猜测端到端流量路径。",
+        "en": "End-to-end traffic paths are not guessed from names or tags."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "CDB",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDBInstances"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:cdb:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "TencentDB for PostgreSQL",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDBInstances"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:postgresql:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "Redis",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeInstances"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:redis:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "MongoDB",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDBInstances"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:mongodb:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "SQL Server",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDBInstances"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:sqlserver:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "MariaDB",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDBInstances"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:mariadb:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "TDSQL-C",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeClusters"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:tdsql_c:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "The current entry reads clusters only; per-cluster instance discovery remains an explicit gap."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "Elasticsearch",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeInstances"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:elasticsearch:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "CKafka",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeInstancesDetail"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:ckafka:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "COS buckets",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "GetService"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:cos_bucket:source-id",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "当前目录源码仅保留参考映射；请求形态、父资源发现或补充 API 尚未实现并实测，因此不宣称可运行。",
+        "en": "COS uses its signed XML API rather than generic TC3 JSON; the reference entry is not claimed runnable."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "CFS file systems",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeCfsFileSystems"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:cfs:source-id",
+      "relationships": [
+        "located_in"
+      ],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "CAM users",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "ListUsers"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:cam_user:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "CLS logsets",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeLogsets"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:cls_logset:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "WAF domains",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeDomains"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:waf_domain:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "SSL certificates",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [
+        "DescribeCertificates"
+      ],
+      "pagination": "Offset/Limit; one global max_pages and execution deadline across all regions/resources",
+      "external_key": "tencentcloud:account:region:certificate:source-id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "开源覆盖不足的产品由官方 API 记录补齐；仍未执行 live 调用。",
+        "en": "Official API records fill open-source coverage gaps; no live call has been executed."
+      }
+    },
+    {
+      "scenario_slug": "tencentcloud-database-middleware-inventory",
+      "resource_family": "inferred application dependencies",
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ],
+      "api_operations": [],
+      "pagination": "not applicable",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "首期不推断数据库或中间件之间的应用依赖。",
+        "en": "Application dependencies between data services are not inferred."
+      }
+    },
+    {
+      "scenario_slug": "servicenow-cmdb-ci-snapshot",
+      "resource_family": "cmdb_ci",
+      "provenance_ids": [
+        "servicenow-table-api-2026-09-05",
+        "servicenow-cmdb-mcp-9f0fe8f"
+      ],
+      "api_operations": [
+        "GET /api/now/table/cmdb_ci"
+      ],
+      "pagination": "sysparm_offset/sysparm_limit, bounded by max_pages and max_records",
+      "external_key": "servicenow:instance_id:global:cmdb_ci:sys_id",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "默认仅读取 cmdb_ci；实例 URL 和认证值不写入输出。",
+        "en": "Reads cmdb_ci only by default; instance URL and authentication values are excluded from output."
+      }
+    },
+    {
+      "scenario_slug": "servicenow-cmdb-ci-snapshot",
+      "resource_family": "cmdb_rel_ci",
+      "provenance_ids": [
+        "servicenow-table-api-2026-09-05",
+        "servicenow-cmdb-mcp-9f0fe8f"
+      ],
+      "api_operations": [],
+      "pagination": "not applicable",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "gap",
+      "notes": {
+        "zh-CN": "首期明确不读取 cmdb_rel_ci，也不声称关系拓扑。",
+        "en": "The first release explicitly excludes cmdb_rel_ci and does not claim relationship topology."
+      }
+    },
+    {
+      "scenario_slug": "rest-single-request",
+      "resource_family": "HTTP single request",
+      "provenance_ids": [
+        "http-rfc9110-9112",
+        "dlt-3efddd6",
+        "airbyte-6f59bc9"
+      ],
+      "api_operations": [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
+      "pagination": "not applicable; one request plus same-origin redirect bound",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "非幂等方法默认不重试；凭据类直接 URL/query/header 名称 fail closed，Header 认证只通过 DLR-Auth，Query 认证只通过 query_auth 注入；脱敏 response 受输出字节预算约束。",
+        "en": "Non-idempotent methods are not retried by default; credential-like direct URL, query and header names fail closed, header authentication uses DLR-Auth, query authentication uses query_auth, and the scrubbed response is output-byte bounded."
+      }
+    },
+    {
+      "scenario_slug": "rest-paginated-collection",
+      "resource_family": "HTTP paginated collection",
+      "provenance_ids": [
+        "http-rfc9110-9112",
+        "dlt-3efddd6",
+        "airbyte-6f59bc9"
+      ],
+      "api_operations": [
+        "GET using page",
+        "GET using offset",
+        "GET using cursor",
+        "GET using next URL"
+      ],
+      "pagination": "max_pages/max_records/max_bytes/timeout; successful-request page count; atomic scrubbed-page commits; repeated cursor, URL, offset and no-progress guards",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "凭据类直接 URL/query/header 名称 fail closed，Query/Header 凭据仅通过 Binding 注入；整页脱敏 records 超出输出字节预算时不提交当前页。next URL 默认必须同协议同主机；这不是平台级 SSRF 防线。",
+        "en": "Credential-like direct URL, query and header names fail closed and query/header credentials use bindings only; a full scrubbed page is not committed when it exceeds the records-output byte budget. Next URLs remain same-origin by default; this is not a platform SSRF boundary."
+      }
+    },
+    {
+      "scenario_slug": "webhook-json-normalization",
+      "resource_family": "Webhook JSON transformation",
+      "provenance_ids": [
+        "http-rfc9110-9112"
+      ],
+      "api_operations": [
+        "pure handle transformation"
+      ],
+      "pagination": "not applicable",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "只做必填校验、字段映射和 UTC 时间规范化，不进行外部写入。",
+        "en": "Performs required-field validation, field mapping and UTC normalization without external writes."
+      }
+    },
+    {
+      "scenario_slug": "csv-to-json",
+      "resource_family": "CSV parsing",
+      "provenance_ids": [
+        "csv-rfc4180"
+      ],
+      "api_operations": [
+        "bounded streaming parse"
+      ],
+      "pagination": "max_rows/max_columns/max_field_bytes/max_output_bytes",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "支持 BOM、编码、表头、分隔符、引号换行与空行策略。",
+        "en": "Covers BOM, encoding, headers, delimiters, quoted newlines and blank-line policy."
+      }
+    },
+    {
+      "scenario_slug": "excel-to-json",
+      "resource_family": "XLSX parsing",
+      "provenance_ids": [
+        "excel-formats-and-libraries-2026-09-05"
+      ],
+      "api_operations": [
+        "bounded OOXML workbook parse"
+      ],
+      "pagination": "max_file_bytes/max_rows/max_columns/max_output_bytes",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "解析前预检 OOXML ZIP，拒绝宏、嵌入/ActiveX 内容和外部关系；公式只替换为 null，绝不执行。",
+        "en": "OOXML ZIP is inspected before parsing; macros, embedded/ActiveX content, and external relationships are rejected, while formulas are replaced with null and never executed."
+      }
+    },
+    {
+      "scenario_slug": "excel-to-json",
+      "resource_family": "legacy XLS parsing",
+      "provenance_ids": [
+        "excel-formats-and-libraries-2026-09-05"
+      ],
+      "api_operations": [
+        "bounded BIFF data-only workbook parse"
+      ],
+      "pagination": "max_file_bytes/max_rows/max_columns/max_output_bytes",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "旧版 OLE XLS 使用三语言离线 data-only 解析路径；不调用公式求值器、不执行宏或访问外链。无法像 OOXML 一样完整预检活动内容，因此保持实验标签。",
+        "en": "Legacy OLE XLS uses offline data-only paths in all three languages. No formula evaluator, macro runtime, or external-link fetch is invoked. Complete OOXML-style active-content preflight is unavailable, so maturity remains experimental."
+      }
+    },
+    {
+      "scenario_slug": "json-mapping-cleaning",
+      "resource_family": "RFC 6901 mapping and cleaning",
+      "provenance_ids": [
+        "json-pointer-rfc6901"
+      ],
+      "api_operations": [
+        "pure deterministic transformation"
+      ],
+      "pagination": "max_records/max_output_bytes",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "仅有限转换、等值或存在性过滤、稳定排序与保留首项去重。",
+        "en": "Limited conversions, equality/existence filters, stable sorting and keep-first deduplication only."
+      }
+    },
+    {
+      "scenario_slug": "postgresql-readonly-snapshot",
+      "resource_family": "PostgreSQL SELECT snapshot",
+      "provenance_ids": [
+        "postgresql-17-docs"
+      ],
+      "api_operations": [
+        "one parameterized SELECT in read-only transaction"
+      ],
+      "pagination": "batch_size/max_rows/max_cell_bytes/max_output_bytes/timeout_seconds",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "要求数据库侧只读账号；拒绝多语句、写语句、DDL 和存储过程。已在本地 PostgreSQL 16 对三语言执行参数化批读与类型规范化窄测试，但未完成只读角色和完整失败矩阵。",
+        "en": "Requires a database-enforced read-only account; rejects multiple statements, writes, DDL and procedures. A narrow local PostgreSQL 16 probe exercised parameterized batches and type normalization in all three languages, but read-only-role and full failure-matrix gates remain open."
+      }
+    },
+    {
+      "scenario_slug": "mysql-readonly-snapshot",
+      "resource_family": "MySQL SELECT snapshot",
+      "provenance_ids": [
+        "mysql-9-docs"
+      ],
+      "api_operations": [
+        "one parameterized SELECT with multi-statements disabled"
+      ],
+      "pagination": "batch_size/max_rows/max_cell_bytes/max_output_bytes/timeout_seconds",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "要求数据库侧只读账号且驱动禁用多语句。",
+        "en": "Requires a database-enforced read-only account and driver-level multi-statement disablement."
+      }
+    },
+    {
+      "scenario_slug": "s3-compatible-list-read",
+      "resource_family": "S3-compatible object list and bounded range read",
+      "provenance_ids": [
+        "s3-api-2006-03-01"
+      ],
+      "api_operations": [
+        "ListObjectsV2",
+        "HeadObject",
+        "bounded Range GetObject"
+      ],
+      "pagination": "ContinuationToken/max_objects/max_total_bytes",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "无 Artifact 合同时不下载任意大对象；认证仅来自 Credential Binding。",
+        "en": "Without an Artifact contract, arbitrarily large objects are never downloaded; credentials come only from bindings."
+      }
+    },
+    {
+      "scenario_slug": "sftp-list-read",
+      "resource_family": "SFTP list and bounded read",
+      "provenance_ids": [
+        "sftp-v3-openssh"
+      ],
+      "api_operations": [
+        "REALPATH",
+        "OPENDIR",
+        "READDIR",
+        "LSTAT",
+        "bounded READ"
+      ],
+      "pagination": "max_files/max_file_bytes/max_total_bytes",
+      "external_key": "not applicable",
+      "relationships": [],
+      "support_status": "supported",
+      "notes": {
+        "zh-CN": "认证前校验 known_hosts 或固定指纹；realpath 与符号链接不得逃出根目录。",
+        "en": "Verify known_hosts or pinned fingerprint before authentication; real paths and symlinks cannot escape the root."
+      }
+    }
+  ]
+}

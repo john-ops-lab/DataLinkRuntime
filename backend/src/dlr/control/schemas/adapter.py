@@ -101,6 +101,8 @@ class VersionCreate(BaseModel):
     does not parse requirements.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     code: str
     requirements: str = ""
     # Must be a JSON object; arrays, scalars and null are rejected with 422.
@@ -136,6 +138,10 @@ class AdapterResponse(BaseModel):
     owner_username: str | None = None
     latest_version_id: int | None
     runtime_worker_id: int | None
+    # Optional immutable Gallery origin. Request schemas intentionally omit
+    # these fields so ordinary create/update/clone cannot forge or edit them.
+    template_scenario_slug: str | None
+    template_version: str | None
     runtime_locked: bool = False
     archived_at: datetime | None
     running_execution_id: int | None = None
@@ -169,6 +175,8 @@ class CloneRequest(BaseModel):
     immutable Adapter facts and credential binding references. It has no
     Execution and starts stopped.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     description: str | None = None

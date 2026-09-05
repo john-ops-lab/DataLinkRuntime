@@ -1,6 +1,6 @@
 # DLR（DataLinkRuntime）Overall Architecture
 
-> Current baseline: `v0.1.1` (including the Issue #117 manual-test fixes).
+> Implementation baseline for this change: `v0.3.0` / `d28daabfe9e70a5d5db23fb62613c5c39222764b` (including Issue #130).
 > This document describes the currently implemented architecture. Historical stage contracts live in `docs/specs/README.md`, historical Specs and the Alembic migrations. New work is governed by the currently authorized GitHub Issue.
 
 ## 1. Component Overview
@@ -23,8 +23,8 @@
 
 | Component | Responsibility | Runs user code |
 |-----------|----------------|----------------|
-| web | Catalog, Workbench, Monaco, run control, live logs and history | No |
-| control | API, transactional gates, scheduling, Webhook routing, log SSE, thin AI Provider adapter | No |
+| web | Adapter Catalog, Template Gallery, Workbench, Monaco, run control, live logs and history | No |
+| control | APIs, static template catalog and instantiation, transactional gates, scheduling, Webhook routing, log SSE, thin AI Provider adapter | No |
 | postgres | Adapter, Execution, Admission, Outbox, Attempt, Slot, Lease, and audit authority | No |
 | rabbitmq | Bounded dispatch, delayed retry, and Infrastructure DLQ; one node is not HA | No |
 | worker | Consumes dispatch, Claims through Control, prepares dependencies, runs Sandboxes, reports incrementally | Yes |
@@ -60,6 +60,7 @@ Key fields:
 | `run_mode` | `manual / schedule` for Task; unused by Webhook |
 | `latest_version_id` | the latest saved immutable Revision |
 | `runtime_worker_id` | the current run node |
+| `template_scenario_slug / template_version` | optional, paired, read-only template provenance; both are null for ordinary Adapters |
 | `archived_at` | internal soft-delete marker; the current Web UI shows active Adapters only |
 
 API responses carry `runtime_locked` and `running_execution_id` so the Web UI can
@@ -119,6 +120,45 @@ silently rerouted.
 - `package_sources`: Python / npm / Maven dependency sources, bindable to a
   Credential;
 - Webhook only allows binding a `token`-type Credential.
+
+### 3.6 Template Catalog, Variants, and Instantiation
+
+Templates are not hidden database Adapters. The Control wheel/image carries read-only
+package resources: 5 Themes, 17 Scenarios, 51 Python/JavaScript/Java Variants, JSON
+Schemas, provenance records, and per-language maturity Receipts. Startup validation
+fails closed on stable slugs, versions, languages, Logo keys, cross-references, and
+source SHA-256. Scenario lists and details read metadata only; just the selected source
+is read and bounded-cached by the single-language endpoint:
+
+```text
+GET  /api/templates/themes
+GET  /api/templates/scenarios
+GET  /api/templates/scenarios/{scenario_slug}
+GET  /api/templates/scenarios/{scenario_slug}/variants/{language}
+POST /api/templates/scenarios/{scenario_slug}/variants/{language}/instantiate
+```
+
+The instantiate POST uses the reviewed `expected_template_version` to prevent rolling
+deployment drift. One transaction writes the Adapter, Slot 0, minimum disabled type
+configuration, Revision 1, and latest pointer. It does not use ordinary Clone and does
+not create a Credential/Binding, installed Dependency, Managed File/Artifact/Lease,
+Worker, Schedule, extra ACL, Execution, Admission, Outbox, Attempt, or history. The new
+Adapter starts stopped and is independent of future template changes. On success the
+Web refreshes the Adapter list, loads Revision 1, and opens that Adapter in the editor.
+
+`DLR_MANAGED_FILES_ENABLED=false` disables the corresponding runtime capability only;
+it does not affect discovering, reading one language, or copying any template,
+including CSV and Excel, and instantiation never fabricates a file binding.
+
+Maturity binds `scenario_slug + version + language + source_sha256`. A
+`syntax-verified` Receipt must show exact dependency resolution and that language's
+syntax/compile check. Only a fixed fixture that directly executes the same shipped
+source can establish `fixture-verified`, and only a controlled read-only run against a
+real external service can establish `live-verified`. Static catalog checks, a sibling
+language, or a helper implementation cannot substitute for those results.
+`reference-generated` means no Receipt both matches the current source hash and
+satisfies every gate for the next level; narrow smoke or security-canary execution is
+not maturity-promotion evidence.
 
 ## 4. Task Execution
 
@@ -246,6 +286,26 @@ database Attempt Lease/Fencing, Recovery, and a new generation. For every Attemp
 the Sandbox applies hard CPU, memory, PID, tmpfs, and output bounds inside an exact
 delegated Linux cgroup v2 subtree. A non-Linux or incomplete preflight fails closed.
 
+### 8.1 External-call Boundary for Template Recipes
+
+After copying, a Recipe is an ordinary user Adapter and remains subject to the Worker,
+Revision, Credential, and Execution contracts above. Non-secret endpoints and limits
+belong in Revision runtime config or immutable Execution Input; secrets are injected
+only through Credential Binding. URL scheme, same-origin redirect, timeout, and size
+checks are per-Recipe misuse guards, not a platform-level SSRF, DNS-rebinding, or
+egress-isolation boundary. Trusted administrators must restrict Worker egress with
+deployment firewalls, DNS/proxy policy, and destination allowlists.
+
+The seven cloud/CMDB Recipes use `preview` only to read sources; the normalized
+`dlr-asset-snapshot/v1` and final Adapter Output are bounded. `sync` writes to an
+administrator-configured external `dlr-cmdb-upsert/v1` target, not a DLR Control API.
+Stable `scan_id` and `source_scope` values in immutable Input make a new Attempt of the
+same Execution reuse the same begin/batch/finish idempotency identities. Any source or
+batch failure must return `partial=true` and skip finish so an incomplete scan cannot
+trigger target-side stale cleanup. The Alibaba Cloud SDK `callApi` transport used by
+three Alibaba Recipes does not yet have a proven source-response byte bound, so bounded
+output does not imply bounded raw HTTP transport.
+
 ## 9. AI Assistant
 
 The browser explicitly submits the current Working Copy, user instructions and a
@@ -299,8 +359,8 @@ only.
 - Platform messages generated by Control / Worker are rendered through built-in
   zh-CN / en templates; user-code stdout / stderr, Tracebacks and raw third-party
   tool output never enter the translation layer;
-- The Web uses i18next with bundled resources (five namespaces:
-  `common / adapter / runtime / settings / ai`); the zh-CN / en key sets are
+- The Web uses i18next with bundled resources (six namespaces:
+  `common / adapter / runtime / settings / ai / template`); the zh-CN / en key sets are
   identical, and a missing key falls back to a safe placeholder instead of showing
   the raw key;
 - A language switch never modifies any Adapter code / Revision, Credential true
@@ -312,6 +372,9 @@ only.
 - Backend: Ruff, format check, Mypy, full pytest (including the README / key docs
   bilingual pairing, mutual-link and relative-link resolution checks, and the
   zh-CN / en translation-resource key and placeholder parity checks);
+- Templates: exact 5/17/51 inventory, Schema/provenance/license/source-hash checks,
+  wheel/image package resources, requirements parsers, and per-language Receipt gates;
+  syntax, fixture, and live evidence are recorded as distinct layers;
 - Web: ESLint, TypeScript, Vitest (including locale namespace / leaf-key /
   interpolation-placeholder parity checks), production build;
 - Database: fresh Alembic install and upgrade from the current main schema;
@@ -319,8 +382,9 @@ only.
   Webhook, Clone URL handover and run-lock runs;
 - Reliable Runtime: real broker outage/restart, Confirm ambiguity, Worker/Control
   crash, Slot pressure, DLQ/Replay, post-Cutover invariants, and bounded resources;
-- Sandbox: only real target Linux cgroup v2 + host cgroup namespace + exact delegated
-  subtree Compose evidence counts; macOS or static configuration does not;
+- Sandbox: only real target Linux cgroup v2 + private cgroup namespace + exact
+  delegated-subtree Compose evidence counts; host cgroup namespace is `NO_COUNT`, and
+  macOS or static configuration does not count either;
 - UI: real-browser verification of bottom/fullscreen logs, run lock, Clone/Delete
   and the Task / Webhook main paths.
 

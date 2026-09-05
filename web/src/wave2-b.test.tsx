@@ -390,6 +390,7 @@ it("updates disabled-action accessible names and reasons with the locale", async
     activeExecution: false,
     canRun: false,
     scheduleEnableBlockedReason: null,
+    mutationInFlight: false,
   };
   const { rerender } = render(
     <TaskWorkbenchHeader

@@ -31,6 +31,7 @@ from dlr.control.api import (
     migration,
     package_sources,
     schedules,
+    templates,
     users,
     webhooks,
     workers,
@@ -47,6 +48,7 @@ from dlr.control.services.rabbitmq import topology_bootstrap_loop
 from dlr.control.services.retention import retention_loop
 from dlr.control.services.schedule import scheduler_loop
 from dlr.control.services.secrets import bootstrap_demo_credentials
+from dlr.control.template_catalog import get_template_catalog
 
 logger = logging.getLogger("dlr.control.app")
 
@@ -142,6 +144,10 @@ def create_app() -> FastAPI:
     validate_deployment_configuration(settings)
     configure_platform_logging("control")
     configure_ai_tool_audit_logging()
+    # Parse and cross-validate every catalog metadata/receipt resource at
+    # startup. Variant source bodies remain lazy and are hashed when selected;
+    # release gates validate all 51 before packaging.
+    get_template_catalog()
     app = FastAPI(title="DLR Control", version="0.0.1", lifespan=lifespan)
 
     @app.middleware("http")
@@ -192,12 +198,23 @@ def create_app() -> FastAPI:
     async def _validation_error_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        """Do not echo rejected KnowledgeSource request values.
+        """Do not echo rejected request values on secret-bearing surfaces.
 
         In particular, a malformed client must not make FastAPI's generic
-        validation payload reflect an access_key_secret. Other API routes
-        retain FastAPI's default validation response for compatibility.
+        validation payload reflect an access_key_secret or a value rejected by
+        the Template Gallery. Other API routes retain FastAPI's default
+        validation response for compatibility.
         """
+        if request.url.path.startswith("/api/templates/"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "template_request_invalid",
+                        "message": "Template request is invalid",
+                    }
+                },
+            )
         if request.url.path.startswith("/api/knowledge-sources/"):
             return JSONResponse(
                 status_code=422,
@@ -251,6 +268,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(adapters.router)
+    app.include_router(templates.router)
     app.include_router(input_configs.router)
     app.include_router(migration.router)
     app.include_router(managed_input.router)

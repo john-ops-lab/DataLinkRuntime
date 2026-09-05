@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "rest-paginated-collection",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "df6c6e45dfaf57ec722e1c0996bb1441e18f4b36724bf9b8f169a0b5fa9a9f81",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

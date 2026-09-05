@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "webhook-json-normalization",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "1e8e21fb333269d7d3b92fdfe7ff49ded11631851acaf46c8168d8c28cc02633",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}

@@ -1,0 +1,10 @@
+{
+  "scenario_slug": "tencentcloud-database-middleware-inventory",
+  "version": "1.0.0",
+  "language": "python",
+  "source_sha256": "55432ce24ab273449efb4051ab737512d33faf6546c01b197d4cc69ed323a373",
+  "behavior_contract_version": "dlr-recipe/v1",
+  "maturity": "reference-generated",
+  "evidence": [],
+  "verified_at": null
+}
