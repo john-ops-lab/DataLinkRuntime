@@ -10,6 +10,48 @@ import java.util.Set;
 
 /** Finite RFC 6901 mapping, filtering, sorting and de-duplication. */
 public class Adapter {
+    // JSON 字段整理：可修改的配置集中在这里。
+    // 运行时提供待处理的数据或文件；处理规则在下面配置。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // mappings: 字段映射规则；source/pointer 指定原字段路径，target 指定结果字段名。
+        // filters: 按字段值筛选；空列表表示不过滤。
+        // sort: 排序字段和方向：asc 升序、desc 降序。
+        // dedupe_by: 按此字段去重。
+        // max_records: 单次运行最多返回的记录数。
+        // max_fields: 最多处理的字段数。
+        // max_output_bytes: 返回结果大小上限，单位字节。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "mappings": [
+                {
+                  "pointer": "/profile/name",
+                  "target": "name",
+                  "type": "string",
+                  "default": ""
+                },
+                {
+                  "pointer": "/id",
+                  "target": "id",
+                  "type": "string"
+                }
+              ],
+              "filters": [],
+              "sort": {
+                "field": "name",
+                "direction": "asc"
+              },
+              "dedupe_by": "id",
+              "max_records": 10000,
+              "max_fields": 200,
+              "max_output_bytes": 4194304
+            }
+            """);
+    }
+
     private static final int MAX_POINTER_BYTES = 1_024;
     private static final int MAX_POINTER_TOKENS = 64;
     private static final int MAX_POINTER_TOKEN_BYTES = 256;
@@ -19,6 +61,13 @@ public class Adapter {
     );
 
     public Object handle(Context context, Object rawInput) {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         Map<String, Object> input = object(rawInput, "input_must_be_object");
         List<?> rawRecords = list(input.get("records"), "records_required");
         List<?> mappings = list(input.get("mappings"), "mappings_required");

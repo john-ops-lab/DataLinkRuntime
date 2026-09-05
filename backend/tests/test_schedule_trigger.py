@@ -30,6 +30,7 @@ from dlr.control.services.schedule import (
     next_run_after,
     scheduler_tick,
 )
+from runtime_api_support import claim_execution, report_attempt
 from test_adapters import create_adapter, save_version
 from test_workers import register_worker
 
@@ -85,22 +86,42 @@ def schedule_executions(session_factory: sessionmaker[Session], adapter_id: int)
 
 def enable_rabbitmq_test(monkeypatch: pytest.MonkeyPatch) -> None:
     """Model a successful asynchronous capability probe for API unit tests."""
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", True)
     monkeypatch.setattr(settings, "rabbitmq_url", "amqp://dlr:test-password@rabbitmq:5672/%2F")
     monkeypatch.setattr(settings, "rabbitmq_management_url", "http://rabbitmq:15672")
     rabbitmq.mark_runtime_ready()
 
 
-def finish_active(session_factory: sessionmaker[Session], adapter_id: int) -> None:
-    with session_factory.begin() as session:
-        session.execute(
-            update(Execution)
-            .where(
-                Execution.adapter_id == adapter_id,
-                Execution.status.in_(("pending", "running")),
+def finish_active(
+    client: TestClient,
+    session_factory: sessionmaker[Session],
+    adapter_id: int,
+) -> None:
+    """Complete real Attempts so Slot and Admission state match terminal history."""
+    with session_factory() as session:
+        executions = list(
+            session.scalars(
+                select(Execution)
+                .where(
+                    Execution.adapter_id == adapter_id,
+                    Execution.status.in_(("queued", "running")),
+                )
+                .order_by(Execution.id)
             )
-            .values(status="succeeded", ended_at=func.now())
         )
+    for execution in executions:
+        if execution.status == "queued":
+            claimed = claim_execution(client, execution.target_worker_id, execution_id=execution.id)
+            assert claimed.status_code == 200, claimed.text
+        result = report_attempt(
+            client,
+            execution.target_worker_id,
+            execution.id,
+            {
+                "status": "succeeded",
+                "workspace_cleanup_status": "completed",
+            },
+        )
+        assert result.status_code == 200, result.text
 
 
 def test_schedule_is_task_only_and_get_before_configuration_is_404(
@@ -917,7 +938,7 @@ def test_disabled_save_then_reenabled_schedule_runs_new_latest_revision(
     set_cursor(session_factory, adapter["id"], BASE - timedelta(minutes=1))
     with session_factory() as session:
         assert scheduler_tick(session, now=BASE) == 1
-    finish_active(session_factory, adapter["id"])
+    finish_active(api_client, session_factory, adapter["id"])
 
     assert put_schedule(api_client, adapter["id"], enabled=False).status_code == 200
     second = save_version(api_client, adapter["id"], code="# revision 2\n")
@@ -936,28 +957,45 @@ def test_disabled_save_then_reenabled_schedule_runs_new_latest_revision(
     assert [row.version_id for row in rows] == [first["id"], second["id"]]
 
 
-def test_active_manual_execution_holds_schedule_without_creating_second_run(
+def test_active_manual_execution_queues_schedule_but_retains_slot_until_finished(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    adapter, _, _ = setup_task(api_client, "schedule-busy")
+    adapter, _, worker = setup_task(api_client, "schedule-busy")
     assert put_schedule(api_client, adapter["id"]).status_code == 200
     manual = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
     assert manual.status_code == 202
+    assert claim_execution(api_client, worker["id"]).status_code == 200
     due = BASE - timedelta(minutes=1)
     set_cursor(session_factory, adapter["id"], due)
     with session_factory() as session:
-        assert scheduler_tick(session, now=BASE) == 0
-    assert schedule_executions(session_factory, adapter["id"]) == []
+        assert scheduler_tick(session, now=BASE) == 1
+    scheduled = schedule_executions(session_factory, adapter["id"])
+    assert len(scheduled) == 1 and scheduled[0].status == "queued"
     assert (
-        datetime.fromisoformat(get_schedule(api_client, adapter["id"]).json()["next_run_at"]) == due
+        datetime.fromisoformat(get_schedule(api_client, adapter["id"]).json()["next_run_at"]) > BASE
     )
+    deferred = claim_execution(api_client, worker["id"])
+    assert deferred.status_code == 204
+    assert deferred.headers["X-Test-Claim-Decision"] == "DEFER"
+    assert (
+        report_attempt(
+            api_client,
+            worker["id"],
+            manual.json()["id"],
+            {
+                "status": "succeeded",
+            },
+        ).status_code
+        == 200
+    )
+    assert claim_execution(api_client, worker["id"]).json()["execution_id"] == scheduled[0].id
 
 
 def test_disable_keeps_runtime_locked_until_active_manual_execution_finishes(
     api_client: TestClient,
 ) -> None:
-    adapter, _, _ = setup_task(api_client, "schedule-disable-active")
+    adapter, _, worker = setup_task(api_client, "schedule-disable-active")
     configured = put_schedule(api_client, adapter["id"])
     assert configured.status_code == 200, configured.text
     next_run_at = configured.json()["next_run_at"]
@@ -967,6 +1005,7 @@ def test_disable_keeps_runtime_locked_until_active_manual_execution_finishes(
         json={"input": {"source": "manual"}},
     )
     assert manual.status_code == 202, manual.text
+    assert claim_execution(api_client, worker["id"]).status_code == 200
     unchanged = get_schedule(api_client, adapter["id"]).json()
     assert unchanged["enabled"] is True
     assert unchanged["next_run_at"] == next_run_at
@@ -992,28 +1031,58 @@ def test_disable_keeps_runtime_locked_until_active_manual_execution_finishes(
 
     cancelled = api_client.post(f"/api/executions/{manual.json()['id']}/cancel")
     assert cancelled.status_code == 200
-    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["status"] == "running"
+    assert cancelled.json()["cancel_requested"] is True
+    assert api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_locked"] is True
+    finished = report_attempt(
+        api_client,
+        worker["id"],
+        manual.json()["id"],
+        {
+            "status": "cancelled",
+            "workspace_cleanup_status": "completed",
+        },
+    )
+    assert finished.status_code == 200
+    assert finished.json()["status"] == "cancelled"
     state = api_client.get(f"/api/adapters/{adapter['id']}").json()
     assert state["runtime_locked"] is False
 
 
-def test_active_schedule_execution_rejects_manual_run_once(
+def test_active_schedule_execution_queues_manual_run_until_slot_release(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    adapter, _, _ = setup_task(api_client, "schedule-run-once-busy")
+    adapter, _, worker = setup_task(api_client, "schedule-run-once-busy")
     assert put_schedule(api_client, adapter["id"]).status_code == 200
     set_cursor(session_factory, adapter["id"], BASE - timedelta(minutes=1))
     with session_factory() as session:
         assert scheduler_tick(session, now=BASE) == 1
+    scheduled = claim_execution(api_client, worker["id"])
+    assert scheduled.status_code == 200
 
     manual = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
 
-    assert manual.status_code == 409
-    assert manual.json()["detail"]["code"] == "adapter_busy"
+    assert manual.status_code == 202
+    assert manual.json()["status"] == "queued"
+    deferred = claim_execution(api_client, worker["id"])
+    assert deferred.status_code == 204
+    assert deferred.headers["X-Test-Claim-Decision"] == "DEFER"
+    assert (
+        report_attempt(
+            api_client,
+            worker["id"],
+            scheduled.json()["execution_id"],
+            {
+                "status": "succeeded",
+            },
+        ).status_code
+        == 200
+    )
+    assert claim_execution(api_client, worker["id"]).json()["execution_id"] == manual.json()["id"]
 
 
-def test_offline_worker_holds_due_point_then_recovers_once(
+def test_offline_worker_queues_due_point_and_recovers_without_duplicate(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
@@ -1029,7 +1098,9 @@ def test_offline_worker_holds_due_point_then_recovers_once(
             .values(last_heartbeat=datetime(2000, 1, 1, tzinfo=UTC), status="online")
         )
     with session_factory() as session:
-        assert scheduler_tick(session, now=BASE) == 0
+        assert scheduler_tick(session, now=BASE) == 1
+    queued = schedule_executions(session_factory, adapter["id"])
+    assert len(queued) == 1 and queued[0].status == "queued"
     monkeypatch.setattr(worker_availability, "current_time", lambda _session: BASE)
     recovered_at = BASE
     with session_factory.begin() as session:
@@ -1039,8 +1110,11 @@ def test_offline_worker_holds_due_point_then_recovers_once(
             .values(last_heartbeat=recovered_at, status="online")
         )
     with session_factory() as session:
-        assert scheduler_tick(session, now=BASE) == 1
+        assert scheduler_tick(session, now=BASE) == 0
     assert len(schedule_executions(session_factory, adapter["id"])) == 1
+    recovered = claim_execution(api_client, worker["id"])
+    assert recovered.status_code == 200
+    assert recovered.json()["execution_id"] == queued[0].id
 
 
 def test_concurrent_scheduler_ticks_create_one_execution(

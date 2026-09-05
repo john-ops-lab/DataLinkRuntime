@@ -33,7 +33,7 @@ class ExecutionResponse(BaseModel):
     # M5.2: the planned point for trigger=schedule; null for other triggers.
     scheduled_for: datetime | None
     status: str
-    dispatch_backend: Literal["legacy", "rabbitmq"] = "legacy"
+    dispatch_backend: Literal["rabbitmq"] = "rabbitmq"
     dispatch_generation: int = 0
     queued_at: datetime | None = None
     next_attempt_at: datetime | None = None

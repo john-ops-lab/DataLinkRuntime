@@ -1,3 +1,44 @@
+// REST 分页采集：可修改的配置集中在这里。
+// 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+// 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+// 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+// HTTP_BEARER_TOKEN：HTTP Bearer Token，使用此认证时配置。
+// HTTP_API_KEY：HTTP API Key，使用此认证时配置。
+const CONFIG = {
+  // 填写实际接口地址；不要在地址中填写密码或 Token。
+  "url": "https://api.example/resources",
+  // 分页方式：page（页码）、offset（偏移量）、cursor（游标）或 next-url（下一页地址）。
+  "strategy": "page",
+  // 接口响应中列表的字段路径，例如 items 或 data.items。
+  "records_path": "items",
+  // 接口响应中下一页游标或地址的字段路径。
+  "next_path": "next",
+  // 接口接收页码的参数名。
+  "page_parameter": "page",
+  // 接口接收每页条数的参数名。
+  "size_parameter": "page_size",
+  // 从第几页开始读取。
+  "start_page": 1,
+  // 每次请求的条数，不能超过目标接口限制。
+  "page_size": 100,
+  // 普通请求头；Bearer 认证可增加 "DLR-Auth": "bearer:HTTP_BEARER_TOKEN"，Token 在本适配器凭据绑定中配置。
+  "headers": {},
+  // 可选认证：例如 {"parameter":"api_key","secret_binding":"HTTP_API_KEY"}；在本适配器的凭据绑定中配置同名键。
+  "query_auth": null,
+  // 是否允许下一页跳转到其他站点；建议保留 false。
+  "allow_cross_origin_next": false,
+  // 单次运行最多读取的页数。
+  "max_pages": 20,
+  // 单次运行最多返回的记录数。
+  "max_records": 10000,
+  // 单次运行处理或返回的数据大小上限，单位字节。
+  "max_bytes": 4194304,
+  // 单次请求超时时间，单位秒。
+  "timeout_seconds": 30,
+  // 读取请求失败时的最多重试次数。
+  "max_retries": 2,
+};
+
 /** Bounded REST collection pagination with loop detection. */
 
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -73,6 +114,7 @@ function headersFor(context, raw) {
     if (typeof auth !== "string" || !auth.includes(":")) throw new Error("invalid_auth_scheme");
     const splitAt = auth.indexOf(":");
     const scheme = auth.slice(0, splitAt);
+    // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     const value = context.secrets.get(auth.slice(splitAt + 1));
     if (!value) throw new Error("missing_credential");
     if (scheme === "bearer") {
@@ -117,6 +159,7 @@ function queryAuthFor(context, raw) {
       || typeof raw.secret_binding !== "string" || raw.secret_binding.length === 0) {
     throw new Error("invalid_query_auth");
   }
+  // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
   const value = context.secrets.get(raw.secret_binding);
   if (!value) throw new Error("missing_credential");
   return { parameter: raw.parameter, secret: value };
@@ -303,6 +346,9 @@ async function run(context, input) {
 }
 
 export async function handle(context, input) {
+  if (input === undefined || input === null) input = {};
+  if (typeof input !== "object" || Array.isArray(input)) throw new Error("输入必须是 JSON 对象");
+  input = { ...CONFIG, ...input };
   try {
     return await run(context, input);
   } catch (error) {

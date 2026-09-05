@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from conftest import WORKER_TOKEN
 from dlr.common.config import settings
 from dlr.control.models import Execution
+from runtime_api_support import mark_broker_ready, ready_registration
 from test_adapters import create_adapter, save_version
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
@@ -19,10 +20,11 @@ def register_worker(client: TestClient, name: str = "execution-worker") -> dict:
         return existing[0]
     response = client.post(
         "/api/workers/register",
-        json={"name": name, "capabilities": ["python"]},
+        json=ready_registration(name, ["python"]),
         headers=WORKER_HEADERS,
     )
     assert response.status_code == 200, response.text
+    mark_broker_ready()
     return response.json()
 
 
@@ -39,7 +41,7 @@ def test_create_execution_binds_latest_version(api_client: TestClient) -> None:
     worker = register_worker(api_client)
 
     execution = create_execution(api_client, adapter["id"], {"input": {"k": 1}})
-    assert execution["status"] == "pending"
+    assert execution["status"] == "queued"
     assert execution["trigger"] == "manual"
     assert execution["version_id"] == v2["id"], "manual execution defaults to latest"
     assert execution["adapter_id"] == adapter["id"]
@@ -206,7 +208,7 @@ def test_history_summaries_never_carry_big_fields(api_client: TestClient) -> Non
     assert set(item.keys()) == SUMMARY_FIELDS
     for forbidden in ("input", "output", "stdout", "stderr", "output_preview"):
         assert forbidden not in item
-    assert item["status"] == "pending"
+    assert item["status"] == "queued"
     assert item["trigger"] == "manual"
     assert item["scheduled_for"] is None
     assert item["worker_id"] is None

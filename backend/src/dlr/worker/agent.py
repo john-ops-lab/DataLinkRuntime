@@ -1,11 +1,11 @@
-"""DLR Worker Agent (M2).
+"""Outbound-only Worker with a reliable message Consumer and resource isolation.
 
 Outbound-only agent: registers with the Control Node, sends heartbeats,
-long-polls for tasks and executes each one in a fresh subprocess inside a
-version-scoped venv. The Worker never opens an inbound port.
+consumes persistent dispatches and executes each Attempt inside its Sandbox.
+The Worker never opens an inbound port.
 
 When the Control Node is unavailable the agent keeps registering /
-heartbeating / claiming with simple capped backoff instead of crashing.
+heartbeating with capped backoff instead of crashing.
 """
 
 import json
@@ -16,16 +16,13 @@ import shutil
 import signal
 import subprocess
 import threading
-import time
 from collections.abc import Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
-from functools import partial
 from math import isfinite
 from pathlib import Path
 from typing import Any
 
 from dlr.common.platform_logging import configure_platform_logging
-from dlr.worker import executor, i18n, sandbox
+from dlr.worker import executor, sandbox
 from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
@@ -39,10 +36,10 @@ DEFAULT_READY_FILE = "/tmp/dlr-worker.ready"
 MAX_BACKOFF_SECONDS = 30.0
 REPORT_ATTEMPTS = 3
 MIN_JAVA_MAJOR_VERSION = 21
-DEFAULT_PROTOCOL_VERSION = 1
-SUPPORTED_PROTOCOL_VERSIONS = frozenset({1, 2, 3})
+PROTOCOL_VERSION = 3
 ISOLATION_CAPABILITY_KEYS = (
     "cgroup_v2",
+    "cgroup_namespace_private",
     "mount_namespace",
     "pid_namespace",
     "memory_hard_limit",
@@ -97,17 +94,11 @@ class WorkerConfig:
         self.control_url = os.environ.get("DLR_CONTROL_URL", "http://control:8000")
         self.token = os.environ.get("DLR_WORKER_TOKEN", "")
         self.name = os.environ.get("DLR_WORKER_NAME", "worker-1")
-        try:
-            self.protocol_version = int(
-                os.environ.get("DLR_WORKER_PROTOCOL_VERSION", str(DEFAULT_PROTOCOL_VERSION))
-            )
-        except ValueError as error:
-            raise ValueError("DLR_WORKER_PROTOCOL_VERSION must be 1, 2 or 3") from error
-        if self.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
-            raise ValueError("DLR_WORKER_PROTOCOL_VERSION must be 1, 2 or 3")
+        configured_protocol = os.environ.get("DLR_WORKER_PROTOCOL_VERSION")
+        if configured_protocol is not None and configured_protocol != str(PROTOCOL_VERSION):
+            raise ValueError("Worker protocol is fixed; remove DLR_WORKER_PROTOCOL_VERSION")
+        self.protocol_version = PROTOCOL_VERSION
         self.heartbeat_seconds = float(os.environ.get("DLR_WORKER_HEARTBEAT_SECONDS", "10"))
-        self.claim_wait_seconds = int(os.environ.get("DLR_WORKER_CLAIM_WAIT_SECONDS", "20"))
-        self.max_concurrency = int(os.environ.get("DLR_WORKER_MAX_CONCURRENCY", "4"))
         self.runtime_root = Path(os.environ.get("DLR_RUNTIME_ROOT", "/var/lib/dlr/runtime"))
         self.workspace_cleanup_journal_root = Path(
             os.environ.get(
@@ -132,30 +123,14 @@ class WorkerConfig:
         self.npm_registry_url = os.environ.get("DLR_NPM_REGISTRY_URL") or None
         self.maven_repository_url = os.environ.get("DLR_MAVEN_REPOSITORY_URL") or None
         self.rabbitmq_url = os.environ.get("DLR_RABBITMQ_URL") or None
-        self.execution_slots = max(
-            1, int(os.environ.get("DLR_WORKER_EXECUTION_SLOTS", str(self.max_concurrency)))
-        )
+        self.execution_slots = max(1, int(os.environ.get("DLR_WORKER_EXECUTION_SLOTS", "2")))
         self.attempt_journal_root = Path(
             os.environ.get("DLR_ATTEMPT_JOURNAL_ROOT", str(self.runtime_root / "attempt-journal"))
         )
         self.sandbox_config = sandbox.SandboxConfig.from_environment()
-        self.isolation_capabilities = self._read_isolation_capabilities()
+        self.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
         self._verified_resource_envelope: sandbox.ResourceEnvelope | None = None
         self._preflight_completed = False
-
-    def _read_isolation_capabilities(self) -> dict[str, bool]:
-        """Report observed capabilities; Batch 2 never infers sandbox PASS."""
-        raw = os.environ.get("DLR_WORKER_ISOLATION_CAPABILITIES_JSON")
-        if raw:
-            try:
-                value = json.loads(raw)
-            except json.JSONDecodeError:
-                value = {}
-            if isinstance(value, dict) and all(
-                isinstance(key, str) and isinstance(flag, bool) for key, flag in value.items()
-            ):
-                return {key: value[key] for key in value if key in ISOLATION_CAPABILITY_KEYS}
-        return {key: False for key in ISOLATION_CAPABILITY_KEYS}
 
     def capabilities(self) -> list[str]:
         capabilities: list[str] = []
@@ -181,8 +156,8 @@ class WorkerConfig:
         )
 
     def run_preflight(self) -> None:
-        """Run the real v3 probe once before registration is attempted."""
-        if self._preflight_completed or self.protocol_version < 3:
+        """Run the real isolation probe once before registration is attempted."""
+        if self._preflight_completed:
             return
         self._preflight_completed = True
         # Do not retain environment-provided or stale capability claims while
@@ -212,14 +187,12 @@ class WorkerConfig:
                 envelope=envelope,
             )
             logger.info(
-                "v3 pre-registration finite resource envelope gate passed; "
-                "starting sandbox preflight"
+                "pre-registration finite resource envelope gate passed; starting sandbox preflight"
             )
         except Exception as error:  # noqa: BLE001 - startup gate must fail closed
             error_code = getattr(error, "code", type(error).__name__)
             logger.warning(
-                "v3 resource envelope verification failed (%s); RabbitMQ execution "
-                "remains disabled",
+                "resource envelope verification failed (%s); RabbitMQ execution remains disabled",
                 error_code,
             )
             return
@@ -242,13 +215,17 @@ class WorkerConfig:
                 self.isolation_capabilities["resource_envelope_verified"] = True
                 self._verified_resource_envelope = envelope
             logger.info(
-                "v3 sandbox preflight %s; rabbitmq execution gate=%s",
+                "sandbox preflight %s; rabbitmq execution gate=%s",
                 result.get("details", {}).get("status", "failed"),
                 self.isolation_capabilities.get("preflight_passed", False),
             )
+            if isinstance(details, Mapping) and details.get("status") != "passed":
+                # This receipt contains only the disposable synthetic probe's
+                # isolation checks, never Worker credentials or Adapter data.
+                logger.warning("sandbox preflight receipt: %s", json.dumps(dict(details)))
         except Exception:  # noqa: BLE001 - startup gate must fail closed
             self.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
-            logger.warning("v3 sandbox preflight failed; RabbitMQ execution remains disabled")
+            logger.warning("sandbox preflight failed; RabbitMQ execution remains disabled")
 
 
 class Agent:
@@ -256,15 +233,6 @@ class Agent:
         self._config = config
         self._client = client
         self._stop = threading.Event()
-        self._state_lock = threading.Lock()
-        self._in_flight = 0
-        self._in_flight_execution_ids: set[int] = set()
-        # (adapter_id, version_id) -> number of Executions currently running
-        # against that version. Reference counting prevents a concurrent
-        # cleanup from deleting a venv while a second Execution is still
-        # using it (a plain set would discard the version as soon as the
-        # first Execution finishes).
-        self._active_versions: dict[tuple[int, int], int] = {}
         self._registration_info: dict[str, Any] = {}
         self._consumer: V3Consumer | None = None
 
@@ -272,14 +240,6 @@ class Agent:
         self._stop.set()
         if self._consumer is not None:
             self._consumer.request_stop()
-
-    def _mark_execution_in_flight(self, execution_id: int) -> None:
-        with self._state_lock:
-            self._in_flight_execution_ids.add(execution_id)
-
-    def _unmark_execution_in_flight(self, execution_id: int) -> None:
-        with self._state_lock:
-            self._in_flight_execution_ids.discard(execution_id)
 
     # --- lifecycle ------------------------------------------------------------
 
@@ -296,19 +256,22 @@ class Agent:
             target=self._heartbeat_loop, args=(worker_id,), name="dlr-heartbeat", daemon=True
         )
         heartbeat_thread.start()
+        cleanup_thread = threading.Thread(
+            target=self._cleanup_loop, args=(worker_id,), name="dlr-cleanup", daemon=True
+        )
+        cleanup_thread.start()
         try:
-            if self._config.protocol_version >= 3:
-                if not self._registration_info.get("rabbitmq_execution_v3", False):
-                    logger.warning(
-                        "Worker v3 isolation preflight is not passed; RabbitMQ "
-                        "Consumer remains paused"
-                    )
-                    self._stop.wait()
-                else:
-                    self._run_v3_consumer(worker_id)
+            if not self._registration_info.get("rabbitmq_execution_v3", False) or not all(
+                self._config.isolation_capabilities.get(key, False)
+                for key in ISOLATION_CAPABILITY_KEYS
+            ):
+                logger.warning("Worker isolation preflight failed; execution remains paused")
+                self._stop.wait()
             else:
-                self._claim_loop(worker_id)
+                self._run_consumer(worker_id)
         finally:
+            self.request_stop()
+            cleanup_thread.join(timeout=min(self._config.workspace_cleanup_interval_seconds, 5))
             ready_file.unlink(missing_ok=True)
             self._graceful_offline(worker_id)
             logger.info("worker agent stopped")
@@ -321,24 +284,12 @@ class Agent:
                 capabilities = self._config.capabilities()
                 if not capabilities:
                     raise RuntimeError("no supported Runtime is installed")
-                try:
-                    info = self._client.register(
-                        self._config.name,
-                        capabilities,
-                        protocol_version=self._config.protocol_version,
-                        isolation_capabilities=self._config.isolation_capabilities,
-                    )
-                except TypeError as error:
-                    # Keep the v1/v2 in-process client seam usable during a
-                    # rolling deployment. A real ControlClient accepts the
-                    # matrix; only an older injected client may not.
-                    if "isolation_capabilities" not in str(error):
-                        raise
-                    info = self._client.register(
-                        self._config.name,
-                        capabilities,
-                        protocol_version=self._config.protocol_version,
-                    )
+                info = self._client.register(
+                    self._config.name,
+                    capabilities,
+                    protocol_version=PROTOCOL_VERSION,
+                    isolation_capabilities=self._config.isolation_capabilities,
+                )
                 self._registration_info = info
                 return int(info["id"])
             except ControlUnavailableError as error:
@@ -357,7 +308,7 @@ class Agent:
             backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
         return None
 
-    def _run_v3_consumer(self, worker_id: int) -> None:
+    def _run_consumer(self, worker_id: int) -> None:
         from dlr.control.services import rabbitmq
 
         self._consumer = V3Consumer(
@@ -392,7 +343,7 @@ class Agent:
         except Exception:  # noqa: BLE001 - graceful shutdown must not raise
             logger.debug("offline notification failed")
 
-    # --- claim / execute --------------------------------------------------------
+    # --- startup recovery and adapter cleanup ----------------------------------
 
     def _recover_cleanup_journals(self, worker_id: int) -> None:
         """Recover owned Workspace journals without deleting unknown paths."""
@@ -420,23 +371,19 @@ class Agent:
                 )
             return False
 
-        # Keep the snapshot and task-start marker under one lock.  A task
-        # thread that has not yet established its journal waits here, while
-        # already-running tasks remain protected for the whole scan.
-        with self._state_lock:
-            sandbox_counts = sandbox.recover(
-                self._config.sandbox_config,
-                self._config.workspace_cleanup_journal_root / "sandbox-recovery",
-                runtime_root=self._config.runtime_root,
-            )
-            counts = workspace_manager.recover_cleanup_journals(
-                self._config.workspace_cleanup_journal_root,
-                self._config.runtime_root,
-                report_cleanup=report_cleanup,
-                scan_timeout_seconds=workspace_manager.RECOVERY_SCAN_TIMEOUT_SECONDS,
-                retry_backoff_seconds=workspace_manager.RECOVERY_RETRY_BACKOFF_SECONDS,
-                in_flight_execution_ids=frozenset(self._in_flight_execution_ids),
-            )
+        # Recovery runs before the Consumer starts; no local Attempt is active.
+        sandbox_counts = sandbox.recover(
+            self._config.sandbox_config,
+            self._config.workspace_cleanup_journal_root / "sandbox-recovery",
+            runtime_root=self._config.runtime_root,
+        )
+        counts = workspace_manager.recover_cleanup_journals(
+            self._config.workspace_cleanup_journal_root,
+            self._config.runtime_root,
+            report_cleanup=report_cleanup,
+            scan_timeout_seconds=workspace_manager.RECOVERY_SCAN_TIMEOUT_SECONDS,
+            retry_backoff_seconds=workspace_manager.RECOVERY_RETRY_BACKOFF_SECONDS,
+        )
         if sandbox_counts["inspected"] or sandbox_counts["retained"]:
             logger.info(
                 "sandbox recovery scan inspected %s; completed %s, retained %s",
@@ -453,183 +400,19 @@ class Agent:
                 counts["retained"],
             )
 
-    def _claim_loop(self, worker_id: int) -> None:
-        backoff = 1.0
-        next_cleanup_scan = 0.0
-        with ThreadPoolExecutor(max_workers=self._config.max_concurrency) as pool:
-            while not self._stop.is_set():
-                now = time.monotonic()
-                if now >= next_cleanup_scan:
-                    self._recover_cleanup_journals(worker_id)
-                    next_cleanup_scan = now + max(
-                        1.0, self._config.workspace_cleanup_interval_seconds
-                    )
-                with self._state_lock:
-                    saturated = self._in_flight >= self._config.max_concurrency
-                if saturated:
-                    self._stop.wait(1.0)
-                    continue
-                try:
-                    task = self._client.claim(worker_id, self._config.claim_wait_seconds)
-                    backoff = 1.0
-                except ControlUnavailableError as error:
-                    logger.warning(
-                        "control unavailable during claim (%s); retrying in %.0fs",
-                        error,
-                        backoff,
-                    )
-                    self._stop.wait(backoff)
-                    backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
-                    continue
-                except ClientError as error:
-                    logger.error(
-                        "claim rejected by control with status %s; retrying in %.0fs",
-                        error.status,
-                        backoff,
-                    )
-                    self._stop.wait(backoff)
-                    backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
-                    continue
-                if task is None:
-                    continue
-                self._track_start(task)
-                try:
-                    future = pool.submit(self._execute_task, worker_id, task)
-                except BaseException:
-                    self._track_end(task)
-                    raise
-                future.add_done_callback(partial(self._task_done, task))
-
-    def _task_done(self, task: dict[str, Any], _future: Future[None]) -> None:
-        self._track_end(task)
-
-    def _track_start(self, task: dict[str, Any]) -> None:
-        with self._state_lock:
-            self._in_flight += 1
-            if task.get("kind") == "adapter_cleanup":
-                return
-            key = (int(task["adapter_id"]), int(task["version_id"]))
-            self._active_versions[key] = self._active_versions.get(key, 0) + 1
-
-    def _track_end(self, task: dict[str, Any]) -> None:
-        with self._state_lock:
-            self._in_flight -= 1
-            if task.get("kind") == "adapter_cleanup":
-                return
-            key = (int(task["adapter_id"]), int(task["version_id"]))
-            count = self._active_versions.get(key, 0)
-            if count <= 1:
-                self._active_versions.pop(key, None)
-            else:
-                self._active_versions[key] = count - 1
-
-    def _execute_task(self, worker_id: int, task: dict[str, Any]) -> None:
-        if task.get("kind") == "adapter_cleanup":
-            self._execute_cleanup_task(worker_id, task)
-            return
-        execution_id = int(task["execution_id"])
-        self._mark_execution_in_flight(execution_id)
-        try:
-            self._execute_execution_task(worker_id, task)
-        finally:
-            self._unmark_execution_in_flight(execution_id)
-
-    def _execute_execution_task(self, worker_id: int, task: dict[str, Any]) -> None:
-        execution_id = int(task["execution_id"])
-        logger.info(
-            "executing execution %s (adapter %s version %s)",
-            execution_id,
-            task["adapter_id"],
-            task["version_id"],
-        )
-        claim_token = task.get("claim_token")
-
-        def progress_callback(stdout_chunk: str, stderr_chunk: str) -> bool:
-            # Best effort: the executor swallows any exception raised here.
-            # Control answers the cancel flag on every upload (M3.2), and
-            # empty uploads double as the cancel poll.
-            if claim_token is None:
-                return self._client.report_progress(
-                    worker_id, execution_id, stdout_chunk, stderr_chunk
-                )
-            return self._client.report_progress(
-                worker_id,
-                execution_id,
-                stdout_chunk,
-                stderr_chunk,
-                claim_token=claim_token,
-            )
-
-        input_downloader = None
-        if claim_token is not None:
-
-            def download_input(
-                input_file: Mapping[str, Any], destination: workspace_manager.WritableBinary
-            ) -> int:
-                return self._client.download_input_artifact(
-                    worker_id,
-                    execution_id,
-                    int(input_file["id"]),
-                    claim_token=claim_token,
-                    destination=destination,
-                )
-
-            input_downloader = download_input
-
-        try:
-            if input_downloader is None:
-                result = executor.run(
-                    task,
-                    self._config.runtime_settings(),
-                    progress_callback=progress_callback,
-                )
-            else:
-                result = executor.run(
-                    task,
-                    self._config.runtime_settings(),
-                    progress_callback=progress_callback,
-                    input_downloader=input_downloader,
-                )
-        except Exception:  # noqa: BLE001 - a worker must survive any task
-            logger.error("unexpected executor failure for execution %s", execution_id)
-            result = {
-                "status": "failed",
-                "error": i18n.text(
-                    i18n.resolve_locale(task.get("locale")),
-                    "runtime.worker_internal_error",
-                ),
-                "error_code": "worker_internal_error",
-                "stdout": "",
-                "stdout_truncated": False,
-                "stderr": "",
-                "stderr_truncated": False,
-            }
+    def _cleanup_loop(self, worker_id: int) -> None:
+        """Poll only filesystem cleanup requests; executions use the Consumer."""
+        delay = max(1.0, self._config.workspace_cleanup_interval_seconds)
+        while not self._stop.is_set():
             try:
-                if int(task.get("protocol_version") or 1) >= 2:
-                    result.update(
-                        {
-                            "workspace_cleanup_status": "deferred",
-                            "workspace_cleanup_error_code": "workspace_cleanup_failed",
-                        }
-                    )
-            except (TypeError, ValueError):
-                pass
-        report_accepted = self._report_with_retry(
-            worker_id,
-            execution_id,
-            result,
-            claim_token=claim_token,
-        )
-        if (
-            claim_token is not None
-            and report_accepted
-            and result.get("workspace_cleanup_status") == "completed"
-            and not workspace_manager.remove_cleanup_journal(
-                self._config.workspace_cleanup_journal_root, execution_id
-            )
-        ):
-            logger.warning("cleanup journal removal deferred for execution %s", execution_id)
-        self._cleanup_version_environments(task)
+                task = self._client.claim_cleanup(worker_id)
+                if task is not None:
+                    self._execute_cleanup_task(worker_id, task)
+            except ControlUnavailableError:
+                logger.debug("adapter cleanup deferred: control unavailable")
+            except ClientError as error:
+                logger.warning("adapter cleanup rejected: status=%s", error.status)
+            self._stop.wait(delay)
 
     def _execute_cleanup_task(self, worker_id: int, task: dict[str, Any]) -> None:
         cleanup_id = int(task["cleanup_id"])
@@ -665,58 +448,6 @@ class Agent:
             self._stop.wait(delay)
             delay *= 2
         logger.error("gave up reporting cleanup %s after %s attempts", cleanup_id, REPORT_ATTEMPTS)
-
-    def _report_with_retry(
-        self,
-        worker_id: int,
-        execution_id: int,
-        result: dict[str, Any],
-        *,
-        claim_token: str | None = None,
-    ) -> bool:
-        """Limited transport-level retries; not a business re-run."""
-        delay = 2.0
-        for attempt in range(1, REPORT_ATTEMPTS + 1):
-            try:
-                if claim_token is None:
-                    self._client.report_result(worker_id, execution_id, result)
-                else:
-                    self._client.report_result(
-                        worker_id,
-                        execution_id,
-                        result,
-                        claim_token=claim_token,
-                    )
-                return True
-            except ControlUnavailableError as error:
-                logger.warning("report attempt %s/%s failed: %s", attempt, REPORT_ATTEMPTS, error)
-            except ClientError as error:
-                logger.error(
-                    "result report rejected by control with status %s",
-                    error.status,
-                )
-                return False
-            self._stop.wait(delay)
-            delay *= 2
-        logger.error(
-            "gave up reporting execution %s after %s attempts", execution_id, REPORT_ATTEMPTS
-        )
-        return False
-
-    def _cleanup_version_environments(self, task: dict[str, Any]) -> None:
-        adapter_id = int(task["adapter_id"])
-        keep = {int(task["version_id"])}
-        if task.get("latest_version_id") is not None:
-            keep.add(int(task["latest_version_id"]))
-        with self._state_lock:
-            # Any version with an active count > 0 must be kept.
-            for (active_adapter_id, active_version_id), count in self._active_versions.items():
-                if active_adapter_id == adapter_id and count > 0:
-                    keep.add(active_version_id)
-        try:
-            venv_manager.cleanup_stale_venvs(self._config.runtime_root, adapter_id, keep)
-        except Exception:  # noqa: BLE001 - cleanup must never affect outcomes
-            logger.warning("version environment cleanup failed for adapter %s", adapter_id)
 
 
 def main() -> None:

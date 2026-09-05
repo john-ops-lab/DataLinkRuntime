@@ -19,6 +19,7 @@ from dlr.control.services.accounts import (
     CSRF_COOKIE_NAME,
     bootstrap_default_admin,
 )
+from runtime_api_support import ISOLATION_PASS, mark_broker_ready
 
 ACCOUNT_PREFIX = "/__dlr_account"
 STARTER_CODE = "def handle(context, input):\n    return input\n"
@@ -128,10 +129,16 @@ def create_account_adapter(
 def configure_version(api_client: TestClient, adapter_id: int) -> dict[str, Any]:
     worker = api_client.post(
         "/api/workers/register",
-        json={"name": "wave-c-worker", "capabilities": ["python"]},
+        json={
+            "protocol_version": 3,
+            "isolation_capabilities": dict(ISOLATION_PASS),
+            "name": "wave-c-worker",
+            "capabilities": ["python"],
+        },
         headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
     )
     assert worker.status_code == 200, worker.text
+    mark_broker_ready()
     worker_id = worker.json()["id"]
     patched = api_client.patch(f"/api/adapters/{adapter_id}", json={"runtime_worker_id": worker_id})
     assert patched.status_code == 200, patched.text

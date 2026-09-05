@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -30,26 +30,19 @@ from dlr.control.schemas.execution import (
     ExecutionCreate,
     ExecutionResultReport,
     ExecutionSummary,
-    ProgressReport,
 )
-from dlr.control.services import adapter_runtime, worker_availability
-from dlr.control.services.adapter import domain_error, resolve_runtime_worker
+from dlr.control.services.adapter import domain_error
 from dlr.control.services.execution_cancellation import (
     lock_execution_in_admission_order,
     request_cancellation,
 )
 from dlr.control.services.locale import get_system_locale
-from dlr.control.services.worker_protocol import require_claim_token
 
 logger = logging.getLogger("dlr.control.execution")
 
-# Statuses after which an Execution never changes again.  The two backend
-# sets remain explicit so legacy result/reconciler paths cannot accidentally
-# write RabbitMQ-only terminal states, while readers/retention can use the
-# complete union.
-LEGACY_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
+# Logical Execution states are distinct from individual Attempt failures.
 RABBITMQ_TERMINAL_STATUSES = frozenset({"succeeded", "dead_letter", "cancelled", "expired"})
-TERMINAL_STATUSES = LEGACY_TERMINAL_STATUSES | RABBITMQ_TERMINAL_STATUSES
+TERMINAL_STATUSES = RABBITMQ_TERMINAL_STATUSES
 
 # Execution history pagination contract (M3 spec §5).
 DEFAULT_HISTORY_LIMIT = 50
@@ -143,18 +136,18 @@ def _create_pending_execution_locked(
     target_worker_id: int,
     scheduled_for: Any = None,
     artifact_ids: Sequence[int] = (),
-    dispatch_backend: str = "legacy",
-    dispatch_generation: int = 0,
+    dispatch_backend: str = "rabbitmq",
+    dispatch_generation: int = 1,
     logical_input_bytes: int = 0,
     max_attempts_snapshot: int = 1,
     retry_policy_snapshot: dict[str, object] | None = None,
     resource_profile_snapshot: dict[str, object] | None = None,
     credential_bindings_snapshot: list[dict[str, object]] | None = None,
     schedule_policy_snapshot: dict[str, object] | None = None,
-    resource_class: str | None = "legacy",
+    resource_class: str | None = None,
     version_id_override: int | None = None,
 ) -> Execution:
-    """Create a fully initialized pending Execution under the Adapter lock.
+    """Create a fully initialized queued Execution under the Adapter lock.
 
     Trigger-specific callers own authentication, runtime/input validation and
     input resolution.  This narrow helper owns the lifecycle facts every new
@@ -168,15 +161,16 @@ def _create_pending_execution_locked(
     if version_id is None:  # pragma: no cover - every caller validates readiness
         raise RuntimeError("cannot create an Execution without a saved Adapter version")
     created_at = database_now(session)
-    is_rabbitmq = dispatch_backend == "rabbitmq"
+    if dispatch_backend != "rabbitmq":
+        raise ValueError("unsupported execution backend")
     execution = Execution(
         adapter_id=adapter.id,
         version_id=version_id,
         trigger=trigger,
-        status="queued" if is_rabbitmq else "pending",
+        status="queued",
         dispatch_backend=dispatch_backend,
         dispatch_generation=dispatch_generation,
-        queued_at=created_at if is_rabbitmq else None,
+        queued_at=created_at,
         attempt_count=0,
         max_attempts_snapshot=max_attempts_snapshot,
         retry_policy_snapshot=retry_policy_snapshot or {},
@@ -199,9 +193,7 @@ def _create_pending_execution_locked(
             settings.workspace_cleanup_total_timeout_seconds
         ),
         workspace_cleanup_status="pending",
-        # RabbitMQ queued rows do not use this field for the legacy stale-
-        # pending transition, but they still freeze the bounded Claim
-        # handshake deadline required by the immutable Execution snapshot.
+        # Freeze the bounded Claim handshake budget in the immutable snapshot.
         claim_deadline_at=created_at + timedelta(seconds=settings.execution_claim_timeout_seconds),
         target_worker_id=target_worker_id,
         scheduled_for=scheduled_for,
@@ -236,7 +228,6 @@ def _create_execution_locked(
     idempotency_key: str | None = None,
     idempotency_body: Any = None,
     idempotency_lookup: Any = None,
-    canary: bool = False,
 ) -> Execution:
     """Create one Execution while the caller owns the Adapter transaction lock."""
     from dlr.control.services.input_config import resolve_for_execution
@@ -247,32 +238,19 @@ def _create_execution_locked(
         raise domain_error(409, "adapter_deleted", "Adapter is deleted")
     if adapter.latest_version_id is None:
         raise domain_error(409, "adapter_has_no_version", "Adapter has no saved Revision yet")
-    reliable_enabled = settings.rabbitmq_execution_enabled or (
-        canary and settings.rabbitmq_execution_canary_enabled
+    from dlr.control.services import idempotency as idempotency_service
+    from dlr.control.services.reliable_execution import accept_execution
+
+    lookup = idempotency_lookup or idempotency_service.lookup(
+        session, adapter.id, trigger, idempotency_body, idempotency_key
     )
-    if not reliable_enabled and adapter_runtime.active_execution(session, adapter.id) is not None:
-        raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
-
-    if reliable_enabled:
-        from dlr.control.services import idempotency as idempotency_service
-        from dlr.control.services.reliable_execution import accept_execution
-
-        lookup = idempotency_lookup or idempotency_service.lookup(
-            session,
-            adapter.id,
-            trigger,
-            idempotency_body,
-            idempotency_key,
-        )
-        if lookup.record is not None:
-            existing = session.get(Execution, lookup.record.execution_id)
-            if existing is None:
-                raise domain_error(
-                    409,
-                    "idempotency_record_invalid",
-                    "Idempotency record is unavailable",
-                )
-            return existing
+    if lookup.record is not None:
+        existing = session.get(Execution, lookup.record.execution_id)
+        if existing is None:
+            raise domain_error(
+                409, "idempotency_record_invalid", "Idempotency record is unavailable"
+            )
+        return existing
 
     # A Schedule run-now must take the same Schedule lock as the Scheduler,
     # but it never mutates the row or its cursor.
@@ -295,33 +273,7 @@ def _create_execution_locked(
             adapter.id,
         )
 
-    if reliable_enabled:
-        return accept_execution(
-            session,
-            adapter,
-            trigger=trigger,
-            runtime_input=resolved.runtime_input,
-            input_source_type=resolved.source_type,
-            input_config_revision=resolved.revision,
-            input_snapshot=resolved.snapshot,
-            artifact_ids=resolved.artifact_ids,
-            scheduled_for=scheduled_for,
-            schedule_policy_snapshot=(
-                {
-                    "misfire_policy": schedule.misfire_policy,
-                    "max_catchup_count": schedule.max_catchup_count,
-                    "max_catchup_age_seconds": schedule.max_catchup_age_seconds,
-                }
-                if trigger == "schedule" and schedule is not None
-                else None
-            ),
-            idempotency_key=idempotency_key,
-            idempotency_body=idempotency_body,
-            idempotency_lookup=lookup,
-            canary=canary,
-        )
-    worker = resolve_runtime_worker(session, adapter, now=worker_availability.current_time(session))
-    return _create_pending_execution_locked(
+    return accept_execution(
         session,
         adapter,
         trigger=trigger,
@@ -329,9 +281,11 @@ def _create_execution_locked(
         input_source_type=resolved.source_type,
         input_config_revision=resolved.revision,
         input_snapshot=resolved.snapshot,
-        target_worker_id=worker.id,
         scheduled_for=scheduled_for,
         artifact_ids=resolved.artifact_ids,
+        idempotency_key=idempotency_key,
+        idempotency_body=idempotency_body,
+        idempotency_lookup=lookup,
         schedule_policy_snapshot=(
             {
                 "misfire_policy": schedule.misfire_policy,
@@ -351,39 +305,34 @@ def create_execution(
     *,
     idempotency_key: str | None = None,
     idempotency_body: object = None,
-    canary: bool = False,
 ) -> Execution:
     """Create one Manual or schedule run-now Execution from saved input."""
     input_is_present = "input" in data.model_fields_set
     rabbit_idempotency_lookup = None
-    reliable_enabled = settings.rabbitmq_execution_enabled or (
-        canary and settings.rabbitmq_execution_canary_enabled
-    )
-    if reliable_enabled:
-        from dlr.control.services import idempotency as idempotency_service
+    from dlr.control.services import idempotency as idempotency_service
 
-        adapter = session.get(Adapter, adapter_id, with_for_update=True)
-        if adapter is None:
-            raise domain_error(404, "adapter_not_found", "Adapter not found")
-        request_body = idempotency_body
-        rabbit_idempotency_lookup = idempotency_service.lookup(
-            session,
-            adapter_id,
-            "manual",
-            request_body,
-            idempotency_key,
-        )
-        if rabbit_idempotency_lookup.record is not None:
-            existing = session.get(Execution, rabbit_idempotency_lookup.record.execution_id)
-            if existing is None:
-                raise domain_error(
-                    409,
-                    "idempotency_record_invalid",
-                    "Idempotency record is unavailable",
-                )
-            session.commit()
-            session.refresh(existing)
-            return existing
+    adapter = session.get(Adapter, adapter_id, with_for_update=True)
+    if adapter is None:
+        raise domain_error(404, "adapter_not_found", "Adapter not found")
+    request_body = idempotency_body
+    rabbit_idempotency_lookup = idempotency_service.lookup(
+        session,
+        adapter_id,
+        "manual",
+        request_body,
+        idempotency_key,
+    )
+    if rabbit_idempotency_lookup.record is not None:
+        existing = session.get(Execution, rabbit_idempotency_lookup.record.execution_id)
+        if existing is None:
+            raise domain_error(
+                409,
+                "idempotency_record_invalid",
+                "Idempotency record is unavailable",
+            )
+        session.commit()
+        session.refresh(existing)
+        return existing
     if input_is_present and not settings.legacy_input_compat_enabled:
         raise domain_error(
             422,
@@ -402,7 +351,6 @@ def create_execution(
             idempotency_body=idempotency_body,
             idempotency_key=idempotency_key,
             idempotency_lookup=rabbit_idempotency_lookup,
-            canary=canary,
         )
         session.commit()
     except IntegrityError as exc:
@@ -474,169 +422,19 @@ def _cap_stream(value: str) -> tuple[str, bool]:
     return capped.decode("utf-8", errors="replace"), truncated
 
 
-def apply_result(
-    session: Session,
-    worker_id: int,
-    execution_id: int,
-    report: ExecutionResultReport,
-    *,
-    claim_token: str | None = None,
-) -> Execution:
-    """Persist a terminal result reported by the owning Worker.
-
-    Idempotent: re-reporting an already terminal Execution succeeds without
-    changing it, supporting retries after a lost response. The Execution row
-    is locked for the duration of the transaction so two concurrent result
-    reports from the same Worker cannot race to write different terminal
-    states; ownership is checked before the terminal-idempotent shortcut so
-    a non-owning Worker always gets 409, even after the Execution finished.
-    """
-    execution = (
-        session.query(Execution)
-        .filter(Execution.id == execution_id)
-        .with_for_update()
-        .one_or_none()
-    )
-    if execution is None:
-        raise domain_error(404, "execution_not_found", "Execution not found")
-    # Ownership first: a non-owning Worker must always see 409, even when the
-    # Execution has already reached a terminal state.
-    if execution.worker_id != worker_id:
-        raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
-    if execution.dispatch_backend != "legacy":
-        raise domain_error(
-            409,
-            "worker_protocol_incompatible",
-            "RabbitMQ Executions require the v3 Consumer protocol",
-        )
-    if execution.claim_token_hash is not None:
-        require_claim_token(claim_token, execution.claim_token_hash)
-    if execution.status != "running":
-        # Already terminal: idempotent return. The row lock above guarantees a
-        # concurrent second report from the same Worker observes the same
-        # terminal state and cannot overwrite it.
-        return execution
-
-    output, output_size, output_truncated, output_preview = _normalize_output(report)
-    # The Worker may already have truncated streams; the Control-side cap is
-    # an additional safety net, but the persisted truncated flag must be true
-    # if either side actually truncated.
-    stdout, stdout_capped = _cap_stream(report.stdout)
-    stderr, stderr_capped = _cap_stream(report.stderr)
-    stdout_truncated = report.stdout_truncated or stdout_capped
-    stderr_truncated = report.stderr_truncated or stderr_capped
-
-    execution.status = report.status
-    execution.output = output
-    execution.output_size = output_size
-    execution.output_truncated = output_truncated
-    execution.output_preview = output_preview
-    execution.stdout = stdout
-    execution.stdout_truncated = stdout_truncated
-    execution.stderr = stderr
-    execution.stderr_truncated = stderr_truncated
-    execution.error = report.error
-    execution.error_code = report.error_code
-    if execution.claim_token_hash is None:
-        execution.workspace_cleanup_status = "deferred"
-        execution.workspace_cleanup_error_code = "workspace_cleanup_legacy_unverified"
-    elif report.workspace_cleanup_status is None:
-        execution.workspace_cleanup_status = "deferred"
-        execution.workspace_cleanup_error_code = "workspace_cleanup_unknown"
-    else:
-        execution.workspace_cleanup_status = report.workspace_cleanup_status
-        execution.workspace_cleanup_error_code = report.workspace_cleanup_error_code
-        if report.workspace_cleanup_status == "completed":
-            execution.workspace_cleanup_error_code = None
-    release_execution_leases(session, execution.id)
-    # Both timestamps come from the database clock, so duration_ms never
-    # mixes client and server clocks. The numeric expression is assignment-
-    # cast to the BIGINT column by PostgreSQL.
-    now = func.now()
-    execution.ended_at = now
-    execution.duration_ms = func.extract("epoch", now - Execution.started_at) * 1000
-    session.commit()
-    session.refresh(execution)
-    return execution
-
-
-def _append_stream(existing: str, already_truncated: bool, chunk: str) -> tuple[str, bool]:
-    """Append one progress chunk while honoring the 1 MiB stream cap.
-
-    Once a stream was truncated (by progress growth or by the final result)
-    it stays truncated; the stored text keeps the earliest content plus the
-    newest content so both the startup lines and the most recent lines stay
-    visible. Progress appends never touch output/error/status/timing.
-    """
+def append_stream(existing: str, already_truncated: bool, chunk: str) -> tuple[str, bool]:
+    """Append live output within the same byte bound used by final results."""
     if not chunk:
         return existing, already_truncated
     combined = existing + chunk
-    if len(combined.encode()) <= settings.execution_stream_max_bytes:
-        return combined, already_truncated
-    capped, _ = truncate_utf8(combined.encode(), settings.execution_stream_max_bytes)
-    return capped.decode("utf-8", errors="replace"), True
-
-
-def apply_progress(
-    session: Session,
-    worker_id: int,
-    execution_id: int,
-    report: ProgressReport,
-    *,
-    claim_token: str | None = None,
-) -> bool:
-    """Append best-effort stdout/stderr chunks from the owning Worker.
-
-    Progress never changes Execution status and never touches output, error,
-    ended_at or duration_ms. After the Execution reached a terminal state the
-    chunks are dropped, so the tail of the progress stream can never
-    overwrite the M2 final result; ownership is checked first, so a
-    non-owning Worker still gets 409 even for terminal Executions.
-
-    Returns the current ``cancel_requested`` flag: the progress round trip
-    doubles as the cancel channel (M3.2), and empty uploads are accepted as
-    pure cancel polls (no commit happens when nothing changed).
-    """
-    execution = (
-        session.query(Execution)
-        .filter(Execution.id == execution_id)
-        .with_for_update()
-        .one_or_none()
-    )
-    if execution is None:
-        raise domain_error(404, "execution_not_found", "Execution not found")
-    if execution.worker_id != worker_id:
-        raise domain_error(409, "execution_not_owned", "Execution is not assigned to this worker")
-    if execution.dispatch_backend != "legacy":
-        raise domain_error(
-            409,
-            "worker_protocol_incompatible",
-            "RabbitMQ Executions require the v3 Consumer protocol",
-        )
-    if execution.claim_token_hash is not None:
-        require_claim_token(claim_token, execution.claim_token_hash)
-    if execution.status != "running":
-        # Terminal: drop the chunks, still answer the cancel flag.
-        return execution.cancel_requested
-    if report.stdout_chunk or report.stderr_chunk:
-        stdout, stdout_truncated = _append_stream(
-            execution.stdout, execution.stdout_truncated, report.stdout_chunk
-        )
-        stderr, stderr_truncated = _append_stream(
-            execution.stderr, execution.stderr_truncated, report.stderr_chunk
-        )
-        execution.stdout = stdout
-        execution.stdout_truncated = stdout_truncated
-        execution.stderr = stderr
-        execution.stderr_truncated = stderr_truncated
-        session.commit()
-    return execution.cancel_requested
+    capped, truncated = truncate_utf8(combined.encode(), settings.execution_stream_max_bytes)
+    return capped.decode("utf-8", errors="replace"), already_truncated or truncated
 
 
 def cancel_execution(session: Session, execution_id: int) -> Execution:
     """Request cancellation of one Execution (M3.2).
 
-    Idempotent: pending Executions become ``cancelled`` immediately (they
+    Idempotent: queued Executions become ``cancelled`` immediately (they
     can never be claimed again), running Executions get ``cancel_requested``
     set so the owning Worker kills the subprocess on its next progress round
     trip and reports ``cancelled``, and terminal Executions are returned

@@ -1,195 +1,156 @@
-# Issue #130 Batch 3 Sandbox Deployment
+# Sandbox Deployment and Troubleshooting
 
 [简体中文](../zh-CN/issue130-sandbox-deployment.md) · **English**
 
-This document defines the Linux cgroup v2 host/Compose prerequisites and Worker v3
-Sandbox runtime contract. The default Compose path remains a legacy/diagnostic path;
-this override does not enable ordinary v3 traffic. The production Sandbox Gate must
-be proven on target Linux. macOS, Docker Desktop, static Compose rendering, and
-host-only probes do not count.
+Every execution uses PostgreSQL Outbox, RabbitMQ, Worker Agent, and the Linux
+Sandbox. There is no legacy executor, canary switch, or manual Cutover. The base
+Compose file includes isolation; `docker-compose.sandbox.yml` is an empty override
+retained only for callers that still name that file.
 
-## Exact Delegated Subtree
+## 1. Prepare the Real Linux Host
 
-Create a fresh transient service with the system manager, never a `--user` manager,
-an existing `app.slice`, or another non-delegated path. The unit must set
-`Delegate=yes` and finite aggregate CPU/memory limits. The unit creator and keeper
-remain `root:root`, matching the trusted root Worker supervisor; every Adapter
-payload drops to the configured non-root identity before its first instruction.
+Run preparation on the **Linux host running the Docker daemon**. On macOS this
+means the Colima or equivalent Linux VM, not a similarly named macOS directory.
 
-The provisioning procedure must prove all of these facts before Compose starts:
+Requirements: systemd, unified cgroup v2, Docker's `cgroupfs` driver, delegated
+`cpu memory pids` controllers, and sufficient real CPU/RAM. The script checks the
+host; it does not reconfigure Docker or resize a VM.
 
-1. Resolve the unit's actual `ControlGroup` and require an absolute path such as
-   `/system.slice/<unit>`.
-2. Move the keeper into an `agent` child so the delegated parent has no processes.
-3. Enable exactly `cpu memory pids` in `cgroup.subtree_control`.
-4. Create a disposable sibling child and write/read `cpu.max`, `memory.max`,
-   `memory.swap.max`, and `pids.max` there, never on the parent or `agent` child.
-5. Move a disposable process into that child, verify membership, then kill it and
-   remove the child with zero residue.
-6. Read back a finite parent CPU/memory envelope. When `TasksMax=infinity`, record
-   the host `pid_max` as the finite PID ceiling. The configured Worker slots plus an
-   independent Agent reserve must fit inside this envelope.
-
-A minimal unit creation skeleton is:
+From the repository directory:
 
 ```sh
-UNIT=dlr-worker-sandbox-$(hostname -s)-$(date +%s).service
-REVIEWED_PROVISIONING_SCRIPT=./provision-dlr-sandbox.sh
-
-sudo -n systemd-run \
-  --unit="$UNIT" \
-  --description='DLR Issue 130 Worker Sandbox' \
-  --property=Delegate=yes \
-  --property=CPUQuota=500% \
-  --property=MemoryMax=5G \
-  --property=TasksMax=infinity \
-  --property='CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID' \
-  --property=NoNewPrivileges=yes \
-  --expand-environment=no \
-  --service-type=exec \
-  --remain-after-exit \
-  /bin/bash "$REVIEWED_PROVISIONING_SCRIPT"
+sudo bash scripts/prepare-sandbox-host.sh
 ```
 
-The reviewed provisioning script must implement the six checks above and remain
-alive in `agent`; replacing it with `sleep infinity` without the checks is not
-evidence. Stop only the exact task-owned unit after use:
+Colima example (replace the absolute path with a repository path visible in the VM):
 
 ```sh
-sudo -n systemctl stop "$UNIT"
-sudo -n systemctl reset-failed "$UNIT"
+colima ssh -- sudo bash /ABSOLUTE/PATH/DataLinkRuntime/scripts/prepare-sandbox-host.sh
 ```
 
-## Docker Driver and Path Checks
-
-Read Docker's effective mode:
+The default unit is `dlr-worker-sandbox.service` with a finite **3 CPU / 3 GiB**
+envelope. The script moves its keeper into an `agent` child, leaves the parent
+without internal processes, enables controllers, and verifies actual child
+CPU/memory/swap/PID limits, process migration, `cgroup.kill`, and cleanup.
+It never changes an existing unit with different ownership/configuration.
+For another deployment, choose a distinct name:
 
 ```sh
-docker info --format 'CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'
+sudo bash scripts/prepare-sandbox-host.sh \
+  --unit dlr-my-deployment.service --cpu-quota 300% --memory-max 3G
 ```
 
-The current override targets `cgroupfs` with cgroup v2. A different driver/version
-requires a new target-provisioning review. With a unit under `system.slice`, rendered
-Compose must preserve this exact relationship:
+Copy the two printed settings into this deployment's `.env`. The default unit
+prints the following values. If you used `--unit`, copy that command's actual
+output instead of substituting these default names:
+
+```dotenv
+DLR_SANDBOX_CGROUP_PARENT=/system.slice/dlr-worker-sandbox.service
+DLR_SANDBOX_CGROUP_SOURCE=/sys/fs/cgroup/system.slice/dlr-worker-sandbox.service
+```
+
+Profile arithmetic cannot create host capacity. The default is
+`DLR_WORKER_EXECUTION_SLOTS=2`, with additional resources reserved for the Agent. Increasing
+slots or execution profiles requires a matching real envelope and a fresh passing
+preflight. This is a transient systemd unit: rerun preparation after a host reboot
+before starting the Worker.
+
+## 2. Start Services
+
+Configure credentials and log paths in `.env` as described in the README, then run:
+
+```sh
+bash scripts/issue130-b3-compose-audit.sh
+docker compose up -d --wait postgres rabbitmq
+docker compose run --rm --no-deps control alembic upgrade head
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail 100 worker
+```
+
+The configuration audit proves structure only, not host readiness. A fresh
+database must be migrated before Control starts. RabbitMQ is required without
+an execution enablement switch.
+
+## 3. Verify Execution Readiness
+
+At startup the Worker reads the real cgroup resource envelope and runs isolation
+preflight. It may accept executions only after all required capabilities pass.
+An existing directory, a healthy container, or `/health` alone is not Sandbox
+acceptance.
+
+Inspect this deployment's Worker with an authenticated `GET /api/workers`, matching
+its `id`/`name`. This example uses the administrator Token already set in the current
+shell; replace `8080` if you changed the Web port:
+
+```sh
+curl -fsS -H "Authorization: Bearer ${DLR_ADMIN_TOKEN}" \
+  http://localhost:8080/api/workers
+```
+
+The target Worker must have both `status="online"` and
+`isolation_preflight_status="passed"`. Each of the following **18 required keys**
+in `isolation_capabilities` must be the boolean `true`; counting returned keys
+alone is insufficient:
 
 ```text
-cgroup_parent: /system.slice/$UNIT
-source: /sys/fs/cgroup/system.slice/$UNIT
-target: /run/dlr-cgroup
-cgroup: host
-DLR_SANDBOX_CGROUP_PATH: /run/dlr-cgroup
-unit parent owner: root:root
+cgroup_v2, cgroup_namespace_private, mount_namespace, pid_namespace,
+memory_hard_limit, pids_hard_limit, tmpfs_hard_limit, bounded_output,
+preflight_passed, resource_envelope_verified, cpu_hard_limit, swap_hard_limit,
+nofile_hard_limit, no_new_privileges, cgroup_kill, adapter_control_plane_hidden,
+adapter_mount_blocked, sandbox_cleanup
 ```
 
-Do not remove the leading slash from `cgroup_parent`, bind the cgroup root, mount the
-Docker socket, broaden permissions with `chmod`, or add `CAP_DAC_OVERRIDE`.
+A missing/false capability or an offline Worker is not execution-ready.
+Product UI reports Worker availability and actionable failure
+reasons without exposing internal protocol versions as a user choice.
 
-## Compose Override and Worker Exception
+The default boundary is:
 
-Set `DLR_SANDBOX_CGROUP_PARENT` and `DLR_SANDBOX_CGROUP_SOURCE` from the same freshly
-provisioned unit, then render and start the explicit override:
+- `privileged: false`, `cgroup: private`, no Docker socket or entire host cgroup root.
+- The supervisor drops `ALL` capabilities, then adds exactly `SYS_ADMIN`, `SETUID`,
+  and `SETGID`, with `no-new-privileges`. Worker-only `apparmor=unconfined` permits
+  mount namespace operations; it is not a complete AppArmor confinement policy.
+- Only the prepared parent is bound to `/run/dlr-cgroup`; automatic source-directory
+  creation is disabled.
+- Adapter payloads use the configured non-root UID/GID, clear capabilities, remove
+  the delegated cgroup mount, and run in a child cgroup and bounded tmpfs workspace.
+
+Inside a private cgroup namespace, `/proc/self/cgroup` showing `0::/` is expected.
+**Do not switch to `cgroup: host` to expose a full path.** The kernel represents the
+exact ancestor bind's mount root as `/..`; preflight checks both facts and real
+child operations.
+
+## 4. Common Failures
+
+| Symptom | Action |
+| --- | --- |
+| Bind source missing | Rerun preparation on the Linux Docker daemon host; match `.env` to that unit |
+| Unsupported Docker driver or missing controllers | Fix actual host prerequisites; the script does not reconfigure Docker or fake success |
+| `sandbox_private_cgroup_namespace_required` | Check the actual private namespace and exact parent/source match |
+| cgroup write, process migration, or namespace mount failure | Inspect this unit's journal and Worker preflight; do not bypass with privileged/host namespace |
+| Resource envelope or slots rejected | Provide real host resources, or lower slots/profiles and reverify |
+| `resource_exceeded_disk` during tmpfs probe | Expected exhaustion probe output; judge the complete preflight result |
+
+The isolated Compose smoke prepares a unique unit on local Linux Docker and stops
+it after its containers exit. For macOS or remote Docker, export the two settings
+returned by host preparation first. Smoke never stops an operator-supplied unit.
+
+## 5. Stop and Clean Up
+
+Stop this Compose deployment before its unit. Stopping a unit terminates its whole
+cgroup subtree, so do not share it with another deployment:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.sandbox.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d worker
+docker compose down
+sudo systemctl stop dlr-worker-sandbox.service
 ```
 
-The Worker-only contract is:
+This matches the default preparation command. If you used `--unit`, replace the
+second command's unit with the actual unit named by this deployment's
+`DLR_SANDBOX_CGROUP_PARENT` in `.env`; do not stop another deployment's unit.
+On macOS, run the second command inside the VM via `colima ssh --` as well.
+These commands preserve database volumes. Do not use global Docker prune.
 
-| Property | Required value |
-|---|---|
-| Privilege | `privileged: false` |
-| Capabilities | `cap_drop: ALL`; add only `SYS_ADMIN`, `SETUID`, `SETGID` |
-| Privilege escalation | `no-new-privileges:true` |
-| AppArmor | `apparmor=unconfined` on the Sandbox Worker only; default seccomp remains |
-| cgroup namespace | `host` |
-| cgroup bind | One exact delegated subtree at `/run/dlr-cgroup` |
-| Docker control plane | No Docker socket |
-
-The Worker supervisor needs the three capabilities for private namespaces/tmpfs,
-cgroup child management, and one-way identity drop. They are not granted to Adapter
-code. Before Adapter exec, the helper must set empty supplementary groups,
-`gid=1000`, `uid=501`, `NoNewPrivileges=1`, and
-`CapPrm=CapEff=CapInh=CapAmb=0`. `CapBnd` is audit data and is not cleared by adding
-`CAP_SETPCAP`. If the deployment cannot accept this narrowly scoped supervisor
-exception, keep the v3 gate closed.
-
-The Worker-only AppArmor exception exists because the target's `docker-default`
-profile permits `unshare(CLONE_NEWNS)` but denies the required private-propagation and
-task-owned tmpfs mounts. Preserve an A/B receipt: A uses the same topology without
-the exception and observes `phase=mount_namespace_private`, `errno=13`; B changes
-only to `apparmor=unconfined` and must then pass identity, mount, control-plane hiding,
-three-language execution, and cleanup. Never apply this exception to Control or the
-Docker daemon.
-
-## Adapter Control-plane Hiding
-
-Worker startup validates that `DLR_SANDBOX_CGROUP_PATH` is an absolute, symlink-free
-`cgroup2fs` path with the required interfaces and no overlap with the runtime root or
-`.dlr-sandbox-mount`. Inside the Adapter's private mount namespace, the helper places
-read-only empty tmpfs over both canonical `/sys/fs/cgroup` and the configured
-`/run/dlr-cgroup` bind. Python, JavaScript, and Java probes must independently show
-read and write are blocked without relying on `DLR_SANDBOX_*` environment variables.
-
-The helper reports fixed `phase`, `kind`, and numeric `errno` over a dedicated
-diagnostic descriptor that Adapter code does not inherit. Diagnostics must never
-contain host paths, Secrets, or user output. Missing or failed exact hiding is a
-startup/Attempt failure, never a warning followed by execution.
-
-## Worker v3 Runtime Contract
-
-Before registering v3 capability, the actual `python -m dlr.worker.agent` entrypoint
-must read the finite parent envelope and run one disposable startup preflight against
-the same bind. Any failed probe or cleanup leaves `preflight_passed=false` and
-`rabbitmq_execution_v3=false`; registration may remain visible for diagnosis but
-cannot receive v3 traffic.
-
-Each queued Execution freezes its Resource Profile. Worker validates the raw profile
-for closed fields, schema/backend, numeric limits, cleanup, and output invariants
-before comparing it with the verified capability ceiling. A malformed and
-over-ceiling profile reports `resource_profile_invalid`, never the less fundamental
-capability error.
-
-Each Attempt receives a sibling `attempt-*` cgroup with CPU, memory/swap, PID, tmpfs,
-file-descriptor, output, and wall-time limits. Only the payload enters that child;
-the helper and Agent remain outside it. The workspace is a private, bounded tmpfs.
-Inside the payload-only mount namespace, `/tmp`, `/var/tmp`, and `/dev/shm` are
-private bind mounts backed by that same Attempt tmpfs. `HOME`, `TMPDIR`, `TMP`, and
-`TEMP` point into those mounts, so conventional temporary writes cannot bypass the
-profile's `tmp_bytes` quota or survive into another Attempt. Keep the trusted Worker
-runtime/cache root outside those paths; the Compose contract uses
-`/var/lib/dlr/runtime`.
-Managed input is copied without following symlinks and remains read-only; no host
-workspace path, platform credential mount, cgroup control plane, Worker token, or
-RabbitMQ credential reaches Adapter code.
-
-Cancel, timeout, resource violation, or crash kills only the Attempt child with
-`cgroup.kill`, verifies it is empty, unmounts tmpfs, and removes exact task-owned
-state. Recovery markers are `0600`, closed-schema, and validated against a path
-derived from the verified Attempt/preflight identity. A path stored in a marker is
-never deletion authority; forged markers must preserve unrelated sentinels.
-
-Dependency preparation runs inside the same Attempt resource boundary. Cache builds
-hold a global byte reservation and low-watermark budget, stage on bounded tmpfs, and
-promote atomically only with a closed identity/digest/byte-count, read-only `.ready`
-marker. Lease or reservation loss terminates preparation and forbids promotion.
-Adapter code cannot write the shared cache.
-
-## Verification Boundary
-
-Run `scripts/issue130-b3-compose-audit.sh` to validate the source, rendered Compose,
-security/cgroup declarations, bounded runtime, cache, recovery, and multilingual
-matrix. That static audit is necessary but not sufficient.
-
-Count only a real target-Linux receipt from the actual Compose Worker entrypoint. It
-must include target kernel/cgroup facts, exact unit `ControlGroup`, parent envelope,
-child limits/readback/membership, namespace and identity facts, both hidden cgroup
-paths, bounded log/output/dependency/cache behavior, CPU/OOM/PID/tmpfs/FD/timeout/
-cancel/crash/recovery faults for Python/JavaScript/Java, Agent survival and renewals,
-cleanup, and zero task-owned residue. A driver that directly execs an internal
-runtime helper instead of creating work through Control/RabbitMQ is `NO_COUNT`.
-
-This Sandbox is resource and process containment for trusted-administrator Adapter
-code. It is not an untrusted multi-tenant security boundary. Final traffic Cutover
-also requires the separate database backup/restore, migration, Slot, and invariant
-gates in [Reliable Runtime migration notes](issue130-reliable-runtime-migrations.md).
+The [Issue #130 migration record](issue130-reliable-runtime-migrations.md) is
+historical only; its legacy/canary/Cutover APIs and settings do not apply today.

@@ -1,7 +1,6 @@
-"""RabbitMQ Worker v3 Consumer with bounded delivery and ACK handling.
+"""RabbitMQ Worker Consumer with bounded delivery and ACK handling.
 
-The consumer is intentionally isolated from the legacy long-poll loop.  It
-uses one Pika connection thread, a finite local execution pool and a matching
+The consumer uses one Pika connection thread, a finite execution pool and a matching
 Semaphore.  A Control transport/authentication failure pauses the channel and
 lets the Broker re-deliver after a bounded reconnect backoff; it never creates
 an immediate ``nack(requeue=True)`` loop.
@@ -63,7 +62,7 @@ def _is_cancel_requested_action(response: object, *, attempt_id: int) -> bool:
 
 @dataclass(frozen=True)
 class ConsumerConfig:
-    """Small immutable subset of WorkerConfig needed by the v3 Consumer."""
+    """Small immutable subset of WorkerConfig needed by the Consumer."""
 
     worker_id: int
     queue: str
@@ -97,28 +96,18 @@ class V3Consumer:
         self._slots = threading.BoundedSemaphore(config.execution_slots)
         sandbox_config = getattr(runtime_settings, "sandbox_config", None)
         if sandbox_config is None:
-            self._resource_budget = None
-        elif sandbox_config.cgroup_path is None:
-            # Keep the explicit legacy/unit-test seam.  A production v3
-            # Worker always has a delegated path and must use observed
-            # deployment capacity below.
-            self._resource_budget = sandbox.ResourceBudget.for_worker(
-                sandbox_config, config.execution_slots
-            )
-        else:
-            envelope = getattr(runtime_settings, "resource_envelope", None)
-            if envelope is None:
-                # Retain the direct Consumer seam for tests and older callers;
-                # the production Agent supplies the pre-registration snapshot.
-                envelope = sandbox.read_verified_resource_envelope(sandbox_config)
-            self._resource_budget = sandbox.ResourceBudget.from_verified_envelope(
-                sandbox_config,
-                config.execution_slots,
-                envelope,
-            )
+            raise sandbox.SandboxError("sandbox_linux_target_required")
+        envelope = getattr(runtime_settings, "resource_envelope", None)
+        if envelope is None:
+            envelope = sandbox.read_verified_resource_envelope(sandbox_config)
+        self._resource_budget = sandbox.ResourceBudget.from_verified_envelope(
+            sandbox_config,
+            config.execution_slots,
+            envelope,
+        )
         self._pool = ThreadPoolExecutor(
             max_workers=config.execution_slots,
-            thread_name_prefix="dlr-v3-attempt",
+            thread_name_prefix="dlr-attempt",
         )
 
     def request_stop(self) -> None:
@@ -148,17 +137,15 @@ class V3Consumer:
                     while not self._stop.is_set() and not self._pause.is_set():
                         connection.process_data_events(time_limit=1.0)
                 except (ControlUnavailableError, ClientError) as error:
-                    logger.warning(
-                        "v3 Consumer paused by Control boundary: %s", type(error).__name__
-                    )
+                    logger.warning("Consumer paused by Control boundary: %s", type(error).__name__)
                     self._pause.set()
                 except (pika.exceptions.AMQPError, OSError, TimeoutError):
                     logger.warning(
-                        "v3 Consumer transport unavailable; reconnecting with bounded backoff"
+                        "Consumer transport unavailable; reconnecting with bounded backoff"
                     )
                     self._pause.set()
                 except Exception:
-                    logger.exception("v3 Consumer stopped on an unexpected transport error")
+                    logger.exception("Consumer stopped on an unexpected transport error")
                     self._pause.set()
                 finally:
                     if connection is not None:
@@ -166,7 +153,7 @@ class V3Consumer:
                             if connection.is_open:
                                 connection.close()
                         except Exception:
-                            logger.debug("v3 Consumer connection close failed", exc_info=True)
+                            logger.debug("Consumer connection close failed", exc_info=True)
                 if not self._stop.is_set():
                     self._stop.wait(min(backoff, self._config.attempt_reconnect_max_seconds))
                     backoff = min(backoff * 2, self._config.attempt_reconnect_max_seconds)
@@ -209,7 +196,7 @@ class V3Consumer:
             except (ControlUnavailableError, ClientError) as error:
                 if isinstance(error, ClientError):
                     logger.warning(
-                        "v3 Claim rejected by Control: status=%s code=%s",
+                        "Claim rejected by Control: status=%s code=%s",
                         error.status,
                         _client_error_code(error),
                     )
@@ -435,7 +422,9 @@ class V3Consumer:
                         ownership_lost.set()
                         return
 
-            renew_thread = threading.Thread(target=renew_loop, name="dlr-v3-renew", daemon=True)
+            renew_thread = threading.Thread(
+                target=renew_loop, name="dlr-attempt-renew", daemon=True
+            )
             renew_thread.start()
 
             def progress(stdout_chunk: str, stderr_chunk: str) -> bool:
@@ -577,7 +566,7 @@ class V3Consumer:
             )
         except Exception:
             self._request_pause(connection, channel)
-            logger.debug("v3 native DEFER scheduling failed", exc_info=True)
+            logger.debug("native DEFER scheduling failed", exc_info=True)
 
     @staticmethod
     def _ack(connection: Any, channel: Any, delivery_tag: int) -> None:
@@ -586,7 +575,7 @@ class V3Consumer:
                 partial(channel.basic_ack, delivery_tag=delivery_tag)
             )
         except Exception:
-            logger.debug("v3 ACK scheduling failed", exc_info=True)
+            logger.debug("ACK scheduling failed", exc_info=True)
 
     @staticmethod
     def _nack(connection: Any, channel: Any, delivery_tag: int) -> None:
@@ -595,11 +584,11 @@ class V3Consumer:
                 partial(channel.basic_nack, delivery_tag=delivery_tag, requeue=False)
             )
         except Exception:
-            logger.debug("v3 DLQ disposition scheduling failed", exc_info=True)
+            logger.debug("DLQ disposition scheduling failed", exc_info=True)
 
     def _request_pause(self, connection: Any, channel: Any) -> None:
         self._pause.set()
         try:
             connection.add_callback_threadsafe(channel.stop_consuming)
         except Exception:
-            logger.debug("v3 consumer pause scheduling failed", exc_info=True)
+            logger.debug("consumer pause scheduling failed", exc_info=True)

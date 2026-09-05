@@ -189,48 +189,6 @@ class Settings(BaseSettings):
         le=300,
         validation_alias="DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS",
     )
-    min_worker_protocol_version: int = Field(
-        default=1,
-        ge=1,
-        le=3,
-        validation_alias="DLR_MIN_WORKER_PROTOCOL_VERSION",
-    )
-    # Final Cutover keeps this compatibility switch explicit.  Disabling the
-    # legacy Execution claim path does not disable Worker cleanup receipts or
-    # historical reads, and it is never inferred merely from protocol v3.
-    legacy_execution_claim_enabled: bool = Field(
-        default=True,
-        validation_alias="DLR_LEGACY_EXECUTION_CLAIM_ENABLED",
-    )
-    # These operator attestations bind irreversible Cutover actions to an
-    # actual backup/restore rehearsal, the target-Linux sandbox Gate, and the
-    # post-ingress Slot Gate.  All default closed and are reported by the
-    # migration inventory.
-    cutover_backup_restore_gate_passed: bool = Field(
-        default=False,
-        validation_alias="DLR_CUTOVER_BACKUP_RESTORE_GATE_PASSED",
-    )
-    cutover_sandbox_gate_passed: bool = Field(
-        default=False,
-        validation_alias="DLR_CUTOVER_SANDBOX_GATE_PASSED",
-    )
-    cutover_slot_gate_passed: bool = Field(
-        default=False,
-        validation_alias="DLR_CUTOVER_SLOT_GATE_PASSED",
-    )
-
-    # Issue #130 B1: RabbitMQ ingress stays disabled until the later dark
-    # launch/cutover gates.  Control may still read and repair additive
-    # RabbitMQ rows while this flag is false.
-    rabbitmq_execution_enabled: bool = Field(
-        default=False, validation_alias="DLR_RABBITMQ_EXECUTION_ENABLED"
-    )
-    # Explicit canary/test entry is independent from ordinary Manual,
-    # Schedule and Webhook traffic.  It stays disabled in production by
-    # default and is never used to raise the minimum Worker protocol.
-    rabbitmq_execution_canary_enabled: bool = Field(
-        default=False, validation_alias="DLR_RABBITMQ_EXECUTION_CANARY_ENABLED"
-    )
     rabbitmq_url: str | None = Field(default=None, validation_alias="DLR_RABBITMQ_URL")
     # Compose keeps the broker vhost as one raw value and the AMQP client
     # encodes it at connection construction time.  This avoids maintaining a
@@ -614,19 +572,6 @@ def validate_deployment_configuration(value: Settings) -> Settings:
             "DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS must be less than "
             "DLR_EXECUTION_RECOVERY_GRACE_SECONDS"
         )
-    if value.min_worker_protocol_version not in {1, 2, 3}:
-        raise ValueError("DLR_MIN_WORKER_PROTOCOL_VERSION must be 1, 2, or 3")
-    if not value.legacy_execution_claim_enabled and (
-        not value.rabbitmq_execution_enabled
-        or value.min_worker_protocol_version != 3
-        or not value.cutover_backup_restore_gate_passed
-        or not value.cutover_sandbox_gate_passed
-        or not value.cutover_slot_gate_passed
-    ):
-        raise ValueError(
-            "DLR_LEGACY_EXECUTION_CLAIM_ENABLED may be false only after RabbitMQ ingress, "
-            "minimum protocol v3, backup/restore, Sandbox, and Slot Cutover gates pass"
-        )
     if value.rabbitmq_retry_base_seconds > value.rabbitmq_retry_max_seconds:
         raise ValueError(
             "DLR_RABBITMQ_RETRY_BASE_SECONDS must not exceed DLR_RABBITMQ_RETRY_MAX_SECONDS"
@@ -729,8 +674,8 @@ def validate_deployment_configuration(value: Settings) -> Settings:
             raise ValueError(
                 "DLR_RABBITMQ_VHOST must be 1-255 UTF-8 bytes without control characters"
             )
-    if value.rabbitmq_execution_enabled and not value.rabbitmq_url:
-        raise ValueError("DLR_RABBITMQ_URL is required when RabbitMQ execution is enabled")
+    if not value.rabbitmq_url:
+        raise ValueError("DLR_RABBITMQ_URL is required for execution")
     if value.rabbitmq_url and not value.rabbitmq_management_url:
         raise ValueError(
             "DLR_RABBITMQ_MANAGEMENT_URL is required when DLR_RABBITMQ_URL is configured"

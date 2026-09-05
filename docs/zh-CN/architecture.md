@@ -17,7 +17,7 @@
                                     └──────▲──────┘ └────┬──────────────┘
                                            │ Claim/renew │ dispatch
                                     ┌──────┴─────────────▼──────────────┐
-                                    │ worker v3 (Python/Node.js/Java)  │
+                                    │ worker (Python/Node.js/Java)     │
                                     └───────────────────────────────────┘
 ```
 
@@ -56,7 +56,7 @@ Credential 使用部署级 `DLR_MASTER_KEY` 派生的 Fernet key 加密。浏览
 | `run_mode` | Task 的 `manual / schedule`；Webhook 不使用 |
 | `latest_version_id` | 最新已保存不可变 Revision |
 | `runtime_worker_id` | 当前运行节点 |
-| `template_scenario_slug / template_version` | 可空、成对只读的模板来源；普通 Adapter 均为空 |
+| `template_scenario_slug / template_version` | 历史兼容字段；新复制的 Adapter 两项均为空 |
 | `archived_at` | 内部软删除标记；当前 Web UI 只展示活跃 Adapter |
 
 API 响应附带 `runtime_locked` 与 `running_execution_id`，供 Web 直接展示权威运行锁和当前 Execution，不使用浏览器时间或本地推断替代服务端事实。
@@ -75,13 +75,12 @@ API 响应附带 `runtime_locked` 与 `running_execution_id`，供 Web 直接展
 | `worker_id / target_worker_id` | 实际领取节点 / 指定运行节点 |
 | `trigger` | `manual / schedule / webhook` |
 | `scheduled_for` | Schedule 计划点；其他 trigger 为 NULL |
-| `dispatch_backend / dispatch_generation` | `legacy` 或 `rabbitmq` 责任边界及当前消息 generation |
-| `status` | legacy 的 `pending/running/...`，或 RabbitMQ 的 `queued/running/retry_wait/dead_letter/...` |
+| `dispatch_backend / dispatch_generation` | 固定 `rabbitmq` 后端及当前消息 generation |
+| `status` | `queued/running/retry_wait/succeeded/dead_letter/cancelled/expired` |
 | `input / output / stdout / stderr` | 输入、结果与日志 |
 | `cancel_requested` | 运行中取消请求 |
 
-legacy 兼容期由部分唯一索引保证每个 Adapter 同时最多一个 `pending/running`
-Execution。RabbitMQ backend 可有多个合法 `queued/retry_wait` Execution，但数据库
+同一 Adapter 可有多个合法 `queued/retry_wait` Execution，但数据库
 `adapter_execution_slots(adapter_id, slot_no=0)` 与 active Attempt 唯一约束保证同一
 Adapter 同时最多一个实际执行。Manual、Schedule、Webhook 共用 Admission、Outbox、
 Attempt 与 Slot 合同。
@@ -96,7 +95,7 @@ AND clock_timestamp() - last_heartbeat <= heartbeat_timeout
 ```
 
 超时值必须为正且严格大于 Worker 心跳间隔。RabbitMQ ingress 要求固定 Worker 存在且
-语言、protocol v3 与 isolation capability 兼容；节点暂时 offline 时仍可在 Admission
+语言、执行协议与 isolation capability 兼容；节点暂时 offline 时仍可在 Admission
 允许范围内创建 `queued` Execution，等待同一目标 Worker 恢复，不自动 reroute。
 
 ### 3.5 Credential 与绑定
@@ -108,11 +107,7 @@ AND clock_timestamp() - last_heartbeat <= heartbeat_timeout
 
 ### 3.6 Template Catalog、Variant 与实例化
 
-模板不是数据库中的隐藏 Adapter。Control wheel/镜像携带只读 package resources：5 个
-Theme、17 个 Scenario、51 个 Python/JavaScript/Java Variant，以及 JSON Schema、来源
-记录和逐语言成熟度 Receipt。启动校验按稳定 slug、版本、语言、Logo key、交叉引用和
-源码 SHA-256 fail closed；场景列表与详情只读元数据，只有下面的单语言接口读取并有界
-缓存对应源码：
+模板由 Control 的只读 package resources 发布，包含 5 个主题、17 个场景及各场景实际支持的语言实现。目录校验稳定标识、版本、语言、Logo key、资源路径及源码 SHA-256。场景列表与详情只读元数据，选中语言时才读取并有界缓存对应源码。
 
 ```text
 GET  /api/templates/themes
@@ -122,21 +117,11 @@ GET  /api/templates/scenarios/{scenario_slug}/variants/{language}
 POST /api/templates/scenarios/{scenario_slug}/variants/{language}/instantiate
 ```
 
-实例化 POST 使用用户已查看的 `expected_template_version` 防止滚动发布漂移，并在一个
-事务中写入 Adapter、Slot 0、最小禁用类型配置、Revision 1 和 latest pointer。它不走
-普通 Clone，不创建 Credential/Binding、已安装 Dependency、Managed File/Artifact/Lease、
-Worker、Schedule、额外 ACL、Execution、Admission、Outbox、Attempt 或历史。新 Adapter
-默认停止且与模板解耦；Web 成功后刷新 Adapter 列表、加载 Revision 1 并进入该 Adapter
-编辑页。
+列表接口省略 theme 时查询全部场景；支持关键词、厂家、类型、协议和语言筛选。详情只公开用途、使用步骤、依赖、代码及必要的输入和返回结果示例，不公开来源、许可证、成熟度、参数合同或运行模式标签。
 
-`DLR_MANAGED_FILES_ENABLED=false` 只关闭对应运行能力，不影响全部模板（包括 CSV/Excel）
-的发现、单语言源码读取或复制，也不会在实例化时伪造文件绑定。
+复制 POST 用 expected_template_version 校验用户选择的版本，并在一个事务内创建独立 Adapter、Slot 0 及类型所需配置。不创建 AdapterVersion，不设置 latest_version_id 或模板来源字段，也不复制 Credential、Worker、文件绑定、调度或运行历史。Web 将已取得的代码和依赖放入新适配器编辑草稿，用户点击保存后才通过普通版本 API 创建第一个版本。
 
-成熟度绑定 `scenario_slug + version + language + source_sha256`。`syntax-verified` Receipt
-必须证明精确依赖可解析且对应语言语法/编译通过；只有直接执行同一发布源码的固定 fixture
-才能标 `fixture-verified`，受控真实外部服务的只读执行才能标 `live-verified`。静态目录、
-另一语言或辅助实现的成功均不能替代这些证据。`reference-generated` 表示尚无满足下一等级
-全部门禁且匹配当前源码哈希的 Receipt；窄 smoke 或安全 canary 不构成成熟度升级证据。
+DLR_MANAGED_FILES_ENABLED=false 不影响模板浏览、代码查看或复制；文件场景在实际运行前由用户配置输入文件。
 
 ## 4. Task 执行
 
@@ -148,10 +133,10 @@ POST /api/adapters/{id}/executions
 → 固定最新 Revision、输入、Credential 与目标 Worker 快照
 → 在 PostgreSQL 事务中创建 Execution + Admission + Outbox
 → Relay 发布 RabbitMQ dispatch
-→ Worker v3 Claim / journal / ACK / Sandbox / report
+→ Worker Claim / journal / ACK / Sandbox / report
 ```
 
-取消复用 `POST /api/executions/{id}/cancel`。legacy pending 或 RabbitMQ queued/retry_wait
+取消复用 `POST /api/executions/{id}/cancel`。queued/retry_wait
 可直接进入 cancelled；running 设置取消请求，由 Worker 终止 Sandbox 进程并按当前
 Attempt fence 上报终态。
 
@@ -229,7 +214,7 @@ Workbench 层只有一个当前实时 watcher：
 
 依赖准备统一 offline-first。stdout/stderr 增量上传并脱敏；超限按配置截断。input 超限直接拒绝且不创建 Execution；output 超限只保留大小、截断标记与 preview，不保存破坏的 JSON。
 
-v3 正常顺序固定为 `dispatch → Control durable Claim → 私有 journal → ACK → Sandbox`。
+执行正常顺序固定为 `dispatch → Control durable Claim → 私有 journal → ACK → Sandbox`。
 ACK 不等待业务终态；ACK 后崩溃由数据库 Attempt Lease/Fencing、Recovery 和新 generation
 恢复。Sandbox 在 exact delegated Linux cgroup v2 subtree 内为每个 Attempt 建立 CPU、
 memory、pids、tmpfs 与 output 硬限制；非 Linux 或 preflight 不完整时 fail closed。
@@ -237,14 +222,14 @@ memory、pids、tmpfs 与 output 硬限制；非 Linux 或 preflight 不完整�
 ### 8.1 Template Recipe 的外部调用边界
 
 Recipe 复制后就是普通用户 Adapter，继续服从上述 Worker、Revision、Credential 和
-Execution 合同。非敏感 Endpoint/上限进入 Revision runtime config 或不可变 Execution
-Input；Secret 只由 Credential Binding 注入。URL scheme、同源重定向、超时和大小限制
+Execution 合同。非敏感 Endpoint/上限集中在已保存代码的 CONFIG 中，必要时由 Execution
+Input 覆盖；Secret 只由 Credential Binding 注入。URL scheme、同源重定向、超时和大小限制
 只是单个 Recipe 的防误用措施，不构成平台级 SSRF、DNS rebinding 或出网隔离防线；可信
 管理员必须在部署层用防火墙、DNS/代理策略和目标白名单限制 Worker 出网。
 
 7 个云/CMDB Recipe 的 `preview` 只读来源；规范化 `dlr-asset-snapshot/v1` 与最终 Adapter
 Output 有界。`sync` 写入的是管理员配置的外部 `dlr-cmdb-upsert/v1` 目标，不是 DLR Control
-API；它要求不可变 Input 中稳定的 `scan_id` 与 `source_scope`，使同一 Execution 的新
+API；它要求代码配置或不可变 Input 中稳定的 `scan_id` 与 `source_scope`，使同一 Execution 的新
 Attempt 重用 begin/batch/finish 幂等身份。任一来源或批次失败必须返回 `partial=true` 并
 跳过 finish，避免不完整扫描触发目标侧失效清理。阿里云 3 个 Recipe 使用的 Alibaba Cloud
 SDK `callApi` 尚不能证明原始传输响应受字节上限约束，因此输出有界不等于源 HTTP 传输有界。
@@ -260,15 +245,13 @@ Candidate Apply 只改浏览器 Working Copy；stale Candidate 需要再次明�
 ## 10. 部署与配置
 
 Docker Compose 运行 `web / account-web / control / postgres / rabbitmq / worker` 六个
-服务。默认 RabbitMQ 普通 ingress 关闭、legacy Claim 开启，三个 Cutover attestation
-均关闭。关键配置包括：
+服务。所有执行默认通过 RabbitMQ 与资源 Sandbox，没有旧领取/执行回退。关键配置包括：
 
 - `DLR_ADMIN_TOKEN`、`DLR_WORKER_TOKEN`、`DLR_MASTER_KEY`；
 - `DLR_WORKER_HEARTBEAT_SECONDS` 与 `DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS`；
 - `DLR_SCHEDULE_POLL_SECONDS`；
 - RabbitMQ Queue/Outbox/Admission/Attempt/Dead Letter 的有限上限；
-- `DLR_MIN_WORKER_PROTOCOL_VERSION`、`DLR_LEGACY_EXECUTION_CLAIM_ENABLED` 与三个
-  `DLR_CUTOVER_*_GATE_PASSED`；
+- `DLR_SANDBOX_CGROUP_PARENT`、`DLR_SANDBOX_CGROUP_SOURCE` 与私有 cgroup namespace；
 - Execution 大字段、日志、超时与 Worker 并发限制。
 
 AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smoke 只在隔离网络启动本地 fake Provider。
@@ -295,14 +278,14 @@ AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smo
 
 - Backend：Ruff、format check、Mypy、full pytest（含 README / 关键 docs 双语成对、
   互链与相对链接解析检查，以及 zh-CN / en 翻译资源 key 与占位符一致性检查）；
-- Template：精确 5/17/51、Schema/来源/许可证/源码哈希、wheel/镜像 package resources、
-  requirements parser 与逐语言 Receipt 门禁；语法检查、fixture 和 live 证据分层记录；
+- Template：目录与语言子集、源码哈希、wheel/镜像 package resources、依赖解析、
+  全部页签搜索及复制后首次保存；保留实际源码的语法和 fixture 检查；
 - Web：ESLint、TypeScript、Vitest（含 locale namespace / leaf key / 插值占位符
   一致性检查）、production build；
-- Database：fresh Alembic install 与从当前 main schema upgrade；
+- Database：fresh Alembic install 与旧执行数据拒绝检查；
 - Integration：隔离 Compose smoke，真实运行三语言 Task、Schedule、Webhook、Clone URL 交接与运行锁；
 - Reliable Runtime：真实 Broker outage/restart、Confirm ambiguity、Worker/Control crash、
-  Slot 压力、DLQ/Replay、post-cutover invariant 与资源有界性；
+  Slot 压力、DLQ/Replay、状态不变量与资源有界性；
 - Sandbox：只接受目标 Linux cgroup v2 + private cgroup namespace + exact delegated
   subtree 的真实 Compose 证据；host cgroup namespace 为 `NO_COUNT`，macOS/静态配置
   也不计入；
@@ -314,19 +297,16 @@ AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smo
 编排、独立日志系统、AI 自动执行循环、用户级语言偏好、机器自动翻译用户内容、第三
 语言或 RabbitMQ 多节点 HA。单 Execution 的有界 Retry/Recovery 不扩张为工作流重试。
 
-## 14. Reliable Runtime Cutover 与回滚
+## 14. 唯一执行机制与恢复
 
-### 14.1 不可交换的 Cutover
+普通入口、重试和 Replay 都使用同一个 Admission/Outbox/Attempt/Slot 合同。旧 HTTP
+任务领取、旧执行回报、canary 入口与迁移/Cutover 管理接口已移除；内部 wire protocol
+编号仍为 3，但不再是部署选项或用户界面概念。适配器目录清理使用独立 cleanup API。
 
-顺序固定为：backup/restore 实测 → inventory/preflight → legacy running drain 与 pending
-migrate → Worker v3 + Sandbox → 普通 RabbitMQ ingress → Slot 压力验证 → minimum
-protocol 3 → 退役 legacy active index → legacy active 清零后关闭 legacy Claim。所有
-写操作均需管理员认证；inventory、preflight 与 post-cutover invariant 为只读操作。
+历史 Alembic 链保留，新迁移把 backend、状态、generation 和 Worker 协议约束收敛为
+唯一机制，并自动退役旧单活跃 Execution 索引。全新安装从空库迁移；发现旧机制数据
+时拒绝升级，不隐式转换或丢弃数据。
 
-### 14.2 兼容恢复边界
-
-Cutover 前可关闭新 ingress 并继续 legacy。旧索引退役或新 RabbitMQ row 已存在后，
-回滚必须保留 additive schema，由当前兼容 Control drain/repair Outbox、Attempt、Slot
-与 Incident；不得启动旧二进制解释新 row，不得执行破坏性 schema downgrade，也不应
-简单关掉 ingress 把新请求导向已经关闭的 legacy Claim。操作步骤和 API 见
-[Reliable Runtime 迁移说明](issue130-reliable-runtime-migrations.md)。
+运行恢复依赖持久 Outbox、Attempt Lease/Fencing 和同一机制的修复逻辑，不回退到旧
+执行器。测试版本回退采用对应版本的干净环境。宿主准备、启动顺序与诊断见
+[Sandbox 部署说明](issue130-sandbox-deployment.md)；旧迁移文档仅作历史记录。

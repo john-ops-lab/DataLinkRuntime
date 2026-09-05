@@ -9,9 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from conftest import WORKER_TOKEN
+from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
 from dlr.worker import agent as worker_agent
 from dlr.worker import executor, javaenv, nodeenv, venv
 from dlr.worker import workspace as workspace_manager
+from runtime_api_support import mark_broker_ready
+from worker_runtime_support import run_with_test_sandbox
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 
@@ -164,7 +167,7 @@ def test_c2_same_manifest_fixture_exposes_ordered_input_file(
     language: str,
     code: str,
 ) -> None:
-    result = executor.run(
+    result = run_with_test_sandbox(
         payload(language, code) | {"input": None, "input_files": [c2_input_file()]},
         runtime_settings(tmp_path / language),
         input_downloader=lambda _file, destination: destination.write(C2_INPUT_CONTENT),
@@ -262,7 +265,7 @@ def test_c2_all_languages_preserve_input_file_order(
     language: str,
     code: str,
 ) -> None:
-    result = executor.run(
+    result = run_with_test_sandbox(
         payload(language, code) | {"input": None, "input_files": c2_input_files()},
         runtime_settings(tmp_path / language),
         input_downloader=lambda file, destination: destination.write(
@@ -389,7 +392,7 @@ def _run_c2_worker_manifest_case(
             _mutate_c2_manifest(layout, mutation)
 
     monkeypatch.setattr(workspace_manager, "prepare_input_files", prepare_then_mutate)
-    return executor.run(
+    return run_with_test_sandbox(
         payload(language, _c2_started_adapter_code(language, marker))
         | {"input": None, "input_files": [c2_input_file()]},
         runtime_settings(tmp_path / "runtime"),
@@ -448,7 +451,7 @@ def test_c2_harness_manifest_conformance_is_diagnostic_only(
         _mutate_c2_manifest(layout, mutation)
 
     monkeypatch.setattr(workspace_manager, "validate_input_manifest", validate_then_mutate)
-    result = executor.run(
+    result = run_with_test_sandbox(
         payload(language, _c2_started_adapter_code(language, marker))
         | {"input": None, "input_files": [c2_input_file()]},
         runtime_settings(tmp_path / "runtime"),
@@ -494,7 +497,7 @@ def test_c2_adapter_cannot_forge_input_error_code(
     tmp_path: Path,
     language: str,
 ) -> None:
-    result = executor.run(
+    result = run_with_test_sandbox(
         payload(language, _c2_fake_input_error_adapter_code(language)),
         runtime_settings(tmp_path / language),
     )
@@ -530,25 +533,25 @@ def test_c2_json_handle_contract_remains_unwrapped_retained(
     language: str,
     code: str,
 ) -> None:
-    result = executor.run(payload(language, code), runtime_settings(tmp_path / language))
+    result = run_with_test_sandbox(payload(language, code), runtime_settings(tmp_path / language))
     assert result["status"] == "succeeded", result
     assert result["output"] == {"n": 7}
 
 
-def test_c2_v1_invalid_input_file_container_remains_a_stable_failure(tmp_path: Path) -> None:
-    result = executor.run(
+def test_current_protocol_rejects_invalid_input_file_container(tmp_path: Path) -> None:
+    result = run_with_test_sandbox(
         payload("python", "def handle(context, input):\n    return input\n")
         | {"input_files": "not-a-list"},
         runtime_settings(tmp_path),
     )
 
     assert result["status"] == "failed", result
-    assert result["error_code"] == "input_artifact_not_ready"
+    assert result["error_code"] == "worker_protocol_payload_invalid"
 
 
 def test_javascript_sync_async_config_secret_logs_and_output(tmp_path: Path) -> None:
     progress: list[tuple[str, str]] = []
-    result = executor.run(
+    result = run_with_test_sandbox(
         payload(
             "javascript",
             """
@@ -587,21 +590,21 @@ def test_javascript_exception_invalid_output_timeout_and_cancel(tmp_path: Path) 
             "await new Promise(() => setInterval(() => {}, 1000)); }",
         )
     )
-    raised = executor.run(
+    raised = run_with_test_sandbox(
         payload("javascript", "export function handle() { throw new Error('broken'); }"),
         runtime_settings(tmp_path / "raised"),
     )
     assert raised["status"] == "failed"
     assert "broken" in raised["stdout"]
 
-    invalid = executor.run(
+    invalid = run_with_test_sandbox(
         payload("javascript", "export function handle() { return 1n; }"),
         runtime_settings(tmp_path / "invalid"),
     )
     assert invalid["status"] == "failed"
     assert "JSON" in invalid["stdout"]
 
-    timed_out = executor.run(
+    timed_out = run_with_test_sandbox(
         payload(
             "javascript",
             loop,
@@ -610,7 +613,7 @@ def test_javascript_exception_invalid_output_timeout_and_cancel(tmp_path: Path) 
     )
     assert timed_out["status"] == "timeout"
 
-    cancelled = executor.run(
+    cancelled = run_with_test_sandbox(
         payload(
             "javascript",
             loop,
@@ -623,7 +626,7 @@ def test_javascript_exception_invalid_output_timeout_and_cancel(tmp_path: Path) 
 
 def test_java_compile_run_context_secret_logs_and_output(tmp_path: Path) -> None:
     progress: list[tuple[str, str]] = []
-    result = executor.run(
+    result = run_with_test_sandbox(
         payload(
             "java",
             """
@@ -660,7 +663,7 @@ public class Adapter {
 
 
 def test_java_compile_error_runtime_error_timeout_and_cancel(tmp_path: Path) -> None:
-    compile_error = executor.run(
+    compile_error = run_with_test_sandbox(
         payload("java", "public class Adapter { this is not Java; }"),
         runtime_settings(tmp_path / "compile"),
     )
@@ -671,7 +674,7 @@ def test_java_compile_error_runtime_error_timeout_and_cancel(tmp_path: Path) -> 
     assert "javac" not in compile_error["error"]
     assert compile_error["stdout"]
 
-    runtime_error = executor.run(
+    runtime_error = run_with_test_sandbox(
         payload(
             "java",
             """public class Adapter {
@@ -688,11 +691,11 @@ def test_java_compile_error_runtime_error_timeout_and_cancel(tmp_path: Path) -> 
         while (true) { Thread.sleep(1000); }
     }
 }"""
-    timed_out = executor.run(
+    timed_out = run_with_test_sandbox(
         payload("java", loop), runtime_settings(tmp_path / "timeout", timeout=1)
     )
     assert timed_out["status"] == "timeout"
-    cancelled = executor.run(
+    cancelled = run_with_test_sandbox(
         payload("java", loop),
         runtime_settings(tmp_path / "cancel", timeout=10),
         progress_callback=lambda _out, _err: True,
@@ -1012,7 +1015,12 @@ def test_java_capability_requires_java_and_javac_21(
 def register(client: TestClient, name: str, capabilities: list[str]) -> dict[str, object]:
     response = client.post(
         "/api/workers/register",
-        json={"name": name, "capabilities": capabilities},
+        json={
+            "name": name,
+            "capabilities": capabilities,
+            "protocol_version": 3,
+            "isolation_capabilities": dict.fromkeys(REQUIRED_ISOLATION_CAPABILITIES, True),
+        },
         headers=WORKER_HEADERS,
     )
     assert response.status_code == 200
@@ -1085,6 +1093,7 @@ def test_worker_registration_rejects_unknown_or_empty_capabilities(
 def test_single_compatible_worker_is_adopted_and_multiple_require_selection(
     api_client: TestClient,
 ) -> None:
+    mark_broker_ready()
     register(api_client, "python-unrelated", ["python"])
     javascript = register(api_client, "javascript-compatible", ["javascript"])
     adapter = create_adapter(api_client, "auto-js", "javascript")

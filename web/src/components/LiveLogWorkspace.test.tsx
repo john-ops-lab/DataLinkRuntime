@@ -25,6 +25,7 @@ function setScrollMetrics(element: HTMLElement, scrollHeight: number, clientHeig
 
 function makeExecution(overrides: Partial<Execution> = {}): Execution {
   return {
+    dispatch_backend: "rabbitmq",
     id: 42,
     adapter_id: 7,
     version_id: 3,

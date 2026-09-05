@@ -15,17 +15,11 @@ const variant: TemplateVariant = {
   language: "python",
   adapter_type: "task",
   template_version: "1.0.0",
-  behavior_contract_version: "dlr-recipe/v1",
-  maturity: "syntax-verified",
   code: "def handle(context, input):\n    return input\n",
   requirements: "httpx==0.28.1",
-  install_notes: { "zh-CN": "安装依赖", en: "Install dependencies" },
   input_skeleton: {},
-  input_contract: {},
-  output_contract: {},
+  output_example: {},
   runtime_config: {},
-  runtime_guidance: { "zh-CN": "保持有界", en: "Keep requests bounded" },
-  sources: [],
 };
 
 beforeEach(() => {
@@ -46,7 +40,6 @@ it("encodes every Scenario filter with stable pagination", () => {
     adapter_type: "task",
     protocol: "HTTP/JSON",
     language: "javascript",
-    maturity: "syntax-verified",
     page: 2,
     page_size: 12,
   });
@@ -57,10 +50,13 @@ it("encodes every Scenario filter with stable pagination", () => {
     adapter_type: "task",
     protocol: "HTTP/JSON",
     language: "javascript",
-    maturity: "syntax-verified",
     page: "2",
     page_size: "12",
   });
+});
+
+it("omits theme for the All gallery query", () => {
+  expect(new URLSearchParams(templateScenarioQueryString({ q: "cloud" })).has("theme")).toBe(false);
 });
 
 it("caches only the selected language Variant by slug, version, and language", async () => {

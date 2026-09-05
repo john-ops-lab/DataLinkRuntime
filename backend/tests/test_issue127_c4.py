@@ -35,7 +35,7 @@ def test_control_c4_settings_default_to_closed_and_bounded(
 
     value = Settings()
 
-    assert value.min_worker_protocol_version == 1
+    assert "min_worker_protocol_version" not in Settings.model_fields
     assert value.execution_claim_timeout_seconds == 300
     assert value.execution_recovery_grace_seconds == 60
     assert value.workspace_cleanup_attempt_timeout_seconds == 5
@@ -47,7 +47,6 @@ def test_control_c4_settings_default_to_closed_and_bounded(
 @pytest.mark.parametrize(
     ("name", "low", "high"),
     [
-        ("DLR_MIN_WORKER_PROTOCOL_VERSION", 1, 3),
         ("DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS", 30, 86_400),
         ("DLR_EXECUTION_RECOVERY_GRACE_SECONDS", 10, 3_600),
         ("DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS", 1, 60),
@@ -61,7 +60,6 @@ def test_control_c4_settings_accept_documented_boundaries(
     # Keep the cross-field cleanup invariant valid while testing each field's
     # independent lower and upper boundary.
     values: dict[str, int] = {
-        "DLR_MIN_WORKER_PROTOCOL_VERSION": 1,
         "DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS": 300,
         "DLR_EXECUTION_RECOVERY_GRACE_SECONDS": 3_600,
         "DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS": 1,
@@ -81,8 +79,6 @@ def test_control_c4_settings_accept_documented_boundaries(
 @pytest.mark.parametrize(
     ("name", "value"),
     [
-        ("DLR_MIN_WORKER_PROTOCOL_VERSION", "0"),
-        ("DLR_MIN_WORKER_PROTOCOL_VERSION", "4"),
         ("DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS", "29"),
         ("DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS", "86401"),
         ("DLR_EXECUTION_RECOVERY_GRACE_SECONDS", "9"),
@@ -122,16 +118,19 @@ def test_control_c4_settings_reject_cleanup_order(
         Settings()
 
 
-def test_worker_protocol_version_defaults_to_v1(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_protocol_version_is_current_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DLR_WORKER_PROTOCOL_VERSION", raising=False)
 
-    assert WorkerConfig().protocol_version == 1
+    assert WorkerConfig().protocol_version == 3
 
 
-def test_worker_protocol_version_can_select_v2(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_protocol_version_cannot_select_old_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DLR_WORKER_PROTOCOL_VERSION", "2")
 
-    assert WorkerConfig().protocol_version == 2
+    with pytest.raises(ValueError, match="Worker protocol is fixed"):
+        WorkerConfig()
 
 
 def test_worker_protocol_version_can_select_v3(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,22 +139,23 @@ def test_worker_protocol_version_can_select_v3(monkeypatch: pytest.MonkeyPatch) 
     assert WorkerConfig().protocol_version == 3
 
 
-@pytest.mark.parametrize("value", ["0", "4", "not-a-version"])
+@pytest.mark.parametrize("value", ["0", "1", "4", "not-a-version"])
 def test_worker_protocol_version_rejects_unsupported_values(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     monkeypatch.setenv("DLR_WORKER_PROTOCOL_VERSION", value)
 
-    with pytest.raises(ValueError, match="DLR_WORKER_PROTOCOL_VERSION must be 1, 2 or 3"):
+    with pytest.raises(ValueError, match="Worker protocol is fixed"):
         WorkerConfig()
 
 
 def test_agent_registration_forwards_configured_protocol_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DLR_WORKER_PROTOCOL_VERSION", "2")
+    monkeypatch.delenv("DLR_WORKER_PROTOCOL_VERSION", raising=False)
     config = WorkerConfig()
     monkeypatch.setattr(config, "capabilities", lambda: ["python"])
+    monkeypatch.setattr(config, "run_preflight", lambda: None)
     calls: list[tuple[str, list[str], int]] = []
 
     class FakeClient:
@@ -165,9 +165,10 @@ def test_agent_registration_forwards_configured_protocol_version(
             capabilities: list[str],
             *,
             protocol_version: int,
+            isolation_capabilities: dict[str, bool],
         ) -> dict[str, int]:
             calls.append((name, capabilities, protocol_version))
             return {"id": 7}
 
     assert Agent(config, FakeClient())._register() == 7  # type: ignore[arg-type]
-    assert calls == [(config.name, ["python"], 2)]
+    assert calls == [(config.name, ["python"], 3)]

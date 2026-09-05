@@ -577,30 +577,11 @@ def _structural_gate_failure(session: Session, adapter: Adapter, schedule: Adapt
     worker = session.get(Worker, adapter.runtime_worker_id)
     if worker is None or adapter.language not in worker.capabilities:
         return True
-    if settings.rabbitmq_execution_enabled:
-        try:
-            resolve_queue_target_worker(session, adapter)
-        except HTTPException:
-            return True
-    return False
-
-
-def _transient_gate_failure(session: Session, adapter: Adapter, *, now: datetime) -> bool:
-    """Temporary conditions that keep the planned point due (no queueing).
-
-    A stale Worker or a still-running Execution recovers on its
-    own; the point must stay due so recovery creates exactly the latest
-    planned point up to now, immediately.
-    """
-    if settings.rabbitmq_execution_enabled:
-        # RabbitMQ ingress intentionally accepts an effective-offline fixed
-        # Worker; the durable queue is the short-term buffer.  Only the
-        # legacy HTTP Claim path waits for online health here.
-        return False
-    worker = session.get(Worker, cast(int, adapter.runtime_worker_id))
-    if worker is None or not worker_availability.is_effectively_online(worker, now=now):
+    try:
+        resolve_queue_target_worker(session, adapter)
+    except HTTPException:
         return True
-    return adapter_runtime.active_execution(session, adapter.id) is not None
+    return False
 
 
 def _process_structural_due_schedule(
@@ -654,76 +635,7 @@ def process_due_schedule(
         return ScheduleTickResult.HELD
     if _structural_gate_failure(session, adapter, schedule):
         return _process_structural_due_schedule(session, schedule, since=since, now=now)
-    if _transient_gate_failure(session, adapter, now=now):
-        return ScheduleTickResult.HELD
-    if not settings.rabbitmq_execution_enabled:
-        return _process_legacy_due_schedule(session, adapter, schedule, since=since, now=now)
     return _process_rabbitmq_due_schedule(session, adapter, schedule, since=since, now=now)
-
-
-def _process_legacy_due_schedule(
-    session: Session,
-    adapter: Adapter,
-    schedule: AdapterSchedule,
-    *,
-    since: datetime,
-    now: datetime,
-) -> ScheduleTickResult:
-    """Keep the pre-B1 single-run Scheduler behavior unchanged."""
-    due_point = latest_due_point(schedule.cron, schedule.timezone, since, now)
-    try:
-        with session.begin_nested():
-            _create_execution_locked(
-                session,
-                adapter,
-                trigger="schedule",
-                scheduled_for=due_point,
-                schedule=schedule,
-            )
-    except HTTPException as exc:
-        detail: dict[str, object] = exc.detail if isinstance(exc.detail, dict) else {}
-        code = detail.get("code")
-        if code in {
-            "input_invalid",
-            "input_source_not_available",
-            "execution_input_too_large",
-        }:
-            schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
-            schedule.last_blocked_reason = "input_invalid"
-            params = detail.get("params")
-            blocked_detail = dict(params) if isinstance(params, dict) else {}
-            if code != "input_invalid":
-                blocked_detail = {"code": str(code), **blocked_detail}
-            schedule.last_blocked_detail = blocked_detail or None
-            schedule.last_blocked_at = now
-            schedule.last_processed_due_at = due_point
-            return ScheduleTickResult.CONSUMED
-        raise
-    except IntegrityError as exc:
-        if integrity_constraint_name(exc) not in {
-            "uq_executions_active_adapter",
-            "uq_executions_schedule_point",
-        }:
-            raise
-        # Lost a race (duplicate planned point or an active Execution): the
-        # cursor advance still commits, so the point is never retried.
-        logger.info(
-            "schedule execution race lost for adapter %s at %s",
-            adapter.id,
-            due_point.isoformat(),
-        )
-        schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
-        schedule.last_processed_due_at = due_point
-        schedule.last_blocked_reason = None
-        schedule.last_blocked_detail = None
-        schedule.last_blocked_at = None
-        return ScheduleTickResult.CONSUMED
-    schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
-    schedule.last_processed_due_at = due_point
-    schedule.last_blocked_reason = None
-    schedule.last_blocked_detail = None
-    schedule.last_blocked_at = None
-    return ScheduleTickResult.CREATED
 
 
 def _schedule_http_error(exc: HTTPException) -> tuple[str, dict[str, object]]:
@@ -731,6 +643,13 @@ def _schedule_http_error(exc: HTTPException) -> tuple[str, dict[str, object]]:
     code = str(detail.get("code", "schedule_dispatch_failed"))
     params = detail.get("params")
     return code, dict(params) if isinstance(params, dict) else {}
+
+
+def _input_invalid_detail(code: str, params: dict[str, object]) -> dict[str, object] | None:
+    """Keep specific input failures diagnosable under the common blocked reason."""
+    if code == "input_invalid":
+        return params or None
+    return {**params, "code": code}
 
 
 def _process_rabbitmq_due_schedule(
@@ -870,7 +789,12 @@ def _process_coalesce_latest(
             )
             schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
             schedule.last_processed_due_at = latest
-            _set_schedule_blocked(schedule, reason="input_invalid", detail=params or None, now=now)
+            _set_schedule_blocked(
+                schedule,
+                reason="input_invalid",
+                detail=_input_invalid_detail(code, params),
+                now=now,
+            )
             return ScheduleTickResult.CONSUMED
         raise
     except IntegrityError as exc:
@@ -964,6 +888,7 @@ def _process_skip_while_busy(
         )
     point_outcomes: list[tuple[datetime, str, str | None, int | None]] = []
     input_invalid_seen = False
+    input_invalid_detail: dict[str, object] | None = None
     for index, point in enumerate(eligible.points):
         try:
             with session.begin_nested():
@@ -988,6 +913,7 @@ def _process_skip_while_busy(
             if code in {"input_invalid", "input_source_not_available", "execution_input_too_large"}:
                 point_outcomes.append((point, "skipped", "input_invalid", None))
                 input_invalid_seen = True
+                input_invalid_detail = _input_invalid_detail(code, params)
                 continue
             raise
         except IntegrityError as exc:
@@ -1031,7 +957,9 @@ def _process_skip_while_busy(
     schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
     schedule.last_processed_due_at = cast(datetime, eligible.last)
     if input_invalid_seen:
-        _set_schedule_blocked(schedule, reason="input_invalid", detail=None, now=now)
+        _set_schedule_blocked(
+            schedule, reason="input_invalid", detail=input_invalid_detail, now=now
+        )
     else:
         schedule.last_blocked_reason = None
         schedule.last_blocked_detail = None
@@ -1078,6 +1006,8 @@ def _process_queue_every_occurrence(
         last_processed_point = eligible.points[-max_count - 1]
     created = 0
     first_unaccepted: datetime | None = None
+    input_invalid_seen = False
+    input_invalid_detail: dict[str, object] | None = None
     for point in queue_points:
         try:
             with session.begin_nested():
@@ -1109,6 +1039,8 @@ def _process_queue_every_occurrence(
                     reason="input_invalid",
                 )
                 last_processed_point = point
+                input_invalid_seen = True
+                input_invalid_detail = _input_invalid_detail(code, params)
                 continue
             raise
         except IntegrityError as exc:
@@ -1147,9 +1079,14 @@ def _process_queue_every_occurrence(
         return ScheduleTickResult.CREATED if created else ScheduleTickResult.BLOCKED
     schedule.next_run_at = next_run_after(schedule.cron, schedule.timezone, now)
     schedule.last_processed_due_at = eligible.last or expired.last or since
-    schedule.last_blocked_reason = None
-    schedule.last_blocked_detail = None
-    schedule.last_blocked_at = None
+    if input_invalid_seen:
+        _set_schedule_blocked(
+            schedule, reason="input_invalid", detail=input_invalid_detail, now=now
+        )
+    else:
+        schedule.last_blocked_reason = None
+        schedule.last_blocked_detail = None
+        schedule.last_blocked_at = None
     return ScheduleTickResult.CREATED if created else ScheduleTickResult.CONSUMED
 
 

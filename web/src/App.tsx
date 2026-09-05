@@ -303,6 +303,16 @@ export function AdapterConsole({
   // editorRef 只在点击「加入对话上下文」时读取本次实际选择；editorHasSelection
   // 只驱动按钮可用性（空选区不提供无意义操作）。
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const copiedEditorFocusIdRef = useRef<number | null>(null);
+  const focusCopiedEditor = useCallback(() => {
+    const editor = editorRef.current;
+    if (copiedEditorFocusIdRef.current === null
+      || copiedEditorFocusIdRef.current !== selectedAdapterIdRef.current
+      || !editor?.getDomNode?.()?.isConnected) return;
+    editor.layout();
+    editor.focus();
+    copiedEditorFocusIdRef.current = null;
+  }, []);
   const [editorHasSelection, setEditorHasSelection] = useState(false);
   const [editorSelection, setEditorSelection] = useState<EditorLayoutSnapshot["selection"]>(null);
   const [editorTopVisibleLine, setEditorTopVisibleLine] = useState<number | null>(null);
@@ -851,6 +861,8 @@ export function AdapterConsole({
     };
   }, []);
 
+  const initialAdapterDrafts = useRef(new Map<number, EditorSnapshot>());
+
   function applySnapshot(next: EditorSnapshot) {
     setSnapshot(next);
     setBaseline(next);
@@ -1015,6 +1027,16 @@ export function AdapterConsole({
     setEditorHasSelection(false);
     applySnapshot({ code: "", requirements: "", runtimeConfigText: "{}" });
     try {
+      const initialDraft = initialAdapterDrafts.current.get(adapter.id);
+      if (adapter.latest_version_id === null && initialDraft) {
+        // Copy already supplied the unsaved code. An empty-history request
+        // must not prevent restoring or protecting that local draft.
+        setVersions([]);
+        setSelectedVersionId(null);
+        setSnapshot(initialDraft);
+        setContentReady(true);
+        return true;
+      }
       const list = await api.listVersions(adapter.id);
       if (generation !== requestGeneration.current) {
         return false;
@@ -1083,6 +1105,12 @@ export function AdapterConsole({
         description: request.description,
         expected_template_version: request.expected_template_version,
       });
+      initialAdapterDrafts.current.set(created.id, {
+        code: request.draft.code,
+        requirements: request.draft.requirements,
+        runtimeConfigText: JSON.stringify(request.draft.runtime_config, null, 2),
+      });
+      copiedEditorFocusIdRef.current = created.id;
       let target = created;
       let refreshFailure: string | null = null;
       try {
@@ -1097,10 +1125,7 @@ export function AdapterConsole({
       const contentLoaded = await loadAdapterContent(target, undefined, "edit");
       closePagePortals();
       pushBrowserLocation("/adapters");
-      window.requestAnimationFrame?.(() => {
-        editorRef.current?.layout();
-        editorRef.current?.focus();
-      });
+      window.requestAnimationFrame?.(focusCopiedEditor);
       if (refreshFailure !== null && contentLoaded) {
         setError(refreshFailure);
       }
@@ -1195,6 +1220,7 @@ export function AdapterConsole({
         requirements: snapshot.requirements,
         runtime_config: runtimeConfig,
       });
+      initialAdapterDrafts.current.delete(saveTarget.id);
       // The immutable version exists as soon as POST succeeds: acknowledge it locally
       // right away so a follow-up refresh failure cannot be mistaken for a failed save
       // (which would invite retrying into a duplicate immutable version). Only
@@ -1807,6 +1833,7 @@ export function AdapterConsole({
                             value={snapshot.code}
                             onMount={(editor) => {
                               editorRef.current = editor;
+                              window.requestAnimationFrame?.(focusCopiedEditor);
                               const updateSelectionState = () => {
                                 const selection = editor.getSelection();
                                 const nextHasSelection = selection !== null && !selection.isEmpty();

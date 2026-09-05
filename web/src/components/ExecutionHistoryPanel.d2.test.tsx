@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
 import { applyUiLocale } from "../i18n";
@@ -8,6 +8,7 @@ import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
 
 function summary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
   return {
+    dispatch_backend: "rabbitmq",
     id: 71,
     adapter_id: 41,
     version_id: 11,
@@ -27,6 +28,7 @@ function summary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
 
 function execution(overrides: Partial<Execution> = {}): Execution {
   return {
+    dispatch_backend: "rabbitmq",
     id: 71,
     adapter_id: 41,
     version_id: 11,
@@ -67,6 +69,18 @@ function renderHistory(detail: Execution, row = summary()) {
   render(<ExecutionHistoryPanel adapterId={41} />);
   return list;
 }
+
+beforeEach(() => {
+  vi.spyOn(api, "getReliableExecutionDetail").mockImplementation(async (executionId) => ({
+    execution_id: executionId,
+    dispatch_backend: "rabbitmq",
+    status: "succeeded",
+    attempts: [],
+    incidents: [],
+    replay_available: false,
+    replay_reason: null,
+  }));
+});
 
 afterEach(async () => {
   await applyUiLocale("zh-CN");
@@ -142,6 +156,9 @@ describe("Issue #127 D2 execution history", () => {
     expect(await screen.findByTestId("detail-input-none")).toBeTruthy();
     expect(screen.getByTestId("detail-input").textContent).toContain("无输入");
     expect(screen.getByTestId("detail-input").textContent).not.toContain("storage_key");
+    expect(api.getReliableExecutionDetail).toHaveBeenCalledWith(71);
+    expect(screen.queryByText("派发后端")).toBeNull();
+    expect(screen.queryByText("Legacy")).toBeNull();
     expect(list).toHaveBeenCalledWith(41, { limit: 50 });
     expect(list.mock.calls[0]?.[1]).not.toHaveProperty("input");
   });

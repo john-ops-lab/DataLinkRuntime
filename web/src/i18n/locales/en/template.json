@@ -1,7 +1,6 @@
 {
   "gallery": {
     "title": "Template Gallery",
-    "subtitle": "Start from a reviewed scenario recipe, then copy and adapt it to your environment.",
     "searchPlaceholder": "Search by template, vendor, or tag",
     "searchAria": "Search templates",
     "resultCount": "{{count}} scenarios",
@@ -17,15 +16,12 @@
     "adapterType": "Adapter type",
     "protocol": "Protocol",
     "language": "Language",
-    "maturity": "Maturity",
     "loading": "Loading filter options…",
     "all": "All"
   },
   "card": {
     "view": "View details",
-    "version": "Version {{version}}",
-    "languageSummary": "Available in three languages",
-    "maturitySummary": "Lowest maturity: {{maturity}}"
+    "languageSummary": "Available languages"
   },
   "type": {
     "task": "Task",
@@ -36,12 +32,6 @@
     "javascript": "JavaScript",
     "java": "Java"
   },
-  "maturity": {
-    "reference-generated": "Experimental · unverified",
-    "syntax-verified": "Syntax verified",
-    "fixture-verified": "Fixture verified",
-    "live-verified": "Live verified"
-  },
   "detail": {
     "back": "Back to Template Gallery",
     "copy": "Copy as Adapter",
@@ -51,41 +41,20 @@
     "variantFailed": "This language variant could not be loaded",
     "notFound": "Template not found",
     "retry": "Retry",
-    "version": "Template version",
-    "updated": "Updated {{date}}",
-    "purpose": "Use case",
-    "input": "Input",
-    "output": "Output",
-    "risk": "Safety boundary",
-    "modes": "Modes",
-    "languageMaturity": "Language maturity",
-    "recipe": "Recipe code",
-    "requirements": "Suggested dependencies",
-    "installNotes": "Installation",
-    "runtimeGuidance": "Runtime guidance",
+    "purpose": "How to use",
+    "recipe": "Code",
+    "requirements": "Dependencies",
     "inputSkeleton": "Input example",
-    "inputContract": "Input contract",
-    "outputContract": "Output contract",
-    "runtimeConfig": "Runtime configuration",
-    "sources": "Sources and licenses",
-    "sourceRevision": "Pinned revision {{revision}}",
-    "sourceChecked": "Checked {{date}}",
-    "managedInputHint": "Configure Managed Input after copying when the deployment supports it. Browsing and copying remain available when file storage is disabled."
-  },
-  "useMode": {
-    "adaptation-allowed": "Clean adaptation allowed",
-    "behavior-research-only": "Behavior research only",
-    "official-api": "Official API reference"
+    "outputExample": "Result example"
   },
   "copy": {
     "title": "Copy as Adapter",
-    "description": "Copy the current {{language}} recipe into an independent Adapter. Future template updates will not overwrite it.",
+    "description": "Name this {{language}} adapter, then check its configuration and save it in the editor.",
     "name": "Adapter name",
     "namePlaceholder": "For example: Production asset sync",
     "adapterDescription": "Description (optional)",
     "descriptionPlaceholder": "Describe its purpose or target environment",
     "language": "Current language",
-    "version": "Template version",
     "confirm": "Copy and edit",
     "cancel": "Cancel",
     "nameRequired": "Enter an Adapter name",

@@ -1,5 +1,10 @@
 # Issue #130 Reliable Runtime Migration, Cutover, and Failure Handling
 
+> Historical design record, not the current deployment runbook. The unified
+> execution runtime has removed the legacy/canary/Cutover APIs, switches, and
+> workflows. Do not run these historical commands; use
+> [Sandbox Deployment and Troubleshooting](issue130-sandbox-deployment.md).
+
 [简体中文](../zh-CN/issue130-reliable-runtime-migrations.md) · **English**
 
 This is the deployment/API runbook for Reliable Runtime. Database URLs,

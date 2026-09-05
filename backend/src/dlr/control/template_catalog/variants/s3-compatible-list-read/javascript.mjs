@@ -1,3 +1,37 @@
+// S3 对象读取：可修改的配置集中在这里。
+// 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+// 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+// 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+// S3_ACCESS_KEY_ID：S3 Access Key ID。
+// S3_SECRET_ACCESS_KEY：S3 Secret Access Key。
+// S3_SESSION_TOKEN：S3 临时凭据 Token，仅使用临时凭据时配置。
+const CONFIG = {
+  // S3 兼容服务地址。
+  "endpoint": "https://storage.example",
+  // 存储桶所在区域 ID。
+  "region": "example-region-1",
+  // 填写存储桶名称。
+  "bucket": "example-bucket",
+  // 只列出此前缀下的对象；空字符串表示整个存储桶。
+  "prefix": "exports/",
+  // 继续读取时填写上次 checkpoint 返回的分页标记；首次留空。
+  "continuation_token": null,
+  // 同一页内继续读取的位置，首次为 0。
+  "object_offset": 0,
+  // 填写要读取的对象键；空列表只获取对象清单。
+  "read_keys": [],
+  // 兼容私有 S3 服务时通常使用 true。
+  "force_path_style": true,
+  // 单次运行最多读取的页数。
+  "max_pages": 20,
+  // 最多列出的对象数。
+  "max_objects": 1000,
+  // 单个对象读取大小上限，单位字节。
+  "max_object_bytes": 1048576,
+  // 读取内容总大小上限，单位字节。
+  "max_total_bytes": 4194304,
+};
+
 /** Bounded S3-compatible list and optional range reads. */
 import {
   GetObjectCommand,
@@ -76,7 +110,9 @@ async function run(context, input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("input_must_be_object");
   if (typeof input.bucket !== "string" || input.bucket.length === 0) throw new Error("bucket_required");
   const endpoint = validatedEndpoint(input.endpoint);
+  // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
   const accessKeyId = context.secrets.get("S3_ACCESS_KEY_ID");
+  // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
   const secretAccessKey = context.secrets.get("S3_SECRET_ACCESS_KEY");
   if (!accessKeyId || !secretAccessKey) throw new Error("missing_credential");
   if (input.read_keys !== undefined
@@ -106,6 +142,7 @@ async function run(context, input) {
     credentials: {
       accessKeyId,
       secretAccessKey,
+      // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
       sessionToken: context.secrets.get("S3_SESSION_TOKEN") ?? undefined,
     },
   });
@@ -247,6 +284,9 @@ async function run(context, input) {
 }
 
 export async function handle(context, input) {
+  if (input === undefined || input === null) input = {};
+  if (typeof input !== "object" || Array.isArray(input)) throw new Error("输入必须是 JSON 对象");
+  input = { ...CONFIG, ...input };
   try {
     return await run(context, input);
   } catch (error) {

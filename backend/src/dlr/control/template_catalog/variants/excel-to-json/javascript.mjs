@@ -1,3 +1,27 @@
+// Excel 转 JSON：可修改的配置集中在这里。
+// 运行时提供待处理的数据或文件；处理规则在下面配置。
+// 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+const CONFIG = {
+  // 工作表名称；null 使用第一个工作表。
+  "sheet": null,
+  // 需要读取的单元格范围，例如 A1:D100。
+  "range": "A1:D100",
+  // 是否把首行作为字段名。
+  "header": true,
+  // 作为表头的行号，从 1 开始。
+  "header_row": 1,
+  // 空单元格处理：null 保留空值、empty-string 转为空字符串、omit 忽略空字段。
+  "null_policy": "null",
+  // 单个文件读取大小上限，单位字节。
+  "max_file_bytes": 8388608,
+  // 最多读取的行数。
+  "max_rows": 5000,
+  // 最多读取的列数。
+  "max_columns": 200,
+  // 返回结果大小上限，单位字节。
+  "max_output_bytes": 4194304,
+};
+
 /** Bounded XLSX/XLS data reader that never evaluates formulas or active content. */
 import fs from "node:fs";
 import zlib from "node:zlib";
@@ -261,6 +285,9 @@ function run(context, input) {
 }
 
 export function handle(context, input) {
+  if (input === undefined || input === null) input = {};
+  if (typeof input !== "object" || Array.isArray(input)) throw new Error("输入必须是 JSON 对象");
+  input = { ...CONFIG, ...input };
   try {
     return run(context, input);
   } catch (error) {

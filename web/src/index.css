@@ -4092,13 +4092,8 @@ body {
   letter-spacing: -0.035em;
 }
 
-.template-gallery-hero .ant-typography-paragraph {
-  margin: 8px 0 20px;
-  color: var(--dlr-text-secondary);
-  font-size: 0.94rem;
-}
-
 .template-gallery-hero .ant-input-affix-wrapper {
+  margin-top: 20px;
   min-height: 48px;
   border-radius: 10px;
   box-shadow: 0 4px 16px rgba(22, 119, 255, 0.07);
@@ -4123,7 +4118,7 @@ body {
 
 .template-filter-bar {
   display: grid;
-  grid-template-columns: repeat(5, minmax(136px, 1fr));
+  grid-template-columns: repeat(4, minmax(136px, 1fr));
   gap: 12px;
   padding: 14px;
   border: 1px solid #e9edf3;
@@ -4224,15 +4219,21 @@ body {
   opacity: 0.95;
 }
 
-.template-logo-orbit,
-.template-logo-shield {
-  position: absolute;
-  color: rgba(255, 255, 255, 0.36);
-  font-size: 0.76rem;
+.template-logo-tone-brand {
+  border: 1px solid #e8edf2;
+  background: #fff;
+  box-shadow: 0 3px 10px rgba(28, 42, 68, 0.05);
 }
 
-.template-logo-orbit { top: 7px; right: 8px; }
-.template-logo-shield { bottom: 6px; left: 7px; }
+.template-logo-brand {
+  width: 70%;
+  height: 70%;
+  object-fit: contain;
+}
+
+.template-logo-tile[data-logo-key="servicenow-cmdb"] .template-logo-brand {
+  width: 90%;
+}
 
 .template-card-content {
   flex: 1 1 auto;
@@ -4316,11 +4317,6 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: auto;
-}
-
-.template-maturity-tag {
-  margin-inline-end: 0;
-  white-space: normal;
 }
 
 .template-card-link {
@@ -4435,7 +4431,7 @@ body {
 
 .template-detail-layout {
   display: grid;
-  grid-template-columns: minmax(300px, 0.82fr) minmax(520px, 1.4fr);
+  grid-template-columns: minmax(240px, 0.55fr) minmax(520px, 1.65fr);
   align-items: start;
   gap: 22px;
   max-width: 1480px;
@@ -4476,52 +4472,6 @@ body {
   font-size: 0.8rem;
   line-height: 1.65;
   overflow-wrap: anywhere;
-}
-
-.template-contract-summary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.template-risk-panel {
-  border-left: 3px solid #faad14;
-  background: #fffdf5;
-}
-
-.template-language-maturity,
-.template-source-list {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
-.template-language-maturity > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 0.78rem;
-}
-
-.template-source {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 9px 0;
-  border-bottom: 1px solid #eef1f5;
-  color: #697386;
-  font-size: 0.72rem;
-  overflow-wrap: anywhere;
-}
-
-.template-source:last-child {
-  border-bottom: none;
-}
-
-.template-source a {
-  color: #0958d9;
-  font-weight: 600;
 }
 
 .template-recipe-panel {
@@ -4651,7 +4601,7 @@ body {
   }
 
   .template-filter-bar {
-    grid-template-columns: repeat(3, minmax(150px, 1fr));
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 }
 
@@ -4673,8 +4623,7 @@ body {
   }
 
   .template-card-grid,
-  .template-filter-bar,
-  .template-contract-summary {
+  .template-filter-bar {
     grid-template-columns: minmax(0, 1fr);
   }
 

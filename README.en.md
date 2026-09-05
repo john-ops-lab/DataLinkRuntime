@@ -145,47 +145,15 @@ Saving creates an immutable runtime snapshot, and Executions always run from sav
 
 ## Start from the Template Gallery
 
-The top-level **Template Gallery** provides official Recipe starting points shipped
-with each DLR release. The initial catalog is fixed at **5 themes, 17 scenarios, and
-51 language Variants**. Every scenario has Python, JavaScript, and Java implementations
-and shows the selected language's input/output contracts, suggested dependencies,
-provenance, and maturity.
+Template Gallery offers 5 themes and 17 scenarios. The default All tab searches across categories; vendor, type, protocol, and language filters narrow the results. Vendor templates use vendor logos. Each scenario offers its supported languages without requiring all three languages.
 
 ```text
-Template Gallery → choose a scenario and language → name and copy → automatically edit the new Adapter
+Template Gallery → choose a scenario and language → name and copy → edit the new Adapter → check or change configuration → save → run
 ```
 
-A copy creates an independent Adapter and Revision 1, not a live reference to the
-template. It starts stopped, with no Worker, Credential Binding, installed dependency,
-Schedule, or run history. Later template releases never overwrite the copied code.
-Before running it, choose a compatible Worker, install the exact declared dependencies,
-configure non-secret Runtime values, and supply declared secrets through Credential
-Binding. Administrators must review external endpoints; never put passwords, Tokens,
-or authentication query values in a URL or source code.
+Copying creates an independent Adapter and opens its code and dependencies as an editor draft. Saving creates the first version. The copy has no template association and is unaffected by later template updates. Choose a Worker, prepare dependencies, and bind credentials through the ordinary Adapter workflow before running.
 
-Disabling Managed Input Store does not prevent browsing, viewing, or copying any
-template, including CSV and Excel, and copying never creates a file binding. Seven
-cloud/CMDB scenarios provide a read-only `preview` whose normalized result and Adapter
-Output are bounded by page, record, byte, and total-time limits, plus an optional `sync`
-against the external `dlr-cmdb-upsert/v1` contract. Sync requires stable `scan_id` and
-`source_scope` values in immutable Execution Input, reused by every retry of that
-Execution. The Alibaba Cloud SDK `callApi` transport used by three Alibaba scenarios
-does not yet provide a proven source-response byte bound, so that raw HTTP transport is
-outside the bounded-output claim.
-
-Maturity is tracked per scenario, version, language, and source hash and is backed by
-a Receipt. `reference-generated` means experimental and unverified: there is no Receipt
-that both matches the current source hash and satisfies every gate for the next level.
-Narrow smoke or security-canary execution is allowed but is not complete fixture or
-live-service evidence. See [Template Recipe usage and security boundaries](docs/templates/recipe-usage-security.en.md),
-the [CMDB Upsert v1 contract (Simplified Chinese)](docs/templates/cmdb-upsert-v1.md), and
-[maturity Receipts (Simplified Chinese)](docs/templates/maturity-receipts.md) for the
-precise contracts.
-
-> Recipe URL checks, same-origin redirects, timeouts, and resource limits are not a
-> platform-level SSRF or egress-isolation boundary. DLR retains its trusted-admin code
-> model; production deployments must restrict Worker egress with firewalls, DNS/proxy
-> policy, and destination allowlists.
+Most templates need no input: editable settings live together at the top of the code with explanatory comments. Passwords and Tokens are read from credentials; comments identify the required credential and binding names. Input examples appear only for files, Webhooks, or tasks requiring per-run values. Short result examples explain the output. Details show purpose, usage, language, code, and dependencies; parameter rules and execution-mode configuration belong in code comments.
 
 ---
 
@@ -194,7 +162,7 @@ precise contracts.
 | | Capability | Description |
 |---|---|---|
 | 🧩 | **Code-first Adapters** | Code remains the final asset: readable, editable, testable, and versionable |
-| 🧰 | **Template Gallery** | Browse three-language Recipes by theme and scenario, then copy directly into an independent Adapter editor |
+| 🧰 | **Template Gallery** | Search all templates or filter by category, then copy into an independent Adapter draft |
 | 🖥️ | **Web Workbench** | Create, edit, save, clone, and manage Adapters in the browser |
 | ⚡ | **Multi-language Runtime** | Python, JavaScript, and Java share a consistent Input / Output / Log model |
 | ⏱️ | **Task & Schedule** | Run manually or schedule with Cron + Timezone |
@@ -260,7 +228,7 @@ DLR focuses on **developing and running independent Adapters**, not Workflow / D
 
 ### Prerequisites
 
-- Docker
+- A Linux Docker daemon with cgroup v2 and systemd (prepare inside the Docker Linux VM on macOS)
 - Docker Compose v2
 
 ### 1. Clone and configure
@@ -278,6 +246,8 @@ Edit `.env` and set at least:
 DLR_ADMIN_TOKEN
 DLR_WORKER_TOKEN
 DLR_MASTER_KEY
+DLR_RABBITMQ_USER
+DLR_RABBITMQ_PASSWORD
 ```
 
 Use real random secrets and never commit `.env`.
@@ -314,20 +284,34 @@ mkdir -p ./platform-logs/control \
 For Linux production paths and permissions, see
 [Platform Logs Deployment](docs/deployment/platform-logs.md).
 
-### 3. Initialize the database
+### 3. Prepare Worker resource isolation
+
+Run on the **Linux host running the Docker daemon**, not inside an ordinary app container:
 
 ```bash
-docker compose up -d postgres
-docker compose run --rm control alembic upgrade head
+sudo bash scripts/prepare-sandbox-host.sh
 ```
 
-See [Reliable Runtime migration notes](docs/en/issue130-reliable-runtime-migrations.md)
-for the Issue #130 fresh/current-main migration, non-destructive rollback, Cutover
-API, and old-binary fail-closed boundary. See
-[Sandbox deployment](docs/en/issue130-sandbox-deployment.md) for the Linux cgroup v2
-host prerequisites and exact delegated subtree.
+Copy the printed `DLR_SANDBOX_CGROUP_PARENT` and `DLR_SANDBOX_CGROUP_SOURCE` into `.env`.
+With macOS/Colima, use `colima ssh -- sudo bash <repo-path-visible-in-VM>/scripts/prepare-sandbox-host.sh`.
+The default two execution slots use a finite 3-CPU / 3-GiB host envelope, and the script
+tests the delegated subtree. Prepare it again after a host/VM restart before starting
+Worker. See [Sandbox deployment](docs/en/issue130-sandbox-deployment.md) for support
+requirements and diagnostics.
 
-### 4. Start DLR
+### 4. Initialize a fresh database
+
+```bash
+docker compose up -d --wait postgres rabbitmq
+docker compose run --rm --no-deps control alembic upgrade head
+```
+
+The current version supports one execution mechanism. Its new migration refuses old
+Worker/execution data instead of silently deleting or converting it. This is a fresh
+installation workflow; [old migration notes](docs/en/issue130-reliable-runtime-migrations.md)
+are historical records only.
+
+### 5. Start DLR
 
 ```bash
 docker compose up -d --build
@@ -343,10 +327,9 @@ docker compose -f docker-compose.yml -f docker-compose.management.yml \
 ```
 
 `DLR_RABBITMQ_VHOST` is the one raw vhost value shared by RabbitMQ, Control, and
-Worker; Control and Worker encode it when building the AMQP URL. Ordinary RabbitMQ
-ingress remains disabled and legacy Claim remains enabled by default. Never skip the
-backup/restore, Worker v3/Sandbox, Slot-concurrency, and migration preflight gates by
-flipping a single setting.
+Worker; Control and Worker encode it when building the AMQP URL. All tasks use
+RabbitMQ and the resource Sandbox without canary or cutover switches. Worker must pass
+real isolation preflight at startup; failure never falls back to unisolated execution.
 
 Once all services are healthy:
 
@@ -367,7 +350,7 @@ flowchart LR
     U["Web Workbench<br/>React + Monaco"] -->|"HTTP / JSON / SSE"| C["Control<br/>FastAPI"]
     C -->|"Transaction + Outbox"| P[("PostgreSQL<br/>Authority / History")]
     C -->|"Bounded publish"| Q["RabbitMQ 4.3<br/>Quorum Queue"]
-    Q -->|"Dispatch"| W["Worker v3 Runtime"]
+    Q -->|"Dispatch"| W["Worker Runtime"]
     W -->|"Claim / renew / result"| C
     W --> A["Adapter<br/>Python / JavaScript / Java"]
     A --> X["External Systems"]
@@ -404,7 +387,7 @@ See [Architecture](docs/en/architecture.md) for the detailed contracts.
 - PostgreSQL is the business authority for Execution, Admission, Outbox, Attempt,
   Lease, Fencing, and Slot state. RabbitMQ carries bounded dispatch only; it does not
   replace database correctness.
-- Worker v3 ACKs a message after durable Claim and private-journal persistence, before
+- Worker ACKs a message after durable Claim and private-journal persistence, before
   Sandbox execution. This is **ACK-on-claim**, not ACK-on-completion. Lease Recovery
   creates a new generation after a post-ACK crash.
 - One Adapter may have multiple valid `queued/retry_wait` Executions, while database
@@ -412,7 +395,7 @@ See [Architecture](docs/en/architecture.md) for the detailed contracts.
 - The default Compose deployment uses one RabbitMQ node. Quorum Queue durability is
   **not HA** with one node. PostgreSQL Outbox retains accepted responsibility during
   a broker outage and relays it after recovery.
-- The v3 Sandbox requires a correctly delegated Linux cgroup v2 host and bounds CPU,
+- The Sandbox requires a correctly delegated Linux cgroup v2 host and bounds CPU,
   memory, PIDs, temporary storage, and output. It does not turn DLR into an
   untrusted-tenant arbitrary-code service.
 
@@ -488,8 +471,8 @@ The smoke test uses an isolated local environment and a fake AI provider; it doe
 - [Product definition](docs/en/product.md)
 - [Architecture](docs/en/architecture.md)
 - [Template Recipe usage and security boundaries](docs/templates/recipe-usage-security.en.md)
-- [Template provenance, CMDB contract, and maturity docs (Simplified Chinese)](docs/templates/README.md)
-- [Reliable Runtime migration, Cutover API & failure handling](docs/en/issue130-reliable-runtime-migrations.md)
+- [Template usage documentation (Simplified Chinese)](docs/templates/README.md)
+- [Historical record: Reliable Runtime migration, Cutover API & failure handling](docs/en/issue130-reliable-runtime-migrations.md)
 - [Issue #130 Linux Sandbox deployment](docs/en/issue130-sandbox-deployment.md)
 - [Specs index and precedence](docs/specs/README.md)
 - [Platform logs & deployment](docs/deployment/platform-logs.md)

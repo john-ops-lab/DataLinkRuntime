@@ -20,10 +20,18 @@ from dlr.control.models import PackageSource
 from dlr.control.services import package_source as package_source_service
 from dlr.worker import executor
 from dlr.worker import venv as venv_manager
+from runtime_api_support import ISOLATION_PASS
 from test_adapters import create_adapter, save_version
 from test_executions import create_execution
 from test_runtime import ECHO_CODE, make_payload, runtime_settings
 from test_workers import claim, register_worker, report
+from worker_runtime_support import install_test_sandbox, run_with_test_sandbox
+
+
+@pytest.fixture(autouse=True)
+def _unit_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_test_sandbox(monkeypatch)
+
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 
@@ -225,6 +233,8 @@ def test_claim_payload_selects_source_by_adapter_language(api_client: TestClient
     worker_response = api_client.post(
         "/api/workers/register",
         json={
+            "protocol_version": 3,
+            "isolation_capabilities": dict(ISOLATION_PASS),
             "name": "multilang-source-worker",
             "capabilities": ["python", "javascript", "java"],
         },
@@ -589,7 +599,7 @@ def test_credentialed_index_failure_is_redacted_before_execution_persistence(
     # only the already-redacted result in the unified Execution log (M5.5.10
     # stdout channel; legacy stderr storage stays untouched).
     uploaded: list[str] = []
-    result = executor.run(
+    result = run_with_test_sandbox(
         claimed,
         runtime_settings(tmp_path),
         progress_callback=lambda stdout, _stderr: uploaded.append(stdout) or False,
@@ -669,11 +679,14 @@ def test_executor_prefers_payload_index_url(
     # Control-provided source wins over the Worker environment fallback.
     payload = make_payload(code=ECHO_CODE)
     payload["index_url"] = "https://control.example.com/simple/"
-    result = executor.run(payload, settings)
+    result = run_with_test_sandbox(payload, settings)
     assert result["status"] == "succeeded", result.get("error")
     assert captured["index_url"] == "https://control.example.com/simple/"
 
-    # Without one, the Worker environment compatibility source is used.
-    result = executor.run(make_payload(code=ECHO_CODE), settings)
+    # A separate Execution uses the Worker environment fallback when Control
+    # supplies no source; each Attempt must retain its own cleanup journal.
+    fallback_payload = make_payload(code=ECHO_CODE)
+    fallback_payload["execution_id"] = payload["execution_id"] + 1
+    result = run_with_test_sandbox(fallback_payload, settings)
     assert result["status"] == "succeeded", result.get("error")
     assert captured["index_url"] == "https://worker-env.example.com/simple/"

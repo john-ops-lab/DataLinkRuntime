@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SERVICES=(postgres control worker web account-web)
+SERVICES=(postgres rabbitmq control worker web account-web)
 TIMEOUT_SECONDS=${COMPOSE_SMOKE_TIMEOUT:-240}
 export COMPOSE_PROJECT_NAME=${COMPOSE_SMOKE_PROJECT:-dlr-smoke-${GITHUB_RUN_ID:-$$}}
 export DLR_WEB_HOST_PORT=${COMPOSE_SMOKE_WEB_PORT:-8880}
@@ -19,9 +19,10 @@ SMOKE_PLATFORM_LOG_ROOT="${RUNNER_TEMP:-${PWD}/.tmp-platform-logs}/${COMPOSE_PRO
 export DLR_PLATFORM_LOG_ROOT="${DLR_PLATFORM_LOG_ROOT:-$SMOKE_PLATFORM_LOG_ROOT}"
 mkdir -p "$DLR_PLATFORM_LOG_ROOT"/{control,worker,web,account-web,postgres}
 if [ "$DLR_PLATFORM_LOG_ROOT" = "$SMOKE_PLATFORM_LOG_ROOT" ]; then
-  # The pinned postgres image drops to its postgres UID after initialization;
-  # this directory is disposable smoke data, never a production path.
-  chmod 0777 "$DLR_PLATFORM_LOG_ROOT/postgres"
+  # PostgreSQL uses its own UID; the capability-bounded Worker cannot bypass
+  # runner-owned directory permissions even as UID 0. These are disposable
+  # smoke directories only, never operator-supplied production paths.
+  chmod 0777 "$DLR_PLATFORM_LOG_ROOT/postgres" "$DLR_PLATFORM_LOG_ROOT/worker"
 fi
 export DLR_ADMIN_TOKEN=${DLR_ADMIN_TOKEN:-smoke-admin-token-$$}
 export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
@@ -66,8 +67,19 @@ IMA_FAKE_CONTAINER_ID=""
 AO_DOCKER_LABEL="ao.session=${AO_SESSION_ID:-compose-smoke}"
 ACCOUNT_COOKIE_FILE=""
 ACCOUNT_STALE_COOKIE_FILE=""
+SMOKE_SANDBOX_UNIT=""
 
 cleanup() {
+  smoke_status=$?
+  if [ "$smoke_status" -ne 0 ]; then
+    docker compose -p "$COMPOSE_PROJECT_NAME" logs --no-color --tail 100 control worker >&2 || true
+    worker_id=$(docker compose -p "$COMPOSE_PROJECT_NAME" ps -aq worker)
+    if [ -n "$worker_id" ]; then
+      # Whitelist isolation configuration; never dump Env or credentials.
+      docker inspect --format 'Worker isolation: cgroupns={{.HostConfig.CgroupnsMode}} parent={{.HostConfig.CgroupParent}} caps={{json .HostConfig.CapAdd}} dropped={{json .HostConfig.CapDrop}} security={{json .HostConfig.SecurityOpt}} apparmor={{.AppArmorProfile}}' "$worker_id" >&2 || true
+      docker exec "$worker_id" python -c 'from pathlib import Path; print("Worker cgroup:", Path("/proc/self/cgroup").read_text()); print("Cgroup mounts:", "\n".join(line for line in Path("/proc/self/mountinfo").read_text().splitlines() if " - cgroup2 " in line))' >&2 || true
+    fi
+  fi
   if [ -n "$AI_FAKE_CONTAINER_ID" ]; then
     docker rm -f "$AI_FAKE_CONTAINER_ID" >/dev/null 2>&1 || true
   fi
@@ -81,6 +93,11 @@ cleanup() {
     rm -f "$ACCOUNT_COOKIE_FILE" "$ACCOUNT_STALE_COOKIE_FILE"
   fi
   docker compose -p "$COMPOSE_PROJECT_NAME" down --volumes --remove-orphans
+  if [ -n "$SMOKE_SANDBOX_UNIT" ]; then
+    # --collect may already have removed a failed transient unit. Preserve
+    # the original smoke failure rather than replacing it with stop exit 5.
+    sudo -n systemctl stop "$SMOKE_SANDBOX_UNIT" || true
+  fi
   if [ "$DLR_PLATFORM_LOG_ROOT" = "$SMOKE_PLATFORM_LOG_ROOT" ]; then
     rm -rf "$DLR_PLATFORM_LOG_ROOT"
   fi
@@ -88,6 +105,29 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> smoke project: $COMPOSE_PROJECT_NAME (Token port: $DLR_WEB_HOST_PORT; account port: $DLR_ACCOUNT_WEB_HOST_PORT)"
+if [ -z "${DLR_SANDBOX_CGROUP_PARENT:-}" ] || [ -z "${DLR_SANDBOX_CGROUP_SOURCE:-}" ]; then
+  docker_endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
+  if [ "$(uname -s)" != Linux ] || [[ "$docker_endpoint" != unix://* ]]; then
+    echo 'ERROR: run scripts/prepare-sandbox-host.sh on the Linux Docker daemon host, then export both returned DLR_SANDBOX_CGROUP_* values before this smoke.' >&2
+    exit 1
+  fi
+  # This unit is unique to this smoke. Never stop an operator-supplied parent.
+  smoke_unit_candidate="dlr-compose-smoke-$(date +%s)-$$.service"
+  if [ "$(systemctl show "$smoke_unit_candidate" -p LoadState --value)" != not-found ]; then
+    echo 'ERROR: smoke Sandbox unit name is already in use' >&2
+    exit 1
+  fi
+  SMOKE_SANDBOX_UNIT=$smoke_unit_candidate
+  sandbox_host_config=$(sudo -n bash scripts/prepare-sandbox-host.sh --unit "$SMOKE_SANDBOX_UNIT" --cpu-quota "${COMPOSE_SMOKE_CPU_QUOTA:-300%}")
+  while IFS='=' read -r setting value; do
+    case "$setting" in
+      DLR_SANDBOX_CGROUP_PARENT) export DLR_SANDBOX_CGROUP_PARENT="$value" ;;
+      DLR_SANDBOX_CGROUP_SOURCE) export DLR_SANDBOX_CGROUP_SOURCE="$value" ;;
+      *) echo 'ERROR: unexpected Sandbox host preparation output' >&2; exit 1 ;;
+    esac
+  done <<< "$sandbox_host_config"
+fi
+docker compose config --format json | python3 scripts/check-runtime-deployment.py
 # M5.5.8: the optional DNS override file must always parse, and the default
 # compose config must stay valid without any DNS-related .env variables.
 docker compose -f docker-compose.yml config -q

@@ -10,7 +10,7 @@ JavaScript Excel Variant 暂定精确依赖：
 @e965/xlsx@0.20.3
 ```
 
-不使用旧的 `xlsx@0.18.5`。选择项仍保持 `reference-generated`，不能因为完成本页评审就升级成熟度。
+不使用旧的 `xlsx@0.18.5`。本页记录依赖选择依据，不代表完成实际文件兼容性验证。
 
 ## Registry 事实
 
@@ -46,7 +46,7 @@ npm view @e965/xlsx@0.20.3 description keywords dependencies optionalDependencie
 - 只允许精确版本，不允许 `latest`、范围或未锁定版本；
 - 不把“无外部 dependencies”解释为无安全风险，主要解析代码可能打包在 tarball 内；
 - 不把 registry keywords 解释为真实双格式兼容证明；
-- 安全公告、维护活跃度或许可证证据无法确认时，保持实验标签或更换实现；
+- 安全公告、维护活跃度或许可证证据无法确认时，记录未确认事项，必要时更换实现；
 - 未经新的 OpenSpec 决策，不自动回退到旧 `xlsx@0.18.5`。
 
 ## 计划 API 与活动内容边界
@@ -72,13 +72,13 @@ read(buffer, {
 - XLS 使用解析器的离线 data-only 路径；不创建公式求值器，不执行 VBA，也不跟随外部关系；
 - 不调用公式计算器，不跟随外部链接，不访问网络；
 - 不把公式文本、外部路径或原始解析异常写入普通日志；
-- XLS 无法获得与 OOXML 等价的完整活动内容预检，因此必须保持 `reference-generated`，不能把“未执行”写成“已检测并拒绝”。
+- XLS 无法获得与 OOXML 等价的完整活动内容预检，不能把“未执行”写成“已检测并拒绝”。
 
-旧二进制 XLS 的宏、嵌入对象、外部关系和加密识别尚无三语言一致且可验证的解析前门禁。当前支持面只承诺离线读取存储值且不调用执行引擎；它不是活动内容扫描器，也不据此升级成熟度。
+旧二进制 XLS 的宏、嵌入对象、外部关系和加密识别尚无三语言一致且可验证的解析前门禁。当前支持面只承诺离线读取存储值且不调用执行引擎；它不是活动内容扫描器。
 
-## 发布前强制门禁
+## 验证记录说明
 
-只有以下条件全部完成后，才可考虑提升为 `syntax-verified` 或 `fixture-verified`：
+以下项目说明不同检查各自覆盖的内容，供维护者记录实际结果；不再作为成熟度评级机制：
 
 1. Worker 的 JavaScript requirements parser 接受精确 scoped package；
 2. 从 registry 安装固定版本并核对 lockfile、tarball integrity、包内 LICENSE 和 NOTICE；
@@ -88,6 +88,6 @@ read(buffer, {
 6. fixtures 覆盖 sheet、range、header、空值、文件/行/列/输出上限；
 7. fixtures 证明公式不计算、宏不执行、外部关系不跟随；
 8. 覆盖加密工作簿、损坏文件、ZIP 膨胀、OOXML 活动内容，以及旧版 XLS 不创建公式/宏执行路径和不访问外链的行为；
-9. Receipt 绑定当前 `source_sha256`，不能复用其他实现或其他语言的结果。
+9. 记录实际测试的源码哈希，避免把其他实现或语言的结果当成本实现的结果。
 
-当前尚未完整执行上述 1–9 全部门禁，也没有完成匹配当前发布源码的真实 XLSX/XLS 双格式 fixture，因此 JavaScript Excel Variant 必须继续显示“实验 / 未验证”。已执行的静态检查或窄安全 canary 不构成升级证据。
+本记录核对时尚未完整执行上述检查，也没有完成真实 XLSX/XLS 双格式测试。静态检查和局部测试不能证明所有真实文件都能正确处理。

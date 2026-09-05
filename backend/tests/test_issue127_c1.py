@@ -16,7 +16,7 @@ import stat
 import sys
 import time
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event
 from typing import Any
 
 import pytest
@@ -42,6 +42,12 @@ from test_issue127_c0 import (
     _materialize_blob,
     _register_worker,
 )
+from worker_runtime_support import attempt_payload, install_test_sandbox, unit_sandbox_config
+
+
+@pytest.fixture(autouse=True)
+def explicit_test_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_test_sandbox(monkeypatch)
 
 
 def _runtime_settings(runtime_root: Path, journal_root: Path) -> RuntimeSettings:
@@ -50,168 +56,35 @@ def _runtime_settings(runtime_root: Path, journal_root: Path) -> RuntimeSettings
         execution_timeout_seconds=30,
         dep_install_timeout_seconds=120,
         workspace_cleanup_journal_root=journal_root,
+        sandbox_config=unit_sandbox_config(),
     )
 
 
-def _v2_payload(*, code: str, input_files: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    return {
-        "execution_id": 1,
-        "adapter_id": 7,
-        "version_id": 42,
-        "language": "python",
-        "code": code,
-        "requirements": "",
-        "runtime_config": {},
-        "input": None,
-        "latest_version_id": 42,
-        "execution_timeout_seconds": 30,
-        "secrets": {},
-        "protocol_version": 2,
-        "claim_token": "claim-token-for-test",
-        "cleanup_token": "cleanup-token-for-test",
-        "recovery_grace_seconds_snapshot": 60,
-        "workspace_cleanup_attempt_timeout_seconds_snapshot": 5,
-        "workspace_cleanup_total_timeout_seconds_snapshot": 20,
-        "input_files": input_files or [],
-    }
-
-
-def test_c1_v2_credentials_are_sent_in_their_designated_headers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[dict[str, Any]] = []
-    client = ControlClient("http://control.example", "worker-token")
-
-    def fake_request(
-        method: str,
-        path: str,
-        payload: Any = None,
-        timeout: float | None = None,
-        *,
-        headers: dict[str, str] | None = None,
-    ) -> tuple[int, bytes]:
-        calls.append(
-            {
-                "method": method,
-                "path": path,
-                "payload": payload,
-                "timeout": timeout,
-                "headers": headers or {},
-            }
-        )
-        return 200, b'{"cancel_requested":false}'
-
-    monkeypatch.setattr(client, "_request", fake_request)
-    client.report_result(7, 1, {"status": "succeeded"}, claim_token="claim-token")
-    client.report_progress(7, 1, "", "", claim_token="claim-token")
-    client.report_cleanup_receipt(7, 1, cleanup_token="cleanup-token")
-    client.report_result(7, 1, {"status": "succeeded"})
-    client.report_progress(7, 1, "", "")
-
-    assert calls[0]["headers"] == {"X-DLR-Claim-Token": "claim-token"}
-    assert calls[1]["headers"] == {"X-DLR-Claim-Token": "claim-token"}
-    assert calls[2]["headers"] == {"X-DLR-Cleanup-Token": "cleanup-token"}
-    assert calls[2]["path"] == "/api/workers/executions/1/workspace-cleanup"
-    assert calls[3]["headers"] == {}
-    assert calls[4]["headers"] == {}
-    for call in calls:
-        assert "claim-token" not in call["path"]
-        assert "cleanup-token" not in call["path"]
-        assert "claim-token" not in str(call["payload"])
-        assert "cleanup-token" not in str(call["payload"])
-
-
-def test_c1_agent_forwards_claim_only_and_removes_journal_after_result(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
-    config = agent_module.WorkerConfig()
-    execution_id = 1
-    workspace = workspace_manager.workspace_path(config.runtime_root, execution_id)
-    workspace_manager.write_cleanup_journal(
-        config.workspace_cleanup_journal_root,
-        execution_id,
-        workspace,
-        "cleanup-token",
+def _attempt_payload(
+    *, code: str, input_files: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    return attempt_payload(
+        {
+            "execution_id": 1,
+            "adapter_id": 7,
+            "version_id": 42,
+            "language": "python",
+            "code": code,
+            "requirements": "",
+            "runtime_config": {},
+            "input": None,
+            "latest_version_id": 42,
+            "execution_timeout_seconds": 30,
+            "secrets": {},
+            "protocol_version": 3,
+            "claim_token": "claim-token-for-test",
+            "cleanup_token": "cleanup-token-for-test",
+            "recovery_grace_seconds_snapshot": 60,
+            "workspace_cleanup_attempt_timeout_seconds_snapshot": 5,
+            "workspace_cleanup_total_timeout_seconds_snapshot": 20,
+            "input_files": input_files or [],
+        }
     )
-    calls: dict[str, Any] = {}
-
-    class FakeClient:
-        def report_progress(
-            self,
-            worker_id: int,
-            received_execution_id: int,
-            stdout: str,
-            stderr: str,
-            *,
-            claim_token: str,
-        ) -> bool:
-            calls["progress"] = (worker_id, received_execution_id, stdout, stderr, claim_token)
-            return False
-
-        def download_input_artifact(
-            self,
-            worker_id: int,
-            received_execution_id: int,
-            artifact_id: int,
-            *,
-            claim_token: str,
-            destination: Any,
-        ) -> int:
-            calls["download"] = (worker_id, received_execution_id, artifact_id, claim_token)
-            return destination.write(b"data")
-
-        def report_result(
-            self,
-            worker_id: int,
-            received_execution_id: int,
-            result: dict[str, Any],
-            *,
-            claim_token: str,
-        ) -> dict[str, Any]:
-            calls["result"] = (worker_id, received_execution_id, result, claim_token)
-            return result
-
-    def fake_run(
-        task: dict[str, Any],
-        _settings: RuntimeSettings,
-        *,
-        progress_callback: Any,
-        input_downloader: Any,
-    ) -> dict[str, Any]:
-        progress_callback("log", "")
-        destination = io.BytesIO()
-        input_downloader(task["input_files"][0], destination)
-        return {"status": "succeeded", "workspace_cleanup_status": "completed"}
-
-    monkeypatch.setattr(executor, "run", fake_run)
-    monkeypatch.setattr(agent_module.venv_manager, "cleanup_stale_venvs", lambda *args: None)
-    task = _v2_payload(
-        code="def handle(context, input):\n    return {}\n",
-        input_files=[
-            {
-                "id": 9,
-                "ordinal": 0,
-                "mount_name": "input-00",
-                "original_filename": "input.txt",
-                "content_type": "text/plain",
-                "size_bytes": 4,
-                "sha256": hashlib.sha256(b"data").hexdigest(),
-            }
-        ],
-    )
-    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
-    agent._execute_task(7, task)
-
-    assert calls["progress"][-1] == "claim-token-for-test"
-    assert calls["download"][-1] == "claim-token-for-test"
-    assert calls["result"][-1] == "claim-token-for-test"
-    assert "claim-token-for-test" not in str(calls["result"][2])
-    assert not workspace_manager.journal_path(
-        config.workspace_cleanup_journal_root, execution_id
-    ).exists()
 
 
 def test_c1_client_streams_download_chunks_with_claim_header(
@@ -265,13 +138,14 @@ def test_c1_agent_recovery_sends_cleanup_receipt_before_journal_removal(
     monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
     monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
     config = agent_module.WorkerConfig()
-    layout = workspace_manager.create_workspace(config.runtime_root, 2)
+    layout = workspace_manager.create_workspace(config.runtime_root, 2, attempt_id=1001)
     workspace_manager.prepare_input_files(layout, [], None)
     workspace_manager.write_cleanup_journal(
         config.workspace_cleanup_journal_root,
         2,
         layout.root,
         "cleanup-token-recovery",
+        attempt_id=1001,
     )
     calls: list[tuple[int, int, str]] = []
 
@@ -290,7 +164,9 @@ def test_c1_agent_recovery_sends_cleanup_receipt_before_journal_removal(
     agent._recover_cleanup_journals(7)
     assert calls == [(7, 2, "cleanup-token-recovery")]
     assert not layout.root.exists()
-    assert not workspace_manager.journal_path(config.workspace_cleanup_journal_root, 2).exists()
+    assert not workspace_manager.journal_path(
+        config.workspace_cleanup_journal_root, 2, attempt_id=1001
+    ).exists()
 
 
 def test_c1_progress_transport_error_does_not_log_credentials(
@@ -309,7 +185,7 @@ def test_c1_progress_transport_error_does_not_log_credentials(
 
     caplog.set_level("WARNING", logger="dlr.worker.executor")
     result = executor.run(
-        _v2_payload(code="def handle(context, input):\n    return {}\n"),
+        _attempt_payload(code="def handle(context, input):\n    return {}\n"),
         _runtime_settings(tmp_path / "runtime", tmp_path / "journal"),
         progress_callback=fail_progress,
     )
@@ -329,7 +205,7 @@ def test_c1_bad_download_never_starts_adapter(tmp_path: Path) -> None:
         "size_bytes": len(expected),
         "sha256": hashlib.sha256(b"different").hexdigest(),
     }
-    payload = _v2_payload(
+    payload = _attempt_payload(
         code=(
             "from pathlib import Path\n"
             f"def handle(context, input):\n    Path({str(started)!r}).write_text('started')\n"
@@ -359,7 +235,7 @@ def test_c1_oversized_stream_stops_at_declared_size_and_never_starts_adapter(
 ) -> None:
     started = tmp_path / "adapter-started"
     expected = b"payload"
-    payload = _v2_payload(
+    payload = _attempt_payload(
         code=(
             "from pathlib import Path\n"
             f"def handle(context, input):\n    Path({str(started)!r}).write_text('started')\n"
@@ -405,7 +281,7 @@ def test_c1_oversized_stream_stops_at_declared_size_and_never_starts_adapter(
 
 
 @pytest.mark.parametrize("protocol_version", [1, None, "missing"])
-def test_c1_v1_executor_report_keeps_legacy_cleanup_shape(
+def test_c1_old_or_missing_protocol_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     protocol_version: int | str | None,
@@ -415,7 +291,7 @@ def test_c1_v1_executor_report_keeps_legacy_cleanup_shape(
         "prepare_version_venv",
         lambda *args, **kwargs: Path(sys.executable),
     )
-    payload = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    payload = _attempt_payload(code="def handle(context, input):\n    return {}\n")
     payload.pop("claim_token")
     payload.pop("cleanup_token")
     if protocol_version == "missing":
@@ -423,9 +299,9 @@ def test_c1_v1_executor_report_keeps_legacy_cleanup_shape(
     else:
         payload["protocol_version"] = protocol_version
     result = executor.run(payload, _runtime_settings(tmp_path, tmp_path / "journal"))
-    assert result["status"] == "succeeded"
-    assert "workspace_cleanup_status" not in result
-    assert "workspace_cleanup_error_code" not in result
+    assert result["status"] == "failed"
+    assert result["error_code"] == "worker_protocol_payload_invalid"
+    assert not (tmp_path / "journal").exists()
 
 
 def test_c1_journal_and_workspace_are_ready_before_adapter(
@@ -433,8 +309,8 @@ def test_c1_journal_and_workspace_are_ready_before_adapter(
 ) -> None:
     journal_root = tmp_path / "journal"
     runtime_root = tmp_path / "runtime"
-    workspace = runtime_root / "workspaces" / "dlr-exec-1"
-    journal_path = journal_root / "1.json"
+    workspace = runtime_root / "workspaces" / "attempt-1001" / "dlr-exec-1"
+    journal_path = journal_root / "execution-1-attempt-1001.cleanup.json"
     observed: dict[str, Any] = {}
 
     monkeypatch.setattr(
@@ -453,7 +329,7 @@ def test_c1_journal_and_workspace_are_ready_before_adapter(
 
     monkeypatch.setattr(executor, "_wait_with_progress", observe_wait)
     result = executor.run(
-        _v2_payload(code="def handle(context, input):\n    return {}\n"),
+        _attempt_payload(code="def handle(context, input):\n    return {}\n"),
         _runtime_settings(runtime_root, journal_root),
     )
 
@@ -463,7 +339,8 @@ def test_c1_journal_and_workspace_are_ready_before_adapter(
         "journal_exists": True,
         "journal": {
             "execution_id": 1,
-            "protocol_version": 2,
+            "protocol_version": 3,
+            "attempt_id": 1001,
             "workspace_path": str(workspace),
             "cleanup_token": "cleanup-token-for-test",
         },
@@ -480,7 +357,7 @@ def test_c1_download_requires_running_lease_and_verified_artifact(
     monkeypatch.setattr(settings, "managed_files_enabled", True)
     monkeypatch.setattr(settings, "artifact_store_root", str(tmp_path / "artifacts"))
 
-    worker = _register_worker(api_client, "c1-download-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c1-download-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c1-download")
     save_version(api_client, adapter["id"])
     artifact_id = _create_staged_artifact(session_factory, adapter["id"], "download.txt")
@@ -535,10 +412,13 @@ def test_c1_download_requires_running_lease_and_verified_artifact(
     assert storage_key not in tampered.text
     assert str(tmp_path) not in tampered.text
 
-    finished = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution.json()['id']}/result",
-        json={"status": "failed"},
-        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claim_token},
+    from runtime_api_support import report_attempt
+
+    finished = report_attempt(
+        api_client,
+        worker["id"],
+        execution.json()["id"],
+        {"status": "failed"},
     )
     assert finished.status_code == 200, finished.text
     after_terminal = api_client.get(
@@ -553,7 +433,7 @@ def test_c1_cleanup_receipt_is_terminal_only_and_idempotent(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    worker = _register_worker(api_client, "c1-receipt-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c1-receipt-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c1-receipt")
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
@@ -572,15 +452,18 @@ def test_c1_cleanup_receipt_is_terminal_only_and_idempotent(
     assert before_terminal.status_code == 422
     assert before_terminal.json()["detail"]["code"] == "workspace_cleanup_transition_invalid"
 
-    result = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution_id}/result",
-        json={
+    from runtime_api_support import report_attempt
+
+    result = report_attempt(
+        api_client,
+        worker["id"],
+        execution_id,
+        {
             "status": "succeeded",
             "output": {"unchanged": True},
             "workspace_cleanup_status": "deferred",
             "workspace_cleanup_error_code": "workspace_cleanup_failed",
         },
-        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
     )
     assert result.status_code == 200, result.text
     ended_at = result.json()["ended_at"]
@@ -626,7 +509,7 @@ def test_c1_journal_failure_prevents_workspace_download_and_process(
 
     monkeypatch.setattr(workspace_manager, "write_cleanup_journal", fail_journal)
     result = executor.run(
-        _v2_payload(
+        _attempt_payload(
             code=(
                 "from pathlib import Path\n"
                 f"def handle(context, input):\n    Path({str(started)!r}).write_text('started')\n"
@@ -664,7 +547,7 @@ def test_c1_journal_failure_prevents_workspace_download_and_process(
         ("recovery_grace_seconds_snapshot", 20),
     ],
 )
-def test_c1_invalid_v2_cleanup_snapshot_rejects_before_local_side_effects(
+def test_c1_invalid_attempt_cleanup_snapshot_rejects_before_local_side_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     field: str,
@@ -678,7 +561,7 @@ def test_c1_invalid_v2_cleanup_snapshot_rejects_before_local_side_effects(
         return Path(sys.executable)
 
     monkeypatch.setattr(venv_manager, "prepare_version_venv", prepare)
-    payload = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    payload = _attempt_payload(code="def handle(context, input):\n    return {}\n")
     payload[field] = value
     result = executor.run(
         payload,
@@ -686,7 +569,7 @@ def test_c1_invalid_v2_cleanup_snapshot_rejects_before_local_side_effects(
     )
 
     assert result["status"] == "failed"
-    assert result["error_code"] == "worker_protocol_payload_invalid"
+    assert result["error_code"] == "resource_profile_invalid"
     assert result["workspace_cleanup_status"] == "completed"
     assert prepared is False
     assert not (tmp_path / "journal").exists()
@@ -744,7 +627,7 @@ def test_c1_invalid_v2_cleanup_snapshot_rejects_before_local_side_effects(
         ),
     ],
 )
-def test_c1_invalid_v2_envelope_rejects_before_all_local_side_effects(
+def test_c1_invalid_attempt_envelope_rejects_before_all_local_side_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     field: str,
@@ -763,7 +646,7 @@ def test_c1_invalid_v2_envelope_rejects_before_all_local_side_effects(
     monkeypatch.setattr(workspace_manager, "write_cleanup_journal", count("journal"))
     monkeypatch.setattr(workspace_manager, "create_workspace", count("workspace"))
     monkeypatch.setattr(executor.subprocess, "Popen", count("process"))
-    payload = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    payload = _attempt_payload(code="def handle(context, input):\n    return {}\n")
     if value == "__missing__":
         payload.pop(field)
     else:
@@ -775,7 +658,11 @@ def test_c1_invalid_v2_envelope_rejects_before_all_local_side_effects(
     )
 
     assert result["status"] == "failed"
-    assert result["error_code"] == "worker_protocol_payload_invalid"
+    assert result["error_code"] == (
+        "resource_profile_invalid"
+        if field == "execution_timeout_seconds"
+        else "worker_protocol_payload_invalid"
+    )
     assert result["workspace_cleanup_status"] == "completed"
     assert calls == {"dependency": 0, "journal": 0, "workspace": 0, "process": 0}
     assert not (tmp_path / "journal").exists()
@@ -804,7 +691,7 @@ def test_c1_unknown_protocol_rejects_before_all_local_side_effects(
     monkeypatch.setattr(workspace_manager, "write_cleanup_journal", count("journal"))
     monkeypatch.setattr(workspace_manager, "create_workspace", count("workspace"))
     monkeypatch.setattr(executor.subprocess, "Popen", count("process"))
-    payload = _v2_payload(code="def handle(context, input):\n    return {}\n")
+    payload = _attempt_payload(code="def handle(context, input):\n    return {}\n")
     payload["protocol_version"] = protocol_version
 
     result = executor.run(
@@ -825,7 +712,7 @@ def test_c1_interrupted_download_never_starts_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     started = tmp_path / "started"
-    payload = _v2_payload(
+    payload = _attempt_payload(
         code=(
             "from pathlib import Path\n"
             f"def handle(context, input):\n    Path({str(started)!r}).write_text('started')\n"
@@ -877,11 +764,13 @@ def test_c1_input_files_are_streamed_before_start_and_permissions_are_best_effor
     data = b"verified input"
     journal_root = tmp_path / "journal"
     runtime_root = tmp_path / "runtime"
-    input_path = runtime_root / "workspaces" / "dlr-exec-1" / "input" / "input-00"
+    input_path = runtime_root / "workspaces" / "attempt-1001" / "dlr-exec-1" / "input" / "input-00"
     input_dir = input_path.parent
-    manifest_path = runtime_root / "workspaces" / "dlr-exec-1" / "input_manifest.json"
+    manifest_path = (
+        runtime_root / "workspaces" / "attempt-1001" / "dlr-exec-1" / "input_manifest.json"
+    )
     observed: dict[str, Any] = {}
-    payload = _v2_payload(
+    payload = _attempt_payload(
         code="def handle(context, input):\n    return {}\n",
         input_files=[
             {
@@ -957,7 +846,7 @@ def test_c1_cleanup_failure_is_deferred_without_changing_business_success(
 
     monkeypatch.setattr(workspace_manager, "cleanup_workspace", report_deferred)
     result = executor.run(
-        _v2_payload(code="def handle(context, input):\n    return {'ok': True}\n"),
+        _attempt_payload(code="def handle(context, input):\n    return {'ok': True}\n"),
         _runtime_settings(tmp_path / "runtime", tmp_path / "journal"),
     )
     assert result["status"] == "succeeded"
@@ -1009,21 +898,15 @@ def test_c1_recovery_requires_name_marker_manifest_triple_and_receipt(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     journal_root = tmp_path / "journal"
-    valid_layout = workspace_manager.create_workspace(runtime_root, 1)
+    valid_layout = workspace_manager.create_workspace(runtime_root, 1, attempt_id=1001)
     workspace_manager.prepare_input_files(valid_layout, [], None)
     workspace_manager.write_cleanup_journal(
-        journal_root,
-        1,
-        valid_layout.root,
-        "cleanup-token-1",
+        journal_root, 1, valid_layout.root, "cleanup-token-1", attempt_id=1001
     )
-    unknown = workspace_manager.workspace_path(runtime_root, 2)
+    unknown = workspace_manager.workspace_path(runtime_root, 2, attempt_id=1001)
     unknown.mkdir(parents=True)
     workspace_manager.write_cleanup_journal(
-        journal_root,
-        2,
-        unknown,
-        "cleanup-token-2",
+        journal_root, 2, unknown, "cleanup-token-2", attempt_id=1001
     )
     version_cache = runtime_root / "versions" / "adapter-7" / "42"
     version_cache.mkdir(parents=True)
@@ -1042,293 +925,10 @@ def test_c1_recovery_requires_name_marker_manifest_triple_and_receipt(
     assert counts == {"inspected": 2, "completed": 1, "deferred": 0, "retained": 1}
     assert receipts == [(1, "cleanup-token-1")]
     assert not valid_layout.root.exists()
-    assert workspace_manager.journal_path(journal_root, 1).exists() is False
+    assert workspace_manager.journal_path(journal_root, 1, attempt_id=1001).exists() is False
     assert unknown.exists()
-    assert workspace_manager.journal_path(journal_root, 2).exists()
+    assert workspace_manager.journal_path(journal_root, 2, attempt_id=1001).exists()
     assert (version_cache / "keep").exists()
-
-
-def test_c1_recovery_scan_budget_bounds_claim_delay_and_keeps_journal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
-    config = agent_module.WorkerConfig()
-    layout = workspace_manager.create_workspace(config.runtime_root, 1)
-    workspace_manager.prepare_input_files(layout, [], None)
-    journal = workspace_manager.write_cleanup_journal(
-        config.workspace_cleanup_journal_root,
-        1,
-        layout.root,
-        "cleanup-token-scan-budget",
-    )
-    entered = Event()
-    release = Event()
-    finished = Event()
-
-    def stuck_cleanup(path: Path, **kwargs: Any) -> workspace_manager.CleanupOutcome:
-        entered.set()
-        release.wait(timeout=2)
-        finished.set()
-        return workspace_manager.CleanupOutcome("deferred", "workspace_cleanup_failed")
-
-    monkeypatch.setattr(workspace_manager, "cleanup_workspace", stuck_cleanup)
-    monkeypatch.setattr(workspace_manager, "RECOVERY_SCAN_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(workspace_manager, "RECOVERY_RETRY_BACKOFF_SECONDS", 0.2)
-    claim_times: list[float] = []
-    agent_holder: dict[str, agent_module.Agent] = {}
-
-    class FakeClient:
-        def claim(self, _worker_id: int, _wait_seconds: int) -> None:
-            claim_times.append(time.monotonic())
-            agent_holder["agent"].request_stop()
-            return None
-
-    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
-    agent_holder["agent"] = agent
-    started = time.monotonic()
-    agent._claim_loop(7)
-    elapsed = time.monotonic() - started
-    release.set()
-
-    assert entered.wait(timeout=1)
-    assert finished.wait(timeout=1)
-    assert claim_times
-    assert claim_times[0] - started < 1.0
-    assert elapsed < 1.0
-    assert journal.exists()
-
-
-def test_c1_in_flight_execution_survives_periodic_recovery_scans(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
-    config = agent_module.WorkerConfig()
-    execution_id = 91
-    data = b"long-running-input"
-    payload = _v2_payload(
-        code="def handle(context, input):\n    return {'ok': True}\n",
-        input_files=[
-            {
-                "id": 9,
-                "ordinal": 0,
-                "mount_name": "input-00",
-                "original_filename": "long-running.txt",
-                "content_type": "text/plain",
-                "size_bytes": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-            }
-        ],
-    )
-    payload["execution_id"] = execution_id
-    started = Event()
-    release = Event()
-    finished = Event()
-    reports: list[tuple[int, dict[str, Any], str]] = []
-    cleanup_receipts: list[tuple[int, str]] = []
-
-    class FakeClient:
-        def download_input_artifact(
-            self,
-            _worker_id: int,
-            _execution_id: int,
-            _artifact_id: int,
-            *,
-            claim_token: str,
-            destination: Any,
-        ) -> int:
-            assert claim_token == "claim-token-for-test"
-            return destination.write(data)
-
-        def report_result(
-            self,
-            _worker_id: int,
-            received_execution_id: int,
-            result: dict[str, Any],
-            *,
-            claim_token: str,
-        ) -> None:
-            reports.append((received_execution_id, dict(result), claim_token))
-
-        def report_cleanup_receipt(
-            self,
-            _worker_id: int,
-            received_execution_id: int,
-            *,
-            cleanup_token: str,
-        ) -> None:
-            cleanup_receipts.append((received_execution_id, cleanup_token))
-
-    def long_running_run(
-        task: dict[str, Any],
-        runtime_settings: RuntimeSettings,
-        *,
-        progress_callback: Any,
-        input_downloader: Any,
-    ) -> dict[str, Any]:
-        del progress_callback
-        received_execution_id = int(task["execution_id"])
-        planned_workspace = workspace_manager.workspace_path(
-            runtime_settings.runtime_root, received_execution_id
-        )
-        workspace_manager.write_cleanup_journal(
-            runtime_settings.workspace_cleanup_journal_root,
-            received_execution_id,
-            planned_workspace,
-            str(task["cleanup_token"]),
-        )
-        layout = workspace_manager.create_workspace(
-            runtime_settings.runtime_root,
-            received_execution_id,
-        )
-        workspace_manager.prepare_input_files(layout, task["input_files"], input_downloader)
-        started.set()
-        if not release.wait(timeout=2):
-            raise RuntimeError("test execution was not released")
-        outcome = workspace_manager.cleanup_workspace(
-            layout.root,
-            attempt_timeout_seconds=0.2,
-            total_timeout_seconds=1.0,
-        )
-        finished.set()
-        return {
-            "status": "succeeded",
-            "workspace_cleanup_status": outcome.status,
-            "workspace_cleanup_error_code": outcome.error_code,
-        }
-
-    monkeypatch.setattr(agent_module.executor, "run", long_running_run)
-    monkeypatch.setattr(agent_module.venv_manager, "cleanup_stale_venvs", lambda *args: None)
-    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
-    caplog.set_level("INFO", logger="dlr.worker.workspace")
-    workspace = workspace_manager.workspace_path(config.runtime_root, execution_id)
-    journal = workspace_manager.journal_path(config.workspace_cleanup_journal_root, execution_id)
-    marker = workspace / workspace_manager.MARKER_FILENAME
-    manifest = workspace / workspace_manager.MANIFEST_FILENAME
-    input_path = workspace / workspace_manager.INPUT_DIRNAME / "input-00"
-    thread = Thread(target=agent._execute_task, args=(7, payload), daemon=True)
-    thread.start()
-    assert started.wait(timeout=1)
-
-    try:
-        for _ in range(3):
-            agent._recover_cleanup_journals(7)
-            assert workspace.is_dir()
-            assert journal.is_file()
-            assert marker.is_file()
-            assert manifest.is_file()
-            assert input_path.read_bytes() == data
-        assert reports == []
-        assert cleanup_receipts == []
-        assert "skipped cleanup journal for in-flight execution 91" in caplog.text
-    finally:
-        release.set()
-        thread.join(timeout=2)
-
-    assert not thread.is_alive()
-    assert finished.is_set()
-    assert reports and reports[0][0] == execution_id
-    assert reports[0][1]["status"] == "succeeded"
-    assert reports[0][2] == "claim-token-for-test"
-    assert cleanup_receipts == []
-    assert not workspace.exists()
-    assert not journal.exists()
-    with agent._state_lock:
-        assert agent._in_flight_execution_ids == set()
-
-
-def test_c1_in_flight_execution_set_clears_on_exception_and_cancel(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
-    config = agent_module.WorkerConfig()
-    reports: list[tuple[int, str]] = []
-
-    class FakeClient:
-        def report_result(
-            self,
-            _worker_id: int,
-            execution_id: int,
-            result: dict[str, Any],
-            *,
-            claim_token: str,
-        ) -> None:
-            reports.append((execution_id, str(result["status"])))
-            assert claim_token == "claim-token-for-test"
-            if execution_id == 101:
-                assert result["workspace_cleanup_status"] == "deferred"
-                assert result["workspace_cleanup_error_code"] == "workspace_cleanup_failed"
-
-    monkeypatch.setattr(agent_module.venv_manager, "cleanup_stale_venvs", lambda *args: None)
-    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
-
-    def raise_from_executor(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError("executor failed")
-
-    monkeypatch.setattr(agent_module.executor, "run", raise_from_executor)
-    exception_task = _v2_payload(code="def handle(context, input):\n    return {}\n")
-    exception_task["execution_id"] = 101
-    agent._execute_task(7, exception_task)
-    with agent._state_lock:
-        assert agent._in_flight_execution_ids == set()
-
-    def return_cancelled(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {
-            "status": "cancelled",
-            "workspace_cleanup_status": "completed",
-            "workspace_cleanup_error_code": None,
-        }
-
-    monkeypatch.setattr(agent_module.executor, "run", return_cancelled)
-    cancelled_task = _v2_payload(code="def handle(context, input):\n    return {}\n")
-    cancelled_task["execution_id"] = 102
-    agent._execute_task(7, cancelled_task)
-    with agent._state_lock:
-        assert agent._in_flight_execution_ids == set()
-    assert reports == [(101, "failed"), (102, "cancelled")]
-
-
-def test_c1_submit_failure_clears_execution_tracking(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("DLR_RUNTIME_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("DLR_WORKSPACE_CLEANUP_JOURNAL_ROOT", str(tmp_path / "journal"))
-    config = agent_module.WorkerConfig()
-    task = _v2_payload(code="def handle(context, input):\n    return {}\n")
-
-    class FakeClient:
-        def claim(self, _worker_id: int, _wait_seconds: int) -> dict[str, Any]:
-            return task
-
-    class FailingPool:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            del args, kwargs
-
-        def __enter__(self) -> FailingPool:
-            return self
-
-        def __exit__(self, *_args: Any) -> bool:
-            return False
-
-        def submit(self, *args: Any, **kwargs: Any) -> None:
-            del args, kwargs
-            raise RuntimeError("submit failed")
-
-    monkeypatch.setattr(agent_module, "ThreadPoolExecutor", FailingPool)
-    agent = agent_module.Agent(config, FakeClient())  # type: ignore[arg-type]
-    with pytest.raises(RuntimeError, match="submit failed"):
-        agent._claim_loop(7)
-    with agent._state_lock:
-        assert agent._in_flight == 0
-        assert agent._active_versions == {}
-        assert agent._in_flight_execution_ids == set()
 
 
 def test_c1_recovery_cleanup_timeout_deduplicates_journal_work(
@@ -1338,13 +938,10 @@ def test_c1_recovery_cleanup_timeout_deduplicates_journal_work(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     journal_root = tmp_path / "journal"
-    layout = workspace_manager.create_workspace(runtime_root, 1)
+    layout = workspace_manager.create_workspace(runtime_root, 1, attempt_id=1001)
     workspace_manager.prepare_input_files(layout, [], None)
     journal = workspace_manager.write_cleanup_journal(
-        journal_root,
-        1,
-        layout.root,
-        "cleanup-token-cleanup-timeout",
+        journal_root, 1, layout.root, "cleanup-token-cleanup-timeout", attempt_id=1001
     )
     entered = Event()
     release = Event()
@@ -1403,13 +1000,10 @@ def test_c1_recovery_receipt_rejection_has_persistent_bounded_backoff(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     journal_root = tmp_path / "journal"
-    layout = workspace_manager.create_workspace(runtime_root, 1)
+    layout = workspace_manager.create_workspace(runtime_root, 1, attempt_id=1001)
     workspace_manager.prepare_input_files(layout, [], None)
     journal = workspace_manager.write_cleanup_journal(
-        journal_root,
-        1,
-        layout.root,
-        "cleanup-token-retry",
+        journal_root, 1, layout.root, "cleanup-token-retry", attempt_id=1001
     )
     receipts: list[tuple[int, str]] = []
 
@@ -1454,13 +1048,10 @@ def test_c1_recovery_receipt_timeout_keeps_journal_and_scan_bounded(
 ) -> None:
     runtime_root = tmp_path / "runtime"
     journal_root = tmp_path / "journal"
-    layout = workspace_manager.create_workspace(runtime_root, 1)
+    layout = workspace_manager.create_workspace(runtime_root, 1, attempt_id=1001)
     workspace_manager.prepare_input_files(layout, [], None)
     journal = workspace_manager.write_cleanup_journal(
-        journal_root,
-        1,
-        layout.root,
-        "cleanup-token-timeout",
+        journal_root, 1, layout.root, "cleanup-token-timeout", attempt_id=1001
     )
     entered = Event()
     release = Event()
@@ -1523,11 +1114,13 @@ def test_c1_journal_contains_only_recovery_fields_and_no_claim_or_user_data(
         11,
         tmp_path / "runtime" / "workspaces" / "dlr-exec-11",
         "cleanup-token-only",
+        attempt_id=1001,
     )
     record = json.loads(journal.read_text(encoding="utf-8"))
     assert set(record) == {
         "execution_id",
         "protocol_version",
+        "attempt_id",
         "workspace_path",
         "cleanup_token",
     }

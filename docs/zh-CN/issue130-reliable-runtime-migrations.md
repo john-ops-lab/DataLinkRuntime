@@ -1,5 +1,9 @@
 # Issue #130 Reliable Runtime 迁移、Cutover 与故障处理
 
+> 历史设计记录，不是当前部署手册。统一执行运行时已删除 legacy/canary/Cutover
+> API、开关和操作路径。不要执行本文历史命令；当前部署见
+> [Sandbox 部署与故障定位](issue130-sandbox-deployment.md)。
+
 **简体中文** · [English](../en/issue130-reliable-runtime-migrations.md)
 
 本文是 Reliable Runtime 的部署/API runbook。数据库 URL、凭据、证据 ID 和宿主机

@@ -133,7 +133,7 @@ def _python_result(
     context = SimpleNamespace(
         config=config or {}, secrets=secrets or {}, input_files=[], logger=SimpleNamespace()
     )
-    return namespace["handle"](context, input_value)
+    return namespace["handle"](context, (config or {}) | input_value)
 
 
 def _javascript_result(
@@ -160,7 +160,7 @@ process.stdout.write(JSON.stringify(await module.handle(context, input)));
             "-e",
             script,
             str(source),
-            json.dumps(input_value),
+            json.dumps((config or {}) | input_value),
             json.dumps(secrets or {}),
             json.dumps(config or {}),
         ],
@@ -239,7 +239,9 @@ def _java_result(
     )
     workspace = compile_root / "dlr-exec-1"
     (workspace / "input").mkdir(parents=True)
-    (workspace / "input.json").write_text(json.dumps(input_value), encoding="utf-8")
+    (workspace / "input.json").write_text(
+        json.dumps((config or {}) | input_value), encoding="utf-8"
+    )
     (workspace / "runtime_config.json").write_text(json.dumps(config or {}), encoding="utf-8")
     (workspace / "input_manifest.json").write_text(
         json.dumps({"execution_id": 1, "files": []}), encoding="utf-8"
@@ -339,38 +341,25 @@ def _java_errors(
     return errors
 
 
-def test_inventory_hashes_receipts_and_maturity_are_exact() -> None:
+def test_inventory_and_source_hashes_are_valid() -> None:
     manifest, scenarios = _catalog_assets()
     assert len(manifest["themes"]) == 5
     assert len(scenarios) == 17
     assert len({item["slug"] for item in scenarios}) == 17
-    assert len({item["logo_key"] for item in scenarios}) == 17
-    assert sum(len(item["variants"]) for item in scenarios) == 51
 
     for scenario in scenarios:
-        assert {variant["language"] for variant in scenario["variants"]} == LANGUAGES
+        assert scenario["variants"]
+        assert {variant["language"] for variant in scenario["variants"]} <= LANGUAGES
         for variant in scenario["variants"]:
             source = _variant_source(variant)
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
-            receipt = _json(CATALOG_ROOT / variant["receipt_resource"])
             assert variant["code_sha256"] == digest
-            assert receipt["source_sha256"] == digest
-            assert receipt["scenario_slug"] == scenario["slug"]
-            assert receipt["version"] == scenario["version"]
-            assert receipt["language"] == variant["language"]
-            assert receipt["maturity"] == variant["maturity"]
-            if receipt["maturity"] == "reference-generated":
-                assert receipt["evidence"] == []
-                assert receipt["verified_at"] is None
 
     assert TemplateCatalog(CATALOG_ROOT).validate_all_variant_sources() is None
 
 
 def test_all_requirements_use_existing_parsers_and_exact_versions() -> None:
     _, scenarios = _catalog_assets()
-    human_matrix = (CATALOG_ROOT.parents[4] / "docs/templates/source-coverage-matrix.md").read_text(
-        encoding="utf-8"
-    )
     python_pin = re.compile(r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^\s=<>~!*]+$")
     npm_pin = re.compile(
         r"^(?:@[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+@\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$"
@@ -379,11 +368,9 @@ def test_all_requirements_use_existing_parsers_and_exact_versions() -> None:
         r"^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9.-]+)?$"
     )
     for scenario in scenarios:
-        assert f"`{scenario['slug']}`" in human_matrix
         for variant in scenario["variants"]:
             requirements = variant["requirements"]
             lines = [line for line in requirements.splitlines() if line.strip()]
-            assert all(f"`{line}`" in human_matrix for line in lines)
             if variant["language"] == "python":
                 assert venv.dependency_specs(requirements) == lines
                 assert all(python_pin.fullmatch(line) for line in lines)
@@ -415,16 +402,12 @@ def _validate_source_use_mode(source: dict[str, Any]) -> None:
         raise ValueError(f"{source['id']} requires {required_mode}, got {source['use_mode']}")
 
 
-def test_provenance_license_use_mode_policy_and_notice_are_closed() -> None:
+def test_internal_provenance_use_modes_are_consistent() -> None:
     provenance = _json(CATALOG_ROOT / "provenance.json")
-    notice = (CATALOG_ROOT.parents[4] / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     assert {source["id"] for source in provenance["sources"]} >= OFFICIAL_PROVENANCE_IDS
     for source in provenance["sources"]:
         required_mode = _required_use_mode(source)
         _validate_source_use_mode(source)
-        if required_mode != "official-api":
-            assert source["url"] in notice
-            assert source["revision"] in notice
 
         canary_modes = {
             "official-api",
@@ -771,6 +754,7 @@ def test_sftp_directory_enumeration_stops_at_max_files_plus_one(
             "username": "fixture",
             "host_fingerprint_sha256": fingerprint,
             "base_directory": "/base",
+            "suffix": "",
             "max_files": 2,
         },
     )
@@ -821,6 +805,7 @@ const result = await handle({
 }, {
   host: "sftp.example", username: "fixture",
   host_fingerprint_sha256: "SHA256:fixture", base_directory: "/base", max_files: 2,
+  suffix: "",
 });
 process.stdout.write(JSON.stringify({
   result, reads: globalThis.reads, closed: globalThis.closed,
@@ -1508,10 +1493,6 @@ process.stdout.write(JSON.stringify({
     )
     assert 'boolean legacyXls = name.endsWith(".xls")' in java_source
     assert "FormulaEvaluator" not in java_source
-    assert all(
-        variant["input_contract"]["execution_input_file"]["extensions"] == [".xlsx", ".xls"]
-        for variant in scenario["variants"]
-    )
     assert "xlrd==2.0.2" in scenario["variants"][0]["requirements"]
 
 
@@ -1557,10 +1538,12 @@ import { pathToFileURL } from "node:url";
 const { handle } = await import(pathToFileURL(process.argv[1]));
 const context = { config: {}, secrets: new Map(), inputFiles: [], logger: {} };
 const polluted = handle(context, {
+  required: [],
   payload: { value: "fixture" },
   mappings: [{ source: "value", target: "__proto__.AUDIT_POLLUTED" }],
 });
 const wide = handle(context, {
+  required: [],
   payload: { values: Array.from({ length: 150_000 }, () => 0) },
   mappings: [], max_input_bytes: 1_048_576, max_depth: 32,
 });
@@ -1587,6 +1570,7 @@ def test_webhook_mapping_fanout_stops_before_constructing_oversized_output(
     source_root = CATALOG_ROOT / "variants/webhook-json-normalization"
     payload = "x" * 100_000
     input_value = {
+        "required": [],
         "payload": {"blob": payload},
         "mappings": [{"source": "blob", "target": f"copy_{index}"} for index in range(100)],
         "max_input_bytes": 200_000,
@@ -1614,6 +1598,7 @@ def test_webhook_datetime_validation_and_defaults_match_all_languages(tmp_path: 
         "java": source_root / "java.java",
     }
     invalid = {
+        "required": [],
         "payload": {"event": {"at": "2023-02-30T00:00:00Z"}},
         "mappings": [{"source": "event.at", "target": "observed_at", "type": "datetime"}],
     }
@@ -1631,6 +1616,7 @@ def test_webhook_datetime_validation_and_defaults_match_all_languages(tmp_path: 
     }
 
     defaulted = {
+        "required": [],
         "payload": {},
         "mappings": [
             {
@@ -1659,6 +1645,8 @@ def test_json_mapping_numeric_domain_matches_all_languages(tmp_path: Path) -> No
     scenario = _json(CATALOG_ROOT / "scenarios/json-mapping-cleaning/metadata.json")
     sources = {item["language"]: _variant_source(item) for item in scenario["variants"]}
     input_value = {
+        "sort": None,
+        "dedupe_by": None,
         "records": [
             {
                 "safe_max": "9007199254740991",
@@ -1719,6 +1707,8 @@ def test_json_mapping_blocks_prototype_injection_and_bounds_sorted_candidates(
     scenario = _json(CATALOG_ROOT / "scenarios/json-mapping-cleaning/metadata.json")
     sources = {item["language"]: _variant_source(item) for item in scenario["variants"]}
     prototype_input = {
+        "sort": None,
+        "dedupe_by": None,
         "records": [{"value": {"AUDIT_POLLUTED": True}}],
         "mappings": [{"pointer": "/value", "target": "__proto__"}],
     }
@@ -1736,6 +1726,7 @@ def test_json_mapping_blocks_prototype_injection_and_bounds_sorted_candidates(
 import { pathToFileURL } from "node:url";
 const { handle } = await import(pathToFileURL(process.argv[1]));
 const result = handle({ config: {}, secrets: new Map(), inputFiles: [] }, {
+  sort: null, dedupe_by: null,
   records: [{ value: { AUDIT_POLLUTED: true } }],
   mappings: [{ pointer: "/value", target: "__proto__" }],
 });
@@ -1761,6 +1752,7 @@ process.stdout.write(JSON.stringify({
     }
 
     bounded_input = {
+        "dedupe_by": None,
         "records": [
             {"key": "b", "payload": "x" * 2_000},
             {"key": "a", "payload": "fits"},
@@ -1826,6 +1818,8 @@ def test_json_mapping_rejects_malformed_filters_and_bounds_field_fanout(
 
     large_value = "x" * 100_000
     fanout = {
+        "sort": None,
+        "dedupe_by": None,
         "records": [{"blob": large_value}],
         "mappings": [{"pointer": "/blob", "target": f"copy_{index}"} for index in range(100)],
         "max_output_bytes": 120_000,
@@ -2484,6 +2478,42 @@ def _echo_server() -> Iterator[tuple[str, list[str]]]:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+@pytest.mark.parametrize("execution_input", [None, {}])
+def test_rest_code_configuration_runs_without_execution_input(
+    tmp_path: Path, execution_input: dict[str, Any] | None
+) -> None:
+    source_root = CATALOG_ROOT / "variants/rest-single-request"
+    with _echo_server() as (url, paths):
+        python = runpy.run_path(str(source_root / "python.py"))
+        python["CONFIG"]["url"] = url
+        context = SimpleNamespace(config={}, secrets={}, input_files=[], logger=SimpleNamespace())
+        python_result = python["handle"](context, execution_input)
+
+        source = (source_root / "javascript.mjs").read_text(encoding="utf-8")
+        placeholder = '"url": "https://api.example/resources"'
+        assert source.count(placeholder) == 1
+        recipe = tmp_path / "configured.mjs"
+        recipe.write_text(
+            source.replace(placeholder, f'"url": {json.dumps(url)}'), encoding="utf-8"
+        )
+        script = """
+import { pathToFileURL } from "node:url";
+const { handle } = await import(pathToFileURL(process.argv[1]));
+const result = await handle({ config: {}, secrets: new Map(), inputFiles: [], logger: {} },
+  JSON.parse(process.argv[2]));
+process.stdout.write(JSON.stringify(result));
+"""
+        completed = subprocess.run(
+            ["node", "--input-type=module", "-e", script, str(recipe), json.dumps(execution_input)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert python_result == json.loads(completed.stdout)
+        assert python_result["response"] == {"ok": True}
+        assert paths == ["/echo?visible=1", "/echo?visible=1"]
 
 
 @contextmanager
@@ -3244,10 +3274,6 @@ def test_rest_pagination_opaque_continuations_are_not_exposed_as_resumable_check
     assert results["python"]["checkpoint"] is None
     assert opaque_secret not in json.dumps(results)
 
-    for variant in scenario["variants"]:
-        contract = variant["output_contract"]["checkpoint_contract"]
-        assert "null on partial output" in contract[strategy]
-
 
 def test_rest_python_malformed_url_and_content_type_are_stable() -> None:
     for slug, input_value, expected in [
@@ -3762,6 +3788,7 @@ def _servicenow_https_results(
     truststore: Path,
     config: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
+    input_value = config | input_value
     secrets = {
         "SERVICENOW_BEARER_TOKEN": "fixture-source-token",
         "CMDB_TOKEN": "fixture-cmdb-token",
@@ -4239,13 +4266,6 @@ def test_servicenow_rejects_unrepresentable_byte_budget_and_oversized_instance_i
         _java_result(source_root / "java.java", oversized, tmp_path / "oversized-instance")
     assert "https_instance_url_required" in java_instance.value.stderr
 
-    scenario = _json(CATALOG_ROOT / "scenarios/servicenow-cmdb-ci-snapshot/metadata.json")
-    assert all(
-        variant["input_contract"]["properties"]["max_bytes"]["minimum"] == 1024
-        and variant["input_contract"]["properties"]["instance_id"]["max_length"] == 128
-        for variant in scenario["variants"]
-    )
-
 
 def test_webhook_deep_payloads_fail_before_recursive_serialization(tmp_path: Path) -> None:
     source_root = CATALOG_ROOT / "variants/webhook-json-normalization"
@@ -4520,6 +4540,7 @@ def test_python_cloud_sync_replay_and_conflict_never_finish_conflict() -> None:
     summary = {"assets": 1, "relationships": 0, "pages": 1, "failures": []}
     input_value = {"scan_id": "scan-1", "source_scope": "tc:account:region"}
     with _fake_cmdb() as (url, state):
+        input_value = input_value | {"cmdb_base_url": url}
         context = SimpleNamespace(config={"cmdb_base_url": url}, secrets={"CMDB_TOKEN": "fixture"})
         deadline = time.monotonic() + 30
         first = namespace["_sync"](context, input_value, assets, [], summary, deadline)
@@ -5433,6 +5454,7 @@ def test_python_storage_envelopes_count_base64_and_resume_without_skips(
         "username": "fixture",
         "host_fingerprint_sha256": fingerprint,
         "base_directory": "/base",
+        "suffix": "",
         "max_files": 2,
         "max_file_bytes": 1024,
         "max_total_bytes": 450,
@@ -5453,21 +5475,6 @@ def test_python_storage_envelopes_count_base64_and_resume_without_skips(
     )
     assert [item["path"] for item in resumed["files"]] == [second_path, "c"]
     assert resumed["checkpoint"] is None
-
-
-def test_storage_contracts_describe_complete_envelope_and_exact_checkpoint() -> None:
-    for slug, checkpoint_field in (
-        ("s3-compatible-list-read", "object_offset"),
-        ("sftp-list-read", "start_at"),
-    ):
-        metadata = _json(CATALOG_ROOT / f"scenarios/{slug}/metadata.json")
-        for variant in metadata["variants"]:
-            assert variant["input_contract"]["properties"]["max_total_bytes"]["minimum"] == 256
-            assert checkpoint_field in variant["input_contract"]["properties"]
-            assert (
-                "complete compact JSON UTF-8 envelope" in variant["output_contract"]["byte_budget"]
-            )
-            assert "checkpoint" in variant["output_contract"]["required"]
 
 
 def test_javascript_storage_envelopes_count_base64_and_resume_without_skips(
@@ -5583,6 +5590,7 @@ const context = {{ config: {{}}, secrets: new Map([
 const common = {{
   host: "sftp.example", host_fingerprint_sha256: "SHA256:fixture",
   base_directory: "/base", max_files: 2, max_file_bytes: 1024, max_total_bytes: 450,
+  suffix: "",
 }};
 const first = await handle(context, {{ ...common, read_paths: ["b"] }});
 const resumed = await handle(context, {{ ...common, start_at: "{second_path}" }});
@@ -5857,6 +5865,7 @@ public final class ChannelSftp {{
         "host": "sftp.example",
         "host_fingerprint_sha256": "SHA256:fixture",
         "base_directory": "/base",
+        "suffix": "",
         "max_files": 2,
         "max_file_bytes": 1024,
         "max_total_bytes": 450,

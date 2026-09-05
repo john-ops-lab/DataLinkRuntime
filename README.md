@@ -147,37 +147,15 @@ Create → Edit → Save → Run / Schedule → Observe
 
 ## 从模板广场开始
 
-顶栏的“模板广场”提供随 DLR 版本发布的官方 Recipe 起点。首期目录固定为 **5 个主题、
-17 个场景和 51 个语言 Variant**；每个场景各有 Python、JavaScript、Java 三份实现，
-并展示当前语言的输入输出合同、建议依赖、来源和成熟度。
+模板广场提供 5 个主题、17 个场景，可从“全部”页签跨分类搜索，也可按厂家、类型、协议和语言筛选。厂家模板使用厂家 Logo；每个场景只提供实际支持的语言，不要求凑齐三种语言。
 
 ```text
-模板广场 → 选择场景与语言 → 复制为 Adapter 并命名 → 自动进入新 Adapter 的编辑页
+模板广场 → 选择场景与语言 → 命名并复制 → 自动进入新适配器编辑页 → 检查或修改配置 → 保存 → 运行
 ```
 
-复制产生的是独立 Adapter 和 Revision 1，不是对模板的动态引用。它默认停止、没有
-Worker、Credential Binding、已安装依赖、Schedule 或运行历史；模板以后升级也不会
-覆盖用户已经复制和修改的内容。运行前需要选择兼容 Worker、按说明安装精确依赖、
-配置非敏感 Runtime 参数，并通过 Credential Binding 提供源码声明的 Secret。外部
-Endpoint 由管理员审核和配置，不应把密码、Token 或认证 Query 放入 URL 或代码。
+复制创建独立适配器，代码和依赖先进入编辑草稿；点击保存才创建第一个版本。副本不保留模板关联，后续模板更新不会影响它。运行前按普通适配器流程选择 Worker、准备依赖并绑定凭据。
 
-关闭 Managed Input Store 不影响浏览、查看或复制任何模板，CSV/Excel 也不会在复制时
-自动创建文件绑定。7 个云与 CMDB 场景提供只读 `preview`，其规范化结果和 Adapter
-Output 受页数、记录数、字节数与总时限约束，并可按外部 `dlr-cmdb-upsert/v1` 合同执行
-`sync`；sync 必须在不可变 Execution Input 中提供稳定的 `scan_id` 和 `source_scope`，
-同一次 Execution 的重试必须复用它们。阿里云 3 个场景使用的 Alibaba Cloud SDK
-`callApi` 尚不能证明原始传输响应受字节上限约束，因此该有界承诺不包含其源 HTTP 响应。
-
-成熟度按“场景 + 版本 + 语言 + 源码哈希”分别记录，并由 Receipt 约束。
-`reference-generated` 表示实验/未验证，即尚无满足下一等级全部门禁且匹配当前源码哈希的
-Receipt；允许存在窄 smoke 或安全 canary，但它们不能冒充完整 fixture 或真实外部服务
-验证。详情见 [Template Recipe 使用与安全边界](docs/templates/recipe-usage-security.md)、
-[CMDB Upsert v1 合同](docs/templates/cmdb-upsert-v1.md)和
-[成熟度与 Receipt](docs/templates/maturity-receipts.md)。
-
-> Recipe 的 URL 校验、同源跳转、超时和资源上限不是平台级 SSRF 或出网隔离。DLR
-> 仍采用可信管理员代码模型；生产环境必须另行使用防火墙、DNS/代理策略和目标白名单
-> 限制 Worker 出网。
+大部分模板默认无输入，可修改参数集中在代码开头并有中文注释。密码、Token 等通过凭据读取，注释说明要配置的凭据和绑定名称。只有文件、Webhook 或确需每次传参的场景展示输入示例；返回结果用简短示例说明。详情保留用途、使用步骤、语言、代码和依赖，参数规则及运行模式配置写在代码注释中。
 
 ---
 
@@ -186,7 +164,7 @@ Receipt；允许存在窄 smoke 或安全 canary，但它们不能冒充完整 f
 | | 能力 | 说明 |
 |---|---|---|
 | 🧩 | **Code-first Adapter** | Adapter 是最终资产，可直接阅读、修改、测试和版本化 |
-| 🧰 | **模板广场** | 按主题和场景浏览三语言 Recipe，复制后直接进入独立 Adapter 编辑页 |
+| 🧰 | **模板广场** | 搜索全部模板或按分类筛选，复制后进入独立适配器编辑草稿 |
 | 🖥️ | **Web Workbench** | 在浏览器中创建、编辑、保存、Clone 和管理 Adapter |
 | ⚡ | **多语言 Runtime** | Python、JavaScript、Java 使用一致的 Input / Output / Log 模型 |
 | ⏱️ | **Task & Schedule** | 手动运行，或通过 Cron + Timezone 定时执行 |
@@ -252,7 +230,7 @@ DLR 专注的是 **独立 Adapter 的开发和运行**，而不是 Workflow / DA
 
 ### 前置条件
 
-- Docker
+- Linux Docker daemon，cgroup v2 与 systemd（macOS 需在 Docker Linux VM 内准备）
 - Docker Compose v2
 
 ### 1. 克隆并创建配置
@@ -270,6 +248,8 @@ cp .env.example .env
 DLR_ADMIN_TOKEN
 DLR_WORKER_TOKEN
 DLR_MASTER_KEY
+DLR_RABBITMQ_USER
+DLR_RABBITMQ_PASSWORD
 ```
 
 请替换为真实随机 Secret，不要提交 `.env`。
@@ -301,19 +281,31 @@ mkdir -p ./platform-logs/control \
 Linux 生产部署的路径和权限要求请查看
 [平台日志部署文档](docs/deployment/platform-logs.md)。
 
-### 3. 初始化数据库
+### 3. 准备运行节点资源隔离
+
+在 **Docker daemon 所在的 Linux 主机**执行（不是普通应用容器）：
 
 ```bash
-docker compose up -d postgres
-docker compose run --rm control alembic upgrade head
+sudo bash scripts/prepare-sandbox-host.sh
 ```
 
-Issue #130 的 fresh/current-main migration、非破坏回滚和旧二进制 fail-closed
-边界见 [Reliable Runtime 迁移说明](docs/zh-CN/issue130-reliable-runtime-migrations.md)。
-Linux cgroup v2 的部署前置、精确 delegated subtree 与故障矩阵见
+把输出的 `DLR_SANDBOX_CGROUP_PARENT` 和 `DLR_SANDBOX_CGROUP_SOURCE` 写入 `.env`。
+macOS/Colima 用 `colima ssh -- sudo bash <VM中可见的仓库路径>/scripts/prepare-sandbox-host.sh`。
+默认 2 个执行槽使用有限的 3 CPU / 3 GiB 宿主资源范围；准备脚本会实测委派目录。
+VM/宿主重启后须重新准备该目录，再启动 Worker。完整支持范围和排障见
 [Sandbox 部署说明](docs/zh-CN/issue130-sandbox-deployment.md)。
 
-### 4. 启动 DLR
+### 4. 初始化全新数据库
+
+```bash
+docker compose up -d --wait postgres rabbitmq
+docker compose run --rm --no-deps control alembic upgrade head
+```
+
+当前版本只支持唯一执行机制；新迁移会拒绝旧 Worker/执行数据，不隐式清除或转换。
+这是全新安装流程，[旧迁移说明](docs/zh-CN/issue130-reliable-runtime-migrations.md) 仅作历史记录。
+
+### 5. 启动 DLR
 
 ```bash
 docker compose up -d --build
@@ -330,9 +322,8 @@ docker compose -f docker-compose.yml -f docker-compose.management.yml \
 
 `DLR_RABBITMQ_VHOST` 是 Broker、Control 和 Worker 共用的唯一原始 vhost 配置；
 Control/Worker 在建立 AMQP 连接时负责安全 URL 编码，不能另行维护 URL path。
-默认配置仍关闭 RabbitMQ 普通流量，并保留 legacy Claim；不要只修改一个开关就跳过
-备份恢复、Worker v3/Sandbox、Slot 并发和迁移 preflight。完整、不可交换的 Cutover
-顺序见上面的迁移说明。
+所有任务都通过 RabbitMQ 和资源 Sandbox 执行，无需开启灰度或切换开关。
+Worker 启动时必须通过真实资源隔离预检；失败时不会退回无隔离执行。
 
 服务健康后：
 
@@ -355,7 +346,7 @@ flowchart LR
     U["Web Workbench<br/>React + Monaco"] -->|"HTTP / JSON / SSE"| C["Control<br/>FastAPI"]
     C -->|"Transaction + Outbox"| P[("PostgreSQL<br/>Authority / History")]
     C -->|"Bounded publish"| Q["RabbitMQ 4.3<br/>Quorum Queue"]
-    Q -->|"Dispatch"| W["Worker v3 Runtime"]
+    Q -->|"Dispatch"| W["Worker Runtime"]
     W -->|"Claim / renew / result"| C
     W --> A["Adapter<br/>Python / JavaScript / Java"]
     A --> X["External Systems"]
@@ -391,14 +382,14 @@ flowchart LR
 
 - PostgreSQL 是 Execution、Admission、Outbox、Attempt、Lease、Fencing 与 Slot 的业务
   权威；RabbitMQ 只承载有界 dispatch，不替代数据库正确性。
-- Worker v3 在 durable Claim 与私有 journal 成功后 ACK 消息，再进入 Sandbox 执行；
+- Worker 在 durable Claim 与私有 journal 成功后 ACK 消息，再进入 Sandbox 执行；
   因此这是 **ACK-on-claim**，不是执行完成后 ACK。ACK 后崩溃由 Lease Recovery 创建
   新 generation 恢复。
 - 同一 Adapter 可以存在多个合法 `queued/retry_wait` Execution，但数据库 `Slot 0`
   保证同一时刻最多一个 active Attempt；不同 Adapter 可以并行。
 - 默认 Compose 使用单节点 RabbitMQ。Quorum Queue 提供持久化语义，但单节点仍然
   **不是 HA**；Broker 故障期间 PostgreSQL Outbox 保留已接受责任，恢复后补发。
-- v3 Sandbox 仅在满足部署前置的 Linux cgroup v2 环境成立，用于限制 CPU、内存、
+- Sandbox 仅在满足部署前置的 Linux cgroup v2 环境成立，用于限制 CPU、内存、
   PID、临时磁盘与输出；它不把 DLR 变成面向不可信租户的任意代码平台。
 
 ---
@@ -473,8 +464,8 @@ Smoke Test 使用隔离的本地环境和 fake AI Provider，不会访问公网 
 - [产品定义](docs/zh-CN/product.md)
 - [总体架构](docs/zh-CN/architecture.md)
 - [Template Recipe 使用与安全边界](docs/templates/recipe-usage-security.md)
-- [Template 来源、CMDB 合同与成熟度文档](docs/templates/README.md)
-- [Reliable Runtime 迁移、Cutover API 与故障处理](docs/zh-CN/issue130-reliable-runtime-migrations.md)
+- [模板使用文档](docs/templates/README.md)
+- [历史记录：Reliable Runtime 迁移、Cutover API 与故障处理](docs/zh-CN/issue130-reliable-runtime-migrations.md)
 - [Issue #130 Linux Sandbox 部署](docs/zh-CN/issue130-sandbox-deployment.md)
 - [Specs 索引与冲突优先级](docs/specs/README.md)
 - [平台日志与部署](docs/deployment/platform-logs.md)

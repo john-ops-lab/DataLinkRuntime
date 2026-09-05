@@ -13,7 +13,45 @@ import java.util.Set;
 
 /** Bounded CSV to JSON conversion without Managed Input coupling. */
 public class Adapter {
+    // CSV 转 JSON：可修改的配置集中在这里。
+    // 运行时提供待处理的数据或文件；处理规则在下面配置。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // encoding: CSV 字符编码，例如 utf-8 或 utf-8-sig。
+        // delimiter: CSV 字段分隔符，默认逗号。
+        // header: 是否把首行作为字段名。
+        // skip_empty: 是否跳过空行。
+        // max_input_bytes: 输入大小上限，单位字节。
+        // max_output_bytes: 返回结果大小上限，单位字节。
+        // max_rows: 最多读取的行数。
+        // max_columns: 最多读取的列数。
+        // max_field_bytes: 单个字段大小上限，单位字节。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "encoding": "utf-8-sig",
+              "delimiter": ",",
+              "header": true,
+              "skip_empty": true,
+              "max_input_bytes": 2097152,
+              "max_output_bytes": 4194304,
+              "max_rows": 10000,
+              "max_columns": 200,
+              "max_field_bytes": 65536
+            }
+            """);
+    }
+
     public Object handle(Context context, Object rawInput) throws Exception {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         try {
             return run(context, rawInput);
         } catch (Exception error) {
