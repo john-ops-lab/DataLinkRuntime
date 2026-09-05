@@ -102,4 +102,4 @@
 - [x] 10.6 运行许可证、NOTICE、公开文件 Secret/Endpoint/绝对路径扫描，并确认所有 Logo 为本地原创组合图；验证：扫描结果无真实敏感数据、无不兼容代码复制、无远程 Logo URL。
 - [x] 10.7 运行与改动风险相称的 Compose/API smoke，实例化一项 Task 与 Webhook 并检查数据库对象图；验证：两者 Revision 1 可读、默认停止、无 Worker/Secret/运行绑定，回归普通 Adapter 流程。
 - [x] 10.8 逐项复核 OpenSpec checkbox、`openspec validate --strict`、git diff 和工作树；验证：每个完成项有证据、无调试/生成截图/无关改动，未验证项保持未勾选且风险明确。
-- [ ] 10.9 提交 `codex/issue132-template-gallery`、推送远端并创建关联 #132 的 Draft PR，正文区分本地验证、Hosted CI、Review、合并和人工验收；验证：远端 head SHA 与本地一致、PR diff/文件树/CI 可见，保持 Draft、不合并也不关闭 Issue。
+- [x] 10.9 提交 `codex/issue132-template-gallery`、推送远端并创建关联 #132 的 Draft PR，正文区分本地验证、Hosted CI、Review、合并和人工验收；验证：远端 head SHA 与本地一致、PR diff/文件树/CI 可见，保持 Draft、不合并也不关闭 Issue。

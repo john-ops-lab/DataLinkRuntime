@@ -181,6 +181,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const { t } = useTranslation(["ai", "common"]);
   const { onError, onSaved, onDirtyChange, onMutationStart, onMutationEnd } = props;
   const [form, setForm] = useState<AiModelSettingDraft>({ ...DEFAULT_SETTING });
+  const formValueRef = useRef<AiModelSettingDraft>({ ...DEFAULT_SETTING });
   const settingBaselineRef = useRef<AiModelSettingDraft>({ ...DEFAULT_SETTING });
   const settingDirtyRef = useRef(false);
   const [credentials, setCredentials] = useState<Credential[]>([]);
@@ -190,6 +191,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   const [customDraft, setCustomDraft] = useState<AiCustomProviderDraft>({
     ...DEFAULT_CUSTOM_PROVIDER,
   });
+  const customDraftValueRef = useRef<AiCustomProviderDraft>({ ...DEFAULT_CUSTOM_PROVIDER });
   const customBaselineRef = useRef<AiCustomProviderDraft>({ ...DEFAULT_CUSTOM_PROVIDER });
   const customDirtyRef = useRef(false);
   const [editingCustomId, setEditingCustomId] = useState<number | null>(null);
@@ -265,6 +267,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
 
     if (settingResult.status === "fulfilled") {
       const normalized = normalizeSetting(settingResult.value);
+      formValueRef.current = normalized;
       settingBaselineRef.current = normalized;
       settingDirtyRef.current = false;
       setForm(normalized);
@@ -313,7 +316,10 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   ) {
     setPanelError(null);
     setNotice(null);
-    const next = updater(form);
+    // Keep the latest committed draft outside the render closure so multiple
+    // updates in one React batch compose instead of overwriting each other.
+    const next = updater(formValueRef.current);
+    formValueRef.current = next;
     if (markDirty) {
       settingDirtyRef.current = !sameSettingDraft(next, settingBaselineRef.current);
       publishDirtyState();
@@ -414,6 +420,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
     try {
       const saved = await api.updateAiSetting(payload);
       const normalized = normalizeSetting(saved);
+      formValueRef.current = normalized;
       settingBaselineRef.current = normalized;
       settingDirtyRef.current = false;
       setForm(normalized);
@@ -460,7 +467,8 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   function editCustomDraft(updater: (current: AiCustomProviderDraft) => AiCustomProviderDraft) {
     setPanelError(null);
     setNotice(null);
-    const next = updater(customDraft);
+    const next = updater(customDraftValueRef.current);
+    customDraftValueRef.current = next;
     customDirtyRef.current = !sameCustomDraft(next, customBaselineRef.current);
     publishDirtyState();
     setCustomDraft(next);
@@ -477,6 +485,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
       files_native: provider.files_native,
       tools_supported: provider.tools_supported,
     };
+    customDraftValueRef.current = nextDraft;
     customBaselineRef.current = nextDraft;
     customDirtyRef.current = false;
     setCustomDraft(nextDraft);
@@ -488,6 +497,7 @@ export default function AiModelSettingsPanel(props: AiModelSettingsPanelProps) {
   function resetCustomEditor() {
     setEditingCustomId(null);
     const nextDraft = { ...DEFAULT_CUSTOM_PROVIDER };
+    customDraftValueRef.current = nextDraft;
     customBaselineRef.current = nextDraft;
     customDirtyRef.current = false;
     setCustomDraft(nextDraft);
