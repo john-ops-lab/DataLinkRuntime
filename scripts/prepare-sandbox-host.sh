@@ -91,16 +91,29 @@ memory_bytes=$(numfmt --from=iec "$memory_max")
 host_memory_bytes=$(awk '/MemTotal:/ {printf "%.0f", $2 * 1024}' /proc/meminfo)
 [ "$memory_bytes" -le "$host_memory_bytes" ] || fail 'Memory limit exceeds host RAM'
 description="DataLinkRuntime Sandbox $unit CPU=$cpu_quota Memory=$memory_max"
+keeper_dir=
+cleanup_staged_keeper() {
+  if [ -n "$keeper_dir" ]; then
+    rm -f "$keeper_dir/keeper.sh"
+    rmdir "$keeper_dir"
+  fi
+}
+trap cleanup_staged_keeper EXIT
 load_state=$(systemctl show "$unit" -p LoadState --value)
 if [ "$load_state" = not-found ]; then
   [ "$status_only" = false ] || fail 'Named Sandbox unit has not been prepared'
   script_path=$(readlink -f "$0")
+  # The capability-bounded root service cannot bypass a user's private home
+  # directory permissions. Stage only this script in a root-owned runtime
+  # directory, without widening repository permissions or service capabilities.
+  keeper_dir=$(mktemp -d /run/dlr-sandbox-keeper.XXXXXX)
+  install -m 0700 "$script_path" "$keeper_dir/keeper.sh"
   systemd-run --unit="$unit" --description="$description" --collect \
     --property=Delegate=yes --property="CPUQuota=$cpu_quota" \
     --property="MemoryMax=$memory_max" --property=TasksMax=infinity \
     --property='CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID' \
     --property=NoNewPrivileges=yes --service-type=exec \
-    /bin/bash "$script_path" --unit "$unit" --keeper
+    /bin/bash "$keeper_dir/keeper.sh" --unit "$unit" --keeper
 else
   [ "$(systemctl show "$unit" -p Description --value)" = "$description" ] || fail 'Existing unit has different ownership/configuration; use a new task-specific unit name'
 fi
