@@ -2,11 +2,11 @@
 
 核对日期：2026-09-05。机器可读权威数据位于 `backend/src/dlr/control/template_catalog/provenance.json`。
 
-本矩阵把“来源事实”“目录源码入口”和“验证成熟度”分开记录。当前 51 个 Variant 均为 `reference-generated`；`supported` 只表示目录源码具有对应入口，不等于依赖安装、完整场景 fixture 或 live 验证。已执行的若干发布源码窄 smoke 与安全 canary 只验证特定合同和失败边界，没有形成满足下一等级全部门禁的匹配 Receipt，因此不升级 maturity。下表最后一列专指成熟度升级所需的完整 Fixture 门禁；`not-run` 不表示没有执行任何窄 smoke。
+本矩阵保留来源事实、目录代码入口和当时的验证记录，供维护者查阅，不在模板详情展示。`supported` 表示代码具有对应入口，不代表已连接真实外部服务；`not-run` 表示尚未完成该行完整场景测试，不能据此推断其他测试是否执行。
 
 ## 固定来源
 
-| ID | 固定版本 | 来源 | 许可与使用方式 | 精确参考或显式证据缺口 | 成熟度升级完整 Fixture 门禁 |
+| ID | 固定版本 | 来源 | 许可与使用方式 | 精确参考或显式证据缺口 | 完整场景测试记录 |
 |---|---|---|---|---|---|
 | `open-c3-039b9a4` | `039b9a42fdc80f31520ec0918000b8c7a05162e5` | [source](https://github.com/open-c3/open-c3) | GPL-2.0；`behavior-research-only` | Repository-level behavior survey only; no exact source file was used for adaptation, so file-level evidence remains an explicit gap | not-run; no repository fixture is redistributed |
 | `cloudexplorer-aede557` | `aede557444bcf9d8daa49f5bb13e19cfaa43ce5f` | [source](https://github.com/1Panel-dev/CloudExplorer) | GPL-3.0；`behavior-research-only` | Repository-level product-vocabulary survey only; no exact source file was used for adaptation, so file-level evidence remains an explicit gap | not-run; no repository fixture is redistributed |
@@ -62,7 +62,7 @@
 
 ## 三语言 SDK / 版本索引
 
-下表是 17 个 Scenario 的人类可读索引；精确 requirements 仍以各 Scenario metadata 为准。`标准库 / Runtime` 表示 Variant 不声明额外第三方依赖，不表示已经通过该语言的完整成熟度门禁。
+下表是 17 个 Scenario 的人类可读索引；精确 requirements 仍以各 Scenario metadata 为准。`标准库 / Runtime` 表示 Variant 不声明额外第三方依赖，不表示已经完成该语言的实际服务测试。
 
 | Scenario | Python | JavaScript | Java |
 |---|---|---|---|
@@ -161,7 +161,7 @@
 | `webhook-json-normalization` | Webhook JSON transformation | 支持入口，未完成场景验证 | `http-rfc9110-9112` | `pure handle transformation` | max_fields/max_input_bytes/max_output_bytes/max_depth | not applicable | — | 只做必填校验、字段映射和 UTC 时间规范化；按映射增量计量输出，达到字节上限前停止，不进行外部写入。 |
 | `csv-to-json` | CSV parsing | 支持入口，未完成场景验证 | `csv-rfc4180` | `bounded streaming parse` | max_rows/max_columns/max_field_bytes/max_output_bytes | not applicable | — | 支持 BOM、编码、表头、分隔符、引号换行与空行策略。 |
 | `excel-to-json` | XLSX parsing | 支持入口，未完成场景验证 | `excel-formats-and-libraries-2026-09-05` | `bounded OOXML workbook parse` | max_file_bytes/max_rows/max_columns/max_output_bytes | not applicable | — | 解析前预检 OOXML ZIP，拒绝宏、嵌入/ActiveX 内容和外部关系；公式只替换为 null，绝不执行。 |
-| `excel-to-json` | legacy XLS parsing | 支持入口，未完成场景验证 | `excel-formats-and-libraries-2026-09-05` | `bounded BIFF data-only workbook parse` | max_file_bytes/max_rows/max_columns/max_output_bytes | not applicable | — | 三语言均使用离线 data-only 路径，不调用公式求值器、不执行宏或访问外链；无法完整预检全部 OLE 活动内容，因此保持实验标签。 |
+| `excel-to-json` | legacy XLS parsing | 支持入口，未完成场景验证 | `excel-formats-and-libraries-2026-09-05` | `bounded BIFF data-only workbook parse` | max_file_bytes/max_rows/max_columns/max_output_bytes | not applicable | — | 三语言均使用离线 data-only 路径，不调用公式求值器、不执行宏或访问外链；无法完整预检全部 OLE 活动内容，因此不能声称已检测所有活动内容。 |
 | `json-mapping-cleaning` | RFC 6901 mapping and cleaning | 支持入口，未完成场景验证 | `json-pointer-rfc6901` | `pure deterministic transformation` | max_records/max_fields/max_output_bytes | not applicable | — | 仅有限转换、等值或存在性过滤、稳定排序与保留首项去重；逐字段计量，达到输出字节上限前停止。 |
 | `postgresql-readonly-snapshot` | PostgreSQL SELECT snapshot | 支持入口，未完成场景验证 | `postgresql-17-docs` | `one parameterized SELECT in read-only transaction` | batch_size/max_rows/max_cell_bytes/max_output_bytes/timeout_seconds | not applicable | — | 要求数据库侧只读账号；拒绝多语句、写语句、DDL 和存储过程。已执行本地 PostgreSQL 16 三语言窄测试，但未完成只读角色和完整失败矩阵。 |
 | `mysql-readonly-snapshot` | MySQL SELECT snapshot | 支持入口，未完成场景验证 | `mysql-9-docs` | `one parameterized SELECT with multi-statements disabled` | batch_size/max_rows/max_cell_bytes/max_output_bytes/timeout_seconds | not applicable | — | 要求数据库侧只读账号且驱动禁用多语句；尚未执行真实 MySQL 服务端集成。 |
@@ -171,6 +171,6 @@
 ## 审核规则
 
 1. 目录或代码不得声称超出 `supported` 行的能力；`gap` 行必须保持可见。
-2. 云场景的 metadata、三语言 `OPERATIONS` 和本矩阵必须逐项一致；operation-specific 请求尚未实现时必须标为 gap。
-3. 更新 API、SDK 或来源版本时，必须同步固定 revision、`checked_at`、metadata、代码入口和 receipt。
-4. compile、`node --check` 或单个窄 fixture 都不能冒充完整场景 fixture/live 证据；只有对应语言的发布源码门禁完整通过后才能升级 maturity。
+2. 云场景的 metadata、实际提供语言的 `OPERATIONS` 和本矩阵必须逐项一致；operation-specific 请求尚未实现时必须标为 gap。
+3. 更新 API、SDK 或来源版本时，必须同步固定 revision、`checked_at`、metadata、代码入口和源码哈希。
+4. 编译、`node --check` 或局部测试只证明实际检查的内容；连接真实服务的结果应单独记录。

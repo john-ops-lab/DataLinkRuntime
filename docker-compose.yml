@@ -85,8 +85,6 @@ services:
       - ${DLR_DNS_FALLBACK_2-8.8.8.8}
     environment:
       DATABASE_URL: postgresql+psycopg://dlr:dlr@postgres:5432/dlr
-      DLR_RABBITMQ_EXECUTION_ENABLED: ${DLR_RABBITMQ_EXECUTION_ENABLED:-false}
-      DLR_RABBITMQ_EXECUTION_CANARY_ENABLED: ${DLR_RABBITMQ_EXECUTION_CANARY_ENABLED:-false}
       # Keep the raw vhost as the only vhost setting.  Control encodes it
       # when constructing the Pika URL; Compose cannot safely URL-encode
       # arbitrary UTF-8/reserved characters during interpolation.
@@ -157,13 +155,8 @@ services:
       DLR_ARTIFACT_DELETE_ALERT_THRESHOLD: ${DLR_ARTIFACT_DELETE_ALERT_THRESHOLD:-5}
       DLR_ARTIFACT_GC_INTERVAL_SECONDS: ${DLR_ARTIFACT_GC_INTERVAL_SECONDS:-300}
       DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS: ${DLR_ARTIFACT_AUDIT_INTERVAL_SECONDS:-3600}
-      # Issue #127 Wave C: bounded protocol/recovery settings. These values
+      # Bounded recovery settings. These values
       # are snapshotted into new Executions by Control.
-      DLR_MIN_WORKER_PROTOCOL_VERSION: ${DLR_MIN_WORKER_PROTOCOL_VERSION:-1}
-      DLR_LEGACY_EXECUTION_CLAIM_ENABLED: ${DLR_LEGACY_EXECUTION_CLAIM_ENABLED:-true}
-      DLR_CUTOVER_BACKUP_RESTORE_GATE_PASSED: ${DLR_CUTOVER_BACKUP_RESTORE_GATE_PASSED:-false}
-      DLR_CUTOVER_SANDBOX_GATE_PASSED: ${DLR_CUTOVER_SANDBOX_GATE_PASSED:-false}
-      DLR_CUTOVER_SLOT_GATE_PASSED: ${DLR_CUTOVER_SLOT_GATE_PASSED:-false}
       DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS: ${DLR_EXECUTION_CLAIM_TIMEOUT_SECONDS:-300}
       DLR_EXECUTION_RECOVERY_GRACE_SECONDS: ${DLR_EXECUTION_RECOVERY_GRACE_SECONDS:-60}
       DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS: ${DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS:-5}
@@ -208,6 +201,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -232,10 +227,23 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    # The Worker long-polls claim for up to 20s; Docker's default 10s grace
-    # would kill it before _graceful_offline() can run. 30s covers the worst
-    # case claim wait plus a buffer for the offline notification.
+    # Leave time to stop deliveries, clean up Attempts and report offline.
     stop_grace_period: 30s
+    privileged: false
+    cgroup: private
+    # Only the trusted supervisor holds these capabilities. Adapter payloads
+    # drop to non-root with all effective/permitted capabilities cleared.
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+      # Worker-only namespace/tmpfs permission; Docker seccomp stays enabled.
+      - apparmor=unconfined
+    cgroup_parent: "${DLR_SANDBOX_CGROUP_PARENT:-/system.slice/dlr-worker-sandbox.service}"
     # Same M5.5.8 DNS fallback as control (embedded resolver first).
     dns:
       - ${DLR_DNS_PRIMARY:-127.0.0.11}
@@ -244,19 +252,16 @@ services:
     environment:
       DLR_WORKER_READY_FILE: /tmp/dlr-worker.ready
       DLR_CONTROL_URL: http://control:8000
-      DLR_RABBITMQ_EXECUTION_ENABLED: ${DLR_RABBITMQ_EXECUTION_ENABLED:-false}
       # Must use the same raw vhost source as RabbitMQ and Control; the Worker
-      # client applies the same safe URL encoding when its Rabbit consumer is
-      # enabled in the later protocol batch.
+      # client applies the same safe URL encoding for its RabbitMQ consumer.
       DLR_RABBITMQ_URL: amqp://${DLR_RABBITMQ_USER:?set DLR_RABBITMQ_USER}:${DLR_RABBITMQ_PASSWORD:?set DLR_RABBITMQ_PASSWORD}@rabbitmq:5672
       DLR_RABBITMQ_VHOST: ${DLR_RABBITMQ_VHOST:-/}
       DLR_RABBITMQ_MANAGEMENT_URL: ${DLR_RABBITMQ_MANAGEMENT_URL:-http://rabbitmq:15672}
       DLR_RABBITMQ_DELAYED_RETRY_TYPE: ${DLR_RABBITMQ_DELAYED_RETRY_TYPE:-all}
       DLR_WORKER_TOKEN: ${DLR_WORKER_TOKEN:?set DLR_WORKER_TOKEN (see .env.example)}
       DLR_WORKER_NAME: ${DLR_WORKER_NAME:-worker-1}
-      DLR_WORKER_PROTOCOL_VERSION: ${DLR_WORKER_PROTOCOL_VERSION:-1}
       DLR_WORKER_HEARTBEAT_SECONDS: ${DLR_WORKER_HEARTBEAT_SECONDS:-10}
-      DLR_WORKER_EXECUTION_SLOTS: ${DLR_WORKER_EXECUTION_SLOTS:-4}
+      DLR_WORKER_EXECUTION_SLOTS: ${DLR_WORKER_EXECUTION_SLOTS:-2}
       # Control allows each Adapter to choose up to 24 hours. Keep the Worker
       # capability ceiling separate from Control's 5-minute default.
       DLR_EXECUTION_TIMEOUT_SECONDS: ${DLR_EXECUTION_TIMEOUT_SECONDS:-300}
@@ -266,6 +271,9 @@ services:
       DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS: ${DLR_WORKSPACE_CLEANUP_ATTEMPT_TIMEOUT_SECONDS:-5}
       DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS: ${DLR_WORKSPACE_CLEANUP_TOTAL_TIMEOUT_SECONDS:-20}
       DLR_SANDBOX_BACKEND: ${DLR_SANDBOX_BACKEND:-cgroup_v2}
+      DLR_SANDBOX_CGROUP_PATH: /run/dlr-cgroup
+      DLR_SANDBOX_PAYLOAD_UID: "${DLR_SANDBOX_PAYLOAD_UID:-501}"
+      DLR_SANDBOX_PAYLOAD_GID: "${DLR_SANDBOX_PAYLOAD_GID:-1000}"
       DLR_SANDBOX_CPU_CORES: ${DLR_SANDBOX_CPU_CORES:-1.0}
       DLR_SANDBOX_MEMORY_BYTES: ${DLR_SANDBOX_MEMORY_BYTES:-536870912}
       DLR_SANDBOX_PIDS: ${DLR_SANDBOX_PIDS:-128}
@@ -286,6 +294,14 @@ services:
       # subprocess still only sees DLR_SECRET_* (never tokens or DATABASE_URL).
       DLR_SECRET_SMOKE: ${DLR_SECRET_SMOKE:-local-dev-secret}
     volumes:
+      # Created by scripts/prepare-sandbox-host.sh on the Docker daemon host.
+      # Never bind the full cgroup filesystem or let Compose create this path.
+      - type: bind
+        source: "${DLR_SANDBOX_CGROUP_SOURCE:-/sys/fs/cgroup/system.slice/dlr-worker-sandbox.service}"
+        target: /run/dlr-cgroup
+        read_only: false
+        bind:
+          create_host_path: false
       - dlr_worker_runtime:/var/lib/dlr/runtime
       - dlr_worker_journal:/var/lib/dlr/journal
       - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/worker:/var/lib/dlr/platform-logs/worker

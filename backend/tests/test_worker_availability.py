@@ -23,6 +23,7 @@ from dlr.control.services.worker_availability import (
     effective_status,
     is_effectively_online,
 )
+from runtime_api_support import ISOLATION_PASS
 from test_adapters import create_adapter, save_version
 from test_production_lifecycle import wait_for_postgres_lock
 
@@ -38,7 +39,12 @@ def register_worker(
 ) -> dict:
     response = client.post(
         "/api/workers/register",
-        json={"name": name, "capabilities": capabilities or ["python"]},
+        json={
+            "protocol_version": 3,
+            "isolation_capabilities": dict(ISOLATION_PASS),
+            "name": name,
+            "capabilities": capabilities or ["python"],
+        },
         headers=WORKER_HEADERS,
     )
     assert response.status_code == 200, response.text
@@ -241,7 +247,7 @@ def test_heartbeat_restores_stale_worker_to_effective_online(
         assert stored.last_heartbeat > STALE_HEARTBEAT
 
 
-def test_configured_stale_worker_blocks_manual_test_without_execution(
+def test_configured_stale_worker_queues_manual_execution_durably(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -257,9 +263,9 @@ def test_configured_stale_worker_blocks_manual_test_without_execution(
 
     response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "worker_offline"
-    assert execution_count(session_factory) == 0
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert execution_count(session_factory) == 1
     assert (
         api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_worker_id"] == worker["id"]
     )

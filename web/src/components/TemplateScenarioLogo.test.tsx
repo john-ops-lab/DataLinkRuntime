@@ -11,7 +11,11 @@ it("renders every allowlisted local logo tile without remote media", () => {
   );
 
   expect(container.querySelectorAll(".template-logo-tile")).toHaveLength(17);
-  expect(container.querySelectorAll("img, image")).toHaveLength(0);
+  const logos = Array.from(container.querySelectorAll("img"));
+  expect(logos).toHaveLength(11);
+  expect(logos.every((logo) => !/^https?:/.test(logo.getAttribute("src") ?? ""))).toBe(true);
+  expect(container.querySelector(".template-logo-orbit")).toBeNull();
+  expect(container.querySelector(".template-logo-shield")).toBeNull();
   for (const key of TEMPLATE_LOGO_KEYS) {
     expect(container.querySelector(`[data-logo-key="${key}"]`)?.getAttribute("aria-hidden")).toBe("true");
   }

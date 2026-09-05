@@ -29,6 +29,7 @@ from dlr.worker import agent as worker_agent
 from dlr.worker import executor, sandbox
 from dlr.worker import venv as venv_manager
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
+from worker_runtime_support import unit_resource_envelope
 
 MiB = 1024 * 1024
 
@@ -483,6 +484,7 @@ def test_preflight_preserves_recovery_parent_until_marker_is_consumed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(sandbox, "validate_private_cgroup_namespace", lambda _parent: None)
     monkeypatch.setattr(
         sandbox,
         "_filesystem_magic",
@@ -1404,6 +1406,7 @@ def test_consumer_rejects_profile_before_attempt_journal(tmp_path: Path) -> None
         connection_factory=lambda: object(),  # type: ignore[return-value]
         runtime_settings=SimpleNamespace(
             sandbox_config=_worker_config(memory_bytes=64 * MiB),
+            resource_envelope=unit_resource_envelope(),
         ),
     )
     channel = _AckChannel()
@@ -1443,6 +1446,7 @@ def test_consumer_reports_intrinsic_profile_error_before_ceiling_or_model_valida
         connection_factory=lambda: object(),  # type: ignore[return-value]
         runtime_settings=SimpleNamespace(
             sandbox_config=_worker_config(memory_bytes=64 * MiB),
+            resource_envelope=unit_resource_envelope(),
         ),
     )
     raw_payload = _v3_payload(
@@ -1483,7 +1487,9 @@ def test_consumer_rejects_stale_profile_snapshot_before_attempt_journal(tmp_path
         ),
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(sandbox_config=_worker_config()),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=_worker_config(), resource_envelope=unit_resource_envelope()
+        ),
     )
     raw_payload = _v3_payload("python", "def handle(context, input): return {}")
     raw_payload["execution_timeout_seconds"] = 21

@@ -16,6 +16,49 @@ import java.util.Set;
 
 /** Bounded single HTTP request Recipe for DLR. */
 public class Adapter {
+    // REST 接口请求：可修改的配置集中在这里。
+    // 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    // 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+    // HTTP_BASIC_CREDENTIAL：HTTP Basic 认证，值为 username:password。
+    // HTTP_BEARER_TOKEN：HTTP Bearer Token，使用此认证时配置。
+    // HTTP_API_KEY：HTTP API Key，使用此认证时配置。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // url: 填写实际接口地址；不要在地址中填写密码或 Token。
+        // method: 请求方法：GET 读取；POST、PUT、PATCH、DELETE 可能修改远端数据。
+        // query: 普通查询参数；认证参数使用 query_auth 从凭据读取。
+        // query_auth: 可选认证：例如 {"parameter":"api_key","secret_binding":"HTTP_API_KEY"}；在本适配器的凭据绑定中配置同名键。
+        // headers: 普通请求头；Bearer 认证可增加 "DLR-Auth": "bearer:HTTP_BEARER_TOKEN"，Token 在本适配器凭据绑定中配置。
+        // body: POST、PUT、PATCH 的请求内容；GET 通常留空。
+        // response_type: 返回内容类型：json 或 text。
+        // allowed_statuses: 允许的 HTTP 状态码列表；按目标接口调整。
+        // timeout_seconds: 单次请求超时时间，单位秒。
+        // max_response_bytes: HTTP 响应大小上限，单位字节。
+        // max_redirects: 最多跟随的同站点跳转次数。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "url": "https://api.example/resources",
+              "method": "GET",
+              "query": {},
+              "query_auth": null,
+              "headers": {
+                "Accept": "application/json"
+              },
+              "body": null,
+              "response_type": "json",
+              "allowed_statuses": [
+                200
+              ],
+              "timeout_seconds": 30,
+              "max_response_bytes": 1048576,
+              "max_redirects": 3
+            }
+            """);
+    }
+
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
     private static final Set<String> SIDE_EFFECTS = Set.of("POST", "PUT", "PATCH", "DELETE");
     private static final String HEADER_NAME = "[!#$%&'*+\\-.^_`|~0-9A-Za-z]+";
@@ -29,6 +72,13 @@ public class Adapter {
     );
 
     public Object handle(Context context, Object rawInput) throws Exception {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         Map<String, Object> input = object(rawInput, "input_must_be_object");
         String method = String.valueOf(input.getOrDefault("method", "GET")).toUpperCase();
         if (!METHODS.contains(method)) throw new IllegalArgumentException("unsupported_method");
@@ -216,6 +266,7 @@ public class Adapter {
             throw new IllegalArgumentException("invalid_query_auth");
         }
         String binding = requiredString(value, "secret_binding");
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String secret = context.secrets.get(binding);
         if (secret == null || secret.isEmpty()) throw new IllegalArgumentException("missing_credential");
         return new String[] {parameter, secret};
@@ -292,6 +343,7 @@ public class Adapter {
             int split = auth.indexOf(':');
             if (split <= 0) throw new IllegalArgumentException("invalid_auth_scheme");
             String scheme = auth.substring(0, split);
+            // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
             String secret = context.secrets.get(auth.substring(split + 1));
             if (secret == null || secret.isEmpty()) throw new IllegalArgumentException("missing_credential");
             String injected;

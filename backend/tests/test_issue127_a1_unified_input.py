@@ -299,14 +299,16 @@ def test_schedule_put_and_input_config_mirror_without_revision_fork(
     assert api_client.get(f"/api/adapters/{adapter['id']}/schedule").json()["input"] == {"new": 2}
 
 
+@pytest.mark.parametrize("policy", ["coalesce_latest", "skip_while_busy", "queue_every_occurrence"])
 def test_invalid_schedule_consumes_due_point_and_persists_block(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
+    policy: str,
 ) -> None:
     adapter, _ = setup_task(api_client, "a1-invalid-cursor")
     mode = api_client.patch(f"/api/adapters/{adapter['id']}", json={"run_mode": "schedule"})
     assert mode.status_code == 200, mode.text
-    configured = put_schedule(api_client, adapter["id"])
+    configured = put_schedule(api_client, adapter["id"], misfire_policy=policy)
     assert configured.status_code == 200, configured.text
     due = BASE - timedelta(minutes=1)
     expected_due = latest_due_point("* * * * *", "UTC", due, BASE)
@@ -335,9 +337,11 @@ def test_invalid_schedule_consumes_due_point_and_persists_block(
     assert schedule_state(session_factory, adapter["id"])[4] > BASE
 
 
+@pytest.mark.parametrize("policy", ["coalesce_latest", "skip_while_busy", "queue_every_occurrence"])
 def test_schedule_persists_source_unavailable_code_without_mislabeling(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
+    policy: str,
 ) -> None:
     adapter, _ = setup_task(api_client, "a1-source-unavailable-code")
     assert (
@@ -346,7 +350,7 @@ def test_schedule_persists_source_unavailable_code_without_mislabeling(
         ).status_code
         == 200
     )
-    assert put_schedule(api_client, adapter["id"]).status_code == 200
+    assert put_schedule(api_client, adapter["id"], misfire_policy=policy).status_code == 200
     set_cursor(session_factory, adapter["id"], BASE - timedelta(minutes=1))
     with session_factory.begin() as session:
         config = session.get(AdapterInputConfig, adapter["id"])
@@ -364,10 +368,12 @@ def test_schedule_persists_source_unavailable_code_without_mislabeling(
         assert schedule.last_blocked_detail == {"code": "input_source_not_available"}
 
 
+@pytest.mark.parametrize("policy", ["coalesce_latest", "skip_while_busy", "queue_every_occurrence"])
 def test_schedule_persists_oversized_code_and_structured_limit(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
+    policy: str,
 ) -> None:
     adapter, _ = setup_task(api_client, "a1-oversized-code")
     save_input(api_client, adapter["id"], {"payload": "large-after-policy-change"})
@@ -377,7 +383,7 @@ def test_schedule_persists_oversized_code_and_structured_limit(
         ).status_code
         == 200
     )
-    assert put_schedule(api_client, adapter["id"]).status_code == 200
+    assert put_schedule(api_client, adapter["id"], misfire_policy=policy).status_code == 200
     set_cursor(session_factory, adapter["id"], BASE - timedelta(minutes=1))
     monkeypatch.setattr(settings, "execution_input_max_bytes", 8)
 

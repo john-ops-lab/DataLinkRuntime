@@ -36,64 +36,15 @@ and pins later runs to the latest saved content.
 
 ### 2.1 Template Gallery and Recipe Instantiation
 
-Template Gallery is a top-level destination alongside Adapters. Its initial static,
-release-versioned catalog contains exactly 5 Themes, 17 Scenarios, and one Python,
-JavaScript, and Java implementation per scenario: 51 Variants in total. Users can
-search by theme, keyword, vendor, Adapter type, protocol, language, and maturity. A
-detail view loads code, contracts, dependency guidance, and provenance only for the
-selected language Variant.
+Template Gallery offers 5 themes and 17 scenarios. The default All tab searches across categories; vendor, type, protocol, and language filters narrow the results. Vendor templates use vendor logos. Each scenario offers its supported languages without requiring all three languages.
 
-After the user selects a language, enters a name, and confirms, one transaction creates
-an independent Adapter, Slot 0, the minimum disabled type configuration, and Revision 1.
-The Web then opens that Adapter in the editor. This is not ordinary Clone behavior: the
-new Adapter starts stopped and has no Worker, Credential Binding, installed Dependency,
-Schedule, Managed File, Execution, or history. Later template releases never overwrite
-the copied code. Before running, the user must review or edit it, choose a compatible
-Worker, install exact dependencies, and configure input.
-
-Non-secret Recipe settings belong in `context.config` or Execution Input. Passwords,
-Tokens, private keys, and similar values are supplied only through Credential Binding
-and `context.secrets`. External endpoints are administrator-reviewed runtime settings;
-copying a template does not make them trusted, and authentication query values must not
-be embedded in them. Recipe HTTPS, same-origin redirect, timeout, and limit checks are
-not a platform-level SSRF or egress-isolation boundary. Production deployments still
-need network policy around Worker destinations.
-
-Seven cloud/CMDB Scenarios provide a read-only `preview` whose normalized result and
-Adapter Output are bounded by page, record, byte, and total-request-time limits. Optional
-`sync` targets the external `dlr-cmdb-upsert/v1` contract and obtains stable `scan_id`
-and `source_scope` values from immutable Execution Input. Every Attempt of one logical
-Execution must reuse both values, and any source or batch failure must skip finish. The
-Alibaba Cloud SDK `callApi` transport used by three Alibaba Scenarios does not yet have
-a proven source-response byte bound, so its raw HTTP response is outside this bounded-
-output claim. This is only the identity fragment, not a complete Variant input contract:
-
-```json
-{
-  "mode": "sync",
-  "scan_id": "123e4567-e89b-42d3-a456-426614174000",
-  "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1"
-}
+```text
+Template Gallery → choose a scenario and language → name and copy → edit the new Adapter → check or change configuration → save → run
 ```
 
-The UUID above is an anonymous, copyable example. Use a new value for a new business
-scan and reuse the original value for every retry of that same scan.
+Copying creates an independent Adapter and opens its code and dependencies as an editor draft. Saving creates the first version. The copy has no template association and is unaffected by later template updates. Choose a Worker, prepare dependencies, and bind credentials through the ordinary Adapter workflow before running.
 
-`DLR_MANAGED_FILES_ENABLED=false` does not affect browsing, source viewing, or copying
-the 5/17/51 catalog, including CSV and Excel. Copying does not create a file, Artifact,
-Lease, or binding. At runtime, provide direct content or a file only as allowed by the
-selected Variant contract and deployment capability.
-
-Maturity is independent for each `scenario + version + language + source_sha256`:
-`reference-generated / syntax-verified / fixture-verified / live-verified`. A matching
-Receipt constrains every label. `reference-generated` means there is no Receipt that
-both matches the current source hash and satisfies every gate for the next level;
-narrow smoke or security-canary execution may exist without being promotion evidence.
-Syntax or compilation proves at most `syntax-verified`; it is never complete fixture or
-live-service evidence. See [Template Recipe usage and security boundaries](../templates/recipe-usage-security.en.md),
-the [CMDB Upsert v1 contract (Simplified Chinese)](../templates/cmdb-upsert-v1.md), and
-[maturity Receipts (Simplified Chinese)](../templates/maturity-receipts.md) for the
-detailed contracts.
+Most templates need no input: editable settings live together at the top of the code with explanatory comments. Passwords and Tokens are read from credentials; comments identify the required credential and binding names. Input examples appear only for files, Webhooks, or tasks requiring per-run values. Short result examples explain the output. Details show purpose, usage, language, code, and dependencies; parameter rules and execution-mode configuration belong in code comments.
 
 ## 3. Adapter Types
 
@@ -126,8 +77,7 @@ Users configure a readable path, a Token Credential and the run node, and use
 `Start Receiving` / `Stop Receiving`. After validation the request asynchronously
 creates an Execution and returns `202 + execution_id`. The RabbitMQ backend may keep
 multiple immutable `queued/retry_wait` Executions, while one Adapter still has only
-one active Attempt. The legacy backend keeps its original single-active gate during
-the compatibility window.
+one active Attempt.
 
 The page information architecture is fixed as:
 
@@ -138,7 +88,7 @@ Call History
 ```
 
 Webhook, Task, and Schedule terminal Executions are cleaned in retryable batches
-using deployment-configured age and per-Adapter count limits. `pending` and
+using deployment-configured age and per-Adapter count limits. `queued`, `retry_wait`, and
 `running` rows are never removed by retention. See
 `docs/deployment/platform-logs.md` for defaults and platform-log rotation.
 
@@ -154,13 +104,11 @@ using deployment-configured age and per-Adapter count limits. `pending` and
 
 ## 5. Unified Run Lock
 
-The legacy backend permits at most one `pending/running` Execution per Adapter. The
-RabbitMQ backend permits bounded queueing, while database `Slot 0` binds at most one
+Execution permits bounded queueing, while database `Slot 0` binds at most one
 active Attempt. Task manual runs, Schedule, and Webhook share the same Admission,
 snapshot, and Slot rules.
 
-When a Schedule/Webhook entry is enabled, a legacy active Execution exists, or a
-RabbitMQ active Attempt exists, the following are forbidden:
+When a Schedule/Webhook entry is enabled or an active Attempt exists, the following are forbidden:
 
 - changing code, dependencies, run parameters or Credential bindings;
 - changing the Worker, Task run mode, Cron, Webhook path or Token;
@@ -227,7 +175,7 @@ Input → handle(context, input) → Output
 - `context.secrets.get(key)` provides bound credentials;
 - `context.logger` emits live logs.
 
-The RabbitMQ v3 path adds `queued / running / retry_wait / dead_letter` to the
+The sole execution path uses `queued / running / retry_wait / dead_letter` and the
 existing terminal states. Worker ACKs after the durable Control Claim commits and
 its private journal is atomically persisted, then enters the resource Sandbox. A
 post-ACK crash is recovered through Attempt Lease/Fencing and a new generation, not
@@ -319,21 +267,18 @@ choose a scenario and language in Template Gallery
 → name and copy it
 → edit the independent Adapter immediately
 → configure Worker / Dependency / Input / Credential / Endpoint
-→ save, preview, and decide on use from the actual maturity evidence
+→ check code settings, save, and run
 ```
 
 ## 15. Reliable Runtime Operational Boundary
 
-- Defaults keep ordinary RabbitMQ ingress off, legacy Claim on, and all three
-  Cutover attestations off. An ordinary install never performs Final Cutover
-  automatically.
-- Final Cutover is a staged administrator operation: prove backup/restore, drain or
-  migrate legacy work, require Worker v3 plus the Linux Sandbox, enable ordinary
-  traffic, pressure-test Slot authority, require minimum protocol 3, retire the old
-  index, and only then close legacy Claim. The order is not interchangeable.
-- Post-Cutover rollback uses a compatible Control that understands the additive
-  schema to drain and repair. Never start an old binary against new rows or treat a
-  production `alembic downgrade` as recovery.
-- See [Reliable Runtime migration notes](issue130-reliable-runtime-migrations.md) for
-  configuration, read-only inventory/preflight/invariant APIs, and failure handling;
-  see [Sandbox deployment](issue130-sandbox-deployment.md) for Linux prerequisites.
+- Fresh installations use only RabbitMQ, Attempt/Slot, and the Linux resource Sandbox.
+  There is no legacy mode, canary switch, protocol selector, or manual Cutover attestation.
+- Workers must pass real private-cgroup-namespace and delegated cgroup v2 capability
+  checks. Incomplete isolation prevents execution and appears in system status.
+- Run `alembic upgrade head` against an empty database. Online migration of old runtime
+  data and old-binary rollback are unsupported; test-version rollback uses a clean
+  environment matching that version, not schema downgrade.
+- See [Sandbox deployment](issue130-sandbox-deployment.md) for current installation,
+  host preparation, and diagnostics. [Old migration notes](issue130-reliable-runtime-migrations.md)
+  are historical records, not fresh-install instructions.

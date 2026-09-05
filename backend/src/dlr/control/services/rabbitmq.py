@@ -310,7 +310,6 @@ def ingress_configuration_ready(
     session: Session | None = None,
     *,
     worker_id: int | None = None,
-    allow_disabled: bool = False,
 ) -> bool:
     """Return whether live or restart-persisted capability permits ingress.
 
@@ -320,9 +319,7 @@ def ingress_configuration_ready(
     cold process cannot claim a persisted generation.
     """
 
-    if (
-        not settings.rabbitmq_execution_enabled and not allow_disabled
-    ) or not settings.rabbitmq_url:
+    if not settings.rabbitmq_url:
         return False
     if _runtime_status["last_error_code"] in RABBITMQ_CONFIGURATION_ERROR_CODES:
         return False
@@ -450,7 +447,7 @@ def runtime_health(session: Session | None = None) -> dict[str, object]:
                 repair_error = "rabbitmq_not_verified"
         repair_ready = repair_status == "ready" and capability_verified
 
-    ingress_enabled = bool(settings.rabbitmq_execution_enabled)
+    ingress_enabled = True
     ingress_ready = ingress_configuration_ready(session)
     ingress_error: object = repair_error
     if ingress_enabled and not configured and ingress_error is None:

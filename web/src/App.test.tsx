@@ -255,6 +255,21 @@ function stubFetch(routes: Route[]) {
         }),
       };
     }
+    if (!route && method === "GET" && /^\/api\/executions\/\d+\/reliable-detail$/.test(url)) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          execution_id: Number(url.match(/\d+/)?.[0] ?? 0),
+          dispatch_backend: "rabbitmq",
+          status: "succeeded",
+          attempts: [],
+          incidents: [],
+          replay_available: false,
+          replay_reason: null,
+        }),
+      };
+    }
     if (!route) {
       throw new Error(`Unexpected request: ${method} ${url}`);
     }
@@ -342,6 +357,7 @@ function makeReadyWorker(overrides: Partial<Worker> = {}): Worker {
     rabbitmq_execution_v3: true,
     isolation_capabilities: {
       cgroup_v2: true,
+      cgroup_namespace_private: true,
       mount_namespace: true,
       pid_namespace: true,
       memory_hard_limit: true,
@@ -2199,6 +2215,7 @@ it("never fabricates Adapter.updated_at from the saved version; adapter refresh 
 
 function makeExecution(overrides: Partial<Execution> = {}): Execution {
   return {
+    dispatch_backend: "rabbitmq",
     id: 5,
     adapter_id: 1,
     version_id: 10,
@@ -2227,6 +2244,7 @@ function makeExecution(overrides: Partial<Execution> = {}): Execution {
 
 function makeSummary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
   return {
+    dispatch_backend: "rabbitmq",
     id: 6,
     adapter_id: 1,
     version_id: 10,
@@ -2418,7 +2436,7 @@ it("keeps Template copy disabled while a hidden Task mutation is in flight", asy
 
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
   fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
-  const copyButton = await screen.findByRole("button", { name: "复制为 Adapter" }) as HTMLButtonElement;
+  const copyButton = await screen.findByRole("button", { name: "复制为适配器" }) as HTMLButtonElement;
   expect(copyButton.disabled).toBe(true);
 
   await act(async () => {
@@ -2944,7 +2962,7 @@ it("keeps Worker details off the homepage and uses execution readiness for sever
   const [offlineItem] = await screen.findAllByTestId("worker-item");
   expect(within(offlineItem).getByText("离线")).toBeTruthy();
   expect(
-    screen.getByText("可执行状态同时检查心跳、协议 v3、隔离预检、硬隔离能力和服务端切流门禁；最近心跳时间仅用于排障。"),
+    screen.getByText("节点在线且通过执行接口、资源隔离和消息执行检查后，才能运行适配器。最近心跳时间可用于排查连接问题。"),
   ).toBeTruthy();
   expect(
     screen.getByTestId("system-status-summary").querySelector(".ant-badge-status-error"),
@@ -6376,9 +6394,6 @@ const templateDetailFixture: TemplateScenarioDetail = {
   title: { "zh-CN": "REST 单次请求", en: "Single REST request" },
   summary: { "zh-CN": "调用一个受控 REST API。", en: "Call one controlled REST API." },
   details: { "zh-CN": "用于单次有界请求。", en: "For a single bounded request." },
-  input_summary: { "zh-CN": "请求配置", en: "Request configuration" },
-  output_summary: { "zh-CN": "规范化响应", en: "Normalized response" },
-  risk: { "zh-CN": "禁止跨源重定向。", en: "Cross-origin redirects are rejected." },
   vendor: "DLR",
   adapter_type: "task",
   protocols: ["HTTP", "JSON"],
@@ -6387,21 +6402,10 @@ const templateDetailFixture: TemplateScenarioDetail = {
   template_version: "1.0.0",
   updated_at: "2026-09-05",
   variants: [
-    { language: "python", available: true, maturity: "syntax-verified" },
-    { language: "javascript", available: true, maturity: "reference-generated" },
-    { language: "java", available: true, maturity: "reference-generated" },
+    { language: "python", available: true },
+    { language: "javascript", available: true },
+    { language: "java", available: true },
   ],
-  modes: ["request"],
-  sources: [{
-    id: "http-semantics",
-    url: "https://www.rfc-editor.org/rfc/rfc9110",
-    revision: "RFC 9110",
-    reference: "HTTP Semantics",
-    license: "RFC Trust",
-    license_evidence: "RFC page",
-    use_mode: "official-api",
-    checked_at: "2026-09-05",
-  }],
 };
 
 const templateVariantFixture: TemplateVariant = {
@@ -6411,17 +6415,11 @@ const templateVariantFixture: TemplateVariant = {
   language: "python",
   adapter_type: "task",
   template_version: "1.0.0",
-  behavior_contract_version: "dlr-recipe/v1",
-  maturity: "syntax-verified",
   code: "def handle(context, input):\n    return {\"copied\": True}\n",
   requirements: "httpx==0.28.1",
-  install_notes: { "zh-CN": "安装固定依赖。", en: "Install the pinned dependency." },
-  input_skeleton: { url: "https://example.com/api" },
-  input_contract: { type: "object" },
-  output_contract: { type: "object" },
+  input_skeleton: {},
+  output_example: { copied: true },
   runtime_config: {},
-  runtime_guidance: { "zh-CN": "配置真实凭据后运行。", en: "Configure real credentials before running." },
-  sources: templateDetailFixture.sources,
 };
 
 function templateGalleryRoutes(items = [templateDetailFixture]): Route[] {
@@ -6544,7 +6542,7 @@ it("replaces a directly opened detail with the Gallery so Back leaves Templates"
   expect(screen.queryByTestId("template-detail")).toBeNull();
 });
 
-it("copies the reviewed Variant and automatically opens the new Adapter Edit page", async () => {
+it("copies the Variant into an unsaved ordinary Adapter editor without a Revision", async () => {
   window.history.replaceState(null, "", "/templates/rest-single-request");
   const copied = makeAdapter({
     id: 42,
@@ -6553,15 +6551,9 @@ it("copies the reviewed Variant and automatically opens the new Adapter Edit pag
     adapter_type: "task",
     run_mode: "manual",
     runtime_worker_id: null,
-    latest_version_id: 77,
-    template_scenario_slug: "rest-single-request",
-    template_version: "1.0.0",
-  });
-  const copiedVersion = makeVersion({
-    id: 77,
-    adapter_id: 42,
-    code: templateVariantFixture.code,
-    requirements: templateVariantFixture.requirements,
+    latest_version_id: null,
+    template_scenario_slug: null,
+    template_version: null,
   });
   let committed = false;
   const fetchMock = stubFetch([
@@ -6584,12 +6576,7 @@ it("copies the reviewed Variant and automatically opens the new Adapter Edit pag
     {
       method: "GET",
       match: "/api/adapters/42/versions",
-      respond: () => ({ body: [{ id: 77, adapter_id: 42, seq: 1, created_at: copiedVersion.created_at }] }),
-    },
-    {
-      method: "GET",
-      match: "/api/adapters/42/versions/77",
-      respond: () => ({ body: copiedVersion }),
+      respond: () => ({ body: [] }),
     },
   ]);
 
@@ -6598,8 +6585,8 @@ it("copies the reviewed Variant and automatically opens the new Adapter Edit pag
     "/api/templates/scenarios/rest-single-request/variants/python",
   ));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "Adapter 名称" }), {
+  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: " 生产 REST 同步 " },
   });
   fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
@@ -6609,6 +6596,11 @@ it("copies the reviewed Variant and automatically opens the new Adapter Edit pag
   expect(window.location.pathname).toBe("/adapters");
   expect(screen.getByRole("tab", { name: "编辑" }).getAttribute("aria-selected")).toBe("true");
   expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(true);
+
+  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
+  const unload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(unload);
+  expect(unload.defaultPrevented).toBe(true);
 
   const instantiateCall = fetchMock.mock.calls.find(
     ([url, init]) => String(url).endsWith("/instantiate") && init?.method === "POST",
@@ -6663,8 +6655,8 @@ it("does not let a late bootstrap Adapter list hide the newly instantiated Adapt
   render(<App />);
   await waitFor(() => expect(listCalls).toBe(1));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "Adapter 名称" }), {
+  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: copied.name },
   });
   fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
@@ -6679,21 +6671,21 @@ it("does not let a late bootstrap Adapter list hide the newly instantiated Adapt
   expect(screen.getAllByTestId("adapter-item").some((item) => item.textContent?.includes(copied.name))).toBe(true);
 });
 
-it("keeps the created Adapter selected and reports a real error when its Revision cannot load", async () => {
+it("restores and protects copied code without depending on an empty version-history request", async () => {
   window.history.replaceState(null, "", "/templates/rest-single-request");
   const copied = makeAdapter({
     id: 42,
-    name: "已创建但内容加载失败",
+    name: "历史接口故障仍保留草稿",
     language: "python",
     adapter_type: "task",
     run_mode: "manual",
     runtime_worker_id: null,
-    latest_version_id: 77,
-    template_scenario_slug: "rest-single-request",
-    template_version: "1.0.0",
+    latest_version_id: null,
+    template_scenario_slug: null,
+    template_version: null,
   });
   let committed = false;
-  stubFetch([
+  const fetchMock = stubFetch([
     healthRoute({ status: "ok", database: true }),
     readyWorkerRoute,
     {
@@ -6722,16 +6714,20 @@ it("keeps the created Adapter selected and reports a real error when its Revisio
 
   render(<App />);
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "Adapter 名称" }), {
+  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
     target: { value: copied.name },
   });
   fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
 
   await screen.findByRole("heading", { name: copied.name });
   expect(window.location.pathname).toBe("/adapters");
-  expect((await screen.findByTestId("error-banner")).textContent).toContain("Revision 加载失败");
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
+  await waitForCodeEditorValue(templateVariantFixture.code);
+  expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/adapters/42/versions")).toBe(false);
+  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
+  const unload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(unload);
+  expect(unload.defaultPrevented).toBe(true);
 });
 
 it("does not POST when the user cancels leaving a dirty Adapter for instantiation", async () => {
@@ -6750,8 +6746,8 @@ it("does not POST when the user cancels leaving a dirty Adapter for instantiatio
     "/api/templates/scenarios/rest-single-request/variants/python",
   ));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-  const nameInput = screen.getByRole("textbox", { name: "Adapter 名称" });
+  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留输入" } });
   vi.spyOn(window, "confirm").mockReturnValue(false);
   fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
@@ -6785,8 +6781,8 @@ it("does not POST when the user cancels leaving an unsaved Task input draft", as
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
   fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-  const nameInput = screen.getByRole("textbox", { name: "Adapter 名称" });
+  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留 Task 草稿" } });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
@@ -6822,8 +6818,8 @@ it("does not POST when the user cancels leaving an unsaved Webhook runtime draft
   fireEvent.click(screen.getByRole("link", { name: "模板广场" }));
   fireEvent.click(await screen.findByRole("link", { name: "查看详情" }));
   await waitForCodeEditorValue(templateVariantFixture.code);
-  fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-  const nameInput = screen.getByRole("textbox", { name: "Adapter 名称" });
+  fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+  const nameInput = screen.getByRole("textbox", { name: "适配器名称" });
   fireEvent.change(nameInput, { target: { value: "保留 Webhook 草稿" } });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));

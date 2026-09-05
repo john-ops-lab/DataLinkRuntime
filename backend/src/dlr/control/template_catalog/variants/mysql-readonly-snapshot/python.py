@@ -13,6 +13,29 @@ from decimal import Decimal
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
+# MySQL 数据查询：可修改的配置集中在这里。
+# 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+# 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+# 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+# MYSQL_DSN：MySQL 连接字符串（包含账号密码）。
+CONFIG = {
+    # 填写一条 SELECT；动态值通过 params 绑定，不要拼接用户输入。
+    "sql": "SELECT id, name FROM example_items WHERE updated_at >= %s",
+    # 按 SQL 占位符顺序填写参数。
+    "params": ["2026-01-01T00:00:00Z"],
+    # 最多读取的行数。
+    "max_rows": 5000,
+    # 返回结果大小上限，单位字节。
+    "max_output_bytes": 4194304,
+    # 单个单元格大小上限，单位字节。
+    "max_cell_bytes": 1048576,
+    # 每批处理的记录数。
+    "batch_size": 500,
+    # 单次请求超时时间，单位秒。
+    "timeout_seconds": 30,
+}
+
+
 _SELECT = re.compile(r"\A\s*select\b", re.IGNORECASE)
 
 
@@ -121,6 +144,11 @@ def _row_values(raw_row: object, names: list[str]) -> list[object]:
 
 
 def handle(context, input):
+    if input is None:
+        input = {}
+    if not isinstance(input, dict):
+        raise ValueError("输入必须是 JSON 对象")
+    input = {**CONFIG, **input}
     if not isinstance(input, dict):
         raise ValueError("input_must_be_object")
     sql = _query(input)
@@ -132,6 +160,7 @@ def handle(context, input):
     max_output_bytes = _positive(input.get("max_output_bytes"), 4_194_304, 16_777_216)
     max_cell_bytes = _positive(input.get("max_cell_bytes"), 1_048_576, 8_388_608)
     timeout = _positive(input.get("timeout_seconds"), 30, 300)
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     dsn = context.secrets.get("MYSQL_DSN")
     if not dsn:
         raise ValueError("missing_credential")

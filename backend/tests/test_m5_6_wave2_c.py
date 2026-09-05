@@ -17,6 +17,7 @@ from dlr.worker import executor, javaenv, nodeenv, venv
 from test_adapters import create_adapter, save_version
 from test_executions import create_execution
 from test_workers import claim, register_worker, report
+from worker_runtime_support import run_with_test_sandbox
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 
@@ -135,7 +136,9 @@ def _runtime_settings(root: Path) -> executor.RuntimeSettings:
 
 def _payload(language: str, code: str, locale: str) -> dict[str, object]:
     return {
-        "execution_id": 701,
+        "execution_id": 701
+        + (0 if locale == "zh-CN" else 10)
+        + ("python", "javascript", "java").index(language),
         "adapter_id": 702,
         "version_id": 703,
         "language": language,
@@ -240,7 +243,7 @@ def test_all_three_runtimes_localize_platform_dependency_lines_without_translati
     }
     for locale in ("zh-CN", "en"):
         for language, code in cases.items():
-            result = executor.run(
+            result = run_with_test_sandbox(
                 _payload(language, code, locale),
                 _runtime_settings(tmp_path / locale / language),
             )
@@ -256,7 +259,7 @@ def test_all_three_runtimes_localize_platform_dependency_lines_without_translati
 
 
 def test_user_traceback_and_output_are_not_translated(tmp_path: Path) -> None:
-    result = executor.run(
+    result = run_with_test_sandbox(
         {
             "execution_id": 704,
             "adapter_id": 705,
@@ -293,7 +296,7 @@ def test_english_dependency_error_keeps_localized_hint_and_raw_tool_detail(
         )
 
     monkeypatch.setattr(venv, "prepare_version_venv", fail_prepare)
-    result = executor.run(
+    result = run_with_test_sandbox(
         {
             "execution_id": 707,
             "adapter_id": 708,
@@ -340,7 +343,7 @@ def test_dependency_failure_error_field_is_localized_per_execution_locale(
         ),
     )
     for locale, expected_prefix, forbidden in cases:
-        result = executor.run(
+        result = run_with_test_sandbox(
             _payload("python", code, locale),
             _runtime_settings(tmp_path / locale),
         )
@@ -386,7 +389,7 @@ def test_no_source_failure_uses_localized_message_without_dependency_label(
             "本地缓存",
         ),
     ):
-        result = executor.run(
+        result = run_with_test_sandbox(
             _payload("python", code, locale),
             _runtime_settings(tmp_path / locale),
         )

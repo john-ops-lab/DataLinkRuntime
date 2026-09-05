@@ -8,6 +8,49 @@ import re
 import time
 from urllib import error, parse, request
 
+# REST 分页采集：可修改的配置集中在这里。
+# 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+# 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+# 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+# HTTP_BEARER_TOKEN：HTTP Bearer Token，使用此认证时配置。
+# HTTP_API_KEY：HTTP API Key，使用此认证时配置。
+CONFIG = {
+    # 填写实际接口地址；不要在地址中填写密码或 Token。
+    "url": "https://api.example/resources",
+    # 分页方式：page（页码）、offset（偏移量）、cursor（游标）或 next-url（下一页地址）。
+    "strategy": "page",
+    # 接口响应中列表的字段路径，例如 items 或 data.items。
+    "records_path": "items",
+    # 接口响应中下一页游标或地址的字段路径。
+    "next_path": "next",
+    # 接口接收页码的参数名。
+    "page_parameter": "page",
+    # 接口接收每页条数的参数名。
+    "size_parameter": "page_size",
+    # 从第几页开始读取。
+    "start_page": 1,
+    # 每次请求的条数，不能超过目标接口限制。
+    "page_size": 100,
+    # 普通请求头；Bearer 认证可增加 "DLR-Auth": "bearer:HTTP_BEARER_TOKEN"。
+    # Token 在本适配器凭据绑定中配置。
+    "headers": {},
+    # 可选认证：例如 {"parameter":"api_key","secret_binding":"HTTP_API_KEY"}。
+    # 在本适配器的凭据绑定中配置同名键。
+    "query_auth": None,
+    # 是否允许下一页跳转到其他站点；建议保留 false。
+    "allow_cross_origin_next": False,
+    # 单次运行最多读取的页数。
+    "max_pages": 20,
+    # 单次运行最多返回的记录数。
+    "max_records": 10000,
+    # 单次运行处理或返回的数据大小上限，单位字节。
+    "max_bytes": 4194304,
+    # 单次请求超时时间，单位秒。
+    "timeout_seconds": 30,
+    # 读取请求失败时的最多重试次数。
+    "max_retries": 2,
+}
+
 
 class NoRedirect(request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
@@ -161,6 +204,7 @@ def _headers(context, raw: object) -> tuple[dict[str, str], set[str], set[str]]:
         scheme, separator, key = auth.partition(":")
         if not separator:
             raise ValueError("invalid_auth_scheme")
+        # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         secret = context.secrets.get(key)
         if not secret:
             raise ValueError("missing_credential")
@@ -209,6 +253,7 @@ def _query_auth(context, raw: object) -> tuple[str, str] | None:
         raise ValueError("invalid_query_auth")
     if not isinstance(binding, str) or not binding:
         raise ValueError("invalid_query_auth")
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     secret = context.secrets.get(binding)
     if not secret:
         raise ValueError("missing_credential")
@@ -506,6 +551,11 @@ def _handle(context, input):
 
 
 def handle(context, input):
+    if input is None:
+        input = {}
+    if not isinstance(input, dict):
+        raise ValueError("输入必须是 JSON 对象")
+    input = {**CONFIG, **input}
     try:
         return _handle(context, input)
     except ValueError as error:

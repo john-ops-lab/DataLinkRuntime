@@ -2,28 +2,16 @@
   "slug": "postgresql-readonly-snapshot",
   "theme_slug": "databases",
   "title": {
-    "zh-CN": "PostgreSQL 只读快照",
-    "en": "PostgreSQL Read-only Snapshot"
+    "zh-CN": "PostgreSQL 数据查询",
+    "en": "PostgreSQL Query"
   },
   "summary": {
-    "zh-CN": "用数据库只读账号执行一条参数化 SELECT 并分批返回有界结果。",
-    "en": "Execute one parameterized SELECT with a database read-only account and return bounded batches."
+    "zh-CN": "执行一条查询语句，将 PostgreSQL 查询结果转成 JSON。",
+    "en": "Run a SELECT query and return PostgreSQL rows as JSON."
   },
   "details": {
-    "zh-CN": "在只读事务中设置查询超时，拒绝多语句、写语句、DDL 与存储过程，并通过行数、单元格与输出字节上限约束结果。",
-    "en": "Sets a query timeout in a read-only transaction, rejects multiple statements, writes, DDL and procedures, and bounds results by row, cell and output-byte limits."
-  },
-  "input_summary": {
-    "zh-CN": "一条占位符参数化 SELECT 和位置参数数组。",
-    "en": "One placeholder-parameterized SELECT and positional parameter array."
-  },
-  "output_summary": {
-    "zh-CN": "JSON-safe 字段对象行、读取计数、partial/checkpoint 与脱敏错误。",
-    "en": "JSON-safe field-object rows, read count, partial/checkpoint state and redacted error."
-  },
-  "risk": {
-    "zh-CN": "必须使用数据库侧只读账号；客户端检查不能替代数据库权限。",
-    "en": "A database-enforced read-only account is mandatory; client checks do not replace database permissions."
+    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "PostgreSQL",
   "adapter_type": "task",
@@ -37,309 +25,81 @@
     "snapshot"
   ],
   "logo_key": "database-postgresql",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "updated_at": "2026-09-05",
   "featured_rank": 10,
-  "modes": [
-    "preview"
-  ],
   "provenance_ids": [
     "postgresql-17-docs"
   ],
   "variants": [
     {
       "language": "python",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/postgresql-readonly-snapshot/python.py",
-      "code_sha256": "fd617cbda1978e5e7d923514cbb15e54aaf71ee6e400599812a7a79b335afadc",
+      "code_sha256": "703a7e6a613a4282f96c310ab8c3585d91d3255f971bf6b44cdcb9e1404f0e15",
       "requirements": "psycopg[binary]==3.2.9",
-      "install_notes": {
-        "zh-CN": "建议依赖：psycopg[binary]==3.2.9。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: psycopg[binary]==3.2.9. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "sql": "SELECT id, name FROM example_items WHERE updated_at >= %s",
-        "params": [
-          "2026-01-01T00:00:00Z"
-        ],
-        "max_rows": 5000,
-        "max_output_bytes": 4194304,
-        "max_cell_bytes": 1048576,
-        "batch_size": 500,
-        "timeout_seconds": 30
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "sql"
-        ],
-        "properties": {
-          "sql": {
-            "type": "string",
-            "single_statement": true,
-            "allowed_statement": "SELECT",
-            "placeholder": "%s"
-          },
-          "params": {
-            "type": "array",
-            "max_items": 64
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "max_cell_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 300
-          }
-        },
-        "driver_rule": "one parameterized SELECT in a read-only transaction with bounded cursor batches; multiple statements are rejected before execution",
-        "identifier_rule": "identifiers are fixed in reviewed SQL, never interpolated from unvalidated input",
-        "secret_bindings": [
-          "POSTGRES_DSN"
-        ]
-      },
-      "output_contract": {
-        "success_required": [
-          "rows",
-          "count",
-          "partial",
-          "checkpoint"
-        ],
-        "failure_required": [
-          "rows",
-          "count",
-          "partial",
-          "error"
-        ],
-        "error": "stable database_connection_failed or database_query_failed category only; no DSN, SQL parameters, driver message or password",
-        "column_rule": "duplicate column labels are rejected before any result row is published",
-        "cell_encoding": "decimals and unsafe integers use lossless strings; temporal values use ISO 8601 with the session fixed to UTC; UUID uses text; binary uses {$binary_base64: base64}",
-        "checkpoint": "row_offset is the count of complete JSON-safe rows already published"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：POSTGRES_DSN。在数据库中强制只读角色和只读事务；复制不会创建账号或安装驱动。",
-        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: POSTGRES_DSN. Enforce a read-only role and transaction in the database; copying does not create an account or install the driver."
-      },
       "provenance_ids": [
         "postgresql-17-docs"
       ],
-      "receipt_resource": "receipts/postgresql-readonly-snapshot/python.json"
+      "output_example": {
+        "rows": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "javascript",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/postgresql-readonly-snapshot/javascript.mjs",
-      "code_sha256": "37f23c98823bc045196dce7714be353e70478f36eb381a0381ee7822ca356980",
+      "code_sha256": "1e361f2b0d17261124b6526ad154c3ab836d2c24a5ac90864bce6b9049df45ab",
       "requirements": "pg@8.16.3",
-      "install_notes": {
-        "zh-CN": "建议依赖：pg@8.16.3。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: pg@8.16.3. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "sql": "SELECT id, name FROM example_items WHERE updated_at >= $1",
-        "params": [
-          "2026-01-01T00:00:00Z"
-        ],
-        "max_rows": 5000,
-        "max_output_bytes": 4194304,
-        "max_cell_bytes": 1048576,
-        "batch_size": 500,
-        "timeout_seconds": 30
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "sql"
-        ],
-        "properties": {
-          "sql": {
-            "type": "string",
-            "single_statement": true,
-            "allowed_statement": "SELECT",
-            "placeholder": "$1"
-          },
-          "params": {
-            "type": "array",
-            "max_items": 64
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "max_cell_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 300
-          }
-        },
-        "driver_rule": "one parameterized SELECT in a read-only transaction with bounded cursor batches; multiple statements are rejected before execution",
-        "identifier_rule": "identifiers are fixed in reviewed SQL, never interpolated from unvalidated input",
-        "secret_bindings": [
-          "POSTGRES_DSN"
-        ]
-      },
-      "output_contract": {
-        "success_required": [
-          "rows",
-          "count",
-          "partial",
-          "checkpoint"
-        ],
-        "failure_required": [
-          "rows",
-          "count",
-          "partial",
-          "error"
-        ],
-        "error": "stable database_connection_failed or database_query_failed category only; no DSN, SQL parameters, driver message or password",
-        "column_rule": "duplicate column labels are rejected before any result row is published",
-        "cell_encoding": "decimals and unsafe integers use lossless strings; temporal values use ISO 8601 with the session fixed to UTC; UUID uses text; binary uses {$binary_base64: base64}",
-        "checkpoint": "row_offset is the count of complete JSON-safe rows already published"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：POSTGRES_DSN。在数据库中强制只读角色和只读事务；复制不会创建账号或安装驱动。",
-        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: POSTGRES_DSN. Enforce a read-only role and transaction in the database; copying does not create an account or install the driver."
-      },
       "provenance_ids": [
         "postgresql-17-docs"
       ],
-      "receipt_resource": "receipts/postgresql-readonly-snapshot/javascript.json"
+      "output_example": {
+        "rows": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "java",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/postgresql-readonly-snapshot/java.java",
-      "code_sha256": "23e5d355a14ea382f6c01308ecb8963edffa00f140f7999d0fc0953700fba747",
+      "code_sha256": "7df53c103ec92f559aa0871780d2e63ddd4c285f5bbe417c938e7283c47796bf",
       "requirements": "org.postgresql:postgresql:42.7.7",
-      "install_notes": {
-        "zh-CN": "建议依赖：org.postgresql:postgresql:42.7.7。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: org.postgresql:postgresql:42.7.7. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "sql": "SELECT id, name FROM example_items WHERE updated_at >= ?",
-        "params": [
-          "2026-01-01T00:00:00Z"
-        ],
-        "max_rows": 5000,
-        "max_output_bytes": 4194304,
-        "max_cell_bytes": 1048576,
-        "batch_size": 500,
-        "timeout_seconds": 30
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "sql"
-        ],
-        "properties": {
-          "sql": {
-            "type": "string",
-            "single_statement": true,
-            "allowed_statement": "SELECT",
-            "placeholder": "?"
-          },
-          "params": {
-            "type": "array",
-            "max_items": 64
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "max_cell_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 300
-          }
-        },
-        "driver_rule": "one parameterized SELECT in a read-only transaction with bounded cursor batches; multiple statements are rejected before execution",
-        "identifier_rule": "identifiers are fixed in reviewed SQL, never interpolated from unvalidated input",
-        "secret_bindings": [
-          "POSTGRES_DSN"
-        ]
-      },
-      "output_contract": {
-        "success_required": [
-          "rows",
-          "count",
-          "partial",
-          "checkpoint"
-        ],
-        "failure_required": [
-          "rows",
-          "count",
-          "partial",
-          "error"
-        ],
-        "error": "stable database_connection_failed or database_query_failed category only; no DSN, SQL parameters, driver message or password",
-        "column_rule": "duplicate column labels are rejected before any result row is published",
-        "cell_encoding": "decimals and unsafe integers use lossless strings; temporal values use ISO 8601 with the session fixed to UTC; UUID uses text; binary uses {$binary_base64: base64}",
-        "checkpoint": "row_offset is the count of complete JSON-safe rows already published"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：POSTGRES_DSN。在数据库中强制只读角色和只读事务；复制不会创建账号或安装驱动。",
-        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: POSTGRES_DSN. Enforce a read-only role and transaction in the database; copying does not create an account or install the driver."
-      },
       "provenance_ids": [
         "postgresql-17-docs"
       ],
-      "receipt_resource": "receipts/postgresql-readonly-snapshot/java.json"
+      "output_example": {
+        "rows": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null
+      }
     }
   ]
 }

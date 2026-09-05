@@ -11,6 +11,40 @@ import socket
 import stat
 from contextlib import suppress
 
+# SFTP 文件读取：可修改的配置集中在这里。
+# 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+# 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+# 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+# SFTP_USERNAME：SFTP 用户名。
+# SFTP_PASSWORD：SFTP 密码（密码和私钥二选一）。
+# SFTP_PRIVATE_KEY：SFTP 私钥全文（密码和私钥二选一）。
+# SFTP_PRIVATE_KEY_PASSPHRASE：私钥口令，仅加密私钥需要。
+CONFIG = {
+    # SFTP 服务器地址。
+    "host": "sftp.example",
+    # SFTP 端口，默认 22。
+    "port": 22,
+    # 填写服务器管理员提供的 SSH 主机公钥 SHA256 指纹，用于确认服务器身份。
+    "host_fingerprint_sha256": "SHA256:EXAMPLE_HOST_KEY_FINGERPRINT",
+    # 允许读取的服务器目录。
+    "base_directory": "/exports",
+    # 相对于 base_directory 的目录。
+    "path": ".",
+    # 继续读取时填写上次 checkpoint 返回的文件位置；首次留空。
+    "start_at": None,
+    # 只匹配此后缀；空字符串表示不按后缀筛选。
+    "suffix": ".json",
+    # 要读取的相对文件路径；空列表只获取文件清单。
+    "read_paths": [],
+    # 最多列出的文件数。
+    "max_files": 500,
+    # 单个文件读取大小上限，单位字节。
+    "max_file_bytes": 1048576,
+    # 读取内容总大小上限，单位字节。
+    "max_total_bytes": 4194304,
+}
+
+
 _STABLE_ERRORS = frozenset(
     {
         "input_must_be_object",
@@ -153,6 +187,7 @@ def _handle(context, input):
     import paramiko
 
     host = input.get("host")
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     username = context.secrets.get("SFTP_USERNAME") or input.get("username")
     fingerprint = input.get("host_fingerprint_sha256")
     base_directory = input.get("base_directory", "/")
@@ -202,10 +237,13 @@ def _handle(context, input):
         ).decode().rstrip("=")
         if not hmac.compare_digest(actual, fingerprint):
             raise ValueError("host_key_mismatch")
+        # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         password = context.secrets.get("SFTP_PASSWORD")
+        # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         private_key = context.secrets.get("SFTP_PRIVATE_KEY")
         if private_key:
             key = None
+            # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
             passphrase = context.secrets.get("SFTP_PRIVATE_KEY_PASSPHRASE")
             for key_type in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
                 try:
@@ -413,6 +451,11 @@ def _handle(context, input):
 
 
 def handle(context, input):
+    if input is None:
+        input = {}
+    if not isinstance(input, dict):
+        raise ValueError("输入必须是 JSON 对象")
+    input = {**CONFIG, **input}
     try:
         return _handle(context, input)
     except ValueError as error:

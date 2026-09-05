@@ -53,9 +53,9 @@ function scenario(overrides: Partial<TemplateScenarioSummary> = {}): TemplateSce
     template_version: "1.0.0",
     updated_at: "2026-09-05",
     variants: [
-      { language: "python", available: true, maturity: "fixture-verified" },
-      { language: "javascript", available: true, maturity: "syntax-verified" },
-      { language: "java", available: true, maturity: "reference-generated" },
+      { language: "python", available: true },
+      { language: "javascript", available: true },
+      { language: "java", available: true },
     ],
     ...overrides,
   };
@@ -65,20 +65,6 @@ function detail(overrides: Partial<TemplateScenarioDetail> = {}): TemplateScenar
   return {
     ...scenario(),
     details: { "zh-CN": "用于受控的单次请求。", en: "For a controlled single request." },
-    input_summary: { "zh-CN": "请求参数", en: "Request parameters" },
-    output_summary: { "zh-CN": "规范化响应", en: "Normalized response" },
-    risk: { "zh-CN": "只允许同源重定向。", en: "Same-origin redirects only." },
-    modes: ["request"],
-    sources: [{
-      id: "official-http",
-      url: "https://www.rfc-editor.org/rfc/rfc9110",
-      revision: "RFC 9110",
-      reference: "HTTP Semantics",
-      license: "RFC Trust",
-      license_evidence: "RFC page",
-      use_mode: "official-api",
-      checked_at: "2026-09-05",
-    }],
     ...overrides,
   };
 }
@@ -91,26 +77,11 @@ function variant(language: "python" | "javascript" | "java" = "python"): Templat
     language,
     adapter_type: "task",
     template_version: "1.0.0",
-    behavior_contract_version: "dlr-recipe/v1",
-    maturity: language === "python" ? "fixture-verified" : "syntax-verified",
     code: `${language} recipe source`,
     requirements: `${language}-dependency==1.0.0`,
-    install_notes: { "zh-CN": `${language} 安装说明`, en: `${language} install notes` },
     input_skeleton: { fixture: `${language}-input` },
-    input_contract: { fixture: `${language}-input-contract` },
-    output_contract: { fixture: `${language}-output-contract` },
+    output_example: { fixture: `${language}-result` },
     runtime_config: { fixture: `${language}-runtime-config` },
-    runtime_guidance: { "zh-CN": `${language} 运行建议`, en: `${language} runtime guidance` },
-    sources: [{
-      id: `${language}-source`,
-      url: `https://example.com/${language}`,
-      revision: `${language}-revision`,
-      reference: `${language} source`,
-      license: `${language} license`,
-      license_evidence: `${language} license evidence`,
-      use_mode: "official-api",
-      checked_at: "2026-09-05",
-    }],
   };
 }
 
@@ -129,7 +100,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("renders five Theme tabs, one card per Scenario, and the real lowest maturity", async () => {
+it("defaults to All, lists available languages, and omits maturity", async () => {
   vi.spyOn(api, "listTemplateScenarios").mockResolvedValue(listResponse([scenario()]));
 
   render(
@@ -151,8 +122,10 @@ it("renders five Theme tabs, one card per Scenario, and the real lowest maturity
     await Promise.resolve();
   });
   expect(screen.getByRole("heading", { name: "REST 单次请求" })).toBeTruthy();
-  expect(screen.getAllByRole("tab")).toHaveLength(5);
-  expect(screen.getByText("实验 · 未验证")).toBeTruthy();
+  expect(screen.getAllByRole("tab")).toHaveLength(6);
+  expect(screen.getByRole("tab", { name: "全部 · 17" }).getAttribute("aria-selected")).toBe("true");
+  expect(api.listTemplateScenarios).toHaveBeenCalledWith(expect.objectContaining({ theme: undefined, page_size: 12 }), expect.any(AbortSignal));
+  expect(screen.queryByText("成熟度")).toBeNull();
   expect(screen.getByText("Python")).toBeTruthy();
   expect(screen.getByText("JavaScript")).toBeTruthy();
   expect(screen.getByText("Java")).toBeTruthy();
@@ -329,34 +302,38 @@ describe("Scenario detail and copy", () => {
     expect(await screen.findByDisplayValue("python recipe source")).toBeTruthy();
     expect((within(screen.getByRole("tabpanel")).getByTestId("template-monaco") as HTMLTextAreaElement).value)
       .toBe("python recipe source");
-    expect(screen.getByText("python 安装说明")).toBeTruthy();
-    expect(screen.getByText("python 运行建议")).toBeTruthy();
     expect(screen.getByText(/"fixture": "python-input"/)).toBeTruthy();
-    expect(screen.getByText(/"fixture": "python-input-contract"/)).toBeTruthy();
-    expect(screen.getByText(/"fixture": "python-output-contract"/)).toBeTruthy();
-    expect(screen.getByText(/"fixture": "python-runtime-config"/)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "python source" })).toBeTruthy();
-    expect(screen.getByText(/python-revision/)).toBeTruthy();
+    expect(screen.getByText(/"fixture": "python-result"/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("tab", { name: "JavaScript" }));
     expect(await screen.findByDisplayValue("javascript recipe source")).toBeTruthy();
     expect((within(screen.getByRole("tabpanel")).getByTestId("template-monaco") as HTMLTextAreaElement).value)
       .toBe("javascript recipe source");
-    expect(screen.getByText("javascript 安装说明")).toBeTruthy();
-    expect(screen.getByText("javascript 运行建议")).toBeTruthy();
     expect(screen.getByText(/"fixture": "javascript-input"/)).toBeTruthy();
-    expect(screen.getByText(/"fixture": "javascript-input-contract"/)).toBeTruthy();
-    expect(screen.getByText(/"fixture": "javascript-output-contract"/)).toBeTruthy();
-    expect(screen.getByText(/"fixture": "javascript-runtime-config"/)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "javascript source" })).toBeTruthy();
-    expect(screen.getByText(/javascript-revision/)).toBeTruthy();
+    expect(screen.getByText(/"fixture": "javascript-result"/)).toBeTruthy();
     expect(screen.queryByRole("link", { name: "python source" })).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Python" }));
     expect(await screen.findByDisplayValue("python recipe source")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "python source" })).toBeTruthy();
     expect(api.getTemplateVariant).toHaveBeenCalledTimes(3);
     expect(vi.mocked(api.getTemplateVariant).mock.calls.map((call) => call[2])).toEqual(["python", "javascript", "python"]);
+  });
+
+  it("selects the first available language and hides empty input examples", async () => {
+    vi.mocked(api.getTemplateScenario).mockResolvedValue(detail({
+      variants: [{ language: "java", available: true }],
+    }));
+    vi.mocked(api.getTemplateVariant).mockResolvedValue({ ...variant("java"), input_skeleton: {} });
+    renderDetail();
+    await screen.findByDisplayValue("java recipe source");
+    expect(api.getTemplateVariant).toHaveBeenCalledWith("rest-single-request", "1.0.0", "java");
+    expect(screen.queryByRole("tab", { name: "Python" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "JavaScript" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "输入示例" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "返回结果示例" })).toBeTruthy();
+    for (const name of ["输入", "输出", "安全边界", "运行模式", "来源与许可证", "Runtime 建议配置", "各语言成熟度"]) {
+      expect(screen.queryByRole("heading", { name })).toBeNull();
+    }
   });
 
   it("keeps every scrollable Recipe fact reachable from the keyboard", async () => {
@@ -364,7 +341,7 @@ describe("Scenario detail and copy", () => {
     await screen.findByDisplayValue("python recipe source");
 
     const facts = Array.from(container.querySelectorAll(".template-recipe-facts pre"));
-    expect(facts).toHaveLength(5);
+    expect(facts).toHaveLength(3);
     expect(facts.every((fact) => fact.getAttribute("tabindex") === "0")).toBe(true);
   });
 
@@ -404,12 +381,12 @@ describe("Scenario detail and copy", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "JavaScript" }));
     await act(async () => { await Promise.resolve(); });
-    expect((screen.getByRole("button", { name: "复制为 Adapter" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "复制为适配器" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByDisplayValue("python recipe source")).toBeNull();
 
     await act(async () => resolveJavascript?.(variant("javascript")));
     expect(await screen.findByDisplayValue("javascript recipe source")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "复制为 Adapter" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "复制为适配器" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("distinguishes not-found from a recoverable detail failure and retries", async () => {
@@ -542,15 +519,15 @@ describe("Scenario detail and copy", () => {
     });
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
     fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
-    expect(await screen.findByText("请输入 Adapter 名称")).toBeTruthy();
+    expect(await screen.findByText("请输入适配器名称")).toBeTruthy();
     expect(onInstantiate).not.toHaveBeenCalled();
 
-    const input = screen.getByRole("textbox", { name: "Adapter 名称" });
+    const input = screen.getByRole("textbox", { name: "适配器名称" });
     fireEvent.change(input, { target: { value: "生产资产同步" } });
     fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
-    expect(await screen.findByText("已有同名 Adapter，请换一个名称。")).toBeTruthy();
+    expect(await screen.findByText("已有同名适配器，请换一个名称。")).toBeTruthy();
     expect((input as HTMLInputElement).value).toBe("生产资产同步");
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
@@ -559,8 +536,8 @@ describe("Scenario detail and copy", () => {
     const onInstantiate = vi.fn(async () => true);
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-    const input = screen.getByRole("textbox", { name: "Adapter 名称" });
+    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    const input = screen.getByRole("textbox", { name: "适配器名称" });
     expect(input.getAttribute("required")).not.toBeNull();
     expect(input.getAttribute("aria-required")).toBe("true");
     fireEvent.change(input, { target: { value: "  生产资产同步  " } });
@@ -570,6 +547,7 @@ describe("Scenario detail and copy", () => {
     expect(onInstantiate).toHaveBeenCalledWith(expect.objectContaining({
       name: "生产资产同步",
       description: "每小时同步",
+      draft: { code: "python recipe source", requirements: "python-dependency==1.0.0", runtime_config: { fixture: "python-runtime-config" } },
     }));
   });
 
@@ -577,8 +555,8 @@ describe("Scenario detail and copy", () => {
     const onInstantiate = vi.fn(async () => true);
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Adapter 名称" }), {
+    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), {
       target: { value: "名".repeat(129) },
     });
     fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
@@ -590,8 +568,8 @@ describe("Scenario detail and copy", () => {
     const onInstantiate = vi.fn(async () => { throw new Error("offline"); });
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-    const input = screen.getByRole("textbox", { name: "Adapter 名称" });
+    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    const input = screen.getByRole("textbox", { name: "适配器名称" });
     fireEvent.change(input, { target: { value: "稍后重试" } });
     fireEvent.click(screen.getByRole("button", { name: "复制并编辑" }));
     expect(await screen.findByText("复制失败，请保留当前输入后重试。")).toBeTruthy();
@@ -604,8 +582,8 @@ describe("Scenario detail and copy", () => {
     const onInstantiate = vi.fn(() => new Promise<boolean>((resolve) => { resolveRequest = resolve; }));
     renderDetail(onInstantiate);
     await screen.findByDisplayValue("python recipe source");
-    fireEvent.click(screen.getByRole("button", { name: "复制为 Adapter" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Adapter 名称" }), { target: { value: "单飞复制" } });
+    fireEvent.click(screen.getByRole("button", { name: "复制为适配器" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "适配器名称" }), { target: { value: "单飞复制" } });
     const submit = screen.getByRole("button", { name: "复制并编辑" });
     fireEvent.click(submit);
     fireEvent.click(submit);
@@ -629,8 +607,7 @@ describe("Scenario detail and copy", () => {
         onInstantiate={async () => true}
       />,
     );
-    expect(await screen.findByText(/即使当前未启用文件存储/)).toBeTruthy();
     await screen.findByDisplayValue("python recipe source");
-    expect((screen.getByRole("button", { name: "复制为 Adapter" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "复制为适配器" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

@@ -59,17 +59,16 @@ MANIFEST_FIELDS = frozenset(
     }
 )
 
-# Recovery runs in the claim loop, so one scan must not monopolize the loop
-# behind a slow filesystem or Control response.  Retry timing is kept in the
-# journal inode metadata rather than its schema. v2 keeps the exact four
-# recovery fields; v3 adds its immutable Attempt identity.
+# Startup recovery is bounded so a slow filesystem does not stall registration.
+# Retry timing stays in inode metadata; every journal carries an Attempt identity.
 RECOVERY_SCAN_TIMEOUT_SECONDS = 5.0
 RECOVERY_RETRY_BACKOFF_SECONDS = 60.0
 
 # Keep this list deliberately small.  A journal must never become a general
 # task snapshot or a convenient place to retain user data.
-JOURNAL_FIELDS = frozenset({"execution_id", "protocol_version", "workspace_path", "cleanup_token"})
-V3_JOURNAL_FIELDS = JOURNAL_FIELDS | {"attempt_id"}
+JOURNAL_FIELDS = frozenset(
+    {"execution_id", "protocol_version", "workspace_path", "cleanup_token", "attempt_id"}
+)
 ATTEMPT_JOURNAL_FIELDS = frozenset(
     {
         "execution_id",
@@ -258,9 +257,8 @@ def _write_json(path: Path, value: Mapping[str, Any], *, mode: int) -> None:
 def workspace_path(runtime_root: Path, execution_id: int, attempt_id: int | None = None) -> Path:
     """Return the only Workspace path accepted for one Execution/Attempt.
 
-    Legacy/v2 callers retain the historical Execution-scoped path. v3 puts
-    each Attempt below a private Attempt directory while keeping the leaf
-    name compatible with the existing workspace marker and language harnesses.
+    Each execution Attempt has its own private directory. Standalone file
+    helpers can use an unscoped scratch Workspace without an execution journal.
     """
     if execution_id <= 0 or (
         attempt_id is not None
@@ -277,7 +275,7 @@ def workspace_path(runtime_root: Path, execution_id: int, attempt_id: int | None
 
 
 def journal_path(journal_root: Path, execution_id: int, attempt_id: int | None = None) -> Path:
-    """Return the v2 or Attempt-scoped v3 cleanup journal path."""
+    """Return a private cleanup path; execution journals require an Attempt."""
     if (
         execution_id <= 0
         or not Path(journal_root).is_absolute()
@@ -423,16 +421,15 @@ def write_cleanup_journal(
     planned_workspace: Path,
     cleanup_token: str,
     *,
-    protocol_version: int = 2,
+    protocol_version: int = 3,
     attempt_id: int | None = None,
 ) -> Path:
-    """Persist the v2/v3 cleanup hand-off before touching a Workspace."""
+    """Persist the Attempt cleanup hand-off before touching a Workspace."""
     if (
-        protocol_version not in {2, 3}
+        protocol_version != 3
         or not isinstance(cleanup_token, str)
         or not cleanup_token
-        or (protocol_version == 3 and attempt_id is None)
-        or (protocol_version == 2 and attempt_id is not None)
+        or attempt_id is None
     ):
         raise WorkspaceError("workspace_cleanup_failed")
     if not Path(journal_root).is_absolute():
@@ -454,7 +451,7 @@ def write_cleanup_journal(
                 "execution_id": execution_id,
                 "protocol_version": protocol_version,
                 "workspace_path": str(planned_workspace),
-                **({"attempt_id": attempt_id} if protocol_version == 3 else {}),
+                "attempt_id": attempt_id,
             },
             mode=0o600,
         )
@@ -478,7 +475,7 @@ def write_cleanup_journal(
 def remove_cleanup_journal(
     journal_root: Path, execution_id: int, attempt_id: int | None = None
 ) -> bool:
-    """Remove one v2 or Attempt-scoped v3 journal after receipt acceptance."""
+    """Remove one private cleanup journal after receipt acceptance."""
     target = journal_path(Path(journal_root), execution_id, attempt_id=attempt_id)
     info = _lstat(target)
     if info is None:
@@ -1088,22 +1085,19 @@ def _load_journal(
     raw_protocol_version = value.get("protocol_version")
     if not isinstance(raw_protocol_version, int) or isinstance(raw_protocol_version, bool):
         return None
-    fields = V3_JOURNAL_FIELDS if raw_protocol_version == 3 else JOURNAL_FIELDS
-    if set(value) != fields:
+    if raw_protocol_version != 3 or set(value) != JOURNAL_FIELDS:
         return None
     if not all(isinstance(value[field], str) for field in ("workspace_path", "cleanup_token")):
         return None
     if not isinstance(value["execution_id"], int) or isinstance(value["execution_id"], bool):
         return None
-    if raw_protocol_version == 3 and (
+    if (
         expected_attempt_id is None
         or not isinstance(value["attempt_id"], int)
         or isinstance(value["attempt_id"], bool)
         or value["attempt_id"] <= 0
         or value["attempt_id"] != expected_attempt_id
     ):
-        return None
-    if raw_protocol_version == 2 and expected_attempt_id is not None:
         return None
     try:
         execution_id = int(value["execution_id"])
@@ -1114,7 +1108,7 @@ def _load_journal(
         return None
     if (
         execution_id != expected_execution_id
-        or protocol_version not in {2, 3}
+        or protocol_version != 3
         or not cleanup_token
         or not Path(workspace).is_absolute()
     ):
@@ -1124,7 +1118,7 @@ def _load_journal(
         "protocol_version": protocol_version,
         "workspace_path": workspace,
         "cleanup_token": cleanup_token,
-        **({"attempt_id": int(value["attempt_id"])} if protocol_version == 3 else {}),
+        "attempt_id": int(value["attempt_id"]),
     }
 
 

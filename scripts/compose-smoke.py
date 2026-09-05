@@ -15,11 +15,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, inspect, select, update
-
 from dlr.common.config import settings
 from dlr.control.db import SessionLocal
-from dlr.control.models import AdapterSchedule, AdapterVersion, Execution, Worker
+from dlr.control.models import (
+    AdapterExecutionSlot,
+    AdapterSchedule,
+    AdapterVersion,
+    Execution,
+    ExecutionAttempt,
+    Worker,
+)
+from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
+from sqlalchemy import func, inspect, select, update
 
 BASE = "http://web/api"
 ADMIN_TOKEN = os.environ["DLR_ADMIN_TOKEN"]
@@ -41,7 +48,7 @@ def request(
     path: str,
     payload: object | None = None,
     *,
-    expected: int = 200,
+    expected: int | tuple[int, ...] = 200,
     token: str | None = ADMIN_TOKEN,
 ) -> Any:
     data = json.dumps(payload).encode() if payload is not None else None
@@ -56,7 +63,10 @@ def request(
     except urllib.error.HTTPError as error:
         status, raw = error.code, error.read()
     body = json.loads(raw) if raw else None
-    assert status == expected, f"{method} {path}: expected {expected}, got {status}: {body}"
+    accepted_statuses = (expected,) if isinstance(expected, int) else expected
+    assert status in accepted_statuses, (
+        f"{method} {path}: expected {expected}, got {status}: {body}"
+    )
     return body
 
 
@@ -74,10 +84,90 @@ def wait_terminal(execution_id: int, *, timeout: float = 90) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         execution = request("GET", f"/executions/{execution_id}")
-        if execution["status"] not in {"pending", "running"}:
+        assert execution["dispatch_backend"] == "rabbitmq", execution
+        assert execution["status"] in {
+            "queued",
+            "running",
+            "retry_wait",
+            "succeeded",
+            "dead_letter",
+            "cancelled",
+            "expired",
+        }, execution
+        if execution["status"] not in {"queued", "running", "retry_wait"}:
             return execution
         time.sleep(0.5)
     raise AssertionError(f"execution {execution_id} did not finish within {timeout}s")
+
+
+def wait_running(execution_id: int, *, timeout: float = 90) -> dict[str, Any]:
+    """Runtime locks require an actual Claim/Attempt, not only queued ingress."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        execution = request("GET", f"/executions/{execution_id}")
+        if execution["status"] == "running":
+            return execution
+        assert execution["status"] in {"queued", "retry_wait"}, execution
+        time.sleep(0.1)
+    raise AssertionError(f"execution {execution_id} did not start within {timeout}s")
+
+
+def wait_ingress_ready(*, timeout: float = 60) -> None:
+    """Wait for the real asynchronous topology probe after a Worker-set change."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        health = request("GET", "/health", expected=(200, 503))
+        if health["status"] == "ok" and health["rabbitmq"]["ingress"]["ready"] is True:
+            return
+        time.sleep(0.5)
+    raise AssertionError(f"RabbitMQ ingress did not become ready: {health}")
+
+
+def assert_attempt_receipt(execution_id: int, *, status: str = "succeeded") -> None:
+    """Demand real Sandbox cleanup/limit evidence, not only an API status."""
+    with SessionLocal() as session:
+        attempt = session.scalar(
+            select(ExecutionAttempt)
+            .where(
+                ExecutionAttempt.execution_id == execution_id,
+            )
+            .order_by(ExecutionAttempt.attempt_no.desc())
+            .limit(1)
+        )
+        assert attempt is not None and attempt.status == status, execution_id
+        assert attempt.started_at is not None and attempt.ended_at is not None, (
+            execution_id
+        )
+        cleanup = attempt.cleanup_summary
+        assert isinstance(cleanup, dict), cleanup
+        sandbox = cleanup.get("sandbox")
+        assert isinstance(sandbox, dict) and sandbox.get("status") == "completed", (
+            cleanup
+        )
+        assert sandbox.get("residue") is False, cleanup
+        assert isinstance(sandbox.get("limits"), dict) and sandbox["limits"], cleanup
+
+
+def assert_serial_attempts(adapter_id: int, execution_ids: list[int]) -> None:
+    with SessionLocal() as session:
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt)
+                .where(
+                    ExecutionAttempt.execution_id.in_(execution_ids),
+                )
+                .order_by(ExecutionAttempt.claimed_at)
+            )
+        )
+        assert {attempt.execution_id for attempt in attempts} == set(execution_ids)
+        previous_end: datetime | None = None
+        for attempt in attempts:
+            assert attempt.ended_at is not None
+            if previous_end is not None:
+                assert attempt.claimed_at >= previous_end, "Adapter Attempts overlapped"
+            previous_end = attempt.ended_at
+        slot = session.get(AdapterExecutionSlot, (adapter_id, 0))
+        assert slot is not None and slot.active_attempt_id is None, adapter_id
 
 
 def wait_schedule_execution(adapter_id: int, *, timeout: float = 100) -> dict[str, Any]:
@@ -154,7 +244,15 @@ online_workers = [worker for worker in workers if worker["status"] == "online"]
 assert online_workers, workers
 runtime_worker = online_workers[0]
 runtime_worker_id = runtime_worker["id"]
-assert {"python", "javascript", "java"} <= set(runtime_worker["capabilities"]), runtime_worker
+assert {"python", "javascript", "java"} <= set(runtime_worker["capabilities"]), (
+    runtime_worker
+)
+assert runtime_worker["protocol_version"] == 3, runtime_worker
+assert runtime_worker["rabbitmq_execution_v3"] is True, runtime_worker
+assert all(
+    runtime_worker["isolation_capabilities"].get(key) is True
+    for key in REQUIRED_ISOLATION_CAPABILITIES
+), runtime_worker
 
 # The fresh Compose volume must represent the simplified Alembic head.
 with SessionLocal() as session:
@@ -174,12 +272,24 @@ with SessionLocal() as session:
         "production_state",
     }.isdisjoint(adapter_columns)
     index_names = {index["name"] for index in inspector.get_indexes("executions")}
-    assert "uq_executions_active_adapter" in index_names
+    assert "uq_executions_active_adapter" not in index_names
+    attempt_indexes = {
+        index["name"] for index in inspector.get_indexes("execution_attempts")
+    }
+    assert "uq_execution_attempts_active_execution" in attempt_indexes
+    assert inspector.get_pk_constraint("adapter_execution_slots")[
+        "constrained_columns"
+    ] == [
+        "adapter_id",
+        "slot_no",
+    ]
     webhook_columns = {
         column["name"]: column for column in inspector.get_columns("adapter_webhooks")
     }
     assert webhook_columns["credential_id"]["nullable"] is True
-    webhook_indexes = {index["name"]: index for index in inspector.get_indexes("adapter_webhooks")}
+    webhook_indexes = {
+        index["name"]: index for index in inspector.get_indexes("adapter_webhooks")
+    }
     assert "uq_adapter_webhooks_enabled_public_id" in webhook_indexes
 
 # M5.5.8: the fresh deployment must keep Docker internal service-name
@@ -202,8 +312,13 @@ for kind in ("pypi", "npm", "maven"):
     kind_sources = [source for source in sources if source["kind"] == kind]
     assert len(kind_sources) == 2, kind_sources
     assert sum(source["is_default"] for source in kind_sources) == 1, kind_sources
-    assert next(source for source in kind_sources if source["is_default"])["index_url"] == defaults[kind]["index_url"]
-removed = next(source for source in sources if source["kind"] == "pypi" and source["is_default"])
+    assert (
+        next(source for source in kind_sources if source["is_default"])["index_url"]
+        == defaults[kind]["index_url"]
+    )
+removed = next(
+    source for source in sources if source["kind"] == "pypi" and source["is_default"]
+)
 request("DELETE", f"/package-sources/{removed['id']}", expected=204)
 assert len(request("GET", "/package-sources")) == 5
 restored = request("POST", f"/package-sources/defaults/{removed['kind']}")
@@ -216,7 +331,7 @@ assert len(request("GET", "/package-sources")) == 6
 stale = request(
     "POST",
     "/workers/register",
-    {"name": "smoke-stale-worker", "capabilities": ["python"]},
+    {"name": "smoke-stale-worker", "capabilities": ["python"], "protocol_version": 3},
     token=WORKER_TOKEN,
 )
 with SessionLocal.begin() as session:
@@ -228,11 +343,14 @@ with SessionLocal.begin() as session:
     row.last_heartbeat = database_now - timedelta(
         seconds=settings.worker_heartbeat_timeout_seconds + 1
     )
-effective = next(worker for worker in request("GET", "/workers") if worker["id"] == stale["id"])
+effective = next(
+    worker for worker in request("GET", "/workers") if worker["id"] == stale["id"]
+)
 assert effective["status"] == "offline", effective
 with SessionLocal() as session:
     row = session.get(Worker, stale["id"])
     assert row is not None and row.status == "online"
+wait_ingress_ready()
 
 # M5.5.7: the demo Credentials are bootstrapped on fresh deployments with
 # random values, metadata-only APIs, and brand-new Task Adapters default-bind
@@ -267,7 +385,9 @@ assert demo_task_bindings == [
     }
 ], demo_task_bindings
 demo_webhook = create_adapter("smoke-m557-demo-webhook", "python", "webhook")
-demo_webhook_bindings = request("GET", f"/adapters/{demo_webhook['id']}/credential-bindings")
+demo_webhook_bindings = request(
+    "GET", f"/adapters/{demo_webhook['id']}/credential-bindings"
+)
 assert demo_webhook_bindings == [], demo_webhook_bindings
 demo_webhook_row = request("GET", f"/adapters/{demo_webhook['id']}/webhook")
 assert demo_webhook_row["credential_id"] is None, demo_webhook_row
@@ -287,6 +407,7 @@ save(
 demo_run = create_execution(demo_task["id"], {})
 demo_finished = wait_terminal(demo_run["id"])
 assert demo_finished["status"] == "succeeded", demo_finished
+assert_attempt_receipt(demo_run["id"])
 assert demo_finished["output"]["bound"] is True
 assert demo_finished["output"]["length"] == 32, demo_finished
 assert demo_finished["output"]["leaked"] == "[REDACTED]", demo_finished
@@ -312,7 +433,11 @@ choose_worker(task_id, runtime_worker_id)
 credential = request(
     "POST",
     "/credentials",
-    {"name": "smoke-runtime-secret", "type": "token", "fields": {"token": STORED_SECRET}},
+    {
+        "name": "smoke-runtime-secret",
+        "type": "token",
+        "fields": {"token": STORED_SECRET},
+    },
     expected=201,
 )
 binding_payload = {
@@ -331,7 +456,7 @@ v1_code = (
     "def handle(context, input):\n"
     "    context.logger.info('任务开始')\n"
     "    try:\n"
-    "        time.sleep(5)\n"
+    "        time.sleep(10)\n"
     "        token = context.secrets.get('SMOKE_TOKEN')\n"
     "        return {'revision': 1, 'input': input, 'secret_sha256': "
     "hashlib.sha256(token.encode()).hexdigest()}\n"
@@ -343,9 +468,12 @@ assert v1["seq"] == 1
 run1 = create_execution(task_id, {"run": 1})
 assert run1["version_id"] == v1["id"]
 assert run1["target_worker_id"] == runtime_worker_id
-busy = create_execution(task_id, {"run": "duplicate"}, expected=409)
-assert busy["detail"]["code"] == "adapter_busy", busy
-assert_locked(save(task_id, "def handle(context, input):\n    return 2\n", expected=409))
+wait_running(run1["id"])
+buffered = create_execution(task_id, {"run": "buffered"})
+assert buffered["status"] == "queued", buffered
+assert_locked(
+    save(task_id, "def handle(context, input):\n    return 2\n", expected=409)
+)
 assert_locked(
     request(
         "PATCH",
@@ -373,9 +501,18 @@ assert metadata["runtime_locked"] is True
 finished1 = wait_terminal(run1["id"])
 assert finished1["status"] == "succeeded", finished1
 assert finished1["version_id"] == v1["id"]
-assert finished1["output"]["secret_sha256"] == hashlib.sha256(STORED_SECRET.encode()).hexdigest()
+assert (
+    finished1["output"]["secret_sha256"]
+    == hashlib.sha256(STORED_SECRET.encode()).hexdigest()
+)
 assert "任务开始" in finished1["stdout"] and "任务结束" in finished1["stdout"]
 assert STORED_SECRET not in json.dumps(finished1)
+buffered_finished = wait_terminal(buffered["id"])
+assert buffered_finished["status"] == "succeeded", buffered_finished
+assert buffered_finished["output"]["input"] == {"run": "buffered"}, buffered_finished
+assert_attempt_receipt(run1["id"])
+assert_attempt_receipt(buffered["id"])
+assert_serial_attempts(task_id, [run1["id"], buffered["id"]])
 
 v2_code = (
     "def handle(context, input):\n"
@@ -405,17 +542,38 @@ assert schedule["enabled"] is True
 assert request("GET", f"/adapters/{task_id}")["runtime_locked"] is True
 assert_locked(save(task_id, v2_code, expected=409))
 changed_schedule = dict(schedule_payload, cron="*/2 * * * *")
-assert_locked(request("PUT", f"/adapters/{task_id}/schedule", changed_schedule, expected=409))
+assert_locked(
+    request("PUT", f"/adapters/{task_id}/schedule", changed_schedule, expected=409)
+)
 
 # Schedule mode keeps an independent Run Once action. It uses the latest
 # Revision and must not mutate the Schedule cursor or enabled state.
+with SessionLocal.begin() as session:
+    session.execute(
+        update(AdapterSchedule)
+        .where(
+            AdapterSchedule.adapter_id == task_id,
+        )
+        .values(next_run_at=func.now() + timedelta(minutes=2))
+    )
 schedule_before_manual = request("GET", f"/adapters/{task_id}/schedule")
 manual_in_schedule_mode = create_execution(task_id, {"manual_in_schedule_mode": True})
 manual_finished = wait_terminal(manual_in_schedule_mode["id"])
-assert manual_finished["trigger"] == "manual" and manual_finished["version_id"] == v2["id"]
+assert (
+    manual_finished["trigger"] == "manual" and manual_finished["version_id"] == v2["id"]
+)
 schedule_after_manual = request("GET", f"/adapters/{task_id}/schedule")
 assert schedule_after_manual["enabled"] is True
 assert schedule_after_manual["next_run_at"] == schedule_before_manual["next_run_at"]
+
+with SessionLocal.begin() as session:
+    session.execute(
+        update(AdapterSchedule)
+        .where(
+            AdapterSchedule.adapter_id == task_id,
+        )
+        .values(next_run_at=func.now() - timedelta(seconds=1))
+    )
 
 scheduled_finished = wait_schedule_execution(task_id)
 assert scheduled_finished["status"] == "succeeded", scheduled_finished
@@ -425,7 +583,10 @@ assert scheduled_finished["target_worker_id"] == runtime_worker_id
 assert "任务开始" in scheduled_finished["stdout"]
 assert "任务结束" in scheduled_finished["stdout"]
 disabled_schedule = dict(schedule_payload, enabled=False)
-assert request("PUT", f"/adapters/{task_id}/schedule", disabled_schedule)["enabled"] is False
+assert (
+    request("PUT", f"/adapters/{task_id}/schedule", disabled_schedule)["enabled"]
+    is False
+)
 
 clone = request(
     "POST",
@@ -445,7 +606,7 @@ clone_schedule = request("GET", f"/adapters/{clone['id']}/schedule")
 assert clone_schedule["enabled"] is False and clone_schedule["next_run_at"] is None
 
 # M5.5.11: Adapter-level single-run execution timeout. A short timeout really
-# kills the user-code process and marks the Execution timeout; the timeout is
+# kills user code and records a timed_out Attempt / dead_letter Execution; it is
 # copied by Clone and shared by manual and schedule runs.
 timeout_task = create_adapter("smoke-m5511-timeout", "python", "task")
 assert timeout_task["timeout_seconds"] == 300, timeout_task
@@ -461,7 +622,8 @@ save(
 )
 timeout_run = create_execution(timeout_task["id"], {})
 # Runtime lock semantics: the timeout is runtime configuration and cannot
-# change while the Execution is pending/running.
+# change while a real Attempt holds the Adapter Slot.
+wait_running(timeout_run["id"])
 assert_locked(
     request(
         "PATCH",
@@ -471,7 +633,8 @@ assert_locked(
     )
 )
 timed_out = wait_terminal(timeout_run["id"], timeout=30)
-assert timed_out["status"] == "timeout", timed_out
+assert timed_out["status"] == "dead_letter", timed_out
+assert_attempt_receipt(timeout_run["id"], status="timed_out")
 assert "timed out after 2s" in timed_out["error"], timed_out
 assert timed_out["ended_at"] is not None and timed_out["duration_ms"] is not None
 # Clone copies the authoritative timeout.
@@ -497,7 +660,8 @@ with SessionLocal() as session:
     )
     session.commit()
 scheduled_timeout = wait_schedule_execution(timeout_task["id"], timeout=40)
-assert scheduled_timeout["status"] == "timeout", scheduled_timeout
+assert scheduled_timeout["status"] == "dead_letter", scheduled_timeout
+assert_attempt_receipt(scheduled_timeout["id"], status="timed_out")
 assert scheduled_timeout["trigger"] == "schedule", scheduled_timeout
 assert "timed out after 2s" in scheduled_timeout["error"], scheduled_timeout
 request(
@@ -512,12 +676,21 @@ assert request("POST", f"/adapters/{task_id}/production/start", expected=404)
 assert request("POST", f"/adapters/{task_id}/production/stop", {}, expected=404)
 
 request("DELETE", f"/adapters/{task_id}", expected=204)
-assert request("GET", f"/adapters/{task_id}", expected=404)["detail"]["code"] == "adapter_not_found"
+assert (
+    request("GET", f"/adapters/{task_id}", expected=404)["detail"]["code"]
+    == "adapter_not_found"
+)
 deleted_save = save(task_id, v2_code, expected=404)
 assert deleted_save["detail"]["code"] == "adapter_not_found", deleted_save
 with SessionLocal() as session:
-    assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v1["id"])) is None
-    assert session.scalar(select(AdapterVersion).where(AdapterVersion.id == v2["id"])) is None
+    assert (
+        session.scalar(select(AdapterVersion).where(AdapterVersion.id == v1["id"]))
+        is None
+    )
+    assert (
+        session.scalar(select(AdapterVersion).where(AdapterVersion.id == v2["id"]))
+        is None
+    )
     assert session.scalar(select(Execution).where(Execution.id == run1["id"])) is None
 
 # Final Webhook model: random stopped path, saved Revision decoupled from the
@@ -559,7 +732,7 @@ webhook_v1 = save(
     "def handle(context, input):\n"
     "    context.logger.info('收到 Webhook 请求')\n"
     "    try:\n"
-    "        time.sleep(3)\n"
+    "        time.sleep(10)\n"
     "        return {'received': True, 'data': input}\n"
     "    finally:\n"
     "        context.logger.info('处理完 Webhook 请求')\n",
@@ -578,8 +751,11 @@ assert request("GET", f"/adapters/{webhook_id}/executions")["items"] == []
 unauthorized = hook(webhook_path, "wrong-token", {}, expected=401)
 assert unauthorized["detail"]["code"] == "unauthorized", unauthorized
 accepted1 = hook(webhook_path, webhook_token, {"event": 1})
-busy_hook = hook(webhook_path, webhook_token, {"event": "duplicate"}, expected=409)
-assert busy_hook["detail"]["code"] == "adapter_busy", busy_hook
+wait_running(accepted1["execution_id"])
+buffered_hook = hook(webhook_path, webhook_token, {"event": "buffered"})
+assert (
+    request("GET", f"/executions/{buffered_hook['execution_id']}")["status"] == "queued"
+)
 assert_locked(save(webhook_id, "# blocked\n", expected=409))
 assert_locked(
     request(
@@ -610,7 +786,10 @@ stopped_while_active = request(
 )
 assert stopped_while_active["enabled"] is False
 assert request("GET", f"/adapters/{webhook_id}")["runtime_locked"] is True
-assert hook(webhook_path, webhook_token, {}, expected=404)["detail"]["code"] == "webhook_not_found"
+assert (
+    hook(webhook_path, webhook_token, {}, expected=404)["detail"]["code"]
+    == "webhook_not_found"
+)
 webhook_finished1 = wait_terminal(accepted1["execution_id"])
 assert webhook_finished1["status"] == "succeeded", webhook_finished1
 assert webhook_finished1["version_id"] == webhook_v1["id"]
@@ -618,9 +797,22 @@ assert webhook_finished1["target_worker_id"] == runtime_worker_id
 assert webhook_finished1["output"] == {"received": True, "data": {"event": 1}}
 assert "收到 Webhook 请求" in webhook_finished1["stdout"]
 assert "处理完 Webhook 请求" in webhook_finished1["stdout"]
+buffered_hook_finished = wait_terminal(buffered_hook["execution_id"])
+assert buffered_hook_finished["status"] == "succeeded", buffered_hook_finished
+assert buffered_hook_finished["output"] == {
+    "received": True,
+    "data": {"event": "buffered"},
+}
+assert_attempt_receipt(accepted1["execution_id"])
+assert_attempt_receipt(buffered_hook["execution_id"])
+assert_serial_attempts(
+    webhook_id, [accepted1["execution_id"], buffered_hook["execution_id"]]
+)
 assert request("GET", f"/adapters/{webhook_id}")["runtime_locked"] is False
 call_history = request("GET", f"/adapters/{webhook_id}/executions")["items"]
-assert len(call_history) == 1 and call_history[0]["trigger"] == "webhook"
+assert len(call_history) == 2 and all(
+    item["trigger"] == "webhook" for item in call_history
+)
 
 # Re-enable A, clone it to stopped B with the same URL/Token/Worker/current
 # Revision, then prove only the running owner can receive until Stop A.
@@ -748,6 +940,7 @@ for language, code in language_cases.items():
     assert execution["version_id"] == revision["id"]
     finished = wait_terminal(execution["id"], timeout=150)
     assert finished["status"] == "succeeded", finished
+    assert_attempt_receipt(execution["id"])
     assert finished["output"]["language"] == language, finished
     assert "任务开始" in finished["stdout"] and "任务结束" in finished["stdout"]
 
@@ -780,14 +973,14 @@ working_copy = {
     "requirements": "",
     "runtime_config": {"before_ai": True},
 }
-ai_revision = save(ai_adapter["id"], working_copy["code"], runtime_config={"before_ai": True})
+ai_revision = save(
+    ai_adapter["id"], working_copy["code"], runtime_config={"before_ai": True}
+)
 before = request("GET", f"/adapters/{ai_adapter['id']}")
 before_versions = request("GET", f"/adapters/{ai_adapter['id']}/versions")
 # M5.5.13：上下文以有序多片段快照（代码 + 已脱敏日志文本，各带 source 与
 # 1-based 行范围）随请求发送；日志片段只携带浏览器可见的 [REDACTED] 文本。
-selected_text = os.environ.get(
-    "SMOKE_SELECTED_TEXT", "def handle(context, input):"
-)
+selected_text = os.environ.get("SMOKE_SELECTED_TEXT", "def handle(context, input):")
 log_text = os.environ.get(
     "SMOKE_LOG_TEXT",
     "[2026-08-17 10:21:03] [ERROR] token [REDACTED] failed\n"
@@ -927,7 +1120,9 @@ image_blocked = request(
     },
     expected=422,
 )
-assert image_blocked["detail"]["code"] == "ai_attachment_image_unsupported", image_blocked
+assert image_blocked["detail"]["code"] == "ai_attachment_image_unsupported", (
+    image_blocked
+)
 assert "更换支持图片的模型" in image_blocked["detail"]["message"], image_blocked
 
 # openai 能力表明确支持原生图片：fake 收到 content 数组形式的 image_url 部
@@ -1012,7 +1207,9 @@ assert [item["tool_name"] for item in tool_multi["tool_calls"]] == [
     "dlr_docs_search",
 ], tool_multi
 assert all(item["status"] == "success" for item in tool_multi["tool_calls"]), tool_multi
-assert tool_multi["tool_calls"][1]["source"] == "dlr-docs:v1:secrets-and-bindings", tool_multi
+assert tool_multi["tool_calls"][1]["source"] == "dlr-docs:v1:secrets-and-bindings", (
+    tool_multi
+)
 
 # 非白名单工具被安全拒绝：错误摘要返回浏览器，模型仍产出最终合法 JSON。
 tool_unknown = request(
@@ -1147,7 +1344,9 @@ assert "DLR接口库" in knowledge["tool_calls"][0]["result_summary"], knowledge
 assert knowledge["tool_calls"][1]["source"] == "ima:v1:kb-item-2", knowledge
 # The second candidate knowledge base is searched and returns an honest empty
 # page before the server permits the read.
-assert '"returned_matches": 0' in knowledge["tool_calls"][2]["result_summary"], knowledge
+assert '"returned_matches": 0' in knowledge["tool_calls"][2]["result_summary"], (
+    knowledge
+)
 # The read goes through the official notes branch (get_doc_content).
 assert knowledge["tool_calls"][3]["source"] == "ima:v1:kb-item-2", knowledge
 # The read content echoed the credential token; the tools layer redacted it
@@ -1160,7 +1359,9 @@ assert "[REDACTED]" in serialized, knowledge
 assert "SMOKE_REASONING_MUST_NOT_REACH_BROWSER" not in serialized
 # 知识工具调用同样不产生任何生命周期副作用。
 after_knowledge = request("GET", f"/adapters/{ai_adapter['id']}")
-assert after_knowledge["latest_version_id"] == before["latest_version_id"], after_knowledge
+assert after_knowledge["latest_version_id"] == before["latest_version_id"], (
+    after_knowledge
+)
 assert request("GET", f"/adapters/{ai_adapter['id']}/executions")["items"] == []
 
 # The dedicated audit stream is persisted in Control's platform-log mount.
@@ -1215,7 +1416,9 @@ for audit_path in audit_files:
         try:
             record = json.loads(line)
         except json.JSONDecodeError as error:
-            raise AssertionError(f"{audit_path}:{line_number}: invalid JSONL") from error
+            raise AssertionError(
+                f"{audit_path}:{line_number}: invalid JSONL"
+            ) from error
         assert isinstance(record, dict), (audit_path, line_number, record)
         event_type = record.get("event_type")
         assert event_type in audit_event_fields, (audit_path, line_number, record)
@@ -1225,7 +1428,9 @@ for audit_path in audit_files:
             record,
         )
         assert record["schema_version"] == 1, record
-        assert isinstance(record["timestamp"], str) and record["timestamp"].endswith("Z"), record
+        assert isinstance(record["timestamp"], str) and record["timestamp"].endswith(
+            "Z"
+        ), record
         assert type(record["adapter_id"]) is int and record["adapter_id"] > 0, record
         assert type(record["round"]) is int and record["round"] >= 0, record
         assert type(record["call_index"]) is int and record["call_index"] >= 0, record
@@ -1234,8 +1439,12 @@ for audit_path in audit_files:
         assert type(record["duration_ms"]) is int and record["duration_ms"] >= 0, record
         assert type(record["result_size"]) is int and record["result_size"] >= 0, record
         assert isinstance(record["result_truncated"], bool), record
-        assert record["error_code"] is None or isinstance(record["error_code"], str), record
-        assert record["stop_reason"] is None or isinstance(record["stop_reason"], str), record
+        assert record["error_code"] is None or isinstance(record["error_code"], str), (
+            record
+        )
+        assert record["stop_reason"] is None or isinstance(
+            record["stop_reason"], str
+        ), record
         if event_type == "tool_attempt":
             assert isinstance(record["tool"], str) and record["tool"], record
         else:
@@ -1245,19 +1454,27 @@ for audit_path in audit_files:
             identifier = record[identifier_field]
             assert isinstance(identifier, str), record
             parsed_identifier = uuid.UUID(identifier)
-            assert parsed_identifier.version == 4 and str(parsed_identifier) == identifier, record
+            assert (
+                parsed_identifier.version == 4 and str(parsed_identifier) == identifier
+            ), record
         request_id = record["request_id"]
         conversation_id = record["conversation_id"]
-        previous_conversation = request_conversations.setdefault(request_id, conversation_id)
+        previous_conversation = request_conversations.setdefault(
+            request_id, conversation_id
+        )
         assert previous_conversation == conversation_id, record
 
         if event_type == "request_terminal":
             for count_field in ("successful_calls", "failed_calls", "blocked_calls"):
-                assert type(record[count_field]) is int and record[count_field] >= 0, record
+                assert type(record[count_field]) is int and record[count_field] >= 0, (
+                    record
+                )
         audit_records.append(record)
 
 assert audit_records, audit_files
-assert any(record["event_type"] == "request_terminal" for record in audit_records), audit_records
+assert any(record["event_type"] == "request_terminal" for record in audit_records), (
+    audit_records
+)
 
 audit_sensitive_values = {
     "admin token": ADMIN_TOKEN,
@@ -1272,6 +1489,8 @@ audit_sensitive_values = {
     "Assist Prompt": AUDIT_PROMPT_SENTINEL,
 }
 for sensitive_name, sensitive_value in audit_sensitive_values.items():
-    assert sensitive_value not in audit_text, f"{sensitive_name} leaked into AI tool audit"
+    assert sensitive_value not in audit_text, (
+        f"{sensitive_name} leaked into AI tool audit"
+    )
 
 print("M5.4.4 compose smoke passed")

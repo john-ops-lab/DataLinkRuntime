@@ -47,7 +47,6 @@ from dlr.control.services import attempt as attempt_service
 from dlr.control.services import execution as execution_service
 from dlr.control.services import (
     execution_cancellation,
-    execution_reconciler,
     infrastructure_dlq,
     rabbitmq,
     reliable_execution,
@@ -59,9 +58,21 @@ from dlr.worker.client import ClientError, ControlUnavailableError
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
 from test_adapters import create_adapter, save_version
 from test_issue127_b2_binding import create_artifact
+from worker_runtime_support import (
+    install_test_sandbox,
+    unit_resource_envelope,
+    unit_sandbox_config,
+)
+
+
+@pytest.fixture(autouse=True)
+def _unit_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_test_sandbox(monkeypatch)
+
 
 ISOLATION_PASS = {
     "cgroup_v2": True,
+    "cgroup_namespace_private": True,
     "mount_namespace": True,
     "pid_namespace": True,
     "memory_hard_limit": True,
@@ -82,9 +93,7 @@ ISOLATION_PASS = {
 WORKER_HEADERS = {"Authorization": "Bearer test-worker-token"}
 
 
-def _enable_canary(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", False)
-    monkeypatch.setattr(settings, "rabbitmq_execution_canary_enabled", True)
+def _enable_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "rabbitmq_url", "amqp://dlr:test-password@rabbitmq:5672")
     monkeypatch.setattr(settings, "rabbitmq_vhost", "/")
     monkeypatch.setattr(settings, "rabbitmq_management_url", "http://rabbitmq:15672")
@@ -133,7 +142,7 @@ def _rabbit_adapter(
     return adapter
 
 
-def _canary_execution(
+def _execution(
     client: TestClient,
     adapter_id: int,
     *,
@@ -142,7 +151,7 @@ def _canary_execution(
     payload: dict[str, Any] = {}
     if input_value is not None:
         payload["input"] = input_value
-    response = client.post(f"/api/adapters/{adapter_id}/executions/canary", json=payload)
+    response = client.post(f"/api/adapters/{adapter_id}/executions", json=payload)
     assert response.status_code == 202, response.text
     body = response.json()
     assert body["dispatch_backend"] == "rabbitmq"
@@ -365,6 +374,9 @@ def _valid_consumer_payload(*, execution_id: int = 13, attempt_id: int = 41) -> 
         "runtime_config": {},
         "input": None,
         "execution_timeout_seconds": 10,
+        "recovery_grace_seconds_snapshot": 60,
+        "workspace_cleanup_attempt_timeout_seconds_snapshot": 1,
+        "workspace_cleanup_total_timeout_seconds_snapshot": 2,
         "input_source_type": "none",
         "input_snapshot": {"source_type": "none"},
         "resource_profile": {
@@ -372,10 +384,10 @@ def _valid_consumer_payload(*, execution_id: int = 13, attempt_id: int = 41) -> 
             "resource_class": "small",
             "backend": "cgroup_v2",
             "cpu_cores": 1.0,
-            "memory_bytes": 1,
-            "pids": 1,
-            "tmp_bytes": 1,
-            "nofile": 1,
+            "memory_bytes": 16 * 1024 * 1024,
+            "pids": 16,
+            "tmp_bytes": 1024 * 1024,
+            "nofile": 64,
             "execution_timeout_seconds": 10,
             "claim_timeout_seconds": 30,
             "recovery_grace_seconds": 60,
@@ -408,7 +420,9 @@ def test_v3_consumer_slots_one_bounds_prefetch_pool_and_saturation() -> None:
         ),
         object(),  # type: ignore[arg-type]
         connection_factory=make_connection,
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
     )
     try:
         consumer.run()
@@ -511,7 +525,9 @@ def test_v3_consumer_local_slot_defers_second_delivery_until_first_finishes(
         ),
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
         runner=runner,
     )
     connection = _ImmediateCallbackConnection()
@@ -574,7 +590,9 @@ def test_defer_uses_native_quorum_return_without_republish_or_ack() -> None:
         ),
         object(),  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
     )
     channel = _NativeDeferChannel()
     try:
@@ -613,7 +631,9 @@ def test_control_or_auth_failure_pauses_consumer_without_hot_loop(
         ),
         FailingClient(),  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
     )
     channel = _NativeDeferChannel()
     try:
@@ -657,7 +677,9 @@ def test_invalid_v3_payload_stays_unacked_when_prepare_failure_cannot_be_reporte
         ),
         FailingPrepareClient(),  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
     )
     channel = _NativeDeferChannel()
     decision = {
@@ -782,7 +804,9 @@ def test_v3_result_cleanup_removes_journal_after_control_accepts_result(
         ),
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
         runner=lambda *_args, **_kwargs: {
             "status": "succeeded",
             "workspace_cleanup_status": "completed",
@@ -911,7 +935,9 @@ def test_v3_consumer_reports_cancel_after_control_ack(
         ),
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
         runner=runner,
     )
     try:
@@ -940,10 +966,10 @@ def test_v3_start_boundary_fails_closed_after_cancel_or_recovery(
 ) -> None:
     """A Claim never starts an Adapter after Control withdraws run authority."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, f"b2-start-boundary-{transition}-worker")
     adapter = _rabbit_adapter(api_client, worker, f"b2-start-boundary-{transition}-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     claimed = _claim(session_factory, worker["id"], dispatch)
     assert claimed.payload is not None and claimed.attempt_id is not None
@@ -1001,7 +1027,9 @@ def test_v3_start_boundary_fails_closed_after_cancel_or_recovery(
         ),
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
         runner=runner,
     )
     try:
@@ -1148,7 +1176,9 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
         ),
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
         runner=runner,
     )
     try:
@@ -1221,7 +1251,9 @@ def test_v3_attempt_journal_failure_never_starts_runner(
         ),
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(),
+        runtime_settings=SimpleNamespace(
+            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
+        ),
         runner=runner,
     )
     channel = _NativeDeferChannel()
@@ -1304,10 +1336,10 @@ def test_retry_not_due_duplicate_is_ack_noop_and_waits_for_dispatcher(
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-retry-not-due-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-retry-not-due-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     retry_at = datetime.now(UTC) + timedelta(hours=1)
 
@@ -1345,11 +1377,11 @@ def test_same_adapter_slot_blocks_second_claim_during_concurrent_long_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The first claim holds Slot 0 while a concurrent second claim waits."""
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-slot-concurrency-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-slot-concurrency-adapter")
-    first_execution = _canary_execution(api_client, adapter["id"], input_value={"run": 1})
-    second_execution = _canary_execution(api_client, adapter["id"], input_value={"run": 2})
+    first_execution = _execution(api_client, adapter["id"], input_value={"run": 1})
+    second_execution = _execution(api_client, adapter["id"], input_value={"run": 2})
     first_dispatch = _dispatch(session_factory, first_execution["id"])
     second_dispatch = _dispatch(session_factory, second_execution["id"])
 
@@ -1429,10 +1461,10 @@ def test_claim_and_cancel_share_adapter_first_lock_order(
 ) -> None:
     """Cancellation waits at Adapter instead of deadlocking with Claim at Execution."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-claim-cancel-lock-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-claim-cancel-lock-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
 
     claim_has_admission_scope = threading.Event()
@@ -1507,10 +1539,10 @@ def test_claim_blocked_on_adapter_does_not_lock_execution(
 ) -> None:
     """Prove Adapter is the first blocking row lock without scheduler timing."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-claim-nowait-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-claim-nowait-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     engine = session_factory.kw["bind"]
     adapter_lock_attempted = threading.Event()
@@ -1576,10 +1608,10 @@ def test_retry_dispatch_and_cancel_share_adapter_first_lock_order(
 ) -> None:
     """Retry dispatch holds Adapter before Execution, matching cancellation."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-retry-cancel-lock-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-retry-cancel-lock-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     due_at = datetime.now(UTC) - timedelta(seconds=1)
     with session_factory.begin() as session:
         row = session.get(Execution, execution["id"])
@@ -1670,10 +1702,10 @@ def test_retry_blocked_on_adapter_does_not_lock_execution(
 ) -> None:
     """Prove Retry also waits at Adapter before touching Execution."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-retry-nowait-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-retry-nowait-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     due_at = datetime.now(UTC) - timedelta(seconds=1)
     with session_factory.begin() as session:
         row = session.get(Execution, execution["id"])
@@ -1749,7 +1781,7 @@ def test_concurrent_cancel_and_success_result_release_once(
 ) -> None:
     """Concurrent cancellation and Result converge to one terminal release."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     monkeypatch.setattr(settings, "managed_files_enabled", True)
     worker = _ready_worker(api_client, "b2-terminal-race-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-terminal-race-adapter")
@@ -1764,7 +1796,7 @@ def test_concurrent_cancel_and_success_result_release_once(
         },
     )
     assert configured.status_code == 200, configured.text
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     claimed = _claim(session_factory, worker["id"], dispatch)
     assert claimed.payload is not None and claimed.attempt_id is not None
@@ -1886,10 +1918,10 @@ def test_retry_jitter_persists_deterministic_db_bounds(
     monkeypatch: pytest.MonkeyPatch,
     edge: str,
 ) -> None:
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, f"b2-jitter-{edge}-worker")
     adapter = _rabbit_adapter(api_client, worker, f"b2-jitter-{edge}-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     fixed_now = datetime.now(UTC).replace(microsecond=0)
     policy = {
@@ -1963,7 +1995,7 @@ def test_real_rabbit_delayed_busy_allows_other_adapter_progress(
     management_url = os.environ.get("DLR_B2_REAL_RABBIT_MANAGEMENT_URL")
     if not real_url or not management_url:
         pytest.fail("DLR_B2_REAL_RABBIT_URL and DLR_B2_REAL_RABBIT_MANAGEMENT_URL are required")
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     monkeypatch.setattr(settings, "rabbitmq_url", real_url)
     monkeypatch.setattr(settings, "rabbitmq_management_url", management_url)
     monkeypatch.setattr(settings, "rabbitmq_delayed_retry_type", retry_type)
@@ -1985,11 +2017,9 @@ def test_real_rabbit_delayed_busy_allows_other_adapter_progress(
         queue_state = channel.queue_declare(queue=queue_name, passive=True).method
         assert queue_state.message_count == 0
 
-        busy_a = _canary_execution(api_client, adapter_a["id"], input_value={"run": "busy"})
-        delayed_a = _canary_execution(api_client, adapter_a["id"], input_value={"run": "delayed"})
-        execution_b = _canary_execution(
-            api_client, adapter_b["id"], input_value={"run": "progress"}
-        )
+        busy_a = _execution(api_client, adapter_a["id"], input_value={"run": "busy"})
+        delayed_a = _execution(api_client, adapter_a["id"], input_value={"run": "delayed"})
+        execution_b = _execution(api_client, adapter_b["id"], input_value={"run": "progress"})
         dispatch_busy_a = _dispatch(session_factory, busy_a["id"])
         dispatch_delayed_a = _dispatch(session_factory, delayed_a["id"])
         dispatch_b = _dispatch(session_factory, execution_b["id"])
@@ -2106,10 +2136,10 @@ def test_claim_duplicate_lease_recovery_and_stale_result_are_fenced(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-failure-matrix-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-failure-matrix-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
 
     first = _claim(session_factory, worker["id"], dispatch)
@@ -2225,10 +2255,10 @@ def test_attempt_actions_reject_wrong_token_and_stale_fence(
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-fence-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-fence-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     claimed = _claim(session_factory, worker["id"], dispatch)
     assert claimed.payload is not None and claimed.attempt_id is not None
@@ -2272,10 +2302,10 @@ def test_business_dead_letter_replay_releases_admission_and_keeps_generation_aud
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-dead-letter-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-dead-letter-adapter")
-    execution = _canary_execution(api_client, adapter["id"], input_value={"case": "business"})
+    execution = _execution(api_client, adapter["id"], input_value={"case": "business"})
     dispatch = _dispatch(session_factory, execution["id"])
     claimed = _claim(session_factory, worker["id"], dispatch)
     assert claimed.payload is not None and claimed.attempt_id is not None
@@ -2341,10 +2371,10 @@ def test_replay_waits_for_adapter_before_locking_execution(
 ) -> None:
     """A blocked Replay must not hold Execution and form an AB-BA cycle."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-replay-lock-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-replay-lock-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     ended_at = datetime.now(UTC)
     with session_factory.begin() as session:
         row = session.get(Execution, execution["id"])
@@ -2412,77 +2442,15 @@ def test_replay_waits_for_adapter_before_locking_execution(
     assert result["replay"].replay_of_execution_id == execution["id"]
 
 
-def test_legacy_stale_reconciler_ignores_rabbitmq_running_rows(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Attempt leases, not the legacy stale loop, own RabbitMQ running rows."""
-
-    _enable_canary(monkeypatch)
-    worker = _ready_worker(api_client, "b2-stale-backend-worker")
-    rabbit_adapter = _rabbit_adapter(
-        api_client,
-        worker,
-        "b2-stale-rabbit-adapter",
-    )
-    rabbit_execution = _canary_execution(api_client, rabbit_adapter["id"])
-    claimed = _claim(
-        session_factory,
-        worker["id"],
-        _dispatch(session_factory, rabbit_execution["id"]),
-    )
-    assert claimed.decision == "EXECUTE"
-
-    legacy_adapter = _rabbit_adapter(
-        api_client,
-        worker,
-        "b2-stale-legacy-adapter",
-    )
-    legacy_response = api_client.post(
-        f"/api/adapters/{legacy_adapter['id']}/executions",
-        json={},
-    )
-    assert legacy_response.status_code == 202, legacy_response.text
-    legacy_execution_id = int(legacy_response.json()["id"])
-    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
-    stale_started_at = fixed_now - timedelta(days=2)
-    with session_factory.begin() as session:
-        rabbit_row = session.get(Execution, rabbit_execution["id"])
-        legacy_row = session.get(Execution, legacy_execution_id)
-        assert rabbit_row is not None and legacy_row is not None
-        rabbit_row.started_at = stale_started_at
-        rabbit_row.execution_deadline_at = None
-        rabbit_row.timeout_seconds_snapshot = 1
-        rabbit_row.recovery_grace_seconds_snapshot = 60
-        legacy_row.status = "running"
-        legacy_row.worker_id = worker["id"]
-        legacy_row.started_at = stale_started_at
-        legacy_row.execution_deadline_at = None
-        legacy_row.timeout_seconds_snapshot = 1
-        legacy_row.recovery_grace_seconds_snapshot = 60
-
-    with session_factory() as session:
-        report = execution_reconciler.reconcile_stale_executions(session, now=fixed_now)
-
-    assert report.scanned == 1
-    assert report.running_timeout == 1
-    with session_factory() as session:
-        rabbit_row = session.get(Execution, rabbit_execution["id"])
-        legacy_row = session.get(Execution, legacy_execution_id)
-        assert rabbit_row is not None and rabbit_row.status == "running"
-        assert legacy_row is not None and legacy_row.status == "timeout"
-
-
 def test_infrastructure_dlq_mismatch_is_visible_manual_review_not_business_dead_letter(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-infra-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-infra-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     dispatch["language"] = "javascript"
 
@@ -2525,102 +2493,19 @@ def test_blocking_reconcilers_delegate_each_tick_to_a_thread(
     assert delegated == [(getattr(module, tick_name), (), {})]
 
 
-def test_dark_launch_inventory_and_pending_migration_converge_without_cutover(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _enable_canary(monkeypatch)
-    worker = _ready_worker(api_client, "b2-migration-worker")
-    adapter = _rabbit_adapter(client=api_client, worker=worker, name="b2-migration-adapter")
-    legacy = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
-    assert legacy.status_code == 202, legacy.text
-    legacy_body = legacy.json()
-    assert legacy_body["dispatch_backend"] == "legacy"
-    assert legacy_body["status"] == "pending"
-
-    inventory_response = api_client.get("/api/admin/reliable-runtime/inventory")
-    assert inventory_response.status_code == 200, inventory_response.text
-    facts = inventory_response.json()
-    assert facts["dark_launch"]["rabbitmq_production_ingress_enabled"] is False
-    assert facts["dark_launch"]["ordinary_new_traffic_backend"] == "legacy"
-    assert facts["dark_launch"]["old_active_index_present"] is True
-    assert facts["dark_launch"]["legacy_claim_enabled"] is True
-    assert facts["sandbox_readiness"]["sandbox_gate"] == "not_passed"
-    assert facts["sandbox_readiness"]["cutover_ready"] is False
-
-    dry_run = api_client.post("/api/admin/reliable-runtime/migration/dry-run")
-    assert dry_run.status_code == 200, dry_run.text
-    assert dry_run.json()["dry_run"]["would_convert_pending"] == 1
-
-    migrated = api_client.post(
-        "/api/admin/reliable-runtime/migration/legacy-pending",
-        json={"limit": 1},
-    )
-    assert migrated.status_code == 200, migrated.text
-    assert migrated.json()["converted"] == 1
-    with session_factory() as session:
-        converted = session.get(Execution, legacy_body["id"])
-        outbox_rows = list(
-            session.scalars(
-                select(ExecutionOutbox).where(ExecutionOutbox.execution_id == legacy_body["id"])
-            )
-        )
-        assert converted is not None and converted.dispatch_backend == "rabbitmq"
-        assert converted.status == "queued"
-        assert len(outbox_rows) == 1
-
-    repeated = api_client.post(
-        "/api/admin/reliable-runtime/migration/legacy-pending",
-        json={"limit": 1},
-    )
-    assert repeated.status_code == 200, repeated.text
-    assert repeated.json()["converted"] == 0
-    assert repeated.json()["legacy_pending_remaining"] == 0
-
-
-def test_legacy_running_drain_is_an_explicit_boundary(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _enable_canary(monkeypatch)
-    worker = _ready_worker(api_client, "b2-drain-worker")
-    adapter = _rabbit_adapter(api_client, worker, "b2-drain-adapter")
-    legacy = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
-    assert legacy.status_code == 202, legacy.text
-    with session_factory.begin() as session:
-        row = session.get(Execution, legacy.json()["id"])
-        assert row is not None
-        row.status = "running"
-        row.worker_id = worker["id"]
-
-    blocked = api_client.post("/api/admin/reliable-runtime/migration/legacy-running-drain")
-    assert blocked.status_code == 409, blocked.text
-    assert blocked.json()["detail"]["code"] == "legacy_running_not_drained"
-
-    with session_factory.begin() as session:
-        row = session.get(Execution, legacy.json()["id"])
-        assert row is not None
-        row.status = "succeeded"
-    drained = api_client.post("/api/admin/reliable-runtime/migration/legacy-running-drain")
-    assert drained.status_code == 200, drained.text
-    assert drained.json() == {"status": "drained", "legacy_running": 0}
-
-
 @pytest.mark.parametrize("language", ["python", "javascript", "java"])
-def test_three_language_canary_claim_and_terminal_cleanup(
+def test_three_language_claim_and_terminal_cleanup(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
     language: str,
 ) -> None:
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, f"b2-canary-{language}", [language])
     adapter = _rabbit_adapter(
         api_client, worker, f"b2-canary-adapter-{language}", language=language
     )
-    execution = _canary_execution(api_client, adapter["id"], input_value={"language": language})
+    execution = _execution(api_client, adapter["id"], input_value={"language": language})
     dispatch = _dispatch(session_factory, execution["id"])
     claimed = _claim(session_factory, worker["id"], dispatch)
     assert claimed.decision == "EXECUTE"
@@ -2651,7 +2536,7 @@ def test_managed_file_dead_letter_hold_is_bounded_and_replayable(
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     monkeypatch.setattr(settings, "managed_files_enabled", True)
     worker = _ready_worker(api_client, "b2-managed-canary-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-managed-canary-adapter")
@@ -2666,7 +2551,7 @@ def test_managed_file_dead_letter_hold_is_bounded_and_replayable(
         },
     )
     assert configured.status_code == 200, configured.text
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     claimed = _claim(session_factory, worker["id"], dispatch)
     assert claimed.payload is not None and claimed.attempt_id is not None
@@ -2751,7 +2636,7 @@ def test_v3_consumer_executes_real_language_adapter_and_records_terminal_result(
 ) -> None:
     """The v3 Consumer invokes each real local language runtime end to end."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, f"b2-part2-{language}-worker", [language])
     adapter = _rabbit_adapter(
         api_client,
@@ -2760,7 +2645,7 @@ def test_v3_consumer_executes_real_language_adapter_and_records_terminal_result(
         language=language,
         code=_REAL_LANGUAGE_ADAPTERS[language],
     )
-    execution = _canary_execution(api_client, adapter["id"], input_value=input_value)
+    execution = _execution(api_client, adapter["id"], input_value=input_value)
     dispatch = _dispatch(session_factory, execution["id"])
     client = _V3ServiceClient(api_client, session_factory)
     runtime_root = tmp_path / "runtime"
@@ -2776,6 +2661,8 @@ def test_v3_consumer_executes_real_language_adapter_and_records_terminal_result(
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
         runtime_settings=executor.RuntimeSettings(
+            sandbox_config=unit_sandbox_config(),
+            resource_envelope=unit_resource_envelope(),
             runtime_root=runtime_root,
             execution_timeout_seconds=30,
             dep_install_timeout_seconds=120,
@@ -2838,7 +2725,7 @@ def test_v3_consumer_managed_files_download_manifest_and_restart_cleanup_recover
 ) -> None:
     """v3 proves Claim auth, Control streaming, materialization and recovery."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     monkeypatch.setattr(settings, "managed_files_enabled", True)
     store_root = tmp_path / "artifact-store"
     monkeypatch.setattr(settings, "artifact_store_root", str(store_root))
@@ -2879,7 +2766,7 @@ def test_v3_consumer_managed_files_download_manifest_and_restart_cleanup_recover
         },
     )
     assert configured.status_code == 200, configured.text
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     dispatch = _dispatch(session_factory, execution["id"])
     client = _V3ServiceClient(
         api_client,
@@ -2899,6 +2786,8 @@ def test_v3_consumer_managed_files_download_manifest_and_restart_cleanup_recover
         client,  # type: ignore[arg-type]
         connection_factory=lambda: object(),  # type: ignore[return-value]
         runtime_settings=executor.RuntimeSettings(
+            sandbox_config=unit_sandbox_config(),
+            resource_envelope=unit_resource_envelope(),
             runtime_root=runtime_root,
             execution_timeout_seconds=30,
             dep_install_timeout_seconds=120,
@@ -2975,7 +2864,7 @@ def test_v3_consumer_managed_files_download_manifest_and_restart_cleanup_recover
     ).exists()
 
 
-def test_v3_cleanup_journals_are_attempt_scoped_and_v2_shape_remains_legacy(
+def test_cleanup_journals_are_attempt_scoped(
     tmp_path: Path,
 ) -> None:
     """A deferred v3 Attempt can recover beside another Attempt's journal."""
@@ -3021,13 +2910,6 @@ def test_v3_cleanup_journals_are_attempt_scoped_and_v2_shape_remains_legacy(
     assert receipts == [(17, "cleanup-token-first"), (17, "cleanup-token-second")]
     assert not first_journal.exists() and not second_journal.exists()
     assert not first_layout.root.exists() and not second_layout.root.exists()
-    legacy_journal = workspace.write_cleanup_journal(
-        tmp_path / "legacy-journal",
-        18,
-        workspace.workspace_path(tmp_path / "legacy-runtime", 18),
-        "legacy-cleanup-token",
-    )
-    assert set(json.loads(legacy_journal.read_text(encoding="utf-8"))) == workspace.JOURNAL_FIELDS
 
 
 def test_v3_retry_keeps_old_cleanup_receipt_from_completing_next_attempt(
@@ -3038,10 +2920,10 @@ def test_v3_retry_keeps_old_cleanup_receipt_from_completing_next_attempt(
 ) -> None:
     """A lost receipt leaves the old journal recoverable without blocking Claim 2."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, "b2-cleanup-retry-worker")
     adapter = _rabbit_adapter(api_client, worker, "b2-cleanup-retry-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     first_dispatch = _dispatch(session_factory, execution["id"])
     first = _claim(session_factory, worker["id"], first_dispatch)
     assert first.decision == "EXECUTE"
@@ -3215,10 +3097,10 @@ def test_v3_final_states_accept_cleanup_receipt_and_converge(
 ) -> None:
     """Every v3 terminal business state has an idempotent cleanup boundary."""
 
-    _enable_canary(monkeypatch)
+    _enable_runtime(monkeypatch)
     worker = _ready_worker(api_client, f"b2-final-cleanup-{final_status}-worker")
     adapter = _rabbit_adapter(api_client, worker, f"b2-final-cleanup-{final_status}-adapter")
-    execution = _canary_execution(api_client, adapter["id"])
+    execution = _execution(api_client, adapter["id"])
     if final_status == "dead_letter":
         with session_factory.begin() as session:
             row = session.get(Execution, execution["id"])

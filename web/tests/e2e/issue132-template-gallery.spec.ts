@@ -42,7 +42,7 @@ function scenario(index: number) {
     slug,
     theme_slug: "cloud-cmdb",
     title: { "zh-CN": index === 0 ? "REST 单次请求" : `云模板 ${String(index + 1).padStart(2, "0")}`, en: `Cloud template ${index + 1}` },
-    summary: { "zh-CN": "经过审阅的有界只读场景模板。", en: "A reviewed bounded read-only scenario." },
+    summary: { "zh-CN": "读取接口数据并返回 JSON。", en: "Read API data and return JSON." },
     vendor: index % 2 === 0 ? "DLR" : "Alibaba Cloud",
     adapter_type: "task" as const,
     protocols: index % 2 === 0 ? ["HTTP", "JSON"] : ["OpenAPI", "JSON"],
@@ -53,7 +53,6 @@ function scenario(index: number) {
     variants: (["python", "javascript", "java"] as const).map((language) => ({
       language,
       available: true,
-      maturity: "reference-generated" as const,
     })),
   };
 }
@@ -66,21 +65,7 @@ function detail(slug = "rest-single-request") {
     : scenarios[0];
   return {
     ...base,
-    details: { "zh-CN": "从安全边界明确的模板开始。", en: "Start from an explicit safety boundary." },
-    input_summary: { "zh-CN": "受控输入对象", en: "Bounded input object" },
-    output_summary: { "zh-CN": "规范化 JSON", en: "Normalized JSON" },
-    risk: { "zh-CN": "复制后配置真实凭据，禁止把密钥写进代码。", en: "Configure credentials after copying." },
-    modes: ["request"],
-    sources: [{
-      id: "http-semantics",
-      url: "https://www.rfc-editor.org/rfc/rfc9110",
-      revision: "RFC 9110",
-      reference: "HTTP Semantics",
-      license: "RFC Trust",
-      license_evidence: "RFC page",
-      use_mode: "official-api",
-      checked_at: "2026-09-05",
-    }],
+    details: { "zh-CN": "修改代码开头的请求地址，保存后运行。", en: "Set the URL at the start of the code, save, and run." },
   };
 }
 
@@ -92,17 +77,11 @@ function variant(slug: string, language: Language) {
     language,
     adapter_type: "task",
     template_version: "1.0.0",
-    behavior_contract_version: "dlr-recipe/v1",
-    maturity: "reference-generated",
-    code: `${language} reviewed recipe for ${slug}\n`,
+    code: `${language} template code for ${slug}\n`,
     requirements: language === "python" ? "httpx==0.28.1" : "",
-    install_notes: { "zh-CN": `${language} 安装说明`, en: `${language} installation` },
-    input_skeleton: { url: "https://example.com/api" },
-    input_contract: { type: "object" },
-    output_contract: { type: "object" },
+    input_skeleton: slug === "csv-to-json" ? { file: "example.csv" } : {},
+    output_example: { status: 200, data: [{ id: "example" }] },
     runtime_config: {},
-    runtime_guidance: { "zh-CN": "先绑定凭据和 Worker。", en: "Bind credentials and a Worker first." },
-    sources: detail(slug).sources,
   };
 }
 
@@ -133,9 +112,9 @@ const createdAdapter = {
   id: 42,
   name: "生产 REST 同步",
   description: "copied fixture",
-  latest_version_id: 77,
-  template_scenario_slug: "rest-single-request",
-  template_version: "1.0.0",
+  latest_version_id: null,
+  template_scenario_slug: null,
+  template_version: null,
 };
 
 const version = {
@@ -151,6 +130,8 @@ const version = {
 interface FixtureState {
   created: boolean;
   createdName: string | null;
+  createdWorkerId: number | null;
+  savedPayload: { code: string; requirements: string; runtime_config: Record<string, unknown> } | null;
   posts: string[];
   unknown: string[];
 }
@@ -160,7 +141,13 @@ async function json(route: Route, body: unknown, status = 200): Promise<void> {
 }
 
 async function installFixture(page: Page): Promise<FixtureState> {
-  const state: FixtureState = { created: false, createdName: null, posts: [], unknown: [] };
+  const state: FixtureState = { created: false, createdName: null, createdWorkerId: null, savedPayload: null, posts: [], unknown: [] };
+  const currentCreatedAdapter = () => ({
+    ...createdAdapter,
+    name: state.createdName ?? createdAdapter.name,
+    runtime_worker_id: state.createdWorkerId,
+    latest_version_id: state.savedPayload ? 77 : null,
+  });
   await page.addInitScript(() => {
     window.sessionStorage.setItem("dlr-admin-token", "ISSUE132_BROWSER_TOKEN");
     window.localStorage.setItem("dlr-system-locale", "zh-CN");
@@ -190,6 +177,7 @@ async function installFixture(page: Page): Promise<FixtureState> {
         rabbitmq_execution_v3: true,
         isolation_capabilities: {
           cgroup_v2: true,
+          cgroup_namespace_private: true,
           mount_namespace: true,
           pid_namespace: true,
           memory_hard_limit: true,
@@ -221,7 +209,7 @@ async function installFixture(page: Page): Promise<FixtureState> {
     }
     if (method === "GET" && path === "/api/adapters") {
       return json(route, state.created
-        ? [{ ...createdAdapter, name: state.createdName ?? createdAdapter.name }, existingAdapter]
+        ? [currentCreatedAdapter(), existingAdapter]
         : [existingAdapter]);
     }
     if (method === "GET" && path === "/api/templates/themes") return json(route, themes);
@@ -261,17 +249,17 @@ async function installFixture(page: Page): Promise<FixtureState> {
       return json(route, [{ id: 10, adapter_id: 1, seq: 1, created_at: version.created_at }]);
     }
     if (method === "GET" && path === "/api/adapters/1/versions/10") return json(route, version);
-    if (method === "GET" && path === "/api/adapters/42/versions") {
-      return json(route, [{ id: 77, adapter_id: 42, seq: 1, created_at: version.created_at }]);
+    if (method === "PATCH" && path === "/api/adapters/42") {
+      state.createdWorkerId = (request.postDataJSON() as { runtime_worker_id: number }).runtime_worker_id;
+      return json(route, currentCreatedAdapter());
     }
-    if (method === "GET" && path === "/api/adapters/42/versions/77") {
-      return json(route, {
-        ...version,
-        id: 77,
-        adapter_id: 42,
-        code: variant("rest-single-request", "python").code,
-        requirements: variant("rest-single-request", "python").requirements,
-      });
+    if (method === "POST" && path === "/api/adapters/42/versions") {
+      state.savedPayload = request.postDataJSON();
+      return json(route, { ...version, ...state.savedPayload, id: 77, adapter_id: 42 }, 201);
+    }
+    if (method === "GET" && path === "/api/adapters/42") return json(route, currentCreatedAdapter());
+    if (method === "GET" && path === "/api/adapters/42/versions") {
+      return json(route, state.savedPayload ? [{ id: 77, adapter_id: 42, seq: 1, created_at: version.created_at }] : []);
     }
     if (method === "GET" && /^\/api\/adapters\/\d+\/input-config$/.test(path)) {
       return json(route, {
@@ -318,11 +306,13 @@ test("Gallery search, filters, pagination and responsive layouts remain bounded"
   await page.goto("/templates");
   await expect(page.getByRole("heading", { name: "模板广场" })).toBeVisible();
   await expect(page.locator(".template-card")).toHaveCount(12);
+  await expect(page.getByRole("tab", { name: /全部/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("combobox", { name: "成熟度" })).toHaveCount(0);
   await page.getByTitle("2").click();
   await expect(page.locator(".template-card")).toHaveCount(1);
   await page.getByRole("tab", { name: /API 与事件/ }).click();
   await expect(page.locator(".template-card")).toHaveCount(12);
-  await page.getByRole("tab", { name: /云与 CMDB/ }).click();
+  await page.getByRole("tab", { name: /全部/ }).click();
   await expect(page.locator(".template-card")).toHaveCount(1);
   await page.getByRole("textbox", { name: "搜索模板" }).fill("REST 单次请求");
   await expect(page.getByRole("heading", { name: "REST 单次请求" })).toBeVisible();
@@ -347,7 +337,7 @@ test("Gallery search, filters, pagination and responsive layouts remain bounded"
 
   await page.setViewportSize({ width: 560, height: 820 });
   await page.goto("/templates/rest-single-request");
-  await expect(page.getByText("python reviewed recipe for rest-single-request")).toBeVisible();
+  await expect(page.getByText("python template code for rest-single-request")).toBeVisible();
   await expect.poll(() => page.locator(".template-detail").evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await expect.poll(() => page.locator(".template-detail-layout").evaluate((element) => (
     getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length
@@ -363,29 +353,44 @@ test("a conflict keeps the name and a successful copy opens the new Adapter edit
   const errors = monitorErrors(page);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/templates/rest-single-request");
-  await expect(page.getByText("python reviewed recipe for rest-single-request")).toBeVisible();
-  const copyButton = page.getByRole("button", { name: "复制为 Adapter" });
+  await expect(page.getByText("python template code for rest-single-request")).toBeVisible();
+  const copyButton = page.getByRole("button", { name: "复制为适配器" });
   await expect(copyButton).toBeEnabled();
   await expect.poll(() => copyButton.evaluate((element) => getComputedStyle(element).backgroundColor))
     .toBe("rgb(9, 88, 217)");
+  await expect(page.getByRole("heading", { name: "输入示例" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "返回结果示例" })).toBeVisible();
+  for (const name of ["运行模式", "安全边界", "来源与许可证", "Runtime 建议配置", "各语言成熟度"]) {
+    await expect(page.getByRole("heading", { name })).toHaveCount(0);
+  }
   await page.screenshot({ path: testInfo.outputPath("template-detail-1280.png"), fullPage: true });
   await page.getByRole("tab", { name: "JavaScript" }).click();
-  await expect(page.getByText("javascript reviewed recipe for rest-single-request")).toBeVisible();
+  await expect(page.getByText("javascript template code for rest-single-request")).toBeVisible();
   await page.getByRole("tab", { name: "Python" }).click();
   await copyButton.click();
-  const name = page.getByRole("textbox", { name: "Adapter 名称" });
+  const name = page.getByRole("textbox", { name: "适配器名称" });
   await expect(name).toBeFocused();
   await name.fill("冲突名称");
   await page.getByRole("button", { name: "复制并编辑" }).click();
-  await expect(page.getByText("已有同名 Adapter，请换一个名称。")).toBeVisible();
+  await expect(page.getByText("已有同名适配器，请换一个名称。")).toBeVisible();
   await expect(name).toHaveValue("冲突名称");
   await name.fill("生产 REST 同步");
   await page.getByRole("button", { name: "复制并编辑" }).click();
 
   await expect(page).toHaveURL(/\/adapters$/);
   await expect(page.getByRole("heading", { name: "生产 REST 同步" })).toBeVisible();
-  await expect(page.locator(".monaco-editor")).toContainText("python reviewed recipe for rest-single-request");
+  await expect(page.locator(".monaco-editor")).toContainText("python template code for rest-single-request");
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "运行一次", exact: true })).toBeDisabled();
+  expect(state.posts.some((path) => path.endsWith("/versions"))).toBe(false);
   await page.screenshot({ path: testInfo.outputPath("copied-adapter-edit.png"), fullPage: true });
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect.poll(() => state.savedPayload).toEqual({
+    code: variant("rest-single-request", "python").code,
+    requirements: "httpx==0.28.1",
+    runtime_config: {},
+  });
+  await expect(page.getByRole("button", { name: "运行一次", exact: true })).toBeEnabled();
   expect(state.posts.filter((path) => path.endsWith("/instantiate"))).toHaveLength(2);
   expect(state.posts.some((path) => path.includes("clone"))).toBe(false);
   expect(state.unknown).toEqual([]);
@@ -405,12 +410,12 @@ test("Task input draft cancellation performs no POST and file templates stay cop
   await page.getByRole("link", { name: "模板广场" }).click();
   await page.getByRole("tab", { name: /文件与数据/ }).click();
   await page.getByRole("link", { name: "查看详情" }).click();
-  await expect(page.getByText(/即使当前未启用文件存储/)).toBeVisible();
-  await page.getByRole("button", { name: "复制为 Adapter" }).click();
-  await page.getByRole("textbox", { name: "Adapter 名称" }).fill("不会创建");
+  await expect(page.getByRole("heading", { name: "输入示例" })).toBeVisible();
+  await page.getByRole("button", { name: "复制为适配器" }).click();
+  await page.getByRole("textbox", { name: "适配器名称" }).fill("不会创建");
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "复制并编辑" }).click();
-  await expect(page.getByRole("textbox", { name: "Adapter 名称" })).toHaveValue("不会创建");
+  await expect(page.getByRole("textbox", { name: "适配器名称" })).toHaveValue("不会创建");
   expect(state.posts.filter((path) => path.endsWith("/instantiate"))).toEqual([]);
   await page.getByRole("button", { name: /取\s*消/ }).click();
   await page.getByRole("link", { name: "适配器" }).click();
@@ -439,11 +444,11 @@ test("keyboard navigation opens copy, traps focus and restores the trigger", asy
   await expect(page).toHaveURL(/\/templates\/rest-single-request$/);
   await expect(page.locator(".template-detail")).toBeFocused();
 
-  const copyButton = page.getByRole("button", { name: "复制为 Adapter" });
+  const copyButton = page.getByRole("button", { name: "复制为适配器" });
   await expect(copyButton).toBeEnabled();
   await copyButton.focus();
   await copyButton.press("Space");
-  const name = page.getByRole("textbox", { name: "Adapter 名称" });
+  const name = page.getByRole("textbox", { name: "适配器名称" });
   await expect(name).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);

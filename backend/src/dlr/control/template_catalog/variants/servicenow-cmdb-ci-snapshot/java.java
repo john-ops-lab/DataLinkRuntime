@@ -16,7 +16,71 @@ import java.util.Map;
 
 /** Bounded ServiceNow cmdb_ci snapshot with optional idempotent CMDB sync. */
 public class Adapter {
+    // ServiceNow 资产采集：可修改的配置集中在这里。
+    // 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    // 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+    // SERVICENOW_USERNAME：ServiceNow 用户名，使用 Basic 认证时配置。
+    // SERVICENOW_PASSWORD：ServiceNow 密码，使用 Basic 认证时配置。
+    // SERVICENOW_BEARER_TOKEN：ServiceNow Bearer Token，与 Basic 认证二选一。
+    // CMDB_TOKEN：目标 CMDB Token，仅同步时配置。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // mode: preview 只采集并返回结果；sync 会写入目标 CMDB，请先配置下方地址和 CMDB_TOKEN 凭据。
+        // instance_url: 填写 ServiceNow 实例的 HTTPS 地址。
+        // instance_id: 填写实例标识，用于区分资产来源。
+        // table: 读取的资产表，本模板使用 cmdb_ci。
+        // encoded_query: ServiceNow 查询条件，例如 active=true。
+        // fields: 需要读取的字段列表。
+        // display_value: 是否使用 ServiceNow 展示值；false 保留原始值。
+        // max_pages: 单次运行最多读取的页数。
+        // max_records: 单次运行最多返回的记录数。
+        // max_bytes: 单次运行处理或返回的数据大小上限，单位字节。
+        // page_size: 每次请求的条数，不能超过目标接口限制。
+        // timeout_seconds: 单次请求超时时间，单位秒。
+        // offset: 首次读取从 0 开始；sync 必须为 0。
+        // batch_size: 每批处理的记录数。
+        // source_scope: 同步范围标识：同一账号、区域和资源范围保持不变。
+        // scan_id: 仅 sync 使用：每次新的扫描填写新标识，同一次运行重试保持不变。
+        // cmdb_base_url: 仅 sync 使用：填写目标 CMDB 地址；目标需实现下方代码调用的扫描和批量写入接口。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "mode": "preview",
+              "instance_url": "https://tenant.example",
+              "instance_id": "EXAMPLE_TENANT",
+              "table": "cmdb_ci",
+              "encoded_query": "active=true",
+              "fields": [
+                "sys_id",
+                "name",
+                "sys_class_name",
+                "install_status"
+              ],
+              "display_value": false,
+              "max_pages": 20,
+              "max_records": 5000,
+              "max_bytes": 8388608,
+              "page_size": 500,
+              "timeout_seconds": 30,
+              "offset": 0,
+              "batch_size": 200,
+              "source_scope": "servicenow:EXAMPLE_TENANT:cmdb_ci",
+              "scan_id": "",
+              "cmdb_base_url": "https://cmdb.example"
+            }
+            """);
+    }
+
     public Object handle(Context context, Object rawInput) throws Exception {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         Map<String, Object> input = object(rawInput, "input_must_be_object");
         String mode = String.valueOf(input.getOrDefault("mode", "preview"));
         if (!List.of("preview", "sync").contains(mode)) throw new IllegalArgumentException("invalid_mode");
@@ -217,8 +281,10 @@ public class Adapter {
         throw new IllegalArgumentException("servicenow_request_failed");
     }
     private static Map<String, String> auth(Context context) {
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String bearer = context.secrets.get("SERVICENOW_BEARER_TOKEN");
         if (bearer != null) return new LinkedHashMap<>(Map.of("Authorization", "Bearer " + bearer));
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String user = context.secrets.get("SERVICENOW_USERNAME"), password = context.secrets.get("SERVICENOW_PASSWORD");
         if (user == null || password == null) throw new IllegalArgumentException("missing_credential");
         return new LinkedHashMap<>(Map.of("Authorization", "Basic " + Base64.getEncoder().encodeToString((user + ":" + password).getBytes(StandardCharsets.UTF_8))));
@@ -239,7 +305,8 @@ public class Adapter {
     private static Object display(Map<String, Object> record, String key) { Object value = record.get(key); return value instanceof Map<?, ?> map ? map.get("display_value") : value; }
     private static Object sync(Context context, Map<String, Object> input, List<Map<String, Object>> assets, Map<String, Object> summary, long deadline) throws Exception {
         String scan = required(input, "scan_id"), scope = required(input, "source_scope");
-        String base = context.config.get("cmdb_base_url") instanceof String value ? value : null, token = context.secrets.get("CMDB_TOKEN");
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
+        String base = input.get("cmdb_base_url") instanceof String value ? value : null, token = context.secrets.get("CMDB_TOKEN");
         URI target;
         try { target = base == null ? null : URI.create(base); } catch (Exception error) { target = null; }
         String host = target == null ? null : target.getHost();

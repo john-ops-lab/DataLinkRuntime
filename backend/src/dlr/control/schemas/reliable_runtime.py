@@ -226,7 +226,7 @@ class ReliableExecutionDetail(BaseModel):
     """Lightweight reliable detail exposed to authenticated business users."""
 
     execution_id: int
-    dispatch_backend: Literal["legacy", "rabbitmq"]
+    dispatch_backend: Literal["rabbitmq"]
     status: str
     attempts: list[AttemptSummary]
     incidents: list[dict[str, Any]]

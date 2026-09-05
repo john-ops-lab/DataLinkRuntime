@@ -1,20 +1,13 @@
 """Strict immutable schemas for the versioned Template Gallery assets."""
 
-from datetime import date, datetime
+from datetime import date
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 TemplateLanguage = Literal["python", "javascript", "java"]
-TemplateMaturity = Literal[
-    "reference-generated",
-    "syntax-verified",
-    "fixture-verified",
-    "live-verified",
-]
 TemplateAdapterType = Literal["task", "webhook"]
-TemplateMode = Literal["preview", "sync", "transform", "request"]
 TemplateSourceUseMode = Literal[
     "adaptation-allowed",
     "behavior-research-only",
@@ -81,39 +74,16 @@ class TemplateCatalogManifest(FrozenAssetModel):
     scenarios: tuple[TemplateScenarioReference, ...]
 
 
-class TemplateEvidence(FrozenAssetModel):
-    kind: Literal["syntax", "fixture", "live"]
-    command: NonEmptyText
-    result: Literal["passed"]
-    checked_at: date
-
-
-class TemplateMaturityReceipt(FrozenAssetModel):
-    scenario_slug: Slug
-    version: VersionText
-    language: TemplateLanguage
-    source_sha256: Sha256
-    behavior_contract_version: VersionText
-    maturity: TemplateMaturity
-    evidence: tuple[TemplateEvidence, ...] = ()
-    verified_at: datetime | None = None
-
-
 class TemplateVariantAsset(FrozenAssetModel):
     language: TemplateLanguage
-    maturity: TemplateMaturity
     behavior_contract_version: VersionText
     code_resource: NonEmptyText
     code_sha256: Sha256
     requirements: str
-    install_notes: LocalizedText
     input_skeleton: dict[str, object]
-    input_contract: dict[str, object]
-    output_contract: dict[str, object]
+    output_example: dict[str, object]
     runtime_config: dict[str, object]
-    runtime_guidance: LocalizedText
     provenance_ids: tuple[NonEmptyText, ...] = Field(min_length=1)
-    receipt_resource: NonEmptyText
 
 
 class TemplateScenarioAsset(FrozenAssetModel):
@@ -122,9 +92,6 @@ class TemplateScenarioAsset(FrozenAssetModel):
     title: LocalizedText
     summary: LocalizedText
     details: LocalizedText
-    input_summary: LocalizedText
-    output_summary: LocalizedText
-    risk: LocalizedText
     vendor: NonEmptyText
     adapter_type: TemplateAdapterType
     protocols: tuple[NonEmptyText, ...] = Field(min_length=1)
@@ -133,7 +100,6 @@ class TemplateScenarioAsset(FrozenAssetModel):
     version: VersionText
     updated_at: date
     featured_rank: int = Field(ge=0)
-    modes: tuple[TemplateMode, ...] = Field(min_length=1)
     provenance_ids: tuple[NonEmptyText, ...] = Field(min_length=1)
     variants: tuple[TemplateVariantAsset, ...]
 

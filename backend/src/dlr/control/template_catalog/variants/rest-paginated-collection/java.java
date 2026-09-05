@@ -17,7 +17,62 @@ import java.util.concurrent.TimeUnit;
 
 /** Bounded REST collection pagination with loop detection. */
 public class Adapter {
+    // REST 分页采集：可修改的配置集中在这里。
+    // 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    // 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+    // HTTP_BEARER_TOKEN：HTTP Bearer Token，使用此认证时配置。
+    // HTTP_API_KEY：HTTP API Key，使用此认证时配置。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // url: 填写实际接口地址；不要在地址中填写密码或 Token。
+        // strategy: 分页方式：page（页码）、offset（偏移量）、cursor（游标）或 next-url（下一页地址）。
+        // records_path: 接口响应中列表的字段路径，例如 items 或 data.items。
+        // next_path: 接口响应中下一页游标或地址的字段路径。
+        // page_parameter: 接口接收页码的参数名。
+        // size_parameter: 接口接收每页条数的参数名。
+        // start_page: 从第几页开始读取。
+        // page_size: 每次请求的条数，不能超过目标接口限制。
+        // headers: 普通请求头；Bearer 认证可增加 "DLR-Auth": "bearer:HTTP_BEARER_TOKEN"，Token 在本适配器凭据绑定中配置。
+        // query_auth: 可选认证：例如 {"parameter":"api_key","secret_binding":"HTTP_API_KEY"}；在本适配器的凭据绑定中配置同名键。
+        // allow_cross_origin_next: 是否允许下一页跳转到其他站点；建议保留 false。
+        // max_pages: 单次运行最多读取的页数。
+        // max_records: 单次运行最多返回的记录数。
+        // max_bytes: 单次运行处理或返回的数据大小上限，单位字节。
+        // timeout_seconds: 单次请求超时时间，单位秒。
+        // max_retries: 读取请求失败时的最多重试次数。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "url": "https://api.example/resources",
+              "strategy": "page",
+              "records_path": "items",
+              "next_path": "next",
+              "page_parameter": "page",
+              "size_parameter": "page_size",
+              "start_page": 1,
+              "page_size": 100,
+              "headers": {},
+              "query_auth": null,
+              "allow_cross_origin_next": false,
+              "max_pages": 20,
+              "max_records": 10000,
+              "max_bytes": 4194304,
+              "timeout_seconds": 30,
+              "max_retries": 2
+            }
+            """);
+    }
+
     public Object handle(Context context, Object rawInput) throws Exception {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         try {
             return run(context, rawInput);
         } catch (Exception error) {
@@ -270,6 +325,7 @@ public class Adapter {
             throw new IllegalArgumentException("invalid_query_auth");
         }
         String binding = required(value, "secret_binding");
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String secret = context.secrets.get(binding);
         if (secret == null || secret.isEmpty()) {
             throw new IllegalArgumentException("missing_credential");
@@ -412,6 +468,7 @@ public class Adapter {
             int split = auth.indexOf(':');
             if (split <= 0) throw new IllegalArgumentException("invalid_auth_scheme");
             String scheme = auth.substring(0, split);
+            // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
             String secret = context.secrets.get(auth.substring(split + 1));
             if (secret == null || secret.isEmpty()) throw new IllegalArgumentException("missing_credential");
             if ("bearer".equals(scheme)) {

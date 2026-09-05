@@ -2,28 +2,16 @@
   "slug": "mysql-readonly-snapshot",
   "theme_slug": "databases",
   "title": {
-    "zh-CN": "MySQL 只读快照",
-    "en": "MySQL Read-only Snapshot"
+    "zh-CN": "MySQL 数据查询",
+    "en": "MySQL Query"
   },
   "summary": {
-    "zh-CN": "禁用驱动多语句，用只读账号执行一条参数化 SELECT。",
-    "en": "Disable driver multi-statements and execute one parameterized SELECT with a read-only account."
+    "zh-CN": "执行一条查询语句，将 MySQL 查询结果转成 JSON。",
+    "en": "Run a SELECT query and return MySQL rows as JSON."
   },
   "details": {
-    "zh-CN": "拒绝写操作、DDL 和存储过程，设置超时，并通过行数、单元格与输出字节上限约束结果。",
-    "en": "Rejects writes, DDL and procedures, applies a timeout, and bounds results by row, cell and output-byte limits."
-  },
-  "input_summary": {
-    "zh-CN": "一条占位符参数化 SELECT 和位置参数数组。",
-    "en": "One placeholder-parameterized SELECT and positional parameter array."
-  },
-  "output_summary": {
-    "zh-CN": "JSON-safe 字段对象行、读取计数、partial/checkpoint 与脱敏错误。",
-    "en": "JSON-safe field-object rows, read count, partial/checkpoint state and redacted error."
-  },
-  "risk": {
-    "zh-CN": "驱动必须关闭 multiStatements；数据库侧只读账号仍是最终安全边界。",
-    "en": "The driver must disable multiStatements; the database-side read-only account remains the final security boundary."
+    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "MySQL",
   "adapter_type": "task",
@@ -37,309 +25,81 @@
     "snapshot"
   ],
   "logo_key": "database-mysql",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "updated_at": "2026-09-05",
   "featured_rank": 20,
-  "modes": [
-    "preview"
-  ],
   "provenance_ids": [
     "mysql-9-docs"
   ],
   "variants": [
     {
       "language": "python",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/mysql-readonly-snapshot/python.py",
-      "code_sha256": "0e9fdc4bcc13b55c4d9a45575b35ccab3d7c773ee239ecc7d9589c9e667c5dfb",
+      "code_sha256": "deeca8f4b97f7b1748dabc2e6ce3b414482bd041885d5377ea3ece953beec77b",
       "requirements": "PyMySQL==1.1.1",
-      "install_notes": {
-        "zh-CN": "建议依赖：PyMySQL==1.1.1。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: PyMySQL==1.1.1. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "sql": "SELECT id, name FROM example_items WHERE updated_at >= %s",
-        "params": [
-          "2026-01-01T00:00:00Z"
-        ],
-        "max_rows": 5000,
-        "max_output_bytes": 4194304,
-        "max_cell_bytes": 1048576,
-        "batch_size": 500,
-        "timeout_seconds": 30
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "sql"
-        ],
-        "properties": {
-          "sql": {
-            "type": "string",
-            "single_statement": true,
-            "allowed_statement": "SELECT",
-            "placeholder": "%s"
-          },
-          "params": {
-            "type": "array",
-            "max_items": 64
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "max_cell_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 300
-          }
-        },
-        "driver_rule": "one parameterized SELECT in a read-only transaction with multi-statements disabled and bounded streaming batches",
-        "identifier_rule": "identifiers are fixed in reviewed SQL, never interpolated from unvalidated input",
-        "secret_bindings": [
-          "MYSQL_DSN"
-        ]
-      },
-      "output_contract": {
-        "success_required": [
-          "rows",
-          "count",
-          "partial",
-          "checkpoint"
-        ],
-        "failure_required": [
-          "rows",
-          "count",
-          "partial",
-          "error"
-        ],
-        "error": "stable database_connection_failed or database_query_failed category only; no DSN, SQL parameters, driver message or password",
-        "column_rule": "duplicate column labels are rejected before any result row is published",
-        "cell_encoding": "decimals and unsafe integers use lossless strings; temporal values use ISO 8601 with the session fixed to UTC; UUID uses text; binary uses {$binary_base64: base64}",
-        "checkpoint": "row_offset is the count of complete JSON-safe rows already published"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：MYSQL_DSN。使用数据库侧只读用户并保持 multiStatements 关闭；复制不会创建账号或安装驱动。",
-        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: MYSQL_DSN. Use a database-side read-only user and keep multiStatements disabled; copying does not create accounts or install the driver."
-      },
       "provenance_ids": [
         "mysql-9-docs"
       ],
-      "receipt_resource": "receipts/mysql-readonly-snapshot/python.json"
+      "output_example": {
+        "rows": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "javascript",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/mysql-readonly-snapshot/javascript.mjs",
-      "code_sha256": "c10dd65bed1b8f73ad95342c237b679b70846cdc1dcfc630f8c5869fca3331c5",
+      "code_sha256": "b74738f7e33dd777ebb78f0e7d7da22048a494148b6400b22158e54a65e0c5bd",
       "requirements": "mysql2@3.14.3",
-      "install_notes": {
-        "zh-CN": "建议依赖：mysql2@3.14.3。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: mysql2@3.14.3. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "sql": "SELECT id, name FROM example_items WHERE updated_at >= ?",
-        "params": [
-          "2026-01-01T00:00:00Z"
-        ],
-        "max_rows": 5000,
-        "max_output_bytes": 4194304,
-        "max_cell_bytes": 1048576,
-        "batch_size": 500,
-        "timeout_seconds": 30
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "sql"
-        ],
-        "properties": {
-          "sql": {
-            "type": "string",
-            "single_statement": true,
-            "allowed_statement": "SELECT",
-            "placeholder": "?"
-          },
-          "params": {
-            "type": "array",
-            "max_items": 64
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "max_cell_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 300
-          }
-        },
-        "driver_rule": "one parameterized SELECT in a read-only transaction with multi-statements disabled and bounded streaming batches",
-        "identifier_rule": "identifiers are fixed in reviewed SQL, never interpolated from unvalidated input",
-        "secret_bindings": [
-          "MYSQL_DSN"
-        ]
-      },
-      "output_contract": {
-        "success_required": [
-          "rows",
-          "count",
-          "partial",
-          "checkpoint"
-        ],
-        "failure_required": [
-          "rows",
-          "count",
-          "partial",
-          "error"
-        ],
-        "error": "stable database_connection_failed or database_query_failed category only; no DSN, SQL parameters, driver message or password",
-        "column_rule": "duplicate column labels are rejected before any result row is published",
-        "cell_encoding": "decimals and unsafe integers use lossless strings; temporal values use ISO 8601 with the session fixed to UTC; UUID uses text; binary uses {$binary_base64: base64}",
-        "checkpoint": "row_offset is the count of complete JSON-safe rows already published"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：MYSQL_DSN。使用数据库侧只读用户并保持 multiStatements 关闭；复制不会创建账号或安装驱动。",
-        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: MYSQL_DSN. Use a database-side read-only user and keep multiStatements disabled; copying does not create accounts or install the driver."
-      },
       "provenance_ids": [
         "mysql-9-docs"
       ],
-      "receipt_resource": "receipts/mysql-readonly-snapshot/javascript.json"
+      "output_example": {
+        "rows": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "java",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/mysql-readonly-snapshot/java.java",
-      "code_sha256": "88491ca6858f8dfd730a193aae8362244944e972bce76bec327fabd428869784",
+      "code_sha256": "7d556ecd30dd4013312d9d5fc1970554b7bcef61b8a0193e95974d21889f98b4",
       "requirements": "com.mysql:mysql-connector-j:9.4.0",
-      "install_notes": {
-        "zh-CN": "建议依赖：com.mysql:mysql-connector-j:9.4.0。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: com.mysql:mysql-connector-j:9.4.0. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "sql": "SELECT id, name FROM example_items WHERE updated_at >= ?",
-        "params": [
-          "2026-01-01T00:00:00Z"
-        ],
-        "max_rows": 5000,
-        "max_output_bytes": 4194304,
-        "max_cell_bytes": 1048576,
-        "batch_size": 500,
-        "timeout_seconds": 30
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "sql"
-        ],
-        "properties": {
-          "sql": {
-            "type": "string",
-            "single_statement": true,
-            "allowed_statement": "SELECT",
-            "placeholder": "?"
-          },
-          "params": {
-            "type": "array",
-            "max_items": 64
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "max_cell_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 300
-          }
-        },
-        "driver_rule": "one parameterized SELECT in a read-only transaction with multi-statements disabled and bounded streaming batches",
-        "identifier_rule": "identifiers are fixed in reviewed SQL, never interpolated from unvalidated input",
-        "secret_bindings": [
-          "MYSQL_DSN"
-        ]
-      },
-      "output_contract": {
-        "success_required": [
-          "rows",
-          "count",
-          "partial",
-          "checkpoint"
-        ],
-        "failure_required": [
-          "rows",
-          "count",
-          "partial",
-          "error"
-        ],
-        "error": "stable database_connection_failed or database_query_failed category only; no DSN, SQL parameters, driver message or password",
-        "column_rule": "duplicate column labels are rejected before any result row is published",
-        "cell_encoding": "decimals and unsafe integers use lossless strings; temporal values use ISO 8601 with the session fixed to UTC; UUID uses text; binary uses {$binary_base64: base64}",
-        "checkpoint": "row_offset is the count of complete JSON-safe rows already published"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：MYSQL_DSN。使用数据库侧只读用户并保持 multiStatements 关闭；复制不会创建账号或安装驱动。",
-        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: MYSQL_DSN. Use a database-side read-only user and keep multiStatements disabled; copying does not create accounts or install the driver."
-      },
       "provenance_ids": [
         "mysql-9-docs"
       ],
-      "receipt_resource": "receipts/mysql-readonly-snapshot/java.json"
+      "output_example": {
+        "rows": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null
+      }
     }
   ]
 }

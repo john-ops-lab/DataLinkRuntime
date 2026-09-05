@@ -396,11 +396,7 @@ def resolve_execution_secrets(session: Session, execution: Execution) -> dict[st
 
     RabbitMQ rows must not resolve the Adapter's current bindings at Claim
     time: an administrator may have replaced those bindings after acceptance.
-    Legacy rows retain the historical Adapter lookup because they predate the
-    snapshot contract and never enter the v3 Claim path.
     """
-    if execution.dispatch_backend != "rabbitmq":
-        return resolve_adapter_secrets(session, execution.adapter_id)
     snapshots = execution.credential_bindings_snapshot
     if not isinstance(snapshots, list):
         raise RuntimeError("execution credential binding snapshot is malformed")

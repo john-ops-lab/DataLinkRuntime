@@ -62,13 +62,12 @@ export function clearTemplateVariantCache(): void {
 
 export function templateScenarioQueryString(query: TemplateScenarioQuery): string {
   const search = new URLSearchParams();
-  search.set("theme", query.theme);
+  if (query.theme) search.set("theme", query.theme);
   if (query.q?.trim()) search.set("q", query.q.trim());
   if (query.vendor) search.set("vendor", query.vendor);
   if (query.adapter_type) search.set("adapter_type", query.adapter_type);
   if (query.protocol) search.set("protocol", query.protocol);
   if (query.language) search.set("language", query.language);
-  if (query.maturity) search.set("maturity", query.maturity);
   search.set("page", String(query.page ?? 1));
   search.set("page_size", String(query.page_size ?? 12));
   return search.toString();

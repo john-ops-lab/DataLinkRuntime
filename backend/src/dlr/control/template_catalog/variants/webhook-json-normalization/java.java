@@ -13,6 +13,45 @@ import java.util.Map;
 
 /** Pure webhook payload validation and normalization. */
 public class Adapter {
+    // Webhook 数据整理：可修改的配置集中在这里。
+    // 运行时提供待处理的数据或文件；处理规则在下面配置。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // required: 必须存在的 Webhook 字段。
+        // mappings: 字段映射规则；source/pointer 指定原字段路径，target 指定结果字段名。
+        // max_fields: 最多处理的字段数。
+        // max_input_bytes: 输入大小上限，单位字节。
+        // max_output_bytes: 返回结果大小上限，单位字节。
+        // max_depth: JSON 最大嵌套层数。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "required": [
+                "event_id"
+              ],
+              "mappings": [
+                {
+                  "source": "event_id",
+                  "target": "id",
+                  "required": true
+                },
+                {
+                  "source": "occurred_at",
+                  "target": "timestamp",
+                  "type": "datetime",
+                  "required": true
+                }
+              ],
+              "max_fields": 200,
+              "max_input_bytes": 1048576,
+              "max_output_bytes": 2097152,
+              "max_depth": 32
+            }
+            """);
+    }
+
     private static final List<String> DANGEROUS_TARGET_SEGMENTS = List.of(
         "__proto__", "prototype", "constructor"
     );
@@ -21,6 +60,13 @@ public class Adapter {
     private static final int MIN_OUTPUT_BYTES = 128;
 
     public Object handle(Context context, Object rawInput) {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         Map<String, Object> input = object(rawInput, "input_must_be_object");
         Map<String, Object> payload = object(input.get("payload"), "payload_must_be_object");
         List<?> required = list(input.getOrDefault("required", List.of()), "invalid_required");

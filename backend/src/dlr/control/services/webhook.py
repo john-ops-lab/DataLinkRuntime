@@ -57,9 +57,7 @@ from dlr.control.services.adapter import (
     domain_error,
 )
 from dlr.control.services.execution import (
-    _create_pending_execution_locked,
     compact_json_bytes,
-    integrity_constraint_name,
 )
 from dlr.control.services.reliable_execution import accept_execution, resolve_queue_target_worker
 from dlr.control.services.secrets import decrypt_fields
@@ -368,22 +366,6 @@ def receive_webhook(
         raise domain_error(409, "adapter_type_mismatch", "Only webhook Adapters support Webhook")
     if adapter.latest_version_id is None or adapter.runtime_worker_id is None:
         raise domain_error(409, "adapter_not_ready", "Save the Adapter and choose a runtime Worker")
-    worker: Worker | None = None
-    if not settings.rabbitmq_execution_enabled:
-        worker = session.get(Worker, adapter.runtime_worker_id)
-        if worker is None or not worker_availability.is_effectively_online(
-            worker, now=worker_availability.current_time(session)
-        ):
-            raise domain_error(409, "worker_offline", "The runtime Worker is offline")
-        if adapter.language not in worker.capabilities:
-            raise domain_error(
-                409,
-                "worker_capability_missing",
-                f"The runtime Worker does not support {adapter.language}",
-            )
-        if adapter_runtime.active_execution(session, adapter.id) is not None:
-            raise domain_error(409, "adapter_busy", "The Adapter already has an active Execution")
-
     # --- body contract: raw size, then JSON, then normalized size ------------
     # The raw byte cap is the ingress memory protection; the compact JSON
     # cap is the Execution input contract (the same big-field unit as
@@ -421,67 +403,37 @@ def receive_webhook(
             {"max_bytes": settings.execution_input_max_bytes},
         )
 
-    if settings.rabbitmq_execution_enabled:
-        lookup = idempotency_service.lookup(
-            session,
-            adapter.id,
-            "webhook",
-            payload,
-            idempotency_key,
-        )
-        if lookup.record is not None:
-            existing = session.get(Execution, lookup.record.execution_id)
-            if existing is None:
-                raise domain_error(
-                    409,
-                    "idempotency_record_invalid",
-                    "Idempotency record is unavailable",
-                )
-            session.commit()
-            session.refresh(existing)
-            return existing
-        worker = resolve_queue_target_worker(session, adapter)
-        execution = accept_execution(
-            session,
-            adapter,
-            trigger="webhook",
-            runtime_input=payload,
-            input_source_type="json",
-            input_config_revision=1,
-            input_snapshot={"source_type": "json", "revision": 1},
-            idempotency_key=idempotency_key,
-            idempotency_body=payload,
-            idempotency_lookup=lookup,
-        )
+    lookup = idempotency_service.lookup(
+        session,
+        adapter.id,
+        "webhook",
+        payload,
+        idempotency_key,
+    )
+    if lookup.record is not None:
+        existing = session.get(Execution, lookup.record.execution_id)
+        if existing is None:
+            raise domain_error(
+                409,
+                "idempotency_record_invalid",
+                "Idempotency record is unavailable",
+            )
         session.commit()
-        session.refresh(execution)
-        logger.info("webhook accepted: adapter=%s execution=%s", adapter.id, execution.id)
-        return execution
-
-    # Retention is a unified periodic service, not an inline side effect of
-    # accepting a request.  This keeps receipt latency bounded and lets a
-    # failed cleanup retry in small batches without touching active work.
-    try:
-        assert worker is not None
-        execution = _create_pending_execution_locked(
-            session,
-            adapter,
-            trigger="webhook",
-            runtime_input=payload,
-            input_source_type="json",
-            input_config_revision=1,
-            input_snapshot={"source_type": "json", "revision": 1},
-            target_worker_id=worker.id,
-        )
-    except IntegrityError as exc:
-        # Lost the race against a concurrently created active
-        # Execution: the partial unique index is the final defense.
-        session.rollback()
-        if integrity_constraint_name(exc) != "uq_executions_active_adapter":
-            raise
-        raise domain_error(
-            409, "adapter_busy", "The Adapter already has an active Execution"
-        ) from None
+        session.refresh(existing)
+        return existing
+    resolve_queue_target_worker(session, adapter)
+    execution = accept_execution(
+        session,
+        adapter,
+        trigger="webhook",
+        runtime_input=payload,
+        input_source_type="json",
+        input_config_revision=1,
+        input_snapshot={"source_type": "json", "revision": 1},
+        idempotency_key=idempotency_key,
+        idempotency_body=payload,
+        idempotency_lookup=lookup,
+    )
     session.commit()
     session.refresh(execution)
     logger.info("webhook accepted: adapter=%s execution=%s", adapter.id, execution.id)

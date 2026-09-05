@@ -28,7 +28,6 @@ from dlr.control.api import (
     knowledge_sources,
     locale,
     managed_input,
-    migration,
     package_sources,
     schedules,
     templates,
@@ -40,7 +39,6 @@ from dlr.control.security import require_csrf
 from dlr.control.services import accounts as account_service
 from dlr.control.services.admission import admission_reconciler_loop
 from dlr.control.services.attempt import attempt_reconciler_loop
-from dlr.control.services.execution_reconciler import stale_execution_reconciler_loop
 from dlr.control.services.infrastructure_dlq import infrastructure_dlq_loop
 from dlr.control.services.managed_input_gc import artifact_gc_loop, orphan_audit_loop
 from dlr.control.services.outbox import outbox_relay_loop
@@ -90,7 +88,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     retention_task = asyncio.create_task(retention_loop())
     artifact_gc_task = asyncio.create_task(artifact_gc_loop())
     orphan_audit_task = asyncio.create_task(orphan_audit_loop())
-    stale_execution_task = asyncio.create_task(stale_execution_reconciler_loop())
     admission_task = asyncio.create_task(admission_reconciler_loop())
     attempt_task = asyncio.create_task(attempt_reconciler_loop())
     infrastructure_dlq_task = asyncio.create_task(infrastructure_dlq_loop())
@@ -109,7 +106,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             retention_task,
             artifact_gc_task,
             orphan_audit_task,
-            stale_execution_task,
             admission_task,
             attempt_task,
             infrastructure_dlq_task,
@@ -127,8 +123,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         with contextlib.suppress(asyncio.CancelledError):
             await orphan_audit_task
         with contextlib.suppress(asyncio.CancelledError):
-            await stale_execution_task
-        with contextlib.suppress(asyncio.CancelledError):
             await admission_task
         with contextlib.suppress(asyncio.CancelledError):
             await attempt_task
@@ -144,7 +138,7 @@ def create_app() -> FastAPI:
     validate_deployment_configuration(settings)
     configure_platform_logging("control")
     configure_ai_tool_audit_logging()
-    # Parse and cross-validate every catalog metadata/receipt resource at
+    # Parse and cross-validate every catalog metadata resource at
     # startup. Variant source bodies remain lazy and are hashed when selected;
     # release gates validate all 51 before packaging.
     get_template_catalog()
@@ -270,7 +264,6 @@ def create_app() -> FastAPI:
     app.include_router(adapters.router)
     app.include_router(templates.router)
     app.include_router(input_configs.router)
-    app.include_router(migration.router)
     app.include_router(managed_input.router)
     app.include_router(managed_input.capability_router)
     app.include_router(managed_input.upload_router)

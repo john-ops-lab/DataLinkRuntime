@@ -819,6 +819,30 @@ def _controllers(value: str) -> set[str]:
     return set(value.split())
 
 
+def validate_private_cgroup_namespace(parent: Path) -> None:
+    """Verify the real private namespace and its exact ancestor bind.
+
+    Docker places the supervisor at the root of its private cgroup namespace.
+    The separately bound delegated parent is its immediate ancestor, rendered
+    as /.. by the kernel in mountinfo. A host namespace instead exposes the
+    absolute host path; merely configuring cgroup=private is not evidence.
+    """
+    if _pid_cgroup(os.getpid()) != "/":
+        raise SandboxError("sandbox_private_cgroup_namespace_required")
+    for line in _read(Path("/proc/self/mountinfo")).splitlines():
+        before, separator, after = line.partition(" - ")
+        fields = before.split()
+        if not separator or len(fields) < 6 or not after.split():
+            continue
+        mountpoint = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
+        if mountpoint != str(parent):
+            continue
+        if fields[3] == "/.." and after.split()[0] == "cgroup2":
+            return
+        raise SandboxError("sandbox_private_cgroup_namespace_required")
+    raise SandboxError("sandbox_private_cgroup_namespace_required")
+
+
 def validate_delegated_parent(config: SandboxConfig) -> Path:
     """Validate, but never modify, the exact delegated parent."""
 
@@ -2427,6 +2451,7 @@ def run_preflight(
 
     capabilities: dict[str, bool] = {
         "cgroup_v2": False,
+        "cgroup_namespace_private": False,
         "mount_namespace": False,
         "pid_namespace": False,
         "memory_hard_limit": False,
@@ -2445,6 +2470,7 @@ def run_preflight(
     }
     try:
         parent = validate_delegated_parent(config)
+        validate_private_cgroup_namespace(parent)
     except SandboxError as error:
         failure_details = {
             "status": "failed",
@@ -2453,6 +2479,7 @@ def run_preflight(
         }
         return {"capabilities": capabilities, "details": failure_details}
     capabilities["cgroup_v2"] = True
+    capabilities["cgroup_namespace_private"] = True
     # Keep the disposable mount/workspace below the Worker-owned runtime root
     # so a recovery marker can never authorize deletion of an arbitrary host
     # path.  Tests without an explicit runtime root use the recovery journal's
@@ -2704,6 +2731,7 @@ def run_preflight(
             details["workspace_residue"] = True
     required: tuple[str, ...] = (
         "cgroup_v2",
+        "cgroup_namespace_private",
         "mount_namespace",
         "pid_namespace",
         "memory_hard_limit",

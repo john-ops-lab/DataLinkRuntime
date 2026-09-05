@@ -14,7 +14,6 @@ from dlr.control.models import (
     Adapter,
     AdapterExecutionSlot,
     AdapterInputConfig,
-    AdapterVersion,
     AdapterWebhook,
 )
 from dlr.control.schemas.adapter import DEFAULT_EXECUTION_TIMEOUT_SECONDS
@@ -24,7 +23,6 @@ from dlr.control.schemas.template import (
     TemplateScenarioDetail,
     TemplateScenarioListResponse,
     TemplateScenarioSummary,
-    TemplateSourceResponse,
     TemplateThemeResponse,
     TemplateVariantResponse,
     TemplateVariantSummary,
@@ -34,14 +32,10 @@ from dlr.control.services.locale import get_system_locale
 from dlr.control.template_catalog import TemplateCatalog, get_template_catalog
 from dlr.control.template_catalog.models import (
     LocalizedText,
-    TemplateProvenanceSource,
     TemplateScenarioAsset,
 )
 
 SUPPORTED_LANGUAGES = frozenset({"python", "javascript", "java"})
-SUPPORTED_MATURITIES = frozenset(
-    {"reference-generated", "syntax-verified", "fixture-verified", "live-verified"}
-)
 SUPPORTED_ADAPTER_TYPES = frozenset({"task", "webhook"})
 
 
@@ -49,24 +43,12 @@ def _localized(value: LocalizedText) -> TemplateLocalizedText:
     return TemplateLocalizedText.model_validate(value.model_dump(by_alias=True))
 
 
-def _source_response(source: TemplateProvenanceSource) -> TemplateSourceResponse:
-    return TemplateSourceResponse(
-        id=source.id,
-        url=source.url,
-        revision=source.revision,
-        reference=source.reference,
-        license=source.license,
-        license_evidence=source.license_evidence,
-        use_mode=source.use_mode,
-        checked_at=source.checked_at,
-    )
-
-
 def _variant_summaries(scenario: TemplateScenarioAsset) -> list[TemplateVariantSummary]:
     variants = {variant.language: variant for variant in scenario.variants}
     return [
-        TemplateVariantSummary(language=language, maturity=variants[language].maturity)
+        TemplateVariantSummary(language=language)
         for language in ("python", "javascript", "java")
+        if language in variants
     ]
 
 
@@ -127,27 +109,24 @@ def _require_filter(value: str | None, allowed: frozenset[str], field: str) -> N
 
 def list_template_scenarios(
     *,
-    theme: str,
+    theme: str | None = None,
     q: str | None = None,
     vendor: str | None = None,
     adapter_type: str | None = None,
     protocol: str | None = None,
     language: str | None = None,
-    maturity: str | None = None,
     page: int = 1,
     page_size: int = 12,
     catalog: TemplateCatalog | None = None,
 ) -> TemplateScenarioListResponse:
     selected = _catalog_or_default(catalog)
-    if selected.get_theme(theme) is None:
+    if theme is not None and selected.get_theme(theme) is None:
         _invalid_filter("theme", theme)
     _require_filter(vendor, selected.vendors, "vendor")
     _require_filter(adapter_type, SUPPORTED_ADAPTER_TYPES, "adapter_type")
     _require_filter(protocol, selected.protocols, "protocol")
     _require_filter(language, SUPPORTED_LANGUAGES, "language")
-    _require_filter(maturity, SUPPORTED_MATURITIES, "maturity")
-
-    scenarios = [item for item in selected.scenarios if item.theme_slug == theme]
+    scenarios = [item for item in selected.scenarios if theme is None or item.theme_slug == theme]
     if q is not None and (query := q.strip().casefold()):
         scenarios = [
             item
@@ -174,17 +153,6 @@ def list_template_scenarios(
         scenarios = [
             item for item in scenarios if any(v.language == language for v in item.variants)
         ]
-    if maturity is not None:
-        if language is None:
-            scenarios = [
-                item for item in scenarios if any(v.maturity == maturity for v in item.variants)
-            ]
-        else:
-            scenarios = [
-                item
-                for item in scenarios
-                if any(v.language == language and v.maturity == maturity for v in item.variants)
-            ]
 
     # Stable sort: least-significant key first keeps the contract obvious.
     scenarios.sort(key=lambda item: item.slug)
@@ -217,13 +185,6 @@ def get_template_scenario(
     return TemplateScenarioDetail(
         **summary.model_dump(),
         details=_localized(scenario.details),
-        input_summary=_localized(scenario.input_summary),
-        output_summary=_localized(scenario.output_summary),
-        risk=_localized(scenario.risk),
-        modes=list(scenario.modes),
-        sources=[
-            _source_response(source) for source in selected.sources_for(scenario.provenance_ids)
-        ],
     )
 
 
@@ -245,17 +206,11 @@ def get_template_variant(
         language=variant.language,
         adapter_type=scenario.adapter_type,
         template_version=scenario.version,
-        behavior_contract_version=variant.behavior_contract_version,
-        maturity=variant.maturity,
         code=loaded.code,
         requirements=variant.requirements,
-        install_notes=_localized(variant.install_notes),
         input_skeleton=copy.deepcopy(variant.input_skeleton),
-        input_contract=copy.deepcopy(variant.input_contract),
-        output_contract=copy.deepcopy(variant.output_contract),
+        output_example=copy.deepcopy(variant.output_example),
         runtime_config=copy.deepcopy(variant.runtime_config),
-        runtime_guidance=_localized(variant.runtime_guidance),
-        sources=[_source_response(source) for source in loaded.sources],
     )
 
 
@@ -294,28 +249,6 @@ def _add_template_type_configuration(session: Session, adapter_id: int, adapter_
     session.flush()
 
 
-def _add_template_revision(
-    session: Session,
-    adapter: Adapter,
-    *,
-    code: str,
-    requirements: str,
-    runtime_config: dict[str, object],
-) -> AdapterVersion:
-    revision = AdapterVersion(
-        adapter_id=adapter.id,
-        seq=1,
-        code=code,
-        requirements=requirements,
-        runtime_config=copy.deepcopy(runtime_config),
-    )
-    session.add(revision)
-    session.flush()
-    adapter.latest_version_id = revision.id
-    session.flush()
-    return revision
-
-
 def instantiate_template_adapter(
     session: Session,
     *,
@@ -325,7 +258,7 @@ def instantiate_template_adapter(
     owner_user_id: int | None,
     catalog: TemplateCatalog | None = None,
 ) -> Adapter:
-    """Atomically create a detached stopped Adapter and its first Revision."""
+    """Create an ordinary Adapter; the editor holds the code until the user saves."""
     selected = _catalog_or_default(catalog)
     scenario = _require_scenario(selected, scenario_slug)
     loaded = selected.load_variant(scenario_slug, language)
@@ -361,21 +294,12 @@ def instantiate_template_adapter(
         owner_user_id=owner_user_id,
         latest_version_id=None,
         runtime_worker_id=None,
-        template_scenario_slug=scenario.slug,
-        template_version=scenario.version,
     )
     session.add(adapter)
     try:
         session.flush()
         _add_template_slot(session, adapter.id)
         _add_template_type_configuration(session, adapter.id, adapter.adapter_type)
-        _add_template_revision(
-            session,
-            adapter,
-            code=loaded.code,
-            requirements=loaded.variant.requirements,
-            runtime_config=loaded.variant.runtime_config,
-        )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
