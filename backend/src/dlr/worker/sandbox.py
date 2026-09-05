@@ -1779,6 +1779,16 @@ def _helper_child(
             flush=True,
         )
         return 125
+    except SandboxError as error:
+        cause = error.__cause__
+        _write_helper_diagnostic(
+            diagnostic_fd,
+            stage,
+            kind="os_error" if isinstance(cause, OSError) else "exception",
+            error_number=(cause.errno or errno.EIO) if isinstance(cause, OSError) else 0,
+        )
+        print(f"DLR_SANDBOX_HELPER_ERROR:{stage}:{error.code}", flush=True)
+        return 125
     except BaseException:
         _write_helper_diagnostic(
             diagnostic_fd,

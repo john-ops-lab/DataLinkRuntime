@@ -77,6 +77,7 @@ cleanup() {
     if [ -n "$worker_id" ]; then
       # Whitelist isolation configuration; never dump Env or credentials.
       docker inspect --format 'Worker isolation: cgroupns={{.HostConfig.CgroupnsMode}} parent={{.HostConfig.CgroupParent}} caps={{json .HostConfig.CapAdd}} dropped={{json .HostConfig.CapDrop}} security={{json .HostConfig.SecurityOpt}} apparmor={{.AppArmorProfile}}' "$worker_id" >&2 || true
+      docker exec "$worker_id" python -c 'from pathlib import Path; print("Worker cgroup:", Path("/proc/self/cgroup").read_text()); print("Cgroup mounts:", "\n".join(line for line in Path("/proc/self/mountinfo").read_text().splitlines() if " - cgroup2 " in line))' >&2 || true
     fi
   fi
   if [ -n "$AI_FAKE_CONTAINER_ID" ]; then
