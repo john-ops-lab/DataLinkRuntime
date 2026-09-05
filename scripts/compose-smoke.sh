@@ -19,9 +19,10 @@ SMOKE_PLATFORM_LOG_ROOT="${RUNNER_TEMP:-${PWD}/.tmp-platform-logs}/${COMPOSE_PRO
 export DLR_PLATFORM_LOG_ROOT="${DLR_PLATFORM_LOG_ROOT:-$SMOKE_PLATFORM_LOG_ROOT}"
 mkdir -p "$DLR_PLATFORM_LOG_ROOT"/{control,worker,web,account-web,postgres}
 if [ "$DLR_PLATFORM_LOG_ROOT" = "$SMOKE_PLATFORM_LOG_ROOT" ]; then
-  # The pinned postgres image drops to its postgres UID after initialization;
-  # this directory is disposable smoke data, never a production path.
-  chmod 0777 "$DLR_PLATFORM_LOG_ROOT/postgres"
+  # PostgreSQL uses its own UID; the capability-bounded Worker cannot bypass
+  # runner-owned directory permissions even as UID 0. These are disposable
+  # smoke directories only, never operator-supplied production paths.
+  chmod 0777 "$DLR_PLATFORM_LOG_ROOT/postgres" "$DLR_PLATFORM_LOG_ROOT/worker"
 fi
 export DLR_ADMIN_TOKEN=${DLR_ADMIN_TOKEN:-smoke-admin-token-$$}
 export DLR_WORKER_TOKEN=${DLR_WORKER_TOKEN:-smoke-worker-token-$$}
