@@ -278,7 +278,7 @@ def test_adapter_import_roundtrip_stopped_new_identity(
             )
 
 
-def test_task_worker_gate_conflict_and_preview_have_no_side_effects(
+def test_task_worker_gate_and_duplicate_import_keeps_preview_read_only(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -294,10 +294,12 @@ def test_task_worker_gate_conflict_and_preview_have_no_side_effects(
         assert session.scalar(select(func.count()).select_from(Adapter)) == 0
     value = package(adapter_type="webhook")
     assert import_adapter(api_client, value).status_code == 201
-    assert import_adapter(api_client, value).json()["detail"]["code"] == "adapter_name_conflict"
+    second = import_adapter(api_client, value)
+    assert second.status_code == 201, second.text
+    assert second.json()["name"] == "Portable example(1)"
     with session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Adapter)) == 1
-        assert session.scalar(select(func.count()).select_from(AdapterVersion)) == 1
+        assert session.scalar(select(func.count()).select_from(Adapter)) == 2
+        assert session.scalar(select(func.count()).select_from(AdapterVersion)) == 2
 
 
 def test_json_null_and_omitted_input_template_defaults(
@@ -339,7 +341,6 @@ def test_user_template_persistence_gallery_edit_delete_independence(
     assert detail["theme_slug"] == "other" and detail["source"] == "imported"
     assert detail["can_manage"] is True
     assert [v["language"] for v in detail["variants"]] == ["javascript"]
-    assert import_template(api_client, value).status_code == 409
     listing = api_client.get(
         "/api/templates/scenarios",
         params={"theme": "other", "q": "portable-tag", "language": "javascript"},
@@ -376,7 +377,9 @@ def test_builtin_templates_export_all_languages_and_license(api_client: TestClie
     assert value.status_code == 200, value.text
     assert len(value.json()["variants"]) == 3
     assert value.json()["provenance"] and value.json()["license"]
-    assert import_template(api_client, value.json()).status_code == 409
+    auto_named = import_template(api_client, value.json())
+    assert auto_named.status_code == 201
+    assert auto_named.json()["title"]["zh-CN"] == value.json()["name"] + "(1)"
     renamed = value.json() | {"name": "Imported built-in"}
     imported = import_template(api_client, renamed)
     assert imported.status_code == 201 and imported.json()["source"] == "imported"
@@ -611,3 +614,84 @@ def test_export_does_not_change_live_webhook_or_serialize_token(
         assert (
             hook is not None and hook.enabled and hook.public_id == "source-entry-must-not-travel"
         )
+
+
+@pytest.mark.parametrize("kind", ["adapter", "template"])
+def test_import_name_suffixes_preserve_existing_content(api_client: TestClient, kind: str) -> None:
+    value = package(kind, adapter_type="webhook")
+    create = import_adapter if kind == "adapter" else import_template
+    values = [create(api_client, value) for _ in range(3)]
+    assert all(result.status_code == 201 for result in values)
+
+    def name(result: Any) -> str:
+        return result.json()["name"] if kind == "adapter" else result.json()["title"]["zh-CN"]
+
+    assert [name(result) for result in values] == [
+        "Portable example",
+        "Portable example(1)",
+        "Portable example(2)",
+    ]
+    value["name"] = "长" * 128
+    first = create(api_client, value)
+    second = create(api_client, value)
+    assert first.status_code == second.status_code == 201
+    assert name(first) == "长" * 128
+    assert name(second) == "长" * 125 + "(1)"
+
+
+def test_import_builtin_name_is_suffixed_and_edit_conflicts_still_rejected(
+    api_client: TestClient,
+) -> None:
+    original = api_client.get(
+        "/api/templates/scenarios/alicloud-compute-container-topology/portable"
+    )
+    assert original.status_code == 200
+    created = import_template(api_client, original.json())
+    assert created.status_code == 201, created.text
+    assert created.json()["title"]["zh-CN"] == original.json()["name"] + "(1)"
+    updated = api_client.put(
+        f"/api/templates/scenarios/{created.json()['slug']}",
+        json={
+            "package": original.json(),
+            "sharing_confirmed": True,
+            "expected_version": "1",
+        },
+    )
+    assert updated.status_code == 409
+    assert updated.json()["detail"]["code"] == "template_name_conflict"
+
+
+@pytest.mark.parametrize("kind", ["adapter", "template"])
+def test_concurrent_imports_retry_only_name_uniqueness(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from dlr.control.services import portable, user_templates
+    from dlr.control.services.import_names import insert_with_available_name
+
+    barrier = Barrier(2, timeout=10)
+    requested = "Concurrent import"
+
+    def race(session: Session, name: str, occupied: Any, insert: Any, constraint: str) -> None:
+        def checked(candidate: str) -> bool:
+            result = occupied(candidate)
+            if candidate == requested:
+                barrier.wait()
+            return bool(result)
+
+        insert_with_available_name(session, name, checked, insert, constraint)
+
+    monkeypatch.setattr(
+        portable if kind == "adapter" else user_templates, "insert_with_available_name", race
+    )
+    value = package(kind, adapter_type="webhook") | {"name": requested}
+    create = import_adapter if kind == "adapter" else import_template
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: create(api_client, value), range(2)))
+    assert [result.status_code for result in results] == [201, 201], [r.text for r in results]
+    names = {r.json()["name"] if kind == "adapter" else r.json()["title"]["zh-CN"] for r in results}
+    assert names == {requested, requested + "(1)"}

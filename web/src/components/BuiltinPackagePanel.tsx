@@ -30,7 +30,6 @@ import type {
   BuiltinPackageKind,
   BuiltinPackageLibrary,
   BuiltinCheck,
-  PackageSource,
   Worker,
 } from "../types";
 import "./BuiltinPackagePanel.css";
@@ -67,7 +66,6 @@ export default function BuiltinPackagePanel({
 }: Props) {
   const { t } = useTranslation("settings");
   const [library, setLibrary] = useState<BuiltinPackageLibrary | null>(null);
-  const [sources, setSources] = useState<PackageSource[]>([]);
   const [adapters, setAdapters] = useState<Adapter[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [checks, setChecks] = useState<BuiltinCheck[]>([]);
@@ -94,16 +92,14 @@ export default function BuiltinPackagePanel({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextLibrary, nextSources, nextAdapters, nextWorkers, nextChecks] =
+      const [nextLibrary, nextAdapters, nextWorkers, nextChecks] =
         await Promise.all([
           api.listBuiltinPackages(),
-          api.listPackageSources(),
           api.listAdapters(),
           api.listWorkers(),
           api.listBuiltinChecks(),
         ]);
       setLibrary(nextLibrary);
-      setSources(nextSources);
       setAdapters(nextAdapters);
       setWorkers(nextWorkers);
       setChecks(nextChecks);
@@ -294,37 +290,6 @@ export default function BuiltinPackagePanel({
             </Typography.Text>
           </>
         )}
-      </div>
-      <div className="builtin-source-choices">
-        {KINDS.map((sourceKind) => {
-          const selected = sources.some(
-            (source) =>
-              source.kind === sourceKind &&
-              source.is_default &&
-              source.index_url === `dlr-builtin://${sourceKind}`,
-          );
-          return (
-            <div key={sourceKind}>
-              <strong>{LANGUAGE[sourceKind]}</strong>
-              <Button
-                size="small"
-                disabled={busy || selected}
-                onClick={() =>
-                  void mutate(async () => {
-                    await api.chooseBuiltinSource(sourceKind);
-                    setNotice(
-                      t("builtin.sourceSelected", {
-                        language: LANGUAGE[sourceKind],
-                      }),
-                    );
-                  })
-                }
-              >
-                {t(selected ? "builtin.selected" : "builtin.selectSource")}
-              </Button>
-            </div>
-          );
-        })}
       </div>
       <div className="builtin-toolbar">
         <Input

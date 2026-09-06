@@ -375,3 +375,19 @@ it("stacks type, status and keyword filters (M5.8-008)", async () => {
     screen.getAllByTestId("adapter-item")[3].querySelector(".catalog-status-running"),
   ).not.toBeNull();
 });
+
+
+it("orders adapter actions as copy, export, save as template, settings", async () => {
+  const portable = vi.fn();
+  render(<AdapterCatalog adapters={[makeAdapter(1, "alpha", { access_level: "owner" })]}
+    selectedId={null} busy={false} onSelect={vi.fn()} onCreate={vi.fn(async () => false)}
+    versionSeqById={new Map()} workers={[]} onOpenSettings={vi.fn()} onClone={vi.fn()}
+    onRefresh={vi.fn(async () => {})} onPortable={portable} />);
+  fireEvent.click(screen.getByTestId("adapter-item-menu"));
+  const menu = await screen.findByRole("menu");
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "复制", "导出适配器", "保存为模板", "设置",
+  ]);
+  fireEvent.click(within(menu).getByRole("menuitem", { name: "导出适配器" }));
+  expect(portable).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), "exportAdapter");
+});

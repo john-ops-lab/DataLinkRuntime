@@ -8,7 +8,7 @@ Back up the deployment, run `alembic upgrade head`, then upgrade Control and Wor
 
 Compose mounts `dlr_builtin_packages` at `/var/lib/dlr/builtin-packages` on Control. Standalone deployments set `DLR_BUILTIN_PACKAGE_ROOT` to a persistent local directory. All Control processes must share the filesystem, supporting POSIX flock, atomic rename and fsync.
 
-Open **System Settings → Dependency sources → Builtin library**, upload materials, and explicitly select the builtin default for each language. Maven folder uploads preserve paths below the selected repository root; individual uploads require the group/artifact/version directory prefix. External sources remain available in source configuration.
+Open **System Settings → Dependency sources → Builtin library** and upload materials. In the **Source configuration** tab, explicitly select the builtin default for each language. Maven folder uploads preserve paths below the selected repository root; individual uploads require the group/artifact/version directory prefix. External sources remain available in source configuration.
 
 Select a saved Adapter and a Worker to check installation. This creates an ordinary queued Attempt with resource limits, but executes no business script and injects no business credentials. Java compiles the saved code, so source compilation errors can also fail the check. Results distinguish uploaded files, missing dependencies, environment incompatibility and other failures. Detailed package-manager logs remain in Adapter execution history.
 

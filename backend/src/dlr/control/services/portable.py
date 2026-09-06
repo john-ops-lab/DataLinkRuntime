@@ -35,6 +35,7 @@ from dlr.control.services import adapter as adapter_service
 from dlr.control.services import adapter_access, input_config, managed_input_upload
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.artifact_store import LocalFileArtifactStore
+from dlr.control.services.import_names import insert_with_available_name
 from dlr.control.services.portable_zip import MAX_EXPANDED_BYTES, encode_package
 
 
@@ -160,8 +161,6 @@ def import_adapter(
         adapter_service._validate_runtime_worker_assignment(
             session, request.runtime_worker_id, variant.language
         )
-    if adapter_service._active_name_conflict(session, package.name):
-        raise domain_error(409, "adapter_name_conflict", "Adapter name already exists")
     if package.input.files:
         managed_input_upload.require_feature_enabled()
     adapter = Adapter(
@@ -184,9 +183,19 @@ def import_adapter(
     )
     store: LocalFileArtifactStore | None = None
     created_keys: list[str] = []
-    session.add(adapter)
+
+    def insert(name: str) -> None:
+        adapter.name = name
+        session.add(adapter)
+
     try:
-        session.flush()
+        insert_with_available_name(
+            session,
+            package.name,
+            lambda name: adapter_service._active_name_conflict(session, name),
+            insert,
+            "uq_adapters_active_name",
+        )
         session.add(AdapterExecutionSlot(adapter_id=adapter.id, slot_no=0))
         if adapter.adapter_type == "task":
             session.add(AdapterInputConfig(adapter_id=adapter.id))
@@ -287,7 +296,7 @@ def import_adapter(
                 store.delete_part(key)
                 store.delete(key)
         if isinstance(exc, IntegrityError) and adapter_service._active_name_conflict(
-            session, package.name
+            session, adapter.name
         ):
             raise domain_error(
                 409, "adapter_name_conflict", "Adapter name already exists"

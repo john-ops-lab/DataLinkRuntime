@@ -80,25 +80,11 @@ it("requires explicit deletion confirmation and keeps failure visible", async ()
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
 
-it("uses a builtin source without asking for a Control URL", async () => {
-  const select = vi
-    .spyOn(api, "chooseBuiltinSource")
-    .mockResolvedValue({
-      id: 3,
-      name: "DLR 内置依赖源",
-      kind: "pypi",
-      index_url: "dlr-builtin://pypi",
-      is_default: true,
-      credential_id: null,
-      credential_name: null,
-      created_at: "",
-      updated_at: "",
-    });
+it("keeps dependency-source selection in the dedicated source settings only", async () => {
   render(<BuiltinPackagePanel />);
   await screen.findByText("offline-demo");
-  fireEvent.click(screen.getAllByRole("button", { name: "设为该类默认源" })[0]);
-  await waitFor(() => expect(select).toHaveBeenCalledWith("pypi"));
-  expect(screen.queryByRole("textbox", { name: /URL/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "设为该类默认源" })).toBeNull();
+  expect(api.listPackageSources).not.toHaveBeenCalled();
 });
 
 it("uploads a selected batch and reports each result", async () => {

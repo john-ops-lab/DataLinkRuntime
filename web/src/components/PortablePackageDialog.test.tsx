@@ -2,7 +2,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, api } from "../api";
 import { i18n } from "../i18n";
-import type { PortablePackage, TemplateScenarioDetail } from "../types";
+import type {
+  Adapter,
+  PortablePackage,
+  TemplateScenarioDetail,
+} from "../types";
 import PortablePackageDialog from "./PortablePackageDialog";
 
 function packageValue(
@@ -60,7 +64,11 @@ afterEach(() => vi.restoreAllMocks());
 it("exports a reviewed saved snapshot with inputs off and removes pending values", async () => {
   const preview = vi
     .spyOn(api, "previewAdapterPackage")
-    .mockResolvedValue(packageValue());
+    .mockResolvedValue({
+      ...packageValue(),
+      adapter_type: "task",
+      webhook: null,
+    });
   const exported = vi
     .spyOn(api, "exportPortablePackage")
     .mockResolvedValue(new Blob(["zip"]));
@@ -80,6 +88,8 @@ it("exports a reviewed saved snapshot with inputs off and removes pending values
     />,
   );
   expect(screen.getByText(/存在未保存修改/)).toBeTruthy();
+  await screen.findByLabelText("名称");
+  expect(screen.queryByRole("button", { name: "预览已保存内容" })).toBeNull();
   expect(
     (screen.getByLabelText("明确携带已保存的 JSON 输入") as HTMLInputElement)
       .checked,
@@ -88,7 +98,6 @@ it("exports a reviewed saved snapshot with inputs off and removes pending values
     (screen.getByLabelText("明确携带已选择的托管输入文件") as HTMLInputElement)
       .checked,
   ).toBe(false);
-  fireEvent.click(screen.getByRole("button", { name: "预览已保存内容" }));
   await screen.findByLabelText("可复用运行参数（JSON 对象）");
   expect(preview).toHaveBeenCalledWith(17, {
     as_template: false,
@@ -114,9 +123,10 @@ it("template save keeps only the existing language and requires explicit gallery
   vi.spyOn(api, "previewAdapterPackage").mockResolvedValue(
     packageValue("template"),
   );
-  const save = vi
-    .spyOn(api, "saveTemplatePackage")
-    .mockResolvedValue({ slug: "user-created" } as TemplateScenarioDetail);
+  const save = vi.spyOn(api, "saveTemplatePackage").mockResolvedValue({
+    slug: "user-created",
+    title: { "zh-CN": "Portable fixture", en: "Portable fixture" },
+  } as TemplateScenarioDetail);
   render(
     <PortablePackageDialog
       mode="saveTemplate"
@@ -125,9 +135,8 @@ it("template save keeps only the existing language and requires explicit gallery
     />,
   );
   expect(screen.queryByLabelText("明确携带已保存的 JSON 输入")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "预览已保存内容" }));
-  await screen.findByRole("tab", { name: "javascript" });
-  expect(screen.queryByRole("tab", { name: "python" })).toBeNull();
+  await screen.findByRole("tab", { name: "JavaScript" });
+  expect(screen.queryByRole("tab", { name: "Python" })).toBeNull();
   expect(
     (screen.getByRole("button", { name: "确认保存" }) as HTMLButtonElement)
       .disabled,
@@ -214,4 +223,109 @@ it("provides English preview and confirmation text", async () => {
     screen.getByLabelText("Choose a DLR ZIP package (up to 16 MiB)"),
   ).toBeTruthy();
   expect(screen.getByRole("button", { name: "Confirm save" })).toBeTruthy();
+});
+
+it("opens the complete template editor immediately and saves the edited instructions", async () => {
+  const value = packageValue("template");
+  vi.spyOn(api, "getTemplatePackage").mockResolvedValue(value);
+  const save = vi.spyOn(api, "saveTemplatePackage").mockResolvedValue({
+    slug: "user-edit",
+    title: { "zh-CN": value.name, en: value.name },
+  } as TemplateScenarioDetail);
+  render(
+    <PortablePackageDialog
+      mode="editTemplate"
+      slug="user-edit"
+      expectedVersion="7"
+      onClose={() => undefined}
+    />,
+  );
+  const instructions =
+    await screen.findByLabelText("使用说明与目标环境配置提醒");
+  expect(screen.queryByRole("button", { name: "预览已保存内容" })).toBeNull();
+  expect(screen.queryByText("运行与触发设置（导入后默认停止）")).toBeNull();
+  expect(screen.queryByLabelText("许可证说明")).toBeNull();
+  fireEvent.change(instructions, { target: { value: "Updated guidance" } });
+  fireEvent.click(
+    screen.getByText(
+      "我已检查代码、参数和示例，并确认将这些内容共享到当前部署的模板广场。",
+    ),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ instructions: "Updated guidance" }),
+      expect.objectContaining({ slug: "user-edit", expectedVersion: "7" }),
+    ),
+  );
+  await screen.findByText("模板已保存到模板广场。");
+});
+
+it("changing exported input options preserves all other edits", async () => {
+  const value = packageValue();
+  value.adapter_type = "task";
+  value.webhook = null;
+  const preview = vi
+    .spyOn(api, "previewAdapterPackage")
+    .mockResolvedValueOnce(value)
+    .mockResolvedValueOnce({
+      ...value,
+      input: {
+        source_type: "json",
+        included: true,
+        json_value: { sample: 1 },
+        files: [],
+      },
+    });
+  render(
+    <PortablePackageDialog
+      mode="exportAdapter"
+      adapterId={17}
+      onClose={() => undefined}
+    />,
+  );
+  fireEvent.change(await screen.findByLabelText("名称"), {
+    target: { value: "Reviewed title" },
+  });
+  fireEvent.change(screen.getByLabelText("可复用运行参数（JSON 对象）"), {
+    target: { value: '{"mapping":"reviewed"}' },
+  });
+  fireEvent.click(screen.getByLabelText("明确携带已保存的 JSON 输入"));
+  await waitFor(() =>
+    expect(preview).toHaveBeenLastCalledWith(17, {
+      as_template: false,
+      include_json: true,
+      include_files: false,
+    }),
+  );
+  await screen.findByText(/已明确选择携带/);
+  expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe(
+    "Reviewed title",
+  );
+  expect(
+    (
+      screen.getByLabelText(
+        "可复用运行参数（JSON 对象）",
+      ) as HTMLTextAreaElement
+    ).value,
+  ).toBe('{"mapping":"reviewed"}');
+});
+
+it("shows the actual automatically renamed result after import", async () => {
+  vi.spyOn(api, "previewPortableFile").mockResolvedValue(packageValue());
+  vi.spyOn(api, "importAdapterPackage").mockResolvedValue({
+    name: "Portable fixture(1)",
+  } as Adapter);
+  render(
+    <PortablePackageDialog mode="importAdapter" onClose={() => undefined} />,
+  );
+  fireEvent.change(screen.getByLabelText("选择 DLR ZIP 包（最大 16 MiB）"), {
+    target: { files: [new File(["zip"], "adapter.zip")] },
+  });
+  await screen.findByLabelText("名称");
+  fireEvent.click(
+    screen.getByText("我已检查此预览中的内容，并确认目标环境仍需重新配置。"),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+  await screen.findByText("Portable fixture(1)");
 });

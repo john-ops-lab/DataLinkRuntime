@@ -603,6 +603,7 @@ function CopyTemplateModal({
 
 function TemplateDetail({
   scenarioSlug,
+  focusOnMount,
   busy,
   onBack,
   onInstantiate,
@@ -610,6 +611,7 @@ function TemplateDetail({
   onDelete,
 }: {
   scenarioSlug: string;
+  focusOnMount: boolean;
   onPortable: (request: PortableDialogRequest) => void;
   onDelete: (detail: TemplateScenarioDetail) => void;
   busy: boolean;
@@ -632,9 +634,10 @@ function TemplateDetail({
   const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    if (!focusOnMount) return;
     const frame = window.requestAnimationFrame(() => mainRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
-  }, [scenarioSlug]);
+  }, [scenarioSlug, focusOnMount]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -738,7 +741,8 @@ function TemplateDetail({
       <div className="template-recipe-heading">
         <h2>{t("detail.recipe")}</h2>
       </div>
-      <div className="template-code-view" data-testid="template-code-view">
+      <div className="template-code-view" data-testid="template-code-view"
+        style={{ height: Math.min(560, Math.max(180, variant.code.split("\n").length * 19 + 28)) }}>
         <Editor
           height="100%"
           language={variant.language}
@@ -748,6 +752,7 @@ function TemplateDetail({
             minimap: { enabled: false },
             lineNumbersMinChars: 3,
             scrollBeyondLastLine: false,
+            scrollbar: { alwaysConsumeMouseWheel: false },
             ariaLabel: t("detail.recipe"),
           }}
         />
@@ -778,9 +783,11 @@ function TemplateDetail({
       <span className="template-loading-announcement" role="status" aria-live="polite">
         {variantLoading ? t("detail.variantLoading") : ""}
       </span>
+      <div className="template-detail-nav">
       <Button className="template-detail-back" type="link" icon={<ArrowLeftOutlined aria-hidden="true" />} onClick={onBack}>
         {t("detail.back")}
       </Button>
+      </div>
 
       <header className="template-detail-hero">
         <TemplateScenarioLogo logoKey={detail.logo_key} />
@@ -793,31 +800,23 @@ function TemplateDetail({
             {detail.protocols.map((protocol) => <Tag key={protocol}>{protocol}</Tag>)}
           </div>
         </div>
-        <Button
-          type="primary"
-          size="large"
-          icon={<CopyOutlined aria-hidden="true" />}
-          disabled={busy || variantLoading || variantError || variant === null}
-          onClick={() => setCopyOpen(true)}
-        >
-          {t("detail.copy")}
-        </Button>
+        <div className="template-detail-actions">
+          <Button type="primary" icon={<CopyOutlined aria-hidden="true" />}
+            disabled={busy || variantLoading || variantError || variant === null}
+            onClick={() => setCopyOpen(true)}>{t("detail.copy")}</Button>
+          {detail.can_manage && <Button disabled={busy} onClick={() => onPortable({ mode: "editTemplate", slug: detail.slug, expectedVersion: detail.template_version })}>{t("editTemplate", { ns: "portable" })}</Button>}
+          <Button disabled={busy} onClick={() => onPortable({ mode: "exportTemplate", slug: detail.slug })}>{t("exportTemplate", { ns: "portable" })}</Button>
+          {detail.can_manage && <Button danger type="text" disabled={busy} onClick={() => onDelete(detail)}>{t("deleteTemplate", { ns: "portable" })}</Button>}
+        </div>
       </header>
 
-      <div className="portable-template-actions">
-        <Button disabled={busy} onClick={() => onPortable({ mode: "exportTemplate", slug: detail.slug })}>{t("exportTemplate", { ns: "portable" })}</Button>
-        {detail.can_manage && <>
-          <Button disabled={busy} onClick={() => onPortable({ mode: "editTemplate", slug: detail.slug, expectedVersion: detail.template_version })}>{t("editTemplate", { ns: "portable" })}</Button>
-          <Button danger disabled={busy} onClick={() => onDelete(detail)}>{t("deleteTemplate", { ns: "portable" })}</Button>
-        </>}
-      </div>
       <div className="template-detail-layout">
-        <div className="template-detail-overview">
+        {localized(detail.details).trim() && <div className="template-detail-overview">
           <section className="template-detail-panel">
             <h2>{t("detail.purpose")}</h2>
             <p>{localized(detail.details)}</p>
           </section>
-        </div>
+        </div>}
 
         <section className="template-recipe-panel">
           <Tabs
@@ -944,6 +943,7 @@ export default function TemplateGalleryPage({
         <TemplateDetail
           key={`${scenarioSlug}-${reloadGeneration}`}
           scenarioSlug={scenarioSlug}
+          focusOnMount={portableDialog === null}
           onPortable={setPortableDialog}
           onDelete={(detail) => { setDeleteDetail(detail); setDeleteError(false); }}
           busy={busy}

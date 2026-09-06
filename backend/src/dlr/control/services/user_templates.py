@@ -19,6 +19,7 @@ from dlr.control.schemas.template import (
 )
 from dlr.control.security import Principal
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.import_names import insert_with_available_name
 from dlr.control.services.portable_zip import encode_package
 from dlr.control.template_catalog import get_template_catalog
 
@@ -176,8 +177,20 @@ def write_template(
         for item in get_template_catalog().scenarios
         for name in (item.title.zh_cn, item.title.en)
     }
-    existing = session.scalar(select(UserTemplate).where(UserTemplate.name == package.name))
-    if package.name in names or (existing and existing.slug != slug):
+
+    def occupied(name: str) -> bool:
+        return (
+            name in names
+            or session.scalar(
+                select(UserTemplate.slug).where(
+                    UserTemplate.name == name, UserTemplate.slug != (slug or "")
+                )
+            )
+            is not None
+        )
+
+    automatic_name = source == "imported" and row is None
+    if not automatic_name and occupied(package.name):
         raise domain_error(409, "template_name_conflict", "Template name already exists")
     if row:
         row.version += 1
@@ -192,11 +205,27 @@ def write_template(
             version=1,
             content=package.model_dump(mode="json"),
         )
-        session.add(row)
+        if not automatic_name:
+            session.add(row)
     try:
+        if automatic_name:
+
+            def insert(name: str) -> None:
+                row.name = name
+                row.content = package.model_copy(update={"name": name}).model_dump(mode="json")
+                session.add(row)
+
+            insert_with_available_name(
+                session, package.name, occupied, insert, "user_templates_name_key"
+            )
         session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         session.rollback()
+        if (
+            getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            != "user_templates_name_key"
+        ):
+            raise
         raise domain_error(409, "template_name_conflict", "Template name already exists") from None
     session.refresh(row)
     return row

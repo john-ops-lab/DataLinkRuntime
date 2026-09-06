@@ -16,21 +16,6 @@
   justify-content: space-between;
   gap: 12px;
 }
-.builtin-source-choices {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-.builtin-source-choices > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 12px;
-  background: var(--ant-color-fill-quaternary, #fafafa);
-  border-radius: 6px;
-}
 .builtin-toolbar {
   display: flex;
   gap: 8px;
@@ -65,9 +50,4 @@
 }
 .builtin-upload-form .ant-select {
   min-width: 180px;
-}
-@media (max-width: 700px) {
-  .builtin-source-choices {
-    grid-template-columns: 1fr;
-  }
 }

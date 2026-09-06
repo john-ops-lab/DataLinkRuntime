@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
   Checkbox,
   Input,
-  Modal,
+  Drawer,
+  Skeleton,
   Select,
   Tabs,
   type InputRef,
@@ -87,7 +88,8 @@ export default function PortablePackageDialog({
   const [includeFiles, setIncludeFiles] = useState(false);
   const [workerId, setWorkerId] = useState<number | null>(null);
   const [confirmed, setConfirmed] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(!mode.startsWith("import"));
+  const [savedName, setSavedName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const nameInputRef = useRef<InputRef>(null);
@@ -121,7 +123,7 @@ export default function PortablePackageDialog({
     };
   }, [template, t]);
 
-  function setPackage(next: PortablePackage): void {
+  const setPackage = useCallback((next: PortablePackage): void => {
     setValue(next);
     setDrafts(
       next.variants.map((variant) => ({
@@ -131,73 +133,122 @@ export default function PortablePackageDialog({
       })),
     );
     setConfirmed(false);
-  }
+  }, []);
 
-  function errorText(err: unknown): string {
-    if (
-      err instanceof ApiError &&
-      ["adapter_name_conflict", "template_name_conflict"].includes(err.code)
-    )
-      return t("nameConflict");
-    if (err instanceof ApiError && err.code === "template_version_conflict")
-      return t("versionConflict");
-    if (
-      err instanceof ApiError &&
-      ["portable_package_too_large", "input_file_too_large"].includes(err.code)
-    )
-      return t("tooLarge");
-    if (
-      err instanceof ApiError &&
-      [
-        "worker_not_found",
-        "worker_capability_missing",
-        "runtime_worker_required",
-        "worker_offline",
-      ].includes(err.code)
-    )
-      return t("workerError");
-    if (
-      err instanceof ApiError &&
-      ["input_source_not_available", "artifact_store_unavailable"].includes(
-        err.code,
+  const errorText = useCallback(
+    (err: unknown): string => {
+      if (
+        err instanceof ApiError &&
+        ["adapter_name_conflict", "template_name_conflict"].includes(err.code)
       )
-    )
-      return t("filesUnavailable");
-    if (
-      err instanceof ApiError &&
-      err.code === "portable_saved_version_required"
-    )
-      return t("saveFirst");
-    if (
-      err instanceof ApiError &&
-      ["portable_package_invalid", "portable_object_type"].includes(err.code)
-    )
-      return t("invalidPackage");
-    return t("failed");
-  }
+        return t("nameConflict");
+      if (err instanceof ApiError && err.code === "template_version_conflict")
+        return t("versionConflict");
+      if (
+        err instanceof ApiError &&
+        ["portable_package_too_large", "input_file_too_large"].includes(
+          err.code,
+        )
+      )
+        return t("tooLarge");
+      if (
+        err instanceof ApiError &&
+        [
+          "worker_not_found",
+          "worker_capability_missing",
+          "runtime_worker_required",
+          "worker_offline",
+        ].includes(err.code)
+      )
+        return t("workerError");
+      if (
+        err instanceof ApiError &&
+        ["input_source_not_available", "artifact_store_unavailable"].includes(
+          err.code,
+        )
+      )
+        return t("filesUnavailable");
+      if (
+        err instanceof ApiError &&
+        err.code === "portable_saved_version_required"
+      )
+        return t("saveFirst");
+      if (
+        err instanceof ApiError &&
+        ["portable_package_invalid", "portable_object_type"].includes(err.code)
+      )
+        return t("invalidPackage");
+      return t("failed");
+    },
+    [t],
+  );
 
-  async function load(file?: File): Promise<void> {
-    if (inFlight.current) return;
+  const load = useCallback(
+    async (file?: File): Promise<void> => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      setBusy(true);
+      setError(null);
+      try {
+        if (file && file.size > 16 * 1024 * 1024)
+          throw new ApiError(413, "portable_package_too_large", "");
+        const next = file
+          ? await api.previewPortableFile(file)
+          : adapterId !== undefined
+            ? await api.previewAdapterPackage(adapterId, {
+                include_json: false,
+                include_files: false,
+                as_template: template,
+              })
+            : await api.getTemplatePackage(slug!);
+        if (next.object_type !== (template ? "template" : "adapter"))
+          throw new ApiError(422, "portable_object_type", "");
+        if (mounted.current) setPackage(next);
+      } catch (err) {
+        if (mounted.current) setError(errorText(err));
+      } finally {
+        inFlight.current = false;
+        if (mounted.current) setBusy(false);
+      }
+    },
+    [adapterId, slug, template, errorText, setPackage],
+  );
+
+  useEffect(() => {
+    let active = true;
+    if (!importing)
+      void Promise.resolve().then(() => {
+        if (active) void load();
+      });
+    return () => {
+      active = false;
+    };
+  }, [importing, load]);
+
+  async function changeIncludedInput(
+    kind: "json" | "files",
+    checked: boolean,
+  ): Promise<void> {
+    if (inFlight.current || adapterId === undefined) return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
-      if (file && file.size > 16 * 1024 * 1024)
-        throw new ApiError(413, "portable_package_too_large", "");
-      const next = file
-        ? await api.previewPortableFile(file)
-        : adapterId !== undefined
-          ? await api.previewAdapterPackage(adapterId, {
-              include_json: includeJson,
-              include_files: includeFiles,
-              as_template: template,
-            })
-          : await api.getTemplatePackage(slug!);
-      if (next.object_type !== (template ? "template" : "adapter"))
-        throw new ApiError(422, "portable_object_type", "");
-      if (mounted.current) setPackage(next);
-    } catch (err) {
-      if (mounted.current) setError(errorText(err));
+      const next = await api.previewAdapterPackage(adapterId, {
+        as_template: false,
+        include_json: kind === "json" ? checked : includeJson,
+        include_files: kind === "files" ? checked : includeFiles,
+      });
+      if (mounted.current) {
+        setValue((current) =>
+          current ? { ...current, input: next.input } : current,
+        );
+        if (kind === "json") setIncludeJson(checked);
+        else setIncludeFiles(checked);
+        setConfirmed(false);
+      }
+    } catch (cause) {
+      if (mounted.current) setError(errorText(cause));
     } finally {
       inFlight.current = false;
       if (mounted.current) setBusy(false);
@@ -274,9 +325,11 @@ export default function PortablePackageDialog({
           slug: mode === "editTemplate" ? slug : undefined,
           expectedVersion,
         });
+        setSavedName(result.title[currentSystemLocale()]);
         onTemplateSaved?.(result.slug);
       } else {
         const result = await api.importAdapterPackage(reviewed, workerId);
+        setSavedName(result.name);
         onAdapterCreated?.(result);
       }
       if (mounted.current) setSuccess(true);
@@ -289,51 +342,62 @@ export default function PortablePackageDialog({
   }
 
   const languageSummary = value?.variants
-    .map((item) => item.language)
+    .map((item) => t(`language.${item.language}`, { ns: "template" }))
     .join(" / ");
   const workerRequired =
     mode === "importAdapter" &&
     value?.adapter_type === "task" &&
     workerId === null;
   return (
-    <Modal
+    <Drawer
       open
-      centered
       title={t(mode)}
-      width={940}
-      styles={{
-        body: {
-          maxHeight: "calc(100dvh - 200px)",
-          overflowY: "auto",
-          overflowX: "hidden",
-          paddingRight: 4,
-        },
-      }}
-      onCancel={busy ? undefined : onClose}
+      width="min(1180px, 100vw)"
+      onClose={busy ? undefined : onClose}
       footer={
-        success ? (
-          <Button type="primary" autoFocus onClick={onClose}>
-            {t("close")}
-          </Button>
-        ) : undefined
+        <div className="portable-footer">
+          {success ? (
+            <Button type="primary" autoFocus onClick={onClose}>
+              {t("close")}
+            </Button>
+          ) : (
+            <>
+              <Checkbox
+                className="portable-footer-confirm"
+                checked={confirmed}
+                disabled={busy || !value}
+                onChange={(event) => setConfirmed(event.target.checked)}
+              >
+                {template && !exporting
+                  ? t("confirmShared")
+                  : t("confirmReviewed")}
+              </Checkbox>
+              <div className="portable-footer-actions">
+                <Button disabled={busy} onClick={onClose}>
+                  {t("cancel")}
+                </Button>
+                <Button
+                  type="primary"
+                  loading={busy}
+                  disabled={!value || !confirmed || workerRequired || busy}
+                  onClick={() => void submit()}
+                >
+                  {exporting ? t("download") : t("confirmCreate")}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
       }
-      okText={exporting ? t("download") : t("confirmCreate")}
-      cancelText={t("cancel")}
-      onOk={() => void submit()}
-      confirmLoading={busy}
-      okButtonProps={{
-        disabled: !value || !confirmed || workerRequired || busy,
-      }}
-      cancelButtonProps={{ disabled: busy }}
       closable={!busy}
-      maskClosable={!busy}
+      maskClosable={false}
       keyboard={!busy}
       destroyOnHidden
-      focusTriggerAfterClose
     >
-      <div className="portable-dialog" aria-busy={busy}>
+      <div className="portable-dialog portable-page" aria-busy={busy}>
         {success ? (
           <Alert
+            description={savedName || undefined}
             type="success"
             showIcon
             message={
@@ -346,11 +410,13 @@ export default function PortablePackageDialog({
           />
         ) : (
           <>
-            <Alert showIcon type="warning" message={t("sensitiveWarning")} />
+            {(!template || exporting) && (
+              <Alert showIcon type="warning" message={t("sensitiveWarning")} />
+            )}
             {hasUnsavedChanges && (
               <Alert showIcon type="warning" message={t("unsavedWarning")} />
             )}
-            {template && (
+            {template && !exporting && (
               <Alert showIcon type="info" message={t("galleryWarning")} />
             )}
             {error && (
@@ -374,15 +440,257 @@ export default function PortablePackageDialog({
                       }}
                     />
                   </label>
+                ) : busy ? (
+                  <Skeleton active paragraph={{ rows: 8 }} />
                 ) : (
-                  <>
-                    {!template && (
-                      <>
+                  <Button onClick={() => void load()}>{t("retry")}</Button>
+                )}
+                {importing && <p>{t("previewNote")}</p>}
+              </>
+            ) : (
+              <fieldset disabled={busy} className="portable-fields">
+                <div className="portable-topline">
+                  <span>
+                    {t(`type.${value.adapter_type}`, { ns: "template" })} ·{" "}
+                    {languageSummary}
+                  </span>
+                  {importing && (
+                    <Button
+                      disabled={busy}
+                      onClick={() => {
+                        setValue(null);
+                        setDrafts([]);
+                        setConfirmed(false);
+                        setError(null);
+                      }}
+                    >
+                      {t("chooseAnotherFile")}
+                    </Button>
+                  )}
+                </div>
+                <section className="portable-page-section">
+                  <h3>{t("basicSettings")}</h3>
+                  <label className="portable-field">
+                    <span>{t("name")}</span>
+                    <Input
+                      ref={nameInputRef}
+                      required
+                      aria-required="true"
+                      maxLength={128}
+                      value={value.name}
+                      aria-describedby={error ? "portable-error" : undefined}
+                      onChange={(event) => {
+                        setValue({ ...value, name: event.target.value });
+                        setConfirmed(false);
+                      }}
+                    />
+                  </label>
+                  <label className="portable-field">
+                    <span>{t("description")}</span>
+                    <Input.TextArea
+                      rows={2}
+                      value={value.description}
+                      onChange={(event) => {
+                        setValue({ ...value, description: event.target.value });
+                        setConfirmed(false);
+                      }}
+                    />
+                  </label>
+                  {template && (
+                    <>
+                      <label className="portable-field">
+                        <span>{t("category")}</span>
+                        <Select
+                          aria-label={t("category")}
+                          disabled={busy || exporting}
+                          value={
+                            themes.some(
+                              (theme) => theme.slug === value.category,
+                            )
+                              ? value.category
+                              : "other"
+                          }
+                          options={
+                            themes.length
+                              ? themes.map((theme) => ({
+                                  value: theme.slug,
+                                  label: theme.name[currentSystemLocale()],
+                                }))
+                              : [{ value: "other", label: t("other") }]
+                          }
+                          onChange={(category) => {
+                            setValue({ ...value, category });
+                            setConfirmed(false);
+                          }}
+                        />
+                      </label>
+                      <label className="portable-field">
+                        <span>{t("tags")}</span>
+                        <Select
+                          mode="tags"
+                          aria-label={t("tags")}
+                          disabled={busy || exporting}
+                          value={value.tags}
+                          onChange={(tags: string[]) => {
+                            setValue({ ...value, tags });
+                            setConfirmed(false);
+                          }}
+                        />
+                      </label>
+                    </>
+                  )}
+                  <label className="portable-field">
+                    <span>{t("instructions")}</span>
+                    <Input.TextArea
+                      rows={4}
+                      value={value.instructions}
+                      readOnly={mode === "exportTemplate"}
+                      onChange={(event) => {
+                        setValue({
+                          ...value,
+                          instructions: event.target.value,
+                        });
+                        setConfirmed(false);
+                      }}
+                    />
+                  </label>
+                </section>
+                <section className="portable-page-section">
+                  <h3>{t("contentSettings")}</h3>
+                  <Tabs
+                    items={value.variants.map((variant, index) => ({
+                      key: variant.language,
+                      label: t(`language.${variant.language}`, {
+                        ns: "template",
+                      }),
+                      children: (
+                        <div className="portable-variant">
+                          <label className="portable-field">
+                            <span>{t("code")}</span>
+                            <Input.TextArea
+                              rows={12}
+                              className="portable-code"
+                              value={variant.code}
+                              readOnly={!editableTemplate}
+                              onChange={(event) =>
+                                patchVariant(index, {
+                                  code: event.target.value,
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="portable-field">
+                            <span>{t("requirements")}</span>
+                            <Input.TextArea
+                              rows={3}
+                              value={variant.requirements}
+                              readOnly={!editableTemplate}
+                              onChange={(event) =>
+                                patchVariant(index, {
+                                  requirements: event.target.value,
+                                })
+                              }
+                            />
+                          </label>
+                          <details>
+                            <summary>{t("parametersAndExamples")}</summary>
+                            <div className="portable-optional-content">
+                              <label className="portable-field">
+                                <span>{t("config")}</span>
+                                <Input.TextArea
+                                  rows={5}
+                                  value={drafts[index].config}
+                                  readOnly={mode === "exportTemplate"}
+                                  onChange={(event) =>
+                                    patchDraft(
+                                      index,
+                                      "config",
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </label>
+                              <label className="portable-field">
+                                <span>{t("pendingParameters")}</span>
+                                <Select
+                                  mode="tags"
+                                  aria-label={t("pendingParameters")}
+                                  disabled={busy || mode === "exportTemplate"}
+                                  value={variant.required_parameters}
+                                  onChange={(keys: string[]) =>
+                                    patchVariant(index, {
+                                      required_parameters: keys,
+                                    })
+                                  }
+                                />
+                              </label>
+                              <p>{t("pendingNote")}</p>
+                              {template && (
+                                <>
+                                  <label className="portable-field">
+                                    <span>{t("inputExample")}</span>
+                                    <Input.TextArea
+                                      rows={4}
+                                      value={drafts[index].input}
+                                      readOnly={!editableTemplate}
+                                      onChange={(event) =>
+                                        patchDraft(
+                                          index,
+                                          "input",
+                                          event.target.value,
+                                        )
+                                      }
+                                    />
+                                  </label>
+                                  <label className="portable-field">
+                                    <span>{t("outputExample")}</span>
+                                    <Input.TextArea
+                                      rows={4}
+                                      value={drafts[index].output}
+                                      readOnly={!editableTemplate}
+                                      onChange={(event) =>
+                                        patchDraft(
+                                          index,
+                                          "output",
+                                          event.target.value,
+                                        )
+                                      }
+                                    />
+                                  </label>
+                                </>
+                              )}
+                            </div>
+                          </details>
+                        </div>
+                      ),
+                    }))}
+                  />
+                </section>
+                {!template && (
+                  <details>
+                    <summary>{t("runtimeSettings")}</summary>
+                    <pre>
+                      {json({
+                        timeout_seconds: value.timeout_seconds,
+                        schedule: value.schedule,
+                        webhook: value.webhook,
+                      })}
+                    </pre>
+                  </details>
+                )}
+                {!template && value.adapter_type === "task" && (
+                  <section>
+                    <h3>{t("input")}</h3>
+                    {mode === "exportAdapter" && (
+                      <div className="portable-optional-content">
                         <Checkbox
                           checked={includeJson}
                           disabled={busy}
                           onChange={(event) =>
-                            setIncludeJson(event.target.checked)
+                            void changeIncludedInput(
+                              "json",
+                              event.target.checked,
+                            )
                           }
                         >
                           {t("includeJson")}
@@ -391,219 +699,16 @@ export default function PortablePackageDialog({
                           checked={includeFiles}
                           disabled={busy}
                           onChange={(event) =>
-                            setIncludeFiles(event.target.checked)
+                            void changeIncludedInput(
+                              "files",
+                              event.target.checked,
+                            )
                           }
                         >
                           {t("includeFiles")}
                         </Checkbox>
-                      </>
-                    )}
-                    <Button loading={busy} onClick={() => void load()}>
-                      {t("previewSaved")}
-                    </Button>
-                  </>
-                )}
-                <p>{t("previewNote")}</p>
-              </>
-            ) : (
-              <fieldset disabled={busy} className="portable-fields">
-                <div className="portable-topline">
-                  <span>
-                    {value.adapter_type} · {languageSummary}
-                  </span>
-                  <Button
-                    disabled={busy}
-                    onClick={() => {
-                      setValue(null);
-                      setDrafts([]);
-                      setConfirmed(false);
-                      setError(null);
-                    }}
-                  >
-                    {t("newPreview")}
-                  </Button>
-                </div>
-                <label className="portable-field">
-                  <span>{t("name")}</span>
-                  <Input
-                    ref={nameInputRef}
-                    required
-                    aria-required="true"
-                    maxLength={128}
-                    value={value.name}
-                    aria-describedby={error ? "portable-error" : undefined}
-                    onChange={(event) => {
-                      setValue({ ...value, name: event.target.value });
-                      setConfirmed(false);
-                    }}
-                  />
-                </label>
-                <label className="portable-field">
-                  <span>{t("description")}</span>
-                  <Input.TextArea
-                    rows={2}
-                    value={value.description}
-                    onChange={(event) => {
-                      setValue({ ...value, description: event.target.value });
-                      setConfirmed(false);
-                    }}
-                  />
-                </label>
-                {template && (
-                  <>
-                    <label className="portable-field">
-                      <span>{t("category")}</span>
-                      <Select
-                        aria-label={t("category")}
-                        disabled={busy || exporting}
-                        value={
-                          themes.some((theme) => theme.slug === value.category)
-                            ? value.category
-                            : "other"
-                        }
-                        options={
-                          themes.length
-                            ? themes.map((theme) => ({
-                                value: theme.slug,
-                                label: theme.name[currentSystemLocale()],
-                              }))
-                            : [{ value: "other", label: t("other") }]
-                        }
-                        onChange={(category) => {
-                          setValue({ ...value, category });
-                          setConfirmed(false);
-                        }}
-                      />
-                    </label>
-                    <label className="portable-field">
-                      <span>{t("tags")}</span>
-                      <Select
-                        mode="tags"
-                        aria-label={t("tags")}
-                        disabled={busy || exporting}
-                        value={value.tags}
-                        onChange={(tags: string[]) => {
-                          setValue({ ...value, tags });
-                          setConfirmed(false);
-                        }}
-                      />
-                    </label>
-                  </>
-                )}
-                <Tabs
-                  items={value.variants.map((variant, index) => ({
-                    key: variant.language,
-                    label: variant.language,
-                    children: (
-                      <div className="portable-variant">
-                        <label className="portable-field">
-                          <span>{t("code")}</span>
-                          <Input.TextArea
-                            rows={12}
-                            className="portable-code"
-                            value={variant.code}
-                            readOnly={!editableTemplate}
-                            onChange={(event) =>
-                              patchVariant(index, { code: event.target.value })
-                            }
-                          />
-                        </label>
-                        <label className="portable-field">
-                          <span>{t("requirements")}</span>
-                          <Input.TextArea
-                            rows={3}
-                            value={variant.requirements}
-                            readOnly={!editableTemplate}
-                            onChange={(event) =>
-                              patchVariant(index, {
-                                requirements: event.target.value,
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="portable-field">
-                          <span>{t("config")}</span>
-                          <Input.TextArea
-                            rows={5}
-                            value={drafts[index].config}
-                            readOnly={mode === "exportTemplate"}
-                            onChange={(event) =>
-                              patchDraft(index, "config", event.target.value)
-                            }
-                          />
-                        </label>
-                        <label className="portable-field">
-                          <span>{t("pendingParameters")}</span>
-                          <Select
-                            mode="tags"
-                            aria-label={t("pendingParameters")}
-                            disabled={busy || mode === "exportTemplate"}
-                            value={variant.required_parameters}
-                            onChange={(keys: string[]) =>
-                              patchVariant(index, { required_parameters: keys })
-                            }
-                          />
-                        </label>
-                        <p>{t("pendingNote")}</p>
-                        {template && (
-                          <>
-                            <label className="portable-field">
-                              <span>{t("inputExample")}</span>
-                              <Input.TextArea
-                                rows={4}
-                                value={drafts[index].input}
-                                readOnly={!editableTemplate}
-                                onChange={(event) =>
-                                  patchDraft(index, "input", event.target.value)
-                                }
-                              />
-                            </label>
-                            <label className="portable-field">
-                              <span>{t("outputExample")}</span>
-                              <Input.TextArea
-                                rows={4}
-                                value={drafts[index].output}
-                                readOnly={!editableTemplate}
-                                onChange={(event) =>
-                                  patchDraft(
-                                    index,
-                                    "output",
-                                    event.target.value,
-                                  )
-                                }
-                              />
-                            </label>
-                          </>
-                        )}
                       </div>
-                    ),
-                  }))}
-                />
-                <label className="portable-field">
-                  <span>{t("instructions")}</span>
-                  <Input.TextArea
-                    rows={4}
-                    value={value.instructions}
-                    readOnly={mode === "exportTemplate"}
-                    onChange={(event) => {
-                      setValue({ ...value, instructions: event.target.value });
-                      setConfirmed(false);
-                    }}
-                  />
-                </label>
-                <details>
-                  <summary>{t("runtimeSettings")}</summary>
-                  <pre>
-                    {json({
-                      timeout_seconds: value.timeout_seconds,
-                      schedule: value.schedule,
-                      webhook: value.webhook,
-                    })}
-                  </pre>
-                </details>
-                {!template && (
-                  <section>
-                    <h3>{t("input")}</h3>
+                    )}
                     <p>
                       {value.input.included
                         ? t("inputIncluded")
@@ -639,8 +744,8 @@ export default function PortablePackageDialog({
                   </section>
                 )}
                 {template && (
-                  <section>
-                    <h3>{t("exampleFiles")}</h3>
+                  <details>
+                    <summary>{t("exampleFiles")}</summary>
                     <p>{t("examplesNote")}</p>
                     <ul>
                       {value.example_files.map((file, index) => (
@@ -721,33 +826,24 @@ export default function PortablePackageDialog({
                         />
                       </label>
                     )}
-                  </section>
+                  </details>
                 )}
-                {(value.license || editableTemplate) && (
-                  <label className="portable-field">
-                    <span>{t("license")}</span>
-                    <Input.TextArea
-                      value={value.license}
-                      readOnly={!editableTemplate}
-                      onChange={(event) => {
-                        setValue({ ...value, license: event.target.value });
-                        setConfirmed(false);
-                      }}
-                    />
-                  </label>
-                )}
-                {(value.provenance || editableTemplate) && (
-                  <label className="portable-field">
-                    <span>{t("provenance")}</span>
-                    <Input.TextArea
-                      value={value.provenance}
-                      readOnly={!editableTemplate}
-                      onChange={(event) => {
-                        setValue({ ...value, provenance: event.target.value });
-                        setConfirmed(false);
-                      }}
-                    />
-                  </label>
+                {(value.license || value.provenance) && (
+                  <details>
+                    <summary>{t("attribution")}</summary>
+                    {value.license && (
+                      <>
+                        <h4>{t("license")}</h4>
+                        <pre>{value.license}</pre>
+                      </>
+                    )}
+                    {value.provenance && (
+                      <>
+                        <h4>{t("provenance")}</h4>
+                        <pre>{value.provenance}</pre>
+                      </>
+                    )}
+                  </details>
                 )}
                 {mode === "importAdapter" && (
                   <>
@@ -779,20 +875,12 @@ export default function PortablePackageDialog({
                     {workerRequired && <p>{t("workerRequired")}</p>}
                   </>
                 )}
-                <Checkbox
-                  checked={confirmed}
-                  disabled={busy}
-                  onChange={(event) => setConfirmed(event.target.checked)}
-                >
-                  {template && !exporting
-                    ? t("confirmShared")
-                    : t("confirmReviewed")}
-                </Checkbox>
+                {importing && <p>{t("autoRename")}</p>}
               </fieldset>
             )}
           </>
         )}
       </div>
-    </Modal>
+    </Drawer>
   );
 }
