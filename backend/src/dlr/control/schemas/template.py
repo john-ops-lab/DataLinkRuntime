@@ -41,6 +41,8 @@ class TemplateVariantSummary(BaseModel):
 class TemplateScenarioSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    source: str = "system"
+    can_manage: bool = False
     slug: str
     theme_slug: str
     title: TemplateLocalizedText
@@ -77,6 +79,7 @@ class TemplateVariantResponse(BaseModel):
     language: TemplateLanguage
     adapter_type: Literal["task", "webhook"]
     template_version: str
+    required_parameters: list[str] = Field(default_factory=list)
     code: str
     requirements: str
     input_skeleton: dict[str, Any]

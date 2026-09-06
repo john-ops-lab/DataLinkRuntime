@@ -44,6 +44,7 @@ export interface Adapter {
   access_level?: AdapterAccessLevel | null;
   /** Safe owner display metadata; null means system-owned. */
   owner_username?: string | null;
+  configuration_notes?: { required_parameters?: string[]; input_required?: string; review_environment?: boolean; instructions?: string };
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;
@@ -77,6 +78,8 @@ export interface TemplateVariantSummary {
 }
 
 export interface TemplateScenarioSummary {
+  source?: "system" | "saved" | "imported";
+  can_manage?: boolean;
   slug: string;
   theme_slug: string;
   title: LocalizedText;
@@ -844,4 +847,38 @@ export interface AiAttachmentCapabilities {
 export interface AiConnectionTestResult {
   ok: boolean;
   message: string;
+}
+
+
+export interface PortableFile {
+  filename: string;
+  content_type: string;
+  data_base64: string;
+}
+export interface PortableVariant {
+  language: AdapterLanguage;
+  code: string;
+  requirements: string;
+  runtime_config: Record<string, unknown>;
+  required_parameters: string[];
+  input_skeleton: Record<string, unknown>;
+  output_example: Record<string, unknown>;
+}
+export interface PortablePackage {
+  format_version: 1;
+  object_type: "adapter" | "template";
+  name: string;
+  description: string;
+  instructions: string;
+  category: string;
+  tags: string[];
+  variants: PortableVariant[];
+  timeout_seconds: number;
+  adapter_type: AdapterType;
+  schedule: { cron: string; timezone: string; misfire_policy: string; max_catchup_count: number; max_catchup_age_seconds: number } | null;
+  webhook: { response_mode: "accepted" | "completed"; response_timeout_seconds: number } | null;
+  input: { source_type: string; included: boolean; json_value: unknown; files: PortableFile[] };
+  example_files: PortableFile[];
+  provenance: string;
+  license: string;
 }

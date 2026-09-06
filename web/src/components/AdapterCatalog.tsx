@@ -74,6 +74,8 @@ interface AdapterCatalogProps {
   // M5.5.9：列表项三点菜单——“设置”直接进入该 Adapter 设置；“复制”进入 Clone 流程。
   onOpenSettings: (adapter: Adapter) => void;
   onClone: (adapter: Adapter) => void;
+  onPortable?: (adapter: Adapter, mode: "exportAdapter" | "saveTemplate") => void;
+  onImport?: () => void;
   onRefresh: () => Promise<void>;
   accountPrincipal?: AccountPrincipal;
 }
@@ -213,6 +215,8 @@ export default function AdapterCatalog({
   workers,
   onOpenSettings,
   onClone,
+  onPortable,
+  onImport,
   onRefresh,
   accountPrincipal,
 }: AdapterCatalogProps) {
@@ -345,6 +349,7 @@ export default function AdapterCatalog({
         </div>
       </div>
 
+      {onImport && <Button disabled={busy} onClick={onImport}>{t("importAdapter", { ns: "portable" })}</Button>}
       <div
         className="catalog-toolbar"
         data-testid="adapter-catalog-toolbar"
@@ -461,13 +466,19 @@ export default function AdapterCatalog({
                   placement="bottomRight"
                   menu={{
                     items: [
+                      ...(onPortable && (accessLevel === "admin" || accessLevel === "owner") ? [
+                        { key: "exportAdapter", label: t("exportAdapter", { ns: "portable" }) },
+                        { key: "saveTemplate", label: t("saveTemplate", { ns: "portable" }) },
+                      ] : []),
                       { key: "settings", label: t("catalog.settings") },
                       ...(accessLevel === "read"
                         ? []
                         : [{ key: "clone", label: t("catalog.clone") }]),
                     ],
                     onClick: ({ key }) => {
-                      if (key === "settings") {
+                      if (key === "exportAdapter" || key === "saveTemplate") {
+                        onPortable?.(adapter, key);
+                      } else if (key === "settings") {
                         onOpenSettings(adapter);
                       } else if (key === "clone") {
                         onClone(adapter);

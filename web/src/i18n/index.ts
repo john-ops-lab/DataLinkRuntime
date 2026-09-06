@@ -1,6 +1,8 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 
+import portableEn from "./locales/en/portable.json";
+import portableZhCN from "./locales/zh-CN/portable.json";
 import aiEn from "./locales/en/ai.json";
 import commonEn from "./locales/en/common.json";
 import adapterEn from "./locales/en/adapter.json";
@@ -30,6 +32,7 @@ export const resources = {
     settings: settingsZhCN,
     ai: aiZhCN,
     template: templateZhCN,
+    portable: portableZhCN,
   },
   en: {
     common: commonEn,
@@ -38,6 +41,7 @@ export const resources = {
     settings: settingsEn,
     ai: aiEn,
     template: templateEn,
+    portable: portableEn,
   },
 } as const;
 
@@ -47,7 +51,7 @@ void i18n.use(initReactI18next).init({
   lng: readCachedSystemLocale(),
   fallbackLng: DEFAULT_SYSTEM_LOCALE,
   supportedLngs: ["zh-CN", "en"],
-  ns: ["common", "adapter", "runtime", "settings", "ai", "template"],
+  ns: ["common", "adapter", "runtime", "settings", "ai", "template", "portable"],
   defaultNS: "common",
   resources,
   interpolation: { escapeValue: false },

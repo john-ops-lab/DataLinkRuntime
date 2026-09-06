@@ -6,7 +6,7 @@ import copy
 import secrets as stdlib_secrets
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,7 @@ from dlr.control.models import (
     AdapterExecutionSlot,
     AdapterInputConfig,
     AdapterWebhook,
+    UserTemplate,
 )
 from dlr.control.schemas.adapter import DEFAULT_EXECUTION_TIMEOUT_SECONDS
 from dlr.control.schemas.template import (
@@ -27,6 +28,8 @@ from dlr.control.schemas.template import (
     TemplateVariantResponse,
     TemplateVariantSummary,
 )
+from dlr.control.security import Principal
+from dlr.control.services import user_templates
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.locale import get_system_locale
 from dlr.control.template_catalog import TemplateCatalog, get_template_catalog
@@ -75,11 +78,18 @@ def _catalog_or_default(catalog: TemplateCatalog | None) -> TemplateCatalog:
 
 def list_template_themes(
     catalog: TemplateCatalog | None = None,
+    session: Session | None = None,
 ) -> list[TemplateThemeResponse]:
     selected = _catalog_or_default(catalog)
     counts: dict[str, int] = {theme.slug: 0 for theme in selected.themes}
     for scenario in selected.scenarios:
         counts[scenario.theme_slug] += 1
+    if session is not None:
+        category_expression = UserTemplate.content["category"].astext
+        for category, count in session.execute(
+            select(category_expression, func.count()).group_by(category_expression)
+        ):
+            counts[category] = counts.get(category, 0) + count
     return [
         TemplateThemeResponse(
             slug=theme.slug,
@@ -118,15 +128,23 @@ def list_template_scenarios(
     page: int = 1,
     page_size: int = 12,
     catalog: TemplateCatalog | None = None,
+    session: Session | None = None,
+    principal: Principal | None = None,
 ) -> TemplateScenarioListResponse:
     selected = _catalog_or_default(catalog)
-    if theme is not None and selected.get_theme(theme) is None:
+    if theme is not None and theme != "other" and selected.get_theme(theme) is None:
         _invalid_filter("theme", theme)
-    _require_filter(vendor, selected.vendors, "vendor")
+    _require_filter(vendor, selected.vendors | frozenset({"DLR"}), "vendor")
     _require_filter(adapter_type, SUPPORTED_ADAPTER_TYPES, "adapter_type")
     _require_filter(protocol, selected.protocols, "protocol")
     _require_filter(language, SUPPORTED_LANGUAGES, "language")
-    scenarios = [item for item in selected.scenarios if theme is None or item.theme_slug == theme]
+    system_scenarios = sorted(selected.scenarios, key=lambda item: item.slug)
+    system_scenarios.sort(key=lambda item: item.updated_at, reverse=True)
+    system_scenarios.sort(key=lambda item: item.featured_rank)
+    scenarios = [_scenario_summary(item) for item in system_scenarios]
+    if session is not None:
+        scenarios += user_templates.list_summaries(session, principal)
+    scenarios = [item for item in scenarios if theme is None or item.theme_slug == theme]
     if q is not None and (query := q.strip().casefold()):
         scenarios = [
             item
@@ -154,15 +172,11 @@ def list_template_scenarios(
             item for item in scenarios if any(v.language == language for v in item.variants)
         ]
 
-    # Stable sort: least-significant key first keeps the contract obvious.
-    scenarios.sort(key=lambda item: item.slug)
-    scenarios.sort(key=lambda item: item.updated_at, reverse=True)
-    scenarios.sort(key=lambda item: item.featured_rank)
     total = len(scenarios)
     start = (page - 1) * page_size
     items = scenarios[start : start + page_size]
     return TemplateScenarioListResponse(
-        items=[_scenario_summary(item) for item in items],
+        items=items,
         page=page,
         page_size=page_size,
         total=total,
@@ -177,8 +191,13 @@ def _require_scenario(catalog: TemplateCatalog, scenario_slug: str) -> TemplateS
 
 
 def get_template_scenario(
-    scenario_slug: str, catalog: TemplateCatalog | None = None
+    scenario_slug: str,
+    catalog: TemplateCatalog | None = None,
+    session: Session | None = None,
+    principal: Principal | None = None,
 ) -> TemplateScenarioDetail:
+    if session is not None and scenario_slug.startswith("user-"):
+        return user_templates.detail(session, scenario_slug, principal)
     selected = _catalog_or_default(catalog)
     scenario = _require_scenario(selected, scenario_slug)
     summary = _scenario_summary(scenario)
@@ -192,7 +211,10 @@ def get_template_variant(
     scenario_slug: str,
     language: str,
     catalog: TemplateCatalog | None = None,
+    session: Session | None = None,
 ) -> TemplateVariantResponse:
+    if session is not None and scenario_slug.startswith("user-"):
+        return user_templates.variant(session, scenario_slug, language)
     selected = _catalog_or_default(catalog)
     scenario = _require_scenario(selected, scenario_slug)
     loaded = selected.load_variant(scenario_slug, language)
@@ -259,6 +281,8 @@ def instantiate_template_adapter(
     catalog: TemplateCatalog | None = None,
 ) -> Adapter:
     """Create an ordinary Adapter; the editor holds the code until the user saves."""
+    if scenario_slug.startswith("user-"):
+        return user_templates.instantiate(session, scenario_slug, language, payload, owner_user_id)
     selected = _catalog_or_default(catalog)
     scenario = _require_scenario(selected, scenario_slug)
     loaded = selected.load_variant(scenario_slug, language)

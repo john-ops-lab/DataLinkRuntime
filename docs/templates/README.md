@@ -1,5 +1,7 @@
 # 模板使用文档
 
+- [适配器与模板可移植交付包](portable-packages.md)
+- [Portable packages (English)](portable-packages.en.md)
 - [模板使用说明](recipe-usage-security.md)
 - [Template usage (English)](recipe-usage-security.en.md)
 - [dlr-cmdb-upsert/v1 合同](cmdb-upsert-v1.md)

@@ -112,6 +112,9 @@ class Adapter(Base):
     # is intentionally no FK from user data to the static catalog.
     template_scenario_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
     template_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    configuration_notes: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     # Legacy soft-delete marker; new Wave C deletes remove the row entirely.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

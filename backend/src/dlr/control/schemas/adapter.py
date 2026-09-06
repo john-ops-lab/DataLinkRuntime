@@ -142,6 +142,7 @@ class AdapterResponse(BaseModel):
     # these fields so ordinary create/update/clone cannot forge or edit them.
     template_scenario_slug: str | None
     template_version: str | None
+    configuration_notes: dict[str, Any] = Field(default_factory=dict)
     runtime_locked: bool = False
     archived_at: datetime | None
     running_execution_id: int | None = None

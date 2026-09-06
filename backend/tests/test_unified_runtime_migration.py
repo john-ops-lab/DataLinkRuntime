@@ -12,7 +12,7 @@ from sqlalchemy.engine import Engine, make_url
 
 from dlr.common.config import settings
 
-HEAD_REVISION = "0034_webhook_response"
+HEAD_REVISION = "0035_portable"
 
 
 def _upgrade(database: str, revision: str) -> None:

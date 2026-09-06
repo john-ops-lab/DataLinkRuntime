@@ -47,7 +47,7 @@ def _first_metadata(root: Path) -> tuple[Path, dict[str, Any]]:
 def test_catalog_inventory_is_exact_and_all_sources_pass_hash_validation() -> None:
     catalog = TemplateCatalog(resources.files("dlr.control.template_catalog"))
 
-    assert len(catalog.themes) == 5
+    assert len(catalog.themes) == 6
     assert len(catalog.scenarios) == 17
     assert len({scenario.slug for scenario in catalog.scenarios}) == 17
     assert all(
@@ -252,7 +252,8 @@ def test_theme_api_requires_auth_and_returns_fixed_bilingual_summary(
     response = api_client.get("/api/templates/themes")
     assert response.status_code == 200, response.text
     body = response.json()
-    assert len(body) == 5
+    assert len(body) == 6
+    assert body[-1]["slug"] == "other"
     assert [item["sort_order"] for item in body] == sorted(item["sort_order"] for item in body)
     assert sum(item["scenario_count"] for item in body) == 17
     assert all(item["name"]["zh-CN"] and item["name"]["en"] for item in body)

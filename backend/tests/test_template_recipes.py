@@ -343,7 +343,8 @@ def _java_errors(
 
 def test_inventory_and_source_hashes_are_valid() -> None:
     manifest, scenarios = _catalog_assets()
-    assert len(manifest["themes"]) == 5
+    assert len(manifest["themes"]) == 6
+    assert manifest["themes"][-1]["slug"] == "other"
     assert len(scenarios) == 17
     assert len({item["slug"] for item in scenarios}) == 17
 

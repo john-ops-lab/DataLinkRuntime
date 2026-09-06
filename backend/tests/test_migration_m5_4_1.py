@@ -72,7 +72,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0034_webhook_response"
+    assert revision == "0035_portable"
     assert {
         "adapter_type",
         "run_mode",

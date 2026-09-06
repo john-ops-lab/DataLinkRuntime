@@ -49,10 +49,12 @@ from dlr.control.models.reliable_execution import (
 )
 from dlr.control.models.schedule import AdapterSchedule
 from dlr.control.models.system import SystemSetting
+from dlr.control.models.user_template import UserTemplate
 from dlr.control.models.webhook import AdapterWebhook
 from dlr.control.models.worker_cleanup import WorkerCleanupRequest
 
 __all__ = [
+    "UserTemplate",
     "Adapter",
     "AdapterPermission",
     "AdapterCredentialBinding",

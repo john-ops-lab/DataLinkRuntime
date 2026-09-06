@@ -1,5 +1,5 @@
 {
-  "catalog_version": "1.0.1",
+  "catalog_version": "1.0.2",
   "behavior_contract_version": "dlr-recipe/v1",
   "themes": [
     {
@@ -61,6 +61,18 @@
         "en": "List or read S3 objects and SFTP files."
       },
       "sort_order": 50
+    },
+    {
+      "slug": "other",
+      "name": {
+        "zh-CN": "其他",
+        "en": "Other"
+      },
+      "description": {
+        "zh-CN": "其他业务场景",
+        "en": "Other scenarios"
+      },
+      "sort_order": 60
     }
   ],
   "scenarios": [

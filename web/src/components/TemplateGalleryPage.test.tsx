@@ -31,6 +31,7 @@ const themes: TemplateTheme[] = [
   ["file-data", "文件与数据", "Files & Data", 3],
   ["databases", "数据库", "Databases", 2],
   ["storage-transfer", "存储与传输", "Storage & Transfer", 2],
+  ["other", "其他", "Other", 0],
 ].map(([slug, zh, en, count], index) => ({
   slug: String(slug),
   name: { "zh-CN": String(zh), en: String(en) },
@@ -122,7 +123,7 @@ it("defaults to All, lists available languages, and omits maturity", async () =>
     await Promise.resolve();
   });
   expect(screen.getByRole("heading", { name: "REST 单次请求" })).toBeTruthy();
-  expect(screen.getAllByRole("tab")).toHaveLength(6);
+  expect(screen.getAllByRole("tab")).toHaveLength(7);
   expect(screen.getByRole("tab", { name: "全部 · 17" }).getAttribute("aria-selected")).toBe("true");
   expect(api.listTemplateScenarios).toHaveBeenCalledWith(expect.objectContaining({ theme: undefined, page_size: 12 }), expect.any(AbortSignal));
   expect(screen.queryByText("成熟度")).toBeNull();
@@ -228,7 +229,7 @@ it("preloads complete vendor and protocol facets independently of visible pagina
   );
 
   await screen.findByRole("heading", { name: "REST 单次请求" });
-  await waitFor(() => expect(listSpy.mock.calls.filter(([query]) => query.page_size === 48)).toHaveLength(5));
+  await waitFor(() => expect(listSpy.mock.calls.filter(([query]) => query.page_size === 48)).toHaveLength(themes.length));
   expect(listSpy.mock.calls.filter(([query]) => query.page_size === 48).map(([query]) => query.theme).sort())
     .toEqual(themes.map((theme) => theme.slug).sort());
 

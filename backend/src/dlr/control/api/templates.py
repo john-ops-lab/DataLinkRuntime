@@ -26,12 +26,14 @@ CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
 
 
 @router.get("/api/templates/themes", response_model=list[TemplateThemeResponse])
-def list_template_themes() -> list[TemplateThemeResponse]:
-    return template_service.list_template_themes()
+def list_template_themes(session: DbSession) -> list[TemplateThemeResponse]:
+    return template_service.list_template_themes(session=session)
 
 
 @router.get("/api/templates/scenarios", response_model=TemplateScenarioListResponse)
 def list_template_scenarios(
+    session: DbSession,
+    principal: CurrentPrincipal,
     theme: str | None = None,
     q: Annotated[str | None, Query(max_length=128)] = None,
     vendor: str | None = None,
@@ -42,6 +44,8 @@ def list_template_scenarios(
     page_size: Annotated[int, Query(ge=1, le=48)] = 12,
 ) -> TemplateScenarioListResponse:
     return template_service.list_template_scenarios(
+        session=session,
+        principal=principal,
         theme=theme,
         q=q,
         vendor=vendor,
@@ -57,16 +61,22 @@ def list_template_scenarios(
     "/api/templates/scenarios/{scenario_slug}",
     response_model=TemplateScenarioDetail,
 )
-def get_template_scenario(scenario_slug: str) -> TemplateScenarioDetail:
-    return template_service.get_template_scenario(scenario_slug)
+def get_template_scenario(
+    scenario_slug: str, session: DbSession, principal: CurrentPrincipal
+) -> TemplateScenarioDetail:
+    return template_service.get_template_scenario(
+        scenario_slug, session=session, principal=principal
+    )
 
 
 @router.get(
     "/api/templates/scenarios/{scenario_slug}/variants/{language}",
     response_model=TemplateVariantResponse,
 )
-def get_template_variant(scenario_slug: str, language: str) -> TemplateVariantResponse:
-    return template_service.get_template_variant(scenario_slug, language)
+def get_template_variant(
+    scenario_slug: str, language: str, session: DbSession
+) -> TemplateVariantResponse:
+    return template_service.get_template_variant(scenario_slug, language, session=session)
 
 
 @router.post(

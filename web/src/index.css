@@ -4869,3 +4869,13 @@ body {
     border-radius: 0;
   }
 }
+
+
+/* Portable content previews keep code readable without widening the console. */
+.portable-dialog, .portable-fields, .portable-variant { display: grid; gap: 16px; min-width: 0; }
+.portable-fields { border: 0; padding: 0; margin: 0; }
+.portable-field { display: grid; gap: 6px; min-width: 0; }
+.portable-topline, .portable-template-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.portable-template-actions { justify-content: flex-start; margin-bottom: 20px; }
+.portable-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+.portable-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }

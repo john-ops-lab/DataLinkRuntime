@@ -2,6 +2,7 @@
 
 import type {
   Adapter,
+  PortablePackage,
   AdapterInputConfig,
   AdapterInputConfigDraft,
   AdapterPermission,
@@ -159,7 +160,7 @@ async function parseError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, code, message, params);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, responseType: "json" | "blob" = "json"): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (authToken !== null) {
     headers.Authorization = `Bearer ${authToken}`;
@@ -177,7 +178,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   let response: Response;
   try {
-    response = await fetch(path, { ...init, credentials: "same-origin", headers });
+    response = await fetch(path, { ...init, credentials: "same-origin", headers: { ...headers, ...init?.headers } });
   } catch {
     throw new ApiError(0, "network_error", "Control is unreachable");
   }
@@ -190,10 +191,32 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (response.status === 204) {
     return undefined as T;
   }
-  return (await response.json()) as T;
+  return (await (responseType === "blob" ? response.blob() : response.json())) as T;
 }
 
 export const api = {
+  previewPortableFile: (file: File): Promise<PortablePackage> => request("/api/portable/preview", {
+    method: "POST", body: file, headers: { "Content-Type": "application/zip" },
+  }),
+  previewAdapterPackage: (id: number, options: { include_json: boolean; include_files: boolean; as_template: boolean }): Promise<PortablePackage> =>
+    request(`/api/adapters/${id}/portable-preview`, { method: "POST", body: JSON.stringify(options) }),
+  getTemplatePackage: (slug: string): Promise<PortablePackage> => request(`/api/templates/scenarios/${encodeURIComponent(slug)}/portable`),
+  exportPortablePackage: (value: PortablePackage): Promise<Blob> => request("/api/portable/export", {
+    method: "POST", body: JSON.stringify(value),
+  }, "blob"),
+  importAdapterPackage: (value: PortablePackage, workerId: number | null): Promise<Adapter> => request("/api/portable/adapters", {
+    method: "POST", body: JSON.stringify({ package: value, runtime_worker_id: workerId, configuration_reviewed: true }),
+  }),
+  saveTemplatePackage: (value: PortablePackage, options: { adapterId?: number; slug?: string; expectedVersion?: string }): Promise<TemplateScenarioDetail> => {
+    const path = options.slug ? `/api/templates/scenarios/${encodeURIComponent(options.slug)}`
+      : options.adapterId ? `/api/adapters/${options.adapterId}/templates` : "/api/portable/templates";
+    return request(path, { method: options.slug ? "PUT" : "POST", body: JSON.stringify({
+      package: value, sharing_confirmed: true, expected_version: options.expectedVersion,
+    }) });
+  },
+  deleteUserTemplate: (slug: string, expectedVersion: string): Promise<void> => request(
+    `/api/templates/scenarios/${encodeURIComponent(slug)}?expected_version=${encodeURIComponent(expectedVersion)}`, { method: "DELETE" },
+  ),
   /** Public bootstrap read; the response contains no other system settings. */
   getSystemLocale: (): Promise<SystemLocaleResponse> => request("/api/locale"),
 

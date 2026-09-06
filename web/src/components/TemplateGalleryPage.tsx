@@ -33,6 +33,7 @@ import type {
   TemplateTheme,
   TemplateVariant,
 } from "../types";
+import PortablePackageDialog, { type PortableDialogRequest } from "./PortablePackageDialog";
 import TemplateScenarioLogo from "./TemplateScenarioLogo";
 
 const PAGE_SIZE = 12;
@@ -82,7 +83,7 @@ function TemplateCard({
       <div className="template-card-content">
         <div className="template-card-heading">
           <div>
-            <p className="template-card-vendor">{scenario.vendor}</p>
+            <p className="template-card-vendor">{scenario.vendor} · {t(`source.${scenario.source ?? "system"}`, { ns: "portable" })}</p>
             <h2>{localized(scenario.title)}</h2>
           </div>
           <Tag bordered={false}>{t(`type.${scenario.adapter_type}`)}</Tag>
@@ -130,6 +131,8 @@ function GalleryList({
   hidden,
   containerRef,
   onReloadThemes,
+  onImport,
+  reloadGeneration,
   onOpenScenario,
 }: {
   themes: TemplateTheme[];
@@ -138,6 +141,8 @@ function GalleryList({
   hidden: boolean;
   containerRef: RefObject<HTMLElement | null>;
   onReloadThemes: () => void;
+  onImport: () => void;
+  reloadGeneration: number;
   onOpenScenario: (scenarioSlug: string, trigger: HTMLAnchorElement) => void;
 }) {
   const { t } = useTranslation("template");
@@ -242,7 +247,7 @@ function GalleryList({
       controller.abort();
       if (generation === requestGeneration.current) requestGeneration.current += 1;
     };
-  }, [resolvedActiveTheme, currentPage, debouncedQuery, filters, listReloadGeneration]);
+  }, [resolvedActiveTheme, currentPage, debouncedQuery, filters, listReloadGeneration, reloadGeneration]);
 
   function resetActivePage(): void {
     if (resolvedActiveTheme) {
@@ -417,6 +422,7 @@ function GalleryList({
       </span>
       <header className="template-gallery-hero">
         <Typography.Title level={1}>{t("gallery.title")}</Typography.Title>
+        <Button onClick={onImport}>{t("importTemplate", { ns: "portable" })}</Button>
         <Input
           size="large"
           allowClear
@@ -600,8 +606,12 @@ function TemplateDetail({
   busy,
   onBack,
   onInstantiate,
+  onPortable,
+  onDelete,
 }: {
   scenarioSlug: string;
+  onPortable: (request: PortableDialogRequest) => void;
+  onDelete: (detail: TemplateScenarioDetail) => void;
   busy: boolean;
   onBack: () => void;
   onInstantiate: (request: TemplateCopyRequest) => Promise<boolean>;
@@ -775,7 +785,7 @@ function TemplateDetail({
       <header className="template-detail-hero">
         <TemplateScenarioLogo logoKey={detail.logo_key} />
         <div className="template-detail-title">
-          <p>{detail.vendor}</p>
+          <p>{detail.vendor} · {t(`source.${detail.source ?? "system"}`, { ns: "portable" })}</p>
           <Typography.Title level={1}>{localized(detail.title)}</Typography.Title>
           <Typography.Paragraph>{localized(detail.summary)}</Typography.Paragraph>
           <div className="template-detail-meta">
@@ -794,6 +804,13 @@ function TemplateDetail({
         </Button>
       </header>
 
+      <div className="portable-template-actions">
+        <Button disabled={busy} onClick={() => onPortable({ mode: "exportTemplate", slug: detail.slug })}>{t("exportTemplate", { ns: "portable" })}</Button>
+        {detail.can_manage && <>
+          <Button disabled={busy} onClick={() => onPortable({ mode: "editTemplate", slug: detail.slug, expectedVersion: detail.template_version })}>{t("editTemplate", { ns: "portable" })}</Button>
+          <Button danger disabled={busy} onClick={() => onDelete(detail)}>{t("deleteTemplate", { ns: "portable" })}</Button>
+        </>}
+      </div>
       <div className="template-detail-layout">
         <div className="template-detail-overview">
           <section className="template-detail-panel">
@@ -842,6 +859,11 @@ export default function TemplateGalleryPage({
   onBackToGallery,
   onInstantiate,
 }: TemplateGalleryPageProps) {
+  const { t } = useTranslation("portable");
+  const [portableDialog, setPortableDialog] = useState<PortableDialogRequest | null>(null);
+  const [deleteDetail, setDeleteDetail] = useState<TemplateScenarioDetail | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(false);
   const [themes, setThemes] = useState<TemplateTheme[]>([]);
   const [themesLoading, setThemesLoading] = useState(true);
   const [themesError, setThemesError] = useState(false);
@@ -893,16 +915,37 @@ export default function TemplateGalleryPage({
         hidden={scenarioSlug !== null}
         containerRef={galleryRef}
         onReloadThemes={reloadThemes}
+        onImport={() => setPortableDialog({ mode: "importTemplate" })}
+        reloadGeneration={reloadGeneration}
         onOpenScenario={(slug, trigger) => {
           lastScenarioTriggerRef.current = trigger;
           scenarioOpenedFromGalleryRef.current = slug;
           onOpenScenario(slug);
         }}
       />
+      {portableDialog && <PortablePackageDialog {...portableDialog}
+        onClose={() => setPortableDialog(null)}
+        onTemplateSaved={() => reloadThemes()}
+      />}
+      <Modal open={deleteDetail !== null} title={t("deleteTemplate")} okText={t("deleteTemplate")} cancelText={t("cancel")}
+        confirmLoading={deleting} okButtonProps={{ danger: true }}
+        onCancel={deleting ? undefined : () => setDeleteDetail(null)}
+        onOk={() => {
+          if (!deleteDetail || deleting) return;
+          setDeleting(true);
+          void api.deleteUserTemplate(deleteDetail.slug, deleteDetail.template_version).then(() => {
+            setDeleteDetail(null); reloadThemes(); onBackToGallery(false);
+          }).catch(() => setDeleteError(true)).finally(() => setDeleting(false));
+        }}>
+        <p>{t("deleteWarning")}</p>
+        {deleteError && <Alert type="error" message={t("failed")} />}
+      </Modal>
       {scenarioSlug !== null && (
         <TemplateDetail
-          key={scenarioSlug}
+          key={`${scenarioSlug}-${reloadGeneration}`}
           scenarioSlug={scenarioSlug}
+          onPortable={setPortableDialog}
+          onDelete={(detail) => { setDeleteDetail(detail); setDeleteError(false); }}
           busy={busy}
           onBack={() => onBackToGallery(
             scenarioOpenedFromGalleryRef.current === scenarioSlug
