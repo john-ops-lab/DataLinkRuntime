@@ -273,6 +273,10 @@ class Execution(Base):
     # Only Schedule-triggered rows carry this closed policy snapshot; other
     # triggers keep it NULL rather than exposing current Schedule settings.
     schedule_policy_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    # Receipt response policy is immutable, including across idempotent replays.
+    webhook_response_snapshot: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     resource_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_worker_id_snapshot: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     logical_input_bytes: Mapped[int] = mapped_column(

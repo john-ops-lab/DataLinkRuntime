@@ -236,6 +236,10 @@ function stubFetch(routes: Route[]) {
         ? candidate.match === url
         : candidate.match.test(url);
     });
+    // Existing fixtures without call history represent an empty Webhook.
+    if (!route && method === "GET" && /^\/api\/adapters\/\d+\/executions\?limit=1&trigger=webhook$/.test(url)) {
+      return { ok: true, status: 200, json: async () => ({ items: [], next_before_id: null }) };
+    }
     // A1 creates an Adapter-level Input Object for every Task Adapter. Keep
     // older Console fixtures focused on their own behavior by supplying the
     // stable default resource when a test does not need to customize it.
@@ -4787,6 +4791,8 @@ function makeWebhook(overrides: Record<string, unknown> = {}) {
     hook_path: "/api/hooks/a8f3c9d2",
     credential_id: 7,
     credential_name: "hook-token",
+    response_mode: "accepted",
+    response_timeout_seconds: 30,
     created_at: "2026-08-15T00:00:00Z",
     updated_at: "2026-08-15T00:00:00Z",
     ...overrides,
@@ -4832,6 +4838,115 @@ it("shows the Webhook starter and only 编辑 / 运行设置 / 调用记录 / �
   expect(screen.getByRole("tab", { name: "调用记录" })).toBeDefined();
   expect(screen.getByRole("tab", { name: "实时日志" })).toBeDefined();
   expect(document.body.textContent).not.toMatch(/Publish|Published|Production|测试运行|触发器|Cron|Timezone/);
+});
+
+it("loads the latest saved Webhook log on opening Live logs, including after remount", async () => {
+  const adapter = makeAdapter({ adapter_type: "webhook", runtime_worker_id: 3 });
+  const saved = makeExecution({ id: 71, trigger: "webhook", status: "succeeded", stdout: "saved webhook log\n" });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter),
+    { method: "GET", match: "/api/adapters/1/executions?limit=1&trigger=webhook", respond: () => ({ body: { items: [saved], next_before_id: null } }) },
+    { method: "GET", match: "/api/executions/71", respond: () => ({ body: saved }) },
+  ]);
+  const first = render(<App />);
+  await selectFirstAdapter();
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/executions?"))).toBe(false);
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("saved webhook log"));
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/events"))).toBe(false);
+  first.unmount();
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("saved webhook log"));
+});
+
+it("discovers a completed short Webhook between active-pointer polls and retains logs on read failure", async () => {
+  RUNTIME_REFRESH_POLICY.pollIntervalMs = 20;
+  const adapter = makeAdapter({ adapter_type: "webhook", runtime_worker_id: 3, runtime_locked: true, running_execution_id: null });
+  const first = makeExecution({ id: 71, trigger: "webhook", status: "succeeded", stdout: "first call\n" });
+  const second = makeExecution({ id: 72, trigger: "webhook", status: "succeeded", stdout: "short second call\n" });
+  let latest: Execution | null = null;
+  let failed = false;
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, makeWebhook({ enabled: true })),
+    { method: "GET", match: "/api/adapters/1/executions?limit=1&trigger=webhook", respond: () => failed
+      ? { status: 503, body: { detail: "temporarily unavailable" } }
+      : { body: { items: latest === null ? [] : [latest], next_before_id: null } } },
+    { method: "GET", match: "/api/executions/71", respond: () => ({ body: first }) },
+    { method: "GET", match: "/api/executions/72", respond: () => ({ body: second }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  latest = first;
+  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("first call"));
+  failed = true;
+  await screen.findByTestId("error-banner");
+  expect(screen.getByTestId("live-log").textContent).toContain("first call");
+  failed = false;
+  latest = second;
+  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("short second call"));
+  expect(screen.getByTestId("live-log").textContent).not.toContain("first call");
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/events"))).toBe(false);
+  fireEvent.click(screen.getByRole("tab", { name: "编辑" }));
+  const count = fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length;
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("limit=1&trigger=webhook")).length).toBe(count);
+});
+
+it("does not let a delayed saved Webhook log overwrite a newer active call", async () => {
+  RUNTIME_REFRESH_POLICY.pollIntervalMs = 20;
+  const adapter = makeAdapter({ adapter_type: "webhook", runtime_locked: true, running_execution_id: null });
+  const old = makeExecution({ id: 71, trigger: "webhook", status: "succeeded", stdout: "old saved call\n" });
+  const newer = makeExecution({ id: 72, trigger: "webhook", status: "succeeded", stdout: "newer active call\n" });
+  let resolveDetail!: (value: RouteResponse) => void;
+  const delayed = new Promise<RouteResponse>((resolve) => { resolveDetail = resolve; });
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, makeWebhook({ enabled: true })),
+    { method: "GET", match: "/api/adapters/1/executions?limit=1&trigger=webhook", respond: () => ({ body: { items: [old], next_before_id: null } }) },
+    { method: "GET", match: "/api/executions/71", respond: () => delayed },
+    { method: "GET", match: "/api/executions/72", respond: () => ({ body: newer }) },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/executions/71")).toBe(true));
+  adapter.running_execution_id = 72;
+  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("newer active call"));
+  await act(async () => { resolveDetail({ body: old }); await delayed; });
+  expect(screen.getByTestId("live-log").textContent).toContain("newer active call");
+  expect(screen.getByTestId("live-log").textContent).not.toContain("old saved call");
+});
+
+it("ignores a delayed latest Webhook detail after switching adapters and reloads on return", async () => {
+  const adapterA = makeAdapter({ adapter_type: "webhook", name: "hook-a" });
+  const adapterB = makeAdapter({ id: 2, adapter_type: "webhook", name: "hook-b" });
+  const saved = makeExecution({ id: 71, trigger: "webhook", status: "succeeded", stdout: "only adapter A\n" });
+  let resolveDetail!: (value: RouteResponse) => void;
+  const delayed = new Promise<RouteResponse>((resolve) => { resolveDetail = resolve; });
+  const fetchMock = stubFetch([
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapterA, adapterB] }) },
+    ...webhookConsoleRoutes(adapterA),
+    { method: "GET", match: "/api/adapters/2/versions", respond: () => ({ body: [] }) },
+    { method: "GET", match: "/api/adapters/2", respond: () => ({ body: adapterB }) },
+    { method: "GET", match: "/api/adapters/2/webhook", respond: () => ({ body: makeWebhook({ adapter_id: 2 }) }) },
+    { method: "GET", match: "/api/adapters/1/executions?limit=1&trigger=webhook", respond: () => ({ body: { items: [saved], next_before_id: null } }) },
+    { method: "GET", match: "/api/executions/71", respond: () => delayed },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/executions/71")).toBe(true));
+  fireEvent.click(screen.getAllByTestId("adapter-item")[1]);
+  await screen.findByRole("heading", { name: "hook-b" });
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  await act(async () => { resolveDetail({ body: saved }); await delayed; });
+  expect(screen.getByTestId("live-log-workspace").textContent).not.toContain("only adapter A");
+  fireEvent.click(screen.getAllByTestId("adapter-item")[0]);
+  await screen.findByRole("heading", { name: "hook-a" });
+  fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
+  await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("only adapter A"));
 });
 
 it("ignores a late Webhook start callback after another Adapter is selected", async () => {
@@ -5067,8 +5182,8 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
     .filter(([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT")
     .map(([, init]) => JSON.parse(String(init?.body)));
   expect(payloads).toEqual([
-    { enabled: false, public_id: "receive-sys1-data", credential_id: 7 },
-    { enabled: true, public_id: "receive-sys1-data", credential_id: 7 },
+    { enabled: false, public_id: "receive-sys1-data", credential_id: 7, response_mode: "accepted", response_timeout_seconds: 30 },
+    { enabled: true, public_id: "receive-sys1-data", credential_id: 7, response_mode: "accepted", response_timeout_seconds: 30 },
   ]);
   expect(screen.getByTestId("webhook-url")).toHaveProperty(
     "value",
@@ -5174,6 +5289,8 @@ it("preserves an unchanged legacy Webhook path but validates it once edited", as
     ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
   );
   expect(JSON.parse(String(startCall?.[1]?.body))).toEqual({
+    response_mode: "accepted",
+    response_timeout_seconds: 30,
     enabled: true,
     public_id: legacyPath,
     credential_id: 7,
@@ -5241,6 +5358,8 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
     ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
   );
   expect(JSON.parse(String(stopCall?.[1]?.body))).toEqual({
+    response_mode: "accepted",
+    response_timeout_seconds: 30,
     enabled: false,
     public_id: "a8f3c9d2",
     credential_id: 7,
@@ -5358,6 +5477,8 @@ it("ends the active call immediately when the user chooses 直接结束当前调
   );
   expect(stopCalls.length).toBe(1);
   expect(JSON.parse(String(stopCalls[0]?.[1]?.body))).toEqual({
+    response_mode: "accepted",
+    response_timeout_seconds: 30,
     enabled: false,
     public_id: "a8f3c9d2",
     credential_id: 7,
@@ -7097,4 +7218,50 @@ it("blocks primary navigation while an Adapter permission mutation is in flight"
   await screen.findByTestId("template-gallery");
   expect(window.location.pathname).toBe("/templates");
   expect(confirm).not.toHaveBeenCalled();
+});
+
+it("saves completed Webhook response mode, validates wait limit and locks it on start", async () => {
+  let adapter = makeAdapter({ adapter_type: "webhook", latest_version_id: 10, runtime_worker_id: 3 });
+  let webhook = makeWebhook();
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, webhook),
+    { method: "PATCH", match: "/api/adapters/1", respond: (body) => {
+      adapter = { ...adapter, ...JSON.parse(body ?? "{}") };
+      return { body: adapter };
+    } },
+    { method: "PUT", match: "/api/adapters/1/webhook", respond: (body) => {
+      webhook = { ...webhook, ...JSON.parse(body ?? "{}") };
+      adapter = { ...adapter, runtime_locked: webhook.enabled };
+      return { body: webhook };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  expect(screen.queryByTestId("webhook-response-timeout")).toBeNull();
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("radio", { name: "处理完成后返回" }));
+  const timeout = screen.getByRole("spinbutton", { name: "响应等待时限（秒）" });
+  fireEvent.change(timeout, { target: { value: "" } });
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("radio", { name: "接收后返回" }));
+  expect(screen.queryByTestId("webhook-response-timeout")).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "处理完成后返回" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "响应等待时限（秒）" }), { target: { value: "12" } });
+  fireEvent.click(screen.getByTestId("webhook-save"));
+  await waitFor(() => expect(webhook.response_mode).toBe("completed"));
+  expect(webhook.response_timeout_seconds).toBe(12);
+  await waitFor(() => expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true));
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+  await waitFor(() => expect(webhook.enabled).toBe(true));
+  expect((await screen.findByTestId("webhook-response-mode-locked")).textContent).toContain("处理完成后返回");
+  expect(screen.getByTestId("webhook-response-timeout-locked").textContent).toContain("12");
+  const payloads = fetchMock.mock.calls
+    .filter(([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT")
+    .map(([, init]) => JSON.parse(String(init?.body)));
+  expect(payloads).toHaveLength(2);
+  for (const payload of payloads) {
+    expect(payload).toMatchObject({ response_mode: "completed", response_timeout_seconds: 12 });
+  }
 });

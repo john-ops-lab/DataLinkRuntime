@@ -505,6 +505,7 @@ export function AdapterConsole({
   );
   const liveWatcher = useExecutionWatcher((watchError) => setError(watchError));
   const liveWatchRef = useRef(liveWatcher.watch);
+  const liveExecutionRef = useRef(liveWatcher.execution);
   const refreshedTerminalExecutionId = useRef<number | null>(null);
 
   const dirty =
@@ -576,6 +577,7 @@ export function AdapterConsole({
 
   useEffect(() => {
     liveWatchRef.current = liveWatcher.watch;
+    liveExecutionRef.current = liveWatcher.execution;
   });
 
   const handleTaskRuntimeStateChange = useCallback((state: TaskRuntimeState) => {
@@ -704,16 +706,21 @@ export function AdapterConsole({
     if (
       selectedAdapterId === null ||
       activeExecutionId === null ||
-      liveWatcher.execution?.id === activeExecutionId
+      (liveWatcher.execution?.adapter_id === selectedAdapterId &&
+        liveWatcher.execution.id >= activeExecutionId)
     ) {
       return;
     }
     const adapterId = selectedAdapterId;
     let cancelled = false;
     void api.getExecution(activeExecutionId).then((execution) => {
-      if (cancelled || execution.adapter_id !== adapterId) {
+      if (cancelled || execution.adapter_id !== adapterId ||
+        selectedAdapterIdRef.current !== adapterId) {
         return;
       }
+      const current = liveExecutionRef.current;
+      if (current?.adapter_id === adapterId && current.id > execution.id) return;
+      liveExecutionRef.current = execution;
       refreshedTerminalExecutionId.current = null;
       liveWatchRef.current(execution);
       setWaitingForWebhook(false);
@@ -730,7 +737,68 @@ export function AdapterConsole({
     return () => {
       cancelled = true;
     };
-  }, [activeExecutionId, liveWatcher.execution?.id, messageApi, selectedAdapterId]);
+  }, [activeExecutionId, liveWatcher.execution?.adapter_id, liveWatcher.execution?.id, messageApi, selectedAdapterId]);
+
+  const liveWebhookAdapterId = activeSection === "adapters" &&
+    activeTabKey === "live" && selected?.adapter_type === "webhook"
+    ? selected.id
+    : null;
+
+  // An active pointer alone can miss a call that finishes between polls. Read
+  // the newest persisted call when opening Live logs and while it is visible,
+  // including stopped Webhooks. History keeps its independent lazy loading.
+  useEffect(() => {
+    if (liveWebhookAdapterId === null) return;
+    const adapterId = liveWebhookAdapterId;
+    const generation = requestGeneration.current;
+    let cancelled = false;
+    let initial = true;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const isCurrent = () => !cancelled &&
+      requestGeneration.current === generation &&
+      selectedAdapterIdRef.current === adapterId;
+
+    async function discoverLatestCall() {
+      try {
+        const page = await api.listExecutions(adapterId, { limit: 1, trigger: "webhook" });
+        if (!isCurrent()) return;
+        const latest = page.items[0];
+        const watched = liveExecutionRef.current;
+        if (latest !== undefined && (
+          watched?.adapter_id !== adapterId ||
+          latest.id > watched.id ||
+          (latest.id === watched.id && initial)
+        )) {
+          const detail = await api.getExecution(latest.id);
+          if (!isCurrent() || detail.adapter_id !== adapterId) return;
+          const current = liveExecutionRef.current;
+          // A running call discovered during this GET owns the view if newer.
+          if (current?.adapter_id !== adapterId || current.id < detail.id ||
+            (current.id === detail.id && current === watched)) {
+            liveExecutionRef.current = detail;
+            liveWatchRef.current(detail);
+            setWaitingForWebhook(false);
+          }
+        }
+        initial = false;
+      } catch (watchError) {
+        if (isCurrent()) setError(errorMessage(watchError));
+      } finally {
+        if (isCurrent()) {
+          timeoutId = setTimeout(
+            () => void discoverLatestCall(),
+            RUNTIME_REFRESH_POLICY.pollIntervalMs,
+          );
+        }
+      }
+    }
+
+    void discoverLatestCall();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
+  }, [liveWebhookAdapterId]);
 
   useEffect(() => {
     const execution = liveWatcher.execution;

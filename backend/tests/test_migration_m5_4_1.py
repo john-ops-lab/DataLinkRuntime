@@ -72,7 +72,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0033_unified_execution"
+    assert revision == "0034_webhook_response"
     assert {
         "adapter_type",
         "run_mode",

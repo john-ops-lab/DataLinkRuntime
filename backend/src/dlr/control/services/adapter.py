@@ -798,6 +798,10 @@ def clone_adapter(
                     source_webhook.credential_id if source_webhook is not None else None
                 ),
                 enabled=False,
+                response_mode=source_webhook.response_mode if source_webhook else "accepted",
+                response_timeout_seconds=(
+                    source_webhook.response_timeout_seconds if source_webhook else 30
+                ),
             )
         )
     session.commit()

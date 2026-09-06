@@ -177,7 +177,7 @@ processing does not hot-loop or jump past the first unowned point.
 ## 5. Webhook
 
 `adapter_webhooks` is the per-Webhook-Adapter singleton configuration: enabled,
-public_id, token credential and timestamps.
+public_id, token credential, response_mode, response_timeout_seconds and timestamps.
 
 In the stopped state multiple Adapters may use the same `public_id`; the PostgreSQL
 partial unique index constrains path uniqueness to `enabled=true` rows only. When
@@ -195,8 +195,10 @@ Content-Type: application/json
 Validation covers body size, enabled route, Bearer Token, JSON contract, fixed run
 node, and Admission in order. On success it atomically snapshots the latest Revision,
 Credential references, and complete JSON body as immutable JSON input, creates the
-`trigger=webhook` Execution plus Outbox, and returns `202` immediately. Control does
-not wait for Worker completion.
+`trigger=webhook` Execution plus Outbox, and captures the response policy. Accepted mode
+returns `202` immediately; completed mode observes the logical terminal state after commit
+using short-lived sessions and async polling. See the
+[response contract](../integrations/webhook-response.md) for timeouts, replays and disconnects.
 
 Every successful reception is one call record. Retention governs terminal history in
 bounded batches using deployment-configured days and per-Adapter limits per trigger;
@@ -367,7 +369,7 @@ only.
 
 ## 13. Explicit Boundaries
 
-Currently absent: synchronous Webhook, URL takeover, resident process model, RBAC,
+Currently absent: URL takeover, resident process model, RBAC,
 generic plugin system, workflow orchestration, a separate log system, AI
 auto-execution loop, user-level language preference, machine translation of user
 content, a third language, or a multi-node RabbitMQ HA cluster. Bounded Retry/Recovery

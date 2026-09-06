@@ -242,7 +242,14 @@
       "waitCall": "Wait for the call to finish",
       "cancelCall": "Cancel",
       "stoppedAndEnded": "Receiving stopped and the current call ended.",
-      "cancelFailed": "Receiving stopped, but cancelling the current call failed: {{error}}. The call is still running; view it in Live logs. Runtime settings unlock after it reaches a terminal state."
+      "cancelFailed": "Receiving stopped, but cancelling the current call failed: {{error}}. The call is still running; view it in Live logs. Runtime settings unlock after it reaches a terminal state.",
+      "responseMode": "Response mode",
+      "responseAccepted": "Return after acceptance",
+      "responseCompleted": "Return after completion",
+      "responseAcceptedHint": "Return the execution ID immediately (HTTP 202). View the result in call history.",
+      "responseCompletedHint": "Wait for processing and return the Adapter JSON output or execution error. Business validation results come from the Adapter output; callers should check its business fields.",
+      "responseTimeout": "Response wait limit (seconds)",
+      "responseTimeoutHint": "1–300 seconds; default 30. Includes queueing and retries. A timeout returns HTTP 504 and the execution ID; execution continues. Retry with the same Idempotency-Key and body to wait for the original execution. Client and proxy timeouts should exceed this limit."
     }
   },
   "history": {

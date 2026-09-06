@@ -22,7 +22,7 @@ import { i18n } from "../i18n";
 
 import { ApiError, api } from "../api";
 import { subscribeCredentialCatalog } from "../credential-catalog";
-import type { Adapter, AdapterWebhook, Credential, Worker } from "../types";
+import type { Adapter, AdapterWebhook, Credential, Worker, WebhookResponseMode } from "../types";
 import { userErrorMessage } from "../user-message";
 
 const PATH_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
@@ -147,6 +147,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   const [saving, setSaving] = useState(false);
   const [changingState, setChangingState] = useState(false);
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [responseMode, setResponseMode] = useState<WebhookResponseMode>("accepted");
+  const [responseTimeout, setResponseTimeout] = useState<number | null>(30);
   const [saved, setSaved] = useState<AdapterWebhook | null>(null);
   const [publicId, setPublicId] = useState("");
   const [credentialId, setCredentialId] = useState<number | null>(null);
@@ -186,6 +188,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         }
         setCredentials(credentialList);
         setSaved(webhook);
+        setResponseMode(webhook.response_mode);
+        setResponseTimeout(webhook.response_timeout_seconds);
         setPublicId(webhook.public_id);
         setCredentialId(webhook.credential_id);
         setWorkerId(adapter.runtime_worker_id ?? null);
@@ -253,10 +257,13 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) !== effectiveTimeoutSeconds;
   const dirty =
     saved !== null &&
-    (saved.public_id !== publicId ||
+    (saved.response_mode !== responseMode ||
+      saved.response_timeout_seconds !== responseTimeout ||
+      saved.public_id !== publicId ||
       saved.credential_id !== credentialId ||
       (props.adapter.runtime_worker_id ?? null) !== workerId ||
       timeoutDirty);
+  const responseTimeoutValid = responseTimeout !== null && Number.isInteger(responseTimeout) && responseTimeout >= 1 && responseTimeout <= 300;
   const canConfigure = !props.readOnly && !archived && !runtimeLocked && !saving && !changingState;
   const startBlockedReason =
     props.adapter.latest_version_id === null
@@ -346,7 +353,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   }
 
   async function saveConfiguration() {
-    if (!canConfigure || !pathAcceptable) return;
+    if (!canConfigure || !pathAcceptable || !responseTimeoutValid) return;
     const timeoutSeconds = resolveTimeoutSeconds();
     if (timeoutSeconds === null) return;
     setSaving(true);
@@ -363,6 +370,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         enabled: false,
         public_id: publicId,
         credential_id: credentialId,
+        response_mode: responseMode,
+        response_timeout_seconds: responseTimeout!,
       });
       setSaved(webhook);
       props.onAdapterChange(adapter);
@@ -386,6 +395,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         enabled: false,
         public_id: saved.public_id,
         credential_id: saved.credential_id,
+        response_mode: saved.response_mode,
+        response_timeout_seconds: saved.response_timeout_seconds,
       });
       setSaved(webhook);
       // A successful state transition must lock the UI conservatively while
@@ -414,6 +425,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         enabled: true,
         public_id: saved.public_id,
         credential_id: saved.credential_id,
+        response_mode: saved.response_mode,
+        response_timeout_seconds: saved.response_timeout_seconds,
       });
       setSaved(webhook);
       props.onAdapterChange({ ...props.adapter, runtime_locked: true });
@@ -578,6 +591,57 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           )}
         </label>
         <div className="settings-field">
+          <span id="webhook-response-mode-label" className="settings-field-label">{t("webhook.settings.responseMode")}</span>
+          {canConfigure ? (
+            <Radio.Group
+              data-testid="webhook-response-mode"
+              aria-labelledby="webhook-response-mode-label"
+              name="webhook-response-mode"
+              value={responseMode}
+              onChange={(event) => {
+                const mode = event.target.value as WebhookResponseMode;
+                setResponseMode(mode);
+                if (mode === "accepted" && !responseTimeoutValid) {
+                  setResponseTimeout(saved.response_timeout_seconds);
+                }
+              }}
+              options={[
+                { value: "accepted", label: t("webhook.settings.responseAccepted") },
+                { value: "completed", label: t("webhook.settings.responseCompleted") },
+              ]}
+            />
+          ) : (
+            <LockedValue testId="webhook-response-mode-locked">{t(responseMode === "completed" ? "webhook.settings.responseCompleted" : "webhook.settings.responseAccepted")}</LockedValue>
+          )}
+          <Typography.Text type="secondary" className="settings-field-hint">
+            {t(responseMode === "completed" ? "webhook.settings.responseCompletedHint" : "webhook.settings.responseAcceptedHint")}
+          </Typography.Text>
+        </div>
+        {responseMode === "completed" && (
+          <div className="settings-field">
+            <span id="webhook-response-timeout-label" className="settings-field-label">{t("webhook.settings.responseTimeout")}</span>
+            {canConfigure ? (
+              <InputNumber
+                data-testid="webhook-response-timeout"
+                aria-labelledby="webhook-response-timeout-label"
+                aria-describedby="webhook-response-timeout-hint"
+                aria-invalid={!responseTimeoutValid}
+                min={1}
+                max={300}
+                precision={0}
+                value={responseTimeout}
+                onChange={setResponseTimeout}
+                status={responseTimeoutValid ? undefined : "error"}
+              />
+            ) : (
+              <LockedValue testId="webhook-response-timeout-locked">{responseTimeout} {t("webhook.settings.seconds")}</LockedValue>
+            )}
+            <Typography.Text id="webhook-response-timeout-hint" type="secondary" className="settings-field-hint">
+              {t("webhook.settings.responseTimeoutHint")}
+            </Typography.Text>
+          </div>
+        )}
+        <div className="settings-field">
            <span className="settings-field-label">{t("webhook.settings.timeout")}</span>
           {canConfigure ? (
             <>
@@ -631,7 +695,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           <Button
             data-testid="webhook-save"
             loading={saving}
-            disabled={!pathAcceptable || !dirty}
+            disabled={!pathAcceptable || !responseTimeoutValid || !dirty}
             onClick={() => void saveConfiguration()}
            >{t("webhook.settings.save")}</Button>
         )}
