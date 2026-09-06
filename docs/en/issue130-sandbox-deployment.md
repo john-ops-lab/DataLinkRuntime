@@ -116,10 +116,46 @@ The default boundary is:
 - Adapter payloads use the configured non-root UID/GID, clear capabilities, remove
   the delegated cgroup mount, and run in a child cgroup and bounded tmpfs workspace.
 
-Inside a private cgroup namespace, `/proc/self/cgroup` showing `0::/` is expected.
-**Do not switch to `cgroup: host` to expose a full path.** The kernel represents the
-exact ancestor bind's mount root as `/..`; preflight checks both facts and real
-child operations.
+At startup, `0::/` and the ancestor bind root `/..` identify Docker's C. The Worker
+matches C's device/inode to the canonical namespace root, binds C over the ancestor
+management view, moves PID 1 into C/agent, and enables child controllers. During
+normal operation membership is `0::/agent`, the effective management mount root is
+`/`, and each Attempt is another child inside C:
+
+```text
+P: delegated host parent and outer budget
+├─ agent: host keeper
+└─ C: Docker private namespace root with finite limits
+   ├─ agent: Worker, trusted helpers, Docker exec / healthcheck
+   └─ attempt-*: bounded payload
+```
+
+The covered ancestor mount may remain in mountinfo, but is unreachable through the
+management path. Both migration endpoints stay inside C under `nsdelegate`.
+Do not use host cgroup namespaces or disable nsdelegate. Use the default image
+entrypoint with Worker as PID 1, without adding an unverified init/wrapper.
+
+Docker sets **2.5 CPUs / 2.5 GiB / 512 PIDs, zero swap** by default, using
+`DLR_WORKER_CPU_LIMIT`, `DLR_WORKER_MEMORY_LIMIT`, and `DLR_WORKER_PIDS_LIMIT`.
+The Worker reads C's actual limits; it never writes namespace-root resource limits.
+Host preparation checks effective ancestor constraints. Startup checks the sum of
+container allocations beneath P, leaving at least 0.05 CPU and 16 MiB for its keeper
+(and 8 PIDs when P has a finite PID limit). Slots use only their own container budget.
+
+Two local instances need unique `DLR_WORKER_NAME` values and separate runtime,
+journal and log volumes. Do not scale the default service with shared names/volumes.
+Directory locks reject concurrent ownership. Shared P budgets cannot be counted
+twice; stopping P affects every instance below it. This is not cross-node HA.
+
+Before releasing payloads, the Worker persists kernel cgroup identity. Recovery may
+clean only an identical current object or a proven-absent old namespace; uncertain
+ownership retains records and pauses execution. Cleanup receipts rejected before
+an old Attempt becomes terminal retry with the existing backoff, restricted to
+journals captured at startup and excluding new live Attempts.
+
+`scripts/issue144-runtime-check.py` verifies Docker exec, healthcheck, normal stop,
+SIGKILL/restart, idempotent recovery and two-instance independence in disposable
+smoke projects. Separate real-kernel tests check CPU throttling, OOM, PID denial and tmpfs.
 
 ## 4. Common Failures
 
@@ -129,6 +165,8 @@ child operations.
 | Unsupported Docker driver or missing controllers | Fix actual host prerequisites; the script does not reconfigure Docker or fake success |
 | `sandbox_private_cgroup_namespace_required` | Check the actual private namespace and exact parent/source match |
 | cgroup write, process migration, or namespace mount failure | Inspect this unit's journal and Worker preflight; do not bypass with privileged/host namespace |
+| `sandbox_shared_parent_overcommitted` | Set finite per-container allocations whose total leaves the host keeper reserve |
+| `sandbox_instance_root_in_use` | Use separate runtime/journal volumes and check for an existing owner; do not forcibly remove locks |
 | Resource envelope or slots rejected | Provide real host resources, or lower slots/profiles and reverify |
 | `resource_exceeded_disk` during tmpfs probe | Expected exhaustion probe output; judge the complete preflight result |
 

@@ -33,4 +33,14 @@
 1. 完成唯一机制代码和新数据库迁移，更新默认部署说明。
 2. 对本次 dlr-template-test 项目进行只读盘点，确认无用户新增业务数据后重建任务专用数据库与服务；保留其他项目资源。
 3. 迁移完成后启动 Control、通过真实隔离预检的 Worker 与 Web，验证三语言执行、日志、终态与系统状态。
-4. 向用户交付测试地址和证据；不提交、PR 或发布。若回退测试版本，重新创建该版本干净环境，不使用旧执行器解释新数据。
+4. 原始测试交付已完成；后续按 Issue #144 追加修复到 PR #143，通过最新 HEAD 及合并后 main CI，再在同一 main SHA 创建 v0.4.1 标签与 Release。
+
+## Issue #144: nsdelegate 拓扑修复
+
+CI 在 `018698c` 证伪了将 Attempt 放到 Docker namespace 根的兄弟组的部署假设。祖先 bind 可见不等于允许迁移；启用 `nsdelegate` 时迁移两端必须在 namespace 内。原本机 Colima 证据未启用此选项，保留为历史记录，不作为新版本 Linux 验收。
+
+- 宿主 P 保留委派及外层预算，Docker 为每个容器 C 设置有限 CPU、memory、swap、pids；C 内分为 `agent` 与 `attempt-*`。初始化验证祖先 bind 的真实 mount root `/..`、C 与 canonical namespace 根的设备/inode 相同，然后将 C bind 到管理路径，隐藏原祖先视图。只在 C 内移动启动进程并启用子组控制器，不写 C 的资源上限。
+- 启动前读回 C、P 及宿主准备脚本验证的有效祖先额度。每个 Worker 使用自身 C 额度计算 Slots 和管理进程预留；共享 P 下的容器额度合计不得超过 P。独立实例必须使用唯一 Worker 名称、runtime/journal/log 目录；本次双实例回归不代表 HA。
+- 最终拓扑验证要求管理进程在 `/agent`，管理挂载 root 为 `/` 且与 canonical cgroup 根身份一致；拒绝旧祖先布局。Docker exec、healthcheck、停止、重启、故障清理和恢复均需要真实验收。
+- 恢复记录必须绑定实际 cgroup 身份；namespace 重建后不得按旧名称清理当前实例的同名对象。只有证明旧对象已不存在才可结束旧记录，否则保留诊断，不能虚报清理成功。清理失败保留主错误及 errno。
+- 不修改模板目录、草稿复制/首次保存合同、语言和登录入口；不恢复旧执行路径，不引入 HA、节点身份重构或业务幂等功能。五个最简常驻容器的边界不变。

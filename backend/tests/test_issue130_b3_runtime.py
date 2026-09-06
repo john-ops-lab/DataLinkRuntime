@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import FrozenInstanceError
@@ -28,6 +29,7 @@ from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES, isolatio
 from dlr.worker import agent as worker_agent
 from dlr.worker import executor, sandbox
 from dlr.worker import venv as venv_manager
+from dlr.worker import workspace as workspace_manager
 from dlr.worker.consumer import ConsumerConfig, V3Consumer
 from worker_runtime_support import unit_resource_envelope
 
@@ -343,6 +345,7 @@ def test_resource_usage_uses_private_tmpfs_receipt_not_host_staging(
     workspace.mkdir()
     (workspace / "host-only.log").write_bytes(b"x" * 4096)
     attempt = object.__new__(sandbox.AttemptSandbox)
+    attempt._recovery_marker_owned = False
     attempt.workspace = workspace
     attempt.cgroup = tmp_path / "missing-cgroup"
     attempt.limits = sandbox.ResourceLimits(
@@ -424,6 +427,7 @@ def test_dependency_tmpfs_is_discarded_before_adapter_start(
     target = tmp_path / ".dependency-tmp"
     target.mkdir()
     attempt = object.__new__(sandbox.AttemptSandbox)
+    attempt._recovery_marker_owned = False
     attempt._dependency_tmpfs = target
     unmounted: list[str] = []
     monkeypatch.setattr(sandbox, "_unmount", unmounted.append)
@@ -1029,6 +1033,7 @@ def test_timeout_cleanup_is_idempotent_after_helper_termination(
         start_new_session=True,
     )
     attempt = object.__new__(sandbox.AttemptSandbox)
+    attempt._recovery_marker_owned = False
     attempt.limits = sandbox.ResourceLimits(
         cpu_cores=1.0,
         memory_bytes=64 * MiB,
@@ -1088,6 +1093,7 @@ def test_timeout_cleanup_serializes_concurrent_retries_without_residue(
     cgroup = tmp_path / "attempt"
     cgroup.mkdir(mode=0o700)
     attempt = object.__new__(sandbox.AttemptSandbox)
+    attempt._recovery_marker_owned = False
     attempt.limits = sandbox.ResourceLimits(
         cpu_cores=1.0,
         memory_bytes=64 * MiB,
@@ -1542,12 +1548,14 @@ def real_runtime_root(tmp_path: Path) -> Iterator[Path]:
     base = Path(os.environ.get("DLR_B3_TEST_RUNTIME_ROOT", "/var/lib/dlr/runtime/b3-tests"))
     root = base / f"pytest-{tmp_path.parent.name}-{tmp_path.name}"
     if root.exists():
-        shutil.rmtree(root)
+        shutil.rmtree(root, onexc=workspace_manager._rmtree_on_error)
     root.mkdir(mode=0o755, parents=True)
     try:
         yield root
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        # Published cache entries are deliberately read-only. The production
+        # Worker has no DAC override; restore only this test-owned tree's bits.
+        shutil.rmtree(root, onexc=workspace_manager._rmtree_on_error)
 
 
 def test_real_linux_preflight_receipt(tmp_path: Path) -> None:
@@ -1858,3 +1866,70 @@ def test_real_linux_cancel_timeout_crash_cleanup(
     assert result["cleanup_summary"]["sandbox"]["status"] == "completed"
     assert result["cleanup_summary"]["sandbox"]["residue"] is False
     assert result["workspace_cleanup_status"] == "completed"
+
+
+@pytest.mark.parametrize("resource", ["cpu", "memory", "pids"])
+def test_real_linux_kernel_resource_enforcement(tmp_path: Path, resource: str) -> None:
+    """Demand kernel throttle/OOM/fork-denial counters, beyond limit readback."""
+    config = _real_target_config()
+    _allow_payload_traversal(tmp_path)
+    workspace = tmp_path / "probe"
+    workspace.mkdir(mode=0o711)
+    programs = {
+        "cpu": ("import time\nend=time.monotonic()+3\nwhile time.monotonic()<end: pass\n"),
+        "memory": "value=bytearray(256*1024*1024)\n",
+        "pids": (
+            "import errno,os,time\n"
+            "for index in range(32):\n"
+            "    try: pid=os.fork()\n"
+            "    except OSError as error:\n"
+            "        assert error.errno==errno.EAGAIN\n"
+            "        print('PID_LIMIT_REACHED',flush=True)\n"
+            "        break\n"
+            "    if pid==0:\n"
+            "        time.sleep(30)\n"
+            "        os._exit(0)\n"
+            "else: raise AssertionError('PID limit was not enforced')\n"
+            "time.sleep(30)\n"
+        ),
+    }
+    index = ["cpu", "memory", "pids"].index(resource)
+    attempt = sandbox.AttemptSandbox(
+        config,
+        sandbox.ResourceLimits(
+            cpu_cores=0.25,
+            memory_bytes=64 * MiB,
+            pids=16,
+            tmp_bytes=8 * MiB,
+            nofile=64,
+            execution_timeout_seconds=20,
+        ),
+        execution_id=7300 + index,
+        attempt_id=8300 + index,
+        workspace=workspace,
+        recovery_root=tmp_path / "recovery",
+    )
+    log = tmp_path / "probe.log"
+    try:
+        with log.open("wb") as output:
+            process = attempt.start([sys.executable, "-c", programs[resource]], stdout=output)
+            if resource == "pids":
+                deadline = time.monotonic() + 15
+                while b"PID_LIMIT_REACHED" not in log.read_bytes():
+                    assert process.poll() is None, log.read_text()
+                    assert time.monotonic() < deadline, "bounded fork probe did not finish"
+                    time.sleep(0.05)
+                assert attempt.resource_usage()["pids"]["events"].get("max", 0) > 0
+            else:
+                process.wait(timeout=20)
+                usage = attempt.resource_usage()
+                if resource == "cpu":
+                    assert usage["cpu"].get("nr_throttled", 0) > 0, usage
+                else:
+                    assert usage["memory"]["events"].get("oom_kill", 0) > 0, usage
+            assert attempt.limits_readback["memory.swap.max"] == "0"
+    finally:
+        first = attempt.cleanup()
+        assert first.status == "completed" and not first.residue, first
+        assert attempt.cleanup() == first
+        assert not attempt.cgroup.exists()

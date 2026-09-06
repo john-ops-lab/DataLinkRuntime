@@ -387,6 +387,15 @@ docker compose exec -T \
   -e SMOKE_IMA_CLIENT_ID \
   control python - < scripts/compose-smoke.py
 
+echo "==> verifying namespace restart, recovery and independent Worker budgets"
+python3 scripts/issue144-runtime-check.py --project "$COMPOSE_PROJECT_NAME"
+echo "==> running real Linux kernel isolation regression in the production Worker"
+smoke_worker_id=$(docker compose ps -q worker)
+docker cp backend/tests "$smoke_worker_id:/app/tests"
+docker compose exec -T worker uv sync --frozen
+docker compose exec -T -e DLR_B3_REAL_TARGET=1 worker \
+  uv run pytest tests/test_issue130_b3_runtime.py -k real_linux -q
+
 echo "==> verifying secrets did not enter service logs"
 if docker compose logs control worker web account-web | grep -F "$SMOKE_STORED_SECRET" >/dev/null; then
   echo "ERROR: stored secret appeared in service logs" >&2

@@ -1055,7 +1055,7 @@ def test_v3_start_boundary_fails_closed_after_cancel_or_recovery(
             assert attempt.status == "worker_lost"
 
 
-@pytest.mark.parametrize("lost_via", ["renew", "progress"])
+@pytest.mark.parametrize("lost_via", ["renew", "progress", "shutdown"])
 def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
     tmp_path: Path,
     lost_via: str,
@@ -1154,6 +1154,8 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
     ) -> dict[str, Any]:
         del input_downloader
         runner_started.set()
+        if lost_via == "shutdown":
+            consumer.request_stop()
         if lost_via == "renew":
             assert renew_called.wait(timeout=3)
             renew_response_allowed.set()
@@ -1197,7 +1199,7 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
         assert client.progress_calls == 0
     else:
         assert client.renew_calls == 0
-        assert client.progress_calls == 1
+        assert client.progress_calls == (0 if lost_via == "shutdown" else 1)
 
 
 @pytest.mark.parametrize(

@@ -244,6 +244,12 @@ services:
       # Worker-only namespace/tmpfs permission; Docker seccomp stays enabled.
       - apparmor=unconfined
     cgroup_parent: "${DLR_SANDBOX_CGROUP_PARENT:-/system.slice/dlr-worker-sandbox.service}"
+    # Docker owns C's finite limits; nsdelegate prevents the Agent changing
+    # its namespace root. The host parent additionally reserves its keeper.
+    cpus: "${DLR_WORKER_CPU_LIMIT:-2.5}"
+    mem_limit: "${DLR_WORKER_MEMORY_LIMIT:-2684354560}"
+    memswap_limit: "${DLR_WORKER_MEMORY_LIMIT:-2684354560}"
+    pids_limit: ${DLR_WORKER_PIDS_LIMIT:-512}
     # Same M5.5.8 DNS fallback as control (embedded resolver first).
     dns:
       - ${DLR_DNS_PRIMARY:-127.0.0.11}
@@ -294,6 +300,7 @@ services:
       # subprocess still only sees DLR_SECRET_* (never tokens or DATABASE_URL).
       DLR_SECRET_SMOKE: ${DLR_SECRET_SMOKE:-local-dev-secret}
     volumes:
+      # Bootstrap validates P, then covers this bind with the container's C.
       # Created by scripts/prepare-sandbox-host.sh on the Docker daemon host.
       # Never bind the full cgroup filesystem or let Compose create this path.
       - type: bind

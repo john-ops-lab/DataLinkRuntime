@@ -44,6 +44,12 @@ DLR_SANDBOX_CGROUP_PARENT=/system.slice/dlr-worker-sandbox.service
 DLR_SANDBOX_CGROUP_SOURCE=/sys/fs/cgroup/system.slice/dlr-worker-sandbox.service
 ```
 
+默认 Docker Worker 额度为 **2.5 CPU / 2.5 GiB / 512 PID，swap=0**，对应
+`DLR_WORKER_CPU_LIMIT`、`DLR_WORKER_MEMORY_LIMIT`、`DLR_WORKER_PIDS_LIMIT`。
+这些值由 Docker 写入容器 C，Worker 只读回，不从 namespace 内补写 CPU/内存根限制。
+准备脚本检查宿主有效祖先限制；启动时逐个读取共享父组下的容器额度，合计还须为 keeper
+保留至少 0.05 CPU、16 MiB（父组有 PID 上限时另留 8 PID）。单个 Worker 的 Slots 只按自己的 C 计算。
+
 不能仅改变 profile 数字来制造资源容量。默认 `DLR_WORKER_EXECUTION_SLOTS=2`，还需为 Agent 预留
 资源；扩大 slots 或单次执行 profile 后，应准备匹配的真实 envelope 并重新通过 preflight。
 该 systemd 服务是 transient unit，宿主机重启后须重新运行准备脚本，再启动 Worker。
@@ -102,9 +108,32 @@ adapter_mount_blocked, sandbox_cleanup
 - Adapter payload 降为配置的非 root UID/GID，清空 capabilities，移除 delegated cgroup 挂载，
   在自己的子 cgroup 和有容量限制的 tmpfs 工作区运行。
 
-在 private cgroup namespace 中，`/proc/self/cgroup` 的 `0::/` 是正常结果，
-**不应改用 `cgroup: host` 让路径看起来完整**。内核把精确父组 bind 的 mount root
-表示为 `/..`；preflight 同时验证这两个事实和真实子组操作。
+启动前，`0::/` 与祖先 bind 的 `/..` 仅用于定位容器 C。Worker 根据设备/inode
+确认 C 就是 canonical namespace 根，将 C bind 到 `/run/dlr-cgroup` 覆盖祖先视图，
+把 PID 1 移到 C/agent，再启用子组控制器。正常运行时 `/proc/self/cgroup` 为 `0::/agent`，
+管理路径的有效 mount root 为 `/`，Attempt 也是 C 内的子组：
+
+```text
+P：宿主委派与外层预算
+├─ agent：宿主 keeper
+└─ C：Docker private namespace 根，有限容器额度
+   ├─ agent：Worker、trusted helper、Docker exec / healthcheck
+   └─ attempt-*：受限 payload
+```
+
+旧祖先挂载层可能仍出现在 mountinfo，但已被 C 覆盖，不能通过管理路径进入祖先。
+启用 `nsdelegate` 时，两端都在 C 内才能迁移 payload；**不得改成 host namespace 或关闭 nsdelegate**。
+使用镜像默认入口让 Worker 成为 PID 1；不要通过额外 init/wrapper 改变未经验证的入口拓扑。
+
+同机两个实例必须使用不同的 `DLR_WORKER_NAME` 和独立 runtime、journal、日志卷。
+不能直接沿用默认名称与共享卷执行 `--scale worker=2`。启动目录锁会拒绝并发占用同一状态目录。
+共享 P 时合计预算不可重复计算；停止整个 P 会影响其中所有实例。此支持边界不代表跨节点 HA。
+
+Worker 在 payload 放行前持久化 cgroup 身份。重启时只有旧 namespace 已被证明消失，或当前
+cgroup 身份精确匹配，才可恢复清理；身份不明则保留记录并暂停执行。清理回执若因旧 Attempt
+尚未终态而被暂时拒绝，按已有退避机制自动重试启动时遗留的记录，不扫描新任务的活动记录。
+Docker exec、healthcheck、正常停止、SIGKILL 后重启、幂等恢复和双实例互不干扰均由
+`scripts/issue144-runtime-check.py` 在专用 smoke 项目验证；真实内核测试另验证 CPU 节流、OOM、PID 拒绝与 tmpfs。
 
 ## 4. 常见失败
 
@@ -114,6 +143,8 @@ adapter_mount_blocked, sandbox_cleanup
 | Docker driver 不符 / controllers 缺失 | 修复实际主机前提；脚本不会重配 Docker 或伪造成功 |
 | `sandbox_private_cgroup_namespace_required` | 检查实际容器为 private namespace，parent 与 bind source 精确匹配 |
 | cgroup 写入、进程迁移或 namespace mount 失败 | 查看该 unit 的 `journalctl` 和 Worker preflight；不要切换 privileged/host namespace 绕过 |
+| `sandbox_shared_parent_overcommitted` | 调整各容器的实际额度与父组预算，保留 keeper 预算；不能把 P 全量算给每个 Worker |
+| `sandbox_instance_root_in_use` | 为实例使用独立 runtime/journal 卷，并检查是否已有 Worker 占用；不强制移除锁 |
 | resource envelope 或 slots 不满足 | 为宿主机提供真实资源，或降低 slots/profile 后重新验证 |
 | tmpfs 探测出现 `resource_exceeded_disk` | 容量耗尽探测的预期结果；以整份 preflight 是否通过判定，不单看这一行 |
 

@@ -1132,6 +1132,7 @@ def recover_cleanup_journals(
     scan_timeout_seconds: float = RECOVERY_SCAN_TIMEOUT_SECONDS,
     retry_backoff_seconds: float = RECOVERY_RETRY_BACKOFF_SECONDS,
     in_flight_execution_ids: Collection[int] | None = None,
+    candidate_names: Collection[str] | None = None,
 ) -> dict[str, int]:
     """Recover only journaled, triple-matched workspaces.
 
@@ -1169,6 +1170,8 @@ def recover_cleanup_journals(
     except OSError:
         return counts
     for candidate in candidates:
+        if candidate_names is not None and candidate.name not in candidate_names:
+            continue
         if time.monotonic() >= deadline:
             budget_exhausted = True
             break

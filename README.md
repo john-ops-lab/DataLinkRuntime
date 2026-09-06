@@ -291,7 +291,9 @@ sudo bash scripts/prepare-sandbox-host.sh
 
 把输出的 `DLR_SANDBOX_CGROUP_PARENT` 和 `DLR_SANDBOX_CGROUP_SOURCE` 写入 `.env`。
 macOS/Colima 用 `colima ssh -- sudo bash <VM中可见的仓库路径>/scripts/prepare-sandbox-host.sh`。
-默认 2 个执行槽使用有限的 3 CPU / 3 GiB 宿主资源范围；准备脚本会实测委派目录。
+默认宿主委派范围为 3 CPU / 3 GiB；Docker 为 Worker 分配有限的 2.5 CPU / 2.5 GiB / 512 PID，
+禁用 swap，支撑 2 个执行槽并保留管理进程预算。Worker 在 private namespace 内建立
+`agent` 与 Attempt 子组；准备脚本和启动预检分别验证宿主及容器的实际额度。
 VM/宿主重启后须重新准备该目录，再启动 Worker。完整支持范围和排障见
 [Sandbox 部署说明](docs/zh-CN/issue130-sandbox-deployment.md)。
 

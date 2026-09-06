@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from dlr.common.platform_logging import configure_platform_logging
-from dlr.worker import executor, sandbox
+from dlr.worker import cgroup_namespace, executor, sandbox
 from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
@@ -219,10 +219,10 @@ class WorkerConfig:
                 result.get("details", {}).get("status", "failed"),
                 self.isolation_capabilities.get("preflight_passed", False),
             )
-            if isinstance(details, Mapping) and details.get("status") != "passed":
+            if isinstance(details, Mapping):
                 # This receipt contains only the disposable synthetic probe's
                 # isolation checks, never Worker credentials or Adapter data.
-                logger.warning("sandbox preflight receipt: %s", json.dumps(dict(details)))
+                logger.info("sandbox preflight receipt: %s", json.dumps(dict(details)))
         except Exception:  # noqa: BLE001 - startup gate must fail closed
             self.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
             logger.warning("sandbox preflight failed; RabbitMQ execution remains disabled")
@@ -235,6 +235,8 @@ class Agent:
         self._stop = threading.Event()
         self._registration_info: dict[str, Any] = {}
         self._consumer: V3Consumer | None = None
+        self._startup_cleanup_journals: frozenset[str] = frozenset()
+        self._sandbox_recovery_blocked = False
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -345,8 +347,20 @@ class Agent:
 
     # --- startup recovery and adapter cleanup ----------------------------------
 
-    def _recover_cleanup_journals(self, worker_id: int) -> None:
+    def _recover_cleanup_journals(self, worker_id: int, *, startup: bool = True) -> None:
         """Recover owned Workspace journals without deleting unknown paths."""
+        if not startup and (self._sandbox_recovery_blocked or not self._startup_cleanup_journals):
+            return
+        root = self._config.workspace_cleanup_journal_root
+        if startup and root.is_dir():
+            # Capture before the Consumer starts. Never scan the journals of
+            # newly started live Attempts in a background recovery retry.
+            self._startup_cleanup_journals = frozenset(
+                path.name
+                for path in root.iterdir()
+                if workspace_manager.JOURNAL_NAME_PATTERN.fullmatch(path.name)
+                or workspace_manager.ATTEMPT_CLEANUP_JOURNAL_NAME_PATTERN.fullmatch(path.name)
+            )
 
         def report_cleanup(execution_id: int, cleanup_token: str) -> bool:
             try:
@@ -355,6 +369,26 @@ class Agent:
                     execution_id,
                     cleanup_token=cleanup_token,
                 )
+                for name in self._startup_cleanup_journals:
+                    match = workspace_manager.ATTEMPT_CLEANUP_JOURNAL_NAME_PATTERN.fullmatch(name)
+                    if match is None or int(match.group(1)) != execution_id:
+                        continue
+                    attempt_id = int(match.group(2))
+                    record = workspace_manager.load_attempt_journal(
+                        self._config.attempt_journal_root, attempt_id
+                    )
+                    if (
+                        record is not None
+                        and record["execution_id"] == execution_id
+                        and record["cleanup_token"] == cleanup_token
+                        and Path(record["workspace_path"])
+                        == workspace_manager.workspace_path(
+                            self._config.runtime_root, execution_id, attempt_id=attempt_id
+                        )
+                    ):
+                        workspace_manager.remove_attempt_journal(
+                            self._config.attempt_journal_root, attempt_id
+                        )
                 return True
             except ControlUnavailableError:
                 logger.warning(
@@ -371,18 +405,37 @@ class Agent:
                 )
             return False
 
-        # Recovery runs before the Consumer starts; no local Attempt is active.
-        sandbox_counts = sandbox.recover(
-            self._config.sandbox_config,
-            self._config.workspace_cleanup_journal_root / "sandbox-recovery",
-            runtime_root=self._config.runtime_root,
+        # Kernel recovery runs only before the Consumer starts. Background
+        # retries handle only the captured old filesystem/receipt journals.
+        sandbox_counts = (
+            sandbox.recover(
+                self._config.sandbox_config,
+                root / "sandbox-recovery",
+                runtime_root=self._config.runtime_root,
+            )
+            if startup
+            else {"inspected": 0, "completed": 0, "retained": 0}
         )
+        if sandbox_counts["retained"]:
+            # Do not report filesystem cleanup while kernel ownership is
+            # unresolved, or consume new work beside an unverified residue.
+            self._config.isolation_capabilities = {key: False for key in ISOLATION_CAPABILITY_KEYS}
+            self._sandbox_recovery_blocked = True
+            logger.warning(
+                "sandbox recovery retained %s records; execution and workspace receipts paused",
+                sandbox_counts["retained"],
+            )
+            return
         counts = workspace_manager.recover_cleanup_journals(
             self._config.workspace_cleanup_journal_root,
             self._config.runtime_root,
             report_cleanup=report_cleanup,
             scan_timeout_seconds=workspace_manager.RECOVERY_SCAN_TIMEOUT_SECONDS,
             retry_backoff_seconds=workspace_manager.RECOVERY_RETRY_BACKOFF_SECONDS,
+            candidate_names=self._startup_cleanup_journals,
+        )
+        self._startup_cleanup_journals = frozenset(
+            name for name in self._startup_cleanup_journals if (root / name).exists()
         )
         if sandbox_counts["inspected"] or sandbox_counts["retained"]:
             logger.info(
@@ -405,6 +458,7 @@ class Agent:
         delay = max(1.0, self._config.workspace_cleanup_interval_seconds)
         while not self._stop.is_set():
             try:
+                self._recover_cleanup_journals(worker_id, startup=False)
                 task = self._client.claim_cleanup(worker_id)
                 if task is not None:
                     self._execute_cleanup_task(worker_id, task)
@@ -455,21 +509,39 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    configure_platform_logging("worker")
     config = WorkerConfig()
     if not config.token:
         raise SystemExit("DLR_WORKER_TOKEN is not configured; refusing to start")
+    # A SIGKILL does not run the prior Agent's finally block. Never let its
+    # stale marker make Docker health checks accept an unfinished bootstrap.
+    Path(os.environ.get(READY_FILE_ENV, DEFAULT_READY_FILE)).unlink(missing_ok=True)
 
-    client = ControlClient(config.control_url, config.token)
-    agent = Agent(config, client)
+    with cgroup_namespace.lock_roots(
+        config.runtime_root,
+        [config.workspace_cleanup_journal_root, config.attempt_journal_root],
+    ):
+        try:
+            config.sandbox_config = cgroup_namespace.prepare(config.sandbox_config)
+        except (sandbox.SandboxError, OSError) as error:
+            cause = error.__cause__
+            logger.error(
+                "sandbox namespace bootstrap failed: code=%s errno=%s",
+                getattr(error, "code", "sandbox_namespace_bootstrap_failed"),
+                getattr(error, "errno", None) or getattr(cause, "errno", None),
+            )
+            raise SystemExit(1) from None
+        configure_platform_logging("worker")
 
-    def handle_signal(signum: int, _frame: object) -> None:
-        logger.info("received signal %s, shutting down", signum)
-        agent.request_stop()
+        client = ControlClient(config.control_url, config.token)
+        agent = Agent(config, client)
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
-    agent.run()
+        def handle_signal(signum: int, _frame: object) -> None:
+            logger.info("received signal %s, shutting down", signum)
+            agent.request_stop()
+
+        signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
+        agent.run()
 
 
 if __name__ == "__main__":

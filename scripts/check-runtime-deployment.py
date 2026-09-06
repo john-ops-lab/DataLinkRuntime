@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from typing import Any
 
@@ -63,6 +64,16 @@ def validate_deployment(config: dict[str, Any]) -> None:
         raise ValueError("Worker cgroup bind must match its exact prepared parent")
     if worker["environment"].get("DLR_SANDBOX_CGROUP_PATH") != "/run/dlr-cgroup":
         raise ValueError("Worker sandbox path must match the delegated bind")
+    cpu = float(worker.get("cpus", 0))
+    memory = int(worker.get("mem_limit", 0))
+    if (
+        not math.isfinite(cpu)
+        or cpu <= 0
+        or memory <= 0
+        or int(worker.get("memswap_limit", 0)) != memory
+        or int(worker.get("pids_limit", 0)) <= 0
+    ):
+        raise ValueError("Worker requires finite Docker CPU/memory/pids and disabled swap")
     for service in services.values():
         if REMOVED_SETTINGS & service.get("environment", {}).keys():
             raise ValueError("Removed execution migration settings remain in Compose")

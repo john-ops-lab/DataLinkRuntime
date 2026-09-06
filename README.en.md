@@ -294,8 +294,10 @@ sudo bash scripts/prepare-sandbox-host.sh
 
 Copy the printed `DLR_SANDBOX_CGROUP_PARENT` and `DLR_SANDBOX_CGROUP_SOURCE` into `.env`.
 With macOS/Colima, use `colima ssh -- sudo bash <repo-path-visible-in-VM>/scripts/prepare-sandbox-host.sh`.
-The default two execution slots use a finite 3-CPU / 3-GiB host envelope, and the script
-tests the delegated subtree. Prepare it again after a host/VM restart before starting
+The host envelope defaults to 3 CPUs / 3 GiB. Docker gives each Worker a finite
+2.5-CPU / 2.5-GiB / 512-PID allocation with swap disabled, supporting two slots
+and supervisor reserves. The Worker creates agent and Attempt children inside
+its private namespace; host preparation and startup verify the actual limits. Prepare it again after a host/VM restart before starting
 Worker. See [Sandbox deployment](docs/en/issue130-sandbox-deployment.md) for support
 requirements and diagnostics.
 

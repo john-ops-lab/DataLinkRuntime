@@ -398,6 +398,9 @@ class V3Consumer:
 
             def renew_loop() -> None:
                 while not renew_stop.wait(payload.renew_seconds):
+                    if self._stop.is_set():
+                        ownership_lost.set()
+                        return
                     try:
                         response = self._client.renew_attempt(
                             self._config.worker_id,
@@ -428,6 +431,12 @@ class V3Consumer:
             renew_thread.start()
 
             def progress(stdout_chunk: str, stderr_chunk: str) -> bool:
+                if self._stop.is_set():
+                    # Stop payloads within Docker's grace period. Leave the
+                    # durable Attempt to lease/fencing recovery; a service
+                    # shutdown is not a user-requested business cancellation.
+                    ownership_lost.set()
+                    return True
                 if cancel_requested.is_set():
                     return True
                 if ownership_lost.is_set():

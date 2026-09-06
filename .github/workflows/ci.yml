@@ -80,7 +80,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DLR_WORKER_EXECUTION_SLOTS: "1"
+      DLR_WORKER_CPU_LIMIT: "1.5"
       COMPOSE_SMOKE_CPU_QUOTA: "200%"
+      DLR_REQUIRE_NSDELEGATE: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Configure isolated runner Docker for delegated cgroup v2

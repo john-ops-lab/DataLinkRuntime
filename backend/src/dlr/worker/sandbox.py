@@ -223,6 +223,44 @@ def _write_helper_diagnostic(
 
 
 @dataclass(frozen=True)
+class NamespaceIdentity:
+    """Kernel ownership observed before hiding the delegated ancestor mount."""
+
+    boot_id: str
+    parent_device: int
+    parent_inode: int
+    root_device: int
+    root_inode: int
+    ancestor_children: frozenset[tuple[int, int]]
+
+    def marker(self) -> dict[str, str | int]:
+        return {
+            "boot_id": self.boot_id,
+            "parent_device": self.parent_device,
+            "parent_inode": self.parent_inode,
+            "root_device": self.root_device,
+            "root_inode": self.root_inode,
+        }
+
+    def retired(self, value: Any) -> bool:
+        """Prove an old root disappeared; never infer this from a reused name."""
+        if not isinstance(value, dict) or set(value) != set(self.marker()):
+            return False
+        if not isinstance(value["boot_id"], str) or not re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value["boot_id"]
+        ):
+            return False
+        if any(type(value[key]) is not int or value[key] < 0 for key in value if key != "boot_id"):
+            return False
+        if value["boot_id"] != self.boot_id:
+            return True  # A host reboot destroys every old process and cgroup.
+        return (value["parent_device"], value["parent_inode"]) == (
+            self.parent_device,
+            self.parent_inode,
+        ) and (value["root_device"], value["root_inode"]) not in self.ancestor_children
+
+
+@dataclass(frozen=True)
 class SandboxConfig:
     """Worker capability ceiling and delegated subtree location."""
 
@@ -242,6 +280,7 @@ class SandboxConfig:
     output_preview_max_bytes: int = 16 * 1024
     payload_uid: int = 501
     payload_gid: int = 1000
+    namespace_identity: NamespaceIdentity | None = None
 
     @classmethod
     def from_environment(cls) -> SandboxConfig:
@@ -406,15 +445,12 @@ def _read_positive_integer(path: Path, *, allow_max: bool = False) -> int | None
 
 
 def read_verified_resource_envelope(config: SandboxConfig) -> ResourceEnvelope:
-    """Read a finite aggregate envelope from the delegated deployment cgroup.
+    """Read the finite Docker-owned namespace root budget, never the shared P.
 
-    CPU and memory must be finite limits on the delegated systemd unit.  A
-    unit with either controller set to ``max`` cannot prove that all slots
-    leave an Agent reserve and is therefore rejected by the v3 scheduler.
-    ``TasksMax=infinity`` is part of the provisioning contract, so the
-    kernel's finite ``pid_max`` is recorded as the outer PID envelope.  The
-    tmpfs envelope is conservatively bounded by the same memory envelope:
-    Linux tmpfs pages are charged to the memory controller.
+    Bootstrap verifies the ancestor envelope and aggregate sibling limits
+    before hiding P. CPU/memory/pids on C must be finite; nsdelegate forbids
+    the Worker from inventing or repairing these limits inside the namespace.
+    Linux charges tmpfs pages to the same memory controller.
     """
 
     parent = validate_delegated_parent(config)
@@ -432,15 +468,11 @@ def read_verified_resource_envelope(config: SandboxConfig) -> ResourceEnvelope:
         memory_bytes = _read_positive_integer(parent / "memory.max")
         if memory_bytes is None:
             raise SandboxError("sandbox_resource_envelope_unavailable")
-        pids_bytes = _read_positive_integer(parent / "pids.max", allow_max=True)
+        pids_bytes = _read_positive_integer(parent / "pids.max")
         if pids_bytes is None:
-            host_pid_max = _read_positive_integer(Path("/proc/sys/kernel/pid_max"))
-            if host_pid_max is None:
-                raise SandboxError("sandbox_resource_envelope_unavailable")
-            pids_bytes = host_pid_max
-            pids_source = "delegated_cgroup_v2+host_pid_max"
-        else:
-            pids_source = "delegated_cgroup_v2"
+            raise SandboxError("sandbox_resource_envelope_unavailable")
+        if _read(parent / "memory.swap.max") != "0":
+            raise SandboxError("sandbox_resource_envelope_unavailable")
     except SandboxError:
         raise
     except (OSError, UnicodeError, ValueError) as error:
@@ -452,7 +484,7 @@ def read_verified_resource_envelope(config: SandboxConfig) -> ResourceEnvelope:
         # tmpfs pages are charged to memory.max; this is deliberately not a
         # slot-derived value and leaves the Agent reserve in the same budget.
         tmp_bytes=memory_bytes,
-        source=f"delegated_cgroup_v2(cpu,memory);{pids_source};tmp=memory.max",
+        source="container_cgroup_v2(cpu,memory,pids);ancestor_checked;tmp=memory.max",
     )
 
 
@@ -819,16 +851,8 @@ def _controllers(value: str) -> set[str]:
     return set(value.split())
 
 
-def validate_private_cgroup_namespace(parent: Path) -> None:
-    """Verify the real private namespace and its exact ancestor bind.
-
-    Docker places the supervisor at the root of its private cgroup namespace.
-    The separately bound delegated parent is its immediate ancestor, rendered
-    as /.. by the kernel in mountinfo. A host namespace instead exposes the
-    absolute host path; merely configuring cgroup=private is not evidence.
-    """
-    if _pid_cgroup(os.getpid()) != "/":
-        raise SandboxError("sandbox_private_cgroup_namespace_required")
+def validate_cgroup_mount(parent: Path, *, root: str, writable: bool = False) -> None:
+    """Check the kernel mount boundary, including escaped mountpoint names."""
     for line in _read(Path("/proc/self/mountinfo")).splitlines():
         before, separator, after = line.partition(" - ")
         fields = before.split()
@@ -837,10 +861,38 @@ def validate_private_cgroup_namespace(parent: Path) -> None:
         mountpoint = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
         if mountpoint != str(parent):
             continue
-        if fields[3] == "/.." and after.split()[0] == "cgroup2":
+        if (
+            fields[3] == root
+            and after.split()[0] == "cgroup2"
+            and (not writable or "rw" in fields[5].split(","))
+        ):
             return
-        raise SandboxError("sandbox_private_cgroup_namespace_required")
     raise SandboxError("sandbox_private_cgroup_namespace_required")
+
+
+def cgroup_mountinfo() -> list[str]:
+    """Best-effort diagnostic capture must not obscure the main probe result."""
+    try:
+        return [
+            line
+            for line in _read(Path("/proc/self/mountinfo")).splitlines()
+            if " - cgroup2 " in line
+        ]
+    except SandboxError:
+        return []
+
+
+def validate_private_cgroup_namespace(parent: Path) -> None:
+    """Require an empty namespace root, with all management in its agent leaf."""
+    if _pid_cgroup(os.getpid()) != "/agent" or _pid_cgroup(1) != "/agent":
+        raise SandboxError("sandbox_private_cgroup_namespace_required")
+    validate_cgroup_mount(parent, root="/", writable=True)
+    validate_cgroup_mount(Path("/sys/fs/cgroup"), root="/")
+    try:
+        if not parent.samefile(Path("/sys/fs/cgroup")):
+            raise SandboxError("sandbox_private_cgroup_namespace_required")
+    except OSError as error:
+        raise SandboxError("sandbox_private_cgroup_namespace_required") from error
 
 
 def validate_delegated_parent(config: SandboxConfig) -> Path:
@@ -867,6 +919,14 @@ def validate_delegated_parent(config: SandboxConfig) -> Path:
     try:
         if _filesystem_magic(resolved) != CGROUP2_SUPER_MAGIC:
             raise SandboxError("sandbox_cgroup_parent_invalid")
+        if config.namespace_identity is not None and (
+            resolved.stat().st_dev,
+            resolved.stat().st_ino,
+        ) != (
+            config.namespace_identity.root_device,
+            config.namespace_identity.root_inode,
+        ):
+            raise SandboxError("sandbox_namespace_identity_changed")
     except OSError as error:
         raise SandboxError("sandbox_cgroup_unavailable") from error
     required_files = (
@@ -1934,7 +1994,11 @@ class AttemptSandbox:
         self.cgroup_name = cgroup_name or _child_name(execution_id, attempt_id)
         self.execution_id = execution_id
         self.attempt_id = attempt_id
+        if (recovery_root / f"sandbox-{self.cgroup_name}.json").exists():
+            raise SandboxError("sandbox_recovery_marker_conflict")
+        self._recovery_marker_owned = False
         self.cgroup = _mkdir_child(self.parent, self.cgroup_name)
+        self._cgroup_identity = (self.cgroup.stat().st_dev, self.cgroup.stat().st_ino)
         self.workspace = workspace
         # The production mount is derived from the validated Attempt identity
         # (the attempt directory), not from marker-provided data or the
@@ -2095,6 +2159,9 @@ class AttemptSandbox:
             raise SandboxError("sandbox_mount_already_exists") from error
         except OSError as error:
             raise SandboxError("sandbox_mount_prepare_failed") from error
+        if self.config.namespace_identity is not None:
+            # Durable ownership must precede any helper/payload side effect.
+            self._write_recovery_marker(required=True)
         read_fd, write_fd = os.pipe()
         diagnostic_read_fd, diagnostic_write_fd = os.pipe()
         usage_read_fd, usage_write_fd = os.pipe()
@@ -2311,7 +2378,7 @@ class AttemptSandbox:
         }
         return usage
 
-    def _write_recovery_marker(self) -> None:
+    def _write_recovery_marker(self, *, required: bool = False) -> None:
         try:
             self.recovery_root.mkdir(mode=0o700, parents=True, exist_ok=True)
             marker = self.recovery_root / f"sandbox-{self.cgroup_name}.json"
@@ -2320,6 +2387,7 @@ class AttemptSandbox:
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
                 0o600,
             )
+            self._recovery_marker_owned = True
             with os.fdopen(descriptor, "w", encoding="ascii") as stream:
                 stream.write(
                     json.dumps(
@@ -2328,6 +2396,15 @@ class AttemptSandbox:
                             "execution_id": self.execution_id,
                             "mount_name": self.mount_root.name,
                             "mount_path": str(self.mount_root),
+                            **(
+                                {
+                                    "namespace_identity": self.config.namespace_identity.marker(),
+                                    "cgroup_device": self._cgroup_identity[0],
+                                    "cgroup_inode": self._cgroup_identity[1],
+                                }
+                                if self.config.namespace_identity is not None
+                                else {}
+                            ),
                         },
                         sort_keys=True,
                         separators=(",", ":"),
@@ -2336,10 +2413,13 @@ class AttemptSandbox:
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-        except FileExistsError:
-            pass
-        except OSError:
+        except FileExistsError as error:
+            if required:
+                raise SandboxError("sandbox_recovery_marker_conflict") from error
+        except OSError as error:
             logger.warning("sandbox recovery marker could not be persisted")
+            if required:
+                raise SandboxError("sandbox_recovery_marker_failed") from error
 
     def cleanup(self, *, wait_seconds: float | None = None) -> CleanupResult:
         if self._cleanup_result is not None:
@@ -2409,6 +2489,8 @@ class AttemptSandbox:
             self.cgroup.rmdir()
             if self.mount_root.exists():
                 shutil.rmtree(self.mount_root)
+            if self._recovery_marker_owned:
+                (self.recovery_root / f"sandbox-{self.cgroup_name}.json").unlink(missing_ok=True)
             self._unmounted = True
         except (OSError, SandboxError):
             self._write_recovery_marker()
@@ -2512,6 +2594,10 @@ def run_preflight(
         "parent_basename": parent.name,
         "agent_pid": os.getpid(),
         "agent_cgroup": _pid_cgroup(os.getpid()),
+        "namespace_identity": (
+            config.namespace_identity.marker() if config.namespace_identity else None
+        ),
+        "cgroup_mountinfo": cgroup_mountinfo(),
         "limits": _profile_from_preflight(config).as_dict(),
         "worker_cgroup_management": {
             "parent_controllers_read": True,
@@ -2611,12 +2697,14 @@ def run_preflight(
         )
         details["limits_readback"] = attempt.limits_readback
         details["worker_cgroup_management"]["child_limit_write_read"] = attempt.limits_readback == {
-            "cpu.max": "100000 100000",
-            "memory.max": "67108864",
+            "cpu.max": _cpu_max(limits.cpu_cores),
+            "memory.max": str(limits.memory_bytes),
             "memory.swap.max": "0",
-            "pids.max": "64",
+            "pids.max": str(limits.pids),
         }
-        capabilities["cpu_hard_limit"] = attempt.limits_readback["cpu.max"] == "100000 100000"
+        capabilities["cpu_hard_limit"] = attempt.limits_readback["cpu.max"] == _cpu_max(
+            limits.cpu_cores
+        )
         capabilities["memory_hard_limit"] = attempt.limits_readback["memory.max"] == str(
             limits.memory_bytes
         )
@@ -2916,7 +3004,11 @@ def recover(config: SandboxConfig, recovery_root: Path, *, runtime_root: Path) -
             ):
                 raise ValueError
             value = json.loads(marker.read_text(encoding="ascii"))
-            if not isinstance(value, dict) or set(value) != RECOVERY_FIELDS:
+            identity_fields = {"namespace_identity", "cgroup_device", "cgroup_inode"}
+            if not isinstance(value, dict) or set(value) not in (
+                RECOVERY_FIELDS,
+                RECOVERY_FIELDS | identity_fields,
+            ):
                 raise ValueError
             name = value["cgroup_name"]
             if not isinstance(name, str) or not ATTEMPT_NAME_PATTERN.fullmatch(name):
@@ -2957,7 +3049,21 @@ def recover(config: SandboxConfig, recovery_root: Path, *, runtime_root: Path) -
             child = parent / name
             if child.parent != parent:
                 raise ValueError
-            if child.exists():
+            retired = False
+            identity = config.namespace_identity
+            if identity is not None:
+                if not identity_fields.issubset(value):
+                    raise ValueError  # Legacy names alone cannot authorize kernel cleanup.
+                if value["namespace_identity"] != identity.marker():
+                    retired = identity.retired(value["namespace_identity"])
+                    if not retired or child.exists():
+                        raise ValueError
+                elif child.exists() and (
+                    child.stat().st_dev != value["cgroup_device"]
+                    or child.stat().st_ino != value["cgroup_inode"]
+                ):
+                    raise ValueError
+            if child.exists() and not retired:
                 child_info = child.lstat()
                 if not stat.S_ISDIR(child_info.st_mode):
                     raise ValueError

@@ -24,13 +24,12 @@ SPEC.loader.exec_module(POLICY)
 
 
 @pytest.mark.parametrize("mountpoint", ["/run/dlr-cgroup", "/run/dlr cgroup"])
-def test_private_namespace_checks_kernel_ancestor_mount(monkeypatch, mountpoint):
-    monkeypatch.setattr(sandbox, "_pid_cgroup", lambda pid: "/")
+def test_bootstrap_checks_kernel_ancestor_mount(monkeypatch, mountpoint):
     escaped = mountpoint.replace(" ", r"\040")
     monkeypatch.setattr(
         sandbox, "_read", lambda path: f"41 22 0:28 /.. {escaped} rw - cgroup2 cgroup rw\n"
     )
-    sandbox.validate_private_cgroup_namespace(Path(mountpoint))
+    sandbox.validate_cgroup_mount(Path(mountpoint), root="/..", writable=True)
 
 
 @pytest.mark.parametrize(
@@ -60,6 +59,30 @@ def test_private_namespace_rejects_unproven_topology(
     with pytest.raises(sandbox.SandboxError) as raised:
         sandbox.validate_private_cgroup_namespace(Path("/run/dlr-cgroup"))
     assert raised.value.code == "sandbox_private_cgroup_namespace_required"
+
+
+def test_private_namespace_requires_management_leaf_and_identical_root(monkeypatch):
+    monkeypatch.setattr(sandbox, "_pid_cgroup", lambda pid: "/agent")
+    monkeypatch.setattr(
+        sandbox,
+        "_read",
+        lambda path: (
+            "41 22 0:28 / /run/dlr-cgroup rw - cgroup2 cgroup rw,nsdelegate\n"
+            "42 22 0:28 / /sys/fs/cgroup ro - cgroup2 cgroup rw,nsdelegate\n"
+        ),
+    )
+    monkeypatch.setattr(Path, "samefile", lambda left, right: True)
+    sandbox.validate_private_cgroup_namespace(Path("/run/dlr-cgroup"))
+    monkeypatch.setattr(Path, "samefile", lambda left, right: False)
+    with pytest.raises(sandbox.SandboxError):
+        sandbox.validate_private_cgroup_namespace(Path("/run/dlr-cgroup"))
+
+
+@pytest.mark.parametrize("process_group", ["/", "/attempt-1-1", "/../agent"])
+def test_private_namespace_rejects_management_outside_agent_leaf(monkeypatch, process_group):
+    monkeypatch.setattr(sandbox, "_pid_cgroup", lambda pid: process_group)
+    with pytest.raises(sandbox.SandboxError):
+        sandbox.validate_private_cgroup_namespace(Path("/run/dlr-cgroup"))
 
 
 @pytest.fixture(scope="module")
@@ -112,6 +135,10 @@ def test_default_compose_has_one_execution_topology(rendered_deployment):
         ("cap_add", ["SYS_ADMIN"]),
         ("security_opt", ["apparmor=unconfined"]),
         ("user", "1000:1000"),
+        ("cpus", 0),
+        ("mem_limit", 0),
+        ("memswap_limit", -1),
+        ("pids_limit", -1),
     ],
 )
 def test_deployment_rejects_weakened_worker_policy(rendered_deployment, key, value):

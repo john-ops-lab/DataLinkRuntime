@@ -90,6 +90,26 @@ cpu_percent=${cpu_quota%%%}
 memory_bytes=$(numfmt --from=iec "$memory_max")
 host_memory_bytes=$(awk '/MemTotal:/ {printf "%.0f", $2 * 1024}' /proc/meminfo)
 [ "$memory_bytes" -le "$host_memory_bytes" ] || fail 'Memory limit exceeds host RAM'
+# A finite unit limit does not override a tighter ancestor. Validate the
+# actual hierarchy rather than treating requested properties as capacity.
+ancestor=$(dirname "$parent")
+while [ "$ancestor" != /sys/fs ] && [ "$ancestor" != / ]; do
+  if [ -f "$ancestor/cpu.max" ]; then
+    read -r ancestor_quota ancestor_period < "$ancestor/cpu.max"
+    if [ "$ancestor_quota" != max ]; then
+      awk -v wanted="$cpu_percent" -v quota="$ancestor_quota" -v period="$ancestor_period" \
+        'BEGIN {exit !(wanted / 100 <= quota / period)}' \
+        || fail 'CPU quota exceeds an effective ancestor limit'
+    fi
+  fi
+  if [ -f "$ancestor/memory.max" ]; then
+    ancestor_memory=$(<"$ancestor/memory.max")
+    [ "$ancestor_memory" = max ] || [ "$memory_bytes" -le "$ancestor_memory" ] \
+      || fail 'Memory limit exceeds an effective ancestor limit'
+  fi
+  [ "$ancestor" != /sys/fs/cgroup ] || break
+  ancestor=$(dirname "$ancestor")
+done
 description="DataLinkRuntime Sandbox $unit CPU=$cpu_quota Memory=$memory_max"
 keeper_dir=
 cleanup_staged_keeper() {
@@ -110,7 +130,7 @@ if [ "$load_state" = not-found ]; then
   install -m 0700 "$script_path" "$keeper_dir/keeper.sh"
   systemd-run --unit="$unit" --description="$description" --collect \
     --property=Delegate=yes --property="CPUQuota=$cpu_quota" \
-    --property="MemoryMax=$memory_max" --property=TasksMax=infinity \
+    --property="MemoryMax=$memory_max" --property=MemorySwapMax=0 --property=TasksMax=infinity \
     --property='CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID' \
     --property=NoNewPrivileges=yes --service-type=exec \
     /bin/bash "$keeper_dir/keeper.sh" --unit "$unit" --keeper
@@ -147,6 +167,7 @@ for controller in cpu memory pids; do
 done
 [ "$(awk '{print $1}' "$parent/cpu.max")" != max ] || fail 'CPU envelope is not finite'
 [ "$(<"$parent/memory.max")" = "$memory_bytes" ] || fail 'Memory envelope differs from the requested limit'
+[ "$(<"$parent/memory.swap.max")" = 0 ] || fail 'Parent swap must be disabled'
 
 printf 'DLR_SANDBOX_CGROUP_PARENT=%s\nDLR_SANDBOX_CGROUP_SOURCE=%s\n' "$expected_group" "$parent"
 printf 'Prepared %s; actual Worker isolation preflight must pass before execution.\n' "$unit" >&2

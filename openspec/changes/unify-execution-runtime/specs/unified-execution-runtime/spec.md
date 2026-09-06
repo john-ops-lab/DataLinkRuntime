@@ -43,3 +43,23 @@
 #### Scenario: 查看系统状态
 - **WHEN** 管理员查看节点状态或执行不可用提示
 - **THEN** 页面解释连接或资源隔离问题，不出现“启用 v3”等迁移术语
+
+### Requirement: nsdelegate 内部拓扑与每实例预算
+
+Worker SHALL 在生产启动入口验证真实 private namespace 根身份，并在其内部创建管理进程组和 Attempt 子组。Docker/宿主 MUST 配置有限的容器额度；Worker MUST 只读回容器限额并结合祖先预算验证 Slots 与管理进程预留，不将共享父组的完整额度重复计算为每个实例的容量。
+
+#### Scenario: nsdelegate 已启用
+- **WHEN** Linux cgroup2 使用 nsdelegate，Worker 通过生产入口启动
+- **THEN** 管理进程处于 namespace 内 agent 子组，payload 在放行前移入同一 namespace 内的 Attempt，18 项实际能力检查全部通过，Docker exec 和 healthcheck 持续可用
+
+#### Scenario: 同机两个 Worker
+- **WHEN** 两个唯一命名的实例使用独立运行目录和有限预算并行执行
+- **THEN** 预算不重复计算，停止或清理其中一个不改变另一个的任务和隔离资源
+
+### Requirement: namespace 重建后的恢复归属
+
+恢复 SHALL 校验实例运行目录与真实 cgroup 身份；MUST NOT 根据旧记录的名称清理新 namespace 下不同身份的对象，不能确认旧资源消失时 MUST 保留记录与失败诊断。
+
+#### Scenario: Worker 重启
+- **WHEN** Worker 停止或故障后重新启动且 namespace 身份改变
+- **THEN** 仅恢复本实例已验证归属的记录，证明旧进程与资源不存在或完成清理后才标记完成，重复恢复无副作用
