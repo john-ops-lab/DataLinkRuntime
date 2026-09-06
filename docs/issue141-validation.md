@@ -24,6 +24,7 @@ Hosted CI #285 on `d83a009124525edd1f3267c66e7e04ff9b0a2b9e` passed Web but foun
 - Compose now checks nine sources, one non-default builtin per language, unchanged external defaults, and builtin identity preservation across default deletion/restoration.
 - Archive tests independently assert that an oversized read never reaches the underlying stream, accept early parser rejection of truncated headers, and require the actual upload API to return `422 builtin_package_invalid`.
 - The main CI #283 frontend failure held a detached button node after `ActionWithReason` removed its Tooltip wrapper. The existing unsaved-edit regression now queries the live button on each retry; its blocked-run and save-unblocks-run assertions remain intact.
+- Combined-branch regression also exposed an editor-layout timing assertion: initial layout calls did not prove animation-frame selection restoration had completed. The test now awaits each restoration, including maximize followed by Escape, before checking selection, scroll position and focus. Both affected App tests passed after this adjustment.
 
 Follow-up local checks: all 26 library tests and all 138 App tests passed; fresh PostgreSQL migration plus the exact Compose dependency-source assertion block passed through the real Control API. Ruff on the changed backend test, ESLint on the changed App test, and Compose Python syntax checks passed. The updated commit still requires its own complete hosted CI result; historical local or hosted results do not imply that result.
 
