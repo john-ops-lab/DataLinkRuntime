@@ -3412,7 +3412,9 @@ it("maximizes and restores the editor without losing position, dirty edits, or l
 
   fireEvent.click(screen.getByTestId("editor-maximize"));
   await waitFor(() => expect(screen.getByTestId("editor-restore")).toBeTruthy());
-  await waitFor(() => expect(monacoHarness.getLayoutCalls()).toBeGreaterThan(0));
+  // Initial editor layout also increments layoutCalls; wait for this
+  // transition's animation-frame restoration before checking its snapshot.
+  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(1));
   expect(screen.getByTestId("editor-main").getAttribute("data-layout")).toBe("maximized");
   const appStyles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
   expect(appStyles).toMatch(
@@ -3438,9 +3440,10 @@ it("maximizes and restores the editor without losing position, dirty edits, or l
 
   fireEvent.click(screen.getByTestId("editor-maximize"));
   await screen.findByTestId("editor-restore");
+  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(3));
   fireEvent.keyDown(document, { key: "Escape" });
   await waitFor(() => expect(screen.getByTestId("editor-maximize")).toBeTruthy());
-  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(3));
+  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(4));
   expectEditorPosition(expectedSelection, 7);
   expect(monacoHarness.getRestoredSelections().at(-1)).toEqual(expectedSelection);
   expect(valueOf("code-editor")).toBe("edited while maximized\n");
