@@ -113,7 +113,7 @@ function RetryCountdown(props: {
 
 export default function ExecutionHistoryPanel(props: {
   adapterId: number;
-  /** Server-side filter; Webhook call history excludes legacy manual runs. */
+  /** Server-side filter for Webhook call history. */
   trigger?: "webhook";
   /** Start 成功后自动打开该 Execution 的详情抽屉（含执行日志）。 */
   autoOpenExecutionId?: number | null;
@@ -213,25 +213,21 @@ export default function ExecutionHistoryPanel(props: {
       // watch() commits the detail synchronously and follows non-terminal
       // executions live (SSE + bounded fallback), shared with the Workbench log surface.
       watcher.watch(loaded);
-      if (loaded.dispatch_backend === "rabbitmq") {
-        setReliableDetailLoading(true);
-        void api.getReliableExecutionDetail(executionId).then((runtimeDetail) => {
-          if (requestId !== detailRequestRef.current) {
-            return;
-          }
-          setReliableDetail(runtimeDetail);
-        }).catch((error: unknown) => {
-          if (requestId === detailRequestRef.current) {
-            setReliableDetailError(errorMessage(error));
-          }
-        }).finally(() => {
-          if (requestId === detailRequestRef.current) {
-            setReliableDetailLoading(false);
-          }
-        });
-      } else {
-        setReliableDetailLoading(false);
-      }
+      setReliableDetailLoading(true);
+      void api.getReliableExecutionDetail(executionId).then((runtimeDetail) => {
+        if (requestId !== detailRequestRef.current) {
+          return;
+        }
+        setReliableDetail(runtimeDetail);
+      }).catch((error: unknown) => {
+        if (requestId === detailRequestRef.current) {
+          setReliableDetailError(errorMessage(error));
+        }
+      }).finally(() => {
+        if (requestId === detailRequestRef.current) {
+          setReliableDetailLoading(false);
+        }
+      });
     } catch (error) {
       if (requestId !== detailRequestRef.current) {
         return;
@@ -438,13 +434,6 @@ export default function ExecutionHistoryPanel(props: {
               items={[
                 { key: "status", label: t("labels.status", { ns: "common" }), children: <Tag color={statusColor(visibleDetail.status)}>{statusLabel(visibleDetail.status)}</Tag> },
                 {
-                  key: "backend",
-                  label: t("history.backend"),
-                  children: visibleDetail.dispatch_backend === "rabbitmq"
-                    ? t("history.backendRabbitmq")
-                    : t("history.backendLegacy"),
-                },
-                {
                   key: "worker",
                   label: t("labels.runtimeWorker", { ns: "common" }),
                   children: activeSummary?.worker_name ? (
@@ -495,77 +484,75 @@ export default function ExecutionHistoryPanel(props: {
               ]}
             />
             <Space direction="vertical" size="small" className="execution-detail-runtime-facts">
-              {visibleDetail.dispatch_backend === "rabbitmq" && (
-                <div className="reliable-runtime-facts" data-testid="execution-reliable-runtime-facts">
-                  <div className="reliable-runtime-section">
-                    <div className="reliable-runtime-section-title">{t("history.runtimeFacts")}</div>
-                    {reliableDetailLoading && <Spin size="small" />}
-                    {reliableDetailError !== null && (
-                      <Alert
-                        type="warning"
-                        showIcon
-                        data-testid="execution-reliable-detail-error"
-                        message={t("history.reliableDetailUnavailable")}
-                        description={reliableDetailError}
-                      />
-                    )}
-                  </div>
-                  {reliableDetail !== null && (
-                    <>
-                      <div className="reliable-runtime-section" data-testid="execution-attempt-timeline">
-                        <div className="reliable-runtime-section-title">{t("history.attemptTimeline")}</div>
-                        {reliableDetail.attempts.length === 0 ? (
-                          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("history.noAttempts")} />
-                        ) : (
-                          <Timeline
-                            items={reliableDetail.attempts.map((attempt) => ({
-                              key: String(attempt.id),
-                              color: attemptStatusColor(attempt.status),
-                              children: (
-                                <div data-testid={`execution-attempt-${attempt.attempt_no}`}>
-                                  <div className="reliable-runtime-attempt-heading">
-                                    <strong>{t("history.attemptNumber", { number: attempt.attempt_no })}</strong>
-                                    <Tag color={attemptStatusColor(attempt.status)}>
-                                      {attemptStatusLabel(attempt.status, (key, options) => t(key, options))}
-                                    </Tag>
-                                  </div>
-                                  <div className="execution-version-debug">
-                                    {t("history.attemptClaimedAt", { time: formatTime(attempt.claimed_at, locale) })}
-                                  </div>
-                                  {attempt.error_code !== null && (
-                                    <div className="execution-version-debug">
-                                      {t("history.attemptError", { code: attempt.error_code })}
-                                    </div>
-                                  )}
-                                </div>
-                              ),
-                            }))}
-                          />
-                        )}
-                      </div>
-                      <div className="reliable-runtime-section" data-testid="execution-incidents">
-                        <div className="reliable-runtime-section-title">{t("history.incidents")}</div>
-                        {reliableDetail.incidents.length === 0 ? (
-                          <div className="execution-version-debug">{t("history.noIncidents")}</div>
-                        ) : (
-                          reliableDetail.incidents.map((incident) => (
-                            <Alert
-                              key={incident.id}
-                              type={incident.status === "open" ? "warning" : "info"}
-                              showIcon
-                              message={t("history.incidentTitle", { kind: incident.kind })}
-                              description={t("history.incidentAttempts", {
-                                attempts: incident.attempts,
-                                error: incident.last_error ?? "—",
-                              })}
-                            />
-                          ))
-                        )}
-                      </div>
-                    </>
+              <div className="reliable-runtime-facts" data-testid="execution-reliable-runtime-facts">
+                <div className="reliable-runtime-section">
+                  <div className="reliable-runtime-section-title">{t("history.runtimeFacts")}</div>
+                  {reliableDetailLoading && <Spin size="small" />}
+                  {reliableDetailError !== null && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      data-testid="execution-reliable-detail-error"
+                      message={t("history.reliableDetailUnavailable")}
+                      description={reliableDetailError}
+                    />
                   )}
                 </div>
-              )}
+                {reliableDetail !== null && (
+                  <>
+                    <div className="reliable-runtime-section" data-testid="execution-attempt-timeline">
+                      <div className="reliable-runtime-section-title">{t("history.attemptTimeline")}</div>
+                      {reliableDetail.attempts.length === 0 ? (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("history.noAttempts")} />
+                      ) : (
+                        <Timeline
+                          items={reliableDetail.attempts.map((attempt) => ({
+                            key: String(attempt.id),
+                            color: attemptStatusColor(attempt.status),
+                            children: (
+                              <div data-testid={`execution-attempt-${attempt.attempt_no}`}>
+                                <div className="reliable-runtime-attempt-heading">
+                                  <strong>{t("history.attemptNumber", { number: attempt.attempt_no })}</strong>
+                                  <Tag color={attemptStatusColor(attempt.status)}>
+                                    {attemptStatusLabel(attempt.status, (key, options) => t(key, options))}
+                                  </Tag>
+                                </div>
+                                <div className="execution-version-debug">
+                                  {t("history.attemptClaimedAt", { time: formatTime(attempt.claimed_at, locale) })}
+                                </div>
+                                {attempt.error_code !== null && (
+                                  <div className="execution-version-debug">
+                                    {t("history.attemptError", { code: attempt.error_code })}
+                                  </div>
+                                )}
+                              </div>
+                            ),
+                          }))}
+                        />
+                      )}
+                    </div>
+                    <div className="reliable-runtime-section" data-testid="execution-incidents">
+                      <div className="reliable-runtime-section-title">{t("history.incidents")}</div>
+                      {reliableDetail.incidents.length === 0 ? (
+                        <div className="execution-version-debug">{t("history.noIncidents")}</div>
+                      ) : (
+                        reliableDetail.incidents.map((incident) => (
+                          <Alert
+                            key={incident.id}
+                            type={incident.status === "open" ? "warning" : "info"}
+                            showIcon
+                            message={t("history.incidentTitle", { kind: incident.kind })}
+                            description={t("history.incidentAttempts", {
+                              attempts: incident.attempts,
+                              error: incident.last_error ?? "—",
+                            })}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
               {visibleDetail.status === "dead_letter" && (
                 reliableDetail?.replay_available === true
                   ? (

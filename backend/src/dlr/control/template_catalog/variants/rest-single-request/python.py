@@ -7,6 +7,41 @@ import json
 import re
 from urllib import error, parse, request
 
+# REST 接口请求：可修改的配置集中在这里。
+# 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+# 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+# 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+# HTTP_BASIC_CREDENTIAL：HTTP Basic 认证，值为 username:password。
+# HTTP_BEARER_TOKEN：HTTP Bearer Token，使用此认证时配置。
+# HTTP_API_KEY：HTTP API Key，使用此认证时配置。
+CONFIG = {
+    # 填写实际接口地址；不要在地址中填写密码或 Token。
+    "url": "https://api.example/resources",
+    # 请求方法：GET 读取；POST、PUT、PATCH、DELETE 可能修改远端数据。
+    "method": "GET",
+    # 普通查询参数；认证参数使用 query_auth 从凭据读取。
+    "query": {},
+    # 可选认证：例如 {"parameter":"api_key","secret_binding":"HTTP_API_KEY"}。
+    # 在本适配器的凭据绑定中配置同名键。
+    "query_auth": None,
+    # 普通请求头；Bearer 认证可增加 "DLR-Auth": "bearer:HTTP_BEARER_TOKEN"。
+    # Token 在本适配器凭据绑定中配置。
+    "headers": {"Accept": "application/json"},
+    # POST、PUT、PATCH 的请求内容；GET 通常留空。
+    "body": None,
+    # 返回内容类型：json 或 text。
+    "response_type": "json",
+    # 允许的 HTTP 状态码列表；按目标接口调整。
+    "allowed_statuses": [200],
+    # 单次请求超时时间，单位秒。
+    "timeout_seconds": 30,
+    # HTTP 响应大小上限，单位字节。
+    "max_response_bytes": 1048576,
+    # 最多跟随的同站点跳转次数。
+    "max_redirects": 3,
+}
+
+
 _METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 _SIDE_EFFECT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _QUERY_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
@@ -108,6 +143,7 @@ def _positive_int(value: object, default: int, maximum: int) -> int:
 def _secret(context, key: object) -> str:
     if not isinstance(key, str) or not key:
         raise ValueError("invalid_secret_key")
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     value = context.secrets.get(key)
     if not value:
         raise ValueError("missing_credential")
@@ -204,6 +240,11 @@ def _scrub(value: object, sensitive: set[str]) -> object:
 
 
 def handle(context, input):
+    if input is None:
+        input = {}
+    if not isinstance(input, dict):
+        raise ValueError("输入必须是 JSON 对象")
+    input = {**CONFIG, **input}
     if not isinstance(input, dict):
         raise ValueError("input_must_be_object")
     method = str(input.get("method", "GET")).upper()

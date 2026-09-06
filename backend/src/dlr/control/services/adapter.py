@@ -177,9 +177,7 @@ def create_adapter(
     session.add(adapter)
     try:
         session.flush()
-        # The additive B1 schema has one explicit Slot 0 per Adapter.  It is
-        # a future Claim authority only; legacy HTTP Claim continues to use
-        # the existing execution index until Batch 2.
+        # Slot 0 is the single concurrency authority for this Adapter.
         session.add(AdapterExecutionSlot(adapter_id=adapter.id, slot_no=0))
         if adapter.adapter_type == "task":
             # A new Task starts with one explicit Adapter-level input object;

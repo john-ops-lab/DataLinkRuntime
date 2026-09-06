@@ -12,11 +12,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
 from dlr.common.config import settings
-from dlr.control.models import Credential, Execution, Worker
+from dlr.control.models import Credential, Execution, ExecutionOutbox, Worker
 from dlr.control.services import secrets as secrets_service
 from dlr.control.services import webhook as webhook_service
 from dlr.control.services.retention import cleanup_execution_retention
 from dlr.worker import executor
+from runtime_api_support import ISOLATION_PASS, claim_execution, report_attempt
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential
 from test_workers import register_worker
@@ -90,16 +91,26 @@ def executions_of(session_factory: sessionmaker[Session], adapter_id: int) -> li
         )
 
 
-def finish_active(session_factory: sessionmaker[Session], adapter_id: int) -> None:
-    with session_factory.begin() as session:
-        session.execute(
-            update(Execution)
-            .where(
-                Execution.adapter_id == adapter_id,
-                Execution.status.in_(("pending", "running")),
-            )
-            .values(status="succeeded")
+def finish_active(
+    client: TestClient, session_factory: sessionmaker[Session], adapter_id: int
+) -> None:
+    """Complete through Attempt Result so Slots, leases and Admission also converge."""
+    for execution in executions_of(session_factory, adapter_id):
+        if execution.status == "queued":
+            claimed = claim_execution(client, execution.target_worker_id, execution_id=execution.id)
+            assert claimed.status_code == 200, claimed.text
+        elif execution.status != "running":
+            continue
+        response = report_attempt(
+            client,
+            execution.target_worker_id,
+            execution.id,
+            {
+                "status": "succeeded",
+                "workspace_cleanup_status": "completed",
+            },
         )
+        assert response.status_code == 200, response.text
 
 
 def test_webhook_is_webhook_type_only_and_created_with_random_stopped_path(
@@ -275,16 +286,17 @@ def test_stop_during_active_call_does_not_cancel_and_unlocks_only_after_terminal
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    adapter, _, _, credential, webhook = setup_webhook(api_client, "webhook-stop-active")
+    adapter, _, worker, credential, webhook = setup_webhook(api_client, "webhook-stop-active")
     accepted = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {"active": True})
     assert accepted.status_code == 202
+    assert claim_execution(api_client, worker["id"]).status_code == 200
 
     stopped = put_webhook(api_client, adapter["id"], credential["id"], enabled=False)
     assert stopped.status_code == 200
     assert stopped.json()["enabled"] is False
     with session_factory() as session:
         execution = session.get(Execution, accepted.json()["execution_id"])
-        assert execution is not None and execution.status == "pending"
+        assert execution is not None and execution.status == "running"
     assert api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_locked"] is True
     assert post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {}).status_code == 404
     other_worker = register_worker(api_client, name="webhook-stop-active-other-worker")
@@ -300,7 +312,7 @@ def test_stop_during_active_call_does_not_cancel_and_unlocks_only_after_terminal
     assert locked_token.status_code == 409
     assert locked_token.json()["detail"]["code"] == "credential_webhook_runtime_locked"
 
-    finish_active(session_factory, adapter["id"])
+    finish_active(api_client, session_factory, adapter["id"])
     assert api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_locked"] is False
     assert (
         api_client.patch(
@@ -339,7 +351,7 @@ def test_success_creates_execution_from_latest_revision_on_runtime_worker(
     assert execution.input == {"event": "created"}
 
 
-def test_webhook_v2_execution_captures_required_lifecycle_snapshots(
+def test_webhook_execution_captures_required_lifecycle_snapshots(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
@@ -350,9 +362,10 @@ def test_webhook_v2_execution_captures_required_lifecycle_snapshots(
     worker_response = api_client.post(
         "/api/workers/register",
         json={
+            "isolation_capabilities": dict(ISOLATION_PASS),
             "name": "webhook-v2-snapshot-worker",
             "capabilities": ["python"],
-            "protocol_version": 2,
+            "protocol_version": 3,
         },
         headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
     )
@@ -403,20 +416,16 @@ def test_webhook_v2_execution_captures_required_lifecycle_snapshots(
         )
 
     # A rolling deployment may change the process defaults after this row was
-    # created.  The v2 payload must still use the immutable per-Execution facts.
+    # created. The payload must still use the immutable per-Execution facts.
     monkeypatch.setattr(settings, "workspace_cleanup_attempt_timeout_seconds", 6)
     monkeypatch.setattr(settings, "workspace_cleanup_total_timeout_seconds", 21)
     monkeypatch.setattr(settings, "execution_recovery_grace_seconds", 61)
 
-    claimed = api_client.post(
-        f"/api/workers/{worker['id']}/tasks/claim",
-        params={"wait_seconds": 0},
-        headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
-    )
+    claimed = claim_execution(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
     payload = claimed.json()
     assert payload["execution_id"] == execution_id
-    assert payload["protocol_version"] == 2
+    assert payload["protocol_version"] == 3
     assert payload["recovery_grace_seconds_snapshot"] == snapshot_recovery_seconds
     assert payload["workspace_cleanup_attempt_timeout_seconds_snapshot"] == (
         snapshot_cleanup_attempt_seconds
@@ -424,7 +433,7 @@ def test_webhook_v2_execution_captures_required_lifecycle_snapshots(
     assert payload["workspace_cleanup_total_timeout_seconds_snapshot"] == (
         snapshot_cleanup_total_seconds
     )
-    validated = executor._validated_v2_payload(payload)
+    validated = executor._validated_payload(payload)
     assert validated.execution_id == execution_id
     assert validated.cleanup_budget == (
         float(snapshot_cleanup_attempt_seconds),
@@ -458,7 +467,7 @@ def test_disabled_save_then_reenabled_webhook_uses_new_latest_revision(
     adapter, first, _, credential, webhook = setup_webhook(api_client, "webhook-revision")
     accepted = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {"revision": 1})
     assert accepted.status_code == 202
-    finish_active(session_factory, adapter["id"])
+    finish_active(api_client, session_factory, adapter["id"])
     assert (
         put_webhook(api_client, adapter["id"], credential["id"], enabled=False).status_code == 200
     )
@@ -486,7 +495,7 @@ def test_auth_failure_creates_no_execution(
     assert executions_of(session_factory, adapter["id"]) == []
 
 
-def test_unknown_disabled_and_busy_requests_create_no_extra_execution(
+def test_unknown_disabled_reject_but_busy_requests_queue_durably(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -501,9 +510,9 @@ def test_unknown_disabled_and_busy_requests_create_no_extra_execution(
     first = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {})
     assert first.status_code == 202
     busy = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {})
-    assert busy.status_code == 409
-    assert busy.json()["detail"]["code"] == "adapter_busy"
-    assert len(executions_of(session_factory, adapter["id"])) == 1
+    assert busy.status_code == 202
+    assert len(executions_of(session_factory, adapter["id"])) == 2
+    assert all(row.status == "queued" for row in executions_of(session_factory, adapter["id"]))
 
 
 def test_webhook_reraises_unrelated_integrity_errors(
@@ -562,7 +571,7 @@ def test_input_size_cap_precedes_route_and_auth(
     assert response.json()["detail"]["code"] == "execution_input_too_large"
 
 
-def test_offline_or_incompatible_runtime_worker_rejects_without_execution(
+def test_offline_worker_queues_but_incompatible_worker_rejects_without_extra_execution(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -570,7 +579,7 @@ def test_offline_or_incompatible_runtime_worker_rejects_without_execution(
     with session_factory.begin() as session:
         session.execute(update(Worker).where(Worker.id == worker["id"]).values(status="offline"))
     offline = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {})
-    assert offline.json()["detail"]["code"] == "worker_offline"
+    assert offline.status_code == 202
     with session_factory.begin() as session:
         session.execute(
             update(Worker)
@@ -578,8 +587,9 @@ def test_offline_or_incompatible_runtime_worker_rejects_without_execution(
             .values(status="online", capabilities=["javascript"])
         )
     mismatch = post_hook(api_client, webhook["public_id"], WEBHOOK_TOKEN, {})
-    assert mismatch.json()["detail"]["code"] == "worker_capability_missing"
-    assert executions_of(session_factory, adapter["id"]) == []
+    assert mismatch.json()["detail"]["code"] == "runtime_worker_invalid"
+    queued = executions_of(session_factory, adapter["id"])
+    assert len(queued) == 1 and queued[0].status == "queued"
 
 
 def test_webhook_credential_reference_blocks_deletion(api_client: TestClient) -> None:
@@ -589,11 +599,11 @@ def test_webhook_credential_reference_blocks_deletion(api_client: TestClient) ->
     assert response.json()["detail"]["code"] == "credential_in_use"
 
 
-def test_concurrent_requests_create_only_one_active_execution(
+def test_concurrent_requests_queue_both_but_claim_only_one_active_attempt(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    adapter, _, _, _, webhook = setup_webhook(api_client, "webhook-race")
+    adapter, _, worker, _, webhook = setup_webhook(api_client, "webhook-race")
     barrier = threading.Barrier(2)
     statuses: list[tuple[int, str | None]] = []
 
@@ -608,9 +618,16 @@ def test_concurrent_requests_create_only_one_active_execution(
         thread.start()
     for thread in threads:
         thread.join()
-    assert sorted(status for status, _ in statuses) == [202, 409]
-    assert any(code == "adapter_busy" for _, code in statuses)
-    assert len(executions_of(session_factory, adapter["id"])) == 1
+    assert sorted(status for status, _ in statuses) == [202, 202]
+    assert len(executions_of(session_factory, adapter["id"])) == 2
+    assert claim_execution(api_client, worker["id"]).status_code == 200
+    deferred = claim_execution(api_client, worker["id"])
+    assert deferred.status_code == 204
+    assert deferred.headers["X-Test-Claim-Decision"] == "DEFER"
+    assert sorted(row.status for row in executions_of(session_factory, adapter["id"])) == [
+        "queued",
+        "running",
+    ]
 
 
 def test_concurrent_start_same_path_has_one_database_winner(
@@ -694,7 +711,21 @@ def test_retention_keeps_latest_configured_webhook_calls_only(
             api_client, webhook["public_id"], WEBHOOK_TOKEN, {"sequence": sequence}
         )
         assert response.status_code == 202, response.text
-        finish_active(session_factory, adapter["id"])
+        finish_active(api_client, session_factory, adapter["id"])
+    # Delivery helpers simulate the Consumer side; mark broker confirms too,
+    # since retention must retain any row with unresolved Outbox responsibility.
+    with session_factory.begin() as session:
+        session.execute(
+            update(ExecutionOutbox)
+            .where(
+                ExecutionOutbox.execution_id.in_(
+                    select(Execution.id).where(
+                        Execution.adapter_id == adapter["id"],
+                    )
+                ),
+            )
+            .values(status="published", published_at=func.now())
+        )
     with session_factory() as session:
         report = cleanup_execution_retention(session)
     assert report.deleted == 1
@@ -753,7 +784,7 @@ def test_retention_never_deletes_task_or_active_execution(
             == 1
         )
         active = session.get(Execution, accepted.json()["execution_id"])
-        assert active is not None and active.status == "pending"
+        assert active is not None and active.status == "queued"
 
 
 def test_webhook_history_filter_excludes_legacy_manual_runs_and_keeps_cursor_paging(

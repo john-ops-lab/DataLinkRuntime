@@ -19,7 +19,55 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 
 /** Bounded S3-compatible list and optional range reads. */
 public class Adapter {
+    // S3 对象读取：可修改的配置集中在这里。
+    // 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    // 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+    // S3_ACCESS_KEY_ID：S3 Access Key ID。
+    // S3_SECRET_ACCESS_KEY：S3 Secret Access Key。
+    // S3_SESSION_TOKEN：S3 临时凭据 Token，仅使用临时凭据时配置。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // endpoint: S3 兼容服务地址。
+        // region: 存储桶所在区域 ID。
+        // bucket: 填写存储桶名称。
+        // prefix: 只列出此前缀下的对象；空字符串表示整个存储桶。
+        // continuation_token: 继续读取时填写上次 checkpoint 返回的分页标记；首次留空。
+        // object_offset: 同一页内继续读取的位置，首次为 0。
+        // read_keys: 填写要读取的对象键；空列表只获取对象清单。
+        // force_path_style: 兼容私有 S3 服务时通常使用 true。
+        // max_pages: 单次运行最多读取的页数。
+        // max_objects: 最多列出的对象数。
+        // max_object_bytes: 单个对象读取大小上限，单位字节。
+        // max_total_bytes: 读取内容总大小上限，单位字节。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "endpoint": "https://storage.example",
+              "region": "example-region-1",
+              "bucket": "example-bucket",
+              "prefix": "exports/",
+              "continuation_token": null,
+              "object_offset": 0,
+              "read_keys": [],
+              "force_path_style": true,
+              "max_pages": 20,
+              "max_objects": 1000,
+              "max_object_bytes": 1048576,
+              "max_total_bytes": 4194304
+            }
+            """);
+    }
+
     public Object handle(Context context, Object rawInput) throws Exception {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         try {
             return run(context, rawInput);
         } catch (Exception error) {
@@ -34,7 +82,9 @@ public class Adapter {
     private Object run(Context context, Object rawInput) throws Exception {
         Map<String, Object> input = object(rawInput);
         String bucket = required(input, "bucket");
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String access = context.secrets.get("S3_ACCESS_KEY_ID");
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String secret = context.secrets.get("S3_SECRET_ACCESS_KEY");
         if (access == null || secret == null) throw new IllegalArgumentException("missing_credential");
         Set<String> requested = new LinkedHashSet<>();
@@ -66,6 +116,7 @@ public class Adapter {
         ) > maxTotalBytes) {
             throw new IllegalArgumentException("max_total_bytes_too_small");
         }
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String session = context.secrets.get("S3_SESSION_TOKEN");
         var credentials = session == null
             ? AwsBasicCredentials.create(access, secret)

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from conftest import ADMIN_TOKEN, WORKER_TOKEN
 from dlr.common.config import settings
+from runtime_api_support import ISOLATION_PASS
 
 
 def test_protected_api_rejects_missing_token(api_client: TestClient) -> None:
@@ -41,7 +42,11 @@ def test_admin_api_rejects_worker_token(api_client: TestClient) -> None:
 def test_worker_api_rejects_admin_token(api_client: TestClient) -> None:
     response = api_client.post(
         "/api/workers/register",
-        json={"name": "worker-1"},
+        json={
+            "protocol_version": 3,
+            "isolation_capabilities": dict(ISOLATION_PASS),
+            "name": "worker-1",
+        },
         headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
     )
     assert response.status_code == 401
@@ -62,7 +67,11 @@ def test_worker_token_not_configured_yields_503(
     monkeypatch.setattr(settings, "worker_token", None)
     response = api_client.post(
         "/api/workers/register",
-        json={"name": "worker-1"},
+        json={
+            "protocol_version": 3,
+            "isolation_capabilities": dict(ISOLATION_PASS),
+            "name": "worker-1",
+        },
         headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
     )
     assert response.status_code == 503

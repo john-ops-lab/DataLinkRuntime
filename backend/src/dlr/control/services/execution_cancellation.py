@@ -1,16 +1,15 @@
 """Shared row-locking primitives for Execution cancellation.
 
-Callers own the surrounding transaction. Locking before reading the status is
-load-bearing: it serializes cancellation with Worker claim, which also locks
-the Execution row before changing ``pending`` to ``running``.
+Callers own the surrounding transaction. Admission-order locking serializes
+cancellation with Claim and Attempt transitions.
 """
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dlr.control.models import Execution
 
-ACTIVE_EXECUTION_STATUSES = ("pending", "running")
+ACTIVE_EXECUTION_STATUSES = ("running",)
 RABBITMQ_CANCELLABLE_STATUSES = ("queued", "retry_wait")
 RABBITMQ_NONTERMINAL_STATUSES = ("queued", "running", "retry_wait")
 
@@ -18,8 +17,7 @@ RABBITMQ_NONTERMINAL_STATUSES = ("queued", "running", "retry_wait")
 def lock_nonterminal_executions(session: Session, adapter_id: int) -> list[Execution]:
     """Lock every non-terminal Execution for one Adapter in id order.
 
-    The legacy partial unique index only covers ``pending``/``running``.  A
-    RabbitMQ Adapter may have several ``queued`` or ``retry_wait`` rows, so a
+    An Adapter may have several ``queued`` or ``retry_wait`` rows, so a
     single-row active lookup is not a safe deletion barrier.
     """
     return list(
@@ -27,16 +25,7 @@ def lock_nonterminal_executions(session: Session, adapter_id: int) -> list[Execu
             select(Execution)
             .where(
                 Execution.adapter_id == adapter_id,
-                or_(
-                    and_(
-                        Execution.dispatch_backend == "legacy",
-                        Execution.status.in_(ACTIVE_EXECUTION_STATUSES),
-                    ),
-                    and_(
-                        Execution.dispatch_backend == "rabbitmq",
-                        Execution.status.in_(RABBITMQ_NONTERMINAL_STATUSES),
-                    ),
-                ),
+                Execution.status.in_(RABBITMQ_NONTERMINAL_STATUSES),
             )
             .order_by(Execution.id.asc())
             .with_for_update()
@@ -87,14 +76,9 @@ def lock_active_execution(session: Session, adapter_id: int) -> Execution | None
 
 def request_cancellation(execution: Execution) -> None:
     """Apply the cancellation transition to an already locked Execution."""
-    if execution.status == "pending" or (
-        execution.dispatch_backend == "rabbitmq"
-        and execution.status in RABBITMQ_CANCELLABLE_STATUSES
-    ):
+    if execution.status in RABBITMQ_CANCELLABLE_STATUSES:
         execution.status = "cancelled"
         execution.ended_at = func.now()
-        execution.last_error_code = (
-            "cancelled" if execution.dispatch_backend == "rabbitmq" else None
-        )
+        execution.last_error_code = "cancelled"
     elif execution.status == "running":
         execution.cancel_requested = True

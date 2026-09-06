@@ -2,28 +2,16 @@
   "slug": "alicloud-compute-container-topology",
   "theme_slug": "cloud-cmdb",
   "title": {
-    "zh-CN": "阿里云计算与容器拓扑",
-    "en": "Alibaba Cloud Compute & Container Topology"
+    "zh-CN": "阿里云计算资源",
+    "en": "Alibaba Cloud Compute Resources"
   },
   "summary": {
-    "zh-CN": "为已核对的 ECS、云盘、网卡、镜像与伸缩组生成字节有界的规范化预览，并可幂等同步到窄 CMDB 合同。",
-    "en": "Produce a byte-bounded normalized preview for checked ECS, disk, network-interface, image, and scaling-group operations, with optional idempotent CMDB sync."
+    "zh-CN": "采集 ECS 实例、云盘、网卡、镜像和伸缩组，整理资源之间的关联。",
+    "en": "Collect ECS instances, disks, network interfaces, images and scaling groups with their relationships."
   },
   "details": {
-    "zh-CN": "执行表仅包含已核对的 ECS 实例、云盘、弹性网卡、镜像和伸缩组只读 OpenAPI；按区域生成稳定资产键和显式关系。ACK 与推断工作负载拓扑只在来源矩阵中列为 gap，不会被 Recipe 请求。",
-    "en": "The executable table contains only checked read-only OpenAPI operations for ECS instances, disks, ENIs, images, and Auto Scaling groups, emitting stable keys and explicit relationships per region. ACK and inferred workload topology remain source-matrix gaps and are not requested by the Recipe."
-  },
-  "input_summary": {
-    "zh-CN": "账号、区域、资源族、模式，以及 sync 所需稳定扫描标识。",
-    "en": "Account, regions, resource families, mode, and stable scan identity for sync."
-  },
-  "output_summary": {
-    "zh-CN": "preview 返回有界资产快照；sync 只返回计数、失败范围和 checkpoint 摘要。",
-    "en": "Preview returns a bounded asset snapshot; sync returns counts, failed scopes and checkpoint summary only."
-  },
-  "risk": {
-    "zh-CN": "需要最小只读云权限；关系不做猜测，部分失败时禁止 finish。当前 Alibaba Cloud SDK callApi 的传输层响应无法证明受字节上限约束；max_bytes 只限制规范化输出与 fixture 处理，本 Variant 仍为 reference-generated。",
-    "en": "Requires least-privilege cloud read access; relationships are not inferred and finish is forbidden after partial failure. The transport response from Alibaba Cloud SDK callApi is not proven byte-bounded; max_bytes limits normalized output and fixture processing only, and this Variant remains reference-generated."
+    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "Alibaba Cloud",
   "adapter_type": "task",
@@ -33,18 +21,13 @@
   ],
   "tags": [
     "ECS",
-    "ACK",
     "topology",
     "CMDB"
   ],
   "logo_key": "alicloud-compute",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "updated_at": "2026-09-05",
   "featured_rank": 10,
-  "modes": [
-    "preview",
-    "sync"
-  ],
   "provenance_ids": [
     "steampipe-alicloud-d619a9d",
     "alicloud-openapi-2026-09-05",
@@ -54,513 +37,132 @@
   "variants": [
     {
       "language": "python",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/alicloud-compute-container-topology/python.py",
-      "code_sha256": "2671b7d7ad64973108064b33b6744970d097aed98ab6abb23d29a8dc42bf7286",
+      "code_sha256": "359e43b14fab26e9e1c8a276e766b300afc39b7bc03727d40f67c2f319852b9d",
       "requirements": "alibabacloud-tea-openapi==0.4.6",
-      "install_notes": {
-        "zh-CN": "建议依赖：alibabacloud-tea-openapi==0.4.6。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependency: alibabacloud-tea-openapi==0.4.6. Copying the template does not install it; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "mode": "preview",
-        "account": "EXAMPLE_ACCOUNT",
-        "regions": [
-          "example-region-1"
-        ],
-        "max_pages": 50,
-        "max_records": 5000,
-        "max_bytes": 8388608,
-        "page_size": 100,
-        "timeout_seconds": 30,
-        "batch_size": 200,
-        "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1",
-        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "mode",
-          "account",
-          "regions"
-        ],
-        "properties": {
-          "mode": {
-            "enum": [
-              "preview",
-              "sync"
-            ]
-          },
-          "account": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 256
-          },
-          "regions": {
-            "type": "array",
-            "min_items": 1,
-            "max_items": 32,
-            "unique_items": true,
-            "items": {
-              "type": "string",
-              "min_length": 1,
-              "max_length": 128
-            }
-          },
-          "max_pages": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
-          },
-          "max_records": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50000
-          },
-          "max_bytes": {
-            "type": "integer",
-            "minimum": 1024,
-            "maximum": 16777216
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 120
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "source_scope": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 128
-          },
-          "scan_id": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 128
-          },
-          "fixture_pages": {
-            "type": "object",
-            "testing_only": true,
-            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
-          }
-        },
-        "conditional_required": {
-          "sync": [
-            "source_scope",
-            "scan_id"
-          ]
-        },
-        "secret_bindings": [
-          "ALICLOUD_ACCESS_KEY_ID",
-          "ALICLOUD_ACCESS_KEY_SECRET",
-          "ALICLOUD_SECURITY_TOKEN",
-          "CMDB_TOKEN"
-        ],
-        "invariants": [
-          "preview never calls the target CMDB",
-          "sync validates source_scope and scan_id before begin_scan",
-          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
-        ]
-      },
-      "output_contract": {
-        "schema": "dlr-asset-snapshot/v1",
-        "preview_required": [
-          "schema_version",
-          "assets",
-          "relationships",
-          "summary",
-          "partial",
-          "checkpoint"
-        ],
-        "sync_required": [
-          "mode",
-          "scan_id",
-          "source_scope",
-          "summary",
-          "partial",
-          "failed",
-          "checkpoint"
-        ],
-        "sync_excludes": [
-          "assets",
-          "relationships",
-          "secrets",
-          "raw_third_party_response"
-        ],
-        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
-        "relation_types": [
-          "located_in",
-          "attached_to",
-          "protected_by",
-          "member_of",
-          "serves",
-          "routes_to"
-        ]
-      },
-      "runtime_config": {
-        "cmdb_base_url": "https://cmdb.example"
-      },
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：ALICLOUD_ACCESS_KEY_ID、ALICLOUD_ACCESS_KEY_SECRET、CMDB_TOKEN。使用最小只读 RAM 权限；sync 前确认目标实现 dlr-cmdb-upsert/v1。",
-        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: ALICLOUD_ACCESS_KEY_ID, ALICLOUD_ACCESS_KEY_SECRET, CMDB_TOKEN. Use least-privilege read-only RAM permissions; confirm the target implements dlr-cmdb-upsert/v1 before sync."
-      },
+      "input_skeleton": {},
+      "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
       ],
-      "receipt_resource": "receipts/alicloud-compute-container-topology/python.json"
+      "output_example": {
+        "schema_version": "dlr-asset-snapshot/v1",
+        "assets": [
+          {
+            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:ecs_instance:example-resource",
+            "class": "ecs_instance",
+            "provider_type": "DescribeInstances",
+            "name": "示例资源",
+            "account": "EXAMPLE_ACCOUNT",
+            "region": "cn-hangzhou",
+            "zone": null,
+            "status": "Running",
+            "tags": {},
+            "attributes": {
+              "source_action": "DescribeInstances"
+            }
+          }
+        ],
+        "relationships": [],
+        "summary": {
+          "assets": 1,
+          "relationships": 0,
+          "pages": 1,
+          "failures": []
+        },
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "javascript",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/alicloud-compute-container-topology/javascript.mjs",
-      "code_sha256": "677a73d9874d0db075b9422ed06609e7f369c2f84a017ef91201fd4e4286729e",
+      "code_sha256": "d014d1797dd2d234f0505182b7372c332716e0b6d29f95811483a1040693d995",
       "requirements": "@alicloud/openapi-client@0.4.15",
-      "install_notes": {
-        "zh-CN": "建议依赖：@alicloud/openapi-client@0.4.15。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependency: @alicloud/openapi-client@0.4.15. Copying the template does not install it; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "mode": "preview",
-        "account": "EXAMPLE_ACCOUNT",
-        "regions": [
-          "example-region-1"
-        ],
-        "max_pages": 50,
-        "max_records": 5000,
-        "max_bytes": 8388608,
-        "page_size": 100,
-        "timeout_seconds": 30,
-        "batch_size": 200,
-        "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1",
-        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "mode",
-          "account",
-          "regions"
-        ],
-        "properties": {
-          "mode": {
-            "enum": [
-              "preview",
-              "sync"
-            ]
-          },
-          "account": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 256
-          },
-          "regions": {
-            "type": "array",
-            "min_items": 1,
-            "max_items": 32,
-            "unique_items": true,
-            "items": {
-              "type": "string",
-              "min_length": 1,
-              "max_length": 128
-            }
-          },
-          "max_pages": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
-          },
-          "max_records": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50000
-          },
-          "max_bytes": {
-            "type": "integer",
-            "minimum": 1024,
-            "maximum": 16777216
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 120
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "source_scope": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 128
-          },
-          "scan_id": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 128
-          },
-          "fixture_pages": {
-            "type": "object",
-            "testing_only": true,
-            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
-          }
-        },
-        "conditional_required": {
-          "sync": [
-            "source_scope",
-            "scan_id"
-          ]
-        },
-        "secret_bindings": [
-          "ALICLOUD_ACCESS_KEY_ID",
-          "ALICLOUD_ACCESS_KEY_SECRET",
-          "ALICLOUD_SECURITY_TOKEN",
-          "CMDB_TOKEN"
-        ],
-        "invariants": [
-          "preview never calls the target CMDB",
-          "sync validates source_scope and scan_id before begin_scan",
-          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
-        ]
-      },
-      "output_contract": {
-        "schema": "dlr-asset-snapshot/v1",
-        "preview_required": [
-          "schema_version",
-          "assets",
-          "relationships",
-          "summary",
-          "partial",
-          "checkpoint"
-        ],
-        "sync_required": [
-          "mode",
-          "scan_id",
-          "source_scope",
-          "summary",
-          "partial",
-          "failed",
-          "checkpoint"
-        ],
-        "sync_excludes": [
-          "assets",
-          "relationships",
-          "secrets",
-          "raw_third_party_response"
-        ],
-        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
-        "relation_types": [
-          "located_in",
-          "attached_to",
-          "protected_by",
-          "member_of",
-          "serves",
-          "routes_to"
-        ]
-      },
-      "runtime_config": {
-        "cmdb_base_url": "https://cmdb.example"
-      },
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：ALICLOUD_ACCESS_KEY_ID、ALICLOUD_ACCESS_KEY_SECRET、CMDB_TOKEN。使用最小只读 RAM 权限；sync 前确认目标实现 dlr-cmdb-upsert/v1。",
-        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: ALICLOUD_ACCESS_KEY_ID, ALICLOUD_ACCESS_KEY_SECRET, CMDB_TOKEN. Use least-privilege read-only RAM permissions; confirm the target implements dlr-cmdb-upsert/v1 before sync."
-      },
+      "input_skeleton": {},
+      "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
       ],
-      "receipt_resource": "receipts/alicloud-compute-container-topology/javascript.json"
+      "output_example": {
+        "schema_version": "dlr-asset-snapshot/v1",
+        "assets": [
+          {
+            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:ecs_instance:example-resource",
+            "class": "ecs_instance",
+            "provider_type": "DescribeInstances",
+            "name": "示例资源",
+            "account": "EXAMPLE_ACCOUNT",
+            "region": "cn-hangzhou",
+            "zone": null,
+            "status": "Running",
+            "tags": {},
+            "attributes": {
+              "source_action": "DescribeInstances"
+            }
+          }
+        ],
+        "relationships": [],
+        "summary": {
+          "assets": 1,
+          "relationships": 0,
+          "pages": 1,
+          "failures": []
+        },
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "java",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/alicloud-compute-container-topology/java.java",
-      "code_sha256": "1cef30ce4ae22020525db3318bd94d9f557532f03ecf730583211e10ba2c18e2",
+      "code_sha256": "0d643794e77eac290384045bffad07c73c5202d81032ef2088fb5c4eb9f65ef2",
       "requirements": "com.aliyun:tea-openapi:0.3.15",
-      "install_notes": {
-        "zh-CN": "建议依赖：com.aliyun:tea-openapi:0.3.15。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependency: com.aliyun:tea-openapi:0.3.15. Copying the template does not install it; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "mode": "preview",
-        "account": "EXAMPLE_ACCOUNT",
-        "regions": [
-          "example-region-1"
-        ],
-        "max_pages": 50,
-        "max_records": 5000,
-        "max_bytes": 8388608,
-        "page_size": 100,
-        "timeout_seconds": 30,
-        "batch_size": 200,
-        "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1",
-        "scan_id": "EXAMPLE_SCAN_ID_FOR_SYNC"
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "mode",
-          "account",
-          "regions"
-        ],
-        "properties": {
-          "mode": {
-            "enum": [
-              "preview",
-              "sync"
-            ]
-          },
-          "account": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 256
-          },
-          "regions": {
-            "type": "array",
-            "min_items": 1,
-            "max_items": 32,
-            "unique_items": true,
-            "items": {
-              "type": "string",
-              "min_length": 1,
-              "max_length": 128
-            }
-          },
-          "max_pages": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
-          },
-          "max_records": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50000
-          },
-          "max_bytes": {
-            "type": "integer",
-            "minimum": 1024,
-            "maximum": 16777216
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 120
-          },
-          "batch_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "source_scope": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 128
-          },
-          "scan_id": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 128
-          },
-          "fixture_pages": {
-            "type": "object",
-            "testing_only": true,
-            "description": "Deterministic provider-response fixture map for direct catalog-source verification; omit in deployed executions."
-          }
-        },
-        "conditional_required": {
-          "sync": [
-            "source_scope",
-            "scan_id"
-          ]
-        },
-        "secret_bindings": [
-          "ALICLOUD_ACCESS_KEY_ID",
-          "ALICLOUD_ACCESS_KEY_SECRET",
-          "ALICLOUD_SECURITY_TOKEN",
-          "CMDB_TOKEN"
-        ],
-        "invariants": [
-          "preview never calls the target CMDB",
-          "sync validates source_scope and scan_id before begin_scan",
-          "one logical DLR Execution reuses the same immutable scan_id across Attempts"
-        ]
-      },
-      "output_contract": {
-        "schema": "dlr-asset-snapshot/v1",
-        "preview_required": [
-          "schema_version",
-          "assets",
-          "relationships",
-          "summary",
-          "partial",
-          "checkpoint"
-        ],
-        "sync_required": [
-          "mode",
-          "scan_id",
-          "source_scope",
-          "summary",
-          "partial",
-          "failed",
-          "checkpoint"
-        ],
-        "sync_excludes": [
-          "assets",
-          "relationships",
-          "secrets",
-          "raw_third_party_response"
-        ],
-        "finish_rule": "finish_scan is called only after every source scope and acknowledged batch succeeds",
-        "relation_types": [
-          "located_in",
-          "attached_to",
-          "protected_by",
-          "member_of",
-          "serves",
-          "routes_to"
-        ]
-      },
-      "runtime_config": {
-        "cmdb_base_url": "https://cmdb.example"
-      },
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：ALICLOUD_ACCESS_KEY_ID、ALICLOUD_ACCESS_KEY_SECRET、CMDB_TOKEN。使用最小只读 RAM 权限；sync 前确认目标实现 dlr-cmdb-upsert/v1。",
-        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: ALICLOUD_ACCESS_KEY_ID, ALICLOUD_ACCESS_KEY_SECRET, CMDB_TOKEN. Use least-privilege read-only RAM permissions; confirm the target implements dlr-cmdb-upsert/v1 before sync."
-      },
+      "input_skeleton": {},
+      "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
       ],
-      "receipt_resource": "receipts/alicloud-compute-container-topology/java.json"
+      "output_example": {
+        "schema_version": "dlr-asset-snapshot/v1",
+        "assets": [
+          {
+            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:ecs_instance:example-resource",
+            "class": "ecs_instance",
+            "provider_type": "DescribeInstances",
+            "name": "示例资源",
+            "account": "EXAMPLE_ACCOUNT",
+            "region": "cn-hangzhou",
+            "zone": null,
+            "status": "Running",
+            "tags": {},
+            "attributes": {
+              "source_action": "DescribeInstances"
+            }
+          }
+        ],
+        "relationships": [],
+        "summary": {
+          "assets": 1,
+          "relationships": 0,
+          "pages": 1,
+          "failures": []
+        },
+        "partial": false,
+        "checkpoint": null
+      }
     }
   ]
 }

@@ -6,6 +6,28 @@ import json
 import re
 from datetime import UTC, datetime
 
+# Webhook 数据整理：可修改的配置集中在这里。
+# 运行时提供待处理的数据或文件；处理规则在下面配置。
+# 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+CONFIG = {
+    # 必须存在的 Webhook 字段。
+    "required": ["event_id"],
+    # 字段映射规则；source/pointer 指定原字段路径，target 指定结果字段名。
+    "mappings": [
+        {"source": "event_id", "target": "id", "required": True},
+        {"source": "occurred_at", "target": "timestamp", "type": "datetime", "required": True},
+    ],
+    # 最多处理的字段数。
+    "max_fields": 200,
+    # 输入大小上限，单位字节。
+    "max_input_bytes": 1048576,
+    # 返回结果大小上限，单位字节。
+    "max_output_bytes": 2097152,
+    # JSON 最大嵌套层数。
+    "max_depth": 32,
+}
+
+
 _DANGEROUS_TARGET_SEGMENTS = {"__proto__", "prototype", "constructor"}
 _PATH_SEGMENT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MAX_PATH_LENGTH = 256
@@ -128,6 +150,11 @@ def _bounded_result(
 
 
 def handle(context, input):
+    if input is None:
+        input = {}
+    if not isinstance(input, dict):
+        raise ValueError("输入必须是 JSON 对象")
+    input = {**CONFIG, **input}
     if not isinstance(input, dict):
         raise ValueError("input_must_be_object")
     payload = input.get("payload")

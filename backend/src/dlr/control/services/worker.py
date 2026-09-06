@@ -1,19 +1,13 @@
-"""Domain service for Worker registration, heartbeat and task claiming.
-
-Claiming uses ``FOR UPDATE SKIP LOCKED`` so concurrent Workers can never
-claim the same Execution, while different Executions are claimed in
-parallel. Long polling simply retries the atomic claim until the deadline.
-"""
+"""Worker registration, capability health, input delivery and cleanup."""
 
 import hashlib
 import re
-import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Any, BinaryIO, cast
+from datetime import UTC, datetime
+from typing import BinaryIO, cast
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from dlr.common.config import settings
@@ -44,10 +38,7 @@ from dlr.control.services import worker_availability
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.artifact_store import ArtifactStoreError, LocalFileArtifactStore
 from dlr.control.services.worker_protocol import (
-    generate_token,
-    hash_token,
     require_claim_token,
-    require_cleanup_token,
     token_matches,
 )
 
@@ -79,35 +70,6 @@ def _as_utc(value: datetime) -> datetime:
 def _database_now(session: Session) -> datetime:
     """Sample the authoritative decision time after the candidate row is locked."""
     return _as_utc(worker_availability.current_time(session))
-
-
-def _claim_deadline_expression() -> Any:
-    """Return the explicit or legacy effective claim deadline SQL expression."""
-    legacy_deadline = Execution.created_at + func.make_interval(
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        settings.execution_claim_timeout_seconds,
-    )
-    return func.coalesce(Execution.claim_deadline_at, legacy_deadline)
-
-
-def _effective_claim_deadline(execution: Execution) -> datetime:
-    """Resolve a historical NULL deadline without rejuvenating the row."""
-    deadline = execution.claim_deadline_at
-    if deadline is None:
-        deadline = execution.created_at + timedelta(
-            seconds=settings.execution_claim_timeout_seconds
-        )
-    return _as_utc(deadline)
-
-
-def _claim_deadline_is_open(execution: Execution, *, now: datetime) -> bool:
-    """Only a deadline strictly after the post-lock DB time remains claimable."""
-    return _effective_claim_deadline(execution) > _as_utc(now)
 
 
 def _safe_content_type(value: object) -> str:
@@ -148,12 +110,7 @@ def get_worker(session: Session, worker_id: int) -> Worker:
 def validate_claim_for_route(
     session: Session, worker_id: int, execution_id: int, claim_token: str | None
 ) -> Execution:
-    """Validate the C0 Claim credential without exposing row existence.
-
-    Full Artifact content authorization and streaming are deliberately owned
-    by the later Worker download wave; the C0 route skeleton still enforces
-    the protocol credential boundary before returning its not-ready result.
-    """
+    """Authorize input delivery against the current active Attempt credential."""
     execution = session.get(Execution, execution_id)
     if execution is None or execution.worker_id != worker_id or execution.status != "running":
         raise domain_error(
@@ -161,30 +118,21 @@ def validate_claim_for_route(
             "execution_claim_token_invalid",
             "A valid Claim Token is required",
         )
-    if execution.dispatch_backend == "rabbitmq":
-        attempt = session.scalar(
-            select(ExecutionAttempt).where(
-                ExecutionAttempt.execution_id == execution.id,
-                ExecutionAttempt.attempt_no == execution.attempt_count,
-                ExecutionAttempt.worker_id == worker_id,
-                ExecutionAttempt.status.in_(V3_ACTIVE_ATTEMPT_STATUSES),
-            )
+    attempt = session.scalar(
+        select(ExecutionAttempt).where(
+            ExecutionAttempt.execution_id == execution.id,
+            ExecutionAttempt.attempt_no == execution.attempt_count,
+            ExecutionAttempt.worker_id == worker_id,
+            ExecutionAttempt.status.in_(V3_ACTIVE_ATTEMPT_STATUSES),
         )
-        if attempt is None:
-            raise domain_error(
-                422,
-                "execution_claim_token_invalid",
-                "A valid Claim Token is required",
-            )
-        require_claim_token(claim_token, attempt.claim_token_hash)
-    else:
-        if execution.claim_token_hash is None:
-            raise domain_error(
-                422,
-                "execution_claim_token_invalid",
-                "A valid Claim Token is required",
-            )
-        require_claim_token(claim_token, execution.claim_token_hash)
+    )
+    if attempt is None:
+        raise domain_error(
+            422,
+            "execution_claim_token_invalid",
+            "A valid Claim Token is required",
+        )
+    require_claim_token(claim_token, attempt.claim_token_hash)
     return execution
 
 
@@ -274,7 +222,7 @@ def apply_cleanup_receipt(
     execution_id: int,
     cleanup_token: str | None,
 ) -> Execution:
-    """Advance only cleanup state after a valid v2 or v3 receipt.
+    """Advance only cleanup state after a valid Attempt receipt.
 
     The row lock and capability-token check make retries after a lost HTTP
     response idempotent.  No business result, timestamp, or Lease is changed
@@ -292,89 +240,61 @@ def apply_cleanup_receipt(
             "execution_cleanup_token_invalid",
             "A valid Cleanup Token is required",
         )
-    matched_attempt: ExecutionAttempt | None = None
-    if execution.cleanup_receipt_token_hash is not None:
-        require_cleanup_token(cleanup_token, execution.cleanup_receipt_token_hash)
-    elif execution.dispatch_backend == "rabbitmq":
-        attempts = list(
-            session.scalars(
-                select(ExecutionAttempt)
-                .where(ExecutionAttempt.execution_id == execution_id)
-                .order_by(ExecutionAttempt.attempt_no)
-                .with_for_update()
-            )
+    attempts = list(
+        session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.execution_id == execution_id)
+            .order_by(ExecutionAttempt.attempt_no)
+            .with_for_update()
         )
-        matched_attempt = next(
-            (
-                attempt
-                for attempt in attempts
-                if token_matches(cleanup_token, attempt.cleanup_token_hash)
-            ),
-            None,
+    )
+    matched_attempt = next(
+        (
+            attempt
+            for attempt in attempts
+            if token_matches(cleanup_token, attempt.cleanup_token_hash)
+        ),
+        None,
+    )
+    if matched_attempt is None:
+        raise domain_error(
+            422, "execution_cleanup_token_invalid", "A valid Cleanup Token is required"
         )
-        if matched_attempt is None:
-            raise domain_error(
-                422,
-                "execution_cleanup_token_invalid",
-                "A valid Cleanup Token is required",
-            )
-    else:
+    if matched_attempt.status not in V3_TERMINAL_ATTEMPT_STATUSES:
         raise domain_error(
             422,
-            "execution_cleanup_token_invalid",
-            "A valid Cleanup Token is required",
+            "workspace_cleanup_transition_invalid",
+            "Workspace cleanup is not available before the Attempt is terminal",
         )
-    if matched_attempt is None:
-        allowed_statuses = {"succeeded", "failed", "timeout", "cancelled"}
-    else:
-        if matched_attempt.status not in V3_TERMINAL_ATTEMPT_STATUSES:
-            raise domain_error(
-                422,
-                "workspace_cleanup_transition_invalid",
-                "Workspace cleanup is not available before the Attempt is terminal",
-            )
-        # A receipt for an older Attempt can arrive while the next Attempt is
-        # running. It is independently idempotent and must not complete the
-        # current Attempt's Execution cleanup state.
-        allowed_statuses = {
-            "queued",
-            "running",
-            "retry_wait",
-            "succeeded",
-            "dead_letter",
-            "cancelled",
-            "expired",
-        }
+    allowed_statuses = {
+        "queued",
+        "running",
+        "retry_wait",
+        "succeeded",
+        "dead_letter",
+        "cancelled",
+        "expired",
+    }
     if execution.status not in allowed_statuses:
         raise domain_error(
             422,
             "workspace_cleanup_transition_invalid",
             "Workspace cleanup is not available in the current Execution state",
         )
-    if matched_attempt is not None:
-        summary = dict(matched_attempt.cleanup_summary or {})
-        summary["workspace_cleanup_status"] = "completed"
-        summary.pop("workspace_cleanup_error_code", None)
-        matched_attempt.cleanup_summary = summary
-        if matched_attempt.attempt_no == execution.attempt_count:
-            if execution.workspace_cleanup_status == "deferred":
-                execution.workspace_cleanup_status = "completed"
-                execution.workspace_cleanup_error_code = None
-            elif execution.workspace_cleanup_status != "completed":
-                raise domain_error(
-                    422,
-                    "workspace_cleanup_transition_invalid",
-                    "Workspace cleanup state cannot transition to completed",
-                )
-    elif execution.workspace_cleanup_status == "deferred":
-        execution.workspace_cleanup_status = "completed"
-        execution.workspace_cleanup_error_code = None
-    elif execution.workspace_cleanup_status != "completed":
-        raise domain_error(
-            422,
-            "workspace_cleanup_transition_invalid",
-            "Workspace cleanup state cannot transition to completed",
-        )
+    summary = dict(matched_attempt.cleanup_summary or {})
+    summary["workspace_cleanup_status"] = "completed"
+    summary.pop("workspace_cleanup_error_code", None)
+    matched_attempt.cleanup_summary = summary
+    if matched_attempt.attempt_no == execution.attempt_count:
+        if execution.workspace_cleanup_status == "deferred":
+            execution.workspace_cleanup_status = "completed"
+            execution.workspace_cleanup_error_code = None
+        elif execution.workspace_cleanup_status != "completed":
+            raise domain_error(
+                422,
+                "workspace_cleanup_transition_invalid",
+                "Workspace cleanup state cannot transition to completed",
+            )
     session.commit()
     session.refresh(execution)
     return execution
@@ -394,13 +314,9 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
     attempted while the Worker is offline.
     """
     worker = session.scalar(select(Worker).where(Worker.name == data.name).with_for_update())
-    protocol_version = int(data.protocol_version or 1)
-    preflight_ready = protocol_version >= 3 and isolation_capabilities_ready(
-        data.isolation_capabilities
-    )
-    preflight_status = (
-        "passed" if preflight_ready else ("failed" if protocol_version >= 3 else "unknown")
-    )
+    protocol_version = data.protocol_version
+    preflight_ready = isolation_capabilities_ready(data.isolation_capabilities)
+    preflight_status = "passed" if preflight_ready else "failed"
     if worker is None:
         worker = Worker(
             name=data.name,
@@ -410,7 +326,7 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
             protocol_version=protocol_version,
             isolation_capabilities=data.isolation_capabilities,
             isolation_preflight_status=preflight_status,
-            isolation_preflight_at=func.now() if protocol_version >= 3 else None,
+            isolation_preflight_at=func.now(),
             rabbitmq_execution_v3=preflight_ready,
         )
         session.add(worker)
@@ -421,7 +337,7 @@ def register_worker(session: Session, data: WorkerRegister) -> Worker:
         worker.protocol_version = protocol_version
         worker.isolation_capabilities = cast(dict[str, object], data.isolation_capabilities)
         worker.isolation_preflight_status = preflight_status
-        worker.isolation_preflight_at = func.now() if protocol_version >= 3 else None
+        worker.isolation_preflight_at = func.now()
         worker.rabbitmq_execution_v3 = preflight_ready
         session.execute(
             update(WorkerCleanupRequest)
@@ -555,22 +471,9 @@ def build_task_payload(
     )
 
 
-def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayload | None:
-    """One atomic claim attempt; None when no task is free.
-
-    M3.2 scheduling rules: Executions flagged for cancellation are never
-    claimed, and an Execution with a scheduling target may only be claimed
-    by that Worker (a NULL target stays claimable by any Worker, which keeps
-    historical rows working).
-    """
-    worker = get_worker(session, worker_id)
-    protocol_version = int(worker.protocol_version or 1)
-    if protocol_version < settings.min_worker_protocol_version:
-        raise domain_error(
-            409,
-            "worker_protocol_incompatible",
-            "Worker protocol version is below the deployment minimum",
-        )
+def claim_cleanup(session: Session, worker_id: int) -> CleanupTaskPayload | None:
+    """Claim only adapter-private cleanup work, never an Execution."""
+    get_worker(session, worker_id)
     cleanup = session.scalar(
         select(WorkerCleanupRequest)
         .where(
@@ -581,200 +484,14 @@ def try_claim(session: Session, worker_id: int) -> TaskPayload | CleanupTaskPayl
         .with_for_update(skip_locked=True)
         .limit(1)
     )
-    if cleanup is not None:
-        cleanup.status = "running"
-        cleanup.attempts += 1
-        cleanup.error_code = None
-        session.commit()
-        session.refresh(cleanup)
-        return CleanupTaskPayload(cleanup_id=cleanup.id, adapter_id=cleanup.adapter_id)
-
-    if not settings.legacy_execution_claim_enabled:
+    if cleanup is None:
         session.rollback()
-        raise domain_error(
-            409,
-            "legacy_claim_disabled",
-            "Legacy Execution claim is disabled after reliable-runtime Cutover",
-        )
-
-    lease_rejected_execution_ids: set[int] = set()
-    expired_execution_ids: set[int] = set()
-    while True:
-        deadline_is_open = _claim_deadline_expression() > func.clock_timestamp()
-        candidate_query = (
-            select(Execution)
-            .join(Adapter, Adapter.id == Execution.adapter_id)
-            .where(
-                # Batch 1 deliberately keeps the HTTP long-poll Claim path
-                # legacy-only.  RabbitMQ dispatch rows wait for the later v3
-                # Consumer/Claim batch and must never be silently downgraded.
-                Execution.dispatch_backend == "legacy",
-                Execution.status == "pending",
-                Execution.cancel_requested.is_(False),
-                Adapter.language.in_(worker.capabilities),
-                or_(
-                    Execution.target_worker_id.is_(None),
-                    Execution.target_worker_id == worker_id,
-                ),
-                deadline_is_open,
-            )
-        )
-        if protocol_version < 2:
-            candidate_query = candidate_query.where(
-                Execution.input_source_type.in_(("none", "json"))
-            )
-        excluded_execution_ids = lease_rejected_execution_ids | expired_execution_ids
-        if excluded_execution_ids:
-            candidate_query = candidate_query.where(Execution.id.not_in(excluded_execution_ids))
-        candidate_query = (
-            candidate_query.order_by(Execution.created_at.asc(), Execution.id.asc())
-            .with_for_update(skip_locked=True)
-            .limit(1)
-        )
-        execution = session.scalar(candidate_query)
-        if execution is None:
-            if lease_rejected_execution_ids:
-                session.rollback()
-                raise domain_error(
-                    409,
-                    "execution_input_lease_unavailable",
-                    "Execution input Lease is unavailable",
-                )
-            if protocol_version < 2:
-                incompatible_exists = session.scalar(
-                    select(Execution.id)
-                    .join(Adapter, Adapter.id == Execution.adapter_id)
-                    .where(
-                        Execution.status == "pending",
-                        Execution.dispatch_backend == "legacy",
-                        Execution.cancel_requested.is_(False),
-                        Execution.input_source_type.not_in(("none", "json")),
-                        Adapter.language.in_(worker.capabilities),
-                        or_(
-                            Execution.target_worker_id.is_(None),
-                            Execution.target_worker_id == worker_id,
-                        ),
-                        _claim_deadline_expression() > func.clock_timestamp(),
-                    )
-                    .order_by(Execution.created_at.asc(), Execution.id.asc())
-                    .limit(1)
-                )
-                if incompatible_exists is not None:
-                    session.rollback()
-                    raise domain_error(
-                        409,
-                        "worker_protocol_incompatible",
-                        "This Execution requires a newer Worker protocol",
-                    )
-                rabbitmq_exists = session.scalar(
-                    select(Execution.id)
-                    .join(Adapter, Adapter.id == Execution.adapter_id)
-                    .where(
-                        Execution.dispatch_backend == "rabbitmq",
-                        Execution.status == "queued",
-                        Execution.cancel_requested.is_(False),
-                        Adapter.language.in_(worker.capabilities),
-                        or_(
-                            Execution.target_worker_id.is_(None),
-                            Execution.target_worker_id == worker_id,
-                        ),
-                    )
-                    .order_by(Execution.created_at.asc(), Execution.id.asc())
-                    .limit(1)
-                )
-                if rabbitmq_exists is not None:
-                    session.rollback()
-                    raise domain_error(
-                        409,
-                        "worker_protocol_incompatible",
-                        "RabbitMQ Executions require the v3 Consumer protocol",
-                    )
-            # Release any snapshot state before the next poll iteration.
-            session.rollback()
-            return None
-        if protocol_version < 2 and execution.input_source_type not in {"none", "json"}:
-            # Defensive guard for rows introduced by a concurrent migration or a
-            # future source type: do not transition an unclaimable Execution.
-            session.rollback()
-            raise domain_error(
-                409,
-                "worker_protocol_incompatible",
-                "This Execution requires a newer Worker protocol",
-            )
-        now = _database_now(session)
-        if not _claim_deadline_is_open(execution, now=now):
-            # The SQL prefilter avoids locking work already known to be stale;
-            # this post-lock check closes the query-to-lock boundary.  Leave
-            # terminalization, cleanup facts and Lease release to the
-            # reconciler's single convergence path.
-            expired_execution_ids.add(int(execution.id))
-            session.rollback()
-            continue
-        claim_token: str | None = None
-        cleanup_token: str | None = None
-        execution.status = "running"
-        execution.worker_id = worker_id
-        execution.started_at = now
-        if protocol_version >= 2:
-            claim_token = generate_token()
-            cleanup_token = generate_token()
-            execution.claim_token_hash = hash_token(claim_token)
-            execution.cleanup_receipt_token_hash = hash_token(cleanup_token)
-            timeout_seconds = execution.timeout_seconds_snapshot
-            if timeout_seconds is None:
-                adapter = session.get(Adapter, execution.adapter_id)
-                timeout_seconds = (
-                    adapter.timeout_seconds
-                    if adapter is not None
-                    else settings.execution_timeout_seconds
-                )
-            execution.execution_deadline_at = now + timedelta(seconds=timeout_seconds)
-        try:
-            # Build the response while the claim is still uncommitted. A
-            # historical managed-files row may predate the C0 Lease table; a
-            # structured rejection leaves it pending and lets this same claim
-            # attempt continue to a later valid candidate.
-            payload = build_task_payload(
-                session,
-                execution,
-                worker=worker,
-                claim_token=claim_token,
-                cleanup_token=cleanup_token,
-            )
-        except HTTPException as exc:
-            detail = exc.detail
-            if (
-                exc.status_code == 409
-                and isinstance(detail, dict)
-                and detail.get("code") == "execution_input_lease_unavailable"
-            ):
-                lease_rejected_execution_ids.add(int(execution.id))
-                session.rollback()
-                continue
-            session.rollback()
-            raise
-        except Exception:
-            session.rollback()
-            raise
-        session.commit()
-        return payload
-
-
-def claim_task(
-    session: Session, worker_id: int, wait_seconds: int
-) -> TaskPayload | CleanupTaskPayload | None:
-    """Long-poll: retry the atomic claim until a task or the deadline."""
-    get_worker(session, worker_id)
-    wait_seconds = max(0, min(wait_seconds, MAX_CLAIM_WAIT_SECONDS))
-    deadline = time.monotonic() + wait_seconds
-    while True:
-        payload = try_claim(session, worker_id)
-        if payload is not None:
-            return payload
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return None
-        time.sleep(min(CLAIM_POLL_INTERVAL_SECONDS, remaining))
+        return None
+    cleanup.status = "running"
+    cleanup.attempts += 1
+    cleanup.error_code = None
+    session.commit()
+    return CleanupTaskPayload(cleanup_id=cleanup.id, adapter_id=cleanup.adapter_id)
 
 
 def apply_cleanup_result(

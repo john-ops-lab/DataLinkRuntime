@@ -20,7 +20,45 @@ import java.util.UUID;
 
 /** Bounded read-only MySQL snapshot. */
 public class Adapter {
+    // MySQL 数据查询：可修改的配置集中在这里。
+    // 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    // 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+    // MYSQL_DSN：MySQL 连接字符串（包含账号密码）。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // sql: 填写一条 SELECT；动态值通过 params 绑定，不要拼接用户输入。
+        // params: 按 SQL 占位符顺序填写参数。
+        // max_rows: 最多读取的行数。
+        // max_output_bytes: 返回结果大小上限，单位字节。
+        // max_cell_bytes: 单个单元格大小上限，单位字节。
+        // batch_size: 每批处理的记录数。
+        // timeout_seconds: 单次请求超时时间，单位秒。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "sql": "SELECT id, name FROM example_items WHERE updated_at >= ?",
+              "params": [
+                "2026-01-01T00:00:00Z"
+              ],
+              "max_rows": 5000,
+              "max_output_bytes": 4194304,
+              "max_cell_bytes": 1048576,
+              "batch_size": 500,
+              "timeout_seconds": 30
+            }
+            """);
+    }
+
     public Object handle(Context context, Object rawInput) {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         Map<String, Object> input = object(rawInput);
         String sql = checkedQuery(input.get("sql"));
         Object rawParams = input.get("params");
@@ -34,6 +72,7 @@ public class Adapter {
         int maxOutput = positive(input.get("max_output_bytes"), 4_194_304, 16_777_216);
         int maxCell = positive(input.get("max_cell_bytes"), 1_048_576, 8_388_608);
         int timeout = positive(input.get("timeout_seconds"), 30, 300);
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String dsn = context.secrets.get("MYSQL_DSN");
         if (dsn == null || dsn.isBlank()) throw new IllegalArgumentException("missing_credential");
         List<Map<String, Object>> rows = new ArrayList<>();

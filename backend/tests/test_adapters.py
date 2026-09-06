@@ -10,6 +10,12 @@ from conftest import WORKER_TOKEN
 from dlr.control.schemas.adapter import AdapterCreate, VersionCreate
 from dlr.control.services.adapter import create_adapter as service_create_adapter
 from dlr.control.services.adapter import save_version as service_save_version
+from runtime_api_support import (
+    claim_execution,
+    mark_broker_ready,
+    ready_registration,
+    report_attempt,
+)
 
 STARTER_CODE = "def handle(context, input):\n    return input\n"
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
@@ -44,6 +50,7 @@ def save_version(
             response = client.post(
                 "/api/workers/register",
                 json={
+                    **ready_registration("worker-1", [adapter["language"]]),
                     "name": "worker-1",
                     "capabilities": [adapter["language"]],
                 },
@@ -56,6 +63,7 @@ def save_version(
             json={"runtime_worker_id": compatible[0]["id"]},
         )
         assert response.status_code == 200, response.text
+    mark_broker_ready()
     payload: dict[str, Any] = {"code": code, "requirements": requirements}
     if runtime_config is not None:
         payload["runtime_config"] = runtime_config
@@ -70,26 +78,19 @@ def pass_publish_gate(
     """Compatibility helper for tests that need one completed Manual run."""
     register = client.post(
         "/api/workers/register",
-        json={"name": worker_name, "capabilities": ["python"]},
+        json=ready_registration(worker_name, ["python"]),
         headers=WORKER_HEADERS,
     )
     assert register.status_code == 200, register.text
     worker = register.json()
+    mark_broker_ready()
     patch = client.patch(f"/api/adapters/{adapter_id}", json={"runtime_worker_id": worker["id"]})
     assert patch.status_code == 200, patch.text
     execution = client.post(f"/api/adapters/{adapter_id}/executions", json={})
     assert execution.status_code == 202, execution.text
-    claimed = client.post(
-        f"/api/workers/{worker['id']}/tasks/claim",
-        params={"wait_seconds": 0},
-        headers=WORKER_HEADERS,
-    )
+    claimed = claim_execution(client, worker["id"])
     assert claimed.status_code == 200, claimed.text
-    result = client.post(
-        f"/api/workers/{worker['id']}/executions/{execution.json()['id']}/result",
-        json={"status": "succeeded"},
-        headers=WORKER_HEADERS,
-    )
+    result = report_attempt(client, worker["id"], execution.json()["id"], {"status": "succeeded"})
     assert result.status_code == 200, result.text
     return worker
 
@@ -574,7 +575,7 @@ def test_concurrent_saves_keep_seq_unique_and_latest_correct(
     adapter_id = created["id"]
     worker_response = api_client.post(
         "/api/workers/register",
-        json={"name": "concurrent-save-worker", "capabilities": ["python"]},
+        json=ready_registration("concurrent-save-worker", ["python"]),
         headers=WORKER_HEADERS,
     )
     assert worker_response.status_code == 200

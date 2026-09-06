@@ -22,7 +22,7 @@ from sqlalchemy.sql import Select
 
 from dlr.common.config import settings
 from dlr.control.models import Execution, ExecutionIdempotencyRecord, ExecutionOutbox
-from dlr.control.services.execution import LEGACY_TERMINAL_STATUSES, RABBITMQ_TERMINAL_STATUSES
+from dlr.control.services.execution import TERMINAL_STATUSES
 from dlr.control.services.idempotency import cleanup_expired_records
 
 logger = logging.getLogger("dlr.control.retention")
@@ -69,12 +69,8 @@ def _terminal_query(policy: RetentionPolicy, adapter_id: int) -> Select[tuple[in
     return select(Execution.id).where(
         Execution.adapter_id == adapter_id,
         Execution.trigger == policy.trigger,
-        ((Execution.dispatch_backend == "legacy") & Execution.status.in_(LEGACY_TERMINAL_STATUSES))
-        | (
-            (Execution.dispatch_backend == "rabbitmq")
-            & Execution.status.in_(RABBITMQ_TERMINAL_STATUSES)
-        ),
-        ((Execution.dispatch_backend == "legacy") | Execution.admission_released_at.is_not(None)),
+        Execution.status.in_(TERMINAL_STATUSES),
+        Execution.admission_released_at.is_not(None),
         ~exists(
             select(1).where(
                 ExecutionIdempotencyRecord.execution_id == Execution.id,
@@ -95,14 +91,7 @@ def _adapter_ids(session: Session, policy: RetentionPolicy) -> list[int]:
             select(Execution.adapter_id)
             .where(
                 Execution.trigger == policy.trigger,
-                (
-                    (Execution.dispatch_backend == "legacy")
-                    & Execution.status.in_(LEGACY_TERMINAL_STATUSES)
-                )
-                | (
-                    (Execution.dispatch_backend == "rabbitmq")
-                    & Execution.status.in_(RABBITMQ_TERMINAL_STATUSES)
-                ),
+                Execution.status.in_(TERMINAL_STATUSES),
             )
             .distinct()
         )
@@ -117,18 +106,8 @@ def _delete_batch(session: Session, ids: list[int]) -> int:
         session.execute(
             delete(Execution).where(
                 Execution.id.in_(ids),
-                (
-                    (Execution.dispatch_backend == "legacy")
-                    & Execution.status.in_(LEGACY_TERMINAL_STATUSES)
-                )
-                | (
-                    (Execution.dispatch_backend == "rabbitmq")
-                    & Execution.status.in_(RABBITMQ_TERMINAL_STATUSES)
-                ),
-                (
-                    (Execution.dispatch_backend == "legacy")
-                    | Execution.admission_released_at.is_not(None)
-                ),
+                Execution.status.in_(TERMINAL_STATUSES),
+                Execution.admission_released_at.is_not(None),
                 ~exists(
                     select(1).where(
                         ExecutionIdempotencyRecord.execution_id == Execution.id,

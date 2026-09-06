@@ -49,10 +49,10 @@ def test_catalog_inventory_is_exact_and_all_sources_pass_hash_validation() -> No
 
     assert len(catalog.themes) == 5
     assert len(catalog.scenarios) == 17
-    assert sum(len(scenario.variants) for scenario in catalog.scenarios) == 51
     assert len({scenario.slug for scenario in catalog.scenarios}) == 17
     assert all(
-        {variant.language for variant in scenario.variants} == {"python", "javascript", "java"}
+        set(variant.language for variant in scenario.variants) <= {"python", "javascript", "java"}
+        and scenario.variants
         for scenario in catalog.scenarios
     )
 
@@ -69,20 +69,24 @@ def test_catalog_rejects_duplicate_scenario_slug(tmp_path: Path) -> None:
         TemplateCatalog(root)
 
 
-def test_catalog_rejects_missing_language(tmp_path: Path) -> None:
+def test_catalog_accepts_supported_language_subset_but_rejects_empty_variants(
+    tmp_path: Path,
+) -> None:
     root = _copy_catalog(tmp_path)
     path, metadata = _first_metadata(root)
-    metadata["variants"].pop()
+    metadata["variants"] = metadata["variants"][:1]
     _write_json(path, metadata)
-
-    with pytest.raises(CatalogValidationError, match="exactly 3 languages"):
+    assert len(TemplateCatalog(root).get_scenario(metadata["slug"]).variants) == 1
+    metadata["variants"] = []
+    _write_json(path, metadata)
+    with pytest.raises(CatalogValidationError):
         TemplateCatalog(root)
 
 
 def test_catalog_rejects_unknown_enum_logo_and_unsafe_source_url(tmp_path: Path) -> None:
     enum_root = _copy_catalog(tmp_path / "enum")
     enum_path, enum_metadata = _first_metadata(enum_root)
-    enum_metadata["variants"][0]["maturity"] = "claimed-verified"
+    enum_metadata["variants"][0]["language"] = "ruby"
     _write_json(enum_path, enum_metadata)
     with pytest.raises(CatalogValidationError, match="ValidationError"):
         TemplateCatalog(enum_root)
@@ -172,10 +176,6 @@ def test_variant_hash_is_checked_only_when_selected(tmp_path: Path) -> None:
     metadata_path, metadata = _first_metadata(root)
     variant = metadata["variants"][0]
     variant["code_sha256"] = "0" * 64
-    receipt_path = root / variant["receipt_resource"]
-    receipt = _json(receipt_path)
-    receipt["source_sha256"] = "0" * 64
-    _write_json(receipt_path, receipt)
     _write_json(metadata_path, metadata)
 
     catalog = TemplateCatalog(root)
@@ -292,7 +292,6 @@ def test_scenario_list_filters_with_and_semantics_and_stable_pagination(
         "adapter_type": item["adapter_type"],
         "protocol": item["protocols"][0],
         "language": variant["language"],
-        "maturity": variant["maturity"],
         "page_size": 1,
     }
     filtered = api_client.get("/api/templates/scenarios", params=params)
@@ -321,53 +320,30 @@ def test_scenario_list_filters_with_and_semantics_and_stable_pagination(
     assert past_end.json()["total"] == first_page["total"]
 
 
-def test_language_and_maturity_filters_must_match_the_same_variant(tmp_path: Path) -> None:
+def test_all_templates_search_and_language_filter(tmp_path: Path) -> None:
     root = _copy_catalog(tmp_path)
     slug = "rest-single-request"
     metadata_path = root / "scenarios" / slug / "metadata.json"
     metadata = _json(metadata_path)
-    variants = {item["language"]: item for item in metadata["variants"]}
-    variants["python"]["maturity"] = "reference-generated"
-    variants["javascript"]["maturity"] = "syntax-verified"
+    metadata["variants"] = [
+        item for item in metadata["variants"] if item["language"] == "javascript"
+    ]
     _write_json(metadata_path, metadata)
-
-    python_receipt_path = root / variants["python"]["receipt_resource"]
-    python_receipt = _json(python_receipt_path)
-    python_receipt.update({"maturity": "reference-generated", "evidence": [], "verified_at": None})
-    _write_json(python_receipt_path, python_receipt)
-    javascript_receipt_path = root / variants["javascript"]["receipt_resource"]
-    javascript_receipt = _json(javascript_receipt_path)
-    javascript_receipt.update(
-        {
-            "maturity": "syntax-verified",
-            "evidence": [
-                {
-                    "kind": "syntax",
-                    "command": "node --check javascript.mjs",
-                    "result": "passed",
-                    "checked_at": "2026-09-05",
-                }
-            ],
-            "verified_at": "2026-09-05T00:00:00Z",
-        }
-    )
-    _write_json(javascript_receipt_path, javascript_receipt)
 
     catalog = TemplateCatalog(root)
     wrong_language = template_service.list_template_scenarios(
-        theme=metadata["theme_slug"],
         language="python",
-        maturity="syntax-verified",
+        q=metadata["title"]["en"],
         catalog=catalog,
     )
     matching_language = template_service.list_template_scenarios(
-        theme=metadata["theme_slug"],
         language="javascript",
-        maturity="syntax-verified",
+        q=metadata["title"]["en"],
         catalog=catalog,
     )
     assert slug not in {item.slug for item in wrong_language.items}
     assert slug in {item.slug for item in matching_language.items}
+    assert template_service.list_template_scenarios(catalog=catalog).total == 17
 
 
 @pytest.mark.parametrize(
@@ -391,11 +367,6 @@ def test_language_and_maturity_filters_must_match_the_same_variant(tmp_path: Pat
         ),
         (
             {"theme": "cloud-cmdb", "language": "ruby"},
-            422,
-            "template_filter_invalid",
-        ),
-        (
-            {"theme": "cloud-cmdb", "maturity": "certified"},
             422,
             "template_filter_invalid",
         ),
@@ -429,7 +400,9 @@ def test_detail_and_variant_not_found_errors_are_stable(api_client: TestClient) 
     detail_body = detail.json()
     assert '"code"' not in json.dumps(detail_body)
     assert len(detail_body["variants"]) == 3
-    assert all(source["revision"] for source in detail_body["sources"])
+    assert "sources" not in detail_body
+    assert all("maturity" not in variant for variant in detail_body["variants"])
+    assert not {"input", "output_summary", "risk", "modes"} & detail_body.keys()
     for selected_language in ("python", "javascript", "java"):
         selected = api_client.get(
             f"/api/templates/scenarios/rest-single-request/variants/{selected_language}"
@@ -437,6 +410,19 @@ def test_detail_and_variant_not_found_errors_are_stable(api_client: TestClient) 
         assert selected.status_code == 200, selected.text
         assert selected.json()["language"] == selected_language
         assert selected.json()["template_version"] == detail_body["template_version"]
+        assert (
+            not {
+                "maturity",
+                "receipt",
+                "sources",
+                "input_contract",
+                "output_contract",
+                "runtime_guidance",
+                "install_notes",
+                "behavior_contract_version",
+            }
+            & selected.json().keys()
+        )
 
 
 def test_traversal_like_identifiers_never_read_variant_resources(
@@ -534,7 +520,8 @@ def test_built_wheel_contains_and_loads_every_catalog_resource(tmp_path: Path) -
         root = zipfile.Path(archive, "dlr/control/template_catalog/")
         catalog = TemplateCatalog(root)
         catalog.validate_all_variant_sources()
-        assert sum(len(scenario.variants) for scenario in catalog.scenarios) == 51
+        expected_variants = sum(len(scenario.variants) for scenario in catalog.scenarios)
+        assert expected_variants >= len(catalog.scenarios)
 
     installed = tmp_path / "installed"
     subprocess.run(
@@ -570,4 +557,4 @@ def test_built_wheel_contains_and_loads_every_catalog_resource(tmp_path: Path) -
         capture_output=True,
         text=True,
     )
-    assert result.stdout.strip() == "51"
+    assert result.stdout.strip() == str(expected_variants)

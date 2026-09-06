@@ -7,6 +7,31 @@ import io
 import json
 from pathlib import Path
 
+# CSV 转 JSON：可修改的配置集中在这里。
+# 运行时提供待处理的数据或文件；处理规则在下面配置。
+# 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+CONFIG = {
+    # CSV 字符编码，例如 utf-8 或 utf-8-sig。
+    "encoding": "utf-8-sig",
+    # CSV 字段分隔符，默认逗号。
+    "delimiter": ",",
+    # 是否把首行作为字段名。
+    "header": True,
+    # 是否跳过空行。
+    "skip_empty": True,
+    # 输入大小上限，单位字节。
+    "max_input_bytes": 2097152,
+    # 返回结果大小上限，单位字节。
+    "max_output_bytes": 4194304,
+    # 最多读取的行数。
+    "max_rows": 10000,
+    # 最多读取的列数。
+    "max_columns": 200,
+    # 单个字段大小上限，单位字节。
+    "max_field_bytes": 65536,
+}
+
+
 _STABLE_ERRORS = frozenset(
     {
         "input_must_be_object",
@@ -128,6 +153,11 @@ def _handle(context, input):
 
 
 def handle(context, input):
+    if input is None:
+        input = {}
+    if not isinstance(input, dict):
+        raise ValueError("输入必须是 JSON 对象")
+    input = {**CONFIG, **input}
     try:
         return _handle(context, input)
     except ValueError as error:

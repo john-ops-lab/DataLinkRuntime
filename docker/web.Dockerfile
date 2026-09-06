@@ -23,6 +23,5 @@ FROM nginx:alpine
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker/nginx-account.conf /etc/nginx/nginx-account.conf
 COPY --from=build /app/dist /usr/share/nginx/html
-COPY THIRD_PARTY_NOTICES.md /usr/share/nginx/html/THIRD_PARTY_NOTICES.md
 
 EXPOSE 80

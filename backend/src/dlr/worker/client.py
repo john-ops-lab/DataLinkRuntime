@@ -84,7 +84,7 @@ class ControlClient:
         name: str,
         capabilities: list[str],
         *,
-        protocol_version: int = 1,
+        protocol_version: int = 3,
         isolation_capabilities: Mapping[str, bool] | None = None,
     ) -> dict[str, Any]:
         raw = self._expect(
@@ -115,64 +115,6 @@ class ControlClient:
 
     def mark_offline(self, worker_id: int) -> None:
         self._expect("POST", f"/api/workers/{worker_id}/offline", expected=204)
-
-    def claim(self, worker_id: int, wait_seconds: int) -> dict[str, Any] | None:
-        """Long-poll one task; None when the wait deadline expires (204)."""
-        status, raw = self._request(
-            "POST",
-            f"/api/workers/{worker_id}/tasks/claim?wait_seconds={wait_seconds}",
-        )
-        if status >= 500:
-            raise ControlUnavailableError(f"control answered {status}")
-        if status == 204:
-            return None
-        if status != 200:
-            raise ClientError(status, raw.decode(errors="replace"))
-        task: dict[str, Any] = json.loads(raw)
-        return task
-
-    def report_result(
-        self,
-        worker_id: int,
-        execution_id: int,
-        result: dict[str, Any],
-        *,
-        claim_token: str | None = None,
-    ) -> dict[str, Any]:
-        raw = self._expect(
-            "POST",
-            f"/api/workers/{worker_id}/executions/{execution_id}/result",
-            result,
-            headers={"X-DLR-Claim-Token": claim_token} if claim_token is not None else None,
-        )
-        body: dict[str, Any] = json.loads(raw)
-        return body
-
-    def report_progress(
-        self,
-        worker_id: int,
-        execution_id: int,
-        stdout_chunk: str,
-        stderr_chunk: str,
-        *,
-        claim_token: str | None = None,
-    ) -> bool:
-        """Best-effort live-log upload (M3). Progress is never retried here;
-        callers swallow failures so an Execution can never fail because its
-        live logs could not be delivered. Uses a dedicated short timeout so
-        a stuck upload can never stretch the adapter execution deadline.
-
-        Returns True when Control requested cancellation of this Execution
-        (M3.2); empty uploads are legal and double as the cancel poll."""
-        raw = self._expect(
-            "POST",
-            f"/api/workers/{worker_id}/executions/{execution_id}/progress",
-            {"stdout_chunk": stdout_chunk, "stderr_chunk": stderr_chunk},
-            timeout=self.PROGRESS_TIMEOUT_SECONDS,
-            headers={"X-DLR-Claim-Token": claim_token} if claim_token is not None else None,
-        )
-        body = json.loads(raw) if raw else {}
-        return bool(body.get("cancel_requested", False))
 
     def download_input_artifact(
         self,
@@ -241,6 +183,20 @@ class ControlClient:
             expected=204,
         )
 
+    def claim_cleanup(self, worker_id: int) -> dict[str, Any] | None:
+        """Claim an adapter filesystem cleanup, never an execution payload."""
+        status, raw = self._request("POST", f"/api/workers/{worker_id}/cleanups/claim")
+        if status >= 500:
+            raise ControlUnavailableError(f"control answered {status}")
+        if status == 204:
+            return None
+        if status != 200:
+            raise ClientError(status, raw.decode(errors="replace"))
+        body = json.loads(raw)
+        if not isinstance(body, dict) or body.get("kind") != "adapter_cleanup":
+            raise ClientError(502, "cleanup response is not a cleanup task")
+        return body
+
     def claim_v3(self, worker_id: int, dispatch: Mapping[str, Any]) -> dict[str, Any]:
         """Submit only the small dispatch body; Control owns all DB reads."""
         raw = self._expect(
@@ -251,7 +207,7 @@ class ControlClient:
         )
         body = json.loads(raw)
         if not isinstance(body, dict):
-            raise ClientError(502, "v3 claim response is not an object")
+            raise ClientError(502, "claim response is not an object")
         return body
 
     def _attempt_request(
@@ -265,11 +221,13 @@ class ControlClient:
             "POST",
             f"/api/workers/{worker_id}/attempts/{attempt_id}/{action}",
             dict(payload),
-            timeout=self._timeout_seconds,
+            timeout=self.PROGRESS_TIMEOUT_SECONDS
+            if action == "progress"
+            else self._timeout_seconds,
         )
         body = json.loads(raw)
         if not isinstance(body, dict):
-            raise ClientError(502, "v3 attempt response is not an object")
+            raise ClientError(502, "attempt response is not an object")
         return body
 
     def start_attempt(

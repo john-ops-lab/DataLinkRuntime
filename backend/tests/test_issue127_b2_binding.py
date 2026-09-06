@@ -26,6 +26,7 @@ from dlr.control.models import (
 from dlr.control.schemas.input_config import AdapterInputConfigUpsert
 from dlr.control.services import input_config as input_config_service
 from dlr.control.services.schedule import scheduler_tick
+from runtime_api_support import claim_execution
 from test_adapters import save_version
 
 FIXED_NOW = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
@@ -427,7 +428,8 @@ def test_active_execution_lock_and_lifecycle_keep_snapshot_immutable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "managed_files_enabled", True)
-    monkeypatch.setattr(input_config_service, "database_now", lambda _session: FIXED_NOW)
+    # Execution/Outbox use the real DB clock. The later lifecycle transition
+    # receives its future clock explicitly, without aging a new Outbox row.
     adapter = create_task(api_client, "b2-lifecycle-lock")
     save_version(api_client, adapter["id"])
     artifact_id = create_artifact(session_factory, adapter["id"], "expiring.txt")
@@ -459,6 +461,8 @@ def test_active_execution_lock_and_lifecycle_keep_snapshot_immutable(
     }
     assert "storage_key" not in execution.text
     assert "upload_session_id" not in execution.text
+    claimed = claim_execution(api_client, execution.json()["target_worker_id"])
+    assert claimed.status_code == 200, claimed.text
 
     locked = api_client.put(
         f"/api/adapters/{adapter['id']}/input-config",
@@ -501,7 +505,7 @@ def test_active_execution_lock_and_lifecycle_keep_snapshot_immutable(
             select(Execution).where(Execution.id == execution.json()["id"])
         )
         assert current_execution is not None
-        assert current_execution.status == "pending"
+        assert current_execution.status == "running"
         assert current_execution.input_snapshot == snapshot
 
 

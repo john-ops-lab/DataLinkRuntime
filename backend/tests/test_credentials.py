@@ -14,11 +14,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from dlr.common.config import settings
 from dlr.control.models.platform import Credential
 from dlr.control.services import secrets as secrets_service
-from dlr.worker import executor
 from test_adapters import create_adapter, save_version
 from test_executions import create_execution
 from test_runtime import make_payload, runtime_settings
 from test_workers import claim, register_worker
+from worker_runtime_support import run_with_test_sandbox
 
 PLAIN_PASSWORD = "db-plain-42"
 PLAIN_TOKEN = "token-plain-77"
@@ -332,7 +332,7 @@ def test_executor_injects_payload_secrets_and_redacts(tmp_path: object) -> None:
     payload = make_payload(code=code)
     payload["secrets"] = {"API_TOKEN": "bound-secret-value"}
 
-    result = executor.run(payload, runtime_settings(tmp_path))
+    result = run_with_test_sandbox(payload, runtime_settings(tmp_path))
     assert result["status"] == "succeeded", result.get("error")
     # The subprocess saw the injected secret (via env and Runtime Contract).
     assert result["output"]["length"] == len("bound-secret-value")
@@ -352,7 +352,7 @@ def test_executor_output_json_redacts_payload_secrets(tmp_path: object) -> None:
     payload = make_payload(code=code)
     payload["secrets"] = {"DB_PASSWORD": "output-leak-secret"}
 
-    result = executor.run(payload, runtime_settings(tmp_path))
+    result = run_with_test_sandbox(payload, runtime_settings(tmp_path))
     assert result["status"] == "succeeded", result.get("error")
     assert "output-leak-secret" not in str(result["output"])
     assert result["output"]["token"] == "[REDACTED]"

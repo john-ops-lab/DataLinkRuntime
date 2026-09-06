@@ -19,6 +19,7 @@ from dlr.common.config import Settings, settings
 from dlr.control.ai import providers, tool_audit
 from dlr.control.models import AdapterVersion, AiModelSetting, Execution
 from dlr.control.schemas.ai import AiModelOutput, AiSettingDraft
+from runtime_api_support import ISOLATION_PASS
 
 PROVIDER_TOKEN = "provider-token-plaintext-sentinel"
 BUSINESS_SECRET = "business-secret-plaintext-sentinel"
@@ -64,7 +65,12 @@ def save_version(
     if not compatible:
         registered = client.post(
             "/api/workers/register",
-            json={"name": f"ai-worker-{adapter_id}", "capabilities": [adapter["language"]]},
+            json={
+                "protocol_version": 3,
+                "isolation_capabilities": dict(ISOLATION_PASS),
+                "name": f"ai-worker-{adapter_id}",
+                "capabilities": [adapter["language"]],
+            },
             headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
         )
         assert registered.status_code == 200, registered.text

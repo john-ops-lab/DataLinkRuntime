@@ -48,7 +48,7 @@ export interface Adapter {
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;
   archived_at?: string | null;
-  /** Immutable provenance set only by the template-instantiation endpoint. */
+  /** Legacy provenance; new copies are ordinary independent adapters. */
   template_scenario_slug?: string | null;
   template_version?: string | null;
   running_execution_id?: number | null;
@@ -63,12 +63,6 @@ export interface LocalizedText {
   en: string;
 }
 
-export type TemplateMaturity =
-  | "reference-generated"
-  | "syntax-verified"
-  | "fixture-verified"
-  | "live-verified";
-
 export interface TemplateTheme {
   slug: string;
   name: LocalizedText;
@@ -80,18 +74,6 @@ export interface TemplateTheme {
 export interface TemplateVariantSummary {
   language: AdapterLanguage;
   available: boolean;
-  maturity: TemplateMaturity;
-}
-
-export interface TemplateSource {
-  id: string;
-  url: string;
-  revision: string;
-  reference: string;
-  license: string;
-  license_evidence: string;
-  use_mode: "adaptation-allowed" | "behavior-research-only" | "official-api";
-  checked_at: string;
 }
 
 export interface TemplateScenarioSummary {
@@ -118,11 +100,6 @@ export interface TemplateScenarioListResponse {
 
 export interface TemplateScenarioDetail extends TemplateScenarioSummary {
   details: LocalizedText;
-  input_summary: LocalizedText;
-  output_summary: LocalizedText;
-  risk: LocalizedText;
-  modes: ("preview" | "sync" | "transform" | "request")[];
-  sources: TemplateSource[];
 }
 
 export interface TemplateVariant {
@@ -132,27 +109,20 @@ export interface TemplateVariant {
   language: AdapterLanguage;
   adapter_type: AdapterType;
   template_version: string;
-  behavior_contract_version: string;
-  maturity: TemplateMaturity;
   code: string;
   requirements: string;
-  install_notes: LocalizedText;
   input_skeleton: Record<string, unknown>;
-  input_contract: Record<string, unknown>;
-  output_contract: Record<string, unknown>;
+  output_example: Record<string, unknown>;
   runtime_config: Record<string, unknown>;
-  runtime_guidance: LocalizedText;
-  sources: TemplateSource[];
 }
 
 export interface TemplateScenarioQuery {
-  theme: string;
+  theme?: string;
   q?: string;
   vendor?: string;
   adapter_type?: AdapterType;
   protocol?: string;
   language?: AdapterLanguage;
-  maturity?: TemplateMaturity;
   page?: number;
   page_size?: number;
 }
@@ -202,8 +172,8 @@ export interface Execution {
   /** M5.2: the planned point for trigger=schedule; null for other triggers. */
   scheduled_for: string | null;
   status: ExecutionStatus;
-  /** Issue #130: backend facts are additive and absent on legacy responses. */
-  dispatch_backend?: "legacy" | "rabbitmq";
+  /** All executions use the durable message runtime. */
+  dispatch_backend: "rabbitmq";
   dispatch_generation?: number;
   queued_at?: string | null;
   next_attempt_at?: string | null;
@@ -213,7 +183,7 @@ export interface Execution {
   resource_profile_snapshot?: Record<string, unknown>;
   resource_class?: string | null;
   last_error_code?: string | null;
-  /** Server-provided replay decision; B2 endpoints may add this later. */
+  /** Server-provided replay decision. */
   replay_available?: boolean;
   replay_unavailable_reason?: string | null;
   input: unknown;
@@ -300,7 +270,7 @@ export interface ExecutionSummary {
   /** M5.2: the planned point for trigger=schedule; null for other triggers. */
   scheduled_for: string | null;
   status: ExecutionStatus;
-  dispatch_backend?: "legacy" | "rabbitmq";
+  dispatch_backend: "rabbitmq";
   queued_at?: string | null;
   created_at: string;
   started_at: string | null;
@@ -314,7 +284,7 @@ export interface ExecutionHistoryPage {
   next_before_id: number | null;
 }
 
-/** Safe Attempt facts returned by the B2 reliable-runtime detail endpoint. */
+/** Safe attempt facts returned by the execution detail endpoint. */
 export interface AttemptSummary {
   id: number;
   execution_id: number;
@@ -345,7 +315,7 @@ export interface ReliableExecutionIncident {
 
 export interface ReliableExecutionDetail {
   execution_id: number;
-  dispatch_backend: "legacy" | "rabbitmq";
+  dispatch_backend: "rabbitmq";
   status: string;
   attempts: AttemptSummary[];
   incidents: ReliableExecutionIncident[];

@@ -58,6 +58,7 @@ function makeSchedule(): AdapterSchedule {
 
 function makeExecution(overrides: Partial<Execution> = {}): Execution {
   return {
+    dispatch_backend: "rabbitmq",
     id: 31,
     adapter_id: 7,
     version_id: 11,

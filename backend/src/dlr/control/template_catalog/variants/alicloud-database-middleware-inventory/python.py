@@ -10,6 +10,42 @@ import time
 from datetime import UTC, datetime
 from urllib import error, parse, request
 
+# 阿里云数据库与基础服务：可修改的配置集中在这里。
+# 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+# 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+# 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+# ALICLOUD_ACCESS_KEY_ID：阿里云 AccessKey ID。
+# ALICLOUD_ACCESS_KEY_SECRET：阿里云 AccessKey Secret。
+# ALICLOUD_SECURITY_TOKEN：阿里云临时凭据 Token，仅使用临时凭据时配置。
+# CMDB_TOKEN：目标 CMDB Token，仅同步时配置。
+CONFIG = {
+    # preview 只采集并返回结果；sync 会写入目标 CMDB，请先配置下方地址和 CMDB_TOKEN 凭据。
+    "mode": "preview",
+    # 填写云账号标识，用于区分不同账号的资产；不是密码。
+    "account": "EXAMPLE_ACCOUNT",
+    # 填写需要采集的区域 ID，可配置多个区域。
+    "regions": ["cn-hangzhou"],
+    # 单次运行最多读取的页数。
+    "max_pages": 50,
+    # 单次运行最多返回的记录数。
+    "max_records": 5000,
+    # 单次运行处理或返回的数据大小上限，单位字节。
+    "max_bytes": 8388608,
+    # 每次请求的条数，不能超过目标接口限制。
+    "page_size": 100,
+    # 单次请求超时时间，单位秒。
+    "timeout_seconds": 30,
+    # 每批处理的记录数。
+    "batch_size": 200,
+    # 同步范围标识：同一账号、区域和资源范围保持不变。
+    "source_scope": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou",
+    # 仅 sync 使用：每次新的扫描填写新标识，同一次运行重试保持不变。
+    "scan_id": "",
+    # 仅 sync 使用：填写目标 CMDB 地址；目标需实现下方代码调用的扫描和批量写入接口。
+    "cmdb_base_url": "https://cmdb.example",
+}
+
+
 PROVIDER = "alicloud"
 OPERATIONS = json.loads(
     r"""[["rds","rds","rds.aliyuncs.com","DescribeDBInstances","2014-08-15","Items.DBInstance",["DBInstanceId"],["DBInstanceDescription"],["ZoneId"],["DBInstanceStatus"],[["VpcId","vpc","located_in"],["VSwitchId","vswitch","located_in"]],["next-token","MaxResults",1,100,"NextToken","NextToken","",""]],["redis","r-kvstore","r-kvstore.aliyuncs.com","DescribeInstances","2015-01-01","Instances.KVStoreInstance",["InstanceId"],["InstanceName"],["ZoneId"],["InstanceStatus"],[["VpcId","vpc","located_in"],["VSwitchId","vswitch","located_in"]],["numbered","PageSize",1,50,"PageNumber","","",""]],["mongodb","dds","mongodb.aliyuncs.com","DescribeDBInstances","2015-12-01","DBInstances.DBInstance",["DBInstanceId"],["DBInstanceDescription"],["ZoneId"],["DBInstanceStatus"],[["VpcId","vpc","located_in"],["VSwitchId","vswitch","located_in"]],["numbered","PageSize",30,30,"PageNumber","","",""]],["nas","nas","nas.aliyuncs.com","DescribeFileSystems","2017-06-26","FileSystems.FileSystem",["FileSystemId"],["Description"],["ZoneId"],["Status"],[["VpcId","vpc","located_in"]],["numbered","PageSize",1,100,"PageNumber","","",""]],["ram_user","ram","ram.aliyuncs.com","ListUsers","2015-05-01","Users.User",["UserId"],["UserName"],[""],[""],[],["marker","MaxItems",1,100,"Marker","Marker","",""]],["kms_key","kms","kms.aliyuncs.com","ListKeys","2016-01-20","Keys.Key",["KeyId"],["KeyId"],[""],[""],[],["numbered","PageSize",1,100,"PageNumber","","",""]],["actiontrail","actiontrail","actiontrail.aliyuncs.com","DescribeTrails","2020-07-06","TrailList",["TrailRegion","Name"],["Name"],["TrailRegion"],["Status"],[],["none","",0,0,"","","",""]],["security_center_asset","sas","sas.aliyuncs.com","DescribeCloudCenterInstances","2018-12-03","Instances",["InstanceId"],["InstanceName"],["Region"],["Status"],[["VpcInstanceId","vpc","located_in"]],["next-token","PageSize",1,20,"NextToken","PageInfo.NextToken","UseNextToken","true"]]]"""
@@ -164,7 +200,9 @@ def _alicloud(operation, region, query, context, timeout):
     from alibabacloud_tea_openapi.utils_models import Config, OpenApiRequest, Params
     from alibabacloud_tea_util.models import RuntimeOptions
 
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     access = context.secrets.get("ALICLOUD_ACCESS_KEY_ID")
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     secret = context.secrets.get("ALICLOUD_ACCESS_KEY_SECRET")
     if not access or not secret:
         raise ValueError("missing_credential")
@@ -173,6 +211,7 @@ def _alicloud(operation, region, query, context, timeout):
         Config(
             access_key_id=access,
             access_key_secret=secret,
+            # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
             security_token=context.secrets.get("ALICLOUD_SECURITY_TOKEN"),
             endpoint=endpoint,
             region_id=region,
@@ -209,7 +248,9 @@ def _tc3_key(secret, date, service):
 
 
 def _tencentcloud(operation, region, page, size, context, timeout):
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     access = context.secrets.get("TENCENTCLOUD_SECRET_ID")
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     secret = context.secrets.get("TENCENTCLOUD_SECRET_KEY")
     if not access or not secret:
         raise ValueError("missing_credential")
@@ -252,6 +293,7 @@ def _tencentcloud(operation, region, page, size, context, timeout):
         "X-TC-Timestamp": str(timestamp),
         "X-TC-Region": region,
     }
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     token = context.secrets.get("TENCENTCLOUD_TOKEN")
     if token:
         headers["X-TC-Token"] = token
@@ -295,7 +337,8 @@ def _sync(context, input, assets, relationships, summary, deadline):
         raise ValueError("invalid_scan_id")
     if not isinstance(scope, str) or not _ID.fullmatch(scope):
         raise ValueError("invalid_source_scope")
-    base = context.config.get("cmdb_base_url") if isinstance(context.config, dict) else None
+    base = input.get("cmdb_base_url")
+    # 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
     token = context.secrets.get("CMDB_TOKEN")
     try:
         target = parse.urlsplit(base) if isinstance(base, str) else None
@@ -400,6 +443,11 @@ def _sync(context, input, assets, relationships, summary, deadline):
 
 
 def handle(context, input):
+    if input is None:
+        input = {}
+    if not isinstance(input, dict):
+        raise ValueError("输入必须是 JSON 对象")
+    input = {**CONFIG, **input}
     if not isinstance(input, dict):
         raise ValueError("input_must_be_object")
     mode = input.get("mode", "preview")

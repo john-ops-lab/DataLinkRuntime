@@ -18,7 +18,6 @@ from pydantic import BaseModel, ValidationError
 
 from dlr.control.template_catalog.models import (
     TemplateCatalogManifest,
-    TemplateMaturityReceipt,
     TemplateProvenanceCatalog,
     TemplateProvenanceSource,
     TemplateScenarioAsset,
@@ -188,8 +187,8 @@ def _unique_map[AssetModel: BaseModel](
 class TemplateCatalog:
     """Immutable catalog metadata with a bounded selected-source cache.
 
-    Construction reads the manifest, Scenario metadata, provenance and
-    maturity receipts, but deliberately does not read any Variant source.
+    Construction reads the manifest, Scenario metadata and provenance,
+    but deliberately does not read any Variant source.
     ``load_variant`` is the only runtime path that reads code. Release gates
     call ``validate_all_variant_sources`` to verify all declared hashes.
     """
@@ -248,7 +247,6 @@ class TemplateCatalog:
                 )
         scenarios: dict[str, TemplateScenarioAsset] = {}
         variants: dict[tuple[str, str], TemplateVariantAsset] = {}
-        receipts: dict[tuple[str, str], TemplateMaturityReceipt] = {}
 
         for slug, ref in refs.items():
             theme_slug = ref.theme_slug
@@ -265,8 +263,8 @@ class TemplateCatalog:
             if scenario.logo_key != EXPECTED_LOGO_KEYS[slug]:
                 raise _stable_error(metadata_resource, f"unknown or mismatched logo_key for {slug}")
             language_map = _unique_map(scenario.variants, "language", resource=metadata_resource)
-            if frozenset(language_map) != EXPECTED_LANGUAGES:
-                raise _stable_error(metadata_resource, "Scenario must contain exactly 3 languages")
+            if not language_map or not frozenset(language_map).issubset(EXPECTED_LANGUAGES):
+                raise _stable_error(metadata_resource, "Scenario must contain supported languages")
             self._validate_provenance_ids(
                 scenario.provenance_ids, sources, resource=metadata_resource
             )
@@ -285,16 +283,6 @@ class TemplateCatalog:
                 if variant.code_resource != expected_code:
                     raise _stable_error(variant.code_resource, "unexpected Variant source mapping")
                 _resource_at(self._root, variant.code_resource)
-                expected_receipt = f"receipts/{slug}/{language}.json"
-                _safe_resource_path(variant.receipt_resource, prefix="receipts/", suffix=".json")
-                if variant.receipt_resource != expected_receipt:
-                    raise _stable_error(variant.receipt_resource, "unexpected receipt mapping")
-                receipt = _read_json(
-                    self._root,
-                    variant.receipt_resource,
-                    TemplateMaturityReceipt,
-                )
-                self._validate_receipt(scenario, variant, receipt)
                 self._validate_provenance_ids(
                     variant.provenance_ids, sources, resource=metadata_resource
                 )
@@ -305,7 +293,6 @@ class TemplateCatalog:
                     )
                 key = (slug, language)
                 variants[key] = variant
-                receipts[key] = receipt
             scenarios[slug] = scenario
 
         coverage_scenarios = {entry.scenario_slug for entry in self.provenance.coverage}
@@ -334,7 +321,6 @@ class TemplateCatalog:
         self._themes = MappingProxyType(themes)
         self._scenarios = MappingProxyType(scenarios)
         self._variants = MappingProxyType(variants)
-        self._receipts = MappingProxyType(receipts)
         self._sources = MappingProxyType(sources)
 
     @staticmethod
@@ -349,47 +335,6 @@ class TemplateCatalog:
         unknown = set(identifiers) - set(sources)
         if unknown:
             raise _stable_error(resource, f"unknown provenance id {sorted(unknown)[0]}")
-
-    @staticmethod
-    def _validate_receipt(
-        scenario: TemplateScenarioAsset,
-        variant: TemplateVariantAsset,
-        receipt: TemplateMaturityReceipt,
-    ) -> None:
-        resource = variant.receipt_resource
-        expected = (
-            scenario.slug,
-            scenario.version,
-            variant.language,
-            variant.code_sha256,
-            variant.behavior_contract_version,
-            variant.maturity,
-        )
-        actual = (
-            receipt.scenario_slug,
-            receipt.version,
-            receipt.language,
-            receipt.source_sha256,
-            receipt.behavior_contract_version,
-            receipt.maturity,
-        )
-        if actual != expected:
-            raise _stable_error(resource, "receipt does not match its Variant")
-        evidence_kinds = {evidence.kind for evidence in receipt.evidence}
-        maturity_requirements = {
-            "reference-generated": frozenset(),
-            "syntax-verified": frozenset({"syntax"}),
-            "fixture-verified": frozenset({"syntax", "fixture"}),
-            "live-verified": frozenset({"syntax", "fixture", "live"}),
-        }
-        required = maturity_requirements[receipt.maturity]
-        if not required.issubset(evidence_kinds):
-            raise _stable_error(resource, "receipt lacks evidence required by maturity")
-        if receipt.maturity == "reference-generated":
-            if receipt.evidence or receipt.verified_at is not None:
-                raise _stable_error(resource, "reference-generated receipt must be unverified")
-        elif receipt.verified_at is None:
-            raise _stable_error(resource, "verified maturity requires verified_at")
 
     @property
     def themes(self) -> tuple[TemplateThemeAsset, ...]:
@@ -471,10 +416,11 @@ class TemplateCatalog:
     def validate_all_variant_sources(self) -> None:
         """Read and hash every source for build, wheel and image gates."""
         for scenario in sorted(self._scenarios.values(), key=lambda item: item.slug):
-            for language in ("python", "javascript", "java"):
-                if self.load_variant(scenario.slug, language) is None:  # pragma: no cover
+            for variant in scenario.variants:
+                if self.load_variant(scenario.slug, variant.language) is None:  # pragma: no cover
                     raise _stable_error(
-                        f"{scenario.slug}/{language}", "validated Variant unexpectedly missing"
+                        f"{scenario.slug}/{variant.language}",
+                        "validated Variant unexpectedly missing",
                     )
 
 

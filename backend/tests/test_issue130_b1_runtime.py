@@ -37,6 +37,7 @@ from dlr.control.models import (
     ScheduleDispatchOutcome,
     Worker,
 )
+from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
 from dlr.control.services import adapter as adapter_service
 from dlr.control.services import (
     admission,
@@ -59,7 +60,6 @@ from test_credentials import create_credential
 
 
 def _enable_rabbitmq_test(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", True)
     monkeypatch.setattr(settings, "rabbitmq_url", "amqp://dlr:test-password@rabbitmq:5672/%2F")
     monkeypatch.setattr(settings, "rabbitmq_management_url", "http://rabbitmq:15672")
     rabbitmq.mark_runtime_ready()
@@ -68,7 +68,12 @@ def _enable_rabbitmq_test(monkeypatch: pytest.MonkeyPatch) -> None:
 def _register_reliable_worker(client: TestClient, name: str) -> dict:
     response = client.post(
         "/api/workers/register",
-        json={"name": name, "capabilities": ["python"], "protocol_version": 3},
+        json={
+            "name": name,
+            "capabilities": ["python"],
+            "protocol_version": 3,
+            "isolation_capabilities": {name: True for name in REQUIRED_ISOLATION_CAPABILITIES},
+        },
         headers={"Authorization": "Bearer test-worker-token"},
     )
     assert response.status_code == 200, response.text
@@ -906,17 +911,18 @@ def test_targetless_health_rejects_batch_local_worker_generation(
     assert rabbitmq.runtime_health()["ready"] is False
 
 
-def test_gate_off_does_not_hide_configured_repair_degradation(
+def test_runtime_health_exposes_configured_repair_degradation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _enable_rabbitmq_test(monkeypatch)
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", False)
     rabbitmq.mark_runtime_failure("topology_unavailable")
 
     status = rabbitmq.runtime_health()
 
-    assert status["enabled"] is False
-    assert status["ready"] is False
+    assert status["enabled"] is True
+    # Verified topology still permits durable Outbox ingress during an outage.
+    assert status["ready"] is True
+    assert status["repair"]["ready"] is False
     assert status["repair"]["status"] == "degraded"
     assert status["repair"]["last_error_code"] == "topology_unavailable"
 
@@ -1325,7 +1331,7 @@ def test_relay_isolates_poison_payload_and_publishes_good_row_in_same_batch(
         assert poison_execution is not None and poison_execution.status == "queued"
 
 
-def test_gate_off_relay_recovers_existing_pending_outbox(
+def test_relay_recovers_existing_pending_outbox(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
@@ -1333,7 +1339,12 @@ def test_gate_off_relay_recovers_existing_pending_outbox(
     _enable_rabbitmq_test(monkeypatch)
     worker = api_client.post(
         "/api/workers/register",
-        json={"name": "gate-off-relay-worker", "capabilities": ["python"], "protocol_version": 3},
+        json={
+            "name": "gate-off-relay-worker",
+            "capabilities": ["python"],
+            "protocol_version": 3,
+            "isolation_capabilities": {name: True for name in REQUIRED_ISOLATION_CAPABILITIES},
+        },
         headers={"Authorization": "Bearer test-worker-token"},
     ).json()
     adapter = create_adapter(api_client, name="gate-off-relay")
@@ -1349,7 +1360,6 @@ def test_gate_off_relay_recovers_existing_pending_outbox(
     assert accepted.status_code == 202, accepted.text
     execution_id = accepted.json()["id"]
 
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", False)
     monkeypatch.setattr(rabbitmq, "bootstrap_worker_topology", lambda *_: None)
     monkeypatch.setattr(outbox, "_publish_row", lambda *_: None)
     with session_factory() as session:
@@ -1539,7 +1549,6 @@ def test_health_fails_closed_for_pending_outbox_without_repair_url(
     accepted = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
     assert accepted.status_code == 202, accepted.text
 
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", False)
     monkeypatch.setattr(settings, "rabbitmq_url", None)
     response = api_client.get("/api/health")
 
@@ -2173,7 +2182,12 @@ def test_rabbit_failure_logs_never_include_uri_userinfo(
     _enable_rabbitmq_test(monkeypatch)
     worker = api_client.post(
         "/api/workers/register",
-        json={"name": "redaction-worker", "capabilities": ["python"], "protocol_version": 3},
+        json={
+            "name": "redaction-worker",
+            "capabilities": ["python"],
+            "protocol_version": 3,
+            "isolation_capabilities": {name: True for name in REQUIRED_ISOLATION_CAPABILITIES},
+        },
         headers={"Authorization": "Bearer test-worker-token"},
     ).json()
     adapter = create_adapter(api_client, name="redaction-outbox")
@@ -2189,7 +2203,6 @@ def test_rabbit_failure_logs_never_include_uri_userinfo(
     def fail_connection() -> _FakeConnection:
         raise RuntimeError(sentinel)
 
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", False)
     with (
         caplog.at_level(logging.WARNING, logger="dlr.control.outbox"),
         session_factory() as session,
@@ -2207,9 +2220,9 @@ def test_reconcile_repairs_zero_outstanding_stale_adapter_counter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _enable_rabbitmq_test(monkeypatch)
+    worker = _register_reliable_worker(api_client, name="stale-admission-worker")
     adapter = create_adapter(api_client, name="stale-admission")
     save_version(api_client, adapter["id"])
-    worker = _register_reliable_worker(api_client, name="stale-admission-worker")
     with session_factory.begin() as session:
         session.execute(update(Worker).where(Worker.id == worker["id"]).values(status="online"))
     api_client.patch(

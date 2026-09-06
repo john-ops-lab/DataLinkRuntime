@@ -1,4 +1,4 @@
-"""Final Cutover gates and post-Cutover invariants for Issue #130 Batch 3."""
+"""Single-runtime protocol, schema and concurrent Slot invariants."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from dlr.common.config import Settings, settings
+from dlr.common.config import Settings
 from dlr.control.models import (
     AdapterExecutionAdmission,
     AdapterExecutionSlot,
@@ -21,21 +21,139 @@ from dlr.control.models import (
     ExecutionAttempt,
     ExecutionOutbox,
     GlobalExecutionAdmission,
+    Worker,
 )
 from dlr.control.schemas.reliable_runtime import AttemptResultBody, ClaimDecision
 from dlr.control.schemas.worker import REQUIRED_ISOLATION_CAPABILITIES
 from dlr.control.services import attempt as attempt_service
-from dlr.control.services import migration as migration_service
 from dlr.control.services import rabbitmq
 from test_adapters import create_adapter, save_version
 
 WORKER_HEADERS = {"Authorization": "Bearer test-worker-token"}
 ISOLATION_PASS = {name: True for name in REQUIRED_ISOLATION_CAPABILITIES}
-LEGACY_INDEX_SQL = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_executions_active_adapter "
-    "ON executions (adapter_id) "
-    "WHERE dispatch_backend = 'legacy' AND status IN ('pending', 'running')"
+
+
+def test_unified_runtime_has_no_dispatch_or_cutover_switches() -> None:
+    removed = {
+        "rabbitmq_execution_enabled",
+        "rabbitmq_execution_canary_enabled",
+        "min_worker_protocol_version",
+        "legacy_execution_claim_enabled",
+        "cutover_backup_restore_gate_passed",
+        "cutover_sandbox_gate_passed",
+        "cutover_slot_gate_passed",
+    }
+    assert removed.isdisjoint(Settings.model_fields)
+
+
+@pytest.mark.parametrize("protocol_version", [1, 2, 4])
+def test_worker_registration_rejects_other_protocols(
+    api_client: TestClient,
+    protocol_version: int,
+) -> None:
+    response = api_client.post(
+        "/api/workers/register",
+        json={
+            "name": "obsolete-worker",
+            "capabilities": ["python"],
+            "protocol_version": protocol_version,
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert response.status_code == 422
+
+
+def test_private_cgroup_namespace_is_required_for_execution_readiness(
+    api_client: TestClient,
+) -> None:
+    capabilities = dict(ISOLATION_PASS)
+    del capabilities["cgroup_namespace_private"]
+    response = api_client.post(
+        "/api/workers/register",
+        json={
+            "name": "host-cgroup-worker",
+            "capabilities": ["python"],
+            "protocol_version": 3,
+            "isolation_capabilities": capabilities,
+        },
+        headers=WORKER_HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["rabbitmq_execution_v3"] is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("dispatch_backend", "legacy"),
+        ("dispatch_generation", 0),
+        ("status", "pending"),
+        ("status", "failed"),
+        ("status", "timeout"),
+    ],
 )
+def test_execution_database_rejects_retired_runtime_states(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    field: str,
+    value: object,
+) -> None:
+    worker = _register_worker(api_client, "schema-worker")
+    rabbitmq.mark_runtime_ready()
+    adapter = _adapter(api_client, worker["id"], "schema-adapter")
+    execution = _execution(api_client, adapter["id"], "schema-execution")
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        setattr(row, field, value)
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
+
+
+def test_worker_database_rejects_legacy_protocol(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    worker = _register_worker(api_client, "schema-protocol-worker")
+    with session_factory() as session:
+        row = session.get(Worker, worker["id"])
+        assert row is not None
+        row.protocol_version = 2
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("get", "/api/admin/reliable-runtime/inventory"),
+        ("get", "/api/admin/reliable-runtime/cutover/preflight"),
+        ("post", "/api/admin/reliable-runtime/migration/dry-run"),
+        ("post", "/api/admin/reliable-runtime/migration/legacy-pending"),
+        ("post", "/api/admin/reliable-runtime/migration/legacy-running-drain"),
+        ("post", "/api/admin/reliable-runtime/cutover/retire-legacy-index"),
+        ("post", "/api/adapters/1/executions/canary"),
+        ("post", "/api/workers/1/claim"),
+    ],
+)
+def test_retired_rollout_endpoints_are_absent(
+    api_client: TestClient,
+    method: str,
+    path: str,
+) -> None:
+    assert api_client.request(method, path, json={}).status_code == 404
+
+
+def test_slots_are_sole_concurrency_authority_on_fresh_schema(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+) -> None:
+    worker = _register_worker(api_client, "unified-slot-worker")
+    rabbitmq.mark_runtime_ready()
+    assert not _index_present(session_factory)
+    _exercise_slot_claim_result_and_recovery(api_client, session_factory, worker["id"], "unified")
 
 
 def _register_worker(
@@ -58,53 +176,6 @@ def _register_worker(
     return cast(dict[str, Any], response.json())
 
 
-def _configure_verified_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    worker_ids: list[int],
-    *,
-    ingress: bool,
-    minimum_protocol: int,
-    legacy_claim: bool = True,
-    backup_restore_gate: bool = True,
-    sandbox_gate: bool = True,
-    slot_gate: bool = False,
-) -> None:
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", ingress)
-    monkeypatch.setattr(settings, "rabbitmq_execution_canary_enabled", False)
-    monkeypatch.setattr(
-        settings,
-        "rabbitmq_url",
-        "amqp://dlr:test-password@rabbitmq:5672",
-    )
-    monkeypatch.setattr(settings, "rabbitmq_vhost", "/")
-    monkeypatch.setattr(settings, "rabbitmq_management_url", "http://rabbitmq:15672")
-    monkeypatch.setattr(settings, "min_worker_protocol_version", minimum_protocol)
-    monkeypatch.setattr(settings, "legacy_execution_claim_enabled", legacy_claim)
-    monkeypatch.setattr(
-        settings,
-        "cutover_backup_restore_gate_passed",
-        backup_restore_gate,
-    )
-    monkeypatch.setattr(settings, "cutover_sandbox_gate_passed", sandbox_gate)
-    monkeypatch.setattr(settings, "cutover_slot_gate_passed", slot_gate)
-    runtime_values: dict[str, object] = {
-        "status": "ready",
-        "last_error_code": None,
-        "worker_count": len(worker_ids),
-        "capability_verified": True,
-        "configuration_fingerprint": rabbitmq.configuration_fingerprint(worker_ids),
-        "verified_worker_ids": frozenset(worker_ids),
-        "broker_observations": {},
-    }
-    for key, value in runtime_values.items():
-        monkeypatch.setitem(rabbitmq._runtime_status, key, value)
-    monkeypatch.setattr(
-        rabbitmq,
-        "infrastructure_dlq_observation",
-        lambda: {"messages_ready": 0, "messages_unacknowledged": 0},
-    )
-
-
 def _index_present(session_factory: sessionmaker[Session]) -> bool:
     with session_factory() as session:
         return bool(
@@ -116,11 +187,6 @@ def _index_present(session_factory: sessionmaker[Session]) -> bool:
                 )
             )
         )
-
-
-def _restore_legacy_index(engine: Engine) -> None:
-    with engine.begin() as connection:
-        connection.execute(text(LEGACY_INDEX_SQL))
 
 
 def _adapter(client: TestClient, worker_id: int, name: str) -> dict[str, Any]:
@@ -306,306 +372,6 @@ def _exercise_slot_claim_result_and_recovery(
         assert global_admission.outstanding_bytes == 0
 
 
-def _retire_body(schema_revision: str) -> dict[str, str]:
-    return {
-        "confirmation": "retire-legacy-active-index",
-        "expected_schema_revision": schema_revision,
-        "backup_restore_evidence_id": "issue130-b3-test-restore-1",
-    }
-
-
-def test_cutover_settings_default_closed_and_protocol_three_is_explicit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for name in (
-        "DLR_MIN_WORKER_PROTOCOL_VERSION",
-        "DLR_LEGACY_EXECUTION_CLAIM_ENABLED",
-        "DLR_CUTOVER_BACKUP_RESTORE_GATE_PASSED",
-        "DLR_CUTOVER_SANDBOX_GATE_PASSED",
-        "DLR_CUTOVER_SLOT_GATE_PASSED",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    defaults = Settings()
-    assert defaults.min_worker_protocol_version == 1
-    assert defaults.legacy_execution_claim_enabled is True
-    assert defaults.cutover_backup_restore_gate_passed is False
-    assert defaults.cutover_sandbox_gate_passed is False
-    assert defaults.cutover_slot_gate_passed is False
-
-    monkeypatch.setenv("DLR_MIN_WORKER_PROTOCOL_VERSION", "3")
-    assert Settings().min_worker_protocol_version == 3
-
-    monkeypatch.setenv("DLR_LEGACY_EXECUTION_CLAIM_ENABLED", "false")
-    with pytest.raises(ValueError, match="may be false only after"):
-        Settings()
-    for name, value in {
-        "DLR_RABBITMQ_EXECUTION_ENABLED": "true",
-        "DLR_RABBITMQ_URL": "amqp://dlr:example-password@rabbitmq:5672",
-        "DLR_RABBITMQ_MANAGEMENT_URL": "http://rabbitmq:15672",
-        "DLR_CUTOVER_BACKUP_RESTORE_GATE_PASSED": "true",
-        "DLR_CUTOVER_SANDBOX_GATE_PASSED": "true",
-        "DLR_CUTOVER_SLOT_GATE_PASSED": "true",
-    }.items():
-        monkeypatch.setenv(name, value)
-    assert Settings().legacy_execution_claim_enabled is False
-
-
-def test_preflight_is_read_only_and_fails_closed_until_every_worker_and_gate_pass(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    v3 = _register_worker(api_client, "b3-preflight-v3")
-    v2 = _register_worker(api_client, "b3-preflight-v2", protocol_version=2)
-    _configure_verified_runtime(
-        monkeypatch,
-        [v3["id"], v2["id"]],
-        ingress=False,
-        minimum_protocol=1,
-        backup_restore_gate=False,
-        sandbox_gate=True,
-    )
-
-    first = api_client.get("/api/admin/reliable-runtime/cutover/preflight")
-    assert first.status_code == 200, first.text
-    first_body = first.json()
-    assert first_body["status"] == "blocked"
-    assert first_body["read_only"] is True
-    assert first_body["backup_restore_evidence_required"] is True
-    assert set(first_body["blockers"]) == {
-        "backup_restore_gate_not_attested",
-        "worker_v3_isolation_not_ready",
-    }
-    assert first_body["index_retirement"]["status"] == "blocked"
-    assert {
-        "backup_restore_gate_not_attested",
-        "slot_gate_not_attested",
-        "rabbitmq_ingress_not_enabled",
-        "minimum_worker_protocol_not_v3",
-        "worker_v3_isolation_not_ready",
-    }.issubset(first_body["index_retirement"]["blockers"])
-    assert _index_present(session_factory) is True
-
-    upgraded = _register_worker(api_client, "b3-preflight-v2", protocol_version=3)
-    assert upgraded["id"] == v2["id"]
-    _configure_verified_runtime(
-        monkeypatch,
-        [v3["id"], v2["id"]],
-        ingress=False,
-        minimum_protocol=1,
-        backup_restore_gate=True,
-        sandbox_gate=True,
-    )
-    second = api_client.get("/api/admin/reliable-runtime/cutover/preflight")
-    assert second.status_code == 200, second.text
-    assert second.json()["status"] == "ready"
-    assert second.json()["blockers"] == []
-    assert second.json()["index_retirement"] == {
-        "status": "blocked",
-        "blockers": [
-            "slot_gate_not_attested",
-            "rabbitmq_ingress_not_enabled",
-            "minimum_worker_protocol_not_v3",
-            "rabbitmq_ingress_not_ready",
-        ],
-    }
-    assert _index_present(session_factory) is True
-
-
-def test_minimum_v3_and_closed_legacy_claim_reject_old_paths_explicitly(
-    api_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    v1 = _register_worker(api_client, "b3-old-v1", protocol_version=1)
-    v2 = _register_worker(api_client, "b3-old-v2", protocol_version=2)
-    v3 = _register_worker(api_client, "b3-current-v3")
-    monkeypatch.setattr(settings, "min_worker_protocol_version", 3)
-
-    for worker in (v1, v2):
-        response = api_client.post(
-            f"/api/workers/{worker['id']}/tasks/claim",
-            params={"wait_seconds": 0},
-            headers=WORKER_HEADERS,
-        )
-        assert response.status_code == 409, response.text
-        assert response.json()["detail"]["code"] == "worker_protocol_incompatible"
-
-    monkeypatch.setattr(settings, "legacy_execution_claim_enabled", False)
-    closed = api_client.post(
-        f"/api/workers/{v3['id']}/tasks/claim",
-        params={"wait_seconds": 0},
-        headers=WORKER_HEADERS,
-    )
-    assert closed.status_code == 409, closed.text
-    assert closed.json()["detail"]["code"] == "legacy_claim_disabled"
-
-
-def test_cutover_sequence_and_slot_authority_hold_before_and_after_index_retirement(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    test_engine: Engine,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = _register_worker(api_client, "b3-cutover-worker")
-    _configure_verified_runtime(
-        monkeypatch,
-        [worker["id"]],
-        ingress=False,
-        minimum_protocol=1,
-        slot_gate=False,
-    )
-    historical_adapter = _adapter(api_client, worker["id"], "b3-historical-adapter")
-    legacy = api_client.post(
-        f"/api/adapters/{historical_adapter['id']}/executions",
-        json={"input": {"kind": "legacy-history"}},
-    )
-    assert legacy.status_code == 202, legacy.text
-    assert legacy.json()["dispatch_backend"] == "legacy"
-    with session_factory.begin() as session:
-        row = session.get(Execution, legacy.json()["id"])
-        assert row is not None
-        row.status = "succeeded"
-        row.ended_at = datetime.now(UTC)
-
-    preflight = api_client.get("/api/admin/reliable-runtime/cutover/preflight")
-    assert preflight.status_code == 200, preflight.text
-    assert preflight.json()["status"] == "ready"
-    schema_revision = preflight.json()["inventory"]["schema_revision"]
-
-    _configure_verified_runtime(
-        monkeypatch,
-        [worker["id"]],
-        ingress=True,
-        minimum_protocol=1,
-        slot_gate=False,
-    )
-    _exercise_slot_claim_result_and_recovery(
-        api_client,
-        session_factory,
-        worker["id"],
-        "before-index",
-    )
-
-    monkeypatch.setattr(settings, "min_worker_protocol_version", 3)
-    malformed = api_client.post(
-        "/api/admin/reliable-runtime/cutover/retire-legacy-index",
-        json={**_retire_body(schema_revision), "confirmation": "drop-it"},
-    )
-    assert malformed.status_code == 422
-    blocked = api_client.post(
-        "/api/admin/reliable-runtime/cutover/retire-legacy-index",
-        json=_retire_body(schema_revision),
-    )
-    assert blocked.status_code == 409, blocked.text
-    assert "slot_gate_not_attested" in blocked.json()["detail"]["params"]["blockers"]
-    assert _index_present(session_factory) is True
-
-    monkeypatch.setattr(settings, "cutover_slot_gate_passed", True)
-    retirement_preflight = api_client.get("/api/admin/reliable-runtime/cutover/preflight")
-    assert retirement_preflight.status_code == 200, retirement_preflight.text
-    assert retirement_preflight.json()["index_retirement"] == {
-        "status": "ready",
-        "blockers": [],
-    }
-    mismatch = api_client.post(
-        "/api/admin/reliable-runtime/cutover/retire-legacy-index",
-        json=_retire_body("wrong_revision"),
-    )
-    assert mismatch.status_code == 409, mismatch.text
-    assert mismatch.json()["detail"]["code"] == "cutover_schema_revision_mismatch"
-    assert _index_present(session_factory) is True
-
-    try:
-        retired = api_client.post(
-            "/api/admin/reliable-runtime/cutover/retire-legacy-index",
-            json=_retire_body(schema_revision),
-        )
-        assert retired.status_code == 200, retired.text
-        assert retired.json() == {
-            "status": "completed",
-            "schema_revision": schema_revision,
-            "backup_restore_evidence_id": "issue130-b3-test-restore-1",
-            "old_active_index_present": False,
-            "changed": True,
-        }
-        repeated = api_client.post(
-            "/api/admin/reliable-runtime/cutover/retire-legacy-index",
-            json=_retire_body(schema_revision),
-        )
-        assert repeated.status_code == 200, repeated.text
-        assert repeated.json()["changed"] is False
-        assert _index_present(session_factory) is False
-
-        _exercise_slot_claim_result_and_recovery(
-            api_client,
-            session_factory,
-            worker["id"],
-            "after-index",
-        )
-        monkeypatch.setattr(settings, "legacy_execution_claim_enabled", False)
-        repeated_after_claim_close = api_client.post(
-            "/api/admin/reliable-runtime/cutover/retire-legacy-index",
-            json=_retire_body(schema_revision),
-        )
-        assert repeated_after_claim_close.status_code == 200, repeated_after_claim_close.text
-        assert repeated_after_claim_close.json()["changed"] is False
-        first = api_client.get("/api/admin/reliable-runtime/cutover/invariants")
-        second = api_client.get("/api/admin/reliable-runtime/cutover/invariants")
-        assert first.status_code == 200, first.text
-        assert second.status_code == 200, second.text
-        assert first.json() == second.json()
-        assert first.json()["status"] == "passed"
-        assert first.json()["violations"] == []
-
-        claim = api_client.post(
-            f"/api/workers/{worker['id']}/tasks/claim",
-            params={"wait_seconds": 0},
-            headers=WORKER_HEADERS,
-        )
-        assert claim.status_code == 409, claim.text
-        assert claim.json()["detail"]["code"] == "legacy_claim_disabled"
-        historical = api_client.get(f"/api/executions/{legacy.json()['id']}")
-        assert historical.status_code == 200, historical.text
-        assert historical.json()["dispatch_backend"] == "legacy"
-        assert historical.json()["status"] == "succeeded"
-    finally:
-        _restore_legacy_index(test_engine)
-
-
-def test_index_retirement_rechecks_all_preconditions_after_table_lock(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    schema_revision = api_client.get("/api/admin/reliable-runtime/inventory").json()[
-        "schema_revision"
-    ]
-    checks = 0
-
-    def changing_preconditions(_session: Session) -> list[str]:
-        nonlocal checks
-        checks += 1
-        return [] if checks == 1 else ["worker_v3_isolation_not_ready"]
-
-    monkeypatch.setattr(
-        migration_service,
-        "_cutover_mutation_blockers",
-        changing_preconditions,
-    )
-    response = api_client.post(
-        "/api/admin/reliable-runtime/cutover/retire-legacy-index",
-        json=_retire_body(schema_revision),
-    )
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"] == {
-        "code": "cutover_precondition_failed",
-        "message": "Reliable-runtime Cutover preconditions changed while acquiring the lock",
-        "params": {"blockers": ["worker_v3_isolation_not_ready"]},
-    }
-    assert checks == 2
-    assert _index_present(session_factory) is True
-
-
 @pytest.mark.parametrize(
     ("messages_ready", "messages_unacknowledged"),
     ((True, 0), (-1, 0), (0, False), (0, -1), (None, 0), (0, "1")),
@@ -627,58 +393,3 @@ def test_infrastructure_dlq_observation_rejects_invalid_counters(
     with pytest.raises(rabbitmq.RabbitMQTopologyError) as error:
         rabbitmq.infrastructure_dlq_observation()
     assert error.value.code == "topology_unavailable"
-
-
-def test_post_cutover_invariants_report_bounded_non_sensitive_corruption(
-    api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    test_engine: Engine,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = _register_worker(api_client, "b3-invariant-worker")
-    _configure_verified_runtime(
-        monkeypatch,
-        [worker["id"]],
-        ingress=True,
-        minimum_protocol=3,
-        slot_gate=True,
-    )
-    schema_revision = api_client.get("/api/admin/reliable-runtime/inventory").json()[
-        "schema_revision"
-    ]
-    try:
-        retired = api_client.post(
-            "/api/admin/reliable-runtime/cutover/retire-legacy-index",
-            json=_retire_body(schema_revision),
-        )
-        assert retired.status_code == 200, retired.text
-        monkeypatch.setattr(settings, "legacy_execution_claim_enabled", False)
-
-        adapter = _adapter(api_client, worker["id"], "b3-invariant-adapter")
-        malformed = _execution(api_client, adapter["id"], "malformed-outbox")
-        running = _execution(api_client, adapter["id"], "missing-attempt")
-        with session_factory.begin() as session:
-            outbox_row = session.scalar(
-                select(ExecutionOutbox).where(ExecutionOutbox.execution_id == malformed["id"])
-            )
-            running_row = session.get(Execution, running["id"])
-            assert outbox_row is not None and running_row is not None
-            payload = dict(outbox_row.payload_json)
-            payload["execution_id"] = -1
-            outbox_row.payload_json = payload
-            running_row.status = "running"
-
-        response = api_client.get("/api/admin/reliable-runtime/cutover/invariants")
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["status"] == "failed"
-        violations = {item["code"]: item for item in body["violations"]}
-        assert "orphan_or_future_outbox" in violations
-        assert "running_without_single_attempt_and_slot" in violations
-        assert violations["orphan_or_future_outbox"]["count"] == 1
-        assert len(violations["orphan_or_future_outbox"]["sample_ids"]) == 1
-        assert violations["running_without_single_attempt_and_slot"]["sample_ids"] == [
-            str(running["id"])
-        ]
-    finally:
-        _restore_legacy_index(test_engine)

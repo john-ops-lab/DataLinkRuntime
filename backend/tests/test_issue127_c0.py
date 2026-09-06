@@ -1,9 +1,7 @@
-"""Issue #127 C0 red/green contract tests.
+"""Managed Input contracts on the sole Outbox/Attempt execution path.
 
-The first four tests are the minimum C0 risk gate.  They intentionally cover
-the boundaries that the B3 hook could not prove: a pending file Execution's
-Lease, protocol gating, claim-token authentication, and terminal Lease
-release.
+Retains queued/running file Leases, PostgreSQL GC lock ordering, distinct
+Attempt credentials, and terminal Lease release without old polling APIs.
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ from dlr.control.models import (
     AdapterInputArtifactBinding,
     ArtifactDeletionJob,
     Execution,
+    ExecutionAttempt,
     ExecutionInputArtifactLease,
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
@@ -39,6 +38,13 @@ from dlr.control.services import input_config as input_config_service
 from dlr.control.services import managed_input_gc
 from dlr.control.services.artifact_store import LocalFileArtifactStore
 from dlr.control.services.worker_protocol import hash_token
+from runtime_api_support import (
+    attempt_auth,
+    claim_execution,
+    mark_broker_ready,
+    ready_registration,
+    report_attempt,
+)
 from test_adapters import create_adapter, save_version
 
 WORKER_HEADERS = {"Authorization": f"Bearer {WORKER_TOKEN}"}
@@ -49,13 +55,13 @@ def _register_worker(
     client: TestClient,
     name: str,
     *,
-    protocol_version: int | None = None,
+    protocol_version: int = 3,
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = {"name": name, "capabilities": ["python"]}
-    if protocol_version is not None:
-        payload["protocol_version"] = protocol_version
+    payload = ready_registration(name, ["python"])
+    payload["protocol_version"] = protocol_version
     response = client.post("/api/workers/register", json=payload, headers=WORKER_HEADERS)
     assert response.status_code == 200, response.text
+    mark_broker_ready()
     return response.json()
 
 
@@ -125,11 +131,7 @@ def _bind_artifacts(client: TestClient, adapter_id: int, artifact_ids: list[int]
 
 
 def _claim(client: TestClient, worker_id: int) -> Any:
-    return client.post(
-        f"/api/workers/{worker_id}/tasks/claim",
-        params={"wait_seconds": 0},
-        headers=WORKER_HEADERS,
-    )
+    return claim_execution(client, worker_id)
 
 
 def test_c0_red_pending_file_lease_survives_configuration_replacement(
@@ -138,8 +140,8 @@ def test_c0_red_pending_file_lease_survives_configuration_replacement(
     monkeypatch: Any,
 ) -> None:
     """A lifecycle replacement must not make a pending file input deletable."""
+    _register_worker(api_client, "c0_red_pending_file_lease_survives_configuration_replacement")
     monkeypatch.setattr(settings, "managed_files_enabled", True)
-    monkeypatch.setattr(input_config_service, "database_now", lambda _session: FIXED_NOW)
     adapter = create_adapter(api_client, name="c0-red-pending-lease")
     save_version(api_client, adapter["id"])
     artifact_id = _create_staged_artifact(session_factory, adapter["id"], "pending.txt")
@@ -147,6 +149,7 @@ def test_c0_red_pending_file_lease_survives_configuration_replacement(
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
     assert execution.status_code == 202, execution.text
 
+    monkeypatch.setattr(input_config_service, "database_now", lambda _session: FIXED_NOW)
     with session_factory.begin() as session:
         artifact = session.get(ManagedInputArtifact, artifact_id)
         assert artifact is not None
@@ -161,6 +164,9 @@ def test_c0_stop_delete_pending_managed_files_releases_lease_before_artifact_han
     session_factory: sessionmaker[Session],
     monkeypatch: Any,
 ) -> None:
+    _register_worker(
+        api_client, "c0_stop_delete_pending_managed_files_releases_lease_before_artifact_handoff"
+    )
     monkeypatch.setattr(settings, "managed_files_enabled", True)
     adapter = create_adapter(api_client, name="c0-stop-delete-pending-files")
     save_version(api_client, adapter["id"])
@@ -216,7 +222,7 @@ def test_c0_stop_delete_running_managed_files_keeps_lease_until_terminal_then_re
     worker = _register_worker(
         api_client,
         "c0-stop-delete-running-files-worker",
-        protocol_version=2,
+        protocol_version=3,
     )
     adapter = create_adapter(api_client, name="c0-stop-delete-running-files")
     save_version(api_client, adapter["id"])
@@ -257,13 +263,11 @@ def test_c0_stop_delete_running_managed_files_keeps_lease_until_terminal_then_re
         assert jobs == []
         assert store.stat(storage_key) is not None
 
-    cancelled = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution_id}/result",
-        json={"status": "cancelled", "workspace_cleanup_status": "completed"},
-        headers={
-            **WORKER_HEADERS,
-            "X-DLR-Claim-Token": claimed.json()["claim_token"],
-        },
+    cancelled = report_attempt(
+        api_client,
+        worker["id"],
+        execution_id,
+        {"status": "cancelled", "workspace_cleanup_status": "completed"},
     )
     assert cancelled.status_code == 200, cancelled.text
     with session_factory() as session:
@@ -304,27 +308,19 @@ def test_c0_stop_delete_running_managed_files_keeps_lease_until_terminal_then_re
         assert store.stat(storage_key) is None
 
 
-def test_c0_red_v1_worker_cannot_claim_managed_files(
+@pytest.mark.parametrize("protocol_version", [1, 2])
+def test_c0_old_worker_protocol_cannot_register(
     api_client: TestClient,
-    session_factory: sessionmaker[Session],
-    monkeypatch: Any,
+    protocol_version: int,
 ) -> None:
-    monkeypatch.setattr(settings, "managed_files_enabled", True)
-    worker = _register_worker(api_client, "c0-red-v1-worker")
-    adapter = create_adapter(api_client, name="c0-red-v1-files")
-    save_version(api_client, adapter["id"])
-    artifact_id = _create_staged_artifact(session_factory, adapter["id"], "v1.txt")
-    _bind_artifact(api_client, adapter["id"], artifact_id)
-    execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
-    assert execution.status_code == 202, execution.text
-
-    response = _claim(api_client, worker["id"])
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "worker_protocol_incompatible"
+    payload = ready_registration("c0-old-worker", ["python"])
+    payload["protocol_version"] = protocol_version
+    response = api_client.post("/api/workers/register", json=payload, headers=WORKER_HEADERS)
+    assert response.status_code == 422, response.text
 
 
-def test_c0_red_v2_result_without_claim_token_is_rejected(api_client: TestClient) -> None:
-    worker = _register_worker(api_client, "c0-red-no-token-worker", protocol_version=2)
+def test_c0_red_attempt_result_without_claim_token_is_rejected(api_client: TestClient) -> None:
+    worker = _register_worker(api_client, "c0-red-no-token-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c0-red-no-token")
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
@@ -332,13 +328,14 @@ def test_c0_red_v2_result_without_claim_token_is_rejected(api_client: TestClient
     claimed = _claim(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
 
+    payload = attempt_auth(claimed.json())
+    payload.pop("claim_token")
     response = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution.json()['id']}/result",
-        json={"status": "succeeded"},
+        f"/api/workers/{worker['id']}/attempts/{claimed.json()['attempt_id']}/result",
+        json={**payload, "status": "succeeded"},
         headers=WORKER_HEADERS,
     )
     assert response.status_code == 422, response.text
-    assert response.json()["detail"]["code"] == "execution_claim_token_invalid"
 
 
 def test_c0_red_terminal_execution_releases_file_lease(
@@ -347,7 +344,7 @@ def test_c0_red_terminal_execution_releases_file_lease(
     monkeypatch: Any,
 ) -> None:
     monkeypatch.setattr(settings, "managed_files_enabled", True)
-    worker = _register_worker(api_client, "c0-red-terminal-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c0-red-terminal-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c0-red-terminal-lease")
     save_version(api_client, adapter["id"])
     artifact_id = _create_staged_artifact(session_factory, adapter["id"], "terminal.txt")
@@ -357,10 +354,11 @@ def test_c0_red_terminal_execution_releases_file_lease(
     claimed = _claim(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
 
-    response = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution.json()['id']}/result",
-        json={"status": "succeeded"},
-        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
+    response = report_attempt(
+        api_client,
+        worker["id"],
+        execution.json()["id"],
+        {"status": "succeeded"},
     )
     assert response.status_code == 200, response.text
     with session_factory() as session:
@@ -375,12 +373,12 @@ def test_c0_red_terminal_execution_releases_file_lease(
         assert managed_input_gc.has_active_artifact_lease(session, artifact_id) is False
 
 
-def test_c0_execution_snapshot_and_v2_claim_credentials_are_immutable(
+def test_c0_execution_snapshot_and_attempt_claim_credentials_are_immutable(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    worker = _register_worker(api_client, "c0-snapshot-v2-worker", protocol_version=2)
-    adapter = create_adapter(api_client, name="c0-snapshot-v2", timeout_seconds=17)
+    worker = _register_worker(api_client, "c0-snapshot-attempt-worker", protocol_version=3)
+    adapter = create_adapter(api_client, name="c0-snapshot-attempt", timeout_seconds=17)
     save_version(api_client, adapter["id"])
     execution_response = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
     assert execution_response.status_code == 202, execution_response.text
@@ -398,33 +396,37 @@ def test_c0_execution_snapshot_and_v2_claim_credentials_are_immutable(
     claimed = _claim(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
     payload = claimed.json()
-    assert payload["protocol_version"] == 2
+    assert payload["protocol_version"] == 3
     claim_token = payload["claim_token"]
     cleanup_token = payload["cleanup_token"]
     assert claim_token != cleanup_token
     assert len(base64.urlsafe_b64decode(claim_token + "==")) == 32
     assert len(base64.urlsafe_b64decode(cleanup_token + "==")) == 32
-    assert payload["execution_deadline_at"] is not None
+    assert payload["execution_timeout_seconds"] == 17
+    assert payload["lease_expires_at"] is not None
     assert payload["input_files"] == []
 
     with session_factory() as session:
         row = session.get(Execution, execution["id"])
         assert row is not None
-        assert row.claim_token_hash == hash_token(claim_token)
-        assert row.cleanup_receipt_token_hash == hash_token(cleanup_token)
-        assert row.claim_token_hash != claim_token
-        assert row.cleanup_receipt_token_hash != cleanup_token
-        assert row.execution_deadline_at is not None
+        attempt = session.get(ExecutionAttempt, payload["attempt_id"])
+        assert attempt is not None and attempt.execution_id == row.id
+        assert attempt.claim_token_hash == hash_token(claim_token)
+        assert attempt.cleanup_token_hash == hash_token(cleanup_token)
+        assert attempt.claim_token_hash != claim_token
+        assert attempt.cleanup_token_hash != cleanup_token
+        assert attempt.lease_expires_at is not None
+        assert row.claim_token_hash is None and row.cleanup_receipt_token_hash is None
 
 
-def test_c0_v2_managed_files_claim_exposes_ordered_input_file_metadata(
+def test_c0_attempt_managed_files_claim_exposes_ordered_input_file_metadata(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "managed_files_enabled", True)
-    worker = _register_worker(api_client, "c0-managed-files-v2-worker", protocol_version=2)
-    adapter = create_adapter(api_client, name="c0-managed-files-v2")
+    worker = _register_worker(api_client, "c0-managed-files-attempt-worker", protocol_version=3)
+    adapter = create_adapter(api_client, name="c0-managed-files-attempt")
     save_version(api_client, adapter["id"])
     first_id = _create_staged_artifact(session_factory, adapter["id"], "first.txt")
     second_id = _create_staged_artifact(session_factory, adapter["id"], "second.txt")
@@ -475,7 +477,7 @@ def test_c0_task_payload_preserves_nullable_artifact_sha256(
 ) -> None:
     """A legacy/corrupt metadata row keeps missing SHA-256 distinguishable."""
     monkeypatch.setattr(settings, "managed_files_enabled", True)
-    worker = _register_worker(api_client, "c0-nullable-sha-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c0-nullable-sha-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c0-nullable-sha")
     save_version(api_client, adapter["id"])
     artifact_id = _create_staged_artifact(session_factory, adapter["id"], "nullable.txt")
@@ -493,14 +495,14 @@ def test_c0_task_payload_preserves_nullable_artifact_sha256(
     assert claimed.json()["input_files"][0]["sha256"] is None
 
 
-def test_c0_v2_claim_without_historical_lease_stays_pending(
+def test_c0_attempt_claim_without_input_lease_stays_queued(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A missing pre-C0 Lease cannot publish running state or Token hashes."""
+    """A missing input Lease cannot publish running state or Attempt credentials."""
     monkeypatch.setattr(settings, "managed_files_enabled", True)
-    worker = _register_worker(api_client, "c0-missing-lease-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c0-missing-lease-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c0-missing-lease")
     save_version(api_client, adapter["id"])
     artifact_id = _create_staged_artifact(session_factory, adapter["id"], "missing-lease.txt")
@@ -521,10 +523,16 @@ def test_c0_v2_claim_without_historical_lease_stays_pending(
     with session_factory() as session:
         row = session.get(Execution, execution_id)
         assert row is not None
-        assert row.status == "pending"
+        assert row.status == "queued"
         assert row.worker_id is None
         assert row.claim_token_hash is None
         assert row.cleanup_receipt_token_hash is None
+        assert (
+            session.scalar(
+                select(ExecutionAttempt).where(ExecutionAttempt.execution_id == execution_id)
+            )
+            is None
+        )
 
 
 def test_c0_malformed_managed_files_row_does_not_block_later_valid_claim(
@@ -532,9 +540,9 @@ def test_c0_malformed_managed_files_row_does_not_block_later_valid_claim(
     session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A malformed historical row stays pending while a later row is claimable."""
+    """A malformed message stays queued while another Adapter's delivery can run."""
     monkeypatch.setattr(settings, "managed_files_enabled", True)
-    worker = _register_worker(api_client, "c0-malformed-first-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c0-malformed-first-worker", protocol_version=3)
 
     malformed_adapter = create_adapter(api_client, name="c0-malformed-first")
     save_version(api_client, malformed_adapter["id"])
@@ -558,7 +566,9 @@ def test_c0_malformed_managed_files_row_does_not_block_later_valid_claim(
     assert valid.status_code == 202, valid.text
     valid_id = valid.json()["id"]
 
-    claimed = _claim(api_client, worker["id"])
+    rejected = claim_execution(api_client, worker["id"], execution_id=malformed_id)
+    assert rejected.status_code == 409, rejected.text
+    claimed = claim_execution(api_client, worker["id"], execution_id=valid_id)
     assert claimed.status_code == 200, claimed.text
     assert claimed.json()["execution_id"] == valid_id
     assert claimed.json()["input_files"] == []
@@ -567,10 +577,16 @@ def test_c0_malformed_managed_files_row_does_not_block_later_valid_claim(
         malformed_row = session.get(Execution, malformed_id)
         valid_row = session.get(Execution, valid_id)
         assert malformed_row is not None and valid_row is not None
-        assert malformed_row.status == "pending"
+        assert malformed_row.status == "queued"
         assert malformed_row.worker_id is None
         assert malformed_row.claim_token_hash is None
         assert malformed_row.cleanup_receipt_token_hash is None
+        assert (
+            session.scalar(
+                select(ExecutionAttempt).where(ExecutionAttempt.execution_id == malformed_id)
+            )
+            is None
+        )
         assert valid_row.status == "running"
         assert valid_row.worker_id == worker["id"]
 
@@ -581,7 +597,7 @@ def test_c0_database_lease_provider_blocks_gc_state_blob_and_charge_release(
     monkeypatch: Any,
 ) -> None:
     monkeypatch.setattr(settings, "managed_files_enabled", True)
-    worker = _register_worker(api_client, "c0-gc-provider-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c0-gc-provider-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c0-gc-provider")
     save_version(api_client, adapter["id"])
     artifact_id = _create_staged_artifact(session_factory, adapter["id"], "gc-provider.txt")
@@ -621,10 +637,11 @@ def test_c0_database_lease_provider_blocks_gc_state_blob_and_charge_release(
         assert capacity is not None and capacity.actual_bytes == 8
         assert managed_input_gc.has_active_artifact_lease(session, artifact_id) is True
 
-    result = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution.json()['id']}/result",
-        json={"status": "succeeded"},
-        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
+    result = report_attempt(
+        api_client,
+        worker["id"],
+        execution.json()["id"],
+        {"status": "succeeded"},
     )
     assert result.status_code == 200, result.text
 
@@ -643,10 +660,10 @@ def test_c0_database_lease_provider_blocks_gc_state_blob_and_charge_release(
         assert deleted_keys == [artifact.storage_key]
 
 
-def test_c0_v2_result_without_cleanup_report_is_deferred_unknown(
+def test_c0_attempt_result_without_cleanup_report_is_deferred_unknown(
     api_client: TestClient,
 ) -> None:
-    worker = _register_worker(api_client, "c0-result-without-cleanup-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c0-result-without-cleanup-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c0-result-without-cleanup")
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
@@ -654,14 +671,15 @@ def test_c0_v2_result_without_cleanup_report_is_deferred_unknown(
     claimed = _claim(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
 
-    result = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution.json()['id']}/result",
-        json={"status": "succeeded"},
-        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
+    result = report_attempt(
+        api_client,
+        worker["id"],
+        execution.json()["id"],
+        {"status": "succeeded"},
     )
     assert result.status_code == 200, result.text
     assert result.json()["workspace_cleanup_status"] == "deferred"
-    assert result.json()["workspace_cleanup_error_code"] == "workspace_cleanup_unknown"
+    assert result.json()["workspace_cleanup_error_code"] == "workspace_cleanup_failed"
 
 
 @pytest.mark.parametrize("field_name", ["error_code", "workspace_cleanup_error_code"])
@@ -673,7 +691,7 @@ def test_c0_result_error_code_length_is_validated_before_state_change(
     worker = _register_worker(
         api_client,
         f"c0-result-error-code-{field_name}",
-        protocol_version=2,
+        protocol_version=3,
     )
     adapter = create_adapter(api_client, name=f"c0-result-error-code-{field_name}")
     save_version(api_client, adapter["id"])
@@ -684,10 +702,11 @@ def test_c0_result_error_code_length_is_validated_before_state_change(
     assert claimed.status_code == 200, claimed.text
 
     payload = {"status": "succeeded", field_name: "x" * 65}
-    result = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution_id}/result",
-        json=payload,
-        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
+    result = report_attempt(
+        api_client,
+        worker["id"],
+        execution_id,
+        payload,
     )
     assert result.status_code == 422, result.text
 
@@ -718,7 +737,7 @@ def test_c0_result_rejects_ambiguous_cleanup_state_before_state_change(
     worker = _register_worker(
         api_client,
         f"c0-result-cleanup-{cleanup_status}-{cleanup_code}",
-        protocol_version=2,
+        protocol_version=3,
     )
     adapter = create_adapter(api_client, name=f"c0-result-cleanup-{cleanup_status}-{cleanup_code}")
     save_version(api_client, adapter["id"])
@@ -728,14 +747,15 @@ def test_c0_result_rejects_ambiguous_cleanup_state_before_state_change(
     claimed = _claim(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
 
-    result = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution_id}/result",
-        json={
+    result = report_attempt(
+        api_client,
+        worker["id"],
+        execution_id,
+        {
             "status": "succeeded",
             "workspace_cleanup_status": cleanup_status,
             "workspace_cleanup_error_code": cleanup_code,
         },
-        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
     )
     assert result.status_code == 422, result.text
 
@@ -747,26 +767,19 @@ def test_c0_result_rejects_ambiguous_cleanup_state_before_state_change(
         assert row.workspace_cleanup_error_code is None
 
 
-@pytest.mark.parametrize("stale_status", ["pending", "running"])
-def test_c0_red_stale_execution_lease_stays_protected_until_c3_reconciler(
+@pytest.mark.parametrize("stale_status", ["queued", "running"])
+def test_c0_stale_execution_lease_stays_protected_until_terminal_transition(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
     stale_status: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """C0 keeps stale work protected; C3 owns the later stale transition.
-
-    Before C0, the B3 hook returned ``False`` for both stale states, so GC
-    could delete their Blob and release charge while the Execution still
-    referenced it.  C0's durable provider must instead keep the Lease until
-    C3's 13.1/13.2 reconciler atomically writes a terminal state and releases
-    it; this test intentionally does not implement or invoke that reconciler.
-    """
+    """A deadline alone never authorizes GC before a durable terminal transition."""
     monkeypatch.setattr(settings, "managed_files_enabled", True)
     worker = _register_worker(
         api_client,
         f"c0-stale-{stale_status}-worker",
-        protocol_version=2,
+        protocol_version=3,
     )
     adapter = create_adapter(api_client, name=f"c0-stale-{stale_status}")
     save_version(api_client, adapter["id"])
@@ -788,7 +801,11 @@ def test_c0_red_stale_execution_lease_stays_protected_until_c3_reconciler(
         assert row is not None and artifact is not None and capacity is not None
         row.claim_deadline_at = FIXED_NOW - timedelta(minutes=5)
         if stale_status == "running":
-            row.execution_deadline_at = FIXED_NOW - timedelta(minutes=5)
+            attempt = session.scalar(
+                select(ExecutionAttempt).where(ExecutionAttempt.execution_id == execution_id)
+            )
+            assert attempt is not None
+            attempt.lease_expires_at = FIXED_NOW - timedelta(minutes=5)
         artifact.status = ManagedInputArtifactStatus.PENDING_DELETE
         capacity.actual_bytes = artifact.size_bytes
 
@@ -825,6 +842,9 @@ def test_c0_postgres_lock_order_lease_first_blocks_gc_without_blob_or_charge_cha
     monkeypatch: Any,
 ) -> None:
     """Two PostgreSQL transactions serialize Lease creation before GC."""
+    _register_worker(
+        api_client, "c0_postgres_lock_order_lease_first_blocks_gc_without_blob_or_charge_change"
+    )
     monkeypatch.setattr(settings, "managed_files_enabled", True)
     adapter = create_adapter(api_client, name="c0-pg-lease-first")
     save_version(api_client, adapter["id"])
@@ -917,7 +937,7 @@ def test_c0_postgres_lock_order_lease_first_blocks_gc_without_blob_or_charge_cha
         capacity = session.get(ManagedInputCapacity, 1)
         execution = session.get(Execution, outcomes["execution_id"])
         assert artifact is not None and capacity is not None and execution is not None
-        assert execution.status == "pending"
+        assert execution.status == "queued"
         assert artifact.status == ManagedInputArtifactStatus.PENDING_DELETE
         assert capacity.actual_bytes == 8
         assert managed_input_gc.has_active_artifact_lease(session, artifact_id) is True
@@ -933,6 +953,9 @@ def test_c0_postgres_lock_order_governance_first_rejects_creation_after_blob_del
     """A committed GC claim makes the later managed-file create fail safely."""
     from dlr.control.input_errors import InputConfigErrorCode
 
+    _register_worker(
+        api_client, "c0_postgres_lock_order_governance_first_rejects_creation_after_blob_delete"
+    )
     monkeypatch.setattr(settings, "managed_files_enabled", True)
     adapter = create_adapter(api_client, name="c0-pg-governance-first")
     save_version(api_client, adapter["id"])
@@ -1045,7 +1068,7 @@ def test_c0_worker_route_headers_and_non_worker_boundary(
     non_worker = api_client.get(path)
     assert non_worker.status_code == 401
 
-    worker = _register_worker(api_client, "c0-route-v2-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c0-route-attempt-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c0-route-contract")
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
@@ -1083,7 +1106,7 @@ def test_c0_worker_route_headers_and_non_worker_boundary(
 def test_c0_cleanup_receipt_route_keeps_cleanup_token_separate(
     api_client: TestClient,
 ) -> None:
-    worker = _register_worker(api_client, "c0-receipt-v2-worker", protocol_version=2)
+    worker = _register_worker(api_client, "c0-receipt-attempt-worker", protocol_version=3)
     adapter = create_adapter(api_client, name="c0-receipt-contract")
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
@@ -1091,14 +1114,15 @@ def test_c0_cleanup_receipt_route_keeps_cleanup_token_separate(
     claimed = _claim(api_client, worker["id"])
     assert claimed.status_code == 200, claimed.text
     execution_id = execution.json()["id"]
-    result = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution_id}/result",
-        json={
+    result = report_attempt(
+        api_client,
+        worker["id"],
+        execution_id,
+        {
             "status": "succeeded",
             "workspace_cleanup_status": "deferred",
             "workspace_cleanup_error_code": "workspace_cleanup_failed",
         },
-        headers={**WORKER_HEADERS, "X-DLR-Claim-Token": claimed.json()["claim_token"]},
     )
     assert result.status_code == 200, result.text
     receipt_path = f"/api/workers/executions/{execution_id}/workspace-cleanup"

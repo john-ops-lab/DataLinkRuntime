@@ -22,6 +22,7 @@ function readyWorker(overrides: Partial<Worker> = {}): Worker {
     rabbitmq_execution_v3: true,
     isolation_capabilities: {
       cgroup_v2: true,
+      cgroup_namespace_private: true,
       mount_namespace: true,
       pid_namespace: true,
       memory_hard_limit: true,
@@ -70,6 +71,15 @@ describe("system status aggregation", () => {
 
   it("requires every execution gate instead of trusting the heartbeat", () => {
     expect(isWorkerExecutionReady(readyWorker())).toBe(true);
+    expect(isWorkerExecutionReady(readyWorker({ status: "offline" }))).toBe(false);
+    expect(isWorkerExecutionReady(readyWorker({ protocol_version: 1 }))).toBe(false);
+    expect(isWorkerExecutionReady(readyWorker({ isolation_preflight_status: "failed" }))).toBe(false);
+    expect(isWorkerExecutionReady(readyWorker({
+      isolation_capabilities: {
+        ...readyWorker().isolation_capabilities,
+        cgroup_namespace_private: false,
+      },
+    }))).toBe(false);
     expect(isWorkerExecutionReady(readyWorker({ rabbitmq_execution_v3: false }))).toBe(false);
     expect(isWorkerExecutionReady(readyWorker({
       isolation_capabilities: {

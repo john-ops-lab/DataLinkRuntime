@@ -30,53 +30,15 @@ DLR 是一个轻量的数据适配运行平台，用于 CMDB 等系统的数据�
 
 ### 2.1 模板广场与 Recipe 实例化
 
-模板广场是与“适配器”并列的一级入口。首期目录随 DLR 版本静态发布，精确包含 5 个
-Theme、17 个 Scenario，以及每个场景各一份 Python、JavaScript、Java 实现，共 51 个
-Variant。用户可以按主题、关键词、厂家、Adapter 类型、协议、语言和成熟度查找场景；
-详情只在选定语言后加载该 Variant 的代码、合同、依赖建议和来源。
+模板广场提供 5 个主题、17 个场景，可从“全部”页签跨分类搜索，也可按厂家、类型、协议和语言筛选。厂家模板使用厂家 Logo；每个场景只提供实际支持的语言，不要求凑齐三种语言。
 
-用户选择语言、填写名称并确认后，系统在一个事务中创建独立 Adapter、Slot 0、类型所需
-的最小禁用配置和 Revision 1，然后 Web 自动进入新 Adapter 的编辑页。它不是普通 Clone：
-新 Adapter 默认停止且没有 Worker、Credential Binding、已安装 Dependency、Schedule、
-Managed File、Execution 或历史；模板后续升级不会回写用户代码。用户必须在运行前自行
-审阅和修改代码、选择兼容 Worker、安装精确依赖并完成输入配置。
-
-Recipe 的非敏感参数进入 `context.config` 或 Execution Input；密码、Token、私钥等值只
-能通过 Credential Binding 注入 `context.secrets`。外部 Endpoint 是管理员审核的运行
-配置，不得携带认证 Query，也不会因复制模板自动获得可信身份。Recipe 的 HTTPS、同源
-跳转、超时和上限检查不构成平台级 SSRF 或出网隔离；生产部署仍需用网络策略限制 Worker
-可访问的地址。
-
-7 个云与 CMDB Scenario 提供只读 `preview`；其规范化结果和 Adapter Output 受页数、
-记录数、字节数与请求总时限约束。可选 `sync` 面向外部 `dlr-cmdb-upsert/v1` 目标合同，
-必须从不可变 Execution Input 获得稳定的 `scan_id` 与 `source_scope`；同一次逻辑 Execution
-的所有 Attempt 必须复用二者，任一来源或批次失败时不得调用 finish。阿里云 3 个 Scenario
-使用的 Alibaba Cloud SDK `callApi` 尚不能证明原始传输响应受字节上限约束，因此这里的
-有界承诺不包含其源 HTTP 响应。下面只是身份字段片段，不代替具体 Variant 的完整输入合同：
-
-```json
-{
-  "mode": "sync",
-  "scan_id": "123e4567-e89b-42d3-a456-426614174000",
-  "source_scope": "alicloud:EXAMPLE_ACCOUNT:example-region-1"
-}
+```text
+模板广场 → 选择场景与语言 → 命名并复制 → 自动进入新适配器编辑页 → 检查或修改配置 → 保存 → 运行
 ```
 
-上面的 UUID 仅为可复制的匿名示例；新的业务扫描应换用新值，同一业务扫描的重试必须复用
-原值。
+复制创建独立适配器，代码和依赖先进入编辑草稿；点击保存才创建第一个版本。副本不保留模板关联，后续模板更新不会影响它。运行前按普通适配器流程选择 Worker、准备依赖并绑定凭据。
 
-`DLR_MANAGED_FILES_ENABLED=false` 不影响 5/17/51 目录的浏览、代码查看或复制，包括 CSV
-与 Excel；复制也不会创建文件、Artifact、Lease 或绑定。运行时如何提供内容或文件，应
-以所选 Variant 的输入合同和部署能力为准。
-
-成熟度按 `scenario + version + language + source_sha256` 独立展示：
-`reference-generated / syntax-verified / fixture-verified / live-verified`。每个标签由匹配
-源码哈希的 Receipt 约束；`reference-generated` 表示尚无满足下一等级全部门禁且匹配当前
-源码哈希的 Receipt，允许存在不构成升级证据的窄 smoke 或安全 canary。语法/编译通过只可
-证明 `syntax-verified`，不能冒充完整 fixture 或真实外部服务。详细操作与边界见
-[Template Recipe 使用与安全边界](../templates/recipe-usage-security.md)、
-[CMDB Upsert v1 合同](../templates/cmdb-upsert-v1.md)和
-[成熟度与 Receipt](../templates/maturity-receipts.md)。
+大部分模板默认无输入，可修改参数集中在代码开头并有中文注释。密码、Token 等通过凭据读取，注释说明要配置的凭据和绑定名称。只有文件、Webhook 或确需每次传参的场景展示输入示例；返回结果用简短示例说明。详情保留用途、使用步骤、语言、代码和依赖，参数规则及运行模式配置写在代码注释中。
 
 ## 3. Adapter 类型
 
@@ -107,7 +69,7 @@ Authorization: Bearer <token>
 用户配置可读 path、Token Credential 与运行节点，并使用 `开启接收` / `停止接收`。
 请求通过校验和 Admission 后异步创建 Execution 并返回 `202 + execution_id`。RabbitMQ
 backend 可保留多个不可变 `queued/retry_wait` Execution，但同一 Adapter 仍只有一个
-active Attempt；legacy backend 在兼容期继续使用原单活跃门禁。
+active Attempt。
 
 页面信息架构固定为：
 
@@ -118,7 +80,7 @@ active Attempt；legacy backend 在兼容期继续使用原单活跃门禁。
 ```
 
 Webhook、Task 与 Schedule 的终态 Execution 统一按部署配置的保存天数和每个
-Adapter 数量上限分批清理；`pending` / `running` 永不由 retention 删除。具体默认值、
+Adapter 数量上限分批清理；`queued` / `running` / `retry_wait` 永不由 retention 删除。具体默认值、
 批量大小和平台服务日志轮转规则见 `docs/deployment/platform-logs.md`。
 
 ## 4. 保存与运行节点
@@ -131,11 +93,10 @@ Adapter 数量上限分批清理；`pending` / `running` 永不由 retention 删
 
 ## 5. 统一运行锁
 
-legacy backend 的一个 Adapter 同时最多一个 `pending/running` Execution。RabbitMQ
-backend 允许有界排队，但数据库 `Slot 0` 同时最多绑定一个 active Attempt。Task
+执行允许有界排队，但数据库 `Slot 0` 同时最多绑定一个 active Attempt。Task
 手动运行、Schedule 与 Webhook 共用相同的 Admission、快照和 Slot 规则。
 
-Schedule/Webhook 已启用、存在 legacy active Execution，或存在 RabbitMQ active Attempt
+Schedule/Webhook 已启用，或存在 active Attempt
 时禁止：
 
 - 修改代码、依赖、运行参数、Credential binding；
@@ -192,7 +153,7 @@ Input → handle(context, input) → Output
 - `context.secrets.get(key)` 提供绑定凭据；
 - `context.logger` 输出实时日志。
 
-RabbitMQ v3 路径的状态包括 `queued / running / retry_wait / dead_letter` 与既有终态。
+唯一执行链路的状态包括 `queued / running / retry_wait / succeeded / dead_letter / cancelled / expired`。
 Worker 在 Control durable Claim commit 和私有 journal 原子落盘后 ACK，再进入资源
 Sandbox；ACK 后崩溃由 Attempt Lease/Fencing 与新 generation 恢复，不能依赖原消息
 重投。Adapter 对外部系统产生的副作用仍应使用业务幂等键。
@@ -253,18 +214,16 @@ Task / Webhook 创建
 → 复制并命名
 → 自动进入独立 Adapter 编辑页
 → 配置 Worker / Dependency / Input / Credential / Endpoint
-→ 保存、预览并按成熟度证据决定是否投入使用
+→ 检查代码配置、保存并运行
 ```
 
 ## 15. Reliable Runtime 运维边界
 
-- 默认部署保持 RabbitMQ 普通 ingress 关闭、legacy Claim 开启和三个 Cutover attestation
-  关闭；普通安装不会自动进入最终切换。
-- Final Cutover 是管理员分阶段操作：备份恢复实测、legacy drain/migrate、Worker v3 +
-  Linux Sandbox、普通流量、Slot 压力、minimum protocol 3、退役旧索引，最后关闭
-  legacy Claim。顺序不可交换。
-- Cutover 后的回滚使用理解 additive schema 的兼容 Control drain/repair。不得启动旧
-  二进制解释新 row，也不得把生产 `alembic downgrade` 当作恢复方案。
-- 详细配置、只读 inventory/preflight/invariant API 和故障处理见
-  [Reliable Runtime 迁移说明](issue130-reliable-runtime-migrations.md)；Linux 部署前置见
-  [Sandbox 部署说明](issue130-sandbox-deployment.md)。
+- 全新安装只使用 RabbitMQ、Attempt/Slot 和 Linux 资源 Sandbox，不再选择旧机制、
+  canary、协议版本或人工 Cutover attestation。
+- Worker 必须在真实私有 cgroup namespace 与正确委派的 cgroup v2 子树通过能力预检；
+  隔离能力不完整时不可执行，系统状态会说明原因。
+- 数据库从空库执行 `alembic upgrade head`。不支持旧执行数据在线迁移或旧二进制回滚；
+  测试版本回退使用对应版本的干净环境，不把 schema downgrade 当作恢复方案。
+- 当前安装、宿主准备与故障处理见 [Sandbox 部署说明](issue130-sandbox-deployment.md)。
+  [旧迁移说明](issue130-reliable-runtime-migrations.md) 仅保留为历史记录，不是新安装步骤。

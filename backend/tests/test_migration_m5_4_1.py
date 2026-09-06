@@ -72,7 +72,7 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
             )
         )
 
-    assert revision == "0032_issue132_templates"
+    assert revision == "0033_unified_execution"
     assert {
         "adapter_type",
         "run_mode",
@@ -88,9 +88,8 @@ def test_fresh_schema_has_task_run_mode_and_active_execution_contract(
         "production_worker_id",
         "production_state",
     }.isdisjoint(columns)
-    assert index_definition is not None
-    assert "status" in index_definition
-    assert "trigger" not in index_definition
+    # Queued work may coexist; the Attempt/Slot contract serializes actual runs.
+    assert index_definition is None
     assert adapter_type_check is not None
     assert "task" in adapter_type_check and "webhook" in adapter_type_check
     assert webhook_index is not None

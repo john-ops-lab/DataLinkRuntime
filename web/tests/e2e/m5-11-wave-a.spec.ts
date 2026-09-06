@@ -28,6 +28,7 @@ const worker = {
   rabbitmq_execution_v3: true,
   isolation_capabilities: {
     cgroup_v2: true,
+    cgroup_namespace_private: true,
     mount_namespace: true,
     pid_namespace: true,
     memory_hard_limit: true,

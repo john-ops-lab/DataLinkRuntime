@@ -1,3 +1,21 @@
+// Webhook 数据整理：可修改的配置集中在这里。
+// 运行时提供待处理的数据或文件；处理规则在下面配置。
+// 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+const CONFIG = {
+  // 必须存在的 Webhook 字段。
+  "required": ["event_id"],
+  // 字段映射规则；source/pointer 指定原字段路径，target 指定结果字段名。
+  "mappings": [{"source":"event_id","target":"id","required":true},{"source":"occurred_at","target":"timestamp","type":"datetime","required":true}],
+  // 最多处理的字段数。
+  "max_fields": 200,
+  // 输入大小上限，单位字节。
+  "max_input_bytes": 1048576,
+  // 返回结果大小上限，单位字节。
+  "max_output_bytes": 2097152,
+  // JSON 最大嵌套层数。
+  "max_depth": 32,
+};
+
 /** Pure webhook payload validation and normalization. */
 
 const DANGEROUS_TARGET_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
@@ -112,6 +130,9 @@ function boundedInteger(input, key, fallback, minimum, maximum, code) {
 }
 
 export function handle(context, input) {
+  if (input === undefined || input === null) input = {};
+  if (typeof input !== "object" || Array.isArray(input)) throw new Error("输入必须是 JSON 对象");
+  input = { ...CONFIG, ...input };
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("input_must_be_object");
   const payload = input.payload;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("payload_must_be_object");

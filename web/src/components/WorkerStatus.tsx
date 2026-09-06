@@ -76,7 +76,11 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
                           <div>{t("worker.isolationPreflightAt", { time: formatTime(worker.isolation_preflight_at, locale) })}</div>
                         )}
                         <div className="worker-fact-tags">
-                          <Tag>{t("worker.protocol", { version: worker.protocol_version ?? 1 })}</Tag>
+                          <Tag color={worker.protocol_version === 3 ? "green" : "red"}>
+                            {worker.protocol_version === 3
+                              ? t("worker.executionInterfaceCompatible")
+                              : t("worker.executionInterfaceIncompatible")}
+                          </Tag>
                           <Tag color={worker.isolation_preflight_status === "passed" ? "green" : "red"}>
                             {worker.isolation_preflight_status === "passed"
                               ? t("worker.isolationPreflightPassed")
@@ -85,7 +89,7 @@ export default function WorkerStatus({ workers, loading, error }: WorkerStatusPr
                                 : t("worker.isolationPreflightUnknown")}
                           </Tag>
                           <Tag color={worker.rabbitmq_execution_v3 === true ? "green" : "red"}>
-                            {worker.rabbitmq_execution_v3 === true ? t("worker.v3Enabled") : t("worker.v3Paused")}
+                            {worker.rabbitmq_execution_v3 === true ? t("worker.dispatchReady") : t("worker.dispatchUnavailable")}
                           </Tag>
                           <Tag>{t("worker.languages", { languages: worker.capabilities.join(", ") || "—" })}</Tag>
                         </div>

@@ -20,6 +20,7 @@ from dlr.worker import cache, executor
 from dlr.worker import venv as venv_manager
 from dlr.worker.client import ControlClient, ControlUnavailableError
 from dlr.worker.executor import RuntimeSettings
+from worker_runtime_support import run_with_test_sandbox
 
 ECHO_CODE = """
 def handle(context, input):
@@ -127,7 +128,7 @@ def test_venv_dependency_failure_raises(tmp_path: object) -> None:
 
 
 def test_executor_passes_input_and_runtime_config(tmp_path: object) -> None:
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(code=ECHO_CODE, runtime_config={"stage": "s1"}, input_value={"n": 1}),
         runtime_settings(tmp_path),
     )
@@ -147,7 +148,7 @@ def test_executor_secrets_are_redacted_in_output(
         "    return {'value': context.secrets.get('SMOKE'),"
         " 'missing': context.secrets.get('NOPE')}\n"
     )
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
     # The plaintext secret must never appear in the output; the redaction marker takes its place.
     assert result["output"] == {"value": "[REDACTED]", "missing": None}
@@ -160,7 +161,7 @@ def test_executor_collects_logger_output(tmp_path: object) -> None:
         "    context.logger.info('hello from adapter')\n"
         "    return {'ok': True}\n"
     )
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
     assert "hello from adapter" in result["stdout"]
     assert result["stdout_truncated"] is False
@@ -168,7 +169,7 @@ def test_executor_collects_logger_output(tmp_path: object) -> None:
 
 def test_executor_adapter_exception_reports_failed(tmp_path: object) -> None:
     code = "def handle(context, input):\n    raise ValueError('boom')\n"
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "failed"
     # M5.5.10: the traceback lives in the unified log stream (stdout channel).
     assert "ValueError" in result["stdout"]
@@ -179,7 +180,7 @@ def test_executor_adapter_exception_reports_failed(tmp_path: object) -> None:
 
 def test_executor_non_serializable_return_reports_failed(tmp_path: object) -> None:
     code = "def handle(context, input):\n    return object()\n"
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "failed"
     assert "JSON" in result["stdout"]
 
@@ -187,7 +188,7 @@ def test_executor_non_serializable_return_reports_failed(tmp_path: object) -> No
 def test_executor_timeout_kills_process(tmp_path: object) -> None:
     code = "import time\n\n\ndef handle(context, input):\n    time.sleep(30)\n    return {}\n"
     started = time.monotonic()
-    result = executor.run(make_payload(code=code, timeout=1), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code, timeout=1), runtime_settings(tmp_path))
     elapsed = time.monotonic() - started
     assert result["status"] == "timeout"
     assert "timed out" in (result["error"] or "")
@@ -196,7 +197,7 @@ def test_executor_timeout_kills_process(tmp_path: object) -> None:
 
 def test_executor_dependency_failure_reports_failed(tmp_path: object) -> None:
     payload = make_payload(code=ECHO_CODE, requirements="definitely-not-a-real-package-xyz==1.0")
-    result = executor.run(payload, runtime_settings(tmp_path))
+    result = run_with_test_sandbox(payload, runtime_settings(tmp_path))
     assert result["status"] == "failed"
     # Locale-less legacy payloads keep the zh-CN default; the error field
     # carries the localized DLR message, never the raw English instruction.
@@ -230,7 +231,7 @@ def test_executor_dependency_logs_use_live_channel_before_user_script(
         return Path(sys.executable)
 
     monkeypatch.setattr(venv_manager, "prepare_version_venv", fake_prepare)
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(
             code=(
                 "def handle(context, input):\n"
@@ -278,7 +279,7 @@ def test_executor_dependency_failure_skips_user_script_and_reports_dependency(
         )
 
     monkeypatch.setattr(venv_manager, "prepare_version_venv", fake_prepare)
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(
             code=(
                 "from pathlib import Path\n"
@@ -307,8 +308,9 @@ def test_executor_oversized_output_keeps_size_and_preview(
     tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "execution_output_max_bytes", 1024)
+    monkeypatch.setattr(settings, "execution_output_preview_max_bytes", 256)
     code = "def handle(context, input):\n    return 'x' * 4096\n"
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded", "oversized output is not a failure"
     assert result.get("output") is None, "no broken JSON may be stored"
     assert result["output_truncated"] is True
@@ -326,7 +328,7 @@ def test_executor_truncates_large_stdout_keeping_tail(
         "    print('END-MARKER')\n"
         "    return {}\n"
     )
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
     assert result["stdout_truncated"] is True
     assert len(result["stdout"].encode()) <= 64 * 1024
@@ -675,7 +677,7 @@ def test_adapter_subprocess_never_sees_tokens(
     monkeypatch.setenv("DATABASE_URL", "postgresql://secret-host/dlr")
     code = "import os\n\n\ndef handle(context, input):\n    return {'env': dict(os.environ)}\n"
 
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
     seen = result["output"]["env"]
     assert "DLR_WORKER_TOKEN" not in seen
@@ -692,7 +694,7 @@ def test_reported_streams_redact_secret_values(
         "    print('leak attempt: ' + str(context.secrets.get('SMOKE')))\n"
         "    return {}\n"
     )
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
     assert "hunter2-secret" not in result["stdout"]
     assert "[REDACTED]" in result["stdout"]
@@ -759,7 +761,7 @@ def test_output_dict_keys_are_redacted(tmp_path: object, monkeypatch: pytest.Mon
         "    secret = context.secrets.get('SMOKE')\n"
         "    return {secret: {'nested': secret, 'plain': 'visible'}}\n"
     )
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
     output = result["output"]
     # The raw Secret must appear neither as a key nor as any value.
@@ -791,7 +793,7 @@ def test_executor_progress_callback_receives_live_chunks(
     def callback(stdout_chunk: str, stderr_chunk: str) -> None:
         chunks.append((stdout_chunk, stderr_chunk))
 
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(code=LIVE_LOG_CODE),
         runtime_settings(tmp_path),
         progress_callback=callback,
@@ -823,7 +825,7 @@ def test_executor_progress_chunks_are_redacted(
     def callback(stdout_chunk: str, stderr_chunk: str) -> None:
         chunks.append(stdout_chunk)
 
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(code=code), runtime_settings(tmp_path), progress_callback=callback
     )
     assert result["status"] == "succeeded"
@@ -840,7 +842,7 @@ def test_executor_progress_callback_failure_never_fails_run(
     def broken_callback(stdout_chunk: str, stderr_chunk: str) -> None:
         raise RuntimeError("control unreachable")
 
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(code=LIVE_LOG_CODE),
         runtime_settings(tmp_path),
         progress_callback=broken_callback,
@@ -867,7 +869,7 @@ def test_executor_unified_log_merges_streams_and_timestamps_lines(
         "    context.logger.error('logger-error')\n"
         "    return {}\n"
     )
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
     assert result["stderr"] == ""
     assert result["stderr_truncated"] is False
@@ -888,16 +890,16 @@ def test_executor_unified_log_merges_streams_and_timestamps_lines(
 
 def test_executor_unified_log_platform_message_on_failure(tmp_path: object) -> None:
     code = "def handle(context, input):\n    import sys\n    sys.exit(3)\n"
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "failed"
-    assert "adapter process exited with code 3" in result["stdout"]
+    assert "3" in result["stdout"] and "退出" in result["stdout"]
     assert "adapter process exited with code 3" in (result["error"] or "")
 
 
 def test_executor_unified_log_traceback_is_inline(tmp_path: object) -> None:
     """A Traceback is part of the unified stream, not a separate view."""
     code = "def handle(context, input):\n    raise ValueError('boom')\n"
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "failed"
     traceback_lines = [line for line in result["stdout"].splitlines() if "Traceback" in line]
     assert traceback_lines, "the Traceback header must be in the unified log"
@@ -926,7 +928,7 @@ def test_executor_unified_log_live_chunks_match_final_report(
     def callback(stdout_chunk: str, stderr_chunk: str) -> None:
         chunks.append(stdout_chunk)
 
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(code=LIVE_LOG_CODE),
         runtime_settings(tmp_path),
         progress_callback=callback,
@@ -1026,7 +1028,7 @@ def test_executor_progress_redacts_secret_split_across_polls(
     def callback(stdout_chunk: str, stderr_chunk: str) -> None:
         chunks.append(stdout_chunk)
 
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(code=SPLIT_SECRET_CODE),
         runtime_settings(tmp_path),
         progress_callback=callback,
@@ -1067,7 +1069,7 @@ def test_report_progress_fails_fast_on_a_stuck_control() -> None:
         client = ControlClient(f"http://127.0.0.1:{server.server_address[1]}", "test-worker-token")
         started = time.monotonic()
         with pytest.raises(ControlUnavailableError):
-            client.report_progress(1, 2, "x", "")
+            client.progress_attempt(1, 2, {"stdout_chunk": "x", "stderr_chunk": ""})
         elapsed = time.monotonic() - started
         assert elapsed < 15, "progress must use its own short timeout, not the 60s API budget"
     finally:
@@ -1083,7 +1085,9 @@ def test_stuck_progress_upload_does_not_stretch_execution_timeout(
         client = ControlClient(f"http://127.0.0.1:{server.server_address[1]}", "test-worker-token")
 
         def callback(stdout_chunk: str, stderr_chunk: str) -> None:
-            client.report_progress(1, 2, stdout_chunk, stderr_chunk)
+            client.progress_attempt(
+                1, 2, {"stdout_chunk": stdout_chunk, "stderr_chunk": stderr_chunk}
+            )
 
         code = (
             "import time\n\n\n"
@@ -1094,7 +1098,7 @@ def test_stuck_progress_upload_does_not_stretch_execution_timeout(
             "    return {}\n"
         )
         started = time.monotonic()
-        result = executor.run(
+        result = run_with_test_sandbox(
             make_payload(code=code, timeout=2),
             runtime_settings(tmp_path),
             progress_callback=callback,

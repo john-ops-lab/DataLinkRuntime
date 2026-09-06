@@ -168,6 +168,9 @@ def test_backend_has_no_user_visible_hardcoded_chinese() -> None:
     violations: list[str] = []
     for path in _backend_files():
         relative = path.relative_to(BACKEND_ROOT).as_posix()
+        # Copyable Adapter source is user code, not localized platform chrome.
+        if relative.startswith("dlr/control/template_catalog/variants/"):
+            continue
         if relative in BACKEND_ALLOWLISTED_FILES:
             continue
         code = _strip_py_comments(path.read_text(encoding="utf-8"))

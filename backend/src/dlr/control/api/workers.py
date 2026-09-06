@@ -5,15 +5,11 @@ from typing import Annotated, Any, BinaryIO
 
 from fastapi import APIRouter, Body, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from dlr.control import db
 from dlr.control.schemas.execution import (
     ExecutionResponse,
-    ExecutionResultReport,
-    ProgressAck,
-    ProgressReport,
     WorkspaceCleanupReceipt,
 )
 from dlr.control.schemas.reliable_runtime import (
@@ -32,7 +28,6 @@ from dlr.control.schemas.worker import (
 )
 from dlr.control.security import require_business_principal, require_worker_token
 from dlr.control.services import attempt as attempt_service
-from dlr.control.services import execution as execution_service
 from dlr.control.services import worker as worker_service
 from dlr.control.services import worker_availability
 from dlr.control.services.adapter import domain_error
@@ -67,19 +62,6 @@ def _reject_swapped_cleanup_header(cleanup_token: str | None) -> None:
         )
 
 
-def _task_payload_content(payload: BaseModel) -> dict[str, object]:
-    """Keep legacy v1 payload shape free of token fields without dropping nulls."""
-    # Both task payload variants currently expose model_dump; keeping this
-    # helper local avoids an ``exclude_none`` pass that would remove the
-    # existing ``index_url: null`` compatibility field.
-    body = payload.model_dump(mode="json")
-    if body.get("claim_token") is None:
-        body.pop("claim_token", None)
-    if body.get("cleanup_token") is None:
-        body.pop("cleanup_token", None)
-    return body
-
-
 @router.post("/api/workers/register", response_model=WorkerResponse)
 def register_worker(payload: WorkerRegister, session: DbSession) -> WorkerResponse:
     """Upsert by name and mark the Worker online."""
@@ -105,74 +87,6 @@ def offline(worker_id: int, session: DbSession) -> Response:
     """Best-effort graceful offline on normal shutdown."""
     worker_service.mark_offline(session, worker_id)
     return Response(status_code=204)
-
-
-@router.post("/api/workers/{worker_id}/tasks/claim")
-def claim_task(worker_id: int, session: DbSession, wait_seconds: int = 20) -> Response:
-    """Long-poll for one pending Execution; 204 when the deadline expires."""
-    payload = worker_service.claim_task(session, worker_id, wait_seconds)
-    if payload is None:
-        return Response(status_code=204)
-    return JSONResponse(content=_task_payload_content(payload))
-
-
-@router.post(
-    "/api/workers/{worker_id}/executions/{execution_id}/result",
-    response_model=ExecutionResponse,
-)
-def report_result(
-    request: Request,
-    worker_id: int,
-    execution_id: int,
-    payload: ExecutionResultReport,
-    session: DbSession,
-    claim_token: ClaimHeader = None,
-    cleanup_token: CleanupHeader = None,
-) -> ExecutionResponse:
-    """Persist a terminal result; idempotent for terminal Executions."""
-    _reject_query_tokens(request, error_code="execution_claim_token_invalid")
-    _reject_swapped_cleanup_header(cleanup_token)
-    return ExecutionResponse.model_validate(
-        execution_service.apply_result(
-            session,
-            worker_id,
-            execution_id,
-            payload,
-            claim_token=claim_token,
-        )
-    )
-
-
-@router.post(
-    "/api/workers/{worker_id}/executions/{execution_id}/progress",
-    response_model=ProgressAck,
-)
-def report_progress(
-    request: Request,
-    worker_id: int,
-    execution_id: int,
-    payload: ProgressReport,
-    session: DbSession,
-    claim_token: ClaimHeader = None,
-    cleanup_token: CleanupHeader = None,
-) -> ProgressAck:
-    """Append best-effort stdout/stderr chunks while the Execution runs.
-
-    The 200 acknowledgement carries the cancel flag (M3.2) so the owning
-    Worker can kill the subprocess on its next upload. Once the Execution
-    reached a terminal state the chunks are dropped but the flag is still
-    answered; non-owning Workers still get 409.
-    """
-    _reject_query_tokens(request, error_code="execution_claim_token_invalid")
-    _reject_swapped_cleanup_header(cleanup_token)
-    cancel_requested = execution_service.apply_progress(
-        session,
-        worker_id,
-        execution_id,
-        payload,
-        claim_token=claim_token,
-    )
-    return ProgressAck(cancel_requested=cancel_requested)
 
 
 @router.get(
@@ -243,6 +157,14 @@ def report_cleanup_receipt(
             cleanup_token,
         )
     )
+
+
+@router.post("/api/workers/{worker_id}/cleanups/claim")
+def claim_cleanup(worker_id: int, session: DbSession) -> Response:
+    payload = worker_service.claim_cleanup(session, worker_id)
+    if payload is None:
+        return Response(status_code=204)
+    return JSONResponse(content=payload.model_dump(mode="json"))
 
 
 @router.post("/api/workers/{worker_id}/cleanups/{cleanup_id}/result", status_code=204)

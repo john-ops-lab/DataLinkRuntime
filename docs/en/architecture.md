@@ -17,7 +17,7 @@
                                     └──────▲──────┘ └────┬──────────────┘
                                            │ Claim/renew │ dispatch
                                     ┌──────┴─────────────▼──────────────┐
-                                    │ worker v3 (Python/Node.js/Java)  │
+                                    │ worker (Python/Node.js/Java)     │
                                     └───────────────────────────────────┘
 ```
 
@@ -60,7 +60,7 @@ Key fields:
 | `run_mode` | `manual / schedule` for Task; unused by Webhook |
 | `latest_version_id` | the latest saved immutable Revision |
 | `runtime_worker_id` | the current run node |
-| `template_scenario_slug / template_version` | optional, paired, read-only template provenance; both are null for ordinary Adapters |
+| `template_scenario_slug / template_version` | legacy compatibility fields; both are null for newly copied Adapters |
 | `archived_at` | internal soft-delete marker; the current Web UI shows active Adapters only |
 
 API responses carry `runtime_locked` and `running_execution_id` so the Web UI can
@@ -85,13 +85,12 @@ so a later save never changes an already running Execution.
 | `worker_id / target_worker_id` | the claiming node / the requested run node |
 | `trigger` | `manual / schedule / webhook` |
 | `scheduled_for` | the Schedule plan point; NULL for other triggers |
-| `dispatch_backend / dispatch_generation` | the `legacy` or `rabbitmq` responsibility boundary and current message generation |
-| `status` | legacy `pending/running/...`, or RabbitMQ `queued/running/retry_wait/dead_letter/...` |
+| `dispatch_backend / dispatch_generation` | fixed `rabbitmq` backend and current message generation |
+| `status` | `queued/running/retry_wait/succeeded/dead_letter/cancelled/expired` |
 | `input / output / stdout / stderr` | input, result and logs |
 | `cancel_requested` | the cancellation request while running |
 
-During compatibility, a partial unique index permits at most one legacy
-`pending/running` Execution per Adapter. The RabbitMQ backend may keep multiple valid
+An Adapter may keep multiple valid
 `queued/retry_wait` Executions, while `adapter_execution_slots(adapter_id,
 slot_no=0)` plus the active-Attempt unique constraint permits at most one physical
 execution per Adapter. Manual, Schedule, and Webhook share Admission, Outbox,
@@ -109,7 +108,7 @@ AND clock_timestamp() - last_heartbeat <= heartbeat_timeout
 
 The timeout must be positive and strictly larger than the Worker heartbeat interval.
 RabbitMQ ingress requires the fixed Worker to exist and have compatible language,
-protocol v3, and isolation capabilities. A temporarily offline target may still
+execution protocol, and isolation capabilities. A temporarily offline target may still
 receive bounded `queued` responsibility and waits for that same Worker; it is never
 silently rerouted.
 
@@ -123,12 +122,7 @@ silently rerouted.
 
 ### 3.6 Template Catalog, Variants, and Instantiation
 
-Templates are not hidden database Adapters. The Control wheel/image carries read-only
-package resources: 5 Themes, 17 Scenarios, 51 Python/JavaScript/Java Variants, JSON
-Schemas, provenance records, and per-language maturity Receipts. Startup validation
-fails closed on stable slugs, versions, languages, Logo keys, cross-references, and
-source SHA-256. Scenario lists and details read metadata only; just the selected source
-is read and bounded-cached by the single-language endpoint:
+Templates ship as read-only Control package resources: 5 themes, 17 scenarios, and the supported language implementations for each scenario. Catalog validation checks identifiers, versions, languages, logo keys, resource paths, and source SHA-256. Lists and details read metadata; selecting a language reads and bounded-caches only that source.
 
 ```text
 GET  /api/templates/themes
@@ -138,27 +132,11 @@ GET  /api/templates/scenarios/{scenario_slug}/variants/{language}
 POST /api/templates/scenarios/{scenario_slug}/variants/{language}/instantiate
 ```
 
-The instantiate POST uses the reviewed `expected_template_version` to prevent rolling
-deployment drift. One transaction writes the Adapter, Slot 0, minimum disabled type
-configuration, Revision 1, and latest pointer. It does not use ordinary Clone and does
-not create a Credential/Binding, installed Dependency, Managed File/Artifact/Lease,
-Worker, Schedule, extra ACL, Execution, Admission, Outbox, Attempt, or history. The new
-Adapter starts stopped and is independent of future template changes. On success the
-Web refreshes the Adapter list, loads Revision 1, and opens that Adapter in the editor.
+Omitting theme lists all scenarios. Keyword, vendor, type, protocol, and language filters narrow results. Public details contain purpose, usage, dependencies, code, and relevant input/result examples, without provenance, license, maturity, parameter contracts, or execution-mode labels.
 
-`DLR_MANAGED_FILES_ENABLED=false` disables the corresponding runtime capability only;
-it does not affect discovering, reading one language, or copying any template,
-including CSV and Excel, and instantiation never fabricates a file binding.
+The copy POST checks expected_template_version and atomically creates an independent Adapter, Slot 0, and the required type configuration. It creates no AdapterVersion, latest_version_id, or template association, and copies no Credential, Worker, file binding, schedule, or run history. The Web places the selected code and dependencies into the new Adapter editor draft; the ordinary version API creates the first version only when the user saves.
 
-Maturity binds `scenario_slug + version + language + source_sha256`. A
-`syntax-verified` Receipt must show exact dependency resolution and that language's
-syntax/compile check. Only a fixed fixture that directly executes the same shipped
-source can establish `fixture-verified`, and only a controlled read-only run against a
-real external service can establish `live-verified`. Static catalog checks, a sibling
-language, or a helper implementation cannot substitute for those results.
-`reference-generated` means no Receipt both matches the current source hash and
-satisfies every gate for the next level; narrow smoke or security-canary execution is
-not maturity-promotion evidence.
+DLR_MANAGED_FILES_ENABLED=false does not affect browsing, code viewing, or copying. Users configure file inputs before running file-processing templates.
 
 ## 4. Task Execution
 
@@ -170,11 +148,11 @@ POST /api/adapters/{id}/executions
 → snapshot the latest Revision, input, Credential references and target Worker
 → atomically create Execution + Admission + Outbox in PostgreSQL
 → Relay publishes a RabbitMQ dispatch
-→ Worker v3 Claim / journal / ACK / Sandbox / report
+→ Worker Claim / journal / ACK / Sandbox / report
 ```
 
-Cancellation reuses `POST /api/executions/{id}/cancel`. Legacy pending and RabbitMQ
-queued/retry_wait work can go straight to cancelled; a running Execution sets the
+Cancellation reuses `POST /api/executions/{id}/cancel`. Queued/retry_wait
+work can go straight to cancelled; a running Execution sets the
 cancel request and Worker terminates the Sandbox process under the current Attempt
 fence before reporting terminal state.
 
@@ -280,7 +258,7 @@ incrementally and redacted; over-limit content is truncated per configuration.
 Oversized input is rejected outright without creating an Execution; oversized output
 keeps only the size, truncation flag and preview, never storing corrupted JSON.
 
-The v3 order is `dispatch → durable Control Claim → private journal → ACK →
+The execution order is `dispatch → durable Control Claim → private journal → ACK →
 Sandbox`. ACK never waits for business completion; a post-ACK crash is recovered by
 database Attempt Lease/Fencing, Recovery, and a new generation. For every Attempt,
 the Sandbox applies hard CPU, memory, PID, tmpfs, and output bounds inside an exact
@@ -290,7 +268,7 @@ delegated Linux cgroup v2 subtree. A non-Linux or incomplete preflight fails clo
 
 After copying, a Recipe is an ordinary user Adapter and remains subject to the Worker,
 Revision, Credential, and Execution contracts above. Non-secret endpoints and limits
-belong in Revision runtime config or immutable Execution Input; secrets are injected
+belong in the saved code's CONFIG, with optional Execution Input overrides; secrets are injected
 only through Credential Binding. URL scheme, same-origin redirect, timeout, and size
 checks are per-Recipe misuse guards, not a platform-level SSRF, DNS-rebinding, or
 egress-isolation boundary. Trusted administrators must restrict Worker egress with
@@ -299,7 +277,7 @@ deployment firewalls, DNS/proxy policy, and destination allowlists.
 The seven cloud/CMDB Recipes use `preview` only to read sources; the normalized
 `dlr-asset-snapshot/v1` and final Adapter Output are bounded. `sync` writes to an
 administrator-configured external `dlr-cmdb-upsert/v1` target, not a DLR Control API.
-Stable `scan_id` and `source_scope` values in immutable Input make a new Attempt of the
+Stable `scan_id` and `source_scope` values in code settings or immutable Input make a new Attempt of the
 same Execution reuse the same begin/batch/finish idempotency identities. Any source or
 batch failure must return `partial=true` and skip finish so an incomplete scan cannot
 trigger target-side stale cleanup. The Alibaba Cloud SDK `callApi` transport used by
@@ -327,15 +305,14 @@ reasoning, Prompts and raw Responses never enter ordinary logs or persistence.
 ## 10. Deployment and Configuration
 
 Docker Compose runs six services: `web / account-web / control / postgres / rabbitmq
-/ worker`. Defaults keep ordinary RabbitMQ ingress off, legacy Claim on, and all
-three Cutover attestations off. Key configuration includes:
+/ worker`. Every execution uses RabbitMQ and the resource Sandbox, with no old
+polling or execution fallback. Key configuration includes:
 
 - `DLR_ADMIN_TOKEN`, `DLR_WORKER_TOKEN`, `DLR_MASTER_KEY`;
 - `DLR_WORKER_HEARTBEAT_SECONDS` and `DLR_WORKER_HEARTBEAT_TIMEOUT_SECONDS`;
 - `DLR_SCHEDULE_POLL_SECONDS`;
 - finite RabbitMQ Queue/Outbox/Admission/Attempt/Dead Letter bounds;
-- `DLR_MIN_WORKER_PROTOCOL_VERSION`, `DLR_LEGACY_EXECUTION_CLAIM_ENABLED`, and the
-  three `DLR_CUTOVER_*_GATE_PASSED` attestations;
+- `DLR_SANDBOX_CGROUP_PARENT`, `DLR_SANDBOX_CGROUP_SOURCE`, and private cgroup namespace;
 - Execution large-field, log, timeout and Worker concurrency limits.
 
 The AI Provider is an external deployment dependency and never enters the formal
@@ -372,16 +349,16 @@ only.
 - Backend: Ruff, format check, Mypy, full pytest (including the README / key docs
   bilingual pairing, mutual-link and relative-link resolution checks, and the
   zh-CN / en translation-resource key and placeholder parity checks);
-- Templates: exact 5/17/51 inventory, Schema/provenance/license/source-hash checks,
-  wheel/image package resources, requirements parsers, and per-language Receipt gates;
-  syntax, fixture, and live evidence are recorded as distinct layers;
+- Templates: catalog and supported-language subsets, source hashes, wheel/image package
+  resources, dependency parsers, all-category search, and first save after copying;
+  retain syntax checks and fixtures that exercise the actual template source;
 - Web: ESLint, TypeScript, Vitest (including locale namespace / leaf-key /
   interpolation-placeholder parity checks), production build;
-- Database: fresh Alembic install and upgrade from the current main schema;
+- Database: fresh Alembic install and refusal of unsupported old execution data;
 - Integration: isolated Compose smoke with real three-language Task, Schedule,
   Webhook, Clone URL handover and run-lock runs;
 - Reliable Runtime: real broker outage/restart, Confirm ambiguity, Worker/Control
-  crash, Slot pressure, DLQ/Replay, post-Cutover invariants, and bounded resources;
+  crash, Slot pressure, DLQ/Replay, state invariants, and bounded resources;
 - Sandbox: only real target Linux cgroup v2 + private cgroup namespace + exact
   delegated-subtree Compose evidence counts; host cgroup namespace is `NO_COUNT`, and
   macOS or static configuration does not count either;
@@ -396,22 +373,19 @@ auto-execution loop, user-level language preference, machine translation of user
 content, a third language, or a multi-node RabbitMQ HA cluster. Bounded Retry/Recovery
 for one Execution does not expand into workflow retry.
 
-## 14. Reliable Runtime Cutover and Rollback
+## 14. Unified Execution and Recovery
 
-### 14.1 Non-interchangeable Cutover
+Ordinary ingress, retries, and Replay share Admission/Outbox/Attempt/Slot. Old HTTP
+execution polling, old execution reports, canary ingress, and migration/Cutover admin
+endpoints are removed. Internal wire protocol remains 3, but is not a deployment
+choice or UI concept. Adapter-private filesystem cleanup has its own cleanup API.
 
-The order is fixed: prove backup/restore → inventory/preflight → drain legacy running
-and migrate pending → Worker v3 plus Sandbox → ordinary RabbitMQ ingress → Slot
-pressure test → minimum protocol 3 → retire the legacy active index → close legacy
-Claim only after legacy active reaches zero. All mutation endpoints require admin
-authentication; inventory, preflight, and post-Cutover invariants are read-only.
+The historical Alembic chain remains. A new migration constrains the backend, states,
+generation, and Worker protocol to the sole mechanism and retires the old active-Execution
+index automatically. Fresh installs migrate an empty database; old runtime data causes
+an explicit refusal, never implicit conversion or deletion.
 
-### 14.2 Compatible Recovery Boundary
-
-Before Cutover, new ingress can be closed while legacy continues. Once the old index
-is retired or RabbitMQ rows exist, rollback must preserve the additive schema and use
-the current compatible Control to drain/repair Outbox, Attempt, Slot, and Incident
-responsibility. Never start an old binary against new rows, run a destructive schema
-downgrade, or simply disable ingress so new requests fall toward an already-closed
-legacy Claim. See [Reliable Runtime migration notes](issue130-reliable-runtime-migrations.md)
-for the operational sequence and API.
+Recovery uses durable Outbox, Attempt Lease/Fencing, and same-runtime repair without
+falling back to an old executor. Test-version rollback uses a clean matching environment.
+See [Sandbox deployment](issue130-sandbox-deployment.md) for host preparation, startup,
+and diagnostics; old migration documents are historical records only.

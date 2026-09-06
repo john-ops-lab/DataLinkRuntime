@@ -11,15 +11,18 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from dlr.control.models import Execution
+from dlr.control.models import Execution, ExecutionOutbox
 from dlr.worker import executor
+from runtime_api_support import WORKER_HEADERS
 from test_adapters import create_adapter, save_version
 from test_executions import create_execution
 from test_progress_sse import progress
 from test_runtime import make_payload, runtime_settings
 from test_workers import claim, register_worker, report, setup_claimed_execution
+from worker_runtime_support import install_test_sandbox, run_with_test_sandbox
 
 SLEEP_CODE = "import time\n\n\ndef handle(context, input):\n    time.sleep(30)\n    return {}\n"
 
@@ -145,6 +148,20 @@ def test_claim_respects_target_worker(
     assert claim(api_client, other["id"]).status_code == 204, (
         "a non-target Worker must never claim a targeted Execution"
     )
+    with session_factory() as session:
+        outbox = session.scalar(
+            select(ExecutionOutbox).where(ExecutionOutbox.execution_id == execution["id"])
+        )
+        assert outbox is not None
+        dispatch = dict(outbox.payload_json)
+    wrong_target = api_client.post(
+        f"/api/workers/{other['id']}/v3/claim",
+        json=dispatch,
+        headers=WORKER_HEADERS,
+    )
+    assert wrong_target.status_code == 200
+    assert wrong_target.json()["decision"] == "REJECT_DLQ"
+    assert wrong_target.json()["reason"] == "dispatch_target_mismatch"
     response = claim(api_client, target["id"])
     assert response.status_code == 200
     assert response.json()["execution_id"] == execution["id"]
@@ -171,6 +188,7 @@ def test_executor_kills_subprocess_on_cancel_flag(
     tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The cancel channel works even for a subprocess without any output."""
+    install_test_sandbox(monkeypatch)
     monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.1)
     calls: list[tuple[str, str]] = []
 
@@ -179,7 +197,7 @@ def test_executor_kills_subprocess_on_cancel_flag(
         return True
 
     start = time.monotonic()
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(code=SLEEP_CODE),
         runtime_settings(tmp_path),
         progress_callback=callback,
@@ -196,8 +214,9 @@ def test_executor_without_callback_keeps_plain_wait(
     tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No callback means no cancel channel: a normal run still succeeds."""
+    install_test_sandbox(monkeypatch)
     monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.1)
     code = "def handle(context, input):\n    return {'ok': True}\n"
-    result = executor.run(make_payload(code=code), runtime_settings(tmp_path))
+    result = run_with_test_sandbox(make_payload(code=code), runtime_settings(tmp_path))
     assert result["status"] == "succeeded"
     assert result["output"] == {"ok": True}

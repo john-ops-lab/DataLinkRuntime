@@ -48,6 +48,11 @@ def _add_execution(
             error=f"error-{trigger}",
             created_at=created_at,
             scheduled_for=scheduled_for,
+            admission_released_at=(
+                created_at
+                if status in {"succeeded", "dead_letter", "cancelled", "expired"}
+                else None
+            ),
         )
     )
 
@@ -118,7 +123,7 @@ def test_cleanup_applies_per_trigger_counts_and_preserves_active_rows(
                     adapter_id=adapter["id"],
                     version_id=version["id"],
                     trigger=trigger,
-                    status="pending",
+                    status="queued",
                     created_at=now,
                 )
             if trigger == "webhook":
@@ -145,7 +150,7 @@ def test_cleanup_applies_per_trigger_counts_and_preserves_active_rows(
                 .where(Execution.adapter_id == adapter["id"], Execution.trigger == trigger)
             ) == (3 if trigger in ("webhook", "manual") else 2)
         active = session.scalars(
-            select(Execution).where(Execution.status.in_(("pending", "running")))
+            select(Execution).where(Execution.status.in_(("queued", "running")))
         ).all()
         assert len(active) == 2
 
@@ -200,7 +205,7 @@ def test_cleanup_applies_age_cutoff_and_removes_all_execution_payload_fields(
             adapter_id=adapter["id"],
             version_id=version["id"],
             trigger="manual",
-            status="failed",
+            status="dead_letter",
             created_at=now - timedelta(days=8),
         )
         _add_execution(

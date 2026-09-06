@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from dlr.control.models import Adapter, AdapterSchedule, AdapterWebhook, Execution
 
-ACTIVE_EXECUTION_STATUSES = ("pending", "running")
+ACTIVE_EXECUTION_STATUSES = ("running",)
 
 
 @dataclass(frozen=True)

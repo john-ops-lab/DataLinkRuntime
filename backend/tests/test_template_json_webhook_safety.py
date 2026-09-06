@@ -88,6 +88,7 @@ def test_webhook_complete_envelope_and_errors_stay_within_output_budget(tmp_path
         "webhook-json-normalization",
         {
             "payload": {"blob": "x" * 100},
+            "required": [],
             "mappings": [{"source": "blob", "target": "copy"}],
             "max_output_bytes": 128,
         },

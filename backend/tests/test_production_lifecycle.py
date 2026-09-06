@@ -10,8 +10,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from conftest import WORKER_TOKEN
-from dlr.control.models import Adapter, AdapterVersion, Execution
+from dlr.control.models import (
+    Adapter,
+    AdapterExecutionSlot,
+    AdapterVersion,
+    Execution,
+    ExecutionAttempt,
+)
 from dlr.control.models.platform import AdapterCredentialBinding
+from runtime_api_support import ISOLATION_PASS, claim_execution, report_attempt
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential
 from test_workers import register_worker
@@ -99,7 +106,12 @@ def test_runtime_worker_assignment_requires_language_but_allows_offline(
 ) -> None:
     incompatible_response = api_client.post(
         "/api/workers/register",
-        json={"name": "javascript-only", "capabilities": ["javascript"]},
+        json={
+            "protocol_version": 3,
+            "isolation_capabilities": dict(ISOLATION_PASS),
+            "name": "javascript-only",
+            "capabilities": ["javascript"],
+        },
         headers=WORKER_HEADERS,
     )
     assert incompatible_response.status_code == 200
@@ -140,6 +152,8 @@ def test_active_execution_locks_runtime_writes_but_allows_metadata(
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={})
     assert execution.status_code == 202, execution.text
+    worker_id = execution.json()["target_worker_id"]
+    assert claim_execution(api_client, worker_id).status_code == 200
 
     locked_writes = (
         api_client.post(
@@ -169,38 +183,51 @@ def test_active_execution_locks_runtime_writes_but_allows_metadata(
     assert metadata.json()["runtime_locked"] is True
 
 
-def test_database_allows_only_one_active_execution_across_all_triggers(
+def test_database_slots_allow_only_one_active_attempt_across_triggers(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
     adapter = create_adapter(api_client, name="one-active")
-    version = save_version(api_client, adapter["id"])
+    save_version(api_client, adapter["id"])
     worker_id = api_client.get(f"/api/adapters/{adapter['id']}").json()["runtime_worker_id"]
 
+    accepted = [
+        api_client.post(f"/api/adapters/{adapter['id']}/executions", json={}) for _ in range(2)
+    ]
+    assert all(response.status_code == 202 for response in accepted)
+    with session_factory.begin() as session:
+        scheduled = session.get(Execution, accepted[1].json()["id"])
+        assert scheduled is not None
+        scheduled.trigger = "schedule"
+    claimed = claim_execution(api_client, worker_id)
+    assert claimed.status_code == 200
+    deferred = claim_execution(api_client, worker_id)
+    assert deferred.status_code == 204
+    assert deferred.headers["X-Test-Claim-Decision"] == "DEFER"
     with session_factory() as session:
-        session.add(
-            Execution(
-                adapter_id=adapter["id"],
-                version_id=version["id"],
-                trigger="manual",
-                status="pending",
-                target_worker_id=worker_id,
-                input={},
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt).where(
+                    ExecutionAttempt.adapter_id == adapter["id"],
+                    ExecutionAttempt.status.in_(("claimed", "running")),
+                )
             )
         )
-        session.commit()
-        session.add(
-            Execution(
-                adapter_id=adapter["id"],
-                version_id=version["id"],
-                trigger="schedule",
-                status="running",
-                target_worker_id=worker_id,
-                input={},
-            )
-        )
-        with pytest.raises(IntegrityError):
-            session.commit()
+        slot = session.get(AdapterExecutionSlot, (adapter["id"], 0))
+        assert len(attempts) == 1
+        assert slot is not None and slot.active_attempt_id == attempts[0].id
+    assert (
+        report_attempt(
+            api_client,
+            worker_id,
+            accepted[0].json()["id"],
+            {
+                "status": "succeeded",
+            },
+        ).status_code
+        == 200
+    )
+    assert claim_execution(api_client, worker_id).json()["execution_id"] == accepted[1].json()["id"]
 
 
 def test_permanent_delete_removes_adapter_facts_without_deleting_credentials(
@@ -307,7 +334,7 @@ def test_clone_gets_own_revision_one_type_worker_and_bindings_without_executions
         ]
 
 
-def test_manual_creation_race_maps_database_constraint_to_stable_conflict(
+def test_manual_creation_race_accepts_both_into_durable_queue(
     api_client: TestClient,
 ) -> None:
     adapter = create_adapter(api_client, name="manual-race")
@@ -327,5 +354,7 @@ def test_manual_creation_race_maps_database_constraint_to_stable_conflict(
     for thread in threads:
         thread.join()
 
-    assert sorted(status for status, _ in statuses) == [202, 409]
-    assert any(code == "adapter_busy" for _, code in statuses)
+    assert sorted(status for status, _ in statuses) == [202, 202]
+    page = api_client.get(f"/api/adapters/{adapter['id']}/executions").json()
+    assert len(page["items"]) == 2
+    assert all(item["status"] == "queued" for item in page["items"])

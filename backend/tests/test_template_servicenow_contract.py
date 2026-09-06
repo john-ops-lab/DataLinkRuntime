@@ -230,6 +230,7 @@ def test_servicenow_sync_reports_only_acknowledged_target_assets_in_all_language
             ),
             {
                 "scan_id": scan_id,
+                "cmdb_base_url": "http://localhost",
                 "source_scope": "servicenow:fixture",
                 "batch_size": 1,
             },
@@ -273,6 +274,7 @@ for (const stage of stages) {
     inputFiles: [], logger: {},
   }, {
     mode: "sync", scan_id: scanId, source_scope: "servicenow:fixture",
+    cmdb_base_url: "http://localhost",
     instance_url: "https://fixture.service-now.example", instance_id: "fixture",
     page_size: 10, max_pages: 1, batch_size: 1,
   });
@@ -325,6 +327,7 @@ public final class Probe {
     for (String stage : List.of("begin", "first", "later", "finish")) {
       Map<String,Object> input = new LinkedHashMap<>();
       input.put("scan_id", "fail-" + stage);
+      input.put("cmdb_base_url", args[0]);
       input.put("source_scope", "servicenow:fixture"); input.put("batch_size", 1);
       Object result = sync.invoke(
         null, new Context(Map.of("cmdb_base_url", args[0])), input, assets, summary,

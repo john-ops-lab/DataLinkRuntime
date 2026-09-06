@@ -28,7 +28,6 @@ import type {
   AdapterLanguage,
   LocalizedText,
   TemplateInstantiatePayload,
-  TemplateMaturity,
   TemplateScenarioDetail,
   TemplateScenarioSummary,
   TemplateTheme,
@@ -39,16 +38,11 @@ import TemplateScenarioLogo from "./TemplateScenarioLogo";
 const PAGE_SIZE = 12;
 const SEARCH_DELAY_MS = 250;
 const LANGUAGES: AdapterLanguage[] = ["python", "javascript", "java"];
-const MATURITY_ORDER: TemplateMaturity[] = [
-  "reference-generated",
-  "syntax-verified",
-  "fixture-verified",
-  "live-verified",
-];
 
 export interface TemplateCopyRequest extends TemplateInstantiatePayload {
   scenarioSlug: string;
   language: AdapterLanguage;
+  draft: Pick<TemplateVariant, "code" | "requirements" | "runtime_config">;
 }
 
 interface TemplateGalleryPageProps {
@@ -64,41 +58,14 @@ interface GalleryFilters {
   adapterType?: "task" | "webhook";
   protocol?: string;
   language?: AdapterLanguage;
-  maturity?: TemplateMaturity;
 }
 
 function localized(value: LocalizedText): string {
   return value[currentSystemLocale()];
 }
 
-function maturityFloor(scenario: TemplateScenarioSummary): TemplateMaturity {
-  let floor = MATURITY_ORDER.length - 1;
-  for (const variant of scenario.variants) {
-    if (variant.available) {
-      floor = Math.min(floor, MATURITY_ORDER.indexOf(variant.maturity));
-    }
-  }
-  return MATURITY_ORDER[Math.max(0, floor)];
-}
-
-function maturityTone(maturity: TemplateMaturity): string {
-  if (maturity === "live-verified") return "success";
-  if (maturity === "fixture-verified") return "processing";
-  if (maturity === "syntax-verified") return "warning";
-  return "error";
-}
-
 function jsonText(value: Record<string, unknown>): string {
   return JSON.stringify(value, null, 2);
-}
-
-function MaturityTag({ maturity }: { maturity: TemplateMaturity }) {
-  const { t } = useTranslation("template");
-  return (
-    <Tag color={maturityTone(maturity)} className="template-maturity-tag">
-      {t(`maturity.${maturity}`)}
-    </Tag>
-  );
 }
 
 function TemplateCard({
@@ -109,7 +76,6 @@ function TemplateCard({
   onOpen: (scenarioSlug: string, trigger: HTMLAnchorElement) => void;
 }) {
   const { t } = useTranslation("template");
-  const maturity = maturityFloor(scenario);
   return (
     <article className="template-card" data-testid={`template-card-${scenario.slug}`}>
       <TemplateScenarioLogo logoKey={scenario.logo_key} />
@@ -126,16 +92,13 @@ function TemplateCard({
           {scenario.protocols.slice(0, 2).map((protocol) => (
             <Tag key={protocol}>{protocol}</Tag>
           ))}
-          {scenario.variants.map((variant) => (
+          {scenario.variants.filter((variant) => variant.available).map((variant) => (
             <span key={variant.language} className="template-language-dot">
               <span aria-hidden="true" />{t(`language.${variant.language}`)}
             </span>
           ))}
         </div>
         <div className="template-card-footer">
-          <div aria-label={t("card.maturitySummary", { maturity: t(`maturity.${maturity}`) })}>
-            <MaturityTag maturity={maturity} />
-          </div>
           <a
             className="template-card-link"
             href={`/templates/${encodeURIComponent(scenario.slug)}`}
@@ -178,7 +141,7 @@ function GalleryList({
   onOpenScenario: (scenarioSlug: string, trigger: HTMLAnchorElement) => void;
 }) {
   const { t } = useTranslation("template");
-  const [activeTheme, setActiveTheme] = useState("");
+  const [activeTheme, setActiveTheme] = useState("all");
   const [queryInput, setQueryInput] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [filters, setFilters] = useState<GalleryFilters>({});
@@ -195,9 +158,9 @@ function GalleryList({
   const facetRequestGeneration = useRef(0);
   const debouncedQueryRef = useRef("");
 
-  const resolvedActiveTheme = themes.some((theme) => theme.slug === activeTheme)
+  const resolvedActiveTheme = activeTheme === "all" || themes.some((theme) => theme.slug === activeTheme)
     ? activeTheme
-    : (themes[0]?.slug ?? "");
+    : "all";
   const facetThemeKey = themes.map((theme) => theme.slug).join("\u0000");
   const facetsLoading = facetThemeKey !== "" && settledFacetThemeKey !== facetThemeKey;
 
@@ -249,13 +212,12 @@ function GalleryList({
     const generation = ++requestGeneration.current;
     void api.listTemplateScenarios(
       {
-        theme: resolvedActiveTheme,
+        theme: resolvedActiveTheme === "all" ? undefined : resolvedActiveTheme,
         q: debouncedQuery || undefined,
         vendor: filters.vendor,
         adapter_type: filters.adapterType,
         protocol: filters.protocol,
         language: filters.language,
-        maturity: filters.maturity,
         page: currentPage,
         page_size: PAGE_SIZE,
       },
@@ -359,21 +321,6 @@ function GalleryList({
         />
       ),
     },
-    {
-      key: "maturity",
-      label: t("filters.maturity"),
-      node: (
-        <Select
-          aria-label={t("filters.maturity")}
-          allowClear
-          value={filters.maturity}
-          placeholder={t("filters.all")}
-          options={MATURITY_ORDER.map((value) => ({ value, label: t(`maturity.${value}`) }))}
-          onChange={(value) => updateFilter("maturity", value)}
-          style={selectWidth}
-        />
-      ),
-    },
   ];
 
   const galleryPanelContent = (
@@ -470,7 +417,6 @@ function GalleryList({
       </span>
       <header className="template-gallery-hero">
         <Typography.Title level={1}>{t("gallery.title")}</Typography.Title>
-        <Typography.Paragraph>{t("gallery.subtitle")}</Typography.Paragraph>
         <Input
           size="large"
           allowClear
@@ -503,11 +449,15 @@ function GalleryList({
             setListError(false);
             setActiveTheme(theme);
           }}
-          items={themes.map((theme) => ({
+          items={[{
+            key: "all",
+            label: `${t("filters.all")} · ${themes.reduce((count, theme) => count + theme.scenario_count, 0)}`,
+            children: resolvedActiveTheme === "all" ? galleryPanelContent : null,
+          }, ...themes.map((theme) => ({
             key: theme.slug,
             label: `${localized(theme.name)} · ${theme.scenario_count}`,
             children: theme.slug === resolvedActiveTheme ? galleryPanelContent : null,
-          }))}
+          }))]}
         />
       )}
     </main>
@@ -570,6 +520,7 @@ function CopyTemplateModal({
         name: name.trim(),
         description: description.trim() || undefined,
         expected_template_version: variant.template_version,
+        draft: { code: variant.code, requirements: variant.requirements, runtime_config: variant.runtime_config },
       });
       if (completed) close();
     } catch (error) {
@@ -607,7 +558,6 @@ function CopyTemplateModal({
         <p>{t("copy.description", { language: t(`language.${variant.language}`) })}</p>
         <dl className="template-copy-facts">
           <div><dt>{t("copy.language")}</dt><dd>{t(`language.${variant.language}`)}</dd></div>
-          <div><dt>{t("copy.version")}</dt><dd>{variant.template_version}</dd></div>
         </dl>
         <label className="template-copy-field">
           <span>{t("copy.name")}</span>
@@ -680,7 +630,10 @@ function TemplateDetail({
     const controller = new AbortController();
     const generation = ++detailGeneration.current;
     void api.getTemplateScenario(scenarioSlug, controller.signal).then((response) => {
-      if (generation === detailGeneration.current && !controller.signal.aborted) setDetail(response);
+      if (generation === detailGeneration.current && !controller.signal.aborted) {
+        setLanguage(response.variants.find((item) => item.available)?.language ?? "python");
+        setDetail(response);
+      }
     }).catch((error: unknown) => {
       if (generation === detailGeneration.current && !controller.signal.aborted) {
         setDetailError(error instanceof ApiError && error.status === 404 ? "not-found" : "load-failed");
@@ -757,7 +710,6 @@ function TemplateDetail({
     );
   }
 
-  const isManagedFileScenario = detail.slug === "csv-to-json" || detail.slug === "excel-to-json";
   const recipePanelContent = variantLoading ? (
     <Skeleton active paragraph={{ rows: 12 }} />
   ) : variantError || variant === null ? (
@@ -775,7 +727,6 @@ function TemplateDetail({
     <>
       <div className="template-recipe-heading">
         <h2>{t("detail.recipe")}</h2>
-        <MaturityTag maturity={variant.maturity} />
       </div>
       <div className="template-code-view" data-testid="template-code-view">
         <Editor
@@ -794,18 +745,14 @@ function TemplateDetail({
       <section className="template-recipe-facts">
         <h3>{t("detail.requirements")}</h3>
         <pre tabIndex={0}>{variant.requirements || "—"}</pre>
-        <h3>{t("detail.installNotes")}</h3>
-        <p>{localized(variant.install_notes)}</p>
-        <h3>{t("detail.runtimeGuidance")}</h3>
-        <p>{localized(variant.runtime_guidance)}</p>
-        <h3>{t("detail.inputSkeleton")}</h3>
-        <pre tabIndex={0}>{jsonText(variant.input_skeleton)}</pre>
-        <h3>{t("detail.inputContract")}</h3>
-        <pre tabIndex={0}>{jsonText(variant.input_contract)}</pre>
-        <h3>{t("detail.outputContract")}</h3>
-        <pre tabIndex={0}>{jsonText(variant.output_contract)}</pre>
-        <h3>{t("detail.runtimeConfig")}</h3>
-        <pre tabIndex={0}>{jsonText(variant.runtime_config)}</pre>
+        {Object.keys(variant.input_skeleton).length > 0 && <>
+          <h3>{t("detail.inputSkeleton")}</h3>
+          <pre tabIndex={0}>{jsonText(variant.input_skeleton)}</pre>
+        </>}
+        {variant.output_example && Object.keys(variant.output_example).length > 0 && <>
+          <h3>{t("detail.outputExample")}</h3>
+          <pre tabIndex={0}>{jsonText(variant.output_example)}</pre>
+        </>}
       </section>
     </>
   );
@@ -834,8 +781,6 @@ function TemplateDetail({
           <div className="template-detail-meta">
             <Tag>{t(`type.${detail.adapter_type}`)}</Tag>
             {detail.protocols.map((protocol) => <Tag key={protocol}>{protocol}</Tag>)}
-            <span>{t("detail.version")}: {detail.template_version}</span>
-            <span>{t("detail.updated", { date: detail.updated_at })}</span>
           </div>
         </div>
         <Button
@@ -855,49 +800,6 @@ function TemplateDetail({
             <h2>{t("detail.purpose")}</h2>
             <p>{localized(detail.details)}</p>
           </section>
-          <div className="template-contract-summary">
-            <section className="template-detail-panel"><h2>{t("detail.input")}</h2><p>{localized(detail.input_summary)}</p></section>
-            <section className="template-detail-panel"><h2>{t("detail.output")}</h2><p>{localized(detail.output_summary)}</p></section>
-          </div>
-          <section className="template-detail-panel template-risk-panel">
-            <h2>{t("detail.risk")}</h2>
-            <p>{localized(detail.risk)}</p>
-          </section>
-          {isManagedFileScenario && <Alert type="info" showIcon message={t("detail.managedInputHint")} />}
-          <section className="template-detail-panel">
-            <h2>{t("detail.modes")}</h2>
-            <div>{detail.modes.map((mode) => <Tag key={mode}>{mode}</Tag>)}</div>
-          </section>
-          <section className="template-detail-panel">
-            <h2>{t("detail.languageMaturity")}</h2>
-            <div className="template-language-maturity">
-              {detail.variants.map((item) => (
-                <div key={item.language}>
-                  <strong>{t(`language.${item.language}`)}</strong>
-                  <MaturityTag maturity={item.maturity} />
-                </div>
-              ))}
-            </div>
-          </section>
-          <section className="template-detail-panel">
-            <h2>{t("detail.sources")}</h2>
-            {variantLoading ? (
-              <Skeleton active paragraph={{ rows: 2 }} title={false} />
-            ) : variantError || variant === null ? (
-              <Alert showIcon type="error" message={t("detail.variantFailed")} />
-            ) : (
-              <div className="template-source-list">
-                {variant.sources.map((source) => (
-                  <article key={source.id} className="template-source">
-                    <a href={source.url} target="_blank" rel="noreferrer">{source.reference}</a>
-                    <span>{source.license} · {t(`useMode.${source.use_mode}`)}</span>
-                    <span>{t("detail.sourceRevision", { revision: source.revision })}</span>
-                    <span>{t("detail.sourceChecked", { date: source.checked_at })}</span>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
         </div>
 
         <section className="template-recipe-panel">
@@ -911,7 +813,7 @@ function TemplateDetail({
               setVariantError(false);
               setLanguage(key as AdapterLanguage);
             }}
-            items={LANGUAGES.map((item) => ({
+            items={detail.variants.filter((item) => item.available).map(({ language: item }) => ({
               key: item,
               label: t(`language.${item}`),
               children: item === language ? recipePanelContent : null,

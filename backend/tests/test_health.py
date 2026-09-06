@@ -14,7 +14,18 @@ from dlr.control.services import rabbitmq
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    # Unit-test the health aggregation independently of process-local topology
+    # and a real Worker inventory. Individual readiness tests override this.
+    monkeypatch.setattr(
+        rabbitmq,
+        "runtime_health",
+        lambda _session=None: _rabbitmq_status(
+            status="ready",
+            ready=True,
+            worker_count=1,
+        ),
+    )
     yield TestClient(create_app())
 
 
@@ -114,7 +125,6 @@ def test_fresh_configured_control_is_healthy_while_waiting_for_worker(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "rabbitmq_url", "amqp://dlr:password@rabbitmq:5672/%2F")
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", True)
     monkeypatch.setattr(
         rabbitmq,
         "runtime_health",
@@ -138,7 +148,6 @@ def test_waiting_for_worker_with_pending_outbox_is_degraded(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "rabbitmq_url", "amqp://dlr:password@rabbitmq:5672/%2F")
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", False)
     monkeypatch.setattr(
         rabbitmq,
         "runtime_health",
@@ -161,7 +170,6 @@ def test_registered_worker_runtime_is_healthy_and_ready(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "rabbitmq_url", "amqp://dlr:password@rabbitmq:5672/%2F")
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", True)
     monkeypatch.setattr(
         rabbitmq,
         "runtime_health",
@@ -182,7 +190,6 @@ def test_topology_drift_keeps_health_degraded(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "rabbitmq_url", "amqp://dlr:password@rabbitmq:5672/%2F")
-    monkeypatch.setattr(settings, "rabbitmq_execution_enabled", False)
     monkeypatch.setattr(
         rabbitmq,
         "runtime_health",

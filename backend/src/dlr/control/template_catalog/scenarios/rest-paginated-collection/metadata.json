@@ -2,28 +2,16 @@
   "slug": "rest-paginated-collection",
   "theme_slug": "api-events",
   "title": {
-    "zh-CN": "REST 分页集合",
+    "zh-CN": "REST 分页采集",
     "en": "REST Paginated Collection"
   },
   "summary": {
-    "zh-CN": "用 page、offset、cursor 或 next URL 四种策略有界读取集合。",
-    "en": "Boundedly read a collection with page, offset, cursor or next-URL pagination."
+    "zh-CN": "自动翻页读取接口数据，合并成一份列表。",
+    "en": "Fetch API pages and combine their records into one list."
   },
   "details": {
-    "zh-CN": "提供页数、记录数、总字节和总时限上限，按整页提交记录，并检测重复 cursor、重复 next URL、不增长 offset 与无记录推进。",
-    "en": "Enforces page, record, byte and total-deadline limits, commits only whole pages, and detects repeated cursors, repeated next URLs, non-growing offsets and no record progress."
-  },
-  "input_summary": {
-    "zh-CN": "入口 URL、分页策略、items 指针、下一页字段和请求参数名。",
-    "en": "Entry URL, pagination strategy, items pointer, continuation field and request parameter names."
-  },
-  "output_summary": {
-    "zh-CN": "有界 records、页数、记录数、partial，以及仅 page/offset 可直接恢复的 checkpoint。",
-    "en": "Bounded records, page and record counts, partial state, and checkpoints directly resumable only for page/offset strategies."
-  },
-  "risk": {
-    "zh-CN": "next URL 默认只允许同协议同主机；该检查不构成平台级 SSRF 防线。",
-    "en": "Next URLs remain same-scheme and same-host by default; this check is not a platform SSRF boundary."
+    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "Open REST",
   "adapter_type": "task",
@@ -38,12 +26,9 @@
     "collection"
   ],
   "logo_key": "rest-pagination",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "updated_at": "2026-09-05",
   "featured_rank": 20,
-  "modes": [
-    "request"
-  ],
   "provenance_ids": [
     "http-rfc9110-9112",
     "dlt-3efddd6",
@@ -52,506 +37,84 @@
   "variants": [
     {
       "language": "python",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/rest-paginated-collection/python.py",
-      "code_sha256": "df6c6e45dfaf57ec722e1c0996bb1441e18f4b36724bf9b8f169a0b5fa9a9f81",
+      "code_sha256": "aca604c1453ea5f49525c16d6f04568ea91fe58014e1cfc762247987beb77f49",
       "requirements": "",
-      "install_notes": {
-        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
-        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
-      },
-      "input_skeleton": {
-        "url": "https://api.example/resources",
-        "strategy": "page",
-        "records_path": "items",
-        "next_path": "next",
-        "page_parameter": "page",
-        "size_parameter": "page_size",
-        "start_page": 1,
-        "page_size": 100,
-        "headers": {},
-        "query_auth": null,
-        "allow_cross_origin_next": false,
-        "max_pages": 20,
-        "max_records": 10000,
-        "max_bytes": 4194304,
-        "timeout_seconds": 30,
-        "max_retries": 2
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "url",
-          "strategy",
-          "records_path"
-        ],
-        "properties": {
-          "url": {
-            "type": "string",
-            "schemes": [
-              "http",
-              "https"
-            ],
-            "userinfo": "forbidden"
-          },
-          "strategy": {
-            "enum": [
-              "page",
-              "offset",
-              "cursor",
-              "next-url"
-            ]
-          },
-          "records_path": {
-            "type": "string",
-            "syntax": "dot-separated object path"
-          },
-          "next_path": {
-            "type": "string",
-            "syntax": "dot-separated object path"
-          },
-          "start_page": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000000
-          },
-          "start_offset": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000000
-          },
-          "page_parameter": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 64
-          },
-          "size_parameter": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 64
-          },
-          "offset_parameter": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 64
-          },
-          "limit_parameter": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 64
-          },
-          "cursor_parameter": {
-            "type": "string",
-            "min_length": 1,
-            "max_length": 64
-          },
-          "headers": {
-            "type": "object",
-            "credential_binding_syntax": "DLR-Auth: bearer|api-key/header:SECRET_BINDING_NAME"
-          },
-          "query_auth": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "required": [
-              "parameter",
-              "secret_binding"
-            ],
-            "additional_properties": false,
-            "description": "Optional API key query injection resolved from Credential Binding; credential-like names are forbidden in direct URLs and pagination parameter names."
-          },
-          "allow_cross_origin_next": {
-            "type": "boolean",
-            "credential_headers_forwarded": false
-          },
-          "max_pages": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 500
-          },
-          "max_records": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 120
-          },
-          "max_retries": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 5
-          }
-        },
-        "secret_bindings": [
-          "HTTP_BEARER_TOKEN",
-          "HTTP_API_KEY"
-        ],
-        "credential_name_policy": "credential-like query and header names are fail-closed; query credentials require query_auth and header credentials require DLR-Auth",
-        "loop_guards": [
-          "repeated cursor",
-          "repeated next URL",
-          "repeated page payload",
-          "non-growing offset"
-        ]
-      },
-      "output_contract": {
-        "required": [
-          "records",
-          "count",
-          "pages",
-          "bytes",
-          "partial",
-          "checkpoint"
-        ],
-        "records_order": "source order; only complete source pages are committed",
-        "record_cap_behavior": "a page larger than the remaining max_records budget is omitted in full",
-        "byte_cap_behavior": "transport bytes count only successful requests; scrubbed records are also checked as one whole page before commit",
-        "checkpoint_contract": {
-          "page": "overlay strategy and start_page on the original input to resume at the first uncommitted page",
-          "offset": "overlay strategy and start_offset on the original input to resume at the first uncommitted offset",
-          "cursor": "null on partial output because opaque continuations are not emitted or claimed as resumable",
-          "next-url": "null on partial output because signed or credential-bearing URLs are not emitted or claimed as resumable"
-        },
-        "error": "stable category only"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：HTTP_BEARER_TOKEN、HTTP_API_KEY。凭据类 query/header 名称默认拒绝；Query API Key 只能通过 query_auth.secret_binding 注入，Header 凭据只能通过 DLR-Auth 注入。记录会在脱敏后的整页输出通过 max_bytes 预算后才原子提交；超限时 page/offset checkpoint 指向当前未提交边界，cursor/next-url checkpoint 保持 null。页数只统计已成功请求。仅对安全可重试的 GET 使用有界退避。",
-        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: HTTP_BEARER_TOKEN and HTTP_API_KEY. Credential-like query and header names are rejected by default; query API keys must use query_auth.secret_binding and header credentials must use DLR-Auth. A scrubbed page is committed atomically only after its full records output fits max_bytes; on overflow, page/offset checkpoints remain at the current uncommitted boundary and cursor/next-url checkpoints remain null. Page counts include successful requests only. Use bounded backoff only for safely retryable GET requests."
-      },
       "provenance_ids": [
         "http-rfc9110-9112",
         "dlt-3efddd6",
         "airbyte-6f59bc9"
       ],
-      "receipt_resource": "receipts/rest-paginated-collection/python.json"
+      "output_example": {
+        "records": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "pages": 1,
+        "bytes": 37,
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "javascript",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/rest-paginated-collection/javascript.mjs",
-      "code_sha256": "84a82c8022bdeaf5b43cd261811b21ee17b4cb42831460378b7fb9ebd7bde2f5",
+      "code_sha256": "1c7aa3785cfcf934f7f65290a592ea2e3ed4fc82d67a67d0f81b953a4700e6ee",
       "requirements": "",
-      "install_notes": {
-        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
-        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
-      },
-      "input_skeleton": {
-        "url": "https://api.example/resources",
-        "strategy": "page",
-        "records_path": "items",
-        "next_path": "next",
-        "page_parameter": "page",
-        "size_parameter": "page_size",
-        "start_page": 1,
-        "page_size": 100,
-        "headers": {},
-        "query_auth": null,
-        "allow_cross_origin_next": false,
-        "max_pages": 20,
-        "max_records": 10000,
-        "max_bytes": 4194304,
-        "timeout_seconds": 30,
-        "max_retries": 2
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "url",
-          "strategy",
-          "records_path"
-        ],
-        "properties": {
-          "url": {
-            "type": "string",
-            "schemes": [
-              "http",
-              "https"
-            ],
-            "userinfo": "forbidden"
-          },
-          "strategy": {
-            "enum": [
-              "page",
-              "offset",
-              "cursor",
-              "next-url"
-            ]
-          },
-          "records_path": {
-            "type": "string",
-            "syntax": "dot-separated object path"
-          },
-          "next_path": {
-            "type": "string",
-            "syntax": "dot-separated object path"
-          },
-          "headers": {
-            "type": "object",
-            "credential_binding_syntax": "DLR-Auth: bearer|api-key/header:SECRET_BINDING_NAME"
-          },
-          "query_auth": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "required": [
-              "parameter",
-              "secret_binding"
-            ],
-            "additional_properties": false,
-            "description": "Optional API key query injection resolved from Credential Binding; credential-like names are forbidden in direct URLs and pagination parameter names."
-          },
-          "allow_cross_origin_next": {
-            "type": "boolean",
-            "credential_headers_forwarded": false
-          },
-          "max_pages": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 500
-          },
-          "max_records": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 120
-          },
-          "max_retries": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 5
-          }
-        },
-        "secret_bindings": [
-          "HTTP_BEARER_TOKEN",
-          "HTTP_API_KEY"
-        ],
-        "credential_name_policy": "credential-like query and header names are fail-closed; query credentials require query_auth and header credentials require DLR-Auth",
-        "loop_guards": [
-          "repeated cursor",
-          "repeated next URL",
-          "repeated page payload",
-          "non-growing offset"
-        ]
-      },
-      "output_contract": {
-        "required": [
-          "records",
-          "count",
-          "pages",
-          "bytes",
-          "partial",
-          "checkpoint"
-        ],
-        "records_order": "source order; only complete source pages are committed",
-        "record_cap_behavior": "a page larger than the remaining max_records budget is omitted in full",
-        "byte_cap_behavior": "transport bytes count only successful requests; scrubbed records are also checked as one whole page before commit",
-        "checkpoint_contract": {
-          "page": "overlay strategy and start_page on the original input to resume at the first uncommitted page",
-          "offset": "overlay strategy and start_offset on the original input to resume at the first uncommitted offset",
-          "cursor": "null on partial output because opaque continuations are not emitted or claimed as resumable",
-          "next-url": "null on partial output because signed or credential-bearing URLs are not emitted or claimed as resumable"
-        },
-        "error": "stable category only"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：HTTP_BEARER_TOKEN、HTTP_API_KEY。凭据类 query/header 名称默认拒绝；Query API Key 只能通过 query_auth.secret_binding 注入，Header 凭据只能通过 DLR-Auth 注入。记录会在脱敏后的整页输出通过 max_bytes 预算后才原子提交；超限时 page/offset checkpoint 指向当前未提交边界，cursor/next-url checkpoint 保持 null。页数只统计已成功请求。仅对安全可重试的 GET 使用有界退避。",
-        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: HTTP_BEARER_TOKEN and HTTP_API_KEY. Credential-like query and header names are rejected by default; query API keys must use query_auth.secret_binding and header credentials must use DLR-Auth. A scrubbed page is committed atomically only after its full records output fits max_bytes; on overflow, page/offset checkpoints remain at the current uncommitted boundary and cursor/next-url checkpoints remain null. Page counts include successful requests only. Use bounded backoff only for safely retryable GET requests."
-      },
       "provenance_ids": [
         "http-rfc9110-9112",
         "dlt-3efddd6",
         "airbyte-6f59bc9"
       ],
-      "receipt_resource": "receipts/rest-paginated-collection/javascript.json"
+      "output_example": {
+        "records": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "pages": 1,
+        "bytes": 37,
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "java",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/rest-paginated-collection/java.java",
-      "code_sha256": "b2a3476c429ae5abdb6ca49041218ad8d399f5ff17106c70ecb0c8f1438301a5",
+      "code_sha256": "eea7500024c893b158d7217fc2d50bc9cc11ea69f2a1586f2203be0b62435896",
       "requirements": "",
-      "install_notes": {
-        "zh-CN": "无需额外依赖；此 Variant 仅使用对应 Runtime 的标准库。复制后仍需选择兼容 Worker，并通过 Credential Binding 配置真实凭据。",
-        "en": "No extra dependency is required; this Variant uses only its Runtime standard library. After copying, select a compatible Worker and configure real credentials through Credential Binding."
-      },
-      "input_skeleton": {
-        "url": "https://api.example/resources",
-        "strategy": "page",
-        "records_path": "items",
-        "next_path": "next",
-        "page_parameter": "page",
-        "size_parameter": "page_size",
-        "start_page": 1,
-        "page_size": 100,
-        "headers": {},
-        "query_auth": null,
-        "allow_cross_origin_next": false,
-        "max_pages": 20,
-        "max_records": 10000,
-        "max_bytes": 4194304,
-        "timeout_seconds": 30,
-        "max_retries": 2
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "url",
-          "strategy",
-          "records_path"
-        ],
-        "properties": {
-          "url": {
-            "type": "string",
-            "schemes": [
-              "http",
-              "https"
-            ],
-            "userinfo": "forbidden"
-          },
-          "strategy": {
-            "enum": [
-              "page",
-              "offset",
-              "cursor",
-              "next-url"
-            ]
-          },
-          "records_path": {
-            "type": "string",
-            "syntax": "dot-separated object path"
-          },
-          "next_path": {
-            "type": "string",
-            "syntax": "dot-separated object path"
-          },
-          "headers": {
-            "type": "object",
-            "credential_binding_syntax": "DLR-Auth: bearer|api-key/header:SECRET_BINDING_NAME"
-          },
-          "query_auth": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "required": [
-              "parameter",
-              "secret_binding"
-            ],
-            "additional_properties": false,
-            "description": "Optional API key query injection resolved from Credential Binding; credential-like names are forbidden in direct URLs and pagination parameter names."
-          },
-          "allow_cross_origin_next": {
-            "type": "boolean",
-            "credential_headers_forwarded": false
-          },
-          "max_pages": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 500
-          },
-          "max_records": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100000
-          },
-          "max_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          },
-          "page_size": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 1000
-          },
-          "timeout_seconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 120
-          },
-          "max_retries": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 5
-          }
-        },
-        "secret_bindings": [
-          "HTTP_BEARER_TOKEN",
-          "HTTP_API_KEY"
-        ],
-        "credential_name_policy": "credential-like query and header names are fail-closed; query credentials require query_auth and header credentials require DLR-Auth",
-        "loop_guards": [
-          "repeated cursor",
-          "repeated next URL",
-          "repeated page payload",
-          "non-growing offset"
-        ]
-      },
-      "output_contract": {
-        "required": [
-          "records",
-          "count",
-          "pages",
-          "bytes",
-          "partial",
-          "checkpoint"
-        ],
-        "records_order": "source order; only complete source pages are committed",
-        "record_cap_behavior": "a page larger than the remaining max_records budget is omitted in full",
-        "byte_cap_behavior": "transport bytes count only successful requests; scrubbed records are also checked as one whole page before commit",
-        "checkpoint_contract": {
-          "page": "overlay strategy and start_page on the original input to resume at the first uncommitted page",
-          "offset": "overlay strategy and start_offset on the original input to resume at the first uncommitted offset",
-          "cursor": "null on partial output because opaque continuations are not emitted or claimed as resumable",
-          "next-url": "null on partial output because signed or credential-bearing URLs are not emitted or claimed as resumable"
-        },
-        "error": "stable category only"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：HTTP_BEARER_TOKEN、HTTP_API_KEY。凭据类 query/header 名称默认拒绝；Query API Key 只能通过 query_auth.secret_binding 注入，Header 凭据只能通过 DLR-Auth 注入。记录会在脱敏后的整页输出通过 max_bytes 预算后才原子提交；超限时 page/offset checkpoint 指向当前未提交边界，cursor/next-url checkpoint 保持 null。页数只统计已成功请求。仅对安全可重试的 GET 使用有界退避。",
-        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: HTTP_BEARER_TOKEN and HTTP_API_KEY. Credential-like query and header names are rejected by default; query API keys must use query_auth.secret_binding and header credentials must use DLR-Auth. A scrubbed page is committed atomically only after its full records output fits max_bytes; on overflow, page/offset checkpoints remain at the current uncommitted boundary and cursor/next-url checkpoints remain null. Page counts include successful requests only. Use bounded backoff only for safely retryable GET requests."
-      },
       "provenance_ids": [
         "http-rfc9110-9112",
         "dlt-3efddd6",
         "airbyte-6f59bc9"
       ],
-      "receipt_resource": "receipts/rest-paginated-collection/java.json"
+      "output_example": {
+        "records": [
+          {
+            "id": 1,
+            "name": "example"
+          }
+        ],
+        "count": 1,
+        "pages": 1,
+        "bytes": 37,
+        "partial": false,
+        "checkpoint": null
+      }
     }
   ]
 }

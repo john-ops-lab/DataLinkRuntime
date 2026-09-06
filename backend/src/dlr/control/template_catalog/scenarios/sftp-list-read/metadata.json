@@ -2,28 +2,16 @@
   "slug": "sftp-list-read",
   "theme_slug": "storage-transfer",
   "title": {
-    "zh-CN": "SFTP 清单与受限读取",
-    "en": "SFTP List & Bounded Read"
+    "zh-CN": "SFTP 文件读取",
+    "en": "SFTP File Listing & Reading"
   },
   "summary": {
-    "zh-CN": "验证主机身份后，在固定远端根目录中列出并有界读取文件。",
-    "en": "Verify host identity, then list and boundedly read files under a fixed remote root."
+    "zh-CN": "连接 SFTP 服务器，列出目录文件并读取选中的文件。",
+    "en": "Connect to an SFTP server, list a directory and read selected files."
   },
   "details": {
-    "zh-CN": "连接前校验 known_hosts 或固定指纹，使用服务端 realpath，拒绝路径穿越和符号链接逃逸；最终 JSON 总字节受严格限制。",
-    "en": "Verifies a pinned host-key SHA-256 fingerprint before connection, uses server realpath, rejects traversal and symlink escapes, and strictly bounds final JSON bytes."
-  },
-  "input_summary": {
-    "zh-CN": "主机、端口、远端根占位符、过滤规则和可选读取路径。",
-    "en": "Host, port, remote-root placeholder, filters and optional paths to read."
-  },
-  "output_summary": {
-    "zh-CN": "文件清单、受限内容、计数、字节数、partial 与 checkpoint。",
-    "en": "File listing, bounded content, counts, byte size, partial state and checkpoint."
-  },
-  "risk": {
-    "zh-CN": "不得默认接受未知主机密钥；所有规范化路径必须保留在远端根内；base64、清单元数据、状态和 checkpoint 均计入最终 JSON 上限。",
-    "en": "Unknown host keys are never accepted by default; all canonical paths must remain under the remote root, and base64, listing metadata, status and checkpoints count toward the final JSON cap."
+    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "SFTP",
   "adapter_type": "task",
@@ -38,387 +26,96 @@
     "host key"
   ],
   "logo_key": "transfer-sftp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "updated_at": "2026-09-05",
   "featured_rank": 20,
-  "modes": [
-    "preview"
-  ],
   "provenance_ids": [
     "sftp-v3-openssh"
   ],
   "variants": [
     {
       "language": "python",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/sftp-list-read/python.py",
-      "code_sha256": "eef2ddfcc13991d6215a887e24045e70bdacbcb15c56e0d02186beb3ddb171f3",
+      "code_sha256": "bb3db0c35133c7f0c660ed2033617226918f42a24851985788eb21ee623056db",
       "requirements": "paramiko==4.0.0",
-      "install_notes": {
-        "zh-CN": "建议依赖：paramiko==4.0.0。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: paramiko==4.0.0. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "host": "sftp.example",
-        "port": 22,
-        "host_fingerprint_sha256": "SHA256:EXAMPLE_HOST_KEY_FINGERPRINT",
-        "base_directory": "/exports",
-        "path": ".",
-        "start_at": null,
-        "suffix": ".json",
-        "read_paths": [],
-        "max_files": 500,
-        "max_file_bytes": 1048576,
-        "max_total_bytes": 4194304
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "host",
-          "host_fingerprint_sha256",
-          "base_directory"
-        ],
-        "properties": {
-          "host": {
-            "type": "string"
-          },
-          "port": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 65535
-          },
-          "username": {
-            "type": "string",
-            "note": "prefer SFTP_USERNAME Credential Binding"
-          },
-          "host_fingerprint_sha256": {
-            "type": "string",
-            "format": "OpenSSH SHA256 fingerprint"
-          },
-          "base_directory": {
-            "type": "string",
-            "min_length": 1
-          },
-          "path": {
-            "type": "string"
-          },
-          "start_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "min_length": 1
-          },
-          "suffix": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "read_paths": {
-            "type": "array",
-            "max_items": 5000
-          },
-          "max_files": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "max_file_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "max_total_bytes": {
-            "type": "integer",
-            "minimum": 256,
-            "maximum": 16777216
-          }
-        },
-        "secret_bindings": [
-          "SFTP_USERNAME",
-          "SFTP_PASSWORD",
-          "SFTP_PRIVATE_KEY",
-          "SFTP_PRIVATE_KEY_PASSPHRASE"
-        ],
-        "host_identity": "an exact pinned SHA-256 host-key fingerprint is mandatory",
-        "path_rule": "server realpath must remain inside canonical base_directory"
-      },
-      "output_contract": {
-        "required": [
-          "files",
-          "contents",
-          "summary",
-          "partial",
-          "checkpoint"
-        ],
-        "file_fields": [
-          "path",
-          "size",
-          "mtime"
-        ],
-        "oversize": "metadata plus explicit limit_exceeded status",
-        "byte_budget": "max_total_bytes bounds the complete compact JSON UTF-8 envelope, including files, contents, base64, status, summary and checkpoint",
-        "checkpoint_rule": "a bounded checkpoint contains the relative start_at path of the first unprocessed item"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：SFTP_USERNAME、SFTP_PASSWORD、SFTP_PRIVATE_KEY、SFTP_PRIVATE_KEY_PASSPHRASE。先在输入中固定主机公钥 SHA-256 指纹；远端根目录不是本机路径。",
-        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: SFTP_USERNAME, SFTP_PASSWORD, SFTP_PRIVATE_KEY, SFTP_PRIVATE_KEY_PASSPHRASE. Pin the host-key SHA-256 fingerprint in input first; the remote root is not a local path."
-      },
       "provenance_ids": [
         "sftp-v3-openssh"
       ],
-      "receipt_resource": "receipts/sftp-list-read/python.json"
+      "output_example": {
+        "files": [
+          {
+            "path": "items.json",
+            "size": 128,
+            "mtime": 1767225600
+          }
+        ],
+        "contents": [],
+        "summary": {
+          "files": 1,
+          "bytes_read": 0
+        },
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "javascript",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/sftp-list-read/javascript.mjs",
-      "code_sha256": "0ecc8677ffa81939dc7f5ae978d4ea2274b3c4cda8a1db8ca97ca63889466e09",
+      "code_sha256": "6a8c70a41ff0543cff2268a2447fba392e73144c7d7278c75c34417c3d5d88ef",
       "requirements": "ssh2-sftp-client@12.0.1",
-      "install_notes": {
-        "zh-CN": "建议依赖：ssh2-sftp-client@12.0.1。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: ssh2-sftp-client@12.0.1. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "host": "sftp.example",
-        "port": 22,
-        "host_fingerprint_sha256": "SHA256:EXAMPLE_HOST_KEY_FINGERPRINT",
-        "base_directory": "/exports",
-        "path": ".",
-        "start_at": null,
-        "suffix": ".json",
-        "read_paths": [],
-        "max_files": 500,
-        "max_file_bytes": 1048576,
-        "max_total_bytes": 4194304
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "host",
-          "host_fingerprint_sha256",
-          "base_directory"
-        ],
-        "properties": {
-          "host": {
-            "type": "string"
-          },
-          "port": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 65535
-          },
-          "username": {
-            "type": "string",
-            "note": "prefer SFTP_USERNAME Credential Binding"
-          },
-          "host_fingerprint_sha256": {
-            "type": "string",
-            "format": "OpenSSH SHA256 fingerprint"
-          },
-          "base_directory": {
-            "type": "string",
-            "min_length": 1
-          },
-          "path": {
-            "type": "string"
-          },
-          "start_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "min_length": 1
-          },
-          "suffix": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "read_paths": {
-            "type": "array",
-            "max_items": 5000
-          },
-          "max_files": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "max_file_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "max_total_bytes": {
-            "type": "integer",
-            "minimum": 256,
-            "maximum": 16777216
-          }
-        },
-        "secret_bindings": [
-          "SFTP_USERNAME",
-          "SFTP_PASSWORD",
-          "SFTP_PRIVATE_KEY",
-          "SFTP_PRIVATE_KEY_PASSPHRASE"
-        ],
-        "host_identity": "an exact pinned SHA-256 host-key fingerprint is mandatory",
-        "path_rule": "server realpath must remain inside canonical base_directory"
-      },
-      "output_contract": {
-        "required": [
-          "files",
-          "contents",
-          "summary",
-          "partial",
-          "checkpoint"
-        ],
-        "file_fields": [
-          "path",
-          "size",
-          "mtime"
-        ],
-        "oversize": "metadata plus explicit limit_exceeded status",
-        "byte_budget": "max_total_bytes bounds the complete compact JSON UTF-8 envelope, including files, contents, base64, status, summary and checkpoint",
-        "checkpoint_rule": "a bounded checkpoint contains the relative start_at path of the first unprocessed item"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：SFTP_USERNAME、SFTP_PASSWORD、SFTP_PRIVATE_KEY、SFTP_PRIVATE_KEY_PASSPHRASE。先在输入中固定主机公钥 SHA-256 指纹；远端根目录不是本机路径。",
-        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: SFTP_USERNAME, SFTP_PASSWORD, SFTP_PRIVATE_KEY, SFTP_PRIVATE_KEY_PASSPHRASE. Pin the host-key SHA-256 fingerprint in input first; the remote root is not a local path."
-      },
       "provenance_ids": [
         "sftp-v3-openssh"
       ],
-      "receipt_resource": "receipts/sftp-list-read/javascript.json"
+      "output_example": {
+        "files": [
+          {
+            "path": "items.json",
+            "size": 128,
+            "mtime": 1767225600
+          }
+        ],
+        "contents": [],
+        "summary": {
+          "files": 1,
+          "bytes_read": 0
+        },
+        "partial": false,
+        "checkpoint": null
+      }
     },
     {
       "language": "java",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/sftp-list-read/java.java",
-      "code_sha256": "bf52f44fa42bf1a7b9265b0bce2b6cd3ab4736f31ac5172c9b9ef4e4add6f495",
+      "code_sha256": "30fe10a3a9873a856a0d70f373e9e19838f8a04764ec3291584f694811decd1d",
       "requirements": "com.github.mwiede:jsch:0.2.24",
-      "install_notes": {
-        "zh-CN": "建议依赖：com.github.mwiede:jsch:0.2.24。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: com.github.mwiede:jsch:0.2.24. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
-      "input_skeleton": {
-        "host": "sftp.example",
-        "port": 22,
-        "host_fingerprint_sha256": "SHA256:EXAMPLE_HOST_KEY_FINGERPRINT",
-        "base_directory": "/exports",
-        "path": ".",
-        "start_at": null,
-        "suffix": ".json",
-        "read_paths": [],
-        "max_files": 500,
-        "max_file_bytes": 1048576,
-        "max_total_bytes": 4194304
-      },
-      "input_contract": {
-        "type": "object",
-        "required": [
-          "host",
-          "host_fingerprint_sha256",
-          "base_directory"
-        ],
-        "properties": {
-          "host": {
-            "type": "string"
-          },
-          "port": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 65535
-          },
-          "username": {
-            "type": "string",
-            "note": "prefer SFTP_USERNAME Credential Binding"
-          },
-          "host_fingerprint_sha256": {
-            "type": "string",
-            "format": "OpenSSH SHA256 fingerprint"
-          },
-          "base_directory": {
-            "type": "string",
-            "min_length": 1
-          },
-          "path": {
-            "type": "string"
-          },
-          "start_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "min_length": 1
-          },
-          "suffix": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "read_paths": {
-            "type": "array",
-            "max_items": 5000
-          },
-          "max_files": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 5000
-          },
-          "max_file_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 8388608
-          },
-          "max_total_bytes": {
-            "type": "integer",
-            "minimum": 256,
-            "maximum": 16777216
-          }
-        },
-        "secret_bindings": [
-          "SFTP_USERNAME",
-          "SFTP_PASSWORD",
-          "SFTP_PRIVATE_KEY",
-          "SFTP_PRIVATE_KEY_PASSPHRASE"
-        ],
-        "host_identity": "an exact pinned SHA-256 host-key fingerprint is mandatory",
-        "path_rule": "server realpath must remain inside canonical base_directory"
-      },
-      "output_contract": {
-        "required": [
-          "files",
-          "contents",
-          "summary",
-          "partial",
-          "checkpoint"
-        ],
-        "file_fields": [
-          "path",
-          "size",
-          "mtime"
-        ],
-        "oversize": "metadata plus explicit limit_exceeded status",
-        "byte_budget": "max_total_bytes bounds the complete compact JSON UTF-8 envelope, including files, contents, base64, status, summary and checkpoint",
-        "checkpoint_rule": "a bounded checkpoint contains the relative start_at path of the first unprocessed item"
-      },
+      "input_skeleton": {},
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：SFTP_USERNAME、SFTP_PASSWORD、SFTP_PRIVATE_KEY、SFTP_PRIVATE_KEY_PASSPHRASE。先在输入中固定主机公钥 SHA-256 指纹；远端根目录不是本机路径。",
-        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: SFTP_USERNAME, SFTP_PASSWORD, SFTP_PRIVATE_KEY, SFTP_PRIVATE_KEY_PASSPHRASE. Pin the host-key SHA-256 fingerprint in input first; the remote root is not a local path."
-      },
       "provenance_ids": [
         "sftp-v3-openssh"
       ],
-      "receipt_resource": "receipts/sftp-list-read/java.json"
+      "output_example": {
+        "files": [
+          {
+            "path": "items.json",
+            "size": 128,
+            "mtime": 1767225600
+          }
+        ],
+        "contents": [],
+        "summary": {
+          "files": 1,
+          "bytes_read": 0
+        },
+        "partial": false,
+        "checkpoint": null
+      }
     }
   ]
 }

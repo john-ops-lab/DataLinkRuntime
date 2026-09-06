@@ -48,6 +48,7 @@ export interface ControlHealthPayload {
 
 export const REQUIRED_ISOLATION_CAPABILITIES = [
   "cgroup_v2",
+  "cgroup_namespace_private",
   "mount_namespace",
   "pid_namespace",
   "memory_hard_limit",
@@ -119,7 +120,7 @@ export function missingWorkerCapabilities(worker: Worker): RequiredIsolationCapa
   );
 }
 
-/** A heartbeat alone is insufficient: every v3 execution gate must be authoritative. */
+/** A heartbeat alone is insufficient: execution and isolation capabilities must pass. */
 export function isWorkerExecutionReady(worker: Worker): boolean {
   return (
     worker.status === "online"

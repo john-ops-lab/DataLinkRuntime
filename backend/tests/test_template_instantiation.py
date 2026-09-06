@@ -128,11 +128,10 @@ def _new_account_client(
     return client, user_id, csrf_token
 
 
-def test_task_instantiate_creates_exact_detached_revision_and_location(
+def test_task_instantiate_creates_independent_unsaved_adapter_and_location(
     api_client: TestClient,
     session_factory: sessionmaker[Session],
 ) -> None:
-    selected = _variant(api_client, TASK_SCENARIO, "java")
     detail = api_client.get(f"/api/templates/scenarios/{TASK_SCENARIO}").json()
     response = _instantiate(
         api_client,
@@ -151,21 +150,15 @@ def test_task_instantiate_creates_exact_detached_revision_and_location(
     assert body["timeout_seconds"] == DEFAULT_EXECUTION_TIMEOUT_SECONDS
     assert body["runtime_worker_id"] is None
     assert body["description"] == detail["summary"]["zh-CN"]
-    assert body["template_scenario_slug"] == TASK_SCENARIO
-    assert body["template_version"] == selected["template_version"]
-    assert body["latest_version_id"] is not None
-
-    revision_response = api_client.get(
-        f"/api/adapters/{body['id']}/versions/{body['latest_version_id']}"
-    )
-    assert revision_response.status_code == 200, revision_response.text
-    revision = revision_response.json()
-    assert revision["seq"] == 1
-    assert revision["code"] == selected["code"]
-    assert revision["requirements"] == selected["requirements"]
-    assert revision["runtime_config"] == selected["runtime_config"]
+    assert body["template_scenario_slug"] is None
+    assert body["template_version"] is None
+    assert body["latest_version_id"] is None
 
     with session_factory() as session:
+        assert (
+            session.scalar(select(AdapterVersion).where(AdapterVersion.adapter_id == body["id"]))
+            is None
+        )
         assert (
             session.scalar(
                 select(AdapterExecutionSlot).where(AdapterExecutionSlot.adapter_id == body["id"])
@@ -354,12 +347,14 @@ def test_superadmin_copy_is_system_owned(api_client: TestClient) -> None:
     assert created.json()["access_level"] == "admin"
 
 
-def test_template_provenance_is_returned_but_cannot_be_edited(
+def test_copied_adapter_has_no_template_association_and_rejects_forged_origin(
     api_client: TestClient,
 ) -> None:
     created = _instantiate(api_client, TASK_SCENARIO, name="immutable-template-origin")
     assert created.status_code == 201, created.text
     original = created.json()
+    assert original["template_scenario_slug"] is None
+    assert original["template_version"] is None
 
     updated = api_client.patch(
         f"/api/adapters/{original['id']}",
@@ -386,7 +381,6 @@ def test_template_provenance_is_returned_but_cannot_be_edited(
         ("_add_template_slot", TASK_SCENARIO),
         ("_add_template_type_configuration", TASK_SCENARIO),
         ("_add_template_type_configuration", WEBHOOK_SCENARIO),
-        ("_add_template_revision", TASK_SCENARIO),
     ],
 )
 def test_every_intermediate_failure_rolls_back_and_name_can_retry(
@@ -557,7 +551,7 @@ def test_concurrent_same_name_creates_one_complete_object_graph_without_sleep(
                 .select_from(AdapterVersion)
                 .where(AdapterVersion.adapter_id == adapter.id)
             )
-            == 1
+            == 0
         )
         assert (
             session.scalar(

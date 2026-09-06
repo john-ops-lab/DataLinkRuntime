@@ -6,24 +6,12 @@
     "en": "Excel to JSON"
   },
   "summary": {
-    "zh-CN": "以不执行公式、宏或外链的 data-only 路径读取受限 XLSX/XLS 单元格值并输出 JSON。",
-    "en": "Read bounded XLSX/XLS cell values through data-only paths that never execute formulas, macros, or external links, and emit JSON."
+    "zh-CN": "读取 Excel 文件中指定的工作表和区域，转换成 JSON 列表。",
+    "en": "Read a worksheet and cell range from an Excel file as JSON."
   },
   "details": {
-    "zh-CN": "支持工作表、表头行、范围和空值策略。XLSX 在解析前拒绝宏、嵌入对象、活动控件和外部关系；旧版 OLE XLS 使用离线 data-only 解析器，不调用公式求值器、不执行宏也不访问外链，但无法完整预检全部活动内容。",
-    "en": "Supports sheet, header row, range, and null policy. XLSX packages reject macros, embedded objects, active controls, and external relationships before parsing. Legacy OLE XLS uses an offline data-only parser that invokes no formula evaluator, macro runtime, or external-link fetch, although complete active-content preflight is not available."
-  },
-  "input_summary": {
-    "zh-CN": "一份执行输入 XLSX/XLS 文件，以及工作表、范围、表头行和空值策略。",
-    "en": "One execution-input XLSX/XLS file plus sheet, range, header-row and null-policy options."
-  },
-  "output_summary": {
-    "zh-CN": "可用工作表、规范化行、计数、partial/checkpoint 与活动内容报告。",
-    "en": "Available sheets, normalized rows, count, partial/checkpoint state and active-content report."
-  },
-  "risk": {
-    "zh-CN": "XLSX 的加密、活动内容、外部关系及所有超限工作簿会 fail closed；旧版 XLS 无法完整预检活动内容，必须保持实验标签并仅按 data-only 路径使用。",
-    "en": "Encrypted, active-content, or externally linked XLSX packages and all oversized workbooks fail closed. Legacy XLS cannot receive complete active-content preflight, remains experimental, and is handled only through the data-only path."
+    "zh-CN": "复制后选择运行用的 Excel 文件；在代码开头设置工作表和读取范围，保存后运行。",
+    "en": "Select the Excel input file, set the worksheet and range at the top of the code, then save and run."
   },
   "vendor": "DLR",
   "adapter_type": "task",
@@ -38,360 +26,117 @@
     "JSON"
   ],
   "logo_key": "file-excel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "updated_at": "2026-09-05",
   "featured_rank": 20,
-  "modes": [
-    "transform"
-  ],
   "provenance_ids": [
     "excel-formats-and-libraries-2026-09-05"
   ],
   "variants": [
     {
       "language": "python",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/excel-to-json/python.py",
-      "code_sha256": "98c7a121e8bf1d9a1cb017d66754d3e1f742006cbf62810717086e0ecf29a1ff",
+      "code_sha256": "eb7711049bd7957447d90136f4cfe666320bfd5715a1ea222f86538e5bff8bda",
       "requirements": "openpyxl==3.1.5\nxlrd==2.0.2",
-      "install_notes": {
-        "zh-CN": "建议依赖：openpyxl==3.1.5；xlrd==2.0.2。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: openpyxl==3.1.5; xlrd==2.0.2. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
       "input_skeleton": {
-        "sheet": null,
-        "range": "A1:D100",
-        "header": true,
-        "header_row": 1,
-        "null_policy": "null",
-        "max_file_bytes": 8388608,
-        "max_rows": 5000,
-        "max_columns": 200,
-        "max_output_bytes": 4194304
-      },
-      "input_contract": {
-        "type": "object",
-        "execution_input_file": {
-          "required": true,
-          "extensions": [
-            ".xlsx",
-            ".xls"
-          ]
-        },
-        "properties": {
-          "sheet": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "range": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "A1:B20"
-          },
-          "start_row": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "start_column": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "header": {
-            "type": "boolean"
-          },
-          "header_row": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "null_policy": {
-            "enum": [
-              "null",
-              "empty-string",
-              "omit"
-            ]
-          },
-          "max_file_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 33554432
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50000
-          },
-          "max_columns": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 2000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          }
-        },
-        "gallery_available_when_managed_input_disabled": true,
-        "active_content": "preflight OOXML XLSX and reject macros, embedded/ActiveX content and external relationships; parse legacy XLS offline in data-only mode without a formula evaluator, macro execution, external-link fetch or complete active-content preflight"
-      },
-      "output_contract": {
-        "required": [
-          "sheets",
-          "rows",
-          "count",
-          "partial",
-          "checkpoint",
-          "active_content"
-        ],
-        "formula_policy": "XLSX formula cells become null and are reported; legacy XLS exposes only parser-stored data values; no variant invokes a formula evaluator",
-        "header_rule": "header labels are normalized to unique scalar strings; blanks become column_N and duplicates are rejected",
-        "cell_encoding": "date/time values use ISO 8601 millisecond text without an invented timezone; binary values use {$binary_base64: base64}",
-        "checkpoint": "reason is row_limit, output_limit, column_limit or multiple_limits; next_row and next_column are one-based physical positions"
+        "sheet": "Sheet1",
+        "range": "A1:D100"
       },
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 python 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。真实 XLSX/XLS 双格式 fixture 尚未达到升级门禁，本版本保持实验标签；生产使用前请完成依赖审计。XLSX 先做 OOXML ZIP 预检；旧版 OLE XLS 仅由 xlrd 离线读取存储值，不调用公式求值器、宏或外链，但无法完整预检活动内容。",
-        "en": "The copied template is stopped by default. Select a compatible python Worker. Secret keys are supplied only through Credential Binding: none. Matching real XLSX/XLS fixtures have not met the maturity gate, so this release remains experimental; complete dependency review before production use. XLSX receives OOXML ZIP preflight. Legacy OLE XLS is read offline by xlrd for stored values only, with no formula evaluator, macro runtime, or external-link fetch, but without complete active-content preflight."
-      },
       "provenance_ids": [
         "excel-formats-and-libraries-2026-09-05"
       ],
-      "receipt_resource": "receipts/excel-to-json/python.json"
+      "output_example": {
+        "sheets": [
+          "Sheet1"
+        ],
+        "rows": [
+          {
+            "name": "example",
+            "value": 1
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null,
+        "active_content": {
+          "executed": false,
+          "formulas_replaced_with_null": 0,
+          "legacy_xls_data_only": false,
+          "ooxml_preflight": true
+        }
+      }
     },
     {
       "language": "javascript",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/excel-to-json/javascript.mjs",
-      "code_sha256": "b12dee4f2fba28ddb75409de6b8fd4687951b01ef96e1b079915d8483299feed",
+      "code_sha256": "14295f210fd8145f511d1e931405d90d54a1fb5dec1b7b41198d7975bf85ce5f",
       "requirements": "@e965/xlsx@0.20.3",
-      "install_notes": {
-        "zh-CN": "建议依赖：@e965/xlsx@0.20.3。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: @e965/xlsx@0.20.3. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
       "input_skeleton": {
-        "sheet": null,
-        "range": "A1:D100",
-        "header": true,
-        "header_row": 1,
-        "null_policy": "null",
-        "max_file_bytes": 8388608,
-        "max_rows": 5000,
-        "max_columns": 200,
-        "max_output_bytes": 4194304
-      },
-      "input_contract": {
-        "type": "object",
-        "execution_input_file": {
-          "required": true,
-          "extensions": [
-            ".xlsx",
-            ".xls"
-          ]
-        },
-        "properties": {
-          "sheet": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "range": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "A1:B20"
-          },
-          "start_row": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "start_column": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "header": {
-            "type": "boolean"
-          },
-          "header_row": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "null_policy": {
-            "enum": [
-              "null",
-              "empty-string",
-              "omit"
-            ]
-          },
-          "max_file_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 33554432
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50000
-          },
-          "max_columns": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 2000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          }
-        },
-        "gallery_available_when_managed_input_disabled": true,
-        "active_content": "preflight OOXML XLSX and reject macros, embedded/ActiveX content and external relationships; parse legacy XLS offline in data-only mode without a formula evaluator, macro execution, external-link fetch or complete active-content preflight"
-      },
-      "output_contract": {
-        "required": [
-          "sheets",
-          "rows",
-          "count",
-          "partial",
-          "checkpoint",
-          "active_content"
-        ],
-        "formula_policy": "formula cells detected by the parser become null and are reported; legacy XLS otherwise exposes only parser-stored data values; no formula evaluator is invoked",
-        "header_rule": "header labels are normalized to unique scalar strings; blanks become column_N and duplicates are rejected",
-        "cell_encoding": "date/time values use ISO 8601 millisecond text without an invented timezone; binary values use {$binary_base64: base64}",
-        "checkpoint": "reason is row_limit, output_limit, column_limit or multiple_limits; next_row and next_column are one-based physical positions"
+        "sheet": "Sheet1",
+        "range": "A1:D100"
       },
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 javascript 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。真实 XLSX/XLS 双格式 fixture 尚未达到升级门禁，本版本保持实验标签；生产使用前请完成依赖审计。XLSX 先做 OOXML ZIP 预检；旧版 OLE XLS 仅由 @e965/xlsx 离线读取存储值，不调用公式求值器、宏或外链，但无法完整预检活动内容。",
-        "en": "The copied template is stopped by default. Select a compatible javascript Worker. Secret keys are supplied only through Credential Binding: none. Matching real XLSX/XLS fixtures have not met the maturity gate, so this release remains experimental; complete dependency review before production use. XLSX receives OOXML ZIP preflight. Legacy OLE XLS is read offline by @e965/xlsx for stored values only, with no formula evaluator, macro runtime, or external-link fetch, but without complete active-content preflight."
-      },
       "provenance_ids": [
         "excel-formats-and-libraries-2026-09-05"
       ],
-      "receipt_resource": "receipts/excel-to-json/javascript.json"
+      "output_example": {
+        "sheets": [
+          "Sheet1"
+        ],
+        "rows": [
+          {
+            "name": "example",
+            "value": 1
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null,
+        "active_content": {
+          "executed": false,
+          "formulas_replaced_with_null": 0,
+          "legacy_xls_data_only": false,
+          "ooxml_preflight": true
+        }
+      }
     },
     {
       "language": "java",
-      "maturity": "reference-generated",
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/excel-to-json/java.java",
-      "code_sha256": "437ca230d794064b1b091a9f025db6c9fece8925116a3eba661c966c91fac3bf",
+      "code_sha256": "9431483df1676b44e9970cc4ef56d762b5d7a17bbfbfc398a6df6aa3c9fd8062",
       "requirements": "org.apache.poi:poi-ooxml:5.4.1\norg.apache.poi:poi:5.4.1",
-      "install_notes": {
-        "zh-CN": "建议依赖：org.apache.poi:poi-ooxml:5.4.1；org.apache.poi:poi:5.4.1。复制模板不会安装依赖；请先选择兼容 Worker，再按平台依赖流程安装并核验来源。",
-        "en": "Suggested dependencies: org.apache.poi:poi-ooxml:5.4.1; org.apache.poi:poi:5.4.1. Copying the template does not install them; first select a compatible Worker, then install through the platform dependency flow and verify the source."
-      },
       "input_skeleton": {
-        "sheet": null,
-        "range": "A1:D100",
-        "header": true,
-        "header_row": 1,
-        "null_policy": "null",
-        "max_file_bytes": 8388608,
-        "max_rows": 5000,
-        "max_columns": 200,
-        "max_output_bytes": 4194304
-      },
-      "input_contract": {
-        "type": "object",
-        "execution_input_file": {
-          "required": true,
-          "extensions": [
-            ".xlsx",
-            ".xls"
-          ]
-        },
-        "properties": {
-          "sheet": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "range": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "A1:B20"
-          },
-          "start_row": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "start_column": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "header": {
-            "type": "boolean"
-          },
-          "header_row": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "null_policy": {
-            "enum": [
-              "null",
-              "empty-string",
-              "omit"
-            ]
-          },
-          "max_file_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 33554432
-          },
-          "max_rows": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 50000
-          },
-          "max_columns": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 2000
-          },
-          "max_output_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 16777216
-          }
-        },
-        "gallery_available_when_managed_input_disabled": true,
-        "active_content": "preflight OOXML XLSX and reject macros, embedded/ActiveX content and external relationships; parse legacy XLS offline in data-only mode without a formula evaluator, macro execution, external-link fetch or complete active-content preflight"
-      },
-      "output_contract": {
-        "required": [
-          "sheets",
-          "rows",
-          "count",
-          "partial",
-          "checkpoint",
-          "active_content"
-        ],
-        "formula_policy": "formula cells become null and are reported; legacy XLS otherwise exposes only parser-stored data values; no formula evaluator is invoked",
-        "header_rule": "header labels are normalized to unique scalar strings; blanks become column_N and duplicates are rejected",
-        "cell_encoding": "date/time values use ISO 8601 millisecond text without an invented timezone; binary values use {$binary_base64: base64}",
-        "checkpoint": "reason is row_limit, output_limit, column_limit or multiple_limits; next_row and next_column are one-based physical positions"
+        "sheet": "Sheet1",
+        "range": "A1:D100"
       },
       "runtime_config": {},
-      "runtime_guidance": {
-        "zh-CN": "模板复制后默认停止。为 java 选择兼容 Worker；Secret 键仅通过 Credential Binding 提供：无。真实 XLSX/XLS 双格式 fixture 尚未达到升级门禁，本版本保持实验标签；生产使用前请完成依赖审计。XLSX 先做 OOXML ZIP 预检；旧版 OLE XLS 仅由 Apache POI 只读加载并跳过公式单元格，不创建 FormulaEvaluator、不执行宏或访问外链，但无法完整预检活动内容。",
-        "en": "The copied template is stopped by default. Select a compatible java Worker. Secret keys are supplied only through Credential Binding: none. Matching real XLSX/XLS fixtures have not met the maturity gate, so this release remains experimental; complete dependency review before production use. XLSX receives OOXML ZIP preflight. Legacy OLE XLS is loaded read-only by Apache POI, formula cells are skipped, and no FormulaEvaluator, macro runtime, or external-link fetch is created, but complete active-content preflight is unavailable."
-      },
       "provenance_ids": [
         "excel-formats-and-libraries-2026-09-05"
       ],
-      "receipt_resource": "receipts/excel-to-json/java.json"
+      "output_example": {
+        "sheets": [
+          "Sheet1"
+        ],
+        "rows": [
+          {
+            "name": "example",
+            "value": 1
+          }
+        ],
+        "count": 1,
+        "partial": false,
+        "checkpoint": null,
+        "active_content": {
+          "executed": false,
+          "formulas_replaced_with_null": 0,
+          "legacy_xls_data_only": false,
+          "ooxml_preflight": true
+        }
+      }
     }
   ]
 }

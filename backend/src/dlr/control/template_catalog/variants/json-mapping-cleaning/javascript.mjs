@@ -1,3 +1,23 @@
+// JSON 字段整理：可修改的配置集中在这里。
+// 运行时提供待处理的数据或文件；处理规则在下面配置。
+// 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+const CONFIG = {
+  // 字段映射规则；source/pointer 指定原字段路径，target 指定结果字段名。
+  "mappings": [{"pointer":"/profile/name","target":"name","type":"string","default":""},{"pointer":"/id","target":"id","type":"string"}],
+  // 按字段值筛选；空列表表示不过滤。
+  "filters": [],
+  // 排序字段和方向：asc 升序、desc 降序。
+  "sort": {"field":"name","direction":"asc"},
+  // 按此字段去重。
+  "dedupe_by": "id",
+  // 单次运行最多返回的记录数。
+  "max_records": 10000,
+  // 最多处理的字段数。
+  "max_fields": 200,
+  // 返回结果大小上限，单位字节。
+  "max_output_bytes": 4194304,
+};
+
 /** Finite RFC 6901 mapping, filtering, sorting and de-duplication. */
 
 const MAX_POINTER_BYTES = 1_024;
@@ -134,6 +154,9 @@ function boundedInteger(input, key, fallback, maximum) {
 }
 
 export function handle(context, input) {
+  if (input === undefined || input === null) input = {};
+  if (typeof input !== "object" || Array.isArray(input)) throw new Error("输入必须是 JSON 对象");
+  input = { ...CONFIG, ...input };
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("input_must_be_object");
   if (!Array.isArray(input.records) || !Array.isArray(input.mappings)) throw new Error("records_and_mappings_required");
   const maxRecords = boundedInteger(input, "max_records", 10_000, 100_000);

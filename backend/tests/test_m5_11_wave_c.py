@@ -16,6 +16,7 @@ from dlr.control.models import (
     WorkerCleanupRequest,
 )
 from dlr.control.models.platform import AdapterCredentialBinding, Credential
+from runtime_api_support import claim_execution, report_attempt
 from test_adapters import create_adapter, save_version
 from test_credentials import create_credential
 from test_workers import register_worker
@@ -133,11 +134,7 @@ def test_stop_and_delete_waits_for_running_worker_cancellation(api_client: TestC
     adapter = create_adapter(api_client, name="wave-c-running")
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={}).json()
-    claimed = api_client.post(
-        f"/api/workers/{worker['id']}/tasks/claim",
-        params={"wait_seconds": 0},
-        headers=WORKER_HEADERS,
-    )
+    claimed = claim_execution(api_client, worker["id"])
     assert claimed.status_code == 200
 
     waiting = api_client.delete(f"/api/adapters/{adapter['id']}?stop=true")
@@ -145,11 +142,7 @@ def test_stop_and_delete_waits_for_running_worker_cancellation(api_client: TestC
     assert waiting.json()["detail"]["code"] == "adapter_delete_waiting_for_worker"
     assert waiting.json()["detail"]["params"]["active_execution_id"] == execution["id"]
 
-    cancelled = api_client.post(
-        f"/api/workers/{worker['id']}/executions/{execution['id']}/result",
-        json={"status": "cancelled"},
-        headers=WORKER_HEADERS,
-    )
+    cancelled = report_attempt(api_client, worker["id"], execution["id"], {"status": "cancelled"})
     assert cancelled.status_code == 200, cancelled.text
     deleted = api_client.delete(f"/api/adapters/{adapter['id']}?stop=true")
     assert deleted.status_code == 204, deleted.text
@@ -163,11 +156,7 @@ def test_stop_and_delete_blocks_running_execution_when_worker_is_offline(
     adapter = create_adapter(api_client, name="wave-c-running-offline")
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={}).json()
-    claimed = api_client.post(
-        f"/api/workers/{worker['id']}/tasks/claim",
-        params={"wait_seconds": 0},
-        headers=WORKER_HEADERS,
-    )
+    claimed = claim_execution(api_client, worker["id"])
     assert claimed.status_code == 200
     offline = api_client.post(f"/api/workers/{worker['id']}/offline", headers=WORKER_HEADERS)
     assert offline.status_code == 204
@@ -234,16 +223,16 @@ def test_permanent_delete_cleans_every_worker_that_ran_the_adapter(
     adapter = create_adapter(api_client, name="wave-c-history-cleanup")
     save_version(api_client, adapter["id"])
     execution = api_client.post(f"/api/adapters/{adapter['id']}/executions", json={}).json()
-    claimed = api_client.post(
-        f"/api/workers/{first_worker['id']}/tasks/claim",
-        params={"wait_seconds": 0},
-        headers=WORKER_HEADERS,
-    )
+    claimed = claim_execution(api_client, first_worker["id"])
     assert claimed.status_code == 200
-    finished = api_client.post(
-        f"/api/workers/{first_worker['id']}/executions/{execution['id']}/result",
-        json={"status": "succeeded", "output": {}},
-        headers=WORKER_HEADERS,
+    finished = report_attempt(
+        api_client,
+        first_worker["id"],
+        execution["id"],
+        {
+            "status": "succeeded",
+            "output": {},
+        },
     )
     assert finished.status_code == 200, finished.text
     switched = api_client.patch(

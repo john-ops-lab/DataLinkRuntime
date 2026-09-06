@@ -169,9 +169,7 @@ def resolve_queue_target_worker(session: Session, adapter: Adapter) -> Worker:
             "The configured runtime Worker does not support the Adapter language",
             {"language": adapter.language},
         )
-    # RabbitMQ dispatch is a v3 capability.  Registration is still allowed
-    # for diagnosis, but a v1/v2 fixed Worker cannot receive a RabbitMQ row.
-    if int(worker.protocol_version or 1) < 3:
+    if worker.protocol_version != 3:
         raise domain_error(
             409,
             "runtime_worker_invalid",
@@ -220,18 +218,13 @@ def accept_execution(
     idempotency_body: Any = None,
     idempotency_lookup: idempotency.IdempotencyLookup | None = None,
     schedule_policy_snapshot: dict[str, object] | None = None,
-    canary: bool = False,
     version_id: int | None = None,
 ) -> Execution:
     """Atomically accept one gated RabbitMQ Execution or its idempotent hit."""
 
-    if not settings.rabbitmq_execution_enabled and not (
-        canary and settings.rabbitmq_execution_canary_enabled
-    ):
-        raise RuntimeError("RabbitMQ reliable ingress is disabled")
     from dlr.control.services import rabbitmq
 
-    if not rabbitmq.ingress_configuration_ready(session, allow_disabled=canary):
+    if not rabbitmq.ingress_configuration_ready(session):
         raise domain_error(
             503,
             "rabbitmq_not_ready",
@@ -275,9 +268,7 @@ def accept_execution(
         return existing
 
     worker = resolve_queue_target_worker(session, adapter)
-    if not rabbitmq.ingress_configuration_ready(
-        session, worker_id=worker.id, allow_disabled=canary
-    ):
+    if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):
         raise domain_error(
             503,
             "rabbitmq_not_ready",

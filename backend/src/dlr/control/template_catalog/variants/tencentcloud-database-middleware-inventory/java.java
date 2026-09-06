@@ -23,6 +23,50 @@ import javax.crypto.spec.SecretKeySpec;
 
 /** Bounded tencentcloud inventory Recipe with deterministic preview/sync. */
 public class Adapter {
+    // 腾讯云数据库与中间件：可修改的配置集中在这里。
+    // 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+    // 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+    // 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+    // TENCENTCLOUD_SECRET_ID：腾讯云 SecretId。
+    // TENCENTCLOUD_SECRET_KEY：腾讯云 SecretKey。
+    // TENCENTCLOUD_TOKEN：腾讯云临时凭据 Token，仅使用临时凭据时配置。
+    // CMDB_TOKEN：目标 CMDB Token，仅同步时配置。
+    private static final Map<String, Object> CONFIG = defaultConfig();
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> defaultConfig() {
+        // 参数说明与下方 JSON 使用相同顺序。
+        // mode: preview 只采集并返回结果；sync 会写入目标 CMDB，请先配置下方地址和 CMDB_TOKEN 凭据。
+        // account: 填写云账号标识，用于区分不同账号的资产；不是密码。
+        // regions: 填写需要采集的区域 ID，可配置多个区域。
+        // max_pages: 单次运行最多读取的页数。
+        // max_records: 单次运行最多返回的记录数。
+        // max_bytes: 单次运行处理或返回的数据大小上限，单位字节。
+        // page_size: 每次请求的条数，不能超过目标接口限制。
+        // timeout_seconds: 单次请求超时时间，单位秒。
+        // batch_size: 每批处理的记录数。
+        // source_scope: 同步范围标识：同一账号、区域和资源范围保持不变。
+        // scan_id: 仅 sync 使用：每次新的扫描填写新标识，同一次运行重试保持不变。
+        // cmdb_base_url: 仅 sync 使用：填写目标 CMDB 地址；目标需实现下方代码调用的扫描和批量写入接口。
+        return (Map<String, Object>) Json.parse("""
+            {
+              "mode": "preview",
+              "account": "EXAMPLE_ACCOUNT",
+              "regions": [
+                "ap-guangzhou"
+              ],
+              "max_pages": 50,
+              "max_records": 5000,
+              "max_bytes": 8388608,
+              "page_size": 100,
+              "timeout_seconds": 30,
+              "batch_size": 200,
+              "source_scope": "tencentcloud:EXAMPLE_ACCOUNT:ap-guangzhou",
+              "scan_id": "",
+              "cmdb_base_url": "https://cmdb.example"
+            }
+            """);
+    }
+
     private static final String PROVIDER = "tencentcloud";
     private static final String OPERATIONS_JSON = """
 [["cdb","cdb","cdb.tencentcloudapi.com","DescribeDBInstances","2017-03-20","Items",["InstanceId"],["InstanceName"],["Zone"],["Status"],[["VpcId","vpc","located_in"],["SubnetId","subnet","located_in"]]],["postgresql","postgres","postgres.tencentcloudapi.com","DescribeDBInstances","2017-03-12","DBInstanceSet",["DBInstanceId"],["DBInstanceName"],["Zone"],["DBInstanceStatus"],[["VpcId","vpc","located_in"],["SubnetId","subnet","located_in"]]],["redis","redis","redis.tencentcloudapi.com","DescribeInstances","2018-04-12","InstanceSet",["InstanceId"],["InstanceName"],["Zone"],["Status"],[["VpcId","vpc","located_in"],["SubnetId","subnet","located_in"]]],["mongodb","mongodb","mongodb.tencentcloudapi.com","DescribeDBInstances","2019-07-25","InstanceDetails",["InstanceId"],["InstanceName"],["Zone"],["Status"],[["VpcId","vpc","located_in"],["SubnetId","subnet","located_in"]]],["sqlserver","sqlserver","sqlserver.tencentcloudapi.com","DescribeDBInstances","2018-03-28","DBInstances",["InstanceId"],["Name"],["Zone"],["Status"],[["VpcId","vpc","located_in"],["SubnetId","subnet","located_in"]]],["mariadb","mariadb","mariadb.tencentcloudapi.com","DescribeDBInstances","2017-03-12","Instances",["InstanceId"],["InstanceName"],["Zone"],["Status"],[["VpcId","vpc","located_in"],["SubnetId","subnet","located_in"]]],["elasticsearch","es","es.tencentcloudapi.com","DescribeInstances","2018-04-16","InstanceList",["InstanceId"],["InstanceName"],["Zone"],["Status"],[["VpcUid","vpc","located_in"],["SubnetUid","subnet","located_in"]]],["ckafka","ckafka","ckafka.tencentcloudapi.com","DescribeInstancesDetail","2019-08-19","Result.InstanceList",["InstanceId"],["InstanceName"],["ZoneId"],["Status"],[["VpcId","vpc","located_in"],["SubnetId","subnet","located_in"]]],["cfs","cfs","cfs.tencentcloudapi.com","DescribeCfsFileSystems","2019-07-19","FileSystems",["FileSystemId"],["FsName"],["ZoneName"],["Status"],[["VpcId","vpc","located_in"],["SubnetId","subnet","located_in"]]],["cam_user","cam","cam.tencentcloudapi.com","ListUsers","2019-01-16","Data",["Uid"],["Name"],[""],[""],[]],["cls_logset","cls","cls.tencentcloudapi.com","DescribeLogsets","2020-10-16","Logsets",["LogsetId"],["LogsetName"],[""],[""],[]],["waf_domain","waf","waf.tencentcloudapi.com","DescribeDomains","2018-01-25","Domains",["Domain"],["Domain"],["Region"],["Status"],[]],["certificate","ssl","ssl.tencentcloudapi.com","DescribeCertificates","2019-12-05","Certificates",["CertificateId"],["Alias","Domain"],[""],["Status"],[]]]
@@ -32,6 +76,13 @@ public class Adapter {
     );
 
     public Object handle(Context context, Object rawInput) throws Exception {
+        if (rawInput == null) rawInput = Map.of();
+        if (!(rawInput instanceof Map<?, ?>)) throw new IllegalArgumentException("输入必须是 JSON 对象");
+        Map<String, Object> configuredInput = new java.util.LinkedHashMap<>(CONFIG);
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) rawInput).entrySet()) {
+            configuredInput.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        rawInput = configuredInput;
         Map<String, Object> input = object(rawInput, "input_must_be_object");
         String mode = String.valueOf(input.getOrDefault("mode", "preview"));
         if (!List.of("preview", "sync").contains(mode)) throw new IllegalArgumentException("invalid_mode");
@@ -380,7 +431,9 @@ public class Adapter {
     }
 
     private static ProviderPage tencentcloud(List<?> operation, String region, int page, int size, Context context, int timeout, int maxBytes) throws Exception {
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String access = context.secrets.get("TENCENTCLOUD_SECRET_ID");
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String secret = context.secrets.get("TENCENTCLOUD_SECRET_KEY");
         if (access == null || secret == null) throw new IllegalArgumentException("missing_credential");
         String service = String.valueOf(operation.get(1));
@@ -410,6 +463,7 @@ public class Adapter {
             .header("X-TC-Timestamp", String.valueOf(timestamp)).header("X-TC-Region", region)
             .header("Authorization", authorization)
             .POST(HttpRequest.BodyPublishers.ofString(body));
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String token = context.secrets.get("TENCENTCLOUD_TOKEN");
         if (token != null) builder.header("X-TC-Token", token);
         HttpResponse<InputStream> response = HttpClient.newBuilder()
@@ -444,7 +498,8 @@ public class Adapter {
                                List<Map<String, Object>> relationships, Map<String, Object> summary, long deadline) throws Exception {
         String scan = required(input, "scan_id");
         String scope = required(input, "source_scope");
-        String base = context.config.get("cmdb_base_url") instanceof String value ? value : null;
+        String base = input.get("cmdb_base_url") instanceof String value ? value : null;
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
         String token = context.secrets.get("CMDB_TOKEN");
         URI target;
         try { target = base == null ? null : URI.create(base); }

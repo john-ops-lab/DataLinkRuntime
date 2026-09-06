@@ -7,6 +7,30 @@ import math
 import re
 from datetime import UTC, datetime
 
+# JSON 字段整理：可修改的配置集中在这里。
+# 运行时提供待处理的数据或文件；处理规则在下面配置。
+# 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+CONFIG = {
+    # 字段映射规则；source/pointer 指定原字段路径，target 指定结果字段名。
+    "mappings": [
+        {"pointer": "/profile/name", "target": "name", "type": "string", "default": ""},
+        {"pointer": "/id", "target": "id", "type": "string"},
+    ],
+    # 按字段值筛选；空列表表示不过滤。
+    "filters": [],
+    # 排序字段和方向：asc 升序、desc 降序。
+    "sort": {"field": "name", "direction": "asc"},
+    # 按此字段去重。
+    "dedupe_by": "id",
+    # 单次运行最多返回的记录数。
+    "max_records": 10000,
+    # 最多处理的字段数。
+    "max_fields": 200,
+    # 返回结果大小上限，单位字节。
+    "max_output_bytes": 4194304,
+}
+
+
 _INTEGER_TEXT = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 _NUMBER_TEXT = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
@@ -192,6 +216,11 @@ def _json_size(value: object) -> int:
 
 
 def handle(context, input):
+    if input is None:
+        input = {}
+    if not isinstance(input, dict):
+        raise ValueError("输入必须是 JSON 对象")
+    input = {**CONFIG, **input}
     if not isinstance(input, dict):
         raise ValueError("input_must_be_object")
     records = input.get("records")

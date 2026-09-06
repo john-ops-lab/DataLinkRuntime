@@ -32,13 +32,12 @@ def list_template_themes() -> list[TemplateThemeResponse]:
 
 @router.get("/api/templates/scenarios", response_model=TemplateScenarioListResponse)
 def list_template_scenarios(
-    theme: str,
+    theme: str | None = None,
     q: Annotated[str | None, Query(max_length=128)] = None,
     vendor: str | None = None,
     adapter_type: str | None = None,
     protocol: str | None = None,
     language: str | None = None,
-    maturity: str | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=48)] = 12,
 ) -> TemplateScenarioListResponse:
@@ -49,7 +48,6 @@ def list_template_scenarios(
         adapter_type=adapter_type,
         protocol=protocol,
         language=language,
-        maturity=maturity,
         page=page,
         page_size=page_size,
     )

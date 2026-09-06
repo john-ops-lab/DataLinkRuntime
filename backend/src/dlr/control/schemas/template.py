@@ -8,12 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from dlr.control.schemas.adapter import _validate_name
 
 TemplateLanguage = Literal["python", "javascript", "java"]
-TemplateMaturity = Literal[
-    "reference-generated",
-    "syntax-verified",
-    "fixture-verified",
-    "live-verified",
-]
 TemplateVersionInput = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
@@ -42,20 +36,6 @@ class TemplateVariantSummary(BaseModel):
 
     language: TemplateLanguage
     available: bool = True
-    maturity: TemplateMaturity
-
-
-class TemplateSourceResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    url: str
-    revision: str
-    reference: str
-    license: str
-    license_evidence: str
-    use_mode: Literal["adaptation-allowed", "behavior-research-only", "official-api"]
-    checked_at: date
 
 
 class TemplateScenarioSummary(BaseModel):
@@ -86,11 +66,6 @@ class TemplateScenarioListResponse(BaseModel):
 
 class TemplateScenarioDetail(TemplateScenarioSummary):
     details: TemplateLocalizedText
-    input_summary: TemplateLocalizedText
-    output_summary: TemplateLocalizedText
-    risk: TemplateLocalizedText
-    modes: list[Literal["preview", "sync", "transform", "request"]]
-    sources: list[TemplateSourceResponse]
 
 
 class TemplateVariantResponse(BaseModel):
@@ -102,17 +77,11 @@ class TemplateVariantResponse(BaseModel):
     language: TemplateLanguage
     adapter_type: Literal["task", "webhook"]
     template_version: str
-    behavior_contract_version: str
-    maturity: TemplateMaturity
     code: str
     requirements: str
-    install_notes: TemplateLocalizedText
     input_skeleton: dict[str, Any]
-    input_contract: dict[str, Any]
-    output_contract: dict[str, Any]
+    output_example: dict[str, Any]
     runtime_config: dict[str, Any]
-    runtime_guidance: TemplateLocalizedText
-    sources: list[TemplateSourceResponse]
 
 
 class TemplateInstantiateRequest(BaseModel):

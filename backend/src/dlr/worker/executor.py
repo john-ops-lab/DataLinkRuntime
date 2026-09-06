@@ -106,9 +106,8 @@ class RuntimeSettings:
     npm_registry_url: str | None = None
     maven_repository_url: str | None = None
     workspace_cleanup_journal_root: Path | None = None
-    # ``None`` is retained for the legacy/unit-test seam.  The production v3
-    # Agent always supplies a real SandboxConfig after its startup preflight;
-    # v3 execution never reaches the ordinary subprocess path there.
+    # Missing Sandbox configuration is an explicit execution failure.
+    # The Agent supplies this only after its real startup preflight.
     sandbox_config: sandbox.SandboxConfig | None = None
     # The Agent records the finite envelope before registration.  Passing the
     # same snapshot into the Consumer avoids making eligibility depend on a
@@ -890,20 +889,8 @@ def _wait_with_progress(
         tailer.close()
 
 
-def _cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
-    """Read immutable cleanup snapshots, with legacy-safe defaults."""
-    try:
-        attempt = float(payload.get("workspace_cleanup_attempt_timeout_seconds_snapshot") or 5)
-        total = float(payload.get("workspace_cleanup_total_timeout_seconds_snapshot") or 20)
-    except (TypeError, ValueError):
-        return 5.0, 20.0
-    if attempt <= 0 or total <= 0 or attempt > total:
-        return 5.0, 20.0
-    return attempt, total
-
-
-def _v2_cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
-    """Validate immutable v2 cleanup snapshots before any local side effect."""
+def _validated_cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
+    """Validate immutable cleanup snapshots before any local side effect."""
     names = (
         "workspace_cleanup_attempt_timeout_seconds_snapshot",
         "workspace_cleanup_total_timeout_seconds_snapshot",
@@ -911,20 +898,20 @@ def _v2_cleanup_budget(payload: Mapping[str, Any]) -> tuple[float, float]:
     )
     values = [payload.get(name) for name in names]
     if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
-        raise ValueError("v2 cleanup snapshots are required integers")
+        raise ValueError("cleanup snapshots are required integers")
     attempt, total, grace = values
     assert isinstance(attempt, int) and isinstance(total, int) and isinstance(grace, int)
     if not (1 <= attempt <= 60 and 5 <= total <= 300 and 10 <= grace <= 3600):
-        raise ValueError("v2 cleanup snapshots are out of range")
+        raise ValueError("cleanup snapshots are out of range")
     if not (attempt <= total < grace):
-        raise ValueError("v2 cleanup snapshot ordering is invalid")
+        raise ValueError("cleanup snapshot ordering is invalid")
     return float(attempt), float(total)
 
 
 @dataclass(frozen=True)
-class _ValidatedV2Payload:
+class _ValidatedPayload:
     execution_id: int
-    attempt_id: int | None
+    attempt_id: int
     adapter_id: int
     version_id: int
     timeout_seconds: int
@@ -933,60 +920,54 @@ class _ValidatedV2Payload:
     cleanup_budget: tuple[float, float]
 
 
-def _required_v2_integer(
+def _required_integer(
     payload: Mapping[str, Any], name: str, *, minimum: int = 1, maximum: int | None = None
 ) -> int:
     value = payload.get(name)
     if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
-        raise ValueError(f"v2 {name} is invalid")
+        raise ValueError(f"{name} is invalid")
     if maximum is not None and value > maximum:
-        raise ValueError(f"v2 {name} is invalid")
+        raise ValueError(f"{name} is invalid")
     return value
 
 
-def _validated_v2_payload(payload: Mapping[str, Any]) -> _ValidatedV2Payload:
-    """Validate the complete protocol-v2 envelope before local side effects."""
-    execution_id = _required_v2_integer(payload, "execution_id")
-    raw_attempt_id = payload.get("attempt_id")
-    if raw_attempt_id is not None and (
-        not isinstance(raw_attempt_id, int)
-        or isinstance(raw_attempt_id, bool)
-        or raw_attempt_id <= 0
-    ):
-        raise ValueError("v2 attempt_id is invalid")
-    adapter_id = _required_v2_integer(payload, "adapter_id")
-    version_id = _required_v2_integer(payload, "version_id")
-    timeout_seconds = _required_v2_integer(payload, "execution_timeout_seconds", maximum=86_400)
+def _validated_payload(payload: Mapping[str, Any]) -> _ValidatedPayload:
+    """Validate the complete execution envelope before local side effects."""
+    execution_id = _required_integer(payload, "execution_id")
+    raw_attempt_id = _required_integer(payload, "attempt_id")
+    adapter_id = _required_integer(payload, "adapter_id")
+    version_id = _required_integer(payload, "version_id")
+    timeout_seconds = _required_integer(payload, "execution_timeout_seconds", maximum=86_400)
     for name in ("language", "code", "requirements", "claim_token", "cleanup_token"):
         value = payload.get(name)
         if not isinstance(value, str):
-            raise ValueError(f"v2 {name} is invalid")
+            raise ValueError(f"{name} is invalid")
         if name in {"language", "code"} and not value.strip():
-            raise ValueError(f"v2 {name} is invalid")
+            raise ValueError(f"{name} is invalid")
         if name.endswith("token") and not value:
-            raise ValueError(f"v2 {name} is invalid")
+            raise ValueError(f"{name} is invalid")
     if "input" not in payload or "latest_version_id" not in payload:
-        raise ValueError("v2 required field is missing")
+        raise ValueError("required field is missing")
     latest_version_id = payload["latest_version_id"]
     if latest_version_id is not None and (
         not isinstance(latest_version_id, int)
         or isinstance(latest_version_id, bool)
         or latest_version_id <= 0
     ):
-        raise ValueError("v2 latest_version_id is invalid")
+        raise ValueError("latest_version_id is invalid")
     runtime_config = payload.get("runtime_config")
     secrets = payload.get("secrets")
     if not isinstance(runtime_config, Mapping) or not isinstance(secrets, Mapping):
-        raise ValueError("v2 object field is invalid")
+        raise ValueError("object field is invalid")
     if not all(isinstance(key, str) and isinstance(value, str) for key, value in secrets.items()):
-        raise ValueError("v2 secrets are invalid")
+        raise ValueError("secrets are invalid")
     try:
         input_files = workspace_manager.validate_input_descriptors(payload.get("input_files"))
     except workspace_manager.InputPreparationError as error:
-        raise ValueError("v2 input descriptors are invalid") from error
+        raise ValueError("input descriptors are invalid") from error
     cleanup_token = payload["cleanup_token"]
     assert isinstance(cleanup_token, str)
-    return _ValidatedV2Payload(
+    return _ValidatedPayload(
         execution_id=execution_id,
         attempt_id=raw_attempt_id,
         adapter_id=adapter_id,
@@ -994,15 +975,13 @@ def _validated_v2_payload(payload: Mapping[str, Any]) -> _ValidatedV2Payload:
         timeout_seconds=timeout_seconds,
         cleanup_token=cleanup_token,
         input_files=input_files,
-        cleanup_budget=_v2_cleanup_budget(payload),
+        cleanup_budget=_validated_cleanup_budget(payload),
     )
 
 
 def _workspace_failure(
     locale: i18n.WorkerLocale,
     error_code: str,
-    *,
-    protocol_version: int,
 ) -> dict[str, Any]:
     """Build a stable, secret-free failure for pre-process errors."""
     result: dict[str, Any] = {
@@ -1014,13 +993,12 @@ def _workspace_failure(
         "stderr": "",
         "stderr_truncated": False,
     }
-    if protocol_version >= 2:
-        result.update(
-            {
-                "workspace_cleanup_status": "completed",
-                "workspace_cleanup_error_code": None,
-            }
-        )
+    result.update(
+        {
+            "workspace_cleanup_status": "completed",
+            "workspace_cleanup_error_code": None,
+        }
+    )
     return result
 
 
@@ -1049,98 +1027,59 @@ def run(
     """
     language = str(payload.get("language") or "python")
     locale = i18n.resolve_locale(payload.get("locale"))
-    # Payloads created before M5.6 have no locale. Keep their terminal error
-    # text compatible; Control-created payloads always carry the field.
-    legacy_terminal_text = "locale" not in payload
-    raw_protocol_version = payload.get("protocol_version", 1)
-    if raw_protocol_version is None:
-        # Payloads written before protocol negotiation had no version; an
-        # explicit null followed the same legacy-v1 compatibility path.
-        raw_protocol_version = 1
-    if not isinstance(raw_protocol_version, int) or isinstance(raw_protocol_version, bool):
+    raw_protocol_version = payload.get("protocol_version")
+    if type(raw_protocol_version) is not int or raw_protocol_version != 3:
         return _workspace_failure(
             locale,
             "worker_protocol_payload_invalid",
-            protocol_version=2,
         )
-    protocol_version = raw_protocol_version
-    if protocol_version not in {1, 2, 3}:
+    if config.sandbox_config is None:
+        return _workspace_failure(locale, "sandbox_linux_target_required")
+    # Validate immutable limits before journals, workspaces or dependency builds.
+    try:
+        sandbox_limits = sandbox.validate_resource_profile(
+            payload.get("resource_profile"), config.sandbox_config
+        )
+        sandbox.validate_v3_payload_snapshots(payload, sandbox_limits)
+    except sandbox.SandboxError as error:
+        return _workspace_failure(locale, error.code)
+    try:
+        validated_payload = _validated_payload(payload)
+    except (TypeError, ValueError):
         return _workspace_failure(
             locale,
             "worker_protocol_payload_invalid",
-            protocol_version=2,
         )
-    # A production v3 Agent supplies a SandboxConfig only after the real
-    # startup preflight.  Validate the immutable Resource Profile before the
-    # Attempt journal, Workspace, dependency preparation, or Adapter side
-    # effects.  Older direct executor callers keep the v1/v2 compatibility
-    # seam; the Agent/Consumer integration never uses that seam for v3.
-    sandbox_limits: sandbox.ResourceLimits | None = None
-    if protocol_version == 3 and config.sandbox_config is not None:
-        try:
-            sandbox_limits = sandbox.validate_resource_profile(
-                payload.get("resource_profile"), config.sandbox_config
-            )
-            sandbox.validate_v3_payload_snapshots(payload, sandbox_limits)
-        except sandbox.SandboxError as error:
-            return _workspace_failure(locale, error.code, protocol_version=3)
-    if protocol_version >= 2:
-        try:
-            validated_v2 = _validated_v2_payload(payload)
-        except (TypeError, ValueError):
-            return _workspace_failure(
-                locale,
-                "worker_protocol_payload_invalid",
-                protocol_version=protocol_version,
-            )
-        execution_id = validated_v2.execution_id
-        attempt_id = validated_v2.attempt_id
-        adapter_id = validated_v2.adapter_id
-        version_id = validated_v2.version_id
-        timeout = validated_v2.timeout_seconds
-        input_files: list[dict[str, Any]] = validated_v2.input_files
-        input_files_valid = True
-        cleanup_budget = validated_v2.cleanup_budget
-        if protocol_version == 3 and attempt_id is None:
-            return _workspace_failure(
-                locale,
-                "worker_protocol_payload_invalid",
-                protocol_version=protocol_version,
-            )
-        if protocol_version == 3 and sandbox_limits is not None:
-            if timeout != sandbox_limits.execution_timeout_seconds:
-                return _workspace_failure(
-                    locale, "resource_profile_invalid", protocol_version=protocol_version
-                )
-            if validated_v2.cleanup_budget != (
-                float(sandbox_limits.cleanup_attempt_seconds),
-                float(sandbox_limits.cleanup_total_seconds),
-            ):
-                return _workspace_failure(
-                    locale, "resource_profile_invalid", protocol_version=protocol_version
-                )
-            timeout = sandbox_limits.execution_timeout_seconds
-            cleanup_budget = (
-                float(sandbox_limits.cleanup_attempt_seconds),
-                float(sandbox_limits.cleanup_total_seconds),
-            )
-    else:
-        attempt_id = None
-        execution_id = int(payload["execution_id"])
-        adapter_id = int(payload["adapter_id"])
-        version_id = int(payload["version_id"])
-        timeout = int(payload.get("execution_timeout_seconds") or config.execution_timeout_seconds)
-        raw_input_files = payload.get("input_files") or []
-        input_files_valid = isinstance(raw_input_files, list)
-        input_files = raw_input_files if input_files_valid else []
-        cleanup_budget = _cleanup_budget(payload)
+    execution_id = validated_payload.execution_id
+    attempt_id = validated_payload.attempt_id
+    adapter_id = validated_payload.adapter_id
+    version_id = validated_payload.version_id
+    timeout = validated_payload.timeout_seconds
+    input_files: list[dict[str, Any]] = validated_payload.input_files
+    cleanup_budget = validated_payload.cleanup_budget
+    if attempt_id is None:
+        return _workspace_failure(
+            locale,
+            "worker_protocol_payload_invalid",
+        )
+    if timeout != sandbox_limits.execution_timeout_seconds:
+        return _workspace_failure(locale, "resource_profile_invalid")
+    if validated_payload.cleanup_budget != (
+        float(sandbox_limits.cleanup_attempt_seconds),
+        float(sandbox_limits.cleanup_total_seconds),
+    ):
+        return _workspace_failure(locale, "resource_profile_invalid")
+    timeout = sandbox_limits.execution_timeout_seconds
+    cleanup_budget = (
+        float(sandbox_limits.cleanup_attempt_seconds),
+        float(sandbox_limits.cleanup_total_seconds),
+    )
 
-    if protocol_version >= 2 and language not in LANGUAGE_LABELS:
+    if language not in LANGUAGE_LABELS:
         return {
             **_workspace_failure(
                 locale,
                 "unsupported_language",
-                protocol_version=protocol_version,
             ),
             "error": i18n.text(locale, "runtime.unsupported_language", language=language),
         }
@@ -1152,34 +1091,31 @@ def run(
     cleanup_journal_root = config.workspace_cleanup_journal_root or (
         config.runtime_root / "cleanup-journal"
     )
-    if protocol_version >= 2:
-        try:
-            cleanup_attempt_id = attempt_id if protocol_version == 3 else None
-            planned_workspace = workspace_manager.workspace_path(
-                config.runtime_root,
-                execution_id,
-                attempt_id=cleanup_attempt_id,
-            )
-            workspace_manager.write_cleanup_journal(
-                cleanup_journal_root,
-                execution_id,
-                planned_workspace,
-                validated_v2.cleanup_token,
-                protocol_version=protocol_version,
-                attempt_id=cleanup_attempt_id,
-            )
-        except (workspace_manager.WorkspaceError, OSError, ValueError) as error:
-            logger.warning("cleanup journal unavailable for execution %s", execution_id)
-            error_code = (
-                error.code
-                if isinstance(error, workspace_manager.WorkspaceError)
-                else "workspace_cleanup_failed"
-            )
-            return _workspace_failure(
-                locale,
-                error_code,
-                protocol_version=protocol_version,
-            )
+    try:
+        cleanup_attempt_id = attempt_id
+        planned_workspace = workspace_manager.workspace_path(
+            config.runtime_root,
+            execution_id,
+            attempt_id=cleanup_attempt_id,
+        )
+        workspace_manager.write_cleanup_journal(
+            cleanup_journal_root,
+            execution_id,
+            planned_workspace,
+            validated_payload.cleanup_token,
+            attempt_id=cleanup_attempt_id,
+        )
+    except (workspace_manager.WorkspaceError, OSError, ValueError) as error:
+        logger.warning("cleanup journal unavailable for execution %s", execution_id)
+        error_code = (
+            error.code
+            if isinstance(error, workspace_manager.WorkspaceError)
+            else "workspace_cleanup_failed"
+        )
+        return _workspace_failure(
+            locale,
+            error_code,
+        )
 
     # M3.2: bound credentials from the TaskPayload, injected as DLR_SECRET_*
     # and added to the redaction set alongside the platform DLR_SECRET_*.
@@ -1203,17 +1139,13 @@ def run(
     secret_values = _env_secret_values() + [value for value in payload_secrets.values() if value]
     dependency_secret_values = secret_values + venv_manager.package_index_secret_values(index_url)
 
-    stream_limit = (
-        sandbox_limits.stream_max_bytes
-        if sandbox_limits is not None
-        else settings.execution_stream_max_bytes
-    )
+    stream_limit = sandbox_limits.stream_max_bytes
     dependency_log_ring = _BoundedByteRing(stream_limit)
     dependency_uploader = (
         _ProgressUploader(progress_callback, stream_limit) if progress_callback else None
     )
 
-    # v3 dependency preparation is itself an Attempt workload.  Establish the
+    # Dependency preparation is itself an Attempt workload.  Establish the
     # journaled workspace and delegated cgroup before invoking uv/npm/Maven so
     # a slow, noisy or fork-heavy build cannot run beside the Worker Agent.
     layout: workspace_manager.WorkspaceLayout | None = None
@@ -1236,60 +1168,59 @@ def run(
         if dependency_uploader is not None:
             dependency_uploader.submit(line, "")
 
-    if protocol_version == 3 and sandbox_limits is not None:
-        try:
-            if planned_workspace is None:
-                planned_workspace = workspace_manager.workspace_path(
-                    config.runtime_root,
-                    execution_id,
-                    attempt_id=attempt_id,
-                )
-            layout = workspace_manager.create_workspace(
+    try:
+        if planned_workspace is None:
+            planned_workspace = workspace_manager.workspace_path(
                 config.runtime_root,
                 execution_id,
                 attempt_id=attempt_id,
+            )
+        layout = workspace_manager.create_workspace(
+            config.runtime_root,
+            execution_id,
+            attempt_id=attempt_id,
+            attempt_timeout_seconds=attempt_timeout,
+            total_timeout_seconds=total_timeout,
+        )
+        workspace = layout.root
+        assert attempt_id is not None
+        sandbox_config = config.sandbox_config
+        if sandbox_config is None:
+            raise sandbox.SandboxError("sandbox_linux_target_required")
+        sandbox_attempt = sandbox.AttemptSandbox(
+            sandbox_config,
+            sandbox_limits,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+            workspace=workspace,
+            recovery_root=cleanup_journal_root / "sandbox-recovery",
+        )
+        dependency_tmp = layout.temp / ".dependency-tmp"
+        sandbox_attempt.mount_dependency_tmpfs(
+            dependency_tmp,
+            max_bytes=venv_manager.CACHE_RESERVATION_BYTES,
+        )
+        dependency_context = venv_manager.DependencyExecutionContext(
+            cgroup_path=sandbox_attempt.cgroup,
+            tmpdir=dependency_tmp,
+            nofile=sandbox_limits.nofile,
+            log_max_bytes=stream_limit,
+        )
+    except (sandbox.SandboxError, workspace_manager.WorkspaceError, OSError) as error:
+        if sandbox_attempt is not None:
+            sandbox_attempt.cleanup()
+        if workspace is not None:
+            workspace_manager.cleanup_workspace(
+                workspace,
                 attempt_timeout_seconds=attempt_timeout,
                 total_timeout_seconds=total_timeout,
             )
-            workspace = layout.root
-            assert attempt_id is not None
-            sandbox_config = config.sandbox_config
-            if sandbox_config is None:
-                raise sandbox.SandboxError("sandbox_linux_target_required")
-            sandbox_attempt = sandbox.AttemptSandbox(
-                sandbox_config,
-                sandbox_limits,
-                execution_id=execution_id,
-                attempt_id=attempt_id,
-                workspace=workspace,
-                recovery_root=cleanup_journal_root / "sandbox-recovery",
-            )
-            dependency_tmp = layout.temp / ".dependency-tmp"
-            sandbox_attempt.mount_dependency_tmpfs(
-                dependency_tmp,
-                max_bytes=venv_manager.CACHE_RESERVATION_BYTES,
-            )
-            dependency_context = venv_manager.DependencyExecutionContext(
-                cgroup_path=sandbox_attempt.cgroup,
-                tmpdir=dependency_tmp,
-                nofile=sandbox_limits.nofile,
-                log_max_bytes=stream_limit,
-            )
-        except (sandbox.SandboxError, workspace_manager.WorkspaceError, OSError) as error:
-            if sandbox_attempt is not None:
-                sandbox_attempt.cleanup()
-            if workspace is not None:
-                workspace_manager.cleanup_workspace(
-                    workspace,
-                    attempt_timeout_seconds=attempt_timeout,
-                    total_timeout_seconds=total_timeout,
-                )
-            error_code = (
-                error.code
-                if isinstance(error, (sandbox.SandboxError, workspace_manager.WorkspaceError))
-                else "workspace_cleanup_failed"
-            )
-            return _workspace_failure(locale, error_code, protocol_version=3)
+        error_code = (
+            error.code
+            if isinstance(error, (sandbox.SandboxError, workspace_manager.WorkspaceError))
+            else "workspace_cleanup_failed"
+        )
+        return _workspace_failure(locale, error_code)
 
     runtime_path: Path | None = None
     preparation_error: venv_manager.DependencyPreparationError | None = None
@@ -1352,13 +1283,12 @@ def run(
                     "stderr": "",
                     "stderr_truncated": False,
                 }
-                if protocol_version >= 2:
-                    result.update(
-                        {
-                            "workspace_cleanup_status": "completed",
-                            "workspace_cleanup_error_code": None,
-                        }
-                    )
+                result.update(
+                    {
+                        "workspace_cleanup_status": "completed",
+                        "workspace_cleanup_error_code": None,
+                    }
+                )
                 return result
         except venv_manager.DependencyPreparationError as error:
             preparation_error = error
@@ -1475,7 +1405,7 @@ def run(
         unified_log = unified_log_ring.text()
         stdout, stdout_truncated = _cap_stream(
             unified_log.encode(),
-            sandbox_limits.stream_max_bytes if sandbox_limits is not None else None,
+            sandbox_limits.stream_max_bytes,
         )
         result = {
             "status": (
@@ -1487,14 +1417,8 @@ def run(
             "stdout_truncated": stdout_truncated,
             "stderr": "",
             "stderr_truncated": False,
-            **(
-                {
-                    "workspace_cleanup_status": "completed",
-                    "workspace_cleanup_error_code": None,
-                }
-                if protocol_version >= 2
-                else {}
-            ),
+            "workspace_cleanup_status": "completed",
+            "workspace_cleanup_error_code": None,
         }
         if sandbox_attempt is not None:
             preparation_usage = sandbox_attempt.resource_usage()
@@ -1524,35 +1448,6 @@ def run(
 
     assert runtime_path is not None
     dependency_log_text = dependency_log_ring.text()
-    if layout is None:
-        try:
-            if planned_workspace is None:
-                planned_workspace = workspace_manager.workspace_path(
-                    config.runtime_root,
-                    execution_id,
-                    attempt_id=attempt_id if protocol_version == 3 else None,
-                )
-            layout = workspace_manager.create_workspace(
-                config.runtime_root,
-                execution_id,
-                attempt_id=attempt_id if protocol_version == 3 else None,
-                attempt_timeout_seconds=attempt_timeout,
-                total_timeout_seconds=total_timeout,
-            )
-        except workspace_manager.WorkspaceError as error:
-            logger.warning("controlled workspace unavailable for execution %s", execution_id)
-            result = _workspace_failure(
-                locale,
-                error.code,
-                protocol_version=protocol_version,
-            )
-            if protocol_version >= 2:
-                cleanup_outcome = error.cleanup_outcome or workspace_manager.CleanupOutcome(
-                    "completed"
-                )
-                result["workspace_cleanup_status"] = cleanup_outcome.status
-                result["workspace_cleanup_error_code"] = cleanup_outcome.error_code
-            return result
     assert layout is not None
     workspace = layout.root
     output_raw: bytes | None = None
@@ -1596,8 +1491,6 @@ def run(
                 workspace / "runtime_config.json",
                 json.dumps(payload.get("runtime_config") or {}),
             )
-            if not input_files_valid:
-                raise workspace_manager.InputPreparationError("input_artifact_not_ready")
             workspace_manager.prepare_input_files(layout, input_files, input_downloader)
             workspace_manager.validate_input_manifest(layout)
         except (workspace_manager.InputPreparationError, workspace_manager.WorkspaceError) as error:
@@ -1611,11 +1504,9 @@ def run(
             result = _workspace_failure(
                 locale,
                 error.code,
-                protocol_version=protocol_version,
             )
-            if protocol_version >= 2:
-                result["workspace_cleanup_status"] = cleanup_outcome.status
-                result["workspace_cleanup_error_code"] = cleanup_outcome.error_code
+            result["workspace_cleanup_status"] = cleanup_outcome.status
+            result["workspace_cleanup_error_code"] = cleanup_outcome.error_code
             return result
 
         stdout_path = workspace / ".log"
@@ -1623,44 +1514,22 @@ def run(
         # file directly to Popen lets an untrusted Adapter grow ``.log``
         # without a runtime write boundary; _wait_with_progress persists only
         # the configured prefix while continuing to drain the pipe.
-        if protocol_version == 3 and config.sandbox_config is not None:
-            assert sandbox_limits is not None and attempt_id is not None
-            assert sandbox_attempt is not None
-            process = sandbox_attempt.start(
-                command,
-                stdout=subprocess.PIPE,
-                environment=child_env(payload_secrets),
-            )
-            returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
-                process,
-                stdout_path,
-                timeout,
-                progress_callback,
-                secret_values,
-                kill_callback=lambda: sandbox_attempt.kill(process),
-                max_bytes=sandbox_limits.stream_max_bytes,
-            )
-        else:
-            process = subprocess.Popen(  # noqa: S603 - fixed harness command
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env=child_env(payload_secrets),
-                cwd=str(workspace),
-            )
-            returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
-                process,
-                stdout_path,
-                timeout,
-                progress_callback,
-                secret_values,
-                max_bytes=(
-                    sandbox_limits.stream_max_bytes
-                    if sandbox_limits is not None
-                    else settings.execution_stream_max_bytes
-                ),
-            )
+        assert sandbox_limits is not None and attempt_id is not None
+        assert sandbox_attempt is not None
+        process = sandbox_attempt.start(
+            command,
+            stdout=subprocess.PIPE,
+            environment=child_env(payload_secrets),
+        )
+        returncode, timed_out, cancelled, runtime_log = _wait_with_progress(
+            process,
+            stdout_path,
+            timeout,
+            progress_callback,
+            secret_values,
+            kill_callback=lambda: sandbox_attempt.kill(process),
+            max_bytes=sandbox_limits.stream_max_bytes,
+        )
         unified_log_ring = _BoundedByteRing(stream_limit)
         unified_log_ring.add(dependency_log_text)
         unified_log_ring.add(runtime_log)
@@ -1669,11 +1538,7 @@ def run(
             resource_usage = sandbox_attempt.resource_usage()
         if not timed_out and not cancelled and sandbox_error_code is None and returncode == 0:
             output_file = workspace / "output.json"
-            output_limit = (
-                sandbox_limits.output_max_bytes
-                if sandbox_limits is not None
-                else settings.execution_output_max_bytes
-            )
+            output_limit = sandbox_limits.output_max_bytes
             if output_file.exists():
                 output_raw, output_size_on_disk, output_file_truncated = _read_bounded_file(
                     output_file, output_limit
@@ -1741,9 +1606,7 @@ def run(
         unified_log_ring.add(
             _platform_message(
                 "ERROR",
-                "execution cancelled"
-                if legacy_terminal_text
-                else i18n.text(locale, "execution.cancelled"),
+                i18n.text(locale, "execution.cancelled"),
                 secret_values,
             )
         )
@@ -1751,9 +1614,7 @@ def run(
         unified_log_ring.add(
             _platform_message(
                 "ERROR",
-                f"execution timed out after {timeout}s"
-                if legacy_terminal_text
-                else i18n.text(locale, "execution.timed_out", timeout=timeout),
+                i18n.text(locale, "execution.timed_out", timeout=timeout),
                 secret_values,
             )
         )
@@ -1765,11 +1626,7 @@ def run(
                 f"kind={sandbox_diagnostic.kind} errno={sandbox_diagnostic.errno}"
             )
         else:
-            message = (
-                f"adapter process exited with code {returncode}"
-                if legacy_terminal_text
-                else i18n.text(locale, "execution.process_exited", returncode=returncode)
-            )
+            message = i18n.text(locale, "execution.process_exited", returncode=returncode)
         unified_log_ring.add(
             _platform_message(
                 "ERROR",
@@ -1781,18 +1638,12 @@ def run(
         unified_log_ring.add(
             _platform_message(
                 "ERROR",
-                "adapter produced no output.json"
-                if legacy_terminal_text
-                else i18n.text(locale, "execution.no_output"),
+                i18n.text(locale, "execution.no_output"),
                 secret_values,
             )
         )
     elif output_file_truncated:
-        preview_max_bytes = (
-            sandbox_limits.output_preview_max_bytes
-            if sandbox_limits is not None
-            else settings.execution_output_preview_max_bytes
-        )
+        preview_max_bytes = sandbox_limits.output_preview_max_bytes
         preview_ring = _BoundedByteRing(preview_max_bytes)
         preview_ring.add(
             redact_secrets((output_raw or b"").decode("utf-8", errors="replace"), secret_values)
@@ -1818,9 +1669,7 @@ def run(
             unified_log_ring.add(
                 _platform_message(
                     "ERROR",
-                    f"invalid output.json: {error}"
-                    if legacy_terminal_text
-                    else i18n.text(locale, "execution.invalid_output", detail=error),
+                    i18n.text(locale, "execution.invalid_output", detail=error),
                     secret_values,
                 )
             )
@@ -1829,7 +1678,7 @@ def run(
 
     stdout, stdout_truncated = _cap_stream(
         unified_log.encode(),
-        sandbox_limits.stream_max_bytes if sandbox_limits is not None else None,
+        sandbox_limits.stream_max_bytes,
     )
     base: dict[str, Any] = {
         "stdout": stdout,
@@ -1840,8 +1689,7 @@ def run(
         "stderr": "",
         "stderr_truncated": False,
     }
-    if protocol_version >= 2:
-        base.update(cleanup_fields)
+    base.update(cleanup_fields)
     if resource_usage is not None:
         base["resource_usage"] = resource_usage
     if sandbox_summary is not None:
@@ -1897,11 +1745,7 @@ def run(
     output_value = _redact_json_value(output_value, secret_values)
 
     serialized = json.dumps(output_value, separators=(",", ":"), ensure_ascii=False).encode()
-    output_max_bytes = (
-        sandbox_limits.output_max_bytes
-        if sandbox_limits is not None
-        else settings.execution_output_max_bytes
-    )
+    output_max_bytes = sandbox_limits.output_max_bytes
     if len(serialized) <= output_max_bytes:
         return base | {
             "status": "succeeded",
@@ -1909,11 +1753,7 @@ def run(
             "output_size": len(serialized),
         }
     # Oversized output is still a successful run; only the stored form changes.
-    preview_max_bytes = (
-        sandbox_limits.output_preview_max_bytes
-        if sandbox_limits is not None
-        else settings.execution_output_preview_max_bytes
-    )
+    preview_max_bytes = sandbox_limits.output_preview_max_bytes
     preview = serialized[:preview_max_bytes].decode("utf-8", errors="ignore")
     return base | {
         "status": "succeeded",

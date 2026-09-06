@@ -1,3 +1,25 @@
+// MySQL 数据查询：可修改的配置集中在这里。
+// 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+// 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+// 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+// MYSQL_DSN：MySQL 连接字符串（包含账号密码）。
+const CONFIG = {
+  // 填写一条 SELECT；动态值通过 params 绑定，不要拼接用户输入。
+  "sql": "SELECT id, name FROM example_items WHERE updated_at >= ?",
+  // 按 SQL 占位符顺序填写参数。
+  "params": ["2026-01-01T00:00:00Z"],
+  // 最多读取的行数。
+  "max_rows": 5000,
+  // 返回结果大小上限，单位字节。
+  "max_output_bytes": 4194304,
+  // 单个单元格大小上限，单位字节。
+  "max_cell_bytes": 1048576,
+  // 每批处理的记录数。
+  "batch_size": 500,
+  // 单次请求超时时间，单位秒。
+  "timeout_seconds": 30,
+};
+
 /** Bounded read-only MySQL snapshot. */
 import mysql from "mysql2";
 
@@ -107,6 +129,9 @@ function close(connection) {
 }
 
 export async function handle(context, input) {
+  if (input === undefined || input === null) input = {};
+  if (typeof input !== "object" || Array.isArray(input)) throw new Error("输入必须是 JSON 对象");
+  input = { ...CONFIG, ...input };
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("input_must_be_object");
   const sql = checkedQuery(input);
   const params = input.params ?? [];
@@ -116,6 +141,7 @@ export async function handle(context, input) {
   const maxOutput = positive(input.max_output_bytes, 4_194_304, 16_777_216);
   const maxCell = positive(input.max_cell_bytes, 1_048_576, 8_388_608);
   const timeout = positive(input.timeout_seconds, 30, 300);
+  // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
   const dsn = context.secrets.get("MYSQL_DSN");
   if (!dsn) throw new Error("missing_credential");
   const options = connectionOptions(dsn);

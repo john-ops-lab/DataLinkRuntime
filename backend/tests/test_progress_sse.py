@@ -22,10 +22,12 @@ from dlr.control import db as control_db
 from dlr.control.models import Execution
 from dlr.control.services import events as events_service
 from dlr.worker import executor
+from runtime_api_support import progress_attempt
 from test_adapters import create_adapter, save_version
 from test_executions import create_execution
 from test_runtime import SPLIT_SECRET_CODE, make_payload, runtime_settings
 from test_workers import register_worker, report, setup_claimed_execution
+from worker_runtime_support import install_test_sandbox, run_with_test_sandbox
 
 WORKER_AUTH = {"Authorization": f"Bearer {WORKER_TOKEN}"}
 
@@ -39,9 +41,11 @@ def progress(
     stderr_chunk: str = "",
     headers: dict[str, str] = WORKER_AUTH,
 ):
-    return client.post(
-        f"/api/workers/{worker_id}/executions/{execution_id}/progress",
-        json={"stdout_chunk": stdout_chunk, "stderr_chunk": stderr_chunk},
+    return progress_attempt(
+        client,
+        worker_id,
+        execution_id,
+        {"stdout_chunk": stdout_chunk, "stderr_chunk": stderr_chunk},
         headers=headers,
     )
 
@@ -122,7 +126,7 @@ def test_progress_requires_owning_worker(api_client: TestClient) -> None:
 
     response = progress(api_client, intruder["id"], execution["id"], stdout_chunk="hijack\n")
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "execution_not_owned"
+    assert response.json()["detail"]["code"] == "attempt_not_owned"
 
     fetched = api_client.get(f"/api/executions/{execution['id']}").json()
     assert fetched["stdout"] == "", "a non-owning Worker must not append logs"
@@ -135,14 +139,15 @@ def test_progress_unclaimed_execution_conflicts(api_client: TestClient) -> None:
     execution = create_execution(api_client, adapter["id"])
 
     response = progress(api_client, worker["id"], execution["id"], stdout_chunk="early\n")
-    assert response.status_code == 409, "a pending Execution has no owner yet"
+    assert response.status_code == 404, "a queued Execution has no Attempt yet"
+    assert response.json()["detail"]["code"] == "attempt_not_found"
 
 
 def test_progress_not_found(api_client: TestClient) -> None:
     worker = register_worker(api_client, name="progress-missing")
     response = progress(api_client, worker["id"], 999999, stdout_chunk="x")
     assert response.status_code == 404
-    assert response.json()["detail"]["code"] == "execution_not_found"
+    assert response.json()["detail"]["code"] == "attempt_not_found"
 
 
 def test_progress_requires_worker_token(api_client: TestClient) -> None:
@@ -262,14 +267,26 @@ def test_sse_streams_progress_and_closes_on_terminal(
 
     def driver() -> None:
         time.sleep(0.3)
-        _set_fields(session_factory, execution_id, stdout="step 1\n")
+        assert (
+            progress(api_client, worker["id"], execution_id, stdout_chunk="step 1\n").status_code
+            == 200
+        )
         time.sleep(0.4)
-        _set_fields(
-            session_factory,
-            execution_id,
-            stdout="step 1\nstep 2\n",
-            status="succeeded",
-            ended_at=datetime.now(UTC),
+        assert (
+            progress(api_client, worker["id"], execution_id, stdout_chunk="step 2\n").status_code
+            == 200
+        )
+        assert (
+            report(
+                api_client,
+                worker["id"],
+                execution_id,
+                {
+                    "status": "succeeded",
+                    "stdout": "step 1\nstep 2\n",
+                },
+            ).status_code
+            == 200
         )
 
     thread = threading.Thread(target=driver)
@@ -346,8 +363,6 @@ def test_sse_precheck_session_closes_before_streaming_starts(
         session.close = tracking_close  # type: ignore[method-assign]
         return session
 
-    monkeypatch.setattr(control_db, "SessionLocal", recording_factory)
-
     observed: dict[str, int] = {}
 
     def observing_stream(execution_id: int) -> Iterator[str]:
@@ -356,6 +371,7 @@ def test_sse_precheck_session_closes_before_streaming_starts(
         yield ": placeholder\n\n"
 
     worker, execution, _ = setup_claimed_execution(api_client, adapter_name="sse-precheck")
+    monkeypatch.setattr(control_db, "SessionLocal", recording_factory)
     monkeypatch.setattr(events_service, "event_stream", observing_stream)
 
     with api_client.stream("GET", f"/api/executions/{execution['id']}/events") as response:
@@ -373,6 +389,7 @@ def test_split_secret_never_reaches_persisted_live_logs(
     progress poll in between must never reach Control as plaintext chunks.
     The persisted live log is exactly what the SSE stream replays, so it
     stays redacted as well."""
+    install_test_sandbox(monkeypatch)
     monkeypatch.setattr(executor, "PROGRESS_POLL_SECONDS", 0.2)
     monkeypatch.setenv("DLR_SECRET_SPLIT", "abcdef123456")
     worker, execution, _ = setup_claimed_execution(api_client, adapter_name="progress-split")
@@ -390,7 +407,7 @@ def test_split_secret_never_reaches_persisted_live_logs(
         assert response.status_code == 200
         return bool(response.json()["cancel_requested"])
 
-    result = executor.run(
+    result = run_with_test_sandbox(
         make_payload(code=SPLIT_SECRET_CODE),
         runtime_settings(tmp_path),
         progress_callback=callback,

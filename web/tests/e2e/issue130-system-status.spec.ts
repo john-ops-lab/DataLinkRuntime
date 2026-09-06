@@ -18,12 +18,23 @@ const readyWorker = {
   rabbitmq_execution_v3: true,
   isolation_capabilities: {
     cgroup_v2: true,
+    cgroup_namespace_private: true,
     mount_namespace: true,
     pid_namespace: true,
     memory_hard_limit: true,
     pids_hard_limit: true,
     tmpfs_hard_limit: true,
     bounded_output: true,
+    preflight_passed: true,
+    resource_envelope_verified: true,
+    cpu_hard_limit: true,
+    swap_hard_limit: true,
+    nofile_hard_limit: true,
+    no_new_privileges: true,
+    cgroup_kill: true,
+    adapter_control_plane_hidden: true,
+    adapter_mount_blocked: true,
+    sandbox_cleanup: true,
   },
 };
 
@@ -158,7 +169,7 @@ for (const locale of LOCALES) {
       await expect(page.getByText(locale === "zh-CN" ? "控制节点" : "Control node", { exact: true })).toBeVisible();
       await expect(page.getByText(locale === "zh-CN" ? "可靠运行时" : "Reliable runtime", { exact: true })).toBeVisible();
       await expect(page.getByText("runtime-worker-a")).toBeVisible();
-      await expect(page.getByText(locale === "zh-CN" ? "隔离预检通过" : "Isolation preflight passed")).toBeVisible();
+      await expect(page.getByText(locale === "zh-CN" ? "隔离预检通过" : "Isolation preflight passed", { exact: true })).toBeVisible();
 
       const overflow = await page.evaluate(() => ({
         innerWidth: window.innerWidth,
@@ -196,7 +207,7 @@ test("Issue #130 System Status refreshes normal, warning, and error facts", asyn
   await page.getByTestId("system-status-refresh").click();
   await expect(page.getByTestId("system-status-summary")).toHaveText("系统预警");
   await expect(page.getByTestId("system-status-summary").locator(".ant-badge-status-warning")).toBeVisible();
-  await expect(page.getByText("1/2 个运行节点可执行 v3 任务")).toBeVisible();
+  await expect(page.getByText("1/2 个运行节点可执行任务")).toBeVisible();
 
   runtime.mode = "error";
   await page.getByTestId("system-status-refresh").click();

@@ -1,7 +1,6 @@
 {
   "gallery": {
     "title": "模板广场",
-    "subtitle": "从经过审阅的场景模板开始，复制后继续编辑并接入你的真实环境。",
     "searchPlaceholder": "搜索模板名称、厂商或标签",
     "searchAria": "搜索模板",
     "resultCount": "共 {{count}} 个场景",
@@ -17,15 +16,12 @@
     "adapterType": "适配器类型",
     "protocol": "协议",
     "language": "开发语言",
-    "maturity": "成熟度",
     "loading": "正在加载筛选项…",
     "all": "全部"
   },
   "card": {
     "view": "查看详情",
-    "version": "版本 {{version}}",
-    "languageSummary": "三语言可用",
-    "maturitySummary": "最低成熟度：{{maturity}}"
+    "languageSummary": "支持的语言"
   },
   "type": {
     "task": "任务",
@@ -36,61 +32,34 @@
     "javascript": "JavaScript",
     "java": "Java"
   },
-  "maturity": {
-    "reference-generated": "实验 · 未验证",
-    "syntax-verified": "语法已验证",
-    "fixture-verified": "样例已验证",
-    "live-verified": "真实环境已验证"
-  },
   "detail": {
     "back": "返回模板广场",
-    "copy": "复制为 Adapter",
+    "copy": "复制为适配器",
     "loading": "正在加载模板详情…",
     "loadFailed": "模板详情加载失败",
     "variantLoading": "正在加载所选语言模板…",
     "variantFailed": "该语言模板加载失败",
     "notFound": "没有找到这个模板",
     "retry": "重试",
-    "version": "模板版本",
-    "updated": "更新于 {{date}}",
-    "purpose": "适用场景",
-    "input": "输入",
-    "output": "输出",
-    "risk": "安全边界",
-    "modes": "运行模式",
-    "languageMaturity": "各语言成熟度",
-    "recipe": "Recipe 代码",
-    "requirements": "建议依赖",
-    "installNotes": "安装说明",
-    "runtimeGuidance": "运行建议",
+    "purpose": "使用说明",
+    "recipe": "代码",
+    "requirements": "依赖",
     "inputSkeleton": "输入示例",
-    "inputContract": "输入合同",
-    "outputContract": "输出合同",
-    "runtimeConfig": "Runtime 建议配置",
-    "sources": "来源与许可证",
-    "sourceRevision": "固定版本 {{revision}}",
-    "sourceChecked": "核对于 {{date}}",
-    "managedInputHint": "复制后可根据部署能力配置 Managed Input；即使当前未启用文件存储，也不影响浏览或复制此模板。"
-  },
-  "useMode": {
-    "adaptation-allowed": "允许清洁改编",
-    "behavior-research-only": "仅行为研究",
-    "official-api": "官方 API 依据"
+    "outputExample": "返回结果示例"
   },
   "copy": {
-    "title": "复制为 Adapter",
-    "description": "将当前 {{language}} Recipe 复制成独立 Adapter。复制后不会跟随模板升级。",
-    "name": "Adapter 名称",
+    "title": "复制为适配器",
+    "description": "为这份 {{language}} 代码起个名称，进入编辑页后检查配置并保存。",
+    "name": "适配器名称",
     "namePlaceholder": "例如：生产环境资产同步",
     "adapterDescription": "描述（可选）",
     "descriptionPlaceholder": "说明用途或目标环境",
     "language": "当前语言",
-    "version": "模板版本",
     "confirm": "复制并编辑",
     "cancel": "取消",
-    "nameRequired": "请输入 Adapter 名称",
+    "nameRequired": "请输入适配器名称",
     "nameTooLong": "名称不能超过 128 个字符",
-    "nameConflict": "已有同名 Adapter，请换一个名称。",
+    "nameConflict": "已有同名适配器，请换一个名称。",
     "versionConflict": "模板版本已更新，请关闭窗口刷新详情后重试。",
     "failed": "复制失败，请保留当前输入后重试。"
   }

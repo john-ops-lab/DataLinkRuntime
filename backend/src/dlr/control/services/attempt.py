@@ -536,13 +536,13 @@ def claim_dispatch(
 def _lock_attempt_context(
     session: Session, worker_id: int, attempt_id: int
 ) -> tuple[Execution, Adapter, ExecutionAttempt, AdapterExecutionSlot]:
-    peek = session.get(ExecutionAttempt, attempt_id)
-    if peek is None:
+    execution_id = session.scalar(
+        select(ExecutionAttempt.execution_id).where(ExecutionAttempt.id == attempt_id)
+    )
+    if execution_id is None:
         raise domain_error(404, "attempt_not_found", "Attempt not found")
     identity = session.execute(
-        select(Execution.adapter_id, Execution.dispatch_backend).where(
-            Execution.id == peek.execution_id
-        )
+        select(Execution.adapter_id, Execution.dispatch_backend).where(Execution.id == execution_id)
     ).one_or_none()
     if identity is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
@@ -552,13 +552,17 @@ def _lock_attempt_context(
         and admission.lock_admission_scope(session, int(adapter_id)) is None
     ):
         raise domain_error(404, "adapter_not_found", "Adapter not found")
-    execution = session.get(Execution, peek.execution_id, with_for_update=True)
+    execution = session.get(Execution, execution_id, with_for_update=True, populate_existing=True)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
     adapter = session.get(Adapter, execution.adapter_id, with_for_update=True)
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
-    attempt = session.get(ExecutionAttempt, attempt_id, with_for_update=True)
+    # An unlocked identity read must never leave a stale running Attempt in
+    # the identity map after another report won the lock and committed.
+    attempt = session.get(
+        ExecutionAttempt, attempt_id, with_for_update=True, populate_existing=True
+    )
     if attempt is None:
         raise domain_error(404, "attempt_not_found", "Attempt not found")
     slot = _slot(session, adapter.id)
@@ -670,6 +674,12 @@ def progress_attempt(
     # owned by the existing Execution progress contract, not an unbounded JSON
     # array on the Attempt table.
     if payload.stdout_chunk or payload.stderr_chunk:
+        execution.stdout, execution.stdout_truncated = execution_service.append_stream(
+            execution.stdout, execution.stdout_truncated, payload.stdout_chunk
+        )
+        execution.stderr, execution.stderr_truncated = execution_service.append_stream(
+            execution.stderr, execution.stderr_truncated, payload.stderr_chunk
+        )
         attempt.output_summary = {
             "progress": True,
             "stdout_bytes": len(payload.stdout_chunk.encode()),
@@ -1184,7 +1194,6 @@ def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
             if isinstance(old.schedule_policy_snapshot, dict)
             else None
         ),
-        canary=True,
         version_id=old.version_id,
     )
     new_execution.replay_of_execution_id = old.id

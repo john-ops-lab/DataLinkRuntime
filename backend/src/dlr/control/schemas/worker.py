@@ -10,6 +10,7 @@ SUPPORTED_CAPABILITIES = frozenset({"python", "javascript", "java"})
 REQUIRED_ISOLATION_CAPABILITIES = frozenset(
     {
         "cgroup_v2",
+        "cgroup_namespace_private",
         "mount_namespace",
         "pid_namespace",
         "memory_hard_limit",
@@ -61,8 +62,8 @@ class WorkerRegister(BaseModel):
     name: str
     # Defaults to Python for compatibility with M2 Worker clients.
     capabilities: list[str] = Field(default_factory=lambda: ["python"])
-    # Missing protocol_version is the rolling-deployment v1 contract.
-    protocol_version: StrictInt | None = Field(default=1, ge=1, le=3)
+    # The internal wire version is fixed, not a deployment mode.
+    protocol_version: StrictInt = Field(ge=3, le=3)
     # A v3 Worker may report an incomplete matrix and remain registered for
     # diagnostics. Control persists the fact but keeps the execution gate
     # false until every required capability is explicitly true.
@@ -87,15 +88,10 @@ class WorkerRegister(BaseModel):
     @field_validator("protocol_version", mode="before")
     @classmethod
     def normalize_missing_protocol(cls, value: object) -> int:
-        # Missing and explicit JSON null are the rolling v1 contract. Make the
-        # rejection explicit here so a future Pydantic coercion change cannot
-        # turn bool/float/string input into a protocol capability.
-        if value is None:
-            return 1
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("protocol_version must be an integer")
-        if not 1 <= value <= 3:
-            raise ValueError("protocol_version must be between 1 and 3")
+        if value != 3:
+            raise ValueError("unsupported Worker protocol")
         return value
 
     @field_validator("isolation_capabilities", mode="before")
@@ -190,7 +186,7 @@ class TaskPayload(BaseModel):
     index_url: str | None = None
     # Captured at Execution creation; never read again from deployment state.
     locale: str = "zh-CN"
-    protocol_version: StrictInt = Field(default=1, ge=1, le=3)
+    protocol_version: StrictInt = Field(default=3, ge=3, le=3)
     claim_deadline_at: datetime | None = None
     execution_deadline_at: datetime | None = None
     recovery_grace_seconds_snapshot: int | None = None

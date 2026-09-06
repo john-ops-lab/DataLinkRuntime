@@ -64,32 +64,6 @@ def create_execution(
     )
 
 
-@router.post(
-    "/api/adapters/{adapter_id}/executions/canary",
-    status_code=202,
-    response_model=ExecutionResponse,
-)
-def create_canary_execution(
-    adapter_id: int,
-    payload: ExecutionCreate,
-    principal: CurrentPrincipal,
-    session: DbSession,
-    idempotency_key: IdempotencyHeader = None,
-) -> ExecutionResponse:
-    """Explicit B2 test/canary entry; ordinary ingress remains legacy."""
-    adapter_access.require_adapter_access(session, adapter_id, principal, "edit")
-    return ExecutionResponse.model_validate(
-        execution_service.create_execution(
-            session,
-            adapter_id,
-            payload,
-            idempotency_key=idempotency_key,
-            idempotency_body=payload.model_dump(mode="json", exclude_unset=True),
-            canary=True,
-        )
-    )
-
-
 @router.get("/api/executions/{execution_id}", response_model=ExecutionResponse)
 def get_execution(
     execution_id: int, principal: CurrentPrincipal, session: DbSession
