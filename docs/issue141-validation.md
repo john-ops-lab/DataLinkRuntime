@@ -17,6 +17,16 @@ Validated on 2026-09-06 from base `7aec2ed3ee16b5ea3c28745472d0ae018f35184a`, on
 
 The backend suite initially found old migration-head/history-field assertions and unlocalized new compatibility messages. The assertions now reflect the additive contract; new domain errors resolve through the existing locale resources. No tests were removed or disabled for this change.
 
+## CI follow-up after the initial PR commit
+
+Hosted CI #285 on `d83a009124525edd1f3267c66e7e04ff9b0a2b9e` passed Web but found two gaps: Compose still expected six initial dependency sources, and CPython 3.13.15 rejected a truncated PAX header with `tarfile.ReadError` before the test's expected custom allocation error. Neither result was covered by the initial local receipt above.
+
+- Compose now checks nine sources, one non-default builtin per language, unchanged external defaults, and builtin identity preservation across default deletion/restoration.
+- Archive tests independently assert that an oversized read never reaches the underlying stream, accept early parser rejection of truncated headers, and require the actual upload API to return `422 builtin_package_invalid`.
+- The main CI #283 frontend failure held a detached button node after `ActionWithReason` removed its Tooltip wrapper. The existing unsaved-edit regression now queries the live button on each retry; its blocked-run and save-unblocks-run assertions remain intact.
+
+Follow-up local checks: all 26 library tests and all 138 App tests passed; fresh PostgreSQL migration plus the exact Compose dependency-source assertion block passed through the real Control API. Ruff on the changed backend test, ESLint on the changed App test, and Compose Python syntax checks passed. The updated commit still requires its own complete hosted CI result; historical local or hosted results do not imply that result.
+
 ## Native installers with networking disabled
 
 Built the repository Worker image, mounted the branch source, and ran `scripts/issue141-offline-runtime.py` with Docker `--network none`. Maven preparation took place separately before the probe, in a fresh material repository.

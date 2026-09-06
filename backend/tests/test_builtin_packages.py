@@ -637,7 +637,21 @@ def test_upgrade_preserves_defaults_and_name_collisions() -> None:
             )
 
 
-def test_tar_extended_header_is_bounded_before_allocation(tmp_path: Path) -> None:
+def test_tar_reader_bounds_allocations_before_reading() -> None:
+    import gzip
+    from unittest.mock import Mock
+
+    from dlr.common.builtin_packages import MAX_METADATA, _BoundedTarReader
+
+    stream = Mock(spec=gzip.GzipFile)
+    reader = _BoundedTarReader(stream)
+    for size in (None, -1, MAX_METADATA + 1, 1 << 30):
+        with pytest.raises(PackageValidationError, match="allocation limit"):
+            reader.read(size)
+    stream.read.assert_not_called()
+
+
+def test_truncated_tar_extended_header_is_rejected(tmp_path: Path, api_client: TestClient) -> None:
     import gzip
 
     header = tarfile.TarInfo("pax")
@@ -646,5 +660,18 @@ def test_tar_extended_header_is_bounded_before_allocation(tmp_path: Path) -> Non
     path = tmp_path / "bomb.tgz"
     with gzip.open(path, "wb") as stream:
         stream.write(header.tobuf())
-    with pytest.raises(PackageValidationError, match="allocation limit"):
+    # CPython may reject the truncated header before requesting its declared
+    # payload. Both parser rejection and our allocation guard are valid; the
+    # reader's pre-allocation bound is independently verified above.
+    with pytest.raises((PackageValidationError, tarfile.ReadError)):
         inspect_package(path, "npm", "bomb.tgz")
+    reserved = api_client.post(
+        "/api/builtin-packages/uploads",
+        json={"filename": "bomb.tgz", "kind": "npm", "size_bytes": path.stat().st_size},
+    )
+    assert reserved.status_code == 201, reserved.text
+    rejected = api_client.put(
+        f"/api/builtin-packages/uploads/{reserved.json()['id']}", content=path.read_bytes()
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["detail"]["code"] == "builtin_package_invalid"

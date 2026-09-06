@@ -2545,8 +2545,11 @@ it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", 
   await waitFor(() =>
     expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false),
   );
-  const runButton = await screen.findByTestId("header-task-run-once") as HTMLButtonElement;
-  await waitFor(() => expect(runButton.disabled).toBe(false));
+  // Clearing the disabled reason removes the Tooltip wrapper and replaces the
+  // button. Query the current node on each retry, never a detached old button.
+  await waitFor(() =>
+    expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(false),
+  );
 
   // 未保存修改：运行被门禁拦截并提示先保存，不发执行请求。
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "unsaved edit" } });

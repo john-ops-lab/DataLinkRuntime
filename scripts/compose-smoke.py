@@ -300,17 +300,19 @@ assert "127.0.0.11" in resolv, f"embedded resolver missing from resolv.conf:\n{r
 for host, port in (("postgres", 5432), ("control", 8000)):
     socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
 
-# M5.5.15: a fresh deployment starts with domestic + official sources for each
-# kind, with the domestic source selected; deleting one and restoring is safe.
+# A fresh deployment includes domestic, official and non-default builtin sources
+# for each kind. Deleting/restoring an external default preserves the builtins.
 defaults = request("GET", "/package-sources/defaults")
 assert defaults["pypi"]["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
 assert defaults["npm"]["index_url"] == "https://registry.npmmirror.com/"
 assert defaults["maven"]["index_url"] == "https://maven.aliyun.com/repository/public"
 sources = request("GET", "/package-sources")
-assert len(sources) == 6, sources
+assert len(sources) == 9, sources
 for kind in ("pypi", "npm", "maven"):
     kind_sources = [source for source in sources if source["kind"] == kind]
-    assert len(kind_sources) == 2, kind_sources
+    assert len(kind_sources) == 3, kind_sources
+    builtin = [source for source in kind_sources if source["index_url"] == f"dlr-builtin://{kind}"]
+    assert len(builtin) == 1 and builtin[0]["is_default"] is False, kind_sources
     assert sum(source["is_default"] for source in kind_sources) == 1, kind_sources
     assert (
         next(source for source in kind_sources if source["is_default"])["index_url"]
@@ -320,11 +322,15 @@ removed = next(
     source for source in sources if source["kind"] == "pypi" and source["is_default"]
 )
 request("DELETE", f"/package-sources/{removed['id']}", expected=204)
-assert len(request("GET", "/package-sources")) == 5
+assert len(request("GET", "/package-sources")) == 8
 restored = request("POST", f"/package-sources/defaults/{removed['kind']}")
 assert restored["index_url"] == defaults[removed["kind"]]["index_url"], restored
 assert restored["is_default"] is True, restored
-assert len(request("GET", "/package-sources")) == 6
+restored_sources = request("GET", "/package-sources")
+assert len(restored_sources) == 9, restored_sources
+assert {
+    source["id"] for source in restored_sources if source["index_url"].startswith("dlr-builtin://")
+} == {source["id"] for source in sources if source["index_url"].startswith("dlr-builtin://")}
 
 # A stored-online Worker whose heartbeat expired is unavailable without its
 # stored status being rewritten.
