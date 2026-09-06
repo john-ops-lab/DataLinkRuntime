@@ -16,14 +16,17 @@ Contracts kept by this model:
 """
 
 from datetime import datetime
+from typing import Literal
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Identity,
     Index,
+    Integer,
     String,
     func,
     text,
@@ -38,6 +41,12 @@ class AdapterWebhook(Base):
 
     __tablename__ = "adapter_webhooks"
     __table_args__ = (
+        CheckConstraint(
+            "response_mode IN ('accepted', 'completed')", name="ck_webhook_response_mode"
+        ),
+        CheckConstraint(
+            "response_timeout_seconds BETWEEN 1 AND 300", name="ck_webhook_response_timeout"
+        ),
         Index(
             "uq_adapter_webhooks_enabled_public_id",
             "public_id",
@@ -58,7 +67,10 @@ class AdapterWebhook(Base):
     # Webhooks from receiving at the same path.
     public_id: Mapped[str] = mapped_column(String(64), nullable=False)
     enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("false")
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
     )
     # Must reference a token-type Credential; RESTRICT blocks deleting a
     # Credential that a Webhook still uses.
@@ -66,6 +78,12 @@ class AdapterWebhook(Base):
         BigInteger,
         ForeignKey("credentials.id", ondelete="RESTRICT"),
         nullable=True,
+    )
+    response_mode: Mapped[Literal["accepted", "completed"]] = mapped_column(
+        String(16), nullable=False, default="accepted", server_default="accepted"
+    )
+    response_timeout_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30, server_default="30"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -8,13 +8,14 @@ POST /api/hooks/{public_id}
 -> JSON Body
 -> Control validates Webhook / Token / Adapter runtime
 -> creates Execution(trigger=webhook) with input = the whole JSON body
--> HTTP 202 + execution_id; the Worker executes asynchronously
+-> capture response policy; the Worker executes asynchronously
+-> HTTP 202 in accepted mode, or wait for the logical result in completed mode
 ```
 
-Control never waits for the Execution to run. Rejections are immediate and
-never queued: a busy Adapter answers 409 and the caller decides whether to
-retry. Rejected requests are never persisted; accepted ones live in
-Execution history.
+The ingress may wait for the committed Execution when configured to do so.
+Rejections are immediate and never queued: Admission failures answer 409
+and the caller decides whether to retry. Rejected requests are never persisted;
+accepted ones live in Execution history.
 
 Security contract:
 
@@ -138,6 +139,8 @@ def _webhook_response(session: Session, webhook: AdapterWebhook) -> WebhookRespo
     return WebhookResponse(
         adapter_id=webhook.adapter_id,
         enabled=webhook.enabled,
+        response_mode=webhook.response_mode,
+        response_timeout_seconds=webhook.response_timeout_seconds,
         public_id=webhook.public_id,
         hook_path=webhook_path(webhook.public_id),
         credential_id=webhook.credential_id,
@@ -187,8 +190,21 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
         session.add(webhook)
         session.flush()
 
+    response_mode = (
+        data.response_mode if "response_mode" in data.model_fields_set else webhook.response_mode
+    )
+    response_timeout = (
+        data.response_timeout_seconds
+        if "response_timeout_seconds" in data.model_fields_set
+        else webhook.response_timeout_seconds
+    )
+    policy_changed = (
+        response_mode != webhook.response_mode
+        or response_timeout != webhook.response_timeout_seconds
+    )
     changed = (
-        data.public_id != webhook.public_id
+        policy_changed
+        or data.public_id != webhook.public_id
         or data.credential_id != webhook.credential_id
         or data.enabled != webhook.enabled
     )
@@ -205,7 +221,8 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
         )
     if adapter_runtime.adapter_runtime_locked(session, adapter):
         disable_only = (
-            webhook.enabled
+            not policy_changed
+            and webhook.enabled
             and not data.enabled
             and data.public_id == webhook.public_id
             and data.credential_id == webhook.credential_id
@@ -271,6 +288,8 @@ def upsert_webhook(session: Session, adapter_id: int, data: WebhookUpsert) -> We
                 {"path": data.public_id},
             )
 
+    webhook.response_mode = response_mode
+    webhook.response_timeout_seconds = response_timeout
     webhook.enabled = data.enabled
     webhook.public_id = data.public_id
     webhook.credential_id = credential.id if credential is not None else None
@@ -434,6 +453,10 @@ def receive_webhook(
         idempotency_body=payload,
         idempotency_lookup=lookup,
     )
+    execution.webhook_response_snapshot = {
+        "response_mode": webhook.response_mode,
+        "response_timeout_seconds": webhook.response_timeout_seconds,
+    }
     session.commit()
     session.refresh(execution)
     logger.info("webhook accepted: adapter=%s execution=%s", adapter.id, execution.id)

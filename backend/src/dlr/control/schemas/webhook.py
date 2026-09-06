@@ -1,6 +1,7 @@
 """Pydantic schemas for the Adapter Webhook final user model (M5.4.3)."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +24,8 @@ class WebhookUpsert(BaseModel):
     # upgraded running Webhook can still Stop/Start without changing its URL.
     public_id: str = Field(min_length=3, max_length=64)
     credential_id: int | None
+    response_mode: Literal["accepted", "completed"] = "accepted"
+    response_timeout_seconds: int = Field(default=30, ge=1, le=300, strict=True)
 
 
 class WebhookResponse(BaseModel):
@@ -40,6 +43,8 @@ class WebhookResponse(BaseModel):
     public_id: str
     hook_path: str
     credential_id: int | None
+    response_mode: Literal["accepted", "completed"] = "accepted"
+    response_timeout_seconds: int = Field(default=30, ge=1, le=300, strict=True)
     credential_name: str | None
     created_at: datetime
     updated_at: datetime

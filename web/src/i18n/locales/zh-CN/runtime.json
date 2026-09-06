@@ -242,7 +242,14 @@
       "waitCall": "等待调用结束",
       "cancelCall": "取消",
       "stoppedAndEnded": "已停止接收，当前调用已结束。",
-      "cancelFailed": "已停止接收，但取消当前调用失败：{{error}}。当前调用仍在执行，可在「实时日志」中查看；进入终态后运行配置会自动解锁。"
+      "cancelFailed": "已停止接收，但取消当前调用失败：{{error}}。当前调用仍在执行，可在「实时日志」中查看；进入终态后运行配置会自动解锁。",
+      "responseMode": "响应模式",
+      "responseAccepted": "接收后返回",
+      "responseCompleted": "处理完成后返回",
+      "responseAcceptedHint": "请求接收后立即返回执行 ID（HTTP 202），处理结果可在调用记录中查看。",
+      "responseCompletedHint": "本次请求等待处理完成并返回适配器的 JSON 输出或执行错误。业务校验结果由适配器输出，调用方应检查其中的业务字段。",
+      "responseTimeout": "响应等待时限（秒）",
+      "responseTimeoutHint": "1–300 秒，默认 30 秒，包含排队和重试时间。超时返回 HTTP 504 和执行 ID，执行仍会继续；使用相同 Idempotency-Key 和请求内容重试可等待原执行。调用方及代理超时应大于此时限。"
     }
   },
   "history": {

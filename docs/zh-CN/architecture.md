@@ -155,7 +155,7 @@ Control 使用 PostgreSQL 作为唯一调度状态源，以短事务轮询到期
 
 ## 5. Webhook
 
-`adapter_webhooks` 是每个 Webhook Adapter 的单例配置：enabled、public_id、token credential 与时间戳。
+`adapter_webhooks` 是每个 Webhook Adapter 的单例配置：enabled、public_id、token credential、response_mode、response_timeout_seconds 与时间戳。
 
 停止状态允许多个 Adapter 使用相同 `public_id`；PostgreSQL partial unique index 只约束 `enabled=true` 的 path 唯一。开启接收时服务层先返回稳定冲突码，数据库索引负责并发最终防线。
 
@@ -169,8 +169,10 @@ Content-Type: application/json
 
 校验顺序覆盖 body 大小、启用路由、Bearer Token、JSON 合同、固定运行节点与
 Admission。成功后原子固定最新 Revision、Credential 引用和完整 JSON Body 的不可变
-JSON input snapshot，创建 `trigger=webhook` Execution 与 Outbox 并立即返回 202；Control 不
-等待 Worker 完成。
+JSON input snapshot，创建 `trigger=webhook` Execution 与 Outbox，并保存响应策略快照。
+默认 accepted 模式立即返回 202；completed 模式在提交后通过短 Session 异步轮询逻辑终态，
+返回 JSON 输出或执行错误。等待时限、重试和断线合同见
+[Webhook 响应模式](../integrations/webhook-response.md)。
 
 每次成功接收等于一条调用记录。Retention 按 trigger 的部署天数和每 Adapter 数量
 上限分批治理终态历史，永不删除 active Execution 或恢复仍需的责任行。
@@ -293,7 +295,7 @@ AI Provider 是部署外部依赖，不进入正式 Compose 拓扑。compose-smo
 
 ## 13. 明确边界
 
-当前不引入同步 Webhook、URL takeover、常驻进程模型、RBAC、通用插件系统、工作流
+当前不引入URL takeover、常驻进程模型、RBAC、通用插件系统、工作流
 编排、独立日志系统、AI 自动执行循环、用户级语言偏好、机器自动翻译用户内容、第三
 语言或 RabbitMQ 多节点 HA。单 Execution 的有界 Retry/Recovery 不扩张为工作流重试。
 

@@ -4787,6 +4787,8 @@ function makeWebhook(overrides: Record<string, unknown> = {}) {
     hook_path: "/api/hooks/a8f3c9d2",
     credential_id: 7,
     credential_name: "hook-token",
+    response_mode: "accepted",
+    response_timeout_seconds: 30,
     created_at: "2026-08-15T00:00:00Z",
     updated_at: "2026-08-15T00:00:00Z",
     ...overrides,
@@ -5067,8 +5069,8 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
     .filter(([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT")
     .map(([, init]) => JSON.parse(String(init?.body)));
   expect(payloads).toEqual([
-    { enabled: false, public_id: "receive-sys1-data", credential_id: 7 },
-    { enabled: true, public_id: "receive-sys1-data", credential_id: 7 },
+    { enabled: false, public_id: "receive-sys1-data", credential_id: 7, response_mode: "accepted", response_timeout_seconds: 30 },
+    { enabled: true, public_id: "receive-sys1-data", credential_id: 7, response_mode: "accepted", response_timeout_seconds: 30 },
   ]);
   expect(screen.getByTestId("webhook-url")).toHaveProperty(
     "value",
@@ -5174,6 +5176,8 @@ it("preserves an unchanged legacy Webhook path but validates it once edited", as
     ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
   );
   expect(JSON.parse(String(startCall?.[1]?.body))).toEqual({
+    response_mode: "accepted",
+    response_timeout_seconds: 30,
     enabled: true,
     public_id: legacyPath,
     credential_id: 7,
@@ -5241,6 +5245,8 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
     ([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT",
   );
   expect(JSON.parse(String(stopCall?.[1]?.body))).toEqual({
+    response_mode: "accepted",
+    response_timeout_seconds: 30,
     enabled: false,
     public_id: "a8f3c9d2",
     credential_id: 7,
@@ -5358,6 +5364,8 @@ it("ends the active call immediately when the user chooses 直接结束当前调
   );
   expect(stopCalls.length).toBe(1);
   expect(JSON.parse(String(stopCalls[0]?.[1]?.body))).toEqual({
+    response_mode: "accepted",
+    response_timeout_seconds: 30,
     enabled: false,
     public_id: "a8f3c9d2",
     credential_id: 7,
@@ -7097,4 +7105,50 @@ it("blocks primary navigation while an Adapter permission mutation is in flight"
   await screen.findByTestId("template-gallery");
   expect(window.location.pathname).toBe("/templates");
   expect(confirm).not.toHaveBeenCalled();
+});
+
+it("saves completed Webhook response mode, validates wait limit and locks it on start", async () => {
+  let adapter = makeAdapter({ adapter_type: "webhook", latest_version_id: 10, runtime_worker_id: 3 });
+  let webhook = makeWebhook();
+  const fetchMock = stubFetch([
+    ...webhookConsoleRoutes(adapter, webhook),
+    { method: "PATCH", match: "/api/adapters/1", respond: (body) => {
+      adapter = { ...adapter, ...JSON.parse(body ?? "{}") };
+      return { body: adapter };
+    } },
+    { method: "PUT", match: "/api/adapters/1/webhook", respond: (body) => {
+      webhook = { ...webhook, ...JSON.parse(body ?? "{}") };
+      adapter = { ...adapter, runtime_locked: webhook.enabled };
+      return { body: webhook };
+    } },
+  ]);
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  expect(screen.queryByTestId("webhook-response-timeout")).toBeNull();
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("radio", { name: "处理完成后返回" }));
+  const timeout = screen.getByRole("spinbutton", { name: "响应等待时限（秒）" });
+  fireEvent.change(timeout, { target: { value: "" } });
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("radio", { name: "接收后返回" }));
+  expect(screen.queryByTestId("webhook-response-timeout")).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: "处理完成后返回" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "响应等待时限（秒）" }), { target: { value: "12" } });
+  fireEvent.click(screen.getByTestId("webhook-save"));
+  await waitFor(() => expect(webhook.response_mode).toBe("completed"));
+  expect(webhook.response_timeout_seconds).toBe(12);
+  await waitFor(() => expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(true));
+  fireEvent.click(screen.getByTestId("header-webhook-toggle"));
+  await waitFor(() => expect(webhook.enabled).toBe(true));
+  expect((await screen.findByTestId("webhook-response-mode-locked")).textContent).toContain("处理完成后返回");
+  expect(screen.getByTestId("webhook-response-timeout-locked").textContent).toContain("12");
+  const payloads = fetchMock.mock.calls
+    .filter(([url, init]) => String(url) === "/api/adapters/1/webhook" && init?.method === "PUT")
+    .map(([, init]) => JSON.parse(String(init?.body)));
+  expect(payloads).toHaveLength(2);
+  for (const payload of payloads) {
+    expect(payload).toMatchObject({ response_mode: "completed", response_timeout_seconds: 12 });
+  }
 });

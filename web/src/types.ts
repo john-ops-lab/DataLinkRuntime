@@ -515,7 +515,11 @@ export type InputConfigDraft = AdapterInputConfigDraft;
 
 /** Singleton Webhook configuration of one Adapter (GET/PUT response body).
  * Never carries Credential plaintext or ciphertext. */
+export type WebhookResponseMode = "accepted" | "completed";
+
 export interface AdapterWebhook {
+  response_mode: WebhookResponseMode;
+  response_timeout_seconds: number;
   adapter_id: number;
   enabled: boolean;
   /** Random routing identifier; never an authentication secret. */
@@ -529,6 +533,8 @@ export interface AdapterWebhook {
 }
 
 export interface AdapterWebhookDraft {
+  response_mode?: WebhookResponseMode;
+  response_timeout_seconds?: number;
   enabled: boolean;
   public_id: string;
   credential_id: number | null;

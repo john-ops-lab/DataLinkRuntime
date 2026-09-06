@@ -75,7 +75,11 @@ Authorization: Bearer <token>
 
 Users configure a readable path, a Token Credential and the run node, and use
 `Start Receiving` / `Stop Receiving`. After validation the request asynchronously
-creates an Execution and returns `202 + execution_id`. The RabbitMQ backend may keep
+creates an Execution. The default response mode returns `202 + execution_id` immediately;
+“Return after completion” waits for the JSON output or execution error. Its independent wait
+limit is 1–300 seconds (default 30); a response timeout does not cancel the execution.
+See the [response contract and validation example](../integrations/webhook-response.md).
+The RabbitMQ backend may keep
 multiple immutable `queued/retry_wait` Executions, while one Adapter still has only
 one active Attempt.
 
@@ -238,7 +242,7 @@ default `zh-CN`, switchable to `en`:
 
 ## 13. Explicitly Not Implemented
 
-No Adapter chaining, DAG, synchronous Webhook invoke, URL takeover, resident Adapter,
+No Adapter chaining, DAG, URL takeover, resident Adapter,
 RBAC, AI auto-execution loop, generic plugin framework, unified Sink, user-level
 language preference, machine translation of user content, a third language, or a
 RabbitMQ HA cluster. Reliable Runtime retry is a bounded recovery contract for one

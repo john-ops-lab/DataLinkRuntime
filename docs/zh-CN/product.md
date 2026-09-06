@@ -67,7 +67,10 @@ Authorization: Bearer <token>
 ```
 
 用户配置可读 path、Token Credential 与运行节点，并使用 `开启接收` / `停止接收`。
-请求通过校验和 Admission 后异步创建 Execution 并返回 `202 + execution_id`。RabbitMQ
+请求通过校验和 Admission 后创建 Execution。响应模式默认「接收后返回」（`202 + execution_id`）；
+也可选择「处理完成后返回」，本次请求等待并返回 JSON 结果或执行错误。响应等待时限为 1–300 秒，
+默认 30 秒，超时不取消执行。配置、错误码和工单校验示例见
+[Webhook 响应模式](../integrations/webhook-response.md)。RabbitMQ
 backend 可保留多个不可变 `queued/retry_wait` Execution，但同一 Adapter 仍只有一个
 active Attempt。
 
