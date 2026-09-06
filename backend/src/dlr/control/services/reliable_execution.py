@@ -146,16 +146,21 @@ def default_resource_profile(adapter_timeout_seconds: int | None = None) -> dict
     }
 
 
-def resolve_queue_target_worker(session: Session, adapter: Adapter) -> Worker:
+def resolve_queue_target_worker(
+    session: Session, adapter: Adapter, worker_id_override: int | None = None
+) -> Worker:
     """Validate a fixed target without requiring it to be effectively online."""
 
-    if adapter.runtime_worker_id is None:
+    target_worker_id = (
+        worker_id_override if worker_id_override is not None else adapter.runtime_worker_id
+    )
+    if target_worker_id is None:
         raise domain_error(
             409,
             "runtime_worker_invalid",
             "A fixed runtime Worker is required for reliable dispatch",
         )
-    worker = session.get(Worker, adapter.runtime_worker_id)
+    worker = session.get(Worker, target_worker_id)
     if worker is None:
         raise domain_error(
             409,
@@ -219,6 +224,8 @@ def accept_execution(
     idempotency_lookup: idempotency.IdempotencyLookup | None = None,
     schedule_policy_snapshot: dict[str, object] | None = None,
     version_id: int | None = None,
+    dependency_check: bool = False,
+    worker_id_override: int | None = None,
 ) -> Execution:
     """Atomically accept one gated RabbitMQ Execution or its idempotent hit."""
 
@@ -267,7 +274,7 @@ def accept_execution(
             )
         return existing
 
-    worker = resolve_queue_target_worker(session, adapter)
+    worker = resolve_queue_target_worker(session, adapter, worker_id_override)
     if not rabbitmq.ingress_configuration_ready(session, worker_id=worker.id):
         raise domain_error(
             503,
@@ -275,7 +282,9 @@ def accept_execution(
             "Reliable RabbitMQ topology is not verified for the target Worker",
             {"retry_after": 1},
         )
-    credential_bindings_snapshot = _credential_bindings_snapshot(session, adapter.id)
+    credential_bindings_snapshot = (
+        [] if dependency_check else _credential_bindings_snapshot(session, adapter.id)
+    )
     try:
         logical_bytes = admission.logical_input_bytes(
             input_source_type,
@@ -315,6 +324,7 @@ def accept_execution(
         schedule_policy_snapshot=schedule_policy_snapshot,
         resource_class=RESOURCE_PROFILE_CLASS,
         version_id_override=version_id,
+        dependency_check=dependency_check,
     )
     # Keep the DB clock as the accepted-at source for all generated facts.
     execution.queued_at = now

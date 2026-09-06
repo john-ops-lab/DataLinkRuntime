@@ -84,7 +84,8 @@ def _truncate(engine: Engine) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
-                "TRUNCATE TABLE user_templates, adapters, adapter_versions, adapter_schedules, "
+                "TRUNCATE TABLE user_templates, builtin_packages, builtin_package_uploads, "
+                "builtin_package_settings, adapters, adapter_versions, adapter_schedules, "
                 "adapter_input_configs, adapter_webhooks, "
                 "adapter_input_artifact_bindings, managed_input_artifacts, "
                 "managed_input_upload_reservations, artifact_deletion_jobs, "

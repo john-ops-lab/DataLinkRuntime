@@ -20,6 +20,7 @@ from dlr.control.api import (
     adapters,
     ai,
     auth,
+    builtin_packages,
     credentials,
     events,
     executions,
@@ -288,6 +289,8 @@ def create_app() -> FastAPI:
     app.include_router(credentials.router)
     app.include_router(credentials.adapter_router)
     app.include_router(package_sources.router)
+    app.include_router(builtin_packages.router)
+    app.include_router(builtin_packages.worker_router)
     app.include_router(knowledge_sources.router)
     app.include_router(schedules.router)
     app.include_router(webhooks.router)

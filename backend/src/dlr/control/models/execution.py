@@ -211,6 +211,10 @@ class Execution(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    builtin_package_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    dependency_check: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     adapter_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("adapters.id", ondelete="RESTRICT"),

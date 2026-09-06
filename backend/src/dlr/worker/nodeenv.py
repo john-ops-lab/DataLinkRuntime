@@ -6,6 +6,10 @@ import shutil
 import tempfile
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dlr.worker.builtin_packages import BuiltinMaterials
 from urllib import parse as url_parse
 
 from dlr.worker import venv
@@ -67,12 +71,26 @@ def prepare_version_node(
     registry_url: str | None,
     dependency_log: venv.DependencyLogCallback | None = None,
     dependency_context: venv.DependencyExecutionContext | None = None,
+    builtin_materials: "BuiltinMaterials | None" = None,
 ) -> Path:
     directory = venv.version_dir(runtime_root, adapter_id, version_id)
     dependencies = parse_requirements(requirements)
+    if builtin_materials is not None:
+        from dlr.common.builtin_packages import PackageValidationError, validate_npm_dependencies
+
+        try:
+            validate_npm_dependencies({"dependencies": dependencies})
+        except PackageValidationError as error:
+            raise venv.DependencyPreparationError(
+                str(error), "", error_code="builtin_external_reference"
+            ) from error
     with _lock_for(adapter_id, version_id):
         identity = venv._cache_identity(
-            adapter_id, version_id, "javascript", f"{code}\0{requirements}"
+            adapter_id,
+            version_id,
+            "javascript",
+            f"{code}\0{requirements}"
+            + ("\0" + builtin_materials.identity if builtin_materials else ""),
         )
         try:
             _version_cache, directory, build = venv._begin_version_build(
@@ -122,85 +140,121 @@ def prepare_version_node(
             if shutil.which("npm") is None:
                 build.abort()
                 raise venv.DependencyPreparationError("npm Runtime is unavailable", "")
-            clean_registry = None
-            npmrc = None
-            try:
-                if registry_url:
-                    clean_registry, auth_config = _npm_auth(registry_url)
-                    if auth_config:
-                        with tempfile.NamedTemporaryFile(
-                            mode="w",
-                            encoding="utf-8",
-                            prefix="dlr-npm-",
-                            suffix=".npmrc",
-                            dir=(
-                                str(dependency_context.tmpdir)
-                                if dependency_context is not None
-                                else None
-                            ),
-                            delete=False,
-                        ) as handle:
-                            handle.write(auth_config)
-                            npmrc = Path(handle.name)
-                        npmrc.chmod(0o600)
-                command = [
-                    "npm",
-                    "install",
-                    "--ignore-scripts",
-                    "--no-audit",
-                    "--no-fund",
-                    "--prefix",
-                    str(directory),
-                ]
-                if npmrc is not None:
-                    command.extend(["--userconfig", str(npmrc)])
-                if dependency_log is not None:
-                    for name, version in dependencies.items():
-                        dependency_log(f"{name}@{version} 未安装，开始安装")
+            if builtin_materials is not None:
+                from dlr.worker.builtin_packages import install_error
+
+                config_path = directory / ".npmrc"
+                config_path.write_text("", encoding="utf-8")
                 try:
-                    venv._run_install_logged_in_context(
-                        command + ["--offline"], timeout_seconds, dependency_context
-                    )
-                except venv.DependencyPreparationError as offline_error:
-                    if not registry_url:
-                        raise venv.DependencyPreparationError(
-                            "npm dependencies are not available from the local cache and "
-                            "no npm dependency source is configured",
-                            offline_error.install_log,
-                            dependency=venv.dependency_failure_label(
-                                (f"{name}@{version}" for name, version in dependencies.items()),
-                                offline_error.install_log,
-                            ),
-                            no_source=True,
-                            error_code=offline_error.error_code,
-                        ) from offline_error
-                    assert clean_registry is not None
-                    try:
+                    with builtin_materials.npm_registry() as builtin_registry:
                         venv._run_install_logged_in_context(
-                            command + ["--registry", clean_registry],
+                            [
+                                "npm",
+                                "install",
+                                "--ignore-scripts",
+                                "--no-audit",
+                                "--no-fund",
+                                "--engine-strict",
+                                "--prefix",
+                                str(directory),
+                                "--registry",
+                                builtin_registry,
+                                "--cache",
+                                str(directory / ".npm-cache"),
+                                "--userconfig",
+                                str(config_path),
+                                "--globalconfig",
+                                str(directory / ".global-npmrc"),
+                                "--fetch-retries",
+                                "0",
+                            ],
                             timeout_seconds,
                             dependency_context,
                         )
-                    except venv.DependencyPreparationError as source_error:
-                        combined_log = offline_error.install_log + source_error.install_log
-                        raise venv.DependencyPreparationError(
-                            str(source_error),
-                            combined_log,
-                            dependency=venv.dependency_failure_label(
-                                (f"{name}@{version}" for name, version in dependencies.items()),
+                    shutil.rmtree(directory / ".npm-cache", ignore_errors=True)
+                except venv.DependencyPreparationError as error:
+                    build.abort()
+                    raise install_error(error) from error
+            else:
+                clean_registry = None
+                npmrc = None
+                try:
+                    if registry_url:
+                        clean_registry, auth_config = _npm_auth(registry_url)
+                        if auth_config:
+                            with tempfile.NamedTemporaryFile(
+                                mode="w",
+                                encoding="utf-8",
+                                prefix="dlr-npm-",
+                                suffix=".npmrc",
+                                dir=(
+                                    str(dependency_context.tmpdir)
+                                    if dependency_context is not None
+                                    else None
+                                ),
+                                delete=False,
+                            ) as handle:
+                                handle.write(auth_config)
+                                npmrc = Path(handle.name)
+                            npmrc.chmod(0o600)
+                    command = [
+                        "npm",
+                        "install",
+                        "--ignore-scripts",
+                        "--no-audit",
+                        "--no-fund",
+                        "--prefix",
+                        str(directory),
+                    ]
+                    if npmrc is not None:
+                        command.extend(["--userconfig", str(npmrc)])
+                    if dependency_log is not None:
+                        for name, version in dependencies.items():
+                            dependency_log(f"{name}@{version} 未安装，开始安装")
+                    try:
+                        venv._run_install_logged_in_context(
+                            command + ["--offline"], timeout_seconds, dependency_context
+                        )
+                    except venv.DependencyPreparationError as offline_error:
+                        if not registry_url:
+                            raise venv.DependencyPreparationError(
+                                "npm dependencies are not available from the local cache and "
+                                "no npm dependency source is configured",
+                                offline_error.install_log,
+                                dependency=venv.dependency_failure_label(
+                                    (f"{name}@{version}" for name, version in dependencies.items()),
+                                    offline_error.install_log,
+                                ),
+                                no_source=True,
+                                error_code=offline_error.error_code,
+                            ) from offline_error
+                        assert clean_registry is not None
+                        try:
+                            venv._run_install_logged_in_context(
+                                command + ["--registry", clean_registry],
+                                timeout_seconds,
+                                dependency_context,
+                            )
+                        except venv.DependencyPreparationError as source_error:
+                            combined_log = offline_error.install_log + source_error.install_log
+                            raise venv.DependencyPreparationError(
+                                str(source_error),
                                 combined_log,
-                            ),
-                            error_code=source_error.error_code,
-                        ) from source_error
-                if dependency_log is not None:
-                    for name, version in dependencies.items():
-                        dependency_log(f"{name}@{version} 安装成功")
-            except venv.DependencyPreparationError:
-                build.abort()
-                raise
-            finally:
-                if npmrc is not None:
-                    npmrc.unlink(missing_ok=True)
+                                dependency=venv.dependency_failure_label(
+                                    (f"{name}@{version}" for name, version in dependencies.items()),
+                                    combined_log,
+                                ),
+                                error_code=source_error.error_code,
+                            ) from source_error
+                    if dependency_log is not None:
+                        for name, version in dependencies.items():
+                            dependency_log(f"{name}@{version} 安装成功")
+                except venv.DependencyPreparationError:
+                    build.abort()
+                    raise
+                finally:
+                    if npmrc is not None:
+                        npmrc.unlink(missing_ok=True)
         try:
             return build.finish(identity)
         except CacheError as error:

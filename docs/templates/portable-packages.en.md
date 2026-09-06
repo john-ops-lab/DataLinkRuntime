@@ -16,6 +16,6 @@ Limits: 16 MiB ZIP, 32 MiB expanded, 32 entries, 9 input files and 9 example fil
 
 Managed input import reuses target feature, file, quota, free-space and retention checks, assigning new object identities and target-default retention. An outer transaction contains existing services' SAVEPOINT commits, so failures roll back adapters, versions, bindings and capacity and remove the newly written bytes. Preview cancellation leaves no persistent object.
 
-`0035_portable` adds `user_templates` and adapter configuration reminders after `0034_webhook_response`. Apply migrations before starting the new Control. User content is separate from shipped catalog files. Downgrading this migration removes the new template/reminder data; back it up before a production rollback.
+`0036_portable` adds `user_templates` and adapter configuration reminders after `0035_builtin_packages`. Apply migrations before starting the new Control. User content is separate from shipped catalog files. Downgrading this migration removes the new template/reminder data; back it up before a production rollback.
 
 The complete schema is in OpenAPI and `backend/src/dlr/control/schemas/portable.py`. See the [Chinese implementation contract](portable-packages.md) for endpoint and transaction details.

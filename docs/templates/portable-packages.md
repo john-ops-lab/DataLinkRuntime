@@ -58,4 +58,4 @@ examples/0/example.json   # 可选：用户确认可共享的模板示例文件
 
 ## 数据库升级
 
-`0035_portable` 在 `0034_webhook_response` 后增加 `user_templates` 和 `adapters.configuration_notes`。后者记录导入说明和待配置提醒，不是凭据或执行状态。部署时先运行 `alembic upgrade head`，再启动新 Control。回退此 migration 会删除新增的用户模板与提醒数据，生产回退前需另行备份。
+`0036_portable` 在 `0035_builtin_packages` 后增加 `user_templates` 和 `adapters.configuration_notes`。后者记录导入说明和待配置提醒，不是凭据或执行状态。部署时先运行 `alembic upgrade head`，再启动新 Control。回退此 migration 会删除新增的用户模板与提醒数据，生产回退前需另行备份。

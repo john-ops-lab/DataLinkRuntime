@@ -6,8 +6,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0035_portable"
-down_revision: str | None = "0034_webhook_response"
+revision: str = "0036_portable"
+down_revision: str | None = "0035_builtin_packages"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

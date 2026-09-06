@@ -213,6 +213,7 @@ class WorkerConfig:
                     key: capabilities.get(key) is True for key in ISOLATION_CAPABILITY_KEYS
                 }
                 self.isolation_capabilities["resource_envelope_verified"] = True
+                self.isolation_capabilities["builtin_packages_v1"] = True
                 self._verified_resource_envelope = envelope
             logger.info(
                 "sandbox preflight %s; rabbitmq execution gate=%s",

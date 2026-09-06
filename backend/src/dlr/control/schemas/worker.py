@@ -183,6 +183,8 @@ class TaskPayload(BaseModel):
     secrets: dict[str, str] = Field(default_factory=dict)
     # Default source URL resolved by Adapter language at claim time (auth may
     # be embedded); None means the Worker uses its language-specific fallback.
+    builtin_package_snapshot: dict[str, Any] | None = None
+    dependency_check: bool = False
     index_url: str | None = None
     # Captured at Execution creation; never read again from deployment state.
     locale: str = "zh-CN"

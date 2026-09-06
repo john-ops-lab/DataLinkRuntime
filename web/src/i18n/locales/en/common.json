@@ -511,6 +511,26 @@
     "ai_tool_result_too_large": "The accumulated AI tool result exceeded the size limit: stopped safely; narrow the query and retry",
     "sse_connect_failed": "Live event connection failed",
     "sse_connect_failed_http": "Live event connection failed (HTTP {{status}})",
-    "sse_read_failed": "Live event read failed"
+    "sse_read_failed": "Live event read failed",
+    "builtin_dependency_missing": "Builtin dependency materials are incomplete; include dependencies and build materials",
+    "builtin_environment_mismatch": "Builtin materials do not match the Worker system, architecture or runtime",
+    "builtin_external_reference": "Builtin sources do not accept direct downloads or external dependency references",
+    "builtin_checksum_mismatch": "Builtin package integrity verification failed",
+    "builtin_content_unavailable": "Builtin content is unavailable; check Control storage",
+    "builtin_snapshot_invalid": "The builtin dependency snapshot is invalid",
+    "builtin_package_conflict": "Builtin dependency materials conflict",
+    "builtin_package_busy": "The file is being uploaded or downloaded; retry later",
+    "builtin_package_invalid": "Invalid package type, path or metadata; check the prepared materials",
+    "builtin_capacity_in_use": "Capacity cannot be lower than saved and reserved bytes",
+    "builtin_capacity_exceeded": "Builtin library capacity exceeded",
+    "builtin_disk_space_low": "Insufficient Control disk headroom",
+    "builtin_upload_not_found": "Upload reservation not found",
+    "builtin_storage_invalid": "Library storage is inconsistent; verify the restore",
+    "builtin_upload_too_large": "Upload exceeds its reserved size",
+    "builtin_package_not_found": "Package not found or being deleted",
+    "builtin_package_in_use": "An unfinished task or unconfirmed installation cleanup holds this file",
+    "builtin_delete_failed": "Physical deletion failed; check Control storage and retry",
+    "builtin_worker_upgrade_required": "Upgrade the selected Worker to support builtin packages",
+    "builtin_source_invalid": "Select an existing builtin source; its kind, URL and credentials cannot be customized"
   }
 }

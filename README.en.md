@@ -493,3 +493,5 @@ Bug reports, use cases, feature requests, and Pull Requests are welcome.
 DataLinkRuntime is open source under the [Apache License 2.0](LICENSE).
 
 Copyright (c) 2026 john-ops-lab
+
+Offline deployments can use the [DLR builtin dependency source](docs/en/issue141-builtin-dependencies.md) to store and distribute installation materials for all three languages.

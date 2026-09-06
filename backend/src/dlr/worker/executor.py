@@ -1017,6 +1017,7 @@ def run(
     progress_callback: ProgressCallback | None = None,
     *,
     input_downloader: workspace_manager.InputDownloader | None = None,
+    builtin_downloader: workspace_manager.InputDownloader | None = None,
 ) -> dict[str, Any]:
     """Run one task payload to completion; always returns a report dict.
 
@@ -1132,6 +1133,12 @@ def run(
     }.get(language)
     index_url = payload.get("index_url") or fallback_source
     index_url = str(index_url) if index_url else None
+    if (
+        index_url
+        and index_url.startswith("dlr-builtin:")
+        and payload.get("builtin_package_snapshot") is None
+    ):
+        return _workspace_failure(locale, "builtin_snapshot_unavailable")
     # Package-source credentials are only used by the dependency subprocess.
     # Keep them in that error path's explicit redaction set, but do not apply
     # them to normal Adapter stdout/output where a short username could cause
@@ -1222,6 +1229,27 @@ def run(
         )
         return _workspace_failure(locale, error_code)
 
+    builtin_options: dict[str, Any] = {}
+    if dependency_context is not None:
+        builtin_options["dependency_context"] = dependency_context
+    if payload.get("builtin_package_snapshot") is not None:
+        from dlr.worker.builtin_packages import BuiltinMaterials
+
+        assert layout is not None
+
+        def unavailable_download(descriptor: Mapping[str, Any], destination: Any) -> int:
+            raise venv_manager.DependencyPreparationError(
+                "builtin downloader unavailable", "", error_code="builtin_content_unavailable"
+            )
+
+        builtin_options["builtin_materials"] = BuiltinMaterials(
+            payload["builtin_package_snapshot"],
+            (dependency_context.tmpdir if dependency_context is not None else layout.temp)
+            / "builtin-materials",
+            builtin_downloader or unavailable_download,
+        )
+        index_url = None
+
     runtime_path: Path | None = None
     preparation_error: venv_manager.DependencyPreparationError | None = None
     try:
@@ -1235,11 +1263,7 @@ def run(
                     timeout_seconds=config.dep_install_timeout_seconds,
                     index_url=index_url,
                     dependency_log=emit_dependency_log,
-                    **(
-                        {"dependency_context": dependency_context}
-                        if dependency_context is not None
-                        else {}
-                    ),
+                    **builtin_options,
                 )
             elif language == "javascript":
                 runtime_path = nodeenv.prepare_version_node(
@@ -1251,11 +1275,7 @@ def run(
                     timeout_seconds=config.dep_install_timeout_seconds,
                     registry_url=index_url,
                     dependency_log=emit_dependency_log,
-                    **(
-                        {"dependency_context": dependency_context}
-                        if dependency_context is not None
-                        else {}
-                    ),
+                    **builtin_options,
                 )
             elif language == "java":
                 runtime_path = javaenv.prepare_version_java(
@@ -1267,11 +1287,7 @@ def run(
                     timeout_seconds=config.dep_install_timeout_seconds,
                     repository_url=index_url,
                     dependency_log=emit_dependency_log,
-                    **(
-                        {"dependency_context": dependency_context}
-                        if dependency_context is not None
-                        else {}
-                    ),
+                    **builtin_options,
                 )
             else:
                 result = {
@@ -1355,6 +1371,8 @@ def run(
                 "runtime.unavailable",
                 runtime=runtime_name,
             )
+        elif preparation.error_code.startswith("builtin_"):
+            failure_message = i18n.text(locale, f"dependency.{preparation.error_code}")
         elif preparation.no_source:
             # ``no_source`` is the env manager's explicit machine contract.
             # Do not let incidental text in an offline tool log (for example
@@ -1445,6 +1463,30 @@ def run(
             result["workspace_cleanup_status"] = preparation_workspace_cleanup.status
             result["workspace_cleanup_error_code"] = preparation_workspace_cleanup.error_code
         return result
+
+    if payload.get("dependency_check") is True:
+        assert sandbox_attempt is not None and workspace is not None
+        check_usage = sandbox_attempt.resource_usage()
+        check_cleanup = sandbox_attempt.cleanup()
+        workspace_cleanup = workspace_manager.cleanup_workspace(
+            workspace,
+            attempt_timeout_seconds=attempt_timeout,
+            total_timeout_seconds=total_timeout,
+        )
+        return {
+            "status": "succeeded",
+            "output": {"dependency_check": "installable", "language": language},
+            "stdout": dependency_log_ring.text(),
+            "stdout_truncated": False,
+            "stderr": "",
+            "stderr_truncated": False,
+            "resource_usage": check_usage,
+            "workspace_cleanup_status": workspace_cleanup.status,
+            "workspace_cleanup_error_code": workspace_cleanup.error_code,
+            "cleanup_summary": {
+                "sandbox": {"status": check_cleanup.status, "error_code": check_cleanup.error_code}
+            },
+        }
 
     assert runtime_path is not None
     dependency_log_text = dependency_log_ring.text()

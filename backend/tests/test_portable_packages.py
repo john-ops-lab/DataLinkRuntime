@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
@@ -88,6 +88,81 @@ def test_codec_readable_roundtrip(language: str, kind: str) -> None:
         assert any(path.startswith("code/") for path in archive.namelist())
         assert "DO_NOT_EXECUTE" not in archive.read("manifest.json").decode()
     assert decode_package(raw) == original
+
+
+def test_portable_upgrade_preserves_builtin_library() -> None:
+    from test_unified_runtime_migration import _isolated_schema, _upgrade
+
+    with _isolated_schema("portable_after_builtin", "0035_builtin_packages") as (engine, database):
+        with engine.begin() as connection:
+            connection.execute(text("UPDATE builtin_package_settings SET quota_bytes = 2147483648"))
+            connection.execute(
+                text(
+                    "INSERT INTO builtin_package_uploads "
+                    "(id, kind, filename, repository_path, size_bytes) "
+                    "VALUES ('pending-before-upgrade', 'npm', 'pending.tgz', '', 1024)"
+                )
+            )
+            sources = connection.execute(
+                text("SELECT id, index_url FROM package_sources ORDER BY id")
+            ).all()
+        _upgrade(database, "head")
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalars().all() == ["0036_portable"]
+            assert (
+                connection.scalar(text("SELECT quota_bytes FROM builtin_package_settings"))
+                == 2147483648
+            )
+            assert connection.scalar(text("SELECT size_bytes FROM builtin_package_uploads")) == 1024
+            assert (
+                connection.execute(
+                    text("SELECT id, index_url FROM package_sources ORDER BY id")
+                ).all()
+                == sources
+            )
+            assert (
+                connection.scalar(text("SELECT to_regclass('user_templates')")) == "user_templates"
+            )
+
+
+def test_export_with_builtin_default_contains_only_dependency_declarations(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_builtin_packages import upload, wheel
+
+    monkeypatch.setattr(settings, "builtin_package_root", str(tmp_path / "library"))
+    monkeypatch.setattr(settings, "builtin_package_min_free_bytes", 0)
+    filename, material = wheel()
+    stored = upload(api_client, filename, material)
+    selected = api_client.put("/api/builtin-packages/sources/pypi")
+    assert selected.status_code == 200, selected.text
+    value = package()
+    value["variants"][0]["requirements"] = "offline_demo==1.0"
+    imported = import_adapter(api_client, value, worker(session_factory, "python"))
+    assert imported.status_code == 201, imported.text
+    preview = api_client.post(f"/api/adapters/{imported.json()['id']}/portable-preview", json={})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["variants"][0]["requirements"] == "offline_demo==1.0"
+    exported = api_client.post("/api/portable/export", json=preview.json())
+    assert exported.status_code == 200, exported.text
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert not any(
+            name.endswith((".whl", ".tgz", ".jar", ".pom")) for name in archive.namelist()
+        )
+        content = b"\n".join(archive.read(name) for name in archive.namelist())
+    for forbidden in (
+        b"dlr-builtin://",
+        b"package_source_id",
+        b"builtin_package_snapshot",
+        stored["sha256"].encode(),
+    ):
+        assert forbidden not in content
+    assert api_client.get(f"/api/builtin-packages/{stored['id']}/content").content == material
 
 
 @pytest.mark.parametrize(
