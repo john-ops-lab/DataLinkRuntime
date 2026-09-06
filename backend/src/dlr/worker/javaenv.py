@@ -5,6 +5,10 @@ import shutil
 import tempfile
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dlr.worker.builtin_packages import BuiltinMaterials
 from urllib import parse as url_parse
 
 from dlr.runtime.java_runtime import SOURCE as RUNTIME_SOURCE
@@ -85,12 +89,19 @@ def prepare_version_java(
     repository_url: str | None,
     dependency_log: venv.DependencyLogCallback | None = None,
     dependency_context: venv.DependencyExecutionContext | None = None,
+    builtin_materials: "BuiltinMaterials | None" = None,
 ) -> Path:
     directory = venv.version_dir(runtime_root, adapter_id, version_id)
     classes = directory / "classes"
     dependencies = parse_requirements(requirements)
     with _lock_for(adapter_id, version_id):
-        identity = venv._cache_identity(adapter_id, version_id, "java", f"{code}\0{requirements}")
+        identity = venv._cache_identity(
+            adapter_id,
+            version_id,
+            "java",
+            f"{code}\0{requirements}"
+            + ("\0" + builtin_materials.identity if builtin_materials else ""),
+        )
         try:
             _version_cache, directory, build = venv._begin_version_build(
                 runtime_root,
@@ -146,74 +157,104 @@ def prepare_version_java(
             if dependencies:
                 if shutil.which("mvn") is None:
                     raise venv.DependencyPreparationError("Maven Runtime is unavailable", "")
-                if repository_url:
-                    _, settings_xml = _maven_settings(repository_url)
-                    with tempfile.NamedTemporaryFile(
-                        mode="w",
-                        encoding="utf-8",
-                        prefix="dlr-maven-",
-                        suffix=".xml",
-                        dir=(
-                            str(dependency_context.tmpdir)
-                            if dependency_context is not None
-                            else None
-                        ),
-                        delete=False,
-                    ) as handle:
-                        handle.write(settings_xml)
-                        settings_path = Path(handle.name)
-                    settings_path.chmod(0o600)
-                base = [
-                    "mvn",
-                    "-q",
-                    "-f",
-                    str(directory / "pom.xml"),
-                ]
-                if dependency_context is not None:
-                    base.append(
-                        "-Dmaven.repo.local="
-                        f"{dependency_context.tmpdir / '.package-cache' / 'maven'}"
+                if builtin_materials is not None:
+                    from dlr.worker.builtin_packages import install_error
+
+                    material_root = builtin_materials.materialize()
+                    settings_path = directory / "builtin-settings.xml"
+                    settings_path.write_text(
+                        "<settings><offline>true</offline></settings>", encoding="utf-8"
                     )
-                if settings_path is not None:
-                    base.extend(["-s", str(settings_path)])
-                base.extend(["dependency:copy-dependencies", f"-DoutputDirectory={deps}"])
-                if dependency_log is not None:
-                    for group, artifact, version in dependencies:
-                        dependency_log(f"{group}:{artifact}:{version} 未安装，开始安装")
-                try:
-                    venv._run_install_logged_in_context(
-                        base + ["-o"], timeout_seconds, dependency_context
-                    )
-                except venv.DependencyPreparationError as offline_error:
-                    if not repository_url:
-                        raise venv.DependencyPreparationError(
-                            "Maven dependencies are not available from the local "
-                            "repository and no Maven dependency source is configured",
-                            offline_error.install_log,
-                            dependency=venv.dependency_failure_label(
-                                (":".join(parts) for parts in dependencies),
-                                offline_error.install_log,
-                            ),
-                            no_source=True,
-                            error_code=offline_error.error_code,
-                        ) from offline_error
                     try:
                         venv._run_install_logged_in_context(
-                            base, timeout_seconds, dependency_context
+                            [
+                                "mvn",
+                                "-o",
+                                "-q",
+                                "-s",
+                                str(settings_path),
+                                "-gs",
+                                str(settings_path),
+                                "-Dmaven.repo.local=" + str(material_root),
+                                "-f",
+                                str(directory / "pom.xml"),
+                                "org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies",
+                                f"-DoutputDirectory={deps}",
+                            ],
+                            timeout_seconds,
+                            dependency_context,
                         )
-                    except venv.DependencyPreparationError as source_error:
-                        combined_log = offline_error.install_log + source_error.install_log
-                        raise venv.DependencyPreparationError(
-                            str(source_error),
-                            combined_log,
-                            dependency=venv.dependency_failure_label(
-                                (":".join(parts) for parts in dependencies), combined_log
+                    except venv.DependencyPreparationError as error:
+                        raise install_error(error) from error
+                else:
+                    if repository_url:
+                        _, settings_xml = _maven_settings(repository_url)
+                        with tempfile.NamedTemporaryFile(
+                            mode="w",
+                            encoding="utf-8",
+                            prefix="dlr-maven-",
+                            suffix=".xml",
+                            dir=(
+                                str(dependency_context.tmpdir)
+                                if dependency_context is not None
+                                else None
                             ),
-                            error_code=source_error.error_code,
-                        ) from source_error
-                if dependency_log is not None:
-                    for group, artifact, version in dependencies:
-                        dependency_log(f"{group}:{artifact}:{version} 安装成功")
+                            delete=False,
+                        ) as handle:
+                            handle.write(settings_xml)
+                            settings_path = Path(handle.name)
+                        settings_path.chmod(0o600)
+                    base = [
+                        "mvn",
+                        "-q",
+                        "-f",
+                        str(directory / "pom.xml"),
+                    ]
+                    if dependency_context is not None:
+                        base.append(
+                            "-Dmaven.repo.local="
+                            f"{dependency_context.tmpdir / '.package-cache' / 'maven'}"
+                        )
+                    if settings_path is not None:
+                        base.extend(["-s", str(settings_path)])
+                    base.extend(["dependency:copy-dependencies", f"-DoutputDirectory={deps}"])
+                    if dependency_log is not None:
+                        for group, artifact, version in dependencies:
+                            dependency_log(f"{group}:{artifact}:{version} 未安装，开始安装")
+                    try:
+                        venv._run_install_logged_in_context(
+                            base + ["-o"], timeout_seconds, dependency_context
+                        )
+                    except venv.DependencyPreparationError as offline_error:
+                        if not repository_url:
+                            raise venv.DependencyPreparationError(
+                                "Maven dependencies are not available from the local "
+                                "repository and no Maven dependency source is configured",
+                                offline_error.install_log,
+                                dependency=venv.dependency_failure_label(
+                                    (":".join(parts) for parts in dependencies),
+                                    offline_error.install_log,
+                                ),
+                                no_source=True,
+                                error_code=offline_error.error_code,
+                            ) from offline_error
+                        try:
+                            venv._run_install_logged_in_context(
+                                base, timeout_seconds, dependency_context
+                            )
+                        except venv.DependencyPreparationError as source_error:
+                            combined_log = offline_error.install_log + source_error.install_log
+                            raise venv.DependencyPreparationError(
+                                str(source_error),
+                                combined_log,
+                                dependency=venv.dependency_failure_label(
+                                    (":".join(parts) for parts in dependencies), combined_log
+                                ),
+                                error_code=source_error.error_code,
+                            ) from source_error
+                    if dependency_log is not None:
+                        for group, artifact, version in dependencies:
+                            dependency_log(f"{group}:{artifact}:{version} 安装成功")
             venv._run_logged_in_context(
                 [
                     "javac",
@@ -229,8 +270,21 @@ def prepare_version_java(
                 timeout_seconds,
                 dependency_context,
             )
-        except venv.DependencyPreparationError:
+        except venv.DependencyPreparationError as error:
             build.abort()
+            if builtin_materials is not None and any(
+                marker in error.install_log.lower()
+                for marker in (
+                    "class file has wrong version",
+                    "unsupported class file",
+                    "bad class file",
+                )
+            ):
+                raise venv.DependencyPreparationError(
+                    "Java dependency is incompatible with the Worker runtime",
+                    error.install_log,
+                    error_code="builtin_environment_mismatch",
+                ) from error
             raise
         finally:
             if settings_path is not None:

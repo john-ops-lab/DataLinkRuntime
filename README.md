@@ -485,3 +485,5 @@ Smoke Test 使用隔离的本地环境和 fake AI Provider，不会访问公网 
 DataLinkRuntime 基于 [Apache License 2.0](LICENSE) 开源。
 
 Copyright (c) 2026 john-ops-lab
+
+内网部署可使用 [DLR 内置依赖源](docs/zh-CN/issue141-builtin-dependencies.md)，由控制节点保存并分发三种语言的离线安装材料。

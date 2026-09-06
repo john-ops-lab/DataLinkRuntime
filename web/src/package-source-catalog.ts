@@ -31,6 +31,9 @@ export function packageSourcePresetLabel(
   source: Pick<PackageSource, "name" | "preset_id"> | Pick<DefaultPackageSourceInfo, "name" | "preset_id">,
   locale: SystemLocale = currentSystemLocale(),
 ): string {
+  if ("index_url" in source && typeof source.index_url === "string" && source.index_url.startsWith("dlr-builtin://")) {
+    return i18n.getFixedT(locale, "settings")("builtin.sourceName");
+  }
   const key =
     typeof source.preset_id === "string" ? PRESET_LABEL_KEYS[source.preset_id] : undefined;
   if (key === undefined) {

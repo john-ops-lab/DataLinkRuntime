@@ -308,6 +308,8 @@ def _build_v3_payload(
         execution_timeout_seconds=legacy_payload.execution_timeout_seconds,
         secrets=legacy_payload.secrets,
         index_url=legacy_payload.index_url,
+        builtin_package_snapshot=legacy_payload.builtin_package_snapshot,
+        dependency_check=legacy_payload.dependency_check,
         locale=cast(Any, legacy_payload.locale),
         resource_profile=profile,
         credential_bindings=list(execution.credential_bindings_snapshot),
@@ -418,6 +420,14 @@ def claim_dispatch(
     if execution.status in {"cancelled", "succeeded", "dead_letter", "expired"}:
         session.rollback()
         return _decision("ACK_NOOP", "cancelled" if execution.status == "cancelled" else "terminal")
+    if (
+        execution.builtin_package_snapshot is not None
+        and worker.isolation_capabilities.get("builtin_packages_v1") is not True
+    ):
+        session.rollback()
+        return _decision(
+            "PAUSE_CONSUMER", "builtin_worker_upgrade_required", retry_after_seconds=30
+        )
     if execution.status == "retry_wait":
         next_attempt_at = execution.next_attempt_at
         if next_attempt_at is None:
@@ -1195,6 +1205,8 @@ def replay_execution(session: Session, execution_id: int) -> ReplayResponse:
             else None
         ),
         version_id=old.version_id,
+        dependency_check=old.dependency_check,
+        worker_id_override=(old.target_worker_id_snapshot if old.dependency_check else None),
     )
     new_execution.replay_of_execution_id = old.id
     session.commit()

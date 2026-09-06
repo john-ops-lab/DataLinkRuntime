@@ -150,6 +150,8 @@ services:
       # Keep the application root and named-volume target on the same
       # interpolation so an explicit deployment override cannot drift into a
       # different storage authority.
+      DLR_BUILTIN_PACKAGE_ROOT: /var/lib/dlr/builtin-packages
+      DLR_BUILTIN_PACKAGE_MIN_FREE_BYTES: ${DLR_BUILTIN_PACKAGE_MIN_FREE_BYTES:-268435456}
       DLR_ARTIFACT_STORE_ROOT: ${DLR_ARTIFACT_STORE_ROOT:-/var/lib/dlr/artifacts}
       DLR_MANAGED_FILES_ENABLED: ${DLR_MANAGED_FILES_ENABLED:-false}
       DLR_ARTIFACT_DELETE_ALERT_THRESHOLD: ${DLR_ARTIFACT_DELETE_ALERT_THRESHOLD:-5}
@@ -196,6 +198,7 @@ services:
       DLR_IMA_ALLOW_HTTP: ${DLR_IMA_ALLOW_HTTP:-false}
       DLR_IMA_TIMEOUT_SECONDS: ${DLR_IMA_TIMEOUT_SECONDS:-8}
     volumes:
+      - dlr_builtin_packages:/var/lib/dlr/builtin-packages
       - dlr_artifact_store:${DLR_ARTIFACT_STORE_ROOT:-/var/lib/dlr/artifacts}
       - ${DLR_PLATFORM_LOG_ROOT:-/var/lib/dlr/platform-logs}/control:/var/lib/dlr/platform-logs/control
     depends_on:
@@ -376,6 +379,7 @@ services:
 volumes:
   # Issue #127 B4: LocalFileArtifactStore is deliberately single-Writer;
   # only the Control service mounts this volume.
+  dlr_builtin_packages:
   dlr_artifact_store:
   dlr_pg_data:
   dlr_worker_runtime:

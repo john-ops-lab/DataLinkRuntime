@@ -277,7 +277,7 @@ export default function ExecutionHistoryPanel(props: {
       width: 150,
       render: (trigger: string, summary: ExecutionSummary) => (
         <div>
-          <div>{triggerLabel(trigger, (key, options) => t(key, options))}</div>
+          <div>{summary.dependency_check ? t("builtin.checkTitle", { ns: "settings" }) : triggerLabel(trigger, (key, options) => t(key, options))}</div>
           {trigger === "schedule" && summary.scheduled_for !== null && (
             <div className="execution-version-debug" data-testid="history-scheduled-for">
               {t("history.scheduledFor", { time: formatTime(summary.scheduled_for, locale) })}
@@ -444,7 +444,7 @@ export default function ExecutionHistoryPanel(props: {
                     `${t("labels.runtimeWorker", { ns: "common" })} #${visibleDetail.worker_id}`
                   ),
                 },
-                { key: "trigger", label: t("labels.triggerMode", { ns: "common" }), children: triggerLabel(visibleDetail.trigger, (key, options) => t(key, options)) },
+                { key: "trigger", label: t("labels.triggerMode", { ns: "common" }), children: visibleDetail.dependency_check ? t("builtin.checkTitle", { ns: "settings" }) : triggerLabel(visibleDetail.trigger, (key, options) => t(key, options)) },
                 ...(visibleDetail.trigger === "schedule"
                   ? [
                       {

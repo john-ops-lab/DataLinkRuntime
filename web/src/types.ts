@@ -163,6 +163,7 @@ export interface VersionDetail extends VersionSummary {
 
 /** Full current state of one Execution (GET /api/executions/{id}). */
 export interface Execution {
+  dependency_check?: boolean;
   id: number;
   adapter_id: number;
   version_id: number;
@@ -260,6 +261,7 @@ export type ExecutionSnapshot = ExecutionInputSnapshot;
 
 /** Lightweight history row; never carries input/output/stdout/stderr. */
 export interface ExecutionSummary {
+  dependency_check?: boolean;
   id: number;
   adapter_id: number;
   version_id: number;
@@ -845,3 +847,31 @@ export interface AiConnectionTestResult {
   ok: boolean;
   message: string;
 }
+
+
+export type BuiltinPackageKind = "pypi" | "npm" | "maven";
+export interface BuiltinPackage {
+  id: number;
+  kind: BuiltinPackageKind;
+  name: string;
+  version: string;
+  environment: string;
+  filename: string;
+  repository_path: string;
+  size_bytes: number;
+  sha256: string;
+  status: "uploaded" | "deleting";
+  created_at: string;
+}
+export interface BuiltinPackageCapacity {
+  used_bytes: number;
+  reserved_bytes: number;
+  quota_bytes: number;
+}
+export interface BuiltinPackageLibrary {
+  files: BuiltinPackage[];
+  capacity: BuiltinPackageCapacity;
+  uploads: { id: string; filename: string; size_bytes: number; created_at: string }[];
+}
+
+export type BuiltinCheck = Pick<Execution, "id" | "adapter_id" | "version_id" | "created_at" | "target_worker_id" | "status" | "error" | "error_code">;

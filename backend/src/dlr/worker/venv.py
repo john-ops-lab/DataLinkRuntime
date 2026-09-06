@@ -31,6 +31,10 @@ from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dlr.worker.builtin_packages import BuiltinMaterials
 from typing import Any, cast
 from urllib import parse as url_parse
 
@@ -901,13 +905,23 @@ def prepare_version_venv(
     index_url: str | None = None,
     dependency_log: DependencyLogCallback | None = None,
     dependency_context: DependencyExecutionContext | None = None,
+    builtin_materials: "BuiltinMaterials | None" = None,
 ) -> Path:
     """Return the venv Python path, building the venv on first use."""
     directory = version_dir(runtime_root, adapter_id, version_id)
     python_path = venv_python(directory)
     dependencies = dependency_specs(requirements)
     with _lock_for(adapter_id, version_id):
-        identity = _cache_identity(adapter_id, version_id, "python", requirements)
+        if builtin_materials is not None:
+            from dlr.worker.builtin_packages import validate_python_requirements
+
+            validate_python_requirements(requirements)
+        identity = _cache_identity(
+            adapter_id,
+            version_id,
+            "python",
+            requirements + ("\0" + builtin_materials.identity if builtin_materials else ""),
+        )
         try:
             _version_cache, directory, build = _begin_version_build(
                 runtime_root,
@@ -965,7 +979,12 @@ def prepare_version_venv(
         install_log = ""
         try:
             install_log += _run_logged_in_context(
-                ["uv", "venv", str(directory / ".venv")],
+                ["uv", "venv", str(directory / ".venv")]
+                + (
+                    ["--offline", "--no-config", "--no-python-downloads"]
+                    if builtin_materials
+                    else []
+                ),
                 timeout_seconds,
                 dependency_context,
             )
@@ -982,44 +1001,67 @@ def prepare_version_venv(
                     "-r",
                     str(directory / "requirements.txt"),
                 ]
-                # Offline-first: a warm local cache must not need any network.
-                try:
-                    install_log += _run_install_logged_in_context(
-                        base_command + ["--offline"],
-                        timeout_seconds,
-                        dependency_context,
-                    )
-                except DependencyPreparationError as offline_error:
-                    if not index_url:
-                        raise DependencyPreparationError(
-                            "dependencies are not available from the local cache and no "
-                            "package source is configured; ask the platform admin to add "
-                            "a package source in System Settings (or set DLR_PYPI_INDEX_URL "
-                            "on the Worker)",
-                            offline_error.install_log,
-                            dependency=dependency_failure_label(
-                                dependencies, offline_error.install_log
-                            ),
-                            no_source=True,
-                            error_code=offline_error.error_code,
-                        ) from offline_error
-                    install_log += offline_error.install_log
-                    install_log += f"\n{OFFLINE_CACHE_FALLBACK_MARKER}\n"
+                if builtin_materials is not None:
+                    from dlr.worker.builtin_packages import install_error
+
+                    material_root = builtin_materials.materialize()
                     try:
                         install_log += _run_install_logged_in_context(
-                            base_command + ["--index-url", index_url],
+                            base_command
+                            + [
+                                "--offline",
+                                "--no-index",
+                                "--no-config",
+                                "--no-cache",
+                                "--only-binary",
+                                ":all:",
+                                "--find-links",
+                                str(material_root),
+                            ],
                             timeout_seconds,
                             dependency_context,
                         )
-                    except DependencyPreparationError as source_error:
-                        raise DependencyPreparationError(
-                            str(source_error),
-                            install_log + source_error.install_log,
-                            dependency=dependency_failure_label(
-                                dependencies, install_log + source_error.install_log
-                            ),
-                            error_code=source_error.error_code,
-                        ) from source_error
+                    except DependencyPreparationError as error:
+                        raise install_error(error) from error
+                else:
+                    # Offline-first: a warm local cache must not need any network.
+                    try:
+                        install_log += _run_install_logged_in_context(
+                            base_command + ["--offline"],
+                            timeout_seconds,
+                            dependency_context,
+                        )
+                    except DependencyPreparationError as offline_error:
+                        if not index_url:
+                            raise DependencyPreparationError(
+                                "dependencies are not available from the local cache and no "
+                                "package source is configured; ask the platform admin to add "
+                                "a package source in System Settings (or set DLR_PYPI_INDEX_URL "
+                                "on the Worker)",
+                                offline_error.install_log,
+                                dependency=dependency_failure_label(
+                                    dependencies, offline_error.install_log
+                                ),
+                                no_source=True,
+                                error_code=offline_error.error_code,
+                            ) from offline_error
+                        install_log += offline_error.install_log
+                        install_log += f"\n{OFFLINE_CACHE_FALLBACK_MARKER}\n"
+                        try:
+                            install_log += _run_install_logged_in_context(
+                                base_command + ["--index-url", index_url],
+                                timeout_seconds,
+                                dependency_context,
+                            )
+                        except DependencyPreparationError as source_error:
+                            raise DependencyPreparationError(
+                                str(source_error),
+                                install_log + source_error.install_log,
+                                dependency=dependency_failure_label(
+                                    dependencies, install_log + source_error.install_log
+                                ),
+                                error_code=source_error.error_code,
+                            ) from source_error
                 if dependency_log is not None:
                     for dependency in dependencies:
                         dependency_log(f"{dependency} 安装成功")
@@ -1028,6 +1070,12 @@ def prepare_version_venv(
             # cleanly without publishing an unverified runtime.
             build.abort()
             raise
+        if builtin_materials is not None:
+            # uv creates its own advisory lock as 0666; it is runtime metadata,
+            # never package content. Keep the verified environment private.
+            uv_lock = directory / ".venv" / ".lock"
+            if uv_lock.is_file() and not uv_lock.is_symlink():
+                uv_lock.chmod(0o600)
         try:
             final_directory = build.finish(identity)
         except cache.CacheError as error:

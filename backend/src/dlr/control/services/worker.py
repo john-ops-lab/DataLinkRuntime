@@ -449,8 +449,14 @@ def build_task_payload(
         # Execution (manual, schedule and webhook). The platform setting is
         # only a defensive fallback for rows predating the migration.
         execution_timeout_seconds=timeout_seconds,
-        secrets=secrets_service.resolve_execution_secrets(session, execution),
-        index_url=package_source_service.resolve_default_index_url(
+        secrets={}
+        if execution.dependency_check
+        else secrets_service.resolve_execution_secrets(session, execution),
+        builtin_package_snapshot=execution.builtin_package_snapshot,
+        dependency_check=execution.dependency_check,
+        index_url=None
+        if execution.builtin_package_snapshot is not None
+        else package_source_service.resolve_default_index_url(
             session,
             {"python": "pypi", "javascript": "npm", "java": "maven"}[adapter.language],
         ),

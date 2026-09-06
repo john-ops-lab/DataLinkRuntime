@@ -11,6 +11,13 @@ DEFAULT_WORKER_LOCALE: Final[WorkerLocale] = "zh-CN"
 
 _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
     "zh-CN": {
+        "dependency.builtin_dependency_missing": "内置依赖材料不完整，请补齐依赖及构建材料",
+        "dependency.builtin_environment_mismatch": "内置材料与 Worker 系统、架构或运行时不匹配",
+        "dependency.builtin_external_reference": "内置依赖源不接受直接下载地址或外部依赖引用",
+        "dependency.builtin_checksum_mismatch": "内置依赖文件校验失败",
+        "dependency.builtin_content_unavailable": "内置依赖正文不可用，请检查控制节点存储",
+        "dependency.builtin_snapshot_invalid": "内置依赖快照无效",
+        "dependency.builtin_package_conflict": "内置依赖材料存在冲突",
         "dependency.log_prefix": "[依赖检查]",
         "dependency.check_passed": "{dependency} 已安装，检查通过",
         "dependency.install_started": "{dependency} 未安装，开始安装",
@@ -56,6 +63,21 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
         "execution.output_too_large": "适配器输出超过大小限制，已保留预览",
     },
     "en": {
+        "dependency.builtin_dependency_missing": (
+            "Builtin dependency materials are incomplete; include dependencies and build materials"
+        ),
+        "dependency.builtin_environment_mismatch": (
+            "Builtin materials do not match the Worker system, architecture or runtime"
+        ),
+        "dependency.builtin_external_reference": (
+            "Builtin sources do not accept direct downloads or external dependency references"
+        ),
+        "dependency.builtin_checksum_mismatch": "Builtin package integrity verification failed",
+        "dependency.builtin_content_unavailable": (
+            "Builtin content is unavailable; check Control storage"
+        ),
+        "dependency.builtin_snapshot_invalid": "The builtin dependency snapshot is invalid",
+        "dependency.builtin_package_conflict": "Builtin dependency materials conflict",
         "dependency.log_prefix": "[Dependency check]",
         "dependency.check_passed": "{dependency} is installed; check passed",
         "dependency.install_started": "{dependency} is not installed; starting installation",

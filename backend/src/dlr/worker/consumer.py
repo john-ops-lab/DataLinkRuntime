@@ -477,12 +477,26 @@ class V3Consumer:
                     destination=destination,
                 )
 
+            def download_builtin(descriptor: Mapping[str, Any], destination: Any) -> int:
+                return self._client.download_builtin_package(
+                    self._config.worker_id,
+                    payload.execution_id,
+                    int(descriptor["id"]),
+                    claim_token=payload.claim_token,
+                    destination=destination,
+                )
+
             try:
                 result = self._runner(
                     payload.model_dump(mode="json"),
                     self._runtime_settings,
                     progress_callback=progress,
                     input_downloader=download,
+                    **(
+                        {"builtin_downloader": download_builtin}
+                        if payload.builtin_package_snapshot is not None
+                        else {}
+                    ),
                 )
             except Exception:
                 result = {

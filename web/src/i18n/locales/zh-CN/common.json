@@ -511,6 +511,26 @@
     "ai_tool_result_too_large": "AI 工具结果累计超过大小上限：已安全停止，请缩小查询范围后重试",
     "sse_connect_failed": "实时事件连接失败",
     "sse_connect_failed_http": "实时事件连接失败（HTTP {{status}}）",
-    "sse_read_failed": "实时事件读取失败"
+    "sse_read_failed": "实时事件读取失败",
+    "builtin_dependency_missing": "内置依赖材料不完整，请补齐依赖及构建材料",
+    "builtin_environment_mismatch": "内置依赖材料与 Worker 的系统、架构或运行时不匹配",
+    "builtin_external_reference": "内置依赖源不接受直接下载地址或外部依赖引用",
+    "builtin_checksum_mismatch": "内置依赖文件校验失败",
+    "builtin_content_unavailable": "内置依赖正文不可用，请检查控制节点存储",
+    "builtin_snapshot_invalid": "内置依赖快照无效",
+    "builtin_package_conflict": "内置依赖材料存在冲突",
+    "builtin_package_busy": "文件正在上传或下载，请稍后重试",
+    "builtin_package_invalid": "依赖类型、路径或元数据无效，请检查离线准备材料",
+    "builtin_capacity_in_use": "容量不能小于已保存文件与预留的合计大小",
+    "builtin_capacity_exceeded": "内置依赖库容量不足",
+    "builtin_disk_space_low": "控制节点磁盘安全余量不足",
+    "builtin_upload_not_found": "上传预留不存在",
+    "builtin_storage_invalid": "依赖库存储状态不一致，请检查恢复结果",
+    "builtin_upload_too_large": "上传大小超过预留",
+    "builtin_package_not_found": "依赖文件不存在或正在删除",
+    "builtin_package_in_use": "文件被未完成任务或尚未确认清理的安装占用",
+    "builtin_delete_failed": "控制节点文件删除失败，请检查存储后重试",
+    "builtin_worker_upgrade_required": "请先升级所选 Worker 以支持内置依赖源",
+    "builtin_source_invalid": "请选择已有的内置源，其类别、地址和凭据不可自定义"
   }
 }
