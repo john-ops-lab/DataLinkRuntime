@@ -39,6 +39,17 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.1"
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install TypeScript runtime toolchain
+        run: |
+          npm ci --prefix ../docker/typescript --ignore-scripts
+          echo "$GITHUB_WORKSPACE/docker/typescript/node_modules/.bin" >> "$GITHUB_PATH"
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.13"

@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-TemplateLanguage = Literal["python", "javascript", "java"]
+TemplateLanguage = Literal["python", "javascript", "java", "typescript", "go"]
 TemplateAdapterType = Literal["task", "webhook"]
 TemplateSourceUseMode = Literal[
     "adaptation-allowed",
@@ -103,6 +103,8 @@ class TemplateScenarioAsset(FrozenAssetModel):
 class TemplateSdkReferences(FrozenAssetModel):
     python: object | None = None
     javascript: object | None = None
+    typescript: object | None = None
+    go: object | None = None
     java: object | None = None
 
 

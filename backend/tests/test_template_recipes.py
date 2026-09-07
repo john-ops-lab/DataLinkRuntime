@@ -26,7 +26,7 @@ import pytest
 
 from dlr.control.template_catalog import TemplateCatalog
 from dlr.runtime.java_runtime import SOURCE as JAVA_RUNTIME_SOURCE
-from dlr.worker import javaenv, nodeenv, venv
+from dlr.worker import goenv, javaenv, nodeenv, venv
 
 CATALOG_ROOT = Path(__file__).parents[1] / "src/dlr/control/template_catalog"
 LANGUAGES = {"python", "javascript", "java"}
@@ -350,7 +350,10 @@ def test_inventory_and_source_hashes_are_valid() -> None:
 
     for scenario in scenarios:
         assert scenario["variants"]
-        assert {variant["language"] for variant in scenario["variants"]} <= LANGUAGES
+        assert {variant["language"] for variant in scenario["variants"]} <= LANGUAGES | {
+            "typescript",
+            "go",
+        }
         for variant in scenario["variants"]:
             source = _variant_source(variant)
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
@@ -375,10 +378,12 @@ def test_all_requirements_use_existing_parsers_and_exact_versions() -> None:
             if variant["language"] == "python":
                 assert venv.dependency_specs(requirements) == lines
                 assert all(python_pin.fullmatch(line) for line in lines)
-            elif variant["language"] == "javascript":
+            elif variant["language"] in {"javascript", "typescript"}:
                 parsed = nodeenv.parse_requirements(requirements)
                 assert len(parsed) == len(lines)
                 assert all(npm_pin.fullmatch(line) for line in lines)
+            elif variant["language"] == "go":
+                assert len(goenv.parse_requirements(requirements)) == len(lines)
             else:
                 assert len(javaenv.parse_requirements(requirements)) == len(lines)
                 assert all(maven_pin.fullmatch(line) for line in lines)

@@ -16,8 +16,8 @@
     "Alibaba Cloud OpenAPI"
   ],
   "logo_key": "alicloud-network",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 20,
   "provenance_ids": [
     "steampipe-alicloud-d619a9d",
@@ -60,6 +60,34 @@
       "code_resource": "variants/alicloud-network-ingress-topology/java.java",
       "code_sha256": "6538f14c3733a845a9871eb908b91f4be78272686bf3a4b5f3dbdd732f19fa6f",
       "requirements": "com.aliyun:tea-openapi:0.3.15",
+      "runtime_config": {},
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/alicloud-network-ingress-topology/typescript.ts",
+      "code_sha256": "7f01bb9d355d99fd90afb92775aa989fe16875ad7d68295a5693d4183dece0b5",
+      "requirements": "@alicloud/openapi-client@0.4.15",
+      "runtime_config": {},
+      "provenance_ids": [
+        "steampipe-alicloud-d619a9d",
+        "alicloud-openapi-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/alicloud-network-ingress-topology/go.go",
+      "code_sha256": "d1919947a421dbcbc521dfc794fbeff8c17341a776ed11d8d207f8e02787dcab",
+      "requirements": "github.com/alibabacloud-go/darabonba-openapi/v2@v2.1.14\ngithub.com/alibabacloud-go/tea@v1.3.13",
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",

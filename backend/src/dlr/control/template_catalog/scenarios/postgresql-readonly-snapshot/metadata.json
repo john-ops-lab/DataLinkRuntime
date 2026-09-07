@@ -15,8 +15,8 @@
     "PostgreSQL"
   ],
   "logo_key": "database-postgresql",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 10,
   "provenance_ids": [
     "postgresql-17-docs"
@@ -50,6 +50,28 @@
       "code_resource": "variants/postgresql-readonly-snapshot/java.java",
       "code_sha256": "7df53c103ec92f559aa0871780d2e63ddd4c285f5bbe417c938e7283c47796bf",
       "requirements": "org.postgresql:postgresql:42.7.7",
+      "runtime_config": {},
+      "provenance_ids": [
+        "postgresql-17-docs"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/postgresql-readonly-snapshot/typescript.ts",
+      "code_sha256": "3ec26f9d8b820b7413463d23836c2aa7ae9fc368098c78c81be26beddd693f89",
+      "requirements": "pg@8.16.3\n@types/pg@8.23.1",
+      "runtime_config": {},
+      "provenance_ids": [
+        "postgresql-17-docs"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/postgresql-readonly-snapshot/go.go",
+      "code_sha256": "b510884397bcc79e804723edbd877937b8b5454e5f33cd42139f4ab123b9a686",
+      "requirements": "github.com/lib/pq@v1.10.9",
       "runtime_config": {},
       "provenance_ids": [
         "postgresql-17-docs"

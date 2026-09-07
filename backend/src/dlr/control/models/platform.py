@@ -105,13 +105,13 @@ class PackageSource(Base):
     __tablename__ = "package_sources"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('pypi', 'npm', 'maven')",
+            "kind IN ('pypi', 'npm', 'maven', 'goproxy')",
             name="ck_package_sources_kind",
         ),
         CheckConstraint(
             "preset_id IS NULL OR preset_id IN ("
             "'pypi.aliyun', 'pypi.official', 'npm.npmmirror', 'npm.official', "
-            "'maven.aliyun', 'maven.central')",
+            "'maven.aliyun', 'maven.central', 'goproxy.cn', 'goproxy.official')",
             name="ck_package_sources_preset_id",
         ),
         # At most one default source for each kind.

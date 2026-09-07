@@ -44,7 +44,7 @@ from dlr.common.bigfields import truncate_utf8
 from dlr.common.config import settings
 from dlr.runtime import harness
 from dlr.runtime.node_harness import SOURCE as NODE_HARNESS_SOURCE
-from dlr.worker import i18n, javaenv, nodeenv, sandbox
+from dlr.worker import goenv, i18n, javaenv, nodeenv, sandbox
 from dlr.worker import venv as venv_manager
 from dlr.worker import workspace as workspace_manager
 
@@ -59,6 +59,8 @@ LANGUAGE_LABELS: dict[str, str] = {
     "python": "Python",
     "javascript": "JavaScript",
     "java": "Java",
+    "typescript": "TypeScript",
+    "go": "Go",
 }
 
 # Live-log upload rhythm while the subprocess runs (M3 spec §6.1).
@@ -105,6 +107,7 @@ class RuntimeSettings:
     pypi_index_url: str | None = None
     npm_registry_url: str | None = None
     maven_repository_url: str | None = None
+    go_proxy_url: str | None = None
     workspace_cleanup_journal_root: Path | None = None
     # Missing Sandbox configuration is an explicit execution failure.
     # The Agent supplies this only after its real startup preflight.
@@ -1130,6 +1133,8 @@ def run(
         "python": config.pypi_index_url,
         "javascript": config.npm_registry_url,
         "java": config.maven_repository_url,
+        "typescript": config.npm_registry_url,
+        "go": config.go_proxy_url,
     }.get(language)
     index_url = payload.get("index_url") or fallback_source
     index_url = str(index_url) if index_url else None
@@ -1160,6 +1165,16 @@ def run(
     sandbox_attempt: sandbox.AttemptSandbox | None = None
     dependency_context: venv_manager.DependencyExecutionContext | None = None
     attempt_timeout, total_timeout = cleanup_budget
+    preparation_deadline = time.monotonic() + min(config.dep_install_timeout_seconds, timeout)
+
+    def preparation_abort() -> str | None:
+        if dependency_uploader is not None:
+            dependency_uploader.submit("", "")
+            if dependency_uploader.cancel_requested:
+                return "execution_cancelled"
+        if time.monotonic() >= preparation_deadline:
+            return "dependency_timeout"
+        return None
 
     def emit_dependency_log(message: str, level: str = "INFO") -> None:
         """Format and upload one redacted dependency-stage line."""
@@ -1205,13 +1220,18 @@ def run(
         dependency_tmp = layout.temp / ".dependency-tmp"
         sandbox_attempt.mount_dependency_tmpfs(
             dependency_tmp,
-            max_bytes=venv_manager.CACHE_RESERVATION_BYTES,
+            max_bytes=(
+                goenv.BUILD_RESERVATION_BYTES
+                if language == "go"
+                else venv_manager.CACHE_RESERVATION_BYTES
+            ),
         )
         dependency_context = venv_manager.DependencyExecutionContext(
             cgroup_path=sandbox_attempt.cgroup,
             tmpdir=dependency_tmp,
             nofile=sandbox_limits.nofile,
             log_max_bytes=stream_limit,
+            abort_check=preparation_abort if language in {"typescript", "go"} else None,
         )
     except (sandbox.SandboxError, workspace_manager.WorkspaceError, OSError) as error:
         if sandbox_attempt is not None:
@@ -1265,7 +1285,7 @@ def run(
                     dependency_log=emit_dependency_log,
                     **builtin_options,
                 )
-            elif language == "javascript":
+            elif language in {"javascript", "typescript"}:
                 runtime_path = nodeenv.prepare_version_node(
                     config.runtime_root,
                     adapter_id,
@@ -1274,6 +1294,23 @@ def run(
                     str(payload.get("requirements") or ""),
                     timeout_seconds=config.dep_install_timeout_seconds,
                     registry_url=index_url,
+                    **(
+                        cast(dict[str, Any], {"language": language})
+                        if language == "typescript"
+                        else {}
+                    ),
+                    dependency_log=emit_dependency_log,
+                    **builtin_options,
+                )
+            elif language == "go":
+                runtime_path = goenv.prepare_version_go(
+                    config.runtime_root,
+                    adapter_id,
+                    version_id,
+                    str(payload["code"]),
+                    str(payload.get("requirements") or ""),
+                    timeout_seconds=config.dep_install_timeout_seconds,
+                    proxy_url=index_url,
                     dependency_log=emit_dependency_log,
                     **builtin_options,
                 )
@@ -1360,7 +1397,7 @@ def run(
         runtime_name = next(
             (
                 runtime
-                for runtime in ("Node.js", "npm", "java", "javac", "Maven")
+                for runtime in ("Node.js", "npm", "java", "javac", "Maven", "TypeScript", "Go")
                 if f"{runtime} Runtime is unavailable" in str(preparation)
             ),
             None,
@@ -1427,7 +1464,14 @@ def run(
         )
         result = {
             "status": (
-                "resource_exceeded" if preparation.error_code in RESOURCE_ERROR_CODES else "failed"
+                "resource_exceeded"
+                if preparation.error_code in RESOURCE_ERROR_CODES
+                else "cancelled"
+                if preparation.error_code == "execution_cancelled"
+                else "timeout"
+                if preparation.error_code == "dependency_timeout"
+                and language in {"typescript", "go"}
+                else "failed"
             ),
             "error": redact_secrets(result_error, dependency_secret_values),
             "error_code": preparation.error_code,
@@ -1511,15 +1555,18 @@ def run(
             if language == "python":
                 _write_workspace_text(workspace / "adapter.py", str(payload["code"]))
                 command = [str(runtime_path), str(HARNESS_PATH), str(workspace)]
-            elif language == "javascript":
+            elif language in {"javascript", "typescript"}:
                 _write_workspace_text(workspace / "harness.mjs", NODE_HARNESS_SOURCE)
                 (workspace / "node_modules").symlink_to(runtime_path / "node_modules")
                 command = [
                     "node",
+                    *(["--enable-source-maps"] if language == "typescript" else []),
                     str(workspace / "harness.mjs"),
                     str(workspace),
                     str(runtime_path / "adapter.mjs"),
                 ]
+            elif language == "go":
+                command = [str(runtime_path / "adapter"), str(workspace)]
             else:
                 classpath = os.pathsep.join(
                     [str(runtime_path / "classes"), str(runtime_path / "deps" / "*")]

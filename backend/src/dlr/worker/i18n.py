@@ -31,6 +31,8 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
         "dependency.no_source_python": (
             "本地缓存中没有所需依赖，且未配置 Python 依赖源；请管理员在系统设置中添加依赖源"
         ),
+        "dependency.no_source_typescript": "TypeScript 依赖不在本地缓存中，请配置 npm 依赖源。",
+        "dependency.no_source_go": "Go 模块不在本地缓存中，请配置 Go 模块依赖源。",
         "dependency.no_source_javascript": (
             "本地缓存中没有所需依赖，且未配置 JavaScript 依赖源；请管理员在系统设置中添加依赖源"
         ),
@@ -94,6 +96,10 @@ _MESSAGES: Final[dict[WorkerLocale, dict[str, str]]] = {
             "The required dependencies are not in the local cache and no Python dependency "
             "source is configured; ask an administrator to add one in System Settings"
         ),
+        "dependency.no_source_typescript": (
+            "TypeScript requires a configured npm source when dependencies are not cached."
+        ),
+        "dependency.no_source_go": "Go modules are not cached; configure a Go module source.",
         "dependency.no_source_javascript": (
             "The required dependencies are not in the local cache and no JavaScript "
             "dependency source is configured; ask an administrator to add one in System Settings"

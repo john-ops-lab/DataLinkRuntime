@@ -120,6 +120,29 @@ _ENTRIES: tuple[DocEntry, ...] = (
         _JAVASCRIPT_CONTRACT,
     ),
     _entry(
+        "runtime-contract-typescript",
+        "TypeScript Adapter Runtime Contract",
+        "runtime",
+        "Strict TypeScript, npm dependencies, typed Context and JSON output.",
+        _JAVASCRIPT_CONTRACT
+        + "\nUse handle(context: Context, input: unknown). Narrow input or declare "
+        "input interfaces. DLR.Context is global; import type { Context } from 'dlr' also works. "
+        "Worker runs TypeScript 5.8.3 strict/noEmitOnError, Node ESM and source maps. "
+        "Declare npm dependencies with package@version. Do not generate JSX or a web app.",
+    ),
+    _entry(
+        "runtime-contract-go",
+        "Go Adapter Runtime Contract",
+        "runtime",
+        "Go Modules, Handle entry point, Context and JSON output.",
+        "Use package main and func Handle(ctx *Context, input any) (any, error). No main function. "
+        "ctx.Config is map[string]any; ctx.Secrets.Get(key) returns a string (empty if absent). "
+        "ctx.Logger.Info/Warn/Error write logs. ctx.InputFiles exposes Ordinal, Path, OriginalName, "
+        "ContentType, SizeBytes and SHA256. os.ReadFile reads Path. DecodeInput(input, &target) "
+        "decodes typed structs. Input numbers use json.Number. Return JSON-compatible output and "
+        "nil, or nil and an error. Dependencies use module/path@vX.Y.Z; no CGO or toolchain downloads.",
+    ),
+    _entry(
         "runtime-contract-java",
         "Java Adapter Runtime Contract",
         "runtime",
@@ -173,7 +196,7 @@ _ENTRIES: tuple[DocEntry, ...] = (
         "platform",
         "How runtime Workers register, heartbeat, go offline and declare language capabilities.",
         (
-            "Workers register with a name and capabilities (python / javascript / java) and heartbeat "
+            "Workers register with a name and capabilities (python / javascript / java / typescript / go) and heartbeat "
             "on a schedule. An Adapter pins one runtime Worker; only online Workers with the Adapter's "
             "language capability can be chosen. A Worker whose heartbeat expired is reported offline "
             "without rewriting its stored status. Deleting a Worker only archives it; past Executions "

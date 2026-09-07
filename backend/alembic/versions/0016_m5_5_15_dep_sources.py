@@ -62,9 +62,13 @@ def _has_default(connection: sa.Connection, kind: str) -> bool:
 
 def upgrade() -> None:
     connection = op.get_bind()
-    kinds = {source.kind for source in DEFAULT_PACKAGE_SOURCES}
+    # Freeze this historical revision to the kinds valid at revision 0016.
+    defaults = tuple(
+        source for source in DEFAULT_PACKAGE_SOURCES if source.kind in {"pypi", "npm", "maven"}
+    )
+    kinds = {source.kind for source in defaults}
     existing_defaults = {kind: _has_default(connection, kind) for kind in kinds}
-    for default in DEFAULT_PACKAGE_SOURCES:
+    for default in defaults:
         if _source_exists(connection, default):
             continue
         # Preserve an existing user-selected default. For a kind without one,

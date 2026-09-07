@@ -32,7 +32,7 @@ class PortableWebhook(StrictModel):
 
 
 class PortableVariant(StrictModel):
-    language: Literal["python", "javascript", "java"]
+    language: Literal["python", "javascript", "java", "typescript", "go"]
     code: str = Field(min_length=1, max_length=1048576)
     requirements: str = Field(default="", max_length=1048576)
     runtime_config: dict[str, Any] = Field(default_factory=dict)
@@ -73,7 +73,7 @@ class PortablePackage(StrictModel):
     name: str
     description: str = Field(default="", max_length=20000)
     category: str = Field(default="other", max_length=128)
-    variants: list[PortableVariant] = Field(min_length=1, max_length=3)
+    variants: list[PortableVariant] = Field(min_length=1, max_length=5)
     timeout_seconds: int = Field(default=300, ge=1, le=86400)
     adapter_type: Literal["task", "webhook"]
     schedule: PortableSchedule | None = None

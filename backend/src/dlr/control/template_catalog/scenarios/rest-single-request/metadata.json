@@ -16,8 +16,8 @@
     "HTTPS"
   ],
   "logo_key": "rest-request",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 10,
   "provenance_ids": [
     "http-rfc9110-9112",
@@ -56,6 +56,32 @@
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/rest-single-request/java.java",
       "code_sha256": "915ac46e5ea2ac3cb2769209d11a7ea6adcd3223f15928d6edb3c45710da7e98",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "http-rfc9110-9112",
+        "dlt-3efddd6",
+        "airbyte-6f59bc9"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/rest-single-request/typescript.ts",
+      "code_sha256": "675c778934374ef3ec30d8de18b41c1e0e568a14a61400d20e0f9175a14d0709",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "http-rfc9110-9112",
+        "dlt-3efddd6",
+        "airbyte-6f59bc9"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/rest-single-request/go.go",
+      "code_sha256": "dc57ec65f8328f7383c893370847148ba5c2c3d1af5a3b0c48318d46e94b099b",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [

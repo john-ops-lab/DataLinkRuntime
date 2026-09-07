@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 from dlr.control.schemas.adapter import _validate_name
 
-TemplateLanguage = Literal["python", "javascript", "java"]
+TemplateLanguage = Literal["python", "javascript", "java", "typescript", "go"]
 TemplateVersionInput = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=64),

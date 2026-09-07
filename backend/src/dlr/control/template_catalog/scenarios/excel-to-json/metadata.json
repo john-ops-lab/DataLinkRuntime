@@ -16,8 +16,8 @@
     "XLS"
   ],
   "logo_key": "file-excel",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 20,
   "provenance_ids": [
     "excel-formats-and-libraries-2026-09-05"
@@ -51,6 +51,28 @@
       "code_resource": "variants/excel-to-json/java.java",
       "code_sha256": "9431483df1676b44e9970cc4ef56d762b5d7a17bbfbfc398a6df6aa3c9fd8062",
       "requirements": "org.apache.poi:poi-ooxml:5.4.1\norg.apache.poi:poi:5.4.1",
+      "runtime_config": {},
+      "provenance_ids": [
+        "excel-formats-and-libraries-2026-09-05"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/excel-to-json/typescript.ts",
+      "code_sha256": "483a0e44b1dc65de29eca486ee2ac80e6eb1a3829952269b5c7dc289d28cf45f",
+      "requirements": "@e965/xlsx@0.20.3",
+      "runtime_config": {},
+      "provenance_ids": [
+        "excel-formats-and-libraries-2026-09-05"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/excel-to-json/go.go",
+      "code_sha256": "10809b11c770878d8cc94e830c2b24c6d48bdceef07c540c181bc7129cd4d055",
+      "requirements": "github.com/extrame/xls@v0.0.1\ngithub.com/xuri/excelize/v2@v2.9.1",
       "runtime_config": {},
       "provenance_ids": [
         "excel-formats-and-libraries-2026-09-05"

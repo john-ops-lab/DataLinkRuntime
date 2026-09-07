@@ -1,0 +1,19 @@
+# TypeScript and Go adapters
+
+The workbench, Template Gallery, Clone and portable ZIP workflows support `typescript` and `go`. All 17 shipped scenarios include both variants. Templates are editable references: configure endpoints and credential bindings, then validate the actual business integration.
+
+TypeScript uses **5.8.3**, strict checking and `noEmitOnError`, followed by Node 22 ESM execution with source maps. Write `export function handle(context: Context, input: unknown)`. The global `Context` type is also available as `import type { Context } from "dlr"`. The browser provides basic language and DLR types; installed third-party declarations and authoritative diagnostics come from the Worker. Pin npm requirements as `package@1.2.3`, including separate `@types` packages where needed. TypeScript shares JavaScript's online and builtin npm sources.
+
+Go uses fixed **1.27.1**, with automatic toolchain downloads and CGO disabled. Provide one `package main` source file with `func Handle(ctx *Context, input any) (any, error)`; the platform supplies `main()`. `ctx.Config` is `map[string]any`, `ctx.Secrets.Get("BINDING")` returns a string (empty when absent), and `ctx.Logger` exposes `Info/Warn/Error`. `ctx.InputFiles` exposes `Ordinal`, `Path`, `OriginalName`, `ContentType`, `SizeBytes`, and `SHA256`. Read only the supplied paths. Raw JSON numbers use `json.Number`; `DecodeInput(input, &value)` converts input into a business struct. There is no Go LSP, multifile editor or CGO support.
+
+Pin Go requirements one per line, for example `github.com/lib/pq@v1.10.9`; floating versions, local paths and download URLs are rejected. Settings provide Go Modules sources at `https://goproxy.cn` (initial default) and `https://proxy.golang.org`. The selected platform source takes precedence over the optional `DLR_GO_PROXY_URL` Worker fallback. Source authentication uses the existing redaction path.
+
+Builtin Go materials retain standard proxy paths: `example.com/sdk/@v/v1.2.3.mod`, `.info`, and `.zip`. Preserve Go's `!` escaping for uppercase module characters. The module declaration, version and ZIP root must agree with the path. Use directory upload with the proxy root selected, or enter `example.com/sdk/@v` as the upload prefix. On a connected preparation machine, use matching code/toolchain, run `go mod tidy` and `go mod download all`, and collect these three file types for all direct and transitive modules from `GOMODCACHE/cache/download`. Exclude lock files and `list` metadata.
+
+Workers verify material snapshots and install through a local `file://` proxy. Public fallback, VCS, checksum-service access and toolchain download are disabled for builtin installs; missing materials fail explicitly. Existing library capacity, checksum, deletion-hold and execution-download authorization apply.
+
+Builds publish atomically into version caches keyed by source, requirements, selected source, toolchain and platform declarations; Go additionally includes OS and architecture. Failed builds cannot be reused. Go preparation reserves at most 1 GiB scratch and serializes compilation, while retaining Attempt CPU, memory, process and disk constraints. Large SDKs require appropriate resource and timeout configuration. Cancellation, timeout, logs and cleanup are reported through existing execution results.
+
+Upgrade the database (`alembic upgrade head`, revision `0038_issue138_languages`), Control, Worker and Web in that order. New languages require compatible Worker capabilities. Before downgrade, stop and drain new-language tasks, back up and explicitly handle TypeScript/Go assets, Go sources and materials. Migration refuses incompatible data instead of deleting user content.
+
+The representative Kubernetes SDK cold build used about 700 MiB in validation; the review deployment therefore assigns 1 GiB Attempt memory (see [validation evidence](../issue138-validation.md)).

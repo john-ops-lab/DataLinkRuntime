@@ -299,6 +299,7 @@ services:
       DLR_PYPI_INDEX_URL: ${DLR_PYPI_INDEX_URL:-}
       DLR_NPM_REGISTRY_URL: ${DLR_NPM_REGISTRY_URL:-}
       DLR_MAVEN_REPOSITORY_URL: ${DLR_MAVEN_REPOSITORY_URL:-}
+      DLR_GO_PROXY_URL: ${DLR_GO_PROXY_URL:-}
       # Runtime secrets are injected into the Worker only; the Adapter
       # subprocess still only sees DLR_SECRET_* (never tokens or DATABASE_URL).
       DLR_SECRET_SMOKE: ${DLR_SECRET_SMOKE:-local-dev-secret}

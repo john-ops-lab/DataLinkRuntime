@@ -591,7 +591,7 @@ export const api = {
 
   createPackageSource: (payload: {
     name: string;
-    kind: "pypi" | "npm" | "maven";
+    kind: "pypi" | "npm" | "maven" | "goproxy";
     index_url: string;
     is_default: boolean;
     credential_id: number | null;
@@ -602,7 +602,7 @@ export const api = {
     sourceId: number,
     payload: {
       name?: string;
-      kind?: "pypi" | "npm" | "maven";
+      kind?: "pypi" | "npm" | "maven" | "goproxy";
       index_url?: string;
       is_default?: boolean;
       credential_id?: number | null;
@@ -622,7 +622,7 @@ export const api = {
     request("/api/package-sources/defaults"),
 
   /** Reset one kind back to its canonical default source (restore default). */
-  restorePackageSourceDefault: (kind: "pypi" | "npm" | "maven"): Promise<PackageSource> =>
+  restorePackageSourceDefault: (kind: "pypi" | "npm" | "maven" | "goproxy"): Promise<PackageSource> =>
     request(`/api/package-sources/defaults/${kind}`, { method: "POST" }),
 
   // --- M5.8-006: productized read-only KnowledgeSource ----------------------

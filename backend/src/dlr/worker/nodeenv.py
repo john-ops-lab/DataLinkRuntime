@@ -1,6 +1,7 @@
 """Version-scoped Node.js dependency environments."""
 
 import base64
+import hashlib
 import json
 import shutil
 import tempfile
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
     from dlr.worker.builtin_packages import BuiltinMaterials
 from urllib import parse as url_parse
 
+from dlr.runtime.typescript_runtime import DECLARATIONS
 from dlr.worker import venv
 from dlr.worker.cache import CacheError
 
@@ -69,10 +71,29 @@ def prepare_version_node(
     *,
     timeout_seconds: int,
     registry_url: str | None,
+    language: str = "javascript",
     dependency_log: venv.DependencyLogCallback | None = None,
     dependency_context: venv.DependencyExecutionContext | None = None,
     builtin_materials: "BuiltinMaterials | None" = None,
 ) -> Path:
+    compiler = shutil.which("tsc") if language == "typescript" else None
+    if language == "typescript" and compiler is None:
+        raise venv.DependencyPreparationError("TypeScript Runtime is unavailable", "")
+    toolchain_identity = ""
+    if compiler:
+        package_root = Path(compiler).resolve().parents[1]
+        package = json.loads((package_root / "package.json").read_text(encoding="utf-8"))
+        node = shutil.which("node")
+        node_info = Path(node).resolve().stat() if node else None
+        toolchain_identity = json.dumps(
+            {
+                "typescript": package["version"],
+                "node": (node_info.st_size, node_info.st_mtime_ns) if node_info else None,
+                "declarations": hashlib.sha256(DECLARATIONS.encode()).hexdigest(),
+                "compiler_contract": "strict-nodenext-es2022-v1",
+            },
+            sort_keys=True,
+        )
     directory = venv.version_dir(runtime_root, adapter_id, version_id)
     dependencies = parse_requirements(requirements)
     if builtin_materials is not None:
@@ -88,8 +109,9 @@ def prepare_version_node(
         identity = venv._cache_identity(
             adapter_id,
             version_id,
-            "javascript",
-            f"{code}\0{requirements}"
+            language,
+            f"{code}\0{requirements}\0{toolchain_identity}"
+            + ("\0" + str(registry_url) if language == "typescript" else "")
             + ("\0" + builtin_materials.identity if builtin_materials else ""),
         )
         try:
@@ -127,7 +149,9 @@ def prepare_version_node(
             raise venv.DependencyPreparationError("Node.js Runtime is unavailable", "")
         dependencies = parse_requirements(requirements)
         try:
-            (directory / "adapter.mjs").write_text(code, encoding="utf-8")
+            (directory / ("adapter.mts" if compiler else "adapter.mjs")).write_text(
+                code, encoding="utf-8"
+            )
             package = {"private": True, "type": "module", "dependencies": dependencies}
             (directory / "package.json").write_text(
                 json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -255,6 +279,47 @@ def prepare_version_node(
                 finally:
                     if npmrc is not None:
                         npmrc.unlink(missing_ok=True)
+        if compiler:
+            try:
+                type_roots = [
+                    str(Path(compiler).resolve().parents[2] / "@types"),
+                    str(directory / "node_modules" / "@types"),
+                ]
+                (directory / "dlr.d.ts").write_text(DECLARATIONS, encoding="utf-8")
+                (directory / "entry-check.mts").write_text(
+                    'import { handle } from "./adapter.mjs";\n'
+                    "const checked: (context: DLR.Context, input: any) => unknown = handle;\n"
+                    "void checked;\n",
+                    encoding="utf-8",
+                )
+                (directory / "tsconfig.json").write_text(
+                    json.dumps(
+                        {
+                            "compilerOptions": {
+                                "target": "ES2022",
+                                "module": "NodeNext",
+                                "moduleResolution": "NodeNext",
+                                "strict": True,
+                                "noEmitOnError": True,
+                                "sourceMap": True,
+                                "inlineSources": True,
+                                "esModuleInterop": True,
+                                "types": ["node"],
+                                "typeRoots": type_roots,
+                            },
+                            "files": ["adapter.mts", "entry-check.mts", "dlr.d.ts"],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                venv._run_logged_in_context(
+                    [compiler, "--project", str(directory / "tsconfig.json"), "--pretty", "false"],
+                    timeout_seconds,
+                    dependency_context,
+                )
+            except (OSError, venv.DependencyPreparationError):
+                build.abort()
+                raise
         try:
             return build.finish(identity)
         except CacheError as error:

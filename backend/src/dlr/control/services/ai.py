@@ -548,6 +548,18 @@ class _KnowledgeRetrievalState:
 _RUNTIME_CONTRACTS = {
     "python": "def handle(context, input):\n    ...",
     "javascript": "export async function handle(context, input) {\n  ...\n}",
+    "typescript": (
+        "export async function handle(context: Context, input: unknown) { ... }\n"
+        "Strict TypeScript 5.8.3 / Node ESM. DLR.Context or import type { Context } from 'dlr'. "
+        "Narrow unknown inputs or declare input interfaces. npm dependencies use package@version."
+    ),
+    "go": (
+        "package main\nfunc Handle(ctx *Context, input any) (any, error) { ... }\n"
+        "Context embeds context.Context. Use ctx.Config, ctx.Secrets.Get(key) (empty if absent), "
+        "ctx.Logger.Info/Warn/Error, ctx.InputFiles. DecodeInput(input, &value) decodes structs. "
+        "Dependencies use module/path@vX.Y.Z. Pure Go only; no main function or CGO. "
+        "Return a JSON-serializable value and nil, or nil and an error."
+    ),
     "java": (
         "public class Adapter {\n"
         "    public Object handle(Context context, Object input) throws Exception {\n"
@@ -1136,12 +1148,17 @@ def _managed_input_prompt_instruction(language: str) -> str:
             "Worker runtime code may open item.path, using pathlib.Path(item.path).read_text "
             'for text or open(item.path, "rb") for bytes.'
         )
-    elif language == "javascript":
+    elif language in {"javascript", "typescript"}:
         runtime_contract = (
             "JavaScript uses context.inputFiles. Each item exposes item.ordinal, item.path, "
             "item.originalName, item.contentType, item.sizeBytes, and item.sha256. Only "
             "Worker runtime code may read item.path through node:fs, such as "
             'fs.readFileSync(item.path, "utf8") for text or without an encoding for bytes.'
+        )
+    elif language == "go":
+        runtime_contract = (
+            "Go uses ctx.InputFiles ([]InputFile). Fields: Ordinal, Path, OriginalName, "
+            "ContentType, SizeBytes, SHA256. Only Worker code reads Path via os.ReadFile."
         )
     else:
         runtime_contract = (
@@ -1315,7 +1332,8 @@ def _assist_messages(
         "clarification and advice that do not change the Working Copy must return candidate:null "
         "inside this same strict envelope; never return bare prose or Markdown. "
         "Never request, invent, or reveal secret values; use only "
-        'context.secrets.get("ENV_KEY") with an available key name.\n'
+        'context.secrets.get("ENV_KEY") (Go: ctx.Secrets.Get("ENV_KEY")) '
+        "with an available key name.\n"
         "The context_snippets array, when present, carries exact administrator-provided "
         'excerpts for this request only: source "code" items are excerpts of the current '
         'Working Copy, and source "log" items are excerpts of the browser-visible masked '
@@ -1326,7 +1344,8 @@ def _assist_messages(
         + attachment_instructions
         + managed_input_instructions
         + f"Runtime Contract for {language}:\n{_RUNTIME_CONTRACTS[language]}\n"
-        "Common capabilities: context.config; context.secrets.get(key); context.logger; "
+        "Common capabilities: context.config; context.secrets.get(key); context.logger "
+        "(Go: ctx.Config; ctx.Secrets.Get(key); ctx.Logger); "
         "JSON-compatible input; JSON-serializable output.\n"
         "The current Working Copy below is the only authoritative code snapshot. Do not infer "
         "code from earlier conversation messages.\n"

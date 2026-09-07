@@ -146,9 +146,9 @@ def basic():
     catalog = request("GET", "/templates/scenarios?page_size=48")
     assert (
         catalog["total"] == 17
-        and sum(len(s["variants"]) for s in catalog["items"]) == 51
+        and sum(len(s["variants"]) for s in catalog["items"]) == 85
     )
-    for language in ("python", "javascript", "java"):
+    for language in ("python", "javascript", "java", "typescript", "go"):
         path = f"/templates/scenarios/json-mapping-cleaning/variants/{language}"
         variant = request("GET", path)
         adapter = request(
@@ -222,7 +222,7 @@ def basic():
     state["quick_adapter"] = create(prefix, "after-restart", primary["id"])
     save_state(state)
     print(
-        "issue144-api=PASS templates=17/51 three-languages=passed sse-running=passed cancel=passed"
+        "issue144-api=PASS templates=17/85 five-languages=passed sse-running=passed cancel=passed"
     )
 
 

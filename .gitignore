@@ -29,3 +29,5 @@ web/test-results/
 
 # OS
 .DS_Store
+
+docker/typescript/node_modules/

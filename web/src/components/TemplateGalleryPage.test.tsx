@@ -68,7 +68,7 @@ function detail(overrides: Partial<TemplateScenarioDetail> = {}): TemplateScenar
   };
 }
 
-function variant(language: "python" | "javascript" | "java" = "python"): TemplateVariant {
+function variant(language: "python" | "javascript" | "java" | "typescript" | "go" = "python"): TemplateVariant {
   return {
     scenario_slug: "rest-single-request",
     theme_slug: "api-events",

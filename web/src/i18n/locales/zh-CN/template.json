@@ -30,7 +30,9 @@
   "language": {
     "python": "Python",
     "javascript": "JavaScript",
-    "java": "Java"
+    "java": "Java",
+    "typescript": "TypeScript",
+    "go": "Go"
   },
   "detail": {
     "back": "返回模板广场",

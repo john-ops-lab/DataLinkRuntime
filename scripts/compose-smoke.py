@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import socket
@@ -11,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -244,9 +246,9 @@ online_workers = [worker for worker in workers if worker["status"] == "online"]
 assert online_workers, workers
 runtime_worker = online_workers[0]
 runtime_worker_id = runtime_worker["id"]
-assert {"python", "javascript", "java"} <= set(runtime_worker["capabilities"]), (
-    runtime_worker
-)
+assert {"python", "javascript", "java", "typescript", "go"} <= set(
+    runtime_worker["capabilities"]
+), runtime_worker
 assert runtime_worker["protocol_version"] == 3, runtime_worker
 assert runtime_worker["rabbitmq_execution_v3"] is True, runtime_worker
 assert all(
@@ -306,12 +308,17 @@ defaults = request("GET", "/package-sources/defaults")
 assert defaults["pypi"]["index_url"] == "https://mirrors.aliyun.com/pypi/simple/"
 assert defaults["npm"]["index_url"] == "https://registry.npmmirror.com/"
 assert defaults["maven"]["index_url"] == "https://maven.aliyun.com/repository/public"
+assert defaults["goproxy"]["index_url"] == "https://goproxy.cn"
 sources = request("GET", "/package-sources")
-assert len(sources) == 9, sources
-for kind in ("pypi", "npm", "maven"):
+assert len(sources) == 12, sources
+for kind in ("pypi", "npm", "maven", "goproxy"):
     kind_sources = [source for source in sources if source["kind"] == kind]
     assert len(kind_sources) == 3, kind_sources
-    builtin = [source for source in kind_sources if source["index_url"] == f"dlr-builtin://{kind}"]
+    builtin = [
+        source
+        for source in kind_sources
+        if source["index_url"] == f"dlr-builtin://{kind}"
+    ]
     assert len(builtin) == 1 and builtin[0]["is_default"] is False, kind_sources
     assert sum(source["is_default"] for source in kind_sources) == 1, kind_sources
     assert (
@@ -322,15 +329,52 @@ removed = next(
     source for source in sources if source["kind"] == "pypi" and source["is_default"]
 )
 request("DELETE", f"/package-sources/{removed['id']}", expected=204)
-assert len(request("GET", "/package-sources")) == 8
+assert len(request("GET", "/package-sources")) == 11
 restored = request("POST", f"/package-sources/defaults/{removed['kind']}")
 assert restored["index_url"] == defaults[removed["kind"]]["index_url"], restored
 assert restored["is_default"] is True, restored
 restored_sources = request("GET", "/package-sources")
-assert len(restored_sources) == 9, restored_sources
+assert len(restored_sources) == 12, restored_sources
 assert {
-    source["id"] for source in restored_sources if source["index_url"].startswith("dlr-builtin://")
-} == {source["id"] for source in sources if source["index_url"].startswith("dlr-builtin://")}
+    source["id"]
+    for source in restored_sources
+    if source["index_url"].startswith("dlr-builtin://")
+} == {
+    source["id"]
+    for source in sources
+    if source["index_url"].startswith("dlr-builtin://")
+}
+
+# Exercise the real Web proxy with a module ZIP above Nginx's 1 MiB default.
+module_zip = io.BytesIO()
+with zipfile.ZipFile(module_zip, "w", compression=zipfile.ZIP_STORED) as archive:
+    archive.writestr("example.com/smoke@v1.0.0/data.txt", b"x" * (2 * 1024**2))
+module_body = module_zip.getvalue()
+upload = request(
+    "POST",
+    "/builtin-packages/uploads",
+    {
+        "kind": "goproxy",
+        "filename": "v1.0.0.zip",
+        "size_bytes": len(module_body),
+        "repository_path": "example.com/smoke/@v/v1.0.0.zip",
+    },
+    expected=201,
+)
+module_request = urllib.request.Request(
+    BASE + f"/builtin-packages/uploads/{upload['id']}",
+    data=module_body,
+    method="PUT",
+    headers={
+        "Authorization": f"Bearer {ADMIN_TOKEN}",
+        "Content-Type": "application/octet-stream",
+    },
+)
+with urllib.request.urlopen(module_request, timeout=30) as response:
+    assert response.status == 200
+    uploaded_module = json.load(response)["file"]
+assert uploaded_module["size_bytes"] == len(module_body)
+request("DELETE", f"/builtin-packages/{uploaded_module['id']}", expected=204)
 
 # A stored-online Worker whose heartbeat expired is unavailable without its
 # stored status being rewritten.
@@ -915,8 +959,22 @@ wrong_webhook = request(
 )
 assert wrong_webhook["detail"]["code"] == "adapter_type_mismatch", wrong_webhook
 
-# Three-language runtime remains intact under the simplified lifecycle.
+# Five-language runtime under the same sandbox and simplified lifecycle.
 language_cases = {
+    "typescript": (
+        "export function handle(context: Context, input: unknown) {\n"
+        "  context.logger.info('任务开始');\n"
+        "  context.logger.info('任务结束');\n"
+        "  return {language: 'typescript', input};\n"
+        "}\n"
+    ),
+    "go": (
+        "package main\n"
+        "func Handle(ctx *Context, input any) (any, error) {\n"
+        '  ctx.Logger.Info("任务开始"); ctx.Logger.Info("任务结束")\n'
+        '  return map[string]any{"language":"go", "input":input}, nil\n'
+        "}\n"
+    ),
     "javascript": (
         "export async function handle(context, input) {\n"
         "  context.logger.info('任务开始');\n"
