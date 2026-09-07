@@ -16,8 +16,8 @@
     "Text"
   ],
   "logo_key": "file-csv",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 10,
   "provenance_ids": [
     "csv-rfc4180"
@@ -50,6 +50,28 @@
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/csv-to-json/java.java",
       "code_sha256": "729516369069e0394b74fcadcc5bebc97511d2f2f47e82f41e8b99153da2a593",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "csv-rfc4180"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/csv-to-json/typescript.ts",
+      "code_sha256": "1baef5927402becd5df34841ced449bb9250df5c50577105554b7897389991e3",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "csv-rfc4180"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/csv-to-json/go.go",
+      "code_sha256": "99ac634ffd3330c6bb907a20534fcd6828bf10e24494386d8a57afed6f6f1a13",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [

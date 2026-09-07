@@ -38,7 +38,7 @@ import TemplateScenarioLogo from "./TemplateScenarioLogo";
 
 const PAGE_SIZE = 12;
 const SEARCH_DELAY_MS = 250;
-const LANGUAGES: AdapterLanguage[] = ["python", "javascript", "java"];
+const LANGUAGES: AdapterLanguage[] = ["python", "javascript", "java", "typescript", "go"];
 
 export interface TemplateCopyRequest extends TemplateInstantiatePayload {
   scenarioSlug: string;

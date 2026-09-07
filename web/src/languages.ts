@@ -5,11 +5,27 @@ export const LANGUAGE_LABELS: Record<AdapterLanguage, string> = {
   python: "Python",
   javascript: "JavaScript",
   java: "Java",
+  typescript: "TypeScript",
+  go: "Go",
 };
+
+function goStarter(message: string, finished: string, task: boolean): string {
+  return `package main
+
+func Handle(ctx *Context, input any) (any, error) {
+    ctx.Logger.Info(${JSON.stringify(message)})
+    defer ctx.Logger.Info(${JSON.stringify(finished)})
+    ${task ? '// ctx.Secrets.Get("PASSWORD") reads a configured Credential binding.' : '// The platform authenticates the Webhook before execution.'}
+    return input, nil
+}
+`;
+}
 
 export const STARTER_CODE: Record<AdapterLanguage, string> = {
   python: "def handle(context, input):\n    return input\n",
   javascript: "export async function handle(context, input) {\n  return input;\n}\n",
+  typescript: "export async function handle(context: Context, input: unknown) {\n  return input;\n}\n",
+  go: "package main\n\nfunc Handle(ctx *Context, input any) (any, error) {\n    return input, nil\n}\n",
   java:
     "public class Adapter {\n" +
     "    public Object handle(Context context, Object input) throws Exception {\n" +
@@ -55,6 +71,18 @@ export const TASK_STARTER_CODE: Record<AdapterLanguage, string> = {
     "        }\n" +
     "    }\n" +
     "}\n",
+  typescript: "export async function handle(context: Context, input: unknown) {\n" +
+    "  context.logger.info(\"任务开始\");\n" +
+    "  // 读取“凭据绑定”中配置的密码，不要把真实密码直接写进代码\n" +
+    "  const password = context.secrets.get(\"PASSWORD\");\n" +
+    "  try {\n" +
+    "    // 在这里使用 password 调用目标系统，但不要打印 password\n" +
+    "    return { message: \"hello from DLR\", input };\n" +
+    "  } finally {\n" +
+    "    context.logger.info(\"任务结束\");\n" +
+    "  }\n" +
+    "}\n",
+  go: goStarter("任务开始", "任务结束", true),
 };
 
 export const WEBHOOK_STARTER_CODE: Record<AdapterLanguage, string> = {
@@ -77,6 +105,12 @@ export const WEBHOOK_STARTER_CODE: Record<AdapterLanguage, string> = {
     "        return input;\n" +
     "    }\n" +
     "}\n",
+  typescript: "export async function handle(context: Context, input: unknown) {\n" +
+    "  context.logger.info(\"收到 Webhook 请求\");\n" +
+    "  // The platform authenticates Authorization: Bearer before execution; it is not in context.secrets\n" +
+    "  return { received: true, data: input };\n" +
+    "}\n",
+  go: goStarter("收到 Webhook 请求", "处理完 Webhook 请求", false),
 };
 
 const zhRuntimeT = i18n.getFixedT("zh-CN", "runtime");
@@ -98,6 +132,8 @@ export const DEPENDENCY_UI: Record<
     label: zhRuntimeT("dependencies.java.label"),
     placeholder: zhRuntimeT("dependencies.java.placeholder"),
   },
+  typescript: { label: zhRuntimeT("dependencies.typescript.label"), placeholder: zhRuntimeT("dependencies.typescript.placeholder") },
+  go: { label: zhRuntimeT("dependencies.go.label"), placeholder: zhRuntimeT("dependencies.go.placeholder") },
 };
 
 /** zh-CN compatibility export retained for the existing dependency contract tests. */
@@ -140,6 +176,18 @@ const EN_TASK_STARTER_CODE: Record<AdapterLanguage, string> = {
     "        }\n" +
     "    }\n" +
     "}\n",
+  typescript: "export async function handle(context: Context, input: unknown) {\n" +
+    "  context.logger.info(\"Task started\");\n" +
+    "  // Read the password configured in Credential bindings; never put the real password in code\n" +
+    "  const password = context.secrets.get(\"PASSWORD\");\n" +
+    "  try {\n" +
+    "    // Use password to call the target system here, but never print it\n" +
+    "    return { message: \"hello from DLR\", input };\n" +
+    "  } finally {\n" +
+    "    context.logger.info(\"Task finished\");\n" +
+    "  }\n" +
+    "}\n",
+  go: goStarter("Task started", "Task finished", true),
 };
 
 const EN_WEBHOOK_STARTER_CODE: Record<AdapterLanguage, string> = {
@@ -162,6 +210,12 @@ const EN_WEBHOOK_STARTER_CODE: Record<AdapterLanguage, string> = {
     "        return input;\n" +
     "    }\n" +
     "}\n",
+  typescript: "export async function handle(context: Context, input: unknown) {\n" +
+    "  context.logger.info(\"Webhook request received\");\n" +
+    "  // The platform authenticates Authorization: Bearer before execution; it is not in context.secrets\n" +
+    "  return { received: true, data: input };\n" +
+    "}\n",
+  go: goStarter("Webhook request received", "Webhook request finished", false),
 };
 
 /** Stable locale-specific starter snapshots used only for a new unsaved Adapter. */

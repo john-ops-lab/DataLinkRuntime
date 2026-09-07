@@ -16,8 +16,8 @@
     "HTTPS"
   ],
   "logo_key": "rest-pagination",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 20,
   "provenance_ids": [
     "http-rfc9110-9112",
@@ -56,6 +56,32 @@
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/rest-paginated-collection/java.java",
       "code_sha256": "eea7500024c893b158d7217fc2d50bc9cc11ea69f2a1586f2203be0b62435896",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "http-rfc9110-9112",
+        "dlt-3efddd6",
+        "airbyte-6f59bc9"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/rest-paginated-collection/typescript.ts",
+      "code_sha256": "c4fa9f6e6bd2bc0966eb0af4aaf7aa35047bb78c1d2862fe9453d38d36f0c9c2",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "http-rfc9110-9112",
+        "dlt-3efddd6",
+        "airbyte-6f59bc9"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/rest-paginated-collection/go.go",
+      "code_sha256": "34b6447bd481c58b443025d8ef0455b8831680ac5240a00d319a2aa4fe753fc1",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [

@@ -38,7 +38,7 @@ from dlr.control.template_catalog.models import (
     TemplateScenarioAsset,
 )
 
-SUPPORTED_LANGUAGES = frozenset({"python", "javascript", "java"})
+SUPPORTED_LANGUAGES = frozenset({"python", "javascript", "java", "typescript", "go"})
 SUPPORTED_ADAPTER_TYPES = frozenset({"task", "webhook"})
 
 
@@ -50,7 +50,7 @@ def _variant_summaries(scenario: TemplateScenarioAsset) -> list[TemplateVariantS
     variants = {variant.language: variant for variant in scenario.variants}
     return [
         TemplateVariantSummary(language=language)
-        for language in ("python", "javascript", "java")
+        for language in ("python", "javascript", "java", "typescript", "go")
         if language in variants
     ]
 

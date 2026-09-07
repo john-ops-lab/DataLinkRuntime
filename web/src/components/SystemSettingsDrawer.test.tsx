@@ -21,6 +21,7 @@ const CANONICAL_DEFAULTS: PackageSourceDefaults = {
   pypi: { kind: "pypi", name: "阿里云 PyPI 镜像", index_url: "https://mirrors.aliyun.com/pypi/simple/" },
   npm: { kind: "npm", name: "npmmirror npm 镜像", index_url: "https://registry.npmmirror.com/" },
   maven: { kind: "maven", name: "阿里云 Maven 公共仓库", index_url: "https://maven.aliyun.com/repository/public" },
+    goproxy: { kind: "goproxy", name: "Go Modules", index_url: "https://goproxy.cn" },
 };
 
 function credentialMetadata(id: number, name: string, type: CredentialType): Credential {

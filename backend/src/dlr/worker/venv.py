@@ -56,6 +56,7 @@ class DependencyExecutionContext:
     log_max_bytes: int
     reservation_check: Callable[[], None] | None = None
     reservation_lost: threading.Event | None = None
+    abort_check: Callable[[], str | None] | None = None
 
     def with_reservation(
         self,
@@ -591,6 +592,7 @@ def _begin_version_build(
     *,
     identity: Mapping[str, object],
     dependency_context: DependencyExecutionContext | None = None,
+    reservation_bytes: int | None = None,
 ) -> tuple[VerifiedVersionCache, Path, _VersionBuild | None]:
     version_cache = VerifiedVersionCache(runtime_root / "version-cache")
     target = version_dir(runtime_root, adapter_id, version_id)
@@ -598,7 +600,9 @@ def _begin_version_build(
         return version_cache, target, None
     if target.exists():
         version_cache.remove_entry(target)
-    reservation = version_cache.reserve(_CACHE_RESERVATION_BYTES)
+    reservation = version_cache.reserve(
+        _CACHE_RESERVATION_BYTES if reservation_bytes is None else reservation_bytes
+    )
     staging_root: Path | None = None
     if dependency_context is None:
         staging = version_cache.staging_path(f"{adapter_id}-{version_id}", reservation.token)
@@ -717,6 +721,12 @@ def _run_logged(
     def assert_reservation() -> None:
         if context is None:
             return
+        if context.abort_check is not None:
+            reason = context.abort_check()
+            if reason is not None:
+                raise DependencyPreparationError(
+                    "dependency preparation interrupted", "", error_code=reason
+                )
         if context.reservation_lost is not None and context.reservation_lost.is_set():
             raise cache.CacheError("cache_reservation_expired")
         if context.reservation_check is not None:
@@ -860,6 +870,11 @@ def _run_logged(
             _redact_sensitive(bytes(ring).decode(errors="replace"), sensitive_values),
             error_code="dependency_cache_reservation_expired",
         ) from error
+    except DependencyPreparationError:
+        terminate()
+        if process is not None:
+            process.wait()
+        raise
     except (OSError, subprocess.SubprocessError) as error:
         terminate()
         raise DependencyPreparationError(

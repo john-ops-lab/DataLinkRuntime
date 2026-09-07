@@ -1,6 +1,11 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 const loaderConfig = vi.hoisted(() => vi.fn());
+const tsDefaults = vi.hoisted(() => ({ setCompilerOptions: vi.fn(), setDiagnosticsOptions: vi.fn(), addExtraLib: vi.fn() }));
+vi.mock("monaco-editor/languages/features/typescript/register", () => ({
+  typescriptDefaults: tsDefaults, ModuleKind: { ESNext: 99 },
+  ModuleResolutionKind: { NodeJs: 2 }, ScriptTarget: { ESNext: 99 },
+}));
 
 vi.mock("@monaco-editor/react", () => ({
   loader: { config: loaderConfig },
@@ -51,6 +56,11 @@ describe("Monaco worker routing", () => {
     ["unknown", "editor"],
   ])("routes %s to the %s worker", (label, expected) => {
     expect(workerKind(label)).toBe(expected);
+  });
+
+  it("provides strict TypeScript and the DLR Context declarations", () => {
+    expect(tsDefaults.setCompilerOptions).toHaveBeenCalledWith(expect.objectContaining({ strict: true }));
+    expect(tsDefaults.addExtraLib).toHaveBeenCalledWith(expect.stringContaining("interface Context"), "file:///dlr-runtime.d.ts");
   });
 
   it("configures the React loader with the bundled Monaco instance", () => {

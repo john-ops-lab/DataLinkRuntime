@@ -74,7 +74,7 @@ EXPECTED_LOGO_KEYS: Mapping[str, str] = MappingProxyType(
         "sftp-list-read": "transfer-sftp",
     }
 )
-EXPECTED_LANGUAGES = frozenset({"python", "javascript", "java"})
+EXPECTED_LANGUAGES = frozenset({"python", "javascript", "java", "typescript", "go"})
 OFFICIAL_API_SOURCE_LICENSES: Mapping[str, str] = MappingProxyType(
     {
         "alicloud-openapi-2026-09-05": "Apache-2.0",
@@ -93,7 +93,13 @@ OFFICIAL_API_SOURCE_LICENSES: Mapping[str, str] = MappingProxyType(
     }
 )
 EXPECTED_LANGUAGE_FILENAMES: Mapping[str, str] = MappingProxyType(
-    {"python": "python.py", "javascript": "javascript.mjs", "java": "java.java"}
+    {
+        "python": "python.py",
+        "javascript": "javascript.mjs",
+        "java": "java.java",
+        "typescript": "typescript.ts",
+        "go": "go.go",
+    }
 )
 LICENSE_USE_MODE_POLICY: Mapping[str, str] = MappingProxyType(
     {

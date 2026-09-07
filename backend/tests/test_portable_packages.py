@@ -101,13 +101,15 @@ def test_portable_upgrade_preserves_builtin_library() -> None:
                 )
             )
             sources = connection.execute(
-                text("SELECT id, index_url FROM package_sources ORDER BY id")
+                text(
+                    "SELECT id, index_url FROM package_sources WHERE kind != 'goproxy' ORDER BY id"
+                )
             ).all()
         _upgrade(database, "head")
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalars().all() == ["0037_portable_simplified"]
+            ).scalars().all() == ["0038_issue138_languages"]
             assert (
                 connection.scalar(text("SELECT quota_bytes FROM builtin_package_settings"))
                 == 2147483648
@@ -115,7 +117,10 @@ def test_portable_upgrade_preserves_builtin_library() -> None:
             assert connection.scalar(text("SELECT size_bytes FROM builtin_package_uploads")) == 1024
             assert (
                 connection.execute(
-                    text("SELECT id, index_url FROM package_sources ORDER BY id")
+                    text(
+                        "SELECT id, index_url FROM package_sources "
+                        "WHERE kind != 'goproxy' ORDER BY id"
+                    )
                 ).all()
                 == sources
             )
@@ -428,7 +433,7 @@ def test_user_template_persistence_gallery_edit_delete_independence(
 def test_builtin_templates_export_all_languages_and_license(api_client: TestClient) -> None:
     value = api_client.get("/api/templates/scenarios/rest-single-request/portable")
     assert value.status_code == 200, value.text
-    assert len(value.json()["variants"]) == 3
+    assert len(value.json()["variants"]) == 5
     assert value.json()["provenance"] and value.json()["license"]
     auto_named = import_template(api_client, value.json())
     assert auto_named.status_code == 201

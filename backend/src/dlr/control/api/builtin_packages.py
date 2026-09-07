@@ -30,7 +30,7 @@ DbSession = Annotated[Session, Depends(db.get_session)]
 
 class UploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["pypi", "npm", "maven"]
+    kind: Literal["pypi", "npm", "maven", "goproxy"]
     filename: str = Field(min_length=1, max_length=256)
     size_bytes: int = Field(gt=0, le=16 * 1024**3, strict=True)
     repository_path: str = Field(default="", max_length=512)
@@ -152,7 +152,7 @@ def _download(session: Session, file_id: int) -> StreamingResponse:
 
 @router.put("/sources/{kind}")
 def choose_builtin_source(
-    kind: Literal["pypi", "npm", "maven"], session: DbSession
+    kind: Literal["pypi", "npm", "maven", "goproxy"], session: DbSession
 ) -> dict[str, Any]:
     from dlr.control.models.platform import PackageSource
     from dlr.control.services.package_source import (

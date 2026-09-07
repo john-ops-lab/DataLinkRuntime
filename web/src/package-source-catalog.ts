@@ -10,12 +10,15 @@ const PRESET_LABEL_KEYS: Record<string, string> = {
   "npm.official": "packageSources.presets.npm.official",
   "maven.aliyun": "packageSources.presets.maven.aliyun",
   "maven.central": "packageSources.presets.maven.central",
+  "goproxy.cn": "packageSources.presets.goproxy.cn",
+  "goproxy.official": "packageSources.presets.goproxy.official",
 };
 
 const KIND_LABEL_KEYS: Record<PackageSourceKind, string> = {
   pypi: "packageSources.kinds.pypi",
   npm: "packageSources.kinds.npm",
   maven: "packageSources.kinds.maven",
+  goproxy: "packageSources.kinds.goproxy",
 };
 
 export function packageSourceKindLabel(

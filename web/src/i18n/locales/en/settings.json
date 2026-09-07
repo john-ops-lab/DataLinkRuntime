@@ -228,7 +228,8 @@
     "kinds": {
       "pypi": "PyPI",
       "npm": "npm",
-      "maven": "Maven"
+      "maven": "Maven",
+      "goproxy": "Go Modules"
     },
     "presets": {
       "pypi": {
@@ -242,6 +243,10 @@
       "maven": {
         "aliyun": "Aliyun Maven public repository",
         "central": "Maven Central"
+      },
+      "goproxy": {
+        "cn": "Go China module proxy",
+        "official": "Official Go module proxy"
       }
     },
     "new": "New package source",
@@ -378,6 +383,7 @@
     "startUpload": "Start upload",
     "close": "Close",
     "chooseFiles": "Choose files",
+    "chooseGoFolder": "Choose Go module proxy root",
     "chooseFolder": "Choose Maven repository root",
     "mavenPrefix": "Maven repository directory (individual files)",
     "quotaMiB": "Total capacity limit (MiB)",
@@ -392,9 +398,11 @@
     "uploadHint": {
       "pypi": "Upload .whl files matching the target Worker and include every dependency. Only wheels are accepted; Control does not build source distributions.",
       "npm": "Upload npm pack .tgz files and all related packages. Direct URL, Git and local-path dependencies are rejected. Lifecycle scripts are disabled during installation.",
-      "maven": "Choose the repository root to preserve group/artifact/version paths in a batch, or provide a directory for individual files. Include JARs, POMs, metadata, maven-dependency-plugin 3.8.1 and its dependencies."
+      "maven": "Choose the repository root to preserve group/artifact/version paths in a batch, or provide a directory for individual files. Include JARs, POMs, metadata, maven-dependency-plugin 3.8.1 and its dependencies.",
+      "goproxy": "Upload .mod, .info and .zip files including transitive modules. Preserve module/@v/version paths; choose the proxy root for directory uploads."
     },
     "sourceName": "DLR builtin dependency source",
-    "checkRecord": "Check record"
+    "checkRecord": "Check record",
+    "goPrefix": "Go module proxy directory (individual files)"
   }
 }

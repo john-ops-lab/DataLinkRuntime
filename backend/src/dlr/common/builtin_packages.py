@@ -12,7 +12,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree
 
-KINDS = {"python": "pypi", "javascript": "npm", "java": "maven"}
+KINDS = {
+    "python": "pypi",
+    "javascript": "npm",
+    "java": "maven",
+    "typescript": "npm",
+    "go": "goproxy",
+}
 MAX_METADATA = 1024 * 1024
 MAX_MEMBERS = 20000
 MAX_EXPANDED = 1024 * 1024 * 1024
@@ -52,7 +58,7 @@ def safe_path(value: str, *, archive_member: bool = False) -> str:
         or any(part in ("", ".", "..") for part in value.split("/"))
         or "\\" in value
         or any(ord(char) < 32 for char in value)
-        or (not archive_member and not re.fullmatch(r"[A-Za-z0-9_@.+/=-]+", value))
+        or (not archive_member and not re.fullmatch(r"[A-Za-z0-9_@.!+/=-]+", value))
     ):
         raise PackageValidationError("invalid repository path")
     return value
@@ -183,6 +189,47 @@ def inspect_package(
                 sort_keys=True,
             )
             repository_path = f"{name}/{version}/{filename}"
+    elif kind == "goproxy":
+        safe_path(repository_path)
+        match = re.fullmatch(
+            r"(.+)/@v/(v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.+-]+)?)\.(mod|info|zip)",
+            repository_path,
+        )
+        if match is None or repository_path.rsplit("/", 1)[1] != filename:
+            raise PackageValidationError("Go requires module/@v/version.mod, .info or .zip")
+        escaped_name, version, extension = match.groups()
+        if re.search(r"[A-Z]|!(?![a-z])", escaped_name):
+            raise PackageValidationError("Go proxy module path must use canonical case escaping")
+        name = re.sub(r"!([a-z])", lambda m: m[1].upper(), escaped_name)
+        environment = extension
+        if extension in {"mod", "info"}:
+            if path.stat().st_size > MAX_METADATA:
+                raise PackageValidationError("Go metadata exceeds limit")
+            data = path.read_text(encoding="utf-8")
+            if extension == "info":
+                metadata = json.loads(data)
+                if not isinstance(metadata, dict) or metadata.get("Version") != version:
+                    raise PackageValidationError(
+                        "Go version metadata disagrees with repository path"
+                    )
+            else:
+                module = re.search(r'^module\s+(?:"([^"\n]+)"|([^\s]+))', data, re.MULTILINE)
+                if module is None or (module[1] or module[2]) != name:
+                    raise PackageValidationError(
+                        "Go module declaration disagrees with repository path"
+                    )
+        else:
+            with _bounded_zip(path) as archive:
+                members = archive.infolist()
+                _validate_zip(members)
+                prefix = f"{name}@{version}/"
+                if not members or any(
+                    not member.filename.startswith(prefix)
+                    or member.flag_bits & 1
+                    or ((member.external_attr >> 16) & 0o170000) not in (0, 0o100000, 0o040000)
+                    for member in members
+                ):
+                    raise PackageValidationError("Go module ZIP has invalid members or prefix")
     elif kind == "maven":
         safe_path(repository_path)
         parts = repository_path.split("/")
@@ -217,7 +264,9 @@ def inspect_package(
         else:
             raise PackageValidationError("unsupported Maven material")
     else:
-        raise PackageValidationError("expected wheel, npm tgz, or Maven JAR/POM/metadata XML")
+        raise PackageValidationError(
+            "expected wheel, npm tgz, Maven material, or Go module material"
+        )
     return {
         "name": name,
         "version": version,

@@ -601,14 +601,18 @@ def test_upgrade_preserves_defaults_and_name_collisions() -> None:
                 )
             )
             defaults = connection.execute(
-                text("SELECT kind, index_url FROM package_sources WHERE is_default ORDER BY kind")
+                text(
+                    "SELECT kind, index_url FROM package_sources "
+                    "WHERE is_default AND kind != 'goproxy' ORDER BY kind"
+                )
             ).all()
         _upgrade(database, "head")
         with engine.connect() as connection:
             assert (
                 connection.execute(
                     text(
-                        "SELECT kind, index_url FROM package_sources WHERE is_default ORDER BY kind"
+                        "SELECT kind, index_url FROM package_sources "
+                        "WHERE is_default AND kind != 'goproxy' ORDER BY kind"
                     )
                 ).all()
                 == defaults
@@ -620,7 +624,7 @@ def test_upgrade_preserves_defaults_and_name_collisions() -> None:
                         "WHERE index_url LIKE 'dlr-builtin://%' AND NOT is_default"
                     )
                 )
-                == 3
+                == 4
             )
             assert (
                 connection.scalar(

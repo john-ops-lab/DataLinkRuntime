@@ -550,7 +550,7 @@ function CredentialsPanel(props: {
 
 // --- Python 包源 -------------------------------------------------------------
 
-type PackageSourceKind = "pypi" | "npm" | "maven";
+type PackageSourceKind = "pypi" | "npm" | "maven" | "goproxy";
 
 function kindLabel(kind: PackageSourceKind): string {
   return packageSourceKindLabel(kind);
@@ -558,7 +558,7 @@ function kindLabel(kind: PackageSourceKind): string {
 
 interface PackageSourceFormState {
   name: string;
-  kind: "pypi" | "npm" | "maven";
+  kind: "pypi" | "npm" | "maven" | "goproxy";
   index_url: string;
   is_default: boolean;
   credential_id: number | null;
@@ -601,7 +601,7 @@ function PackageSourcesPanel(props: {
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
   const [settingDefaultId, setSettingDefaultId] = useState<number | null>(null);
-  const [restoring, setRestoring] = useState<"pypi" | "npm" | "maven" | null>(null);
+  const [restoring, setRestoring] = useState<"pypi" | "npm" | "maven" | "goproxy" | null>(null);
   const [testResults, setTestResults] = useState<Map<number, PackageSourceTestResult>>(new Map());
   const [panelError, setPanelError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -789,7 +789,7 @@ function PackageSourcesPanel(props: {
     }
   }
 
-  async function handleRestoreDefault(kind: "pypi" | "npm" | "maven") {
+  async function handleRestoreDefault(kind: "pypi" | "npm" | "maven" | "goproxy") {
     if (restoring !== null) {
       return;
     }
@@ -828,7 +828,7 @@ function PackageSourcesPanel(props: {
     }
   }
 
-  const kinds: ("pypi" | "npm" | "maven")[] = ["pypi", "npm", "maven"];
+  const kinds: ("pypi" | "npm" | "maven" | "goproxy")[] = ["pypi", "npm", "maven", "goproxy"];
 
   const visibleSources = sources.filter((source) => {
     const keyword = filters.keyword.trim().toLowerCase();

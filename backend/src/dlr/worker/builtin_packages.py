@@ -54,7 +54,7 @@ class BuiltinMaterials:
             "system": platform.system(),
             "machine": platform.machine(),
         }
-        for command in ("node", "java", "javac", "uv", "mvn"):
+        for command in ("node", "java", "javac", "uv", "mvn", "go", "tsc"):
             executable = shutil.which(command)
             if executable:
                 info = Path(executable).resolve().stat()

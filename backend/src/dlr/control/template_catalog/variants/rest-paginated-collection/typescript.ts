@@ -1,0 +1,445 @@
+// TypeScript 参考模板；外部 JSON 的动态字段显式保留，Context 使用平台类型。
+import type { Context } from "dlr";
+
+// REST 分页采集：可修改的配置集中在这里。
+// 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+// 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+// 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+// HTTP_BEARER_TOKEN：HTTP Bearer Token，使用此认证时配置。
+// HTTP_API_KEY：HTTP API Key，使用此认证时配置。
+const CONFIG: Record<string, any> = {
+    // 填写实际接口地址；不要在地址中填写密码或 Token。
+    "url": "https://api.example/resources",
+    // 分页方式：page（页码）、offset（偏移量）、cursor（游标）或 next-url（下一页地址）。
+    "strategy": "page",
+    // 接口响应中列表的字段路径，例如 items 或 data.items。
+    "records_path": "items",
+    // 接口响应中下一页游标或地址的字段路径。
+    "next_path": "next",
+    // 接口接收页码的参数名。
+    "page_parameter": "page",
+    // 接口接收每页条数的参数名。
+    "size_parameter": "page_size",
+    // 从第几页开始读取。
+    "start_page": 1,
+    // 每次请求的条数，不能超过目标接口限制。
+    "page_size": 100,
+    // 普通请求头；Bearer 认证可增加 "DLR-Auth": "bearer:HTTP_BEARER_TOKEN"，Token 在本适配器凭据绑定中配置。
+    "headers": {},
+    // 可选认证：例如 {"parameter":"api_key","secret_binding":"HTTP_API_KEY"}；在本适配器的凭据绑定中配置同名键。
+    "query_auth": null,
+    // 是否允许下一页跳转到其他站点；建议保留 false。
+    "allow_cross_origin_next": false,
+    // 单次运行最多读取的页数。
+    "max_pages": 20,
+    // 单次运行最多返回的记录数。
+    "max_records": 10000,
+    // 单次运行处理或返回的数据大小上限，单位字节。
+    "max_bytes": 4194304,
+    // 单次请求超时时间，单位秒。
+    "timeout_seconds": 30,
+    // 读取请求失败时的最多重试次数。
+    "max_retries": 2,
+};
+/** Bounded REST collection pagination with loop detection. */
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const RESTRICTED_HEADERS = new Set<any>([
+    "connection", "content-length", "host", "keep-alive", "proxy-connection",
+    "te", "trailer", "transfer-encoding", "upgrade",
+]);
+const CREDENTIAL_NAME_MARKERS: any[] = [
+    "accesskey", "apikey", "authorization", "authentication", "clientsecret", "cookie",
+    "credential", "password", "privatekey", "secret", "signature", "token",
+];
+const STABLE_ERRORS = new Set<any>([
+    "input_must_be_object", "invalid_url", "invalid_strategy", "invalid_headers",
+    "invalid_query_auth", "credential_query_collision", "direct_credential_query_forbidden",
+    "direct_credential_header_forbidden", "invalid_auth_scheme", "missing_credential",
+    "request_timeout", "request_failed", "response_too_large", "retry_limit_exceeded",
+    "unexpected_status", "invalid_json_response", "cross_origin_next_url",
+    "records_path_not_array", "response_path_missing", "pagination_no_progress",
+    "offset_not_advancing", "pagination_loop_detected", "cursor_not_advancing",
+]);
+function credentialLikeName(name: any): any {
+    const compact = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return CREDENTIAL_NAME_MARKERS.some((marker: any) => compact.includes(marker))
+        || compact.endsWith("auth") || compact.endsWith("sig");
+}
+function positive(value: any, fallback: any, maximum: any): any {
+    return Number.isInteger(value) && value > 0 ? Math.min(value, maximum) : fallback;
+}
+function boundedInteger(value: any, fallback: any, minimum: any, maximum: any, errorCode: any): any {
+    if (value === undefined || value === null)
+        return fallback;
+    if (!Number.isInteger(value) || value < minimum || value > maximum)
+        throw new Error(errorCode);
+    return value;
+}
+function path(value: any, dotted: any): any {
+    let current = value;
+    if (!dotted)
+        return current;
+    for (const part of dotted.split(".")) {
+        if (current && typeof current === "object" && Object.hasOwn(current, part))
+            current = current[part];
+        else
+            throw new Error("response_path_missing");
+    }
+    return current;
+}
+function validateHeader(name: any, value: any): any {
+    const normalized = name.toLowerCase();
+    if (!HEADER_NAME.test(name) || RESTRICTED_HEADERS.has(normalized) || normalized.startsWith("proxy-")
+        || value.includes("\r") || value.includes("\n"))
+        throw new Error("request_failed");
+}
+function checkpointValue(strategy: any, page: any, offset: any): any {
+    if (strategy === "page")
+        return { strategy: "page", start_page: page };
+    if (strategy === "offset")
+        return { strategy: "offset", start_offset: offset };
+    // Cursor and next-URL continuations are opaque and may carry credentials.
+    // A redacted token is diagnostic-only and cannot safely resume the scan.
+    return null;
+}
+function headersFor(context: Context, raw: any): any {
+    if (raw === undefined || raw === null) {
+        return { headers: {}, credentialHeaders: new Set<any>(), sensitive: new Set<any>() };
+    }
+    if (typeof raw !== "object" || Array.isArray(raw))
+        throw new Error("invalid_headers");
+    const headers = Object.fromEntries(Object.entries(raw).map(([key, value]: any) => [key, String(value)]));
+    const authNames = Object.keys(headers).filter((key: any) => key.toLowerCase() === "dlr-auth");
+    if (authNames.length > 1)
+        throw new Error("invalid_headers");
+    const auth = authNames.length === 1 ? headers[authNames[0]] : undefined;
+    if (authNames.length === 1)
+        delete headers[authNames[0]];
+    if (Object.keys(headers).some(credentialLikeName)) {
+        throw new Error("direct_credential_header_forbidden");
+    }
+    const credentialHeaders = new Set<any>();
+    const sensitive = new Set<any>();
+    if (auth !== undefined) {
+        if (typeof auth !== "string" || !auth.includes(":"))
+            throw new Error("invalid_auth_scheme");
+        const splitAt = auth.indexOf(":");
+        const scheme = auth.slice(0, splitAt);
+        // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
+        const value = context.secrets.get(auth.slice(splitAt + 1));
+        if (!value)
+            throw new Error("missing_credential");
+        if (scheme === "bearer") {
+            const injected = `Bearer ${value}`;
+            headers.Authorization = injected;
+            credentialHeaders.add("authorization");
+            sensitive.add(value);
+            sensitive.add(injected);
+        }
+        else if (scheme.startsWith("api-key/") && scheme.length > 8) {
+            const headerName = scheme.slice(8);
+            headers[headerName] = value;
+            credentialHeaders.add(headerName.toLowerCase());
+            sensitive.add(value);
+        }
+        else
+            throw new Error("invalid_auth_scheme");
+    }
+    for (const [name, value] of Object.entries(headers))
+        validateHeader(name, value);
+    return { headers, credentialHeaders, sensitive };
+}
+function scrub(value: any, sensitive: any): any {
+    if (typeof value === "string") {
+        for (const secret of [...sensitive].filter(Boolean).sort((a: any, b: any) => b.length - a.length)) {
+            const size = new TextEncoder().encode(secret).byteLength;
+            const marker = size >= 10 ? "<redacted>" : "*".repeat(size);
+            value = value.split(secret).join(marker);
+        }
+        return value;
+    }
+    if (Array.isArray(value))
+        return value.map((item: any) => scrub(item, sensitive));
+    if (value && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value).map(([key, item]: any) => [scrub(key, sensitive), scrub(item, sensitive)]));
+    }
+    return value;
+}
+function queryAuthFor(context: Context, raw: any): any {
+    if (raw === undefined || raw === null)
+        return null;
+    if (typeof raw !== "object" || Array.isArray(raw)
+        || Object.keys(raw).sort().join(",") !== "parameter,secret_binding"
+        || typeof raw.parameter !== "string"
+        || !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(raw.parameter)
+        || typeof raw.secret_binding !== "string" || raw.secret_binding.length === 0) {
+        throw new Error("invalid_query_auth");
+    }
+    // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
+    const value = context.secrets.get(raw.secret_binding);
+    if (!value)
+        throw new Error("missing_credential");
+    return { parameter: raw.parameter, secret: value };
+}
+function applyQueryAuth(url: any, queryAuth: any, allowInjected: any): any {
+    if (!queryAuth)
+        return;
+    if (url.searchParams.has(queryAuth.parameter)) {
+        if (allowInjected && url.searchParams.getAll(queryAuth.parameter).length === 1
+            && url.searchParams.get(queryAuth.parameter) === queryAuth.secret)
+            return;
+        throw new Error("credential_query_collision");
+    }
+    url.searchParams.set(queryAuth.parameter, queryAuth.secret);
+}
+function rejectDirectCredentialQuery(url: any, queryAuth: any = null, allowInjected: any = false): any {
+    let allowedMatches = 0;
+    for (const [name, value] of url.searchParams.entries()) {
+        if (!credentialLikeName(name))
+            continue;
+        if (allowInjected && queryAuth && name === queryAuth.parameter && value === queryAuth.secret) {
+            allowedMatches += 1;
+            continue;
+        }
+        throw new Error("direct_credential_query_forbidden");
+    }
+    if (allowedMatches > 1)
+        throw new Error("credential_query_collision");
+}
+function recordsBytes(records: any): any {
+    return new TextEncoder().encode(JSON.stringify(records)).byteLength;
+}
+async function boundedJson(response: any, maximum: any): Promise<any> {
+    if (!response.body)
+        throw new Error("empty_response");
+    const reader = response.body.getReader();
+    const chunks: any[] = [];
+    let total = 0;
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done)
+            break;
+        total += value.byteLength;
+        if (total > maximum) {
+            await reader.cancel();
+            throw new Error("response_too_large");
+        }
+        chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, at);
+        at += chunk.byteLength;
+    }
+    try {
+        return [JSON.parse(new TextDecoder().decode(bytes)), total];
+    }
+    catch {
+        throw new Error("invalid_json_response");
+    }
+}
+async function getJson(url: any, headers: any, deadline: any, maxBytes: any, retries: any): Promise<any> {
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0)
+            throw new Error("request_timeout");
+        let response: any;
+        try {
+            response = await fetch(url, { headers, redirect: "manual", signal: AbortSignal.timeout(remaining) });
+        }
+        catch {
+            if (attempt === retries)
+                throw new Error("request_failed");
+            const delay = Math.min(100 * 2 ** attempt + Math.floor(Math.random() * 50), 1000, deadline - Date.now());
+            if (delay <= 0)
+                throw new Error("request_timeout");
+            await new Promise((resolve: any) => setTimeout(resolve, delay));
+            continue;
+        }
+        if (response.status === 429 || response.status >= 500) {
+            await response.body?.cancel();
+            if (attempt === retries)
+                throw new Error("retry_limit_exceeded");
+            const delay = Math.min(100 * 2 ** attempt + Math.floor(Math.random() * 50), 1000, deadline - Date.now());
+            if (delay <= 0)
+                throw new Error("request_timeout");
+            await new Promise((resolve: any) => setTimeout(resolve, delay));
+            continue;
+        }
+        if (response.status < 200 || response.status >= 300) {
+            await response.body?.cancel();
+            throw new Error("unexpected_status");
+        }
+        return boundedJson(response, maxBytes);
+    }
+    throw new Error("request_failed");
+}
+async function run(context: Context, input: any): Promise<any> {
+    if (!input || typeof input !== "object" || Array.isArray(input))
+        throw new Error("input_must_be_object");
+    let base: any;
+    try {
+        base = new URL(input.url);
+    }
+    catch {
+        throw new Error("invalid_url");
+    }
+    if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.hash) {
+        throw new Error("invalid_url");
+    }
+    rejectDirectCredentialQuery(base);
+    const strategy = input.strategy ?? "page";
+    if (!["page", "offset", "cursor", "next-url"].includes(strategy))
+        throw new Error("invalid_strategy");
+    const maxPages = positive(input.max_pages, 20, 500);
+    const maxRecords = positive(input.max_records, 10000, 100000);
+    const maxBytes = positive(input.max_bytes, 4194304, 16777216);
+    const pageSize = positive(input.page_size, 100, 1000);
+    const timeout = positive(input.timeout_seconds, 30, 120);
+    const deadline = Date.now() + timeout * 1000;
+    const retries = boundedInteger(input.max_retries, 2, 0, 5, "invalid_max_retries");
+    let page = boundedInteger(input.start_page, 1, 1, 1000000, "invalid_start_page");
+    let offset = boundedInteger(input.start_offset, 0, 0, 1000000000, "invalid_start_offset");
+    const { headers, credentialHeaders, sensitive } = headersFor(context, input.headers);
+    const queryAuth = queryAuthFor(context, input.query_auth);
+    if (queryAuth) {
+        sensitive.add(queryAuth.secret);
+        sensitive.add(encodeURIComponent(queryAuth.secret));
+        sensitive.add(new URLSearchParams([["value", queryAuth.secret]]).toString().slice(6));
+    }
+    const records: any[] = [];
+    const seen = new Set<any>();
+    const seenBatches = new Set<any>();
+    let nextUrl = new URL(base);
+    let cursor: any = null;
+    let totalBytes = 0;
+    let checkpoint: any = null;
+    let partial = false;
+    let pages = 0;
+    let completed = false;
+    for (let iteration = 0; iteration < maxPages; iteration += 1) {
+        const remainingBytes = maxBytes - totalBytes;
+        if (remainingBytes <= 0 || Date.now() >= deadline) {
+            partial = true;
+            checkpoint = checkpointValue(strategy, page, offset);
+            break;
+        }
+        const url = strategy === "next-url" ? new URL(nextUrl) : new URL(base);
+        if (strategy === "page") {
+            url.searchParams.set(input.page_parameter ?? "page", String(page));
+            url.searchParams.set(input.size_parameter ?? "page_size", String(pageSize));
+        }
+        else if (strategy === "offset") {
+            url.searchParams.set(input.offset_parameter ?? "offset", String(offset));
+            url.searchParams.set(input.limit_parameter ?? "limit", String(pageSize));
+        }
+        else if (strategy === "cursor") {
+            url.searchParams.set(input.limit_parameter ?? "limit", String(pageSize));
+            if (cursor !== null)
+                url.searchParams.set(input.cursor_parameter ?? "cursor", cursor);
+        }
+        const crossOrigin = url.origin !== base.origin;
+        if (crossOrigin && input.allow_cross_origin_next !== true)
+            throw new Error("cross_origin_next_url");
+        if (crossOrigin && queryAuth)
+            url.searchParams.delete(queryAuth.parameter);
+        rejectDirectCredentialQuery(url, queryAuth, !crossOrigin && strategy === "next-url");
+        if (!crossOrigin)
+            applyQueryAuth(url, queryAuth, strategy === "next-url");
+        const requestHeaders = crossOrigin
+            ? Object.fromEntries(Object.entries(headers).filter(([key]: any) => ["accept", "content-type", "user-agent"].includes(key.toLowerCase())
+                && !credentialHeaders.has(key.toLowerCase())))
+            : headers;
+        const [payload, size] = await getJson(url, requestHeaders, deadline, remainingBytes, retries);
+        pages += 1;
+        totalBytes += size;
+        if (totalBytes > maxBytes) {
+            partial = true;
+            checkpoint = checkpointValue(strategy, page, offset);
+            break;
+        }
+        const batch = path(payload, input.records_path ?? "items");
+        if (!Array.isArray(batch))
+            throw new Error("records_path_not_array");
+        if (batch.length === 0) {
+            completed = true;
+            break;
+        }
+        const safeBatch = batch.map((item: any) => scrub(item, sensitive));
+        const fingerprint = JSON.stringify(safeBatch);
+        if (seenBatches.has(fingerprint))
+            throw new Error("pagination_no_progress");
+        seenBatches.add(fingerprint);
+        const remaining = maxRecords - records.length;
+        if (safeBatch.length > remaining) {
+            partial = true;
+            checkpoint = checkpointValue(strategy, page, offset);
+            break;
+        }
+        if (recordsBytes([...records, ...safeBatch]) > maxBytes) {
+            partial = true;
+            checkpoint = checkpointValue(strategy, page, offset);
+            break;
+        }
+        records.push(...safeBatch);
+        if (strategy === "page")
+            page += 1;
+        else if (strategy === "offset") {
+            const previous = offset;
+            offset += batch.length;
+            if (offset <= previous)
+                throw new Error("offset_not_advancing");
+        }
+        else {
+            const rawNext = path(payload, input.next_path ?? "next");
+            if (rawNext === null || rawNext === undefined || rawNext === "") {
+                completed = true;
+                break;
+            }
+            const candidate = strategy === "next-url" ? new URL(String(rawNext), url).toString() : String(rawNext);
+            if (seen.has(candidate))
+                throw new Error("pagination_loop_detected");
+            seen.add(candidate);
+            if (strategy === "next-url") {
+                const parsed = new URL(candidate);
+                if (parsed.username || parsed.password || parsed.hash
+                    || (parsed.origin !== base.origin && input.allow_cross_origin_next !== true)) {
+                    throw new Error("cross_origin_next_url");
+                }
+                nextUrl = parsed;
+            }
+            else {
+                if (candidate === cursor)
+                    throw new Error("cursor_not_advancing");
+                cursor = candidate;
+            }
+        }
+        if (records.length >= maxRecords) {
+            partial = true;
+            checkpoint = checkpointValue(strategy, page, offset);
+            break;
+        }
+    }
+    if (!completed && !partial && pages === maxPages) {
+        partial = true;
+        checkpoint ??= checkpointValue(strategy, page, offset);
+    }
+    return { records, count: records.length, pages, bytes: totalBytes, partial, checkpoint };
+}
+export async function handle(context: Context, input: any): Promise<any> {
+    if (input === undefined || input === null)
+        input = {};
+    if (typeof input !== "object" || Array.isArray(input))
+        throw new Error("输入必须是 JSON 对象");
+    input = { ...CONFIG, ...input };
+    try {
+        return await run(context, input);
+    }
+    catch (error: any) {
+        const code = error instanceof Error ? error.message : "";
+        if (STABLE_ERRORS.has(code))
+            throw new Error(code);
+        throw new Error("request_failed");
+    }
+}

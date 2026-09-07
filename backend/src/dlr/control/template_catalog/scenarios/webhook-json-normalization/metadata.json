@@ -16,8 +16,8 @@
     "Webhook"
   ],
   "logo_key": "webhook-normalize",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 30,
   "provenance_ids": [
     "http-rfc9110-9112"
@@ -50,6 +50,28 @@
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/webhook-json-normalization/java.java",
       "code_sha256": "6508095b23bd1668e794a286345e439315b5dc7cd97b451b493cd0c8d52152cc",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "http-rfc9110-9112"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/webhook-json-normalization/typescript.ts",
+      "code_sha256": "d154fc1b148dd81ce5074d2e4273cc73967e7294c194a677718c4843d7f3294f",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "http-rfc9110-9112"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/webhook-json-normalization/go.go",
+      "code_sha256": "97c5ab0163b64905beb2904897c9732c48d6074d901929d841a8745c48a3e7c4",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [

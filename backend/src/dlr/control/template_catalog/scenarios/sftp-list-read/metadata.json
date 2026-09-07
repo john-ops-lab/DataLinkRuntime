@@ -16,8 +16,8 @@
     "SFTP"
   ],
   "logo_key": "transfer-sftp",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 20,
   "provenance_ids": [
     "sftp-v3-openssh"
@@ -51,6 +51,28 @@
       "code_resource": "variants/sftp-list-read/java.java",
       "code_sha256": "30fe10a3a9873a856a0d70f373e9e19838f8a04764ec3291584f694811decd1d",
       "requirements": "com.github.mwiede:jsch:0.2.24",
+      "runtime_config": {},
+      "provenance_ids": [
+        "sftp-v3-openssh"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/sftp-list-read/typescript.ts",
+      "code_sha256": "6df7686c07f099626150745cb366bfa801e41594bdafbc3f458d1c0d6003b7e5",
+      "requirements": "ssh2-sftp-client@12.0.1\n@types/ssh2-sftp-client@9.0.6",
+      "runtime_config": {},
+      "provenance_ids": [
+        "sftp-v3-openssh"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/sftp-list-read/go.go",
+      "code_sha256": "1ad040416280bc64286371bfb81ba2079748fd97a267fc8974077420bf1a9f12",
+      "requirements": "github.com/pkg/sftp@v1.13.9\ngolang.org/x/crypto@v0.39.0",
       "runtime_config": {},
       "provenance_ids": [
         "sftp-v3-openssh"

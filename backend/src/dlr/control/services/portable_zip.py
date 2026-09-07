@@ -20,7 +20,13 @@ MAX_ZIP_BYTES = 16 * 1024 * 1024
 MAX_EXPANDED_BYTES = 32 * 1024 * 1024
 MAX_ENTRIES = 32
 MAX_SECONDS = 5
-CODE_NAMES = {"python": "python.py", "javascript": "javascript.mjs", "java": "java.java"}
+CODE_NAMES = {
+    "python": "python.py",
+    "javascript": "javascript.mjs",
+    "java": "java.java",
+    "typescript": "typescript.ts",
+    "go": "go.go",
+}
 
 
 def invalid() -> None:

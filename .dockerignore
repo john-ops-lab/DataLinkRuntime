@@ -19,3 +19,5 @@ web/dist/
 docs/
 README.md
 docker-compose.yml
+
+docker/typescript/node_modules/

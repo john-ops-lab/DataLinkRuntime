@@ -69,6 +69,7 @@ def list_default_sources() -> PackageSourceDefaultsResponse:
         pypi=default_source_info("pypi"),
         npm=default_source_info("npm"),
         maven=default_source_info("maven"),
+        goproxy=default_source_info("goproxy"),
     )
 
 

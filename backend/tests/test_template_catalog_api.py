@@ -51,7 +51,8 @@ def test_catalog_inventory_is_exact_and_all_sources_pass_hash_validation() -> No
     assert len(catalog.scenarios) == 17
     assert len({scenario.slug for scenario in catalog.scenarios}) == 17
     assert all(
-        set(variant.language for variant in scenario.variants) <= {"python", "javascript", "java"}
+        set(variant.language for variant in scenario.variants)
+        <= {"python", "javascript", "java", "typescript", "go"}
         and scenario.variants
         for scenario in catalog.scenarios
     )
@@ -400,11 +401,11 @@ def test_detail_and_variant_not_found_errors_are_stable(api_client: TestClient) 
     assert detail.status_code == 200, detail.text
     detail_body = detail.json()
     assert '"code"' not in json.dumps(detail_body)
-    assert len(detail_body["variants"]) == 3
+    assert len(detail_body["variants"]) == 5
     assert "sources" not in detail_body
     assert all("maturity" not in variant for variant in detail_body["variants"])
     assert not {"input", "output_summary", "risk", "modes"} & detail_body.keys()
-    for selected_language in ("python", "javascript", "java"):
+    for selected_language in ("python", "javascript", "java", "typescript", "go"):
         selected = api_client.get(
             f"/api/templates/scenarios/rest-single-request/variants/{selected_language}"
         )

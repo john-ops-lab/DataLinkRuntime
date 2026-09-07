@@ -15,8 +15,8 @@
     "MySQL"
   ],
   "logo_key": "database-mysql",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 20,
   "provenance_ids": [
     "mysql-9-docs"
@@ -50,6 +50,28 @@
       "code_resource": "variants/mysql-readonly-snapshot/java.java",
       "code_sha256": "7d556ecd30dd4013312d9d5fc1970554b7bcef61b8a0193e95974d21889f98b4",
       "requirements": "com.mysql:mysql-connector-j:9.4.0",
+      "runtime_config": {},
+      "provenance_ids": [
+        "mysql-9-docs"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/mysql-readonly-snapshot/typescript.ts",
+      "code_sha256": "3c5d906b437ee10fa529eff78606f24764ec760b0993b0722f886db1ab577cbd",
+      "requirements": "mysql2@3.14.3",
+      "runtime_config": {},
+      "provenance_ids": [
+        "mysql-9-docs"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/mysql-readonly-snapshot/go.go",
+      "code_sha256": "52e7d3a510144b1d60321ed89dfcbaafda1d0c3e7015e3c783eaab914ab91d90",
+      "requirements": "github.com/go-sql-driver/mysql@v1.9.3",
       "runtime_config": {},
       "provenance_ids": [
         "mysql-9-docs"
