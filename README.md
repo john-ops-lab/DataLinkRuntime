@@ -489,3 +489,5 @@ DataLinkRuntime 基于 [Apache License 2.0](LICENSE) 开源。
 Copyright (c) 2026 john-ops-lab
 
 内网部署可使用 [DLR 内置依赖源](docs/zh-CN/issue141-builtin-dependencies.md)，由控制节点保存并分发三种语言的离线安装材料。
+
+本机 PR 固定入口及 CI 门控验收流程见 [本机预览交付](docs/zh-CN/local-preview.md)。

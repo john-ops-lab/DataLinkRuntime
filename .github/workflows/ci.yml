@@ -6,6 +6,18 @@ on:
   pull_request:
 
 jobs:
+  local-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Local preview controller regressions
+        run: python3 -m unittest discover -s tools/local-preview/tests -v
+      - name: Local preview deployment syntax
+        run: bash -n tools/local-preview/deploy.sh
+
   backend:
     runs-on: ubuntu-latest
     defaults:
