@@ -34,16 +34,19 @@ import type {
 } from "../types";
 import "./BuiltinPackagePanel.css";
 
-const KINDS: BuiltinPackageKind[] = ["pypi", "npm", "maven"];
+const KINDS: BuiltinPackageKind[] = ["pypi", "npm", "maven", "goproxy"];
 const LANGUAGE: Record<BuiltinPackageKind, string> = {
   pypi: "Python",
-  npm: "JavaScript",
+  npm: "JavaScript / TypeScript",
   maven: "Java",
+  goproxy: "Go",
 };
 const LANGUAGE_KIND: Record<string, BuiltinPackageKind> = {
   python: "pypi",
   javascript: "npm",
   java: "maven",
+  typescript: "npm",
+  go: "goproxy",
 };
 const ACTIVE = new Set(["queued", "running", "retry_wait"]);
 function bytes(value: number): string {
@@ -175,7 +178,7 @@ export default function BuiltinPackagePanel({
         ? ".whl"
         : uploadKind === "npm"
           ? ".tgz,.tar.gz"
-          : ".jar,.pom,.xml",
+          : uploadKind === "goproxy" ? ".mod,.info,.zip" : ".jar,.pom,.xml",
     beforeUpload: () => false,
     onChange: ({ fileList }) => {
       setFiles(fileList);
@@ -192,7 +195,7 @@ export default function BuiltinPackagePanel({
         if (!file) continue;
         const relativePath = file.webkitRelativePath;
         const repositoryPath =
-          uploadKind !== "maven"
+          !["maven", "goproxy"].includes(uploadKind)
             ? ""
             : relativePath
               ? relativePath.split("/").slice(1).join("/")
@@ -598,17 +601,17 @@ export default function BuiltinPackagePanel({
           <Typography.Text>
             {t(`builtin.uploadHint.${uploadKind}`)}
           </Typography.Text>
-          {uploadKind === "maven" && (
+          {["maven", "goproxy"].includes(uploadKind) && (
             <>
               <Input
-                aria-label={t("builtin.mavenPrefix")}
-                placeholder="com/example/sdk/1.0"
+                aria-label={t(uploadKind === "goproxy" ? "builtin.goPrefix" : "builtin.mavenPrefix")}
+                placeholder={uploadKind === "goproxy" ? "example.com/sdk/@v" : "com/example/sdk/1.0"}
                 value={mavenPrefix}
                 disabled={busy}
                 onChange={(event) => setMavenPrefix(event.target.value)}
               />
               <Upload {...uploadProps} directory showUploadList={false}>
-                <Button disabled={busy}>{t("builtin.chooseFolder")}</Button>
+                <Button disabled={busy}>{t(uploadKind === "goproxy" ? "builtin.chooseGoFolder" : "builtin.chooseFolder")}</Button>
               </Upload>
             </>
           )}

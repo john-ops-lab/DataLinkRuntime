@@ -12,7 +12,7 @@ from sqlalchemy.engine import Engine, make_url
 
 from dlr.common.config import settings
 
-HEAD_REVISION = "0037_portable_simplified"
+HEAD_REVISION = "0038_issue138_languages"
 
 
 def _upgrade(database: str, revision: str) -> None:

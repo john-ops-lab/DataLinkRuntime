@@ -575,6 +575,8 @@ export default function AdapterCatalog({
               options={[
                 { value: "python", label: "Python" },
                 { value: "javascript", label: "JavaScript" },
+                { value: "typescript", label: "TypeScript" },
+                { value: "go", label: "Go" },
                 { value: "java", label: "Java" },
               ]}
             />

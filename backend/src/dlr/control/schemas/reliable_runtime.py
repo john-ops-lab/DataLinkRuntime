@@ -35,7 +35,7 @@ class AttemptClaimBody(BaseModel):
     execution_id: StrictInt = Field(gt=0)
     dispatch_generation: StrictInt = Field(ge=1)
     adapter_id: StrictInt = Field(gt=0)
-    language: Literal["python", "javascript", "java"]
+    language: Literal["python", "javascript", "java", "typescript", "go"]
     resource_class: str = Field(min_length=1, max_length=64)
     target_worker_id: StrictInt = Field(gt=0)
 
@@ -113,7 +113,7 @@ class V3TaskPayload(BaseModel):
     cleanup_token: str = Field(min_length=1, max_length=512)
     adapter_id: StrictInt = Field(gt=0)
     version_id: StrictInt = Field(gt=0)
-    language: Literal["python", "javascript", "java"]
+    language: Literal["python", "javascript", "java", "typescript", "go"]
     code: str
     requirements: str
     runtime_config: dict[str, Any]

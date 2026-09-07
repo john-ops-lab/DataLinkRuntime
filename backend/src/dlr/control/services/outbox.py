@@ -257,7 +257,9 @@ def dispatch_payload_for_execution(
         execution_id=execution.id,
         dispatch_generation=execution.dispatch_generation,
         adapter_id=execution.adapter_id,
-        language=cast(Literal["python", "javascript", "java"], adapter.language),
+        language=cast(
+            Literal["python", "javascript", "java", "typescript", "go"], adapter.language
+        ),
         resource_class=execution.resource_class or "default",
         target_worker_id=target_worker_id,
     )

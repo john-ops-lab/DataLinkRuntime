@@ -1,0 +1,203 @@
+// TypeScript 参考模板；外部 JSON 的动态字段显式保留，Context 使用平台类型。
+import type { Context } from "dlr";
+
+// PostgreSQL 数据查询：可修改的配置集中在这里。
+// 默认无需填写运行输入；先修改下面的地址、查询条件等配置，再保存运行。
+// 调试时可传入 JSON 对象覆盖同名配置；嵌套对象需要完整填写。
+// 凭据配置：先在“凭据”中创建对应值，再到此适配器的“凭据绑定”中绑定；绑定键必须与下列名称完全一致。
+// POSTGRES_DSN：PostgreSQL 连接字符串（包含账号密码）。
+const CONFIG: Record<string, any> = {
+    // 填写一条 SELECT；动态值通过 params 绑定，不要拼接用户输入。
+    "sql": "SELECT id, name FROM example_items WHERE updated_at >= $1",
+    // 按 SQL 占位符顺序填写参数。
+    "params": ["2026-01-01T00:00:00Z"],
+    // 最多读取的行数。
+    "max_rows": 5000,
+    // 返回结果大小上限，单位字节。
+    "max_output_bytes": 4194304,
+    // 单个单元格大小上限，单位字节。
+    "max_cell_bytes": 1048576,
+    // 每批处理的记录数。
+    "batch_size": 500,
+    // 单次请求超时时间，单位秒。
+    "timeout_seconds": 30,
+};
+/** Bounded read-only PostgreSQL snapshot. */
+import pg from "pg";
+const TEXT_DATE_OIDS = new Set<any>([1082, 1083, 1114, 1184, 1266, 1700]);
+const JSON_SAFE_TYPES: Record<string, any> = {
+    getTypeParser(oid: any, format: any) {
+        if (format === "text" && TEXT_DATE_OIDS.has(oid)) {
+            if (oid === 1114 || oid === 1184) {
+                return (value: any) => value.replace(" ", "T").replace(/([+-][0-9]{2})$/, "$1:00");
+            }
+            return (value: any) => value;
+        }
+        return pg.types.getTypeParser(oid, format);
+    },
+};
+function positive(value: any, fallback: any, maximum: any): any {
+    return Number.isInteger(value) && value > 0 ? Math.min(value, maximum) : fallback;
+}
+function normalizeCell(value: any, depth: any = 0): any {
+    if (depth > 32)
+        throw new Error("unsupported_cell_type");
+    if (value === null || typeof value === "string" || typeof value === "boolean")
+        return value;
+    if (typeof value === "number") {
+        if (!Number.isFinite(value))
+            throw new Error("unsupported_cell_type");
+        return value;
+    }
+    if (typeof value === "bigint")
+        return value.toString();
+    if (value instanceof Date) {
+        if (Number.isNaN(value.getTime()))
+            throw new Error("unsupported_cell_type");
+        return value.toISOString().replace(/Z$/, "+00:00");
+    }
+    if (Buffer.isBuffer(value))
+        return { $binary_base64: value.toString("base64") };
+    if (ArrayBuffer.isView(value)) {
+        return {
+            $binary_base64: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64"),
+        };
+    }
+    if (value instanceof ArrayBuffer) {
+        return { $binary_base64: Buffer.from(value).toString("base64") };
+    }
+    if (Array.isArray(value))
+        return value.map((item: any) => normalizeCell(item, depth + 1));
+    if (typeof value === "object") {
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null)
+            throw new Error("unsupported_cell_type");
+        return Object.fromEntries(Object.entries(value).map(([key, item]: any) => [key, normalizeCell(item, depth + 1)]));
+    }
+    throw new Error("unsupported_cell_type");
+}
+function jsonBytes(value: any): any {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined)
+        throw new Error("unsupported_cell_type");
+    return Buffer.byteLength(encoded, "utf8");
+}
+function columnNames(fields: any): any {
+    if (!Array.isArray(fields) || fields.length === 0)
+        throw new Error("missing_column_metadata");
+    const names = fields.map((field: any) => String(field.name));
+    if (new Set<any>(names).size !== names.length)
+        throw new Error("duplicate_column_label");
+    return names;
+}
+function checkedQuery(input: any): any {
+    if (typeof input.sql !== "string" || !/^\s*select\b/i.test(input.sql)
+        || input.sql.includes(";")
+        || /\b(insert|update|delete|merge|call|execute|create|alter|drop|truncate|copy)\b/i.test(input.sql)) {
+        throw new Error("single_select_required");
+    }
+    return input.sql;
+}
+export async function handle(context: Context, input: any): Promise<any> {
+    if (input === undefined || input === null)
+        input = {};
+    if (typeof input !== "object" || Array.isArray(input))
+        throw new Error("输入必须是 JSON 对象");
+    input = { ...CONFIG, ...input };
+    if (!input || typeof input !== "object" || Array.isArray(input))
+        throw new Error("input_must_be_object");
+    const sql = checkedQuery(input);
+    const params = input.params ?? [];
+    if (!Array.isArray(params) || params.length > 64)
+        throw new Error("params_must_be_array");
+    const maxRows = positive(input.max_rows, 5000, 100000);
+    const batchSize = positive(input.batch_size, 500, 5000);
+    const maxOutput = positive(input.max_output_bytes, 4194304, 16777216);
+    const maxCell = positive(input.max_cell_bytes, 1048576, 8388608);
+    const timeout = positive(input.timeout_seconds, 30, 300);
+    // 此处读取凭据：请在本适配器的“凭据绑定”中配置与 get(...) 参数一致的绑定键。
+    const dsn = context.secrets.get("POSTGRES_DSN");
+    if (!dsn)
+        throw new Error("missing_credential");
+    let client: any = null;
+    let connected = false;
+    const rows: any[] = [];
+    try {
+        client = new pg.Client({ connectionString: dsn, statement_timeout: timeout * 1000, query_timeout: timeout * 1000 });
+        await client.connect();
+        connected = true;
+        await client.query("BEGIN READ ONLY");
+        await client.query("SET LOCAL TIME ZONE 'UTC'");
+        const boundedSql = `SELECT * FROM (${sql}) AS dlr_snapshot`;
+        await client.query({
+            text: `DECLARE dlr_snapshot_cursor NO SCROLL CURSOR FOR ${boundedSql}`,
+            values: params,
+        });
+        let outputBytes = 2;
+        let partial = false;
+        let names: any = null;
+        while (!partial) {
+            const fetchCount = Math.min(batchSize, maxRows + 1 - rows.length);
+            const result = await client.query({
+                text: `FETCH FORWARD ${fetchCount} FROM dlr_snapshot_cursor`,
+                rowMode: "array",
+                types: JSON_SAFE_TYPES,
+            });
+            if (names === null)
+                names = columnNames(result.fields);
+            if (!Array.isArray(result.rows) || result.rows.length > fetchCount) {
+                throw new Error("invalid_cursor_result");
+            }
+            for (const rawRow of result.rows) {
+                if (rows.length >= maxRows) {
+                    partial = true;
+                    break;
+                }
+                if (!Array.isArray(rawRow) || rawRow.length !== names.length) {
+                    throw new Error("column_count_mismatch");
+                }
+                let normalized: any;
+                try {
+                    normalized = rawRow.map((value: any) => normalizeCell(value));
+                }
+                catch {
+                    partial = true;
+                    break;
+                }
+                if (normalized.some((value: any) => jsonBytes(value) > maxCell)) {
+                    partial = true;
+                    break;
+                }
+                const row = Object.fromEntries(names.map((name: any, at: any) => [name, normalized[at]]));
+                const encodedBytes = jsonBytes(row) + (rows.length ? 1 : 0);
+                if (outputBytes + encodedBytes > maxOutput) {
+                    partial = true;
+                    break;
+                }
+                rows.push(row);
+                outputBytes += encodedBytes;
+            }
+            if (!partial && result.rows.length < fetchCount)
+                break;
+        }
+        const count = rows.length;
+        await client.query("ROLLBACK");
+        return { rows, count, partial, checkpoint: partial ? { row_offset: count } : null };
+    }
+    catch {
+        if (client !== null) {
+            try {
+                await client.query("ROLLBACK");
+            }
+            catch { /* connection may already be unavailable */ }
+        }
+        return {
+            rows, count: rows.length, partial: true,
+            error: connected ? "database_query_failed" : "database_connection_failed",
+        };
+    }
+    finally {
+        if (client !== null)
+            await client.end().catch(() => { });
+    }
+}

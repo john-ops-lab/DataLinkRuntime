@@ -59,6 +59,20 @@ DEFAULT_PACKAGE_SOURCES: Final[tuple[PackageSourceDefault, ...]] = (
         index_url="https://repo1.maven.org/maven2/",
         is_domestic=False,
     ),
+    PackageSourceDefault(
+        preset_id="goproxy.cn",
+        kind="goproxy",
+        name="Go 国内模块源",
+        index_url="https://goproxy.cn",
+        is_domestic=True,
+    ),
+    PackageSourceDefault(
+        preset_id="goproxy.official",
+        kind="goproxy",
+        name="Go 官方模块源",
+        index_url="https://proxy.golang.org",
+        is_domestic=False,
+    ),
 )
 
 

@@ -100,7 +100,7 @@ def reserve_upload(
         safe_path(filename)
         if "/" in filename:
             raise PackageValidationError("invalid filename")
-        if kind == "maven":
+        if kind in {"maven", "goproxy"}:
             safe_path(repository_path)
     except PackageValidationError as error:
         raise domain_error(422, "builtin_package_invalid", str(error)) from None

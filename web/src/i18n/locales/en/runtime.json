@@ -25,7 +25,15 @@
       "label": "Java dependencies",
       "placeholder": "e.g. org.apache.commons:commons-lang3:3.17.0 (one dependency per line)"
     },
-    "note": "The Worker installs these dependencies before execution. Configure a source in System Settings; administrators can pre-populate a source or cache for offline and enterprise networks. An empty list skips the dependency check and missing packages may fail at runtime."
+    "note": "The Worker installs these dependencies before execution. Configure a source in System Settings; administrators can pre-populate a source or cache for offline and enterprise networks. An empty list skips the dependency check and missing packages may fail at runtime.",
+    "typescript": {
+      "label": "TypeScript dependencies",
+      "placeholder": "e.g. axios@1.7.7 (one dependency per line)"
+    },
+    "go": {
+      "label": "Go dependencies",
+      "placeholder": "e.g. github.com/google/uuid@v1.6.0 (one dependency per line)"
+    }
   },
   "task": {
     "status": {
@@ -167,7 +175,9 @@
         "languages": {
           "python": "Python",
           "javascript": "JavaScript",
-          "java": "Java"
+          "java": "Java",
+          "typescript": "TypeScript",
+          "go": "Go"
         }
       },
       "historySnapshot": "Input snapshot",

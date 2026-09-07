@@ -34,7 +34,7 @@ class AdapterCreate(BaseModel):
 
     name: str
     description: str = ""
-    language: Literal["python", "javascript", "java"]
+    language: Literal["python", "javascript", "java", "typescript", "go"]
     adapter_type: Literal["task", "webhook"]
     # M5.5.11: default single-run execution timeout (5 minutes).
     timeout_seconds: int = Field(

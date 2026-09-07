@@ -122,6 +122,7 @@ class WorkerConfig:
         self.pypi_index_url = os.environ.get("DLR_PYPI_INDEX_URL") or None
         self.npm_registry_url = os.environ.get("DLR_NPM_REGISTRY_URL") or None
         self.maven_repository_url = os.environ.get("DLR_MAVEN_REPOSITORY_URL") or None
+        self.go_proxy_url = os.environ.get("DLR_GO_PROXY_URL") or None
         self.rabbitmq_url = os.environ.get("DLR_RABBITMQ_URL") or None
         self.execution_slots = max(1, int(os.environ.get("DLR_WORKER_EXECUTION_SLOTS", "2")))
         self.attempt_journal_root = Path(
@@ -138,6 +139,33 @@ class WorkerConfig:
             capabilities.append("python")
         if shutil.which("node") and shutil.which("npm"):
             capabilities.append("javascript")
+        if shutil.which("node") and shutil.which("npm") and shutil.which("tsc"):
+            try:
+                checked = subprocess.run(
+                    ["tsc", "--version"], capture_output=True, text=True, timeout=10, check=False
+                )
+                if checked.returncode == 0 and checked.stdout.strip() == "Version 5.8.3":
+                    capabilities.append("typescript")
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if shutil.which("go"):
+            try:
+                checked = subprocess.run(
+                    ["go", "version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                    env={
+                        "GOTOOLCHAIN": "local",
+                        "GOENV": "off",
+                        "PATH": os.environ.get("PATH", ""),
+                    },
+                )
+                if checked.returncode == 0 and checked.stdout.startswith("go version go1.27.1 "):
+                    capabilities.append("go")
+            except (OSError, subprocess.SubprocessError):
+                pass
         if _supports_java_runtime():
             capabilities.append("java")
         return capabilities
@@ -150,6 +178,7 @@ class WorkerConfig:
             pypi_index_url=self.pypi_index_url,
             npm_registry_url=self.npm_registry_url,
             maven_repository_url=self.maven_repository_url,
+            go_proxy_url=self.go_proxy_url,
             workspace_cleanup_journal_root=self.workspace_cleanup_journal_root,
             sandbox_config=self.sandbox_config,
             resource_envelope=self._verified_resource_envelope,

@@ -458,7 +458,13 @@ def build_task_payload(
         if execution.builtin_package_snapshot is not None
         else package_source_service.resolve_default_index_url(
             session,
-            {"python": "pypi", "javascript": "npm", "java": "maven"}[adapter.language],
+            {
+                "python": "pypi",
+                "javascript": "npm",
+                "java": "maven",
+                "typescript": "npm",
+                "go": "goproxy",
+            }[adapter.language],
         ),
         locale=execution.locale,
         protocol_version=worker.protocol_version,

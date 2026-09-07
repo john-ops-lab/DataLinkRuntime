@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 MAX_WORKER_NAME_LENGTH = 128
-SUPPORTED_CAPABILITIES = frozenset({"python", "javascript", "java"})
+SUPPORTED_CAPABILITIES = frozenset({"python", "javascript", "java", "typescript", "go"})
 REQUIRED_ISOLATION_CAPABILITIES = frozenset(
     {
         "cgroup_v2",

@@ -16,8 +16,8 @@
     "ServiceNow Table API"
   ],
   "logo_key": "servicenow-cmdb",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 70,
   "provenance_ids": [
     "servicenow-table-api-2026-09-05",
@@ -53,6 +53,30 @@
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/servicenow-cmdb-ci-snapshot/java.java",
       "code_sha256": "e736083b086baaff269a2b49f88156beef42bd5beed368e36b861bc613897c35",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "servicenow-table-api-2026-09-05",
+        "servicenow-cmdb-mcp-9f0fe8f"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/servicenow-cmdb-ci-snapshot/typescript.ts",
+      "code_sha256": "392f2341b5e0c018b888fbd68880b7d212b583b7504d4a27ae1d77b4cc272bdd",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "servicenow-table-api-2026-09-05",
+        "servicenow-cmdb-mcp-9f0fe8f"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/servicenow-cmdb-ci-snapshot/go.go",
+      "code_sha256": "e75a18da828c1c236bd57e9fa905de63ca315e780400336df550adc1044b9f13",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [

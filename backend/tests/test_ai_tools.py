@@ -1107,11 +1107,13 @@ def test_dlr_docs_list_search_read_deterministic_and_bounded() -> None:
     assert listing.status == "success"
     listed = json.loads(listing.model_content)
     assert listed["tool"] == "dlr_docs_list"
-    assert listed["total"] == 3
+    assert listed["total"] == 5
     assert {item["id"] for item in listed["items"]} == {
         "runtime-contract-python",
         "runtime-contract-javascript",
         "runtime-contract-java",
+        "runtime-contract-typescript",
+        "runtime-contract-go",
     }
     assert all(item["source"].startswith("dlr-docs:v1:") for item in listed["items"])
     assert listing.source == "dlr-docs:v1:runtime-contract-python"

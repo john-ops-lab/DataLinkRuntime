@@ -15,7 +15,7 @@
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/actions/workflows/ci.yml"><img src="https://github.com/john-ops-lab/DataLinkRuntime/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="Apache License 2.0"></a>
   <img src="https://img.shields.io/badge/Python-3.13-blue" alt="Python 3.13">
-  <img src="https://img.shields.io/badge/Runtime-Python%20%7C%20JavaScript%20%7C%20Java-informational" alt="Runtimes">
+  <img src="https://img.shields.io/badge/Runtime-Python%20%7C%20JavaScript%20%7C%20Java%20%7C%20TypeScript%20%7C%20Go-informational" alt="Runtimes">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED" alt="Docker Compose">
 </p>
 
@@ -92,7 +92,7 @@ DLR 希望补上中间这一层：
 
 ### 1. 写一个 Adapter
 
-三种语言共享同一个运行模型：
+五种语言共享同一个运行模型：
 
 ```text
 Input → handle(context, input) → Output
@@ -116,6 +116,8 @@ def handle(context, input):
 |---|---|
 | Python | `def handle(context, input)` |
 | JavaScript | `export async function handle(context, input)` |
+| TypeScript | `export function handle(context: Context, input: unknown)` |
+| Go | `func Handle(ctx *Context, input any) (any, error)` |
 | Java | `Adapter.handle(Context context, Object input)` |
 
 运行时通过 `context` 提供非敏感配置、已绑定 Secret 和日志能力。
@@ -135,7 +137,7 @@ Create → Edit → Save → Run / Schedule → Observe
 | 你专注于 | DLR 负责 |
 |---|---|
 | 数据获取与接收 | Adapter 管理 |
-| 字段映射与转换 | Python / JavaScript / Java Runtime |
+| 字段映射与转换 | Python / JavaScript / Java / TypeScript / Go Runtime |
 | 业务处理逻辑 | 依赖与运行参数 |
 | 写入目标系统 | Credential / Secret Binding |
 | 代码本身 | Task / Cron / Timezone / Webhook |
@@ -147,7 +149,7 @@ Create → Edit → Save → Run / Schedule → Observe
 
 ## 从模板广场开始
 
-模板广场预置 5 个主题、17 个场景，并提供“其他”兜底分类和持久化用户模板，可从“全部”页签跨分类搜索，也可按厂家、类型、协议和语言筛选。厂家模板使用厂家 Logo；每个场景只提供实际支持的语言，不要求凑齐三种语言。
+模板广场预置 5 个主题、17 个场景，并提供“其他”兜底分类和持久化用户模板，可从“全部”页签跨分类搜索，也可按厂家、类型、协议和语言筛选。厂家模板使用厂家 Logo；当前 17 个场景均提供五种语言变体。
 
 ```text
 模板广场 → 选择场景与语言 → 命名并复制 → 自动进入新适配器编辑页 → 检查或修改配置 → 保存 → 运行
@@ -168,7 +170,7 @@ Create → Edit → Save → Run / Schedule → Observe
 | 🧩 | **Code-first Adapter** | Adapter 是最终资产，可直接阅读、修改、测试和版本化 |
 | 🧰 | **模板广场** | 搜索全部模板或按分类筛选，复制后进入独立适配器编辑草稿 |
 | 🖥️ | **Web Workbench** | 在浏览器中创建、编辑、保存、Clone 和管理 Adapter |
-| ⚡ | **多语言 Runtime** | Python、JavaScript、Java 使用一致的 Input / Output / Log 模型 |
+| ⚡ | **多语言 Runtime** | Python、JavaScript、Java、TypeScript、Go 使用一致的 Input / Output / Log 模型 |
 | ⏱️ | **Task & Schedule** | 手动运行，或通过 Cron + Timezone 定时执行 |
 | 🔔 | **Webhook** | 接收外部 HTTP 事件并异步创建 Execution |
 | 🔐 | **Credential** | 加密保存凭据，通过 Secret Binding 按执行注入 |
@@ -352,7 +354,7 @@ flowchart LR
     C -->|"Bounded publish"| Q["RabbitMQ 4.3<br/>Quorum Queue"]
     Q -->|"Dispatch"| W["Worker Runtime"]
     W -->|"Claim / renew / result"| C
-    W --> A["Adapter<br/>Python / JavaScript / Java"]
+    W --> A["Adapter<br/>Python / JavaScript / Java / TypeScript / Go"]
     A --> X["External Systems"]
 ```
 
@@ -423,7 +425,7 @@ DLR 当前采用 **可信管理员代码模型**。
 | Web | React 19 · TypeScript · Vite · Ant Design · Monaco Editor · assistant-ui · i18next |
 | Control | Python 3.13 · FastAPI · SQLAlchemy 2 · Alembic |
 | Database | PostgreSQL 16 |
-| Worker | Python · Node.js / npm · JDK 21 / Maven |
+| Worker | Python · Node 22 / npm / TypeScript 5.8.3 · JDK 21 / Maven · Go 1.27.1 |
 | Tooling | uv · pytest · Ruff · mypy |
 | Deploy | Docker Compose |
 
@@ -488,6 +490,8 @@ DataLinkRuntime 基于 [Apache License 2.0](LICENSE) 开源。
 
 Copyright (c) 2026 john-ops-lab
 
-内网部署可使用 [DLR 内置依赖源](docs/zh-CN/issue141-builtin-dependencies.md)，由控制节点保存并分发三种语言的离线安装材料。
+内网部署可使用 [DLR 内置依赖源](docs/zh-CN/issue141-builtin-dependencies.md)，由控制节点保存并分发五种语言的离线安装材料。
+
+[TypeScript 与 Go：入口、依赖源、离线材料和升级说明](docs/zh-CN/issue138-typescript-go.md)
 
 本机 PR 固定入口及 CI 门控验收流程见 [本机预览交付](docs/zh-CN/local-preview.md)。

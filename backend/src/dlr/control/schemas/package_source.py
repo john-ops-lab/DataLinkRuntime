@@ -24,7 +24,7 @@ class PackageSourceCreate(BaseModel):
     """Request body for POST /api/package-sources."""
 
     name: str
-    kind: Literal["pypi", "npm", "maven"] = "pypi"
+    kind: Literal["pypi", "npm", "maven", "goproxy"] = "pypi"
     index_url: str
     is_default: bool = False
     credential_id: int | None = None
@@ -43,7 +43,7 @@ class PackageSourceUpdate(BaseModel):
     """
 
     name: str | None = None
-    kind: Literal["pypi", "npm", "maven"] | None = None
+    kind: Literal["pypi", "npm", "maven", "goproxy"] | None = None
     index_url: str | None = None
     is_default: bool | None = None
     credential_id: int | None = None
@@ -99,3 +99,4 @@ class PackageSourceDefaultsResponse(BaseModel):
     pypi: DefaultPackageSourceInfo
     npm: DefaultPackageSourceInfo
     maven: DefaultPackageSourceInfo
+    goproxy: DefaultPackageSourceInfo

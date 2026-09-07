@@ -28,7 +28,7 @@ DISPATCH_ALLOWED_FIELDS = frozenset(
 DISPATCH_EXCHANGE = "dlr.execution.dispatch.v1"
 INFRASTRUCTURE_DLX = "dlr.execution.infrastructure.dlx"
 INFRASTRUCTURE_DLQ = "dlr.execution.infrastructure.dlq"
-SUPPORTED_LANGUAGES = frozenset({"python", "javascript", "java"})
+SUPPORTED_LANGUAGES = frozenset({"python", "javascript", "java", "typescript", "go"})
 
 
 class DispatchMessage(BaseModel):
@@ -41,7 +41,7 @@ class DispatchMessage(BaseModel):
     execution_id: StrictInt = Field(gt=0)
     dispatch_generation: StrictInt = Field(ge=1)
     adapter_id: StrictInt = Field(gt=0)
-    language: Literal["python", "javascript", "java"]
+    language: Literal["python", "javascript", "java", "typescript", "go"]
     resource_class: str = Field(min_length=1, max_length=64)
     target_worker_id: StrictInt = Field(gt=0)
 
@@ -59,7 +59,7 @@ def build_dispatch_message(
     execution_id: int,
     dispatch_generation: int,
     adapter_id: int,
-    language: Literal["python", "javascript", "java"],
+    language: Literal["python", "javascript", "java", "typescript", "go"],
     resource_class: str,
     target_worker_id: int,
     message_id: uuid.UUID | None = None,

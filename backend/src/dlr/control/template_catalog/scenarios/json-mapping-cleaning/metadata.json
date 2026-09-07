@@ -16,8 +16,8 @@
     "RFC 6901"
   ],
   "logo_key": "data-json",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 30,
   "provenance_ids": [
     "json-pointer-rfc6901"
@@ -50,6 +50,28 @@
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/json-mapping-cleaning/java.java",
       "code_sha256": "4dd459a416cbed197a57e7eaceb04bf3cba4794e20dd5e5b47fb3be07b68b277",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "json-pointer-rfc6901"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/json-mapping-cleaning/typescript.ts",
+      "code_sha256": "1ead950997a6d7b648ca117d655246e4fb32ce5c7637da3abd00f6633a1e3f06",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "json-pointer-rfc6901"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/json-mapping-cleaning/go.go",
+      "code_sha256": "9ea987ece593f81cb047d1558adf7109bff868cb0fd3b0e706bc3611b8e0f0bf",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [

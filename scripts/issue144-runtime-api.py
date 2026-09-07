@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -38,9 +39,29 @@ def request(method, path, body=None, expected=200):
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        assert response.status == expected, (path, response.status)
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read()
+    result = json.loads(raw) if raw else None
+    accepted = (expected,) if isinstance(expected, int) else expected
+    detail = result.get("detail") if isinstance(result, dict) else None
+    code = detail.get("code") if isinstance(detail, dict) else None
+    assert status in accepted, (method, path, status, code)
+    return result
+
+
+def wait_ingress_ready(*, timeout=60):
+    """Worker health precedes asynchronous verification of its broker topology."""
+    deadline = time.monotonic() + timeout
+    health = {}
+    while time.monotonic() < deadline:
+        health = request("GET", "/health", expected=(200, 503))
+        if health["status"] == "ok" and health["rabbitmq"]["ingress"]["ready"] is True:
+            return
+        time.sleep(0.5)
+    raise AssertionError("RabbitMQ ingress did not become ready within the deadline")
 
 
 def worker(name=None):
@@ -59,6 +80,7 @@ def worker(name=None):
                     for key in REQUIRED_ISOLATION_CAPABILITIES
                 )
             ):
+                wait_ingress_ready()
                 return row
         time.sleep(0.5)
     raise AssertionError(f"Worker {name} did not pass the production preflight")
@@ -146,9 +168,9 @@ def basic():
     catalog = request("GET", "/templates/scenarios?page_size=48")
     assert (
         catalog["total"] == 17
-        and sum(len(s["variants"]) for s in catalog["items"]) == 51
+        and sum(len(s["variants"]) for s in catalog["items"]) == 85
     )
-    for language in ("python", "javascript", "java"):
+    for language in ("python", "javascript", "java", "typescript", "go"):
         path = f"/templates/scenarios/json-mapping-cleaning/variants/{language}"
         variant = request("GET", path)
         adapter = request(
@@ -222,7 +244,7 @@ def basic():
     state["quick_adapter"] = create(prefix, "after-restart", primary["id"])
     save_state(state)
     print(
-        "issue144-api=PASS templates=17/51 three-languages=passed sse-running=passed cancel=passed"
+        "issue144-api=PASS templates=17/85 five-languages=passed sse-running=passed cancel=passed"
     )
 
 
@@ -307,11 +329,12 @@ def after_crash():
     print("issue144-crash=PASS production-recovery-and-new-execution=true")
 
 
-{
-    "basic": basic,
-    "after-restart": after_restart,
-    "start-pair": start_pair,
-    "peer-survives": peer_survives,
-    "start-crash": start_crash,
-    "after-crash": after_crash,
-}[os.environ["ISSUE144_PHASE"]]()
+if __name__ == "__main__":
+    {
+        "basic": basic,
+        "after-restart": after_restart,
+        "start-pair": start_pair,
+        "peer-survives": peer_survives,
+        "start-crash": start_crash,
+        "after-crash": after_crash,
+    }[os.environ["ISSUE144_PHASE"]]()

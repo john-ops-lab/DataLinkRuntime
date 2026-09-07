@@ -16,8 +16,8 @@
     "S3"
   ],
   "logo_key": "storage-s3",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 10,
   "provenance_ids": [
     "s3-api-2006-03-01"
@@ -51,6 +51,28 @@
       "code_resource": "variants/s3-compatible-list-read/java.java",
       "code_sha256": "9463c7909278c672522cc7e6474d175557e33d46e3f3d0b6e22a2471bdf14f9d",
       "requirements": "software.amazon.awssdk:s3:2.32.27",
+      "runtime_config": {},
+      "provenance_ids": [
+        "s3-api-2006-03-01"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/s3-compatible-list-read/typescript.ts",
+      "code_sha256": "d46e520ebcfd98cc8e0a0197a989d994b77a9fc0c0c0bc576f188ac03f7cd2d7",
+      "requirements": "@aws-sdk/client-s3@3.883.0",
+      "runtime_config": {},
+      "provenance_ids": [
+        "s3-api-2006-03-01"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/s3-compatible-list-read/go.go",
+      "code_sha256": "b039a9ee14d3b12d383ced8179c3a648cc6e9ca2035e382274aadb0be27c47ce",
+      "requirements": "github.com/minio/minio-go/v7@v7.0.95",
       "runtime_config": {},
       "provenance_ids": [
         "s3-api-2006-03-01"

@@ -38,6 +38,34 @@ export function handle(context, input) {
   return { input, files };
 }
 `,
+  typescript: `import fs from "node:fs";
+
+export function handle(context: Context, input: unknown) {
+  const files = context.inputFiles.map((item) => ({
+    ordinal: item.ordinal,
+    name: item.originalName,
+    contentType: item.contentType,
+    sizeBytes: item.sizeBytes,
+    sha256: item.sha256,
+    content: fs.readFileSync(item.path, "utf8"),
+  }));
+  return { input, files };
+}
+`,
+  go: `package main
+
+import "os"
+
+func Handle(ctx *Context, input any) (any, error) {
+    files := make([]map[string]any, 0, len(ctx.InputFiles))
+    for _, item := range ctx.InputFiles {
+        data, err := os.ReadFile(item.Path)
+        if err != nil { return nil, err }
+        files = append(files, map[string]any{"name": item.OriginalName, "content": string(data), "sha256": item.SHA256})
+    }
+    return map[string]any{"input": input, "files": files}, nil
+}
+`,
   java: `import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

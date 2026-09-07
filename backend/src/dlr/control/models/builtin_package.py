@@ -35,7 +35,8 @@ class BuiltinPackage(Base):
         UniqueConstraint("kind", "name", "version", "environment", name="uq_builtin_identity"),
         UniqueConstraint("kind", "repository_path", name="uq_builtin_path"),
         CheckConstraint(
-            "kind IN ('pypi', 'npm', 'maven') AND size_bytes > 0", name="ck_builtin_package"
+            "kind IN ('pypi', 'npm', 'maven', 'goproxy') AND size_bytes > 0",
+            name="ck_builtin_package",
         ),
         CheckConstraint("status IN ('uploaded', 'deleting')", name="ck_builtin_status"),
     )
@@ -60,7 +61,8 @@ class BuiltinPackageUpload(Base):
     __tablename__ = "builtin_package_uploads"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('pypi', 'npm', 'maven') AND size_bytes > 0", name="ck_builtin_upload"
+            "kind IN ('pypi', 'npm', 'maven', 'goproxy') AND size_bytes > 0",
+            name="ck_builtin_upload",
         ),
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

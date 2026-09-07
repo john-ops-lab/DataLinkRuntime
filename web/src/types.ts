@@ -1,6 +1,6 @@
 /** API shapes shared across the web UI (mirrors the Control API schemas). */
 
-export type AdapterLanguage = "python" | "javascript" | "java";
+export type AdapterLanguage = "python" | "javascript" | "java" | "typescript" | "go";
 export type AdapterType = "task" | "webhook";
 export type TaskRunMode = "manual" | "schedule";
 export type SystemLocale = "zh-CN" | "en";
@@ -582,7 +582,7 @@ export interface PackageSource {
   name: string;
   /** Stable system preset identity; user-created sources have no preset ID. */
   preset_id?: string | null;
-  kind: "pypi" | "npm" | "maven";
+  kind: "pypi" | "npm" | "maven" | "goproxy";
   index_url: string;
   is_default: boolean;
   credential_id: number | null;
@@ -601,7 +601,7 @@ export interface ReachabilityResult {
 /** Canonical fresh-deployment default for one dependency kind (M5.5.8). */
 export interface DefaultPackageSourceInfo {
   preset_id?: string;
-  kind: "pypi" | "npm" | "maven";
+  kind: "pypi" | "npm" | "maven" | "goproxy";
   name: string;
   index_url: string;
 }
@@ -611,6 +611,7 @@ export interface PackageSourceDefaults {
   pypi: DefaultPackageSourceInfo;
   npm: DefaultPackageSourceInfo;
   maven: DefaultPackageSourceInfo;
+  goproxy: DefaultPackageSourceInfo;
 }
 
 // --- M5.8-006: productized read-only KnowledgeSource configuration ---------
@@ -874,7 +875,7 @@ export interface PortablePackage {
   license: string;
 }
 
-export type BuiltinPackageKind = "pypi" | "npm" | "maven";
+export type BuiltinPackageKind = "pypi" | "npm" | "maven" | "goproxy";
 export interface BuiltinPackage {
   id: number;
   kind: BuiltinPackageKind;

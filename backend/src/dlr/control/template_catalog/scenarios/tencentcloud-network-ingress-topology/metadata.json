@@ -16,8 +16,8 @@
     "Tencent Cloud API"
   ],
   "logo_key": "tencentcloud-network",
-  "version": "1.0.1",
-  "updated_at": "2026-09-05",
+  "version": "1.1.0",
+  "updated_at": "2026-09-07",
   "featured_rank": 50,
   "provenance_ids": [
     "steampipe-tencentcloud-d3a0a66",
@@ -59,6 +59,34 @@
       "behavior_contract_version": "dlr-recipe/v1",
       "code_resource": "variants/tencentcloud-network-ingress-topology/java.java",
       "code_sha256": "87b54db96639cc85b7fff3d844b196bf3f37dd08c31271cadb9df574f2557267",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ]
+    },
+    {
+      "language": "typescript",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/tencentcloud-network-ingress-topology/typescript.ts",
+      "code_sha256": "1a4c5fdd3068c65ae9f69f18900329da491a69d7cf750a9d6b3bc417551b14e6",
+      "requirements": "",
+      "runtime_config": {},
+      "provenance_ids": [
+        "steampipe-tencentcloud-d3a0a66",
+        "tencentcloud-api-2026-09-05",
+        "open-c3-039b9a4",
+        "cloudexplorer-aede557"
+      ]
+    },
+    {
+      "language": "go",
+      "behavior_contract_version": "dlr-recipe/v1",
+      "code_resource": "variants/tencentcloud-network-ingress-topology/go.go",
+      "code_sha256": "6feb8f8813221255854f43f8f47f0046bb3c88ae998607ff3d50c38b416865d6",
       "requirements": "",
       "runtime_config": {},
       "provenance_ids": [

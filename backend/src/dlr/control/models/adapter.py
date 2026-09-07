@@ -28,7 +28,7 @@ class Adapter(Base):
     __tablename__ = "adapters"
     __table_args__ = (
         CheckConstraint(
-            "language IN ('python', 'javascript', 'java')",
+            "language IN ('python', 'javascript', 'java', 'typescript', 'go')",
             name="ck_adapters_language",
         ),
         CheckConstraint(

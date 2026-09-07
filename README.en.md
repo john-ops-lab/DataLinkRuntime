@@ -15,7 +15,7 @@
   <a href="https://github.com/john-ops-lab/DataLinkRuntime/actions/workflows/ci.yml"><img src="https://github.com/john-ops-lab/DataLinkRuntime/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="Apache License 2.0"></a>
   <img src="https://img.shields.io/badge/Python-3.13-blue" alt="Python 3.13">
-  <img src="https://img.shields.io/badge/Runtime-Python%20%7C%20JavaScript%20%7C%20Java-informational" alt="Runtimes">
+  <img src="https://img.shields.io/badge/Runtime-Python%20%7C%20JavaScript%20%7C%20Java%20%7C%20TypeScript%20%7C%20Go-informational" alt="Runtimes">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED" alt="Docker Compose">
 </p>
 
@@ -116,6 +116,8 @@ Runtime entry points:
 |---|---|
 | Python | `def handle(context, input)` |
 | JavaScript | `export async function handle(context, input)` |
+| TypeScript | `export function handle(context: Context, input: unknown)` |
+| Go | `func Handle(ctx *Context, input any) (any, error)` |
 | Java | `Adapter.handle(Context context, Object input)` |
 
 The runtime exposes non-sensitive configuration, bound secrets, and logging through `context`.
@@ -133,7 +135,7 @@ Saving creates an immutable runtime snapshot, and Executions always run from sav
 | You focus on | DLR handles |
 |---|---|
 | Fetching and receiving data | Adapter management |
-| Mapping and transformation | Python / JavaScript / Java runtimes |
+| Mapping and transformation | Python / JavaScript / Java / TypeScript / Go runtimes |
 | Business logic | Dependencies and runtime configuration |
 | Writing to target systems | Credentials / Secret Binding |
 | The code itself | Task / Cron / Timezone / Webhook |
@@ -145,7 +147,7 @@ Saving creates an immutable runtime snapshot, and Executions always run from sav
 
 ## Start from the Template Gallery
 
-Template Gallery ships 5 themes and 17 scenarios, plus an Other category and persistent user templates. The default All tab searches across categories; vendor, type, protocol, and language filters narrow the results. Vendor templates use vendor logos. Each scenario offers its supported languages without requiring all three languages.
+Template Gallery ships 5 themes and 17 scenarios, plus an Other category and persistent user templates. The default All tab searches across categories; vendor, type, protocol, and language filters narrow the results. Vendor templates use vendor logos. All 17 scenarios now include five language variants.
 
 ```text
 Template Gallery → choose a scenario and language → name and copy → edit the new Adapter → check or change configuration → save → run
@@ -166,7 +168,7 @@ Adapter menus support ZIP export and saving as a template; the adapter list supp
 | 🧩 | **Code-first Adapters** | Code remains the final asset: readable, editable, testable, and versionable |
 | 🧰 | **Template Gallery** | Search all templates or filter by category, then copy into an independent Adapter draft |
 | 🖥️ | **Web Workbench** | Create, edit, save, clone, and manage Adapters in the browser |
-| ⚡ | **Multi-language Runtime** | Python, JavaScript, and Java share a consistent Input / Output / Log model |
+| ⚡ | **Multi-language Runtime** | Python, JavaScript, Java, TypeScript, and Go share a consistent Input / Output / Log model |
 | ⏱️ | **Task & Schedule** | Run manually or schedule with Cron + Timezone |
 | 🔔 | **Webhook** | Receive external HTTP events and create asynchronous Executions |
 | 🔐 | **Credentials** | Store credentials encrypted and inject them through Secret Binding |
@@ -356,7 +358,7 @@ flowchart LR
     C -->|"Bounded publish"| Q["RabbitMQ 4.3<br/>Quorum Queue"]
     Q -->|"Dispatch"| W["Worker Runtime"]
     W -->|"Claim / renew / result"| C
-    W --> A["Adapter<br/>Python / JavaScript / Java"]
+    W --> A["Adapter<br/>Python / JavaScript / Java / TypeScript / Go"]
     A --> X["External Systems"]
 ```
 
@@ -430,7 +432,7 @@ Important boundaries:
 | Web | React 19 · TypeScript · Vite · Ant Design · Monaco Editor · assistant-ui · i18next |
 | Control | Python 3.13 · FastAPI · SQLAlchemy 2 · Alembic |
 | Database | PostgreSQL 16 |
-| Worker | Python · Node.js / npm · JDK 21 / Maven |
+| Worker | Python · Node 22 / npm / TypeScript 5.8.3 · JDK 21 / Maven · Go 1.27.1 |
 | Tooling | uv · pytest · Ruff · mypy |
 | Deploy | Docker Compose |
 
@@ -494,4 +496,6 @@ DataLinkRuntime is open source under the [Apache License 2.0](LICENSE).
 
 Copyright (c) 2026 john-ops-lab
 
-Offline deployments can use the [DLR builtin dependency source](docs/en/issue141-builtin-dependencies.md) to store and distribute installation materials for all three languages.
+Offline deployments can use the [DLR builtin dependency source](docs/en/issue141-builtin-dependencies.md) to store and distribute installation materials for all five languages.
+
+[TypeScript and Go: entry points, dependencies, offline materials and upgrade](docs/en/issue138-typescript-go.md)

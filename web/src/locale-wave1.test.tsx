@@ -25,6 +25,7 @@ function mockSettingsPanelApis(): void {
     pypi: { kind: "pypi", name: "PyPI", index_url: "https://pypi.org/simple/" },
     npm: { kind: "npm", name: "npm", index_url: "https://registry.npmjs.org/" },
     maven: { kind: "maven", name: "Maven", index_url: "https://repo1.maven.org/maven2/" },
+    goproxy: { kind: "goproxy", name: "Go Modules", index_url: "https://goproxy.cn" },
   });
   vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
 }
