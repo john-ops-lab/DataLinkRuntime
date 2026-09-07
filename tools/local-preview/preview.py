@@ -299,7 +299,25 @@ def check_compatibility(previous, target):
         raise RuntimeError(
             "Existing deployment must be adopted before automatic updates"
         )
-    if git("merge-base", previous["sha"], target["sha"]).strip() != previous["sha"]:
+    anchor = previous.get("history_anchor_sha", previous["sha"])
+    if not re.fullmatch(r"[0-9a-f]{40}", anchor):
+        raise ValueError("Invalid manually reconciled history anchor")
+    if anchor != previous["sha"]:
+        # A private, manually recorded anchor can reconcile rewritten documentation
+        # history only when every deployed source path is exactly unchanged.
+        git(
+            "diff",
+            "--exit-code",
+            previous["sha"],
+            anchor,
+            "--",
+            "backend",
+            "web",
+            "docker",
+            "docker-compose.yml",
+            ".dockerignore",
+        )
+    if git("merge-base", anchor, target["sha"]).strip() != anchor:
         raise ValueError("History diverged; automatic downgrade is refused")
     current = vm_command(
         "docker",

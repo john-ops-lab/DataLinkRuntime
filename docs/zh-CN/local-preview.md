@@ -25,7 +25,7 @@ python3 "$DLR_PREVIEW_HOME/preview.py" copy-token
 
 ## 升级规则
 
-候选必须包含已部署 Git 提交；当前数据库 revision 必须位于唯一、完整、未改变既有 revision/down_revision 的 Alembic 迁移链中。历史已应用迁移的函数修复允许存在，实际升级只执行当前数据库版本之后的迁移。历史分叉或无法向前迁移时记录原因，保留现场，不自动降级或另建环境。
+候选必须包含已部署 Git 提交；当前数据库 revision 必须位于唯一、完整、未改变既有 revision/down_revision 的 Alembic 迁移链中。历史已应用迁移的函数修复允许存在，实际升级只执行当前数据库版本之后的迁移。历史分叉或无法向前迁移时记录原因，保留现场，不自动降级或另建环境。若人工重写仅涉及非运行文件，可在私有 `state.json` 登记 `history_anchor_sha`；控制器仍核对全部部署源码路径完全相同，并要求候选继承该锚点。实际运行 SHA 与镜像记录保留原值，只有完成新部署才更新。
 
 构建发生在无宿主目录共享、无 SSH Agent 转发的 VM 内，源码使用完整 SHA 提取。宿主 GitHub 登录凭据不传给 VM。镜像采用完整 SHA 标签并记录 image ID；构建完成后再次检查目标、HEAD、最新 CI 和数据库版本，才进入切换。
 

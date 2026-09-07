@@ -157,6 +157,36 @@ class ControllerTests(unittest.TestCase):
         self.mocks["eligible"].assert_not_called()
 
 
+class HistoryReconciliationTests(unittest.TestCase):
+    def test_private_anchor_requires_identical_runtime_and_forward_history(self):
+        previous = {"sha": A, "history_anchor_sha": B, "schema": "1"}
+        target = {"sha": "c" * 40}
+        with (
+            patch.object(preview, "git", side_effect=["", B]),
+            patch.object(preview, "container", return_value="example-db"),
+            patch.object(
+                preview, "vm_command", return_value=SimpleNamespace(stdout="1")
+            ),
+            patch.object(
+                preview,
+                "migration_files",
+                return_value={"1.py": "revision='1'\ndown_revision=None"},
+            ),
+        ):
+            preview.check_compatibility(previous, target)
+            self.assertEqual(target["schema"], "1")
+        with (
+            patch.object(preview, "git", side_effect=RuntimeError("runtime differs")),
+            self.assertRaises(RuntimeError),
+        ):
+            preview.check_compatibility(previous, target)
+        with (
+            patch.object(preview, "git", side_effect=["", A]),
+            self.assertRaises(ValueError),
+        ):
+            preview.check_compatibility(previous, target)
+
+
 class PrivateConfigurationTests(unittest.TestCase):
     def test_missing_and_unsafe_deployment_settings_fail_closed(self):
         config = {
