@@ -15,7 +15,6 @@ import { ApiError, api } from "../api";
 import { currentSystemLocale } from "../i18n";
 import type {
   Adapter,
-  PortableFile,
   PortablePackage,
   PortableVariant,
   TemplateTheme,
@@ -42,11 +41,6 @@ interface Props extends PortableDialogRequest {
   onAdapterCreated?: (adapter: Adapter) => void;
   onTemplateSaved?: (slug: string) => void;
 }
-interface VariantDraft {
-  config: string;
-  input: string;
-  output: string;
-}
 const json = (value: unknown) => JSON.stringify(value, null, 2);
 
 function download(blob: Blob, name: string): void {
@@ -56,17 +50,6 @@ function download(blob: Blob, name: string): void {
   link.download = name;
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-async function exampleFile(file: File): Promise<PortableFile> {
-  const data = new Uint8Array(await file.arrayBuffer());
-  let binary = "";
-  for (const byte of data) binary += String.fromCharCode(byte);
-  return {
-    filename: file.name,
-    content_type: file.type || "application/octet-stream",
-    data_base64: btoa(binary),
-  };
 }
 
 export default function PortablePackageDialog({
@@ -82,12 +65,10 @@ export default function PortablePackageDialog({
 }: Props) {
   const { t } = useTranslation("portable");
   const [value, setValue] = useState<PortablePackage | null>(null);
-  const [drafts, setDrafts] = useState<VariantDraft[]>([]);
   const [themes, setThemes] = useState<TemplateTheme[]>([]);
   const [includeJson, setIncludeJson] = useState(false);
   const [includeFiles, setIncludeFiles] = useState(false);
   const [workerId, setWorkerId] = useState<number | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(!mode.startsWith("import"));
   const [savedName, setSavedName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -125,14 +106,6 @@ export default function PortablePackageDialog({
 
   const setPackage = useCallback((next: PortablePackage): void => {
     setValue(next);
-    setDrafts(
-      next.variants.map((variant) => ({
-        config: json(variant.runtime_config),
-        input: json(variant.input_skeleton),
-        output: json(variant.output_example),
-      })),
-    );
-    setConfirmed(false);
   }, []);
 
   const errorText = useCallback(
@@ -245,7 +218,6 @@ export default function PortablePackageDialog({
         );
         if (kind === "json") setIncludeJson(checked);
         else setIncludeFiles(checked);
-        setConfirmed(false);
       }
     } catch (cause) {
       if (mounted.current) setError(errorText(cause));
@@ -263,53 +235,15 @@ export default function PortablePackageDialog({
         i === index ? { ...item, ...patch } : item,
       ),
     });
-    setConfirmed(false);
-  }
-
-  function patchDraft(
-    index: number,
-    key: keyof VariantDraft,
-    text: string,
-  ): void {
-    setDrafts((items) =>
-      items.map((item, i) => (i === index ? { ...item, [key]: text } : item)),
-    );
-    setConfirmed(false);
-  }
-
-  function parsedObject(text: string): Record<string, unknown> {
-    const result: unknown = JSON.parse(text);
-    if (result === null || typeof result !== "object" || Array.isArray(result))
-      throw new Error("object required");
-    return result as Record<string, unknown>;
   }
 
   async function submit(): Promise<void> {
-    if (!value || !confirmed || inFlight.current) return;
+    if (!value || inFlight.current) return;
     if (!value.name.trim()) {
       setError(t("nameRequired"));
       return;
     }
-    let reviewed: PortablePackage;
-    try {
-      reviewed = {
-        ...value,
-        name: value.name.trim(),
-        variants: value.variants.map((variant, index) => {
-          const config = parsedObject(drafts[index].config);
-          for (const key of variant.required_parameters) delete config[key];
-          return {
-            ...variant,
-            runtime_config: config,
-            input_skeleton: parsedObject(drafts[index].input),
-            output_example: parsedObject(drafts[index].output),
-          };
-        }),
-      };
-    } catch {
-      setError(t("invalidJson"));
-      return;
-    }
+    const reviewed: PortablePackage = { ...value, name: value.name.trim() };
     inFlight.current = true;
     setBusy(true);
     setError(null);
@@ -362,27 +296,18 @@ export default function PortablePackageDialog({
             </Button>
           ) : (
             <>
-              <Checkbox
-                className="portable-footer-confirm"
-                checked={confirmed}
-                disabled={busy || !value}
-                onChange={(event) => setConfirmed(event.target.checked)}
-              >
-                {template && !exporting
-                  ? t("confirmShared")
-                  : t("confirmReviewed")}
-              </Checkbox>
               <div className="portable-footer-actions">
                 <Button disabled={busy} onClick={onClose}>
                   {t("cancel")}
                 </Button>
                 <Button
                   type="primary"
+                  autoInsertSpace={false}
                   loading={busy}
-                  disabled={!value || !confirmed || workerRequired || busy}
+                  disabled={!value || workerRequired || busy}
                   onClick={() => void submit()}
                 >
-                  {exporting ? t("download") : t("confirmCreate")}
+                  {exporting ? t("download") : importing ? t("import") : t("save")}
                 </Button>
               </div>
             </>
@@ -459,8 +384,6 @@ export default function PortablePackageDialog({
                       disabled={busy}
                       onClick={() => {
                         setValue(null);
-                        setDrafts([]);
-                        setConfirmed(false);
                         setError(null);
                       }}
                     >
@@ -481,18 +404,16 @@ export default function PortablePackageDialog({
                       aria-describedby={error ? "portable-error" : undefined}
                       onChange={(event) => {
                         setValue({ ...value, name: event.target.value });
-                        setConfirmed(false);
                       }}
                     />
                   </label>
                   <label className="portable-field">
                     <span>{t("description")}</span>
                     <Input.TextArea
-                      rows={2}
+                      rows={4}
                       value={value.description}
                       onChange={(event) => {
                         setValue({ ...value, description: event.target.value });
-                        setConfirmed(false);
                       }}
                     />
                   </label>
@@ -520,40 +441,11 @@ export default function PortablePackageDialog({
                           }
                           onChange={(category) => {
                             setValue({ ...value, category });
-                            setConfirmed(false);
-                          }}
-                        />
-                      </label>
-                      <label className="portable-field">
-                        <span>{t("tags")}</span>
-                        <Select
-                          mode="tags"
-                          aria-label={t("tags")}
-                          disabled={busy || exporting}
-                          value={value.tags}
-                          onChange={(tags: string[]) => {
-                            setValue({ ...value, tags });
-                            setConfirmed(false);
                           }}
                         />
                       </label>
                     </>
                   )}
-                  <label className="portable-field">
-                    <span>{t("instructions")}</span>
-                    <Input.TextArea
-                      rows={4}
-                      value={value.instructions}
-                      readOnly={mode === "exportTemplate"}
-                      onChange={(event) => {
-                        setValue({
-                          ...value,
-                          instructions: event.target.value,
-                        });
-                        setConfirmed(false);
-                      }}
-                    />
-                  </label>
                 </section>
                 <section className="portable-page-section">
                   <h3>{t("contentSettings")}</h3>
@@ -592,75 +484,6 @@ export default function PortablePackageDialog({
                               }
                             />
                           </label>
-                          <details>
-                            <summary>{t("parametersAndExamples")}</summary>
-                            <div className="portable-optional-content">
-                              <label className="portable-field">
-                                <span>{t("config")}</span>
-                                <Input.TextArea
-                                  rows={5}
-                                  value={drafts[index].config}
-                                  readOnly={mode === "exportTemplate"}
-                                  onChange={(event) =>
-                                    patchDraft(
-                                      index,
-                                      "config",
-                                      event.target.value,
-                                    )
-                                  }
-                                />
-                              </label>
-                              <label className="portable-field">
-                                <span>{t("pendingParameters")}</span>
-                                <Select
-                                  mode="tags"
-                                  aria-label={t("pendingParameters")}
-                                  disabled={busy || mode === "exportTemplate"}
-                                  value={variant.required_parameters}
-                                  onChange={(keys: string[]) =>
-                                    patchVariant(index, {
-                                      required_parameters: keys,
-                                    })
-                                  }
-                                />
-                              </label>
-                              <p>{t("pendingNote")}</p>
-                              {template && (
-                                <>
-                                  <label className="portable-field">
-                                    <span>{t("inputExample")}</span>
-                                    <Input.TextArea
-                                      rows={4}
-                                      value={drafts[index].input}
-                                      readOnly={!editableTemplate}
-                                      onChange={(event) =>
-                                        patchDraft(
-                                          index,
-                                          "input",
-                                          event.target.value,
-                                        )
-                                      }
-                                    />
-                                  </label>
-                                  <label className="portable-field">
-                                    <span>{t("outputExample")}</span>
-                                    <Input.TextArea
-                                      rows={4}
-                                      value={drafts[index].output}
-                                      readOnly={!editableTemplate}
-                                      onChange={(event) =>
-                                        patchDraft(
-                                          index,
-                                          "output",
-                                          event.target.value,
-                                        )
-                                      }
-                                    />
-                                  </label>
-                                </>
-                              )}
-                            </div>
-                          </details>
                         </div>
                       ),
                     }))}
@@ -743,91 +566,6 @@ export default function PortablePackageDialog({
                     </ul>
                   </section>
                 )}
-                {template && (
-                  <details>
-                    <summary>{t("exampleFiles")}</summary>
-                    <p>{t("examplesNote")}</p>
-                    <ul>
-                      {value.example_files.map((file, index) => (
-                        <li key={index}>
-                          {file.filename}{" "}
-                          <Button
-                            size="small"
-                            onClick={() =>
-                              download(
-                                new Blob([
-                                  Uint8Array.from(atob(file.data_base64), (c) =>
-                                    c.charCodeAt(0),
-                                  ),
-                                ]),
-                                file.filename,
-                              )
-                            }
-                          >
-                            {t("inspectFile")}
-                          </Button>
-                          {editableTemplate && (
-                            <Button
-                              size="small"
-                              onClick={() => {
-                                setValue({
-                                  ...value,
-                                  example_files: value.example_files.filter(
-                                    (_, i) => i !== index,
-                                  ),
-                                });
-                                setConfirmed(false);
-                              }}
-                            >
-                              {t("remove")}
-                            </Button>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                    {editableTemplate && (
-                      <label className="portable-field">
-                        <span>{t("addExamples")}</span>
-                        <input
-                          type="file"
-                          multiple
-                          disabled={busy}
-                          onChange={(event) => {
-                            const files = Array.from(event.target.files ?? []);
-                            event.target.value = "";
-                            if (
-                              files.length + value.example_files.length > 9 ||
-                              files.reduce(
-                                (total, file) => total + file.size,
-                                0,
-                              ) >
-                                16 * 1024 * 1024
-                            ) {
-                              setError(t("tooLarge"));
-                              return;
-                            }
-                            setBusy(true);
-                            void Promise.all(files.map(exampleFile))
-                              .then((items) => {
-                                if (mounted.current) {
-                                  setValue({
-                                    ...value,
-                                    example_files: [
-                                      ...value.example_files,
-                                      ...items,
-                                    ],
-                                  });
-                                  setConfirmed(false);
-                                }
-                              })
-                              .catch(() => setError(t("failed")))
-                              .finally(() => setBusy(false));
-                          }}
-                        />
-                      </label>
-                    )}
-                  </details>
-                )}
                 {(value.license || value.provenance) && (
                   <details>
                     <summary>{t("attribution")}</summary>
@@ -868,7 +606,6 @@ export default function PortablePackageDialog({
                           }))}
                         onChange={(id: number | undefined) => {
                           setWorkerId(id ?? null);
-                          setConfirmed(false);
                         }}
                       />
                     </label>

@@ -64,7 +64,6 @@ def _scenario_summary(scenario: TemplateScenarioAsset) -> TemplateScenarioSummar
         vendor=scenario.vendor,
         adapter_type=scenario.adapter_type,
         protocols=list(scenario.protocols),
-        tags=list(scenario.tags),
         logo_key=scenario.logo_key,
         template_version=scenario.version,
         updated_at=scenario.updated_at,
@@ -157,7 +156,6 @@ def list_template_scenarios(
                     item.summary.zh_cn,
                     item.summary.en,
                     item.vendor,
-                    *item.tags,
                 )
             ).casefold()
         ]
@@ -203,7 +201,6 @@ def get_template_scenario(
     summary = _scenario_summary(scenario)
     return TemplateScenarioDetail(
         **summary.model_dump(),
-        details=_localized(scenario.details),
     )
 
 
@@ -230,8 +227,6 @@ def get_template_variant(
         template_version=scenario.version,
         code=loaded.code,
         requirements=variant.requirements,
-        input_skeleton=copy.deepcopy(variant.input_skeleton),
-        output_example=copy.deepcopy(variant.output_example),
         runtime_config=copy.deepcopy(variant.runtime_config),
     )
 

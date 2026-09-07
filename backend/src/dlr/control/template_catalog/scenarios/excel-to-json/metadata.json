@@ -6,24 +6,14 @@
     "en": "Excel to JSON"
   },
   "summary": {
-    "zh-CN": "读取 Excel 文件中指定的工作表和区域，转换成 JSON 列表。",
-    "en": "Read a worksheet and cell range from an Excel file as JSON."
-  },
-  "details": {
-    "zh-CN": "复制后选择运行用的 Excel 文件；在代码开头设置工作表和读取范围，保存后运行。",
-    "en": "Select the Excel input file, set the worksheet and range at the top of the code, then save and run."
+    "zh-CN": "读取 Excel 文件中指定的工作表和区域，转换成 JSON 列表。\n\n复制后选择运行用的 Excel 文件；在代码开头设置工作表和读取范围，保存后运行。",
+    "en": "Read a worksheet and cell range from an Excel file as JSON.\n\nSelect the Excel input file, set the worksheet and range at the top of the code, then save and run."
   },
   "vendor": "DLR",
   "adapter_type": "task",
   "protocols": [
     "XLSX",
     "XLS"
-  ],
-  "tags": [
-    "Excel",
-    "XLSX",
-    "XLS",
-    "JSON"
   ],
   "logo_key": "file-excel",
   "version": "1.0.1",
@@ -39,34 +29,10 @@
       "code_resource": "variants/excel-to-json/python.py",
       "code_sha256": "eb7711049bd7957447d90136f4cfe666320bfd5715a1ea222f86538e5bff8bda",
       "requirements": "openpyxl==3.1.5\nxlrd==2.0.2",
-      "input_skeleton": {
-        "sheet": "Sheet1",
-        "range": "A1:D100"
-      },
       "runtime_config": {},
       "provenance_ids": [
         "excel-formats-and-libraries-2026-09-05"
-      ],
-      "output_example": {
-        "sheets": [
-          "Sheet1"
-        ],
-        "rows": [
-          {
-            "name": "example",
-            "value": 1
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null,
-        "active_content": {
-          "executed": false,
-          "formulas_replaced_with_null": 0,
-          "legacy_xls_data_only": false,
-          "ooxml_preflight": true
-        }
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -74,34 +40,10 @@
       "code_resource": "variants/excel-to-json/javascript.mjs",
       "code_sha256": "14295f210fd8145f511d1e931405d90d54a1fb5dec1b7b41198d7975bf85ce5f",
       "requirements": "@e965/xlsx@0.20.3",
-      "input_skeleton": {
-        "sheet": "Sheet1",
-        "range": "A1:D100"
-      },
       "runtime_config": {},
       "provenance_ids": [
         "excel-formats-and-libraries-2026-09-05"
-      ],
-      "output_example": {
-        "sheets": [
-          "Sheet1"
-        ],
-        "rows": [
-          {
-            "name": "example",
-            "value": 1
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null,
-        "active_content": {
-          "executed": false,
-          "formulas_replaced_with_null": 0,
-          "legacy_xls_data_only": false,
-          "ooxml_preflight": true
-        }
-      }
+      ]
     },
     {
       "language": "java",
@@ -109,34 +51,10 @@
       "code_resource": "variants/excel-to-json/java.java",
       "code_sha256": "9431483df1676b44e9970cc4ef56d762b5d7a17bbfbfc398a6df6aa3c9fd8062",
       "requirements": "org.apache.poi:poi-ooxml:5.4.1\norg.apache.poi:poi:5.4.1",
-      "input_skeleton": {
-        "sheet": "Sheet1",
-        "range": "A1:D100"
-      },
       "runtime_config": {},
       "provenance_ids": [
         "excel-formats-and-libraries-2026-09-05"
-      ],
-      "output_example": {
-        "sheets": [
-          "Sheet1"
-        ],
-        "rows": [
-          {
-            "name": "example",
-            "value": 1
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null,
-        "active_content": {
-          "executed": false,
-          "formulas_replaced_with_null": 0,
-          "legacy_xls_data_only": false,
-          "ooxml_preflight": true
-        }
-      }
+      ]
     }
   ]
 }

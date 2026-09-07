@@ -6,24 +6,14 @@
     "en": "CSV to JSON"
   },
   "summary": {
-    "zh-CN": "把 CSV 文本或文件转换成 JSON 列表。",
-    "en": "Convert CSV text or a file into a JSON list."
-  },
-  "details": {
-    "zh-CN": "复制后在代码开头调整处理规则，运行时传入待处理数据。",
-    "en": "Adjust the processing rules at the top of the copied code and provide data when running."
+    "zh-CN": "把 CSV 文本或文件转换成 JSON 列表。\n\n复制后在代码开头调整处理规则，运行时传入待处理数据。",
+    "en": "Convert CSV text or a file into a JSON list.\n\nAdjust the processing rules at the top of the copied code and provide data when running."
   },
   "vendor": "DLR",
   "adapter_type": "task",
   "protocols": [
     "CSV",
     "Text"
-  ],
-  "tags": [
-    "CSV",
-    "JSON",
-    "file",
-    "transform"
   ],
   "logo_key": "file-csv",
   "version": "1.0.1",
@@ -39,26 +29,10 @@
       "code_resource": "variants/csv-to-json/python.py",
       "code_sha256": "9fea7149b3bd5e4161b3a6f0dca20ff77fba11edf62ebeb0fd5d5b25dc4c5c10",
       "requirements": "",
-      "input_skeleton": {
-        "content": "name,value\nexample,1\n"
-      },
       "runtime_config": {},
       "provenance_ids": [
         "csv-rfc4180"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "name": "example",
-            "value": "1"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null,
-        "encoding": "utf-8-sig",
-        "delimiter": ","
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -66,26 +40,10 @@
       "code_resource": "variants/csv-to-json/javascript.mjs",
       "code_sha256": "34bbfb2cf41f70d604bbd194c9afbdb04ddd946d73afce5e294739c65d49dc65",
       "requirements": "",
-      "input_skeleton": {
-        "content": "name,value\nexample,1\n"
-      },
       "runtime_config": {},
       "provenance_ids": [
         "csv-rfc4180"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "name": "example",
-            "value": "1"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null,
-        "encoding": "utf-8",
-        "delimiter": ","
-      }
+      ]
     },
     {
       "language": "java",
@@ -93,26 +51,10 @@
       "code_resource": "variants/csv-to-json/java.java",
       "code_sha256": "729516369069e0394b74fcadcc5bebc97511d2f2f47e82f41e8b99153da2a593",
       "requirements": "",
-      "input_skeleton": {
-        "content": "name,value\nexample,1\n"
-      },
       "runtime_config": {},
       "provenance_ids": [
         "csv-rfc4180"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "name": "example",
-            "value": "1"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null,
-        "encoding": "UTF-8",
-        "delimiter": ","
-      }
+      ]
     }
   ]
 }

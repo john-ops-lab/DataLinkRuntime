@@ -6,23 +6,14 @@
     "en": "Alibaba Cloud Compute Resources"
   },
   "summary": {
-    "zh-CN": "采集 ECS 实例、云盘、网卡、镜像和伸缩组，整理资源之间的关联。",
-    "en": "Collect ECS instances, disks, network interfaces, images and scaling groups with their relationships."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "采集 ECS 实例、云盘、网卡、镜像和伸缩组，整理资源之间的关联。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Collect ECS instances, disks, network interfaces, images and scaling groups with their relationships.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "Alibaba Cloud",
   "adapter_type": "task",
   "protocols": [
     "HTTPS",
     "Alibaba Cloud OpenAPI"
-  ],
-  "tags": [
-    "ECS",
-    "topology",
-    "CMDB"
   ],
   "logo_key": "alicloud-compute",
   "version": "1.0.1",
@@ -41,42 +32,13 @@
       "code_resource": "variants/alicloud-compute-container-topology/python.py",
       "code_sha256": "359e43b14fab26e9e1c8a276e766b300afc39b7bc03727d40f67c2f319852b9d",
       "requirements": "alibabacloud-tea-openapi==0.4.6",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:ecs_instance:example-resource",
-            "class": "ecs_instance",
-            "provider_type": "DescribeInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "cn-hangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -84,42 +46,13 @@
       "code_resource": "variants/alicloud-compute-container-topology/javascript.mjs",
       "code_sha256": "d014d1797dd2d234f0505182b7372c332716e0b6d29f95811483a1040693d995",
       "requirements": "@alicloud/openapi-client@0.4.15",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:ecs_instance:example-resource",
-            "class": "ecs_instance",
-            "provider_type": "DescribeInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "cn-hangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -127,42 +60,13 @@
       "code_resource": "variants/alicloud-compute-container-topology/java.java",
       "code_sha256": "0d643794e77eac290384045bffad07c73c5202d81032ef2088fb5c4eb9f65ef2",
       "requirements": "com.aliyun:tea-openapi:0.3.15",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:ecs_instance:example-resource",
-            "class": "ecs_instance",
-            "provider_type": "DescribeInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "cn-hangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

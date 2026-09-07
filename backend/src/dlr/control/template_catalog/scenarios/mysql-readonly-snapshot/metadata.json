@@ -6,23 +6,13 @@
     "en": "MySQL Query"
   },
   "summary": {
-    "zh-CN": "执行一条查询语句，将 MySQL 查询结果转成 JSON。",
-    "en": "Run a SELECT query and return MySQL rows as JSON."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "执行一条查询语句，将 MySQL 查询结果转成 JSON。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Run a SELECT query and return MySQL rows as JSON.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "MySQL",
   "adapter_type": "task",
   "protocols": [
     "MySQL"
-  ],
-  "tags": [
-    "MySQL",
-    "SQL",
-    "readonly",
-    "snapshot"
   ],
   "logo_key": "database-mysql",
   "version": "1.0.1",
@@ -38,22 +28,10 @@
       "code_resource": "variants/mysql-readonly-snapshot/python.py",
       "code_sha256": "deeca8f4b97f7b1748dabc2e6ce3b414482bd041885d5377ea3ece953beec77b",
       "requirements": "PyMySQL==1.1.1",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "mysql-9-docs"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "id": 1,
-            "name": "example"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -61,22 +39,10 @@
       "code_resource": "variants/mysql-readonly-snapshot/javascript.mjs",
       "code_sha256": "b74738f7e33dd777ebb78f0e7d7da22048a494148b6400b22158e54a65e0c5bd",
       "requirements": "mysql2@3.14.3",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "mysql-9-docs"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "id": 1,
-            "name": "example"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -84,22 +50,10 @@
       "code_resource": "variants/mysql-readonly-snapshot/java.java",
       "code_sha256": "7d556ecd30dd4013312d9d5fc1970554b7bcef61b8a0193e95974d21889f98b4",
       "requirements": "com.mysql:mysql-connector-j:9.4.0",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "mysql-9-docs"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "id": 1,
-            "name": "example"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

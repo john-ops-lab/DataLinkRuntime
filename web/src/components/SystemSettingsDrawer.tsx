@@ -1212,7 +1212,7 @@ function PackageSourcesPanel(props: {
           size="small"
           search={false}
           options={false}
-          pagination={{ pageSize: 8, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 10, pageSizeOptions: [10, 20, 50], showSizeChanger: true }}
           dataSource={visibleSources}
           className="package-source-table"
           tableLayout="fixed"

@@ -321,6 +321,11 @@ export default function AdapterCatalog({
           >
             {t("catalog.new")}
           </Button>
+          {onImport && (
+            <Button size="small" autoInsertSpace={false} disabled={busy} onClick={onImport}>
+              {t("import", { ns: "portable" })}
+            </Button>
+          )}
           <Tooltip title={t("catalog.refreshAria")}>
             <Button
               size="small"
@@ -349,7 +354,6 @@ export default function AdapterCatalog({
         </div>
       </div>
 
-      {onImport && <Button disabled={busy} onClick={onImport}>{t("importAdapter", { ns: "portable" })}</Button>}
       <div
         className="catalog-toolbar"
         data-testid="adapter-catalog-toolbar"

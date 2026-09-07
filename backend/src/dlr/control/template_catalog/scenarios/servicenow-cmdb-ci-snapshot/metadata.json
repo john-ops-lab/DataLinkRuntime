@@ -6,24 +6,14 @@
     "en": "ServiceNow Asset Collection"
   },
   "summary": {
-    "zh-CN": "按条件读取 ServiceNow 中的资产，整理成统一的资源列表。",
-    "en": "Read matching ServiceNow assets and organize them into a consistent resource list."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "按条件读取 ServiceNow 中的资产，整理成统一的资源列表。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Read matching ServiceNow assets and organize them into a consistent resource list.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "ServiceNow",
   "adapter_type": "task",
   "protocols": [
     "HTTPS",
     "ServiceNow Table API"
-  ],
-  "tags": [
-    "CMDB",
-    "cmdb_ci",
-    "ITSM",
-    "snapshot"
   ],
   "logo_key": "servicenow-cmdb",
   "version": "1.0.1",
@@ -40,42 +30,11 @@
       "code_resource": "variants/servicenow-cmdb-ci-snapshot/python.py",
       "code_sha256": "60f01f468b6b10a06d3d6dd8f8ea62dce279fdbfa597170f2fcd950fe011e70f",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "servicenow-table-api-2026-09-05",
         "servicenow-cmdb-mcp-9f0fe8f"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "servicenow:EXAMPLE_TENANT:global:cmdb_ci:example-server",
-            "class": "cmdb_ci_server",
-            "provider_type": "cmdb_ci",
-            "name": "示例服务器",
-            "account": "EXAMPLE_TENANT",
-            "region": "global",
-            "zone": null,
-            "status": "1",
-            "tags": {},
-            "attributes": {
-              "name": "示例服务器",
-              "sys_class_name": "cmdb_ci_server",
-              "install_status": "1"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -83,42 +42,11 @@
       "code_resource": "variants/servicenow-cmdb-ci-snapshot/javascript.mjs",
       "code_sha256": "35754bc66ec0d2753c66482249c0e58bd91bce488c9354f17c723fb48686667b",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "servicenow-table-api-2026-09-05",
         "servicenow-cmdb-mcp-9f0fe8f"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "servicenow:EXAMPLE_TENANT:global:cmdb_ci:example-server",
-            "class": "cmdb_ci_server",
-            "provider_type": "cmdb_ci",
-            "name": "示例服务器",
-            "account": "EXAMPLE_TENANT",
-            "region": "global",
-            "zone": null,
-            "status": "1",
-            "tags": {},
-            "attributes": {
-              "name": "示例服务器",
-              "sys_class_name": "cmdb_ci_server",
-              "install_status": "1"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -126,42 +54,11 @@
       "code_resource": "variants/servicenow-cmdb-ci-snapshot/java.java",
       "code_sha256": "e736083b086baaff269a2b49f88156beef42bd5beed368e36b861bc613897c35",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "servicenow-table-api-2026-09-05",
         "servicenow-cmdb-mcp-9f0fe8f"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "servicenow:EXAMPLE_TENANT:global:cmdb_ci:example-server",
-            "class": "cmdb_ci_server",
-            "provider_type": "cmdb_ci",
-            "name": "示例服务器",
-            "account": "EXAMPLE_TENANT",
-            "region": "global",
-            "zone": null,
-            "status": "1",
-            "tags": {},
-            "attributes": {
-              "name": "示例服务器",
-              "sys_class_name": "cmdb_ci_server",
-              "install_status": "1"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

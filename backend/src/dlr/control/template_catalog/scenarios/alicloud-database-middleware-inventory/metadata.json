@@ -6,24 +6,14 @@
     "en": "Alibaba Cloud Databases & Services"
   },
   "summary": {
-    "zh-CN": "采集 RDS、Redis、MongoDB、NAS 及账号下的身份与安全资源。",
-    "en": "Collect RDS, Redis, MongoDB, NAS, identity and security resources."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "采集 RDS、Redis、MongoDB、NAS 及账号下的身份与安全资源。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Collect RDS, Redis, MongoDB, NAS, identity and security resources.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "Alibaba Cloud",
   "adapter_type": "task",
   "protocols": [
     "HTTPS",
     "Alibaba Cloud OpenAPI"
-  ],
-  "tags": [
-    "RDS",
-    "Redis",
-    "OSS",
-    "security"
   ],
   "logo_key": "alicloud-data",
   "version": "1.0.1",
@@ -42,42 +32,13 @@
       "code_resource": "variants/alicloud-database-middleware-inventory/python.py",
       "code_sha256": "41df6c6bcfc20f81835d79c11d4e543e9331a86830f6da906b513cdef996a242",
       "requirements": "alibabacloud-tea-openapi==0.4.6",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:rds:example-resource",
-            "class": "rds",
-            "provider_type": "DescribeDBInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "cn-hangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeDBInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -85,42 +46,13 @@
       "code_resource": "variants/alicloud-database-middleware-inventory/javascript.mjs",
       "code_sha256": "bc5a679ae3ac2db7ea6c905e9bededa85f6506e33238189de2014bd498878a83",
       "requirements": "@alicloud/openapi-client@0.4.15",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:rds:example-resource",
-            "class": "rds",
-            "provider_type": "DescribeDBInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "cn-hangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeDBInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -128,42 +60,13 @@
       "code_resource": "variants/alicloud-database-middleware-inventory/java.java",
       "code_sha256": "2a7d5b119d15ff1e2d6d6f45599b14f7b4eb7a25d80f692b7c98d6aa40bb9206",
       "requirements": "com.aliyun:tea-openapi:0.3.15",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-alicloud-d619a9d",
         "alicloud-openapi-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "alicloud:EXAMPLE_ACCOUNT:cn-hangzhou:rds:example-resource",
-            "class": "rds",
-            "provider_type": "DescribeDBInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "cn-hangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeDBInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

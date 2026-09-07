@@ -6,24 +6,14 @@
     "en": "S3 Object Listing & Reading"
   },
   "summary": {
-    "zh-CN": "列出存储桶中的对象，也可以读取指定对象的内容。",
-    "en": "List objects in a bucket and optionally read selected objects."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "列出存储桶中的对象，也可以读取指定对象的内容。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "List objects in a bucket and optionally read selected objects.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "S3 Compatible",
   "adapter_type": "task",
   "protocols": [
     "HTTPS",
     "S3"
-  ],
-  "tags": [
-    "S3",
-    "object storage",
-    "list",
-    "range"
   ],
   "logo_key": "storage-s3",
   "version": "1.0.1",
@@ -39,29 +29,10 @@
       "code_resource": "variants/s3-compatible-list-read/python.py",
       "code_sha256": "2f83fc4909d84648a69b197aaa362b24b1373c121f79f95b328676d5728e83b7",
       "requirements": "boto3==1.40.21",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "s3-api-2006-03-01"
-      ],
-      "output_example": {
-        "objects": [
-          {
-            "key": "exports/items.json",
-            "size": 128,
-            "etag": "example-etag",
-            "lastModified": "2026-01-01T00:00:00Z"
-          }
-        ],
-        "contents": [],
-        "summary": {
-          "objects": 1,
-          "bytes_read": 0,
-          "pages": 1
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -69,29 +40,10 @@
       "code_resource": "variants/s3-compatible-list-read/javascript.mjs",
       "code_sha256": "7e32d2618013ccb4373eb3d71a98413d2d50da7ff6f241e27e6f2a4eeb16b6bd",
       "requirements": "@aws-sdk/client-s3@3.883.0",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "s3-api-2006-03-01"
-      ],
-      "output_example": {
-        "objects": [
-          {
-            "key": "exports/items.json",
-            "size": 128,
-            "etag": "example-etag",
-            "lastModified": "2026-01-01T00:00:00Z"
-          }
-        ],
-        "contents": [],
-        "summary": {
-          "objects": 1,
-          "bytes_read": 0,
-          "pages": 1
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -99,29 +51,10 @@
       "code_resource": "variants/s3-compatible-list-read/java.java",
       "code_sha256": "9463c7909278c672522cc7e6474d175557e33d46e3f3d0b6e22a2471bdf14f9d",
       "requirements": "software.amazon.awssdk:s3:2.32.27",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "s3-api-2006-03-01"
-      ],
-      "output_example": {
-        "objects": [
-          {
-            "key": "exports/items.json",
-            "size": 128,
-            "etag": "example-etag",
-            "lastModified": "2026-01-01T00:00:00Z"
-          }
-        ],
-        "contents": [],
-        "summary": {
-          "objects": 1,
-          "bytes_read": 0,
-          "pages": 1
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

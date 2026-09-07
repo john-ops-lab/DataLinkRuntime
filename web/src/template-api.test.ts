@@ -17,8 +17,6 @@ const variant: TemplateVariant = {
   template_version: "1.0.0",
   code: "def handle(context, input):\n    return input\n",
   requirements: "httpx==0.28.1",
-  input_skeleton: {},
-  output_example: {},
   runtime_config: {},
 };
 

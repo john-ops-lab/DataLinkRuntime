@@ -56,17 +56,10 @@ def export_adapter(
             409, "portable_saved_version_required", "Save the adapter before exporting"
         )
     config = dict(version.runtime_config)
-    pending = adapter.configuration_notes.get("required_parameters", [])
-    pending = (
-        [key for key in pending if isinstance(key, str) and key not in config]
-        if isinstance(pending, list)
-        else []
-    )
     package = PortablePackage(
         object_type="template" if options.as_template else "adapter",
         name=adapter.name,
         description=adapter.description,
-        instructions=str(adapter.configuration_notes.get("instructions", "")),
         license=str(adapter.configuration_notes.get("license", "")),
         provenance=str(adapter.configuration_notes.get("provenance", "")),
         adapter_type=adapter.adapter_type,  # type: ignore[arg-type]
@@ -77,9 +70,6 @@ def export_adapter(
                 code=version.code,
                 requirements=version.requirements,
                 runtime_config={} if options.as_template else config,
-                required_parameters=list(dict.fromkeys([*config, *pending]))
-                if options.as_template
-                else pending,
             )
         ],
     )
@@ -173,10 +163,8 @@ def import_adapter(
         runtime_worker_id=request.runtime_worker_id,
         owner_user_id=principal.user_id if principal.kind == "account" else None,
         configuration_notes={
-            "required_parameters": variant.required_parameters,
             "input_required": package.input.source_type if not package.input.included else "none",
             "review_environment": True,
-            "instructions": package.instructions,
             "provenance": package.provenance,
             "license": package.license,
         },

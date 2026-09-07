@@ -6,23 +6,13 @@
     "en": "PostgreSQL Query"
   },
   "summary": {
-    "zh-CN": "执行一条查询语句，将 PostgreSQL 查询结果转成 JSON。",
-    "en": "Run a SELECT query and return PostgreSQL rows as JSON."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "执行一条查询语句，将 PostgreSQL 查询结果转成 JSON。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Run a SELECT query and return PostgreSQL rows as JSON.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "PostgreSQL",
   "adapter_type": "task",
   "protocols": [
     "PostgreSQL"
-  ],
-  "tags": [
-    "PostgreSQL",
-    "SQL",
-    "readonly",
-    "snapshot"
   ],
   "logo_key": "database-postgresql",
   "version": "1.0.1",
@@ -38,22 +28,10 @@
       "code_resource": "variants/postgresql-readonly-snapshot/python.py",
       "code_sha256": "703a7e6a613a4282f96c310ab8c3585d91d3255f971bf6b44cdcb9e1404f0e15",
       "requirements": "psycopg[binary]==3.2.9",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "postgresql-17-docs"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "id": 1,
-            "name": "example"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -61,22 +39,10 @@
       "code_resource": "variants/postgresql-readonly-snapshot/javascript.mjs",
       "code_sha256": "1e361f2b0d17261124b6526ad154c3ab836d2c24a5ac90864bce6b9049df45ab",
       "requirements": "pg@8.16.3",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "postgresql-17-docs"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "id": 1,
-            "name": "example"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -84,22 +50,10 @@
       "code_resource": "variants/postgresql-readonly-snapshot/java.java",
       "code_sha256": "7df53c103ec92f559aa0871780d2e63ddd4c285f5bbe417c938e7283c47796bf",
       "requirements": "org.postgresql:postgresql:42.7.7",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "postgresql-17-docs"
-      ],
-      "output_example": {
-        "rows": [
-          {
-            "id": 1,
-            "name": "example"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

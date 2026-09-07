@@ -19,9 +19,9 @@ Comments beside remote-write settings explain their effect. Templates that suppo
 
 ## When input is needed
 
-File processing, Webhooks, and tasks with per-run parameters provide input examples. Use them to configure files or request data. For other tasks, edit the code configuration section; where supported, execution input can override settings for debugging.
+For file processing, Webhooks and tasks with per-run parameters, configure input files or request data according to the description and fields read by the code. For other tasks, edit the code configuration section; where supported, execution input can override settings for debugging.
 
-CSV can accept text directly; Excel needs an execution-input file. Disabling Managed Input Store does not block browsing or copying, but file processing still needs an input path supported by the deployment. Result examples help explain what the template produces.
+CSV can accept text directly; Excel needs an execution-input file. Disabling Managed Input Store does not block browsing or copying, but file processing still needs an input path supported by the deployment. The code defines the returned result.
 
 ## Further integration
 

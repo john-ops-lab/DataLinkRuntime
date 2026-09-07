@@ -65,10 +65,6 @@ function localized(value: LocalizedText): string {
   return value[currentSystemLocale()];
 }
 
-function jsonText(value: Record<string, unknown>): string {
-  return JSON.stringify(value, null, 2);
-}
-
 function TemplateCard({
   scenario,
   onOpen,
@@ -422,7 +418,7 @@ function GalleryList({
       </span>
       <header className="template-gallery-hero">
         <Typography.Title level={1}>{t("gallery.title")}</Typography.Title>
-        <Button onClick={onImport}>{t("importTemplate", { ns: "portable" })}</Button>
+        <Button autoInsertSpace={false} onClick={onImport}>{t("import", { ns: "portable" })}</Button>
         <Input
           size="large"
           allowClear
@@ -760,14 +756,6 @@ function TemplateDetail({
       <section className="template-recipe-facts">
         <h3>{t("detail.requirements")}</h3>
         <pre tabIndex={0}>{variant.requirements || "—"}</pre>
-        {Object.keys(variant.input_skeleton).length > 0 && <>
-          <h3>{t("detail.inputSkeleton")}</h3>
-          <pre tabIndex={0}>{jsonText(variant.input_skeleton)}</pre>
-        </>}
-        {variant.output_example && Object.keys(variant.output_example).length > 0 && <>
-          <h3>{t("detail.outputExample")}</h3>
-          <pre tabIndex={0}>{jsonText(variant.output_example)}</pre>
-        </>}
       </section>
     </>
   );
@@ -794,7 +782,6 @@ function TemplateDetail({
         <div className="template-detail-title">
           <p>{detail.vendor} · {t(`source.${detail.source ?? "system"}`, { ns: "portable" })}</p>
           <Typography.Title level={1}>{localized(detail.title)}</Typography.Title>
-          <Typography.Paragraph>{localized(detail.summary)}</Typography.Paragraph>
           <div className="template-detail-meta">
             <Tag>{t(`type.${detail.adapter_type}`)}</Tag>
             {detail.protocols.map((protocol) => <Tag key={protocol}>{protocol}</Tag>)}
@@ -811,10 +798,10 @@ function TemplateDetail({
       </header>
 
       <div className="template-detail-layout">
-        {localized(detail.details).trim() && <div className="template-detail-overview">
+        {localized(detail.summary).trim() && <div className="template-detail-overview">
           <section className="template-detail-panel">
             <h2>{t("detail.purpose")}</h2>
-            <p>{localized(detail.details)}</p>
+            <p>{localized(detail.summary)}</p>
           </section>
         </div>}
 

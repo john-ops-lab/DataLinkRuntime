@@ -212,13 +212,13 @@ export const api = {
     method: "POST", body: JSON.stringify(value),
   }, "blob"),
   importAdapterPackage: (value: PortablePackage, workerId: number | null): Promise<Adapter> => request("/api/portable/adapters", {
-    method: "POST", body: JSON.stringify({ package: value, runtime_worker_id: workerId, configuration_reviewed: true }),
+    method: "POST", body: JSON.stringify({ package: value, runtime_worker_id: workerId }),
   }),
   saveTemplatePackage: (value: PortablePackage, options: { adapterId?: number; slug?: string; expectedVersion?: string }): Promise<TemplateScenarioDetail> => {
     const path = options.slug ? `/api/templates/scenarios/${encodeURIComponent(options.slug)}`
       : options.adapterId ? `/api/adapters/${options.adapterId}/templates` : "/api/portable/templates";
     return request(path, { method: options.slug ? "PUT" : "POST", body: JSON.stringify({
-      package: value, sharing_confirmed: true, expected_version: options.expectedVersion,
+      package: value, expected_version: options.expectedVersion,
     }) });
   },
   deleteUserTemplate: (slug: string, expectedVersion: string): Promise<void> => request(

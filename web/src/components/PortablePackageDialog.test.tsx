@@ -17,9 +17,7 @@ function packageValue(
     object_type: type,
     name: "Portable fixture",
     description: "Reusable logic",
-    instructions: "Configure target",
     category: "other",
-    tags: [],
     adapter_type: "webhook",
     variants: [
       {
@@ -27,9 +25,6 @@ function packageValue(
         code: "// fixture",
         requirements: "",
         runtime_config: { customer_url: "secret.example", mapping: "id" },
-        required_parameters: ["customer_url"],
-        input_skeleton: {},
-        output_example: {},
       },
     ],
     timeout_seconds: 300,
@@ -41,7 +36,6 @@ function packageValue(
       json_value: null,
       files: [],
     },
-    example_files: [],
     provenance: "",
     license: "",
   };
@@ -61,7 +55,7 @@ beforeEach(async () => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-it("exports a reviewed saved snapshot with inputs off and removes pending values", async () => {
+it("exports the saved runtime parameters unchanged without a confirmation step", async () => {
   const preview = vi
     .spyOn(api, "previewAdapterPackage")
     .mockResolvedValue({
@@ -98,18 +92,16 @@ it("exports a reviewed saved snapshot with inputs off and removes pending values
     (screen.getByLabelText("明确携带已选择的托管输入文件") as HTMLInputElement)
       .checked,
   ).toBe(false);
-  await screen.findByLabelText("可复用运行参数（JSON 对象）");
+  expect(screen.queryByLabelText("可复用运行参数（JSON 对象）")).toBeNull();
   expect(preview).toHaveBeenCalledWith(17, {
     as_template: false,
     include_json: false,
     include_files: false,
   });
-  fireEvent.click(
-    screen.getByText("我已检查此预览中的内容，并确认目标环境仍需重新配置。"),
-  );
   fireEvent.click(screen.getByRole("button", { name: "导出 ZIP" }));
   await waitFor(() => expect(exported).toHaveBeenCalledOnce());
   expect(exported.mock.calls[0][0].variants[0].runtime_config).toEqual({
+    customer_url: "secret.example",
     mapping: "id",
   });
   await screen.findByText("ZIP 已生成。");
@@ -119,7 +111,7 @@ it("exports a reviewed saved snapshot with inputs off and removes pending values
   vi.unstubAllGlobals();
 });
 
-it("template save keeps only the existing language and requires explicit gallery sharing", async () => {
+it("template save keeps the existing language and submits directly", async () => {
   vi.spyOn(api, "previewAdapterPackage").mockResolvedValue(
     packageValue("template"),
   );
@@ -138,15 +130,10 @@ it("template save keeps only the existing language and requires explicit gallery
   await screen.findByRole("tab", { name: "JavaScript" });
   expect(screen.queryByRole("tab", { name: "Python" })).toBeNull();
   expect(
-    (screen.getByRole("button", { name: "确认保存" }) as HTMLButtonElement)
+    (screen.getByRole("button", { name: "保存" }) as HTMLButtonElement)
       .disabled,
-  ).toBe(true);
-  fireEvent.click(
-    screen.getByText(
-      "我已检查代码、参数和示例，并确认将这些内容共享到当前部署的模板广场。",
-    ),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+  ).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   expect(save.mock.calls[0][0].variants).toHaveLength(1);
   expect(save.mock.calls[0][1].adapterId).toBe(9);
@@ -175,10 +162,7 @@ it("uploads first, rejects wrong package type, and preserves rename input on con
   const name = await screen.findByLabelText("名称");
   await waitFor(() => expect(document.activeElement).toBe(name));
   fireEvent.change(name, { target: { value: "Chosen name" } });
-  fireEvent.click(
-    screen.getByText("我已检查此预览中的内容，并确认目标环境仍需重新配置。"),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+  fireEvent.click(screen.getByRole("button", { name: "导入" }));
   await screen.findByText("名称已存在，请改名后重试。");
   expect((name as HTMLInputElement).value).toBe("Chosen name");
   expect(preview).toHaveBeenCalledTimes(2);
@@ -204,16 +188,13 @@ it("Task import does not silently choose a Worker", async () => {
     target: { files: [new File(["zip"], "task.zip")] },
   });
   await screen.findByText("Task 首次保存需要指定支持该语言的目标 Worker。");
-  fireEvent.click(
-    screen.getByText("我已检查此预览中的内容，并确认目标环境仍需重新配置。"),
-  );
   expect(
-    (screen.getByRole("button", { name: "确认保存" }) as HTMLButtonElement)
+    (screen.getByRole("button", { name: "导入" }) as HTMLButtonElement)
       .disabled,
   ).toBe(true);
 });
 
-it("provides English preview and confirmation text", async () => {
+it("provides the English import action", async () => {
   await i18n.changeLanguage("en");
   render(
     <PortablePackageDialog mode="importTemplate" onClose={() => undefined} />,
@@ -222,10 +203,10 @@ it("provides English preview and confirmation text", async () => {
   expect(
     screen.getByLabelText("Choose a DLR ZIP package (up to 16 MiB)"),
   ).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Confirm save" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Import" })).toBeTruthy();
 });
 
-it("opens the complete template editor immediately and saves the edited instructions", async () => {
+it("opens the simplified template editor immediately and saves its description", async () => {
   const value = packageValue("template");
   vi.spyOn(api, "getTemplatePackage").mockResolvedValue(value);
   const save = vi.spyOn(api, "saveTemplatePackage").mockResolvedValue({
@@ -240,21 +221,15 @@ it("opens the complete template editor immediately and saves the edited instruct
       onClose={() => undefined}
     />,
   );
-  const instructions =
-    await screen.findByLabelText("使用说明与目标环境配置提醒");
+  const description = await screen.findByLabelText("说明");
   expect(screen.queryByRole("button", { name: "预览已保存内容" })).toBeNull();
   expect(screen.queryByText("运行与触发设置（导入后默认停止）")).toBeNull();
   expect(screen.queryByLabelText("许可证说明")).toBeNull();
-  fireEvent.change(instructions, { target: { value: "Updated guidance" } });
-  fireEvent.click(
-    screen.getByText(
-      "我已检查代码、参数和示例，并确认将这些内容共享到当前部署的模板广场。",
-    ),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+  fireEvent.change(description, { target: { value: "Updated guidance" } });
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await waitFor(() =>
     expect(save).toHaveBeenCalledWith(
-      expect.objectContaining({ instructions: "Updated guidance" }),
+      expect.objectContaining({ description: "Updated guidance" }),
       expect.objectContaining({ slug: "user-edit", expectedVersion: "7" }),
     ),
   );
@@ -287,8 +262,8 @@ it("changing exported input options preserves all other edits", async () => {
   fireEvent.change(await screen.findByLabelText("名称"), {
     target: { value: "Reviewed title" },
   });
-  fireEvent.change(screen.getByLabelText("可复用运行参数（JSON 对象）"), {
-    target: { value: '{"mapping":"reviewed"}' },
+  fireEvent.change(screen.getByLabelText("说明"), {
+    target: { value: "Reviewed description" },
   });
   fireEvent.click(screen.getByLabelText("明确携带已保存的 JSON 输入"));
   await waitFor(() =>
@@ -302,13 +277,8 @@ it("changing exported input options preserves all other edits", async () => {
   expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe(
     "Reviewed title",
   );
-  expect(
-    (
-      screen.getByLabelText(
-        "可复用运行参数（JSON 对象）",
-      ) as HTMLTextAreaElement
-    ).value,
-  ).toBe('{"mapping":"reviewed"}');
+  expect((screen.getByLabelText("说明") as HTMLTextAreaElement).value)
+    .toBe("Reviewed description");
 });
 
 it("shows the actual automatically renamed result after import", async () => {
@@ -323,9 +293,6 @@ it("shows the actual automatically renamed result after import", async () => {
     target: { files: [new File(["zip"], "adapter.zip")] },
   });
   await screen.findByLabelText("名称");
-  fireEvent.click(
-    screen.getByText("我已检查此预览中的内容，并确认目标环境仍需重新配置。"),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
+  fireEvent.click(screen.getByRole("button", { name: "导入" }));
   await screen.findByText("Portable fixture(1)");
 });

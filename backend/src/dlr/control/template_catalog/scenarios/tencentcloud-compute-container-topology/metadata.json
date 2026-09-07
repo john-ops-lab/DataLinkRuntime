@@ -6,24 +6,14 @@
     "en": "Tencent Cloud Compute & Containers"
   },
   "summary": {
-    "zh-CN": "采集云服务器、云硬盘、镜像、伸缩组和 TKE 集群。",
-    "en": "Collect CVM instances, disks, images, scaling groups and TKE clusters."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "采集云服务器、云硬盘、镜像、伸缩组和 TKE 集群。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Collect CVM instances, disks, images, scaling groups and TKE clusters.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "Tencent Cloud",
   "adapter_type": "task",
   "protocols": [
     "HTTPS",
     "Tencent Cloud API"
-  ],
-  "tags": [
-    "CVM",
-    "TKE",
-    "CBS",
-    "topology"
   ],
   "logo_key": "tencentcloud-compute",
   "version": "1.0.1",
@@ -42,42 +32,13 @@
       "code_resource": "variants/tencentcloud-compute-container-topology/python.py",
       "code_sha256": "80a63c89807df77af99c5cac966919c6fa3406fd88e377ae6bc179f4ebf041cc",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-tencentcloud-d3a0a66",
         "tencentcloud-api-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "tencentcloud:EXAMPLE_ACCOUNT:ap-guangzhou:cvm_instance:example-resource",
-            "class": "cvm_instance",
-            "provider_type": "DescribeInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "ap-guangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -85,42 +46,13 @@
       "code_resource": "variants/tencentcloud-compute-container-topology/javascript.mjs",
       "code_sha256": "3ea38bf8f5638c20bf87b9e9a78910784b0f1b4a018803d83bb28d323d973d50",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-tencentcloud-d3a0a66",
         "tencentcloud-api-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "tencentcloud:EXAMPLE_ACCOUNT:ap-guangzhou:cvm_instance:example-resource",
-            "class": "cvm_instance",
-            "provider_type": "DescribeInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "ap-guangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -128,42 +60,13 @@
       "code_resource": "variants/tencentcloud-compute-container-topology/java.java",
       "code_sha256": "146ee753d23b82dc1732aa9b7281ea83bbbc44fc91c741e683ae77838326a420",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-tencentcloud-d3a0a66",
         "tencentcloud-api-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "tencentcloud:EXAMPLE_ACCOUNT:ap-guangzhou:cvm_instance:example-resource",
-            "class": "cvm_instance",
-            "provider_type": "DescribeInstances",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "ap-guangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeInstances"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

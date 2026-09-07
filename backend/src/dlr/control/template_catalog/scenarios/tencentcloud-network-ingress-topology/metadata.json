@@ -6,24 +6,14 @@
     "en": "Tencent Cloud Network Resources"
   },
   "summary": {
-    "zh-CN": "采集私有网络、子网、公网 IP 和流量入口等资源。",
-    "en": "Collect VPCs, subnets, public IPs and network entry points."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "采集私有网络、子网、公网 IP 和流量入口等资源。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Collect VPCs, subnets, public IPs and network entry points.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "Tencent Cloud",
   "adapter_type": "task",
   "protocols": [
     "HTTPS",
     "Tencent Cloud API"
-  ],
-  "tags": [
-    "VPC",
-    "CLB",
-    "CCN",
-    "network"
   ],
   "logo_key": "tencentcloud-network",
   "version": "1.0.1",
@@ -42,42 +32,13 @@
       "code_resource": "variants/tencentcloud-network-ingress-topology/python.py",
       "code_sha256": "c653e97bfa05a907f01001adc880d4eb4696031997dd34feb428a7c098c2878e",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-tencentcloud-d3a0a66",
         "tencentcloud-api-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "tencentcloud:EXAMPLE_ACCOUNT:ap-guangzhou:vpc:example-resource",
-            "class": "vpc",
-            "provider_type": "DescribeVpcs",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "ap-guangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeVpcs"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -85,42 +46,13 @@
       "code_resource": "variants/tencentcloud-network-ingress-topology/javascript.mjs",
       "code_sha256": "bdd5bb2294e5671b3614a7e673670e120edf2b2216807fff10e84841a72befb9",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-tencentcloud-d3a0a66",
         "tencentcloud-api-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "tencentcloud:EXAMPLE_ACCOUNT:ap-guangzhou:vpc:example-resource",
-            "class": "vpc",
-            "provider_type": "DescribeVpcs",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "ap-guangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeVpcs"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -128,42 +60,13 @@
       "code_resource": "variants/tencentcloud-network-ingress-topology/java.java",
       "code_sha256": "87b54db96639cc85b7fff3d844b196bf3f37dd08c31271cadb9df574f2557267",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "steampipe-tencentcloud-d3a0a66",
         "tencentcloud-api-2026-09-05",
         "open-c3-039b9a4",
         "cloudexplorer-aede557"
-      ],
-      "output_example": {
-        "schema_version": "dlr-asset-snapshot/v1",
-        "assets": [
-          {
-            "external_key": "tencentcloud:EXAMPLE_ACCOUNT:ap-guangzhou:vpc:example-resource",
-            "class": "vpc",
-            "provider_type": "DescribeVpcs",
-            "name": "示例资源",
-            "account": "EXAMPLE_ACCOUNT",
-            "region": "ap-guangzhou",
-            "zone": null,
-            "status": "Running",
-            "tags": {},
-            "attributes": {
-              "source_action": "DescribeVpcs"
-            }
-          }
-        ],
-        "relationships": [],
-        "summary": {
-          "assets": 1,
-          "relationships": 0,
-          "pages": 1,
-          "failures": []
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

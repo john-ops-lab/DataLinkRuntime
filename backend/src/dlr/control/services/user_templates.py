@@ -53,7 +53,6 @@ def summary(row: UserTemplate, principal: Principal | None = None) -> TemplateSc
         vendor="DLR",
         adapter_type=package.adapter_type,
         protocols=[],
-        tags=package.tags,
         logo_key="custom",
         template_version=str(row.version),
         updated_at=row.updated_at.date(),
@@ -73,7 +72,7 @@ def list_summaries(session: Session, principal: Principal | None) -> list[Templa
         UserTemplate.version,
         UserTemplate.updated_at,
     ]
-    fields = ("category", "description", "adapter_type", "tags")
+    fields = ("category", "description", "adapter_type")
     rows = session.execute(
         select(
             *columns,
@@ -94,7 +93,6 @@ def list_summaries(session: Session, principal: Principal | None) -> list[Templa
         category,
         description,
         adapter_type,
-        tags,
         languages,
     ) in rows:
         managed = principal is not None and (
@@ -111,7 +109,6 @@ def list_summaries(session: Session, principal: Principal | None) -> list[Templa
                 vendor="DLR",
                 adapter_type=adapter_type,
                 protocols=[],
-                tags=tags,
                 logo_key="custom",
                 template_version=str(version),
                 updated_at=updated.date(),
@@ -125,9 +122,7 @@ def list_summaries(session: Session, principal: Principal | None) -> list[Templa
 
 def detail(session: Session, slug: str, principal: Principal | None) -> TemplateScenarioDetail:
     row = require_row(session, slug)
-    return TemplateScenarioDetail(
-        **summary(row, principal).model_dump(), details=localized(str(row.content["instructions"]))
-    )
+    return TemplateScenarioDetail(**summary(row, principal).model_dump())
 
 
 def variant(session: Session, slug: str, language: str) -> TemplateVariantResponse:
@@ -266,8 +261,6 @@ def export_template(session: Session, slug: str) -> PortablePackage:
                 code=loaded.code,
                 requirements=item.requirements,
                 runtime_config=dict(item.runtime_config),
-                input_skeleton=dict(item.input_skeleton),
-                output_example=dict(item.output_example),
             )
         )
         for source in loaded.sources:
@@ -277,9 +270,7 @@ def export_template(session: Session, slug: str) -> PortablePackage:
         object_type="template",
         name=scenario.title.zh_cn,
         description=scenario.summary.zh_cn,
-        instructions=scenario.details.zh_cn + "\n\n" + scenario.details.en,
         category=scenario.theme_slug,
-        tags=list(scenario.tags),
         adapter_type=scenario.adapter_type,
         variants=variants,
         provenance="\n".join(sorted(provenance)),
@@ -314,8 +305,6 @@ def instantiate(
         owner_user_id=owner_user_id,
         timeout_seconds=package.timeout_seconds,
         configuration_notes={
-            "required_parameters": value.required_parameters,
-            "instructions": package.instructions,
             "review_environment": True,
         },
     )

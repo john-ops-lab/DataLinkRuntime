@@ -85,16 +85,15 @@ def encode_package(package: PortablePackage) -> bytes:
         path = "code/" + CODE_NAMES[variant["language"]]
         entries[path] = variant.pop("code").encode("utf-8")
         variant["code_file"] = path
-    for group, files in (("input", data["input"]["files"]), ("examples", data["example_files"])):
-        for index, file in enumerate(files):
-            path = f"{group}/{index}/{file['filename']}"
-            if not _safe_path(path) or PurePosixPath(file["filename"]).name != file["filename"]:
-                invalid()
-            try:
-                entries[path] = base64.b64decode(file.pop("data_base64"), validate=True)
-            except (ValueError, binascii.Error):
-                invalid()
-            file["content_file"] = path
+    for index, file in enumerate(data["input"]["files"]):
+        path = f"input/{index}/{file['filename']}"
+        if not _safe_path(path) or PurePosixPath(file["filename"]).name != file["filename"]:
+            invalid()
+        try:
+            entries[path] = base64.b64decode(file.pop("data_base64"), validate=True)
+        except (ValueError, binascii.Error):
+            invalid()
+        file["content_file"] = path
     entries["manifest.json"] = json.dumps(
         data, ensure_ascii=False, indent=2, allow_nan=False
     ).encode()
@@ -152,15 +151,15 @@ def decode_package(content: bytes) -> PortablePackage:
                 if not isinstance(variant, dict) or "code" in variant:
                     invalid()
                 variant["code"] = entries.pop(variant.pop("code_file")).decode("utf-8")
-            for files in (manifest["input"]["files"], manifest["example_files"]):
-                if not isinstance(files, list):
+            files = manifest["input"]["files"]
+            if not isinstance(files, list):
+                invalid()
+            for file in files:
+                if not isinstance(file, dict) or "data_base64" in file:
                     invalid()
-                for file in files:
-                    if not isinstance(file, dict) or "data_base64" in file:
-                        invalid()
-                    file["data_base64"] = base64.b64encode(
-                        entries.pop(file.pop("content_file"))
-                    ).decode()
+                file["data_base64"] = base64.b64encode(
+                    entries.pop(file.pop("content_file"))
+                ).decode()
             if entries:
                 invalid()
             if time.monotonic() > deadline:

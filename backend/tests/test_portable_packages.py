@@ -67,15 +67,12 @@ def import_adapter(client: TestClient, value: dict[str, Any], worker_id: int | N
         json={
             "package": value,
             "runtime_worker_id": worker_id,
-            "configuration_reviewed": True,
         },
     )
 
 
 def import_template(client: TestClient, value: dict[str, Any]) -> Any:
-    return client.post(
-        "/api/portable/templates", json={"package": value, "sharing_confirmed": True}
-    )
+    return client.post("/api/portable/templates", json={"package": value})
 
 
 @pytest.mark.parametrize("language", ["python", "javascript", "java"])
@@ -110,7 +107,7 @@ def test_portable_upgrade_preserves_builtin_library() -> None:
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalars().all() == ["0036_portable"]
+            ).scalars().all() == ["0037_portable_simplified"]
             assert (
                 connection.scalar(text("SELECT quota_bytes FROM builtin_package_settings"))
                 == 2147483648
@@ -125,6 +122,65 @@ def test_portable_upgrade_preserves_builtin_library() -> None:
             assert (
                 connection.scalar(text("SELECT to_regclass('user_templates')")) == "user_templates"
             )
+
+
+def test_simplification_migration_removes_retired_fields_without_losing_content() -> None:
+    from test_unified_runtime_migration import _isolated_schema, _upgrade
+
+    original = package("template")
+    original.update(
+        description="Purpose",
+        instructions="How to use it",
+        tags=["retired"],
+        example_files=[{"filename": "example.json", "data_base64": "e30="}],
+    )
+    original["variants"][0].update(
+        runtime_config={"page_size": 100},
+        required_parameters=["url"],
+        input_skeleton={"old": "input"},
+        output_example={"old": "output"},
+    )
+    with _isolated_schema("portable_simplified", "0036_portable") as (engine, database):
+        with Session(engine) as session:
+            session.add(
+                UserTemplate(
+                    slug="user-migration",
+                    name=original["name"],
+                    source="saved",
+                    version=1,
+                    content=original,
+                )
+            )
+            adapter = Adapter(
+                name="Migration adapter",
+                description="Adapter purpose",
+                language="python",
+                adapter_type="task",
+                configuration_notes={
+                    "instructions": "Adapter instructions",
+                    "required_parameters": ["url"],
+                    "license": "Fixture license",
+                },
+            )
+            session.add(adapter)
+            session.commit()
+            adapter_id = adapter.id
+        _upgrade(database, "head")
+        with Session(engine) as session:
+            row = session.get(UserTemplate, "user-migration")
+            assert row is not None and row.version == 2
+            migrated = PortablePackage.model_validate(row.content)
+            assert migrated.description == "Purpose\n\nHow to use it"
+            assert migrated.variants[0].runtime_config == {"page_size": 100}
+            assert migrated.variants[0].code == "DO_NOT_EXECUTE"
+            assert {"instructions", "tags", "example_files"}.isdisjoint(row.content)
+            assert {"required_parameters", "input_skeleton", "output_example"}.isdisjoint(
+                row.content["variants"][0]
+            )
+            adapter = session.get(Adapter, adapter_id)
+            assert adapter is not None
+            assert adapter.description == "Adapter purpose\n\nAdapter instructions"
+            assert adapter.configuration_notes == {"license": "Fixture license"}
 
 
 def test_export_with_builtin_default_contains_only_dependency_declarations(
@@ -232,7 +288,6 @@ def test_adapter_import_roundtrip_stopped_new_identity(
 ) -> None:
     value = package(language=language, adapter_type=adapter_type)
     value["variants"][0]["runtime_config"] = {"mapping": {"id": "external_id"}}
-    value["variants"][0]["required_parameters"] = ["customer_url"]
     value["timeout_seconds"] = 123
     if adapter_type == "task":
         value["schedule"] = {"cron": "0 2 * * *", "timezone": "Asia/Shanghai"}
@@ -245,7 +300,6 @@ def test_adapter_import_roundtrip_stopped_new_identity(
     row = result.json()
     assert row["run_mode"] == "manual" and not row["runtime_locked"]
     assert row["timeout_seconds"] == 123
-    assert row["configuration_notes"]["required_parameters"] == ["customer_url"]
     export = api_client.post(
         f"/api/adapters/{row['id']}/portable-preview", json={"include_json": True}
     )
@@ -323,7 +377,6 @@ def test_json_null_and_omitted_input_template_defaults(
     ).json()
     assert template["input"]["source_type"] == "none"
     assert template["variants"][0]["runtime_config"] == {}
-    assert template["variants"][0]["required_parameters"] == ["customer_address"]
     assert "sensitive.example" not in json.dumps(template)
 
 
@@ -333,7 +386,7 @@ def test_user_template_persistence_gallery_edit_delete_independence(
 ) -> None:
     value = package("template", "javascript")
     value["category"] = "foreign-category"
-    value["tags"] = ["portable-tag"]
+    value["description"] = "portable-description"
     created = import_template(api_client, value)
     assert created.status_code == 201, created.text
     detail = created.json()
@@ -343,7 +396,7 @@ def test_user_template_persistence_gallery_edit_delete_independence(
     assert [v["language"] for v in detail["variants"]] == ["javascript"]
     listing = api_client.get(
         "/api/templates/scenarios",
-        params={"theme": "other", "q": "portable-tag", "language": "javascript"},
+        params={"theme": "other", "q": "portable-description", "language": "javascript"},
     ).json()
     assert listing["total"] == 1 and listing["items"][0]["slug"] == slug
     assert api_client.get(f"/api/templates/scenarios/{slug}/variants/python").status_code == 404
@@ -357,7 +410,7 @@ def test_user_template_persistence_gallery_edit_delete_independence(
     value["variants"][0]["code"] = "EDITED_NOT_EXECUTED"
     update = api_client.put(
         f"/api/templates/scenarios/{slug}",
-        json={"package": value, "sharing_confirmed": True, "expected_version": "1"},
+        json={"package": value, "expected_version": "1"},
     )
     assert update.status_code == 200, update.text
     assert update.json()["template_version"] == "2"
@@ -414,7 +467,7 @@ def test_owner_only_export_and_creator_only_template_management(
     assert (
         api_client.post(
             f"/api/adapters/{created['id']}/templates",
-            json={"package": value, "sharing_confirmed": True},
+            json={"package": value},
         ).status_code
         == 403
     )
@@ -428,7 +481,7 @@ def test_owner_only_export_and_creator_only_template_management(
     assert (
         api_client.put(
             f"/api/templates/scenarios/{saved['slug']}",
-            json={"package": value, "sharing_confirmed": True, "expected_version": "1"},
+            json={"package": value, "expected_version": "1"},
         ).status_code
         == 403
     )
@@ -503,16 +556,12 @@ def test_managed_file_import_uses_new_objects_target_policy_and_atomic_rollback(
             assert "storage_key" not in exported.text and "artifact_id" not in exported.text
 
 
-def test_template_example_files_do_not_require_managed_input(
-    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(settings, "managed_files_enabled", False)
+@pytest.mark.parametrize("field", ["example_files", "instructions", "tags"])
+def test_retired_template_fields_are_rejected(api_client: TestClient, field: str) -> None:
     value = package("template")
-    value["example_files"] = [{"filename": "sample.json", "data_base64": "e30="}]
+    value[field] = [] if field != "instructions" else "Old instructions"
     created = import_template(api_client, value)
-    assert created.status_code == 201, created.text
-    exported = api_client.get(f"/api/templates/scenarios/{created.json()['slug']}/portable")
-    assert exported.json()["example_files"][0]["data_base64"] == "e30="
+    assert created.status_code == 422, created.text
 
 
 def test_package_size_time_and_trailing_payload_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -575,7 +624,7 @@ def test_save_template_retains_language_and_survives_source_delete(api_client: T
     preview["name"] = "Independent java template"
     saved = api_client.post(
         f"/api/adapters/{source['id']}/templates",
-        json={"package": preview, "sharing_confirmed": True},
+        json={"package": preview},
     )
     assert saved.status_code == 201, saved.text
     assert saved.json()["source"] == "saved"
@@ -583,7 +632,7 @@ def test_save_template_retains_language_and_survives_source_delete(api_client: T
     assert (
         api_client.post(
             f"/api/adapters/{source['id']}/templates",
-            json={"package": preview, "sharing_confirmed": True},
+            json={"package": preview},
         ).status_code
         == 422
     )
@@ -653,7 +702,6 @@ def test_import_builtin_name_is_suffixed_and_edit_conflicts_still_rejected(
         f"/api/templates/scenarios/{created.json()['slug']}",
         json={
             "package": original.json(),
-            "sharing_confirmed": True,
             "expected_version": "1",
         },
     )

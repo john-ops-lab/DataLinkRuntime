@@ -1731,7 +1731,6 @@ export function AdapterConsole({
 
             {selected?.configuration_notes?.review_environment && <Alert type="info" showIcon
               message={t("configurationNotes", { ns: "portable",
-                parameters: selected.configuration_notes.required_parameters?.filter((key) => !(key in (parseRuntimeConfig(baseline.runtimeConfigText) ?? {}))).join(", ") || t("none", { ns: "portable" }),
                 input: t(`inputType.${selected.configuration_notes.input_required || "none"}`, { ns: "portable" }),
               })} />}
             <div className="console-body">

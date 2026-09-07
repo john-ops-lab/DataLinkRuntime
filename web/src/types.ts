@@ -44,7 +44,7 @@ export interface Adapter {
   access_level?: AdapterAccessLevel | null;
   /** Safe owner display metadata; null means system-owned. */
   owner_username?: string | null;
-  configuration_notes?: { required_parameters?: string[]; input_required?: string; review_environment?: boolean; instructions?: string };
+  configuration_notes?: { input_required?: string; review_environment?: boolean };
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;
@@ -87,7 +87,6 @@ export interface TemplateScenarioSummary {
   vendor: string;
   adapter_type: AdapterType;
   protocols: string[];
-  tags: string[];
   logo_key: string;
   template_version: string;
   updated_at: string;
@@ -101,9 +100,7 @@ export interface TemplateScenarioListResponse {
   total: number;
 }
 
-export interface TemplateScenarioDetail extends TemplateScenarioSummary {
-  details: LocalizedText;
-}
+export type TemplateScenarioDetail = TemplateScenarioSummary;
 
 export interface TemplateVariant {
   scenario_slug: string;
@@ -114,8 +111,6 @@ export interface TemplateVariant {
   template_version: string;
   code: string;
   requirements: string;
-  input_skeleton: Record<string, unknown>;
-  output_example: Record<string, unknown>;
   runtime_config: Record<string, unknown>;
 }
 
@@ -862,25 +857,19 @@ export interface PortableVariant {
   code: string;
   requirements: string;
   runtime_config: Record<string, unknown>;
-  required_parameters: string[];
-  input_skeleton: Record<string, unknown>;
-  output_example: Record<string, unknown>;
 }
 export interface PortablePackage {
   format_version: 1;
   object_type: "adapter" | "template";
   name: string;
   description: string;
-  instructions: string;
   category: string;
-  tags: string[];
   variants: PortableVariant[];
   timeout_seconds: number;
   adapter_type: AdapterType;
   schedule: { cron: string; timezone: string; misfire_policy: string; max_catchup_count: number; max_catchup_age_seconds: number } | null;
   webhook: { response_mode: "accepted" | "completed"; response_timeout_seconds: number } | null;
   input: { source_type: string; included: boolean; json_value: unknown; files: PortableFile[] };
-  example_files: PortableFile[];
   provenance: string;
   license: string;
 }

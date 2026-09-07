@@ -6,24 +6,14 @@
     "en": "Webhook Data Mapping"
   },
   "summary": {
-    "zh-CN": "检查 Webhook 数据中的必填字段，统一字段名称和时间格式。",
-    "en": "Check required webhook fields and normalize field names and timestamps."
-  },
-  "details": {
-    "zh-CN": "复制后在代码开头调整处理规则，运行时传入待处理数据。",
-    "en": "Adjust the processing rules at the top of the copied code and provide data when running."
+    "zh-CN": "检查 Webhook 数据中的必填字段，统一字段名称和时间格式。\n\n复制后在代码开头调整处理规则，运行时传入待处理数据。",
+    "en": "Check required webhook fields and normalize field names and timestamps.\n\nAdjust the processing rules at the top of the copied code and provide data when running."
   },
   "vendor": "DLR",
   "adapter_type": "webhook",
   "protocols": [
     "JSON",
     "Webhook"
-  ],
-  "tags": [
-    "webhook",
-    "validation",
-    "normalization",
-    "UTC"
   ],
   "logo_key": "webhook-normalize",
   "version": "1.0.1",
@@ -39,25 +29,10 @@
       "code_resource": "variants/webhook-json-normalization/python.py",
       "code_sha256": "193efbf1087683486627e1f353fd052c2a65759644cdff4ae9b8b0da98bd9731",
       "requirements": "",
-      "input_skeleton": {
-        "payload": {
-          "event_id": "EXAMPLE_EVENT",
-          "occurred_at": "2026-01-01T00:00:00Z"
-        }
-      },
       "runtime_config": {},
       "provenance_ids": [
         "http-rfc9110-9112"
-      ],
-      "output_example": {
-        "valid": true,
-        "data": {
-          "id": "EXAMPLE_EVENT",
-          "timestamp": "2026-01-01T00:00:00.000Z"
-        },
-        "errors": [],
-        "partial": false
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -65,25 +40,10 @@
       "code_resource": "variants/webhook-json-normalization/javascript.mjs",
       "code_sha256": "3290761b3f9262fcefdb35bad82a7fab9a067ec0e9d479d93dbf7cc7064a1bee",
       "requirements": "",
-      "input_skeleton": {
-        "payload": {
-          "event_id": "EXAMPLE_EVENT",
-          "occurred_at": "2026-01-01T00:00:00Z"
-        }
-      },
       "runtime_config": {},
       "provenance_ids": [
         "http-rfc9110-9112"
-      ],
-      "output_example": {
-        "valid": true,
-        "data": {
-          "id": "EXAMPLE_EVENT",
-          "timestamp": "2026-01-01T00:00:00.000Z"
-        },
-        "errors": [],
-        "partial": false
-      }
+      ]
     },
     {
       "language": "java",
@@ -91,25 +51,10 @@
       "code_resource": "variants/webhook-json-normalization/java.java",
       "code_sha256": "6508095b23bd1668e794a286345e439315b5dc7cd97b451b493cd0c8d52152cc",
       "requirements": "",
-      "input_skeleton": {
-        "payload": {
-          "event_id": "EXAMPLE_EVENT",
-          "occurred_at": "2026-01-01T00:00:00Z"
-        }
-      },
       "runtime_config": {},
       "provenance_ids": [
         "http-rfc9110-9112"
-      ],
-      "output_example": {
-        "valid": true,
-        "data": {
-          "id": "EXAMPLE_EVENT",
-          "timestamp": "2026-01-01T00:00:00.000Z"
-        },
-        "errors": [],
-        "partial": false
-      }
+      ]
     }
   ]
 }

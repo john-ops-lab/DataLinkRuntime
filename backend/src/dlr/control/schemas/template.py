@@ -50,7 +50,6 @@ class TemplateScenarioSummary(BaseModel):
     vendor: str
     adapter_type: Literal["task", "webhook"]
     protocols: list[str]
-    tags: list[str]
     logo_key: str
     template_version: str
     updated_at: date
@@ -67,7 +66,7 @@ class TemplateScenarioListResponse(BaseModel):
 
 
 class TemplateScenarioDetail(TemplateScenarioSummary):
-    details: TemplateLocalizedText
+    pass
 
 
 class TemplateVariantResponse(BaseModel):
@@ -79,11 +78,8 @@ class TemplateVariantResponse(BaseModel):
     language: TemplateLanguage
     adapter_type: Literal["task", "webhook"]
     template_version: str
-    required_parameters: list[str] = Field(default_factory=list)
     code: str
     requirements: str
-    input_skeleton: dict[str, Any]
-    output_example: dict[str, Any]
     runtime_config: dict[str, Any]
 
 

@@ -4942,10 +4942,6 @@ body {
   margin-inline: auto;
 }
 
-.portable-footer-confirm {
-  margin-right: auto;
-}
-
 .portable-footer-actions {
   display: flex;
   flex: 0 0 auto;
@@ -4958,8 +4954,5 @@ body {
   }
   .portable-footer {
     flex-wrap: wrap;
-  }
-  .portable-footer-confirm {
-    width: 100%;
   }
 }

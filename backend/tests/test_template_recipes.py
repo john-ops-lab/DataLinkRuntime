@@ -4577,11 +4577,6 @@ def test_public_assets_do_not_embed_machine_paths_secrets_or_remote_logos() -> N
         assert not scenario["logo_key"].startswith(("http://", "https://"))
         serialized = json.dumps(scenario)
         assert "<svg" not in serialized.casefold()
-        for variant in scenario["variants"]:
-            for value in variant["input_skeleton"].values():
-                if isinstance(value, str) and value.startswith(("http://", "https://")):
-                    hostname = urlsplit(value).hostname or ""
-                    assert hostname == "localhost" or hostname.endswith(".example")
 
 
 def test_csv_variants_stream_to_the_first_real_overflow_and_use_exact_utf8_bounds(

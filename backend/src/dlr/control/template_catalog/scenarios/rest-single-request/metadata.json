@@ -6,24 +6,14 @@
     "en": "REST API Request"
   },
   "summary": {
-    "zh-CN": "调用一个 HTTP 接口，获取 JSON 或文本结果。",
-    "en": "Call an HTTP endpoint and read a JSON or text response."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。 使用写入类请求方法会修改远端数据。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run. Write methods can modify remote data."
+    "zh-CN": "调用一个 HTTP 接口，获取 JSON 或文本结果。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。 使用写入类请求方法会修改远端数据。",
+    "en": "Call an HTTP endpoint and read a JSON or text response.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run. Write methods can modify remote data."
   },
   "vendor": "Open REST",
   "adapter_type": "task",
   "protocols": [
     "HTTP",
     "HTTPS"
-  ],
-  "tags": [
-    "REST",
-    "HTTP",
-    "JSON",
-    "request"
   ],
   "logo_key": "rest-request",
   "version": "1.0.1",
@@ -41,29 +31,12 @@
       "code_resource": "variants/rest-single-request/python.py",
       "code_sha256": "2c64f9b7e96e59852c8817d524d5116df9d7aaa583fa2beda84a6cfe095414ce",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "http-rfc9110-9112",
         "dlt-3efddd6",
         "airbyte-6f59bc9"
-      ],
-      "output_example": {
-        "ok": true,
-        "status": 200,
-        "content_type": "json",
-        "partial": false,
-        "bytes_read": 37,
-        "response": {
-          "items": [
-            {
-              "id": 1,
-              "name": "example"
-            }
-          ]
-        },
-        "side_effect_warning": false
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -71,29 +44,12 @@
       "code_resource": "variants/rest-single-request/javascript.mjs",
       "code_sha256": "e3adb8323b327af7632428754a73e70e9d2d8ab8cb56f6172b8014db3b75fc6d",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "http-rfc9110-9112",
         "dlt-3efddd6",
         "airbyte-6f59bc9"
-      ],
-      "output_example": {
-        "ok": true,
-        "status": 200,
-        "content_type": "json",
-        "partial": false,
-        "bytes_read": 37,
-        "response": {
-          "items": [
-            {
-              "id": 1,
-              "name": "example"
-            }
-          ]
-        },
-        "side_effect_warning": false
-      }
+      ]
     },
     {
       "language": "java",
@@ -101,29 +57,12 @@
       "code_resource": "variants/rest-single-request/java.java",
       "code_sha256": "915ac46e5ea2ac3cb2769209d11a7ea6adcd3223f15928d6edb3c45710da7e98",
       "requirements": "",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "http-rfc9110-9112",
         "dlt-3efddd6",
         "airbyte-6f59bc9"
-      ],
-      "output_example": {
-        "ok": true,
-        "status": 200,
-        "content_type": "json",
-        "partial": false,
-        "bytes_read": 37,
-        "response": {
-          "items": [
-            {
-              "id": 1,
-              "name": "example"
-            }
-          ]
-        },
-        "side_effect_warning": false
-      }
+      ]
     }
   ]
 }

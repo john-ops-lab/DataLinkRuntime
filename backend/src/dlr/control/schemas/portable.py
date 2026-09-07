@@ -36,16 +36,11 @@ class PortableVariant(StrictModel):
     code: str = Field(min_length=1, max_length=1048576)
     requirements: str = Field(default="", max_length=1048576)
     runtime_config: dict[str, Any] = Field(default_factory=dict)
-    required_parameters: list[str] = Field(default_factory=list, max_length=256)
-    input_skeleton: dict[str, Any] = Field(default_factory=dict)
-    output_example: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def pending_values_are_absent(self) -> "PortableVariant":
+    def validate_code(self) -> "PortableVariant":
         if not self.code.strip():
             raise ValueError("code must not be blank")
-        if any(not key or key in self.runtime_config for key in self.required_parameters):
-            raise ValueError("pending parameters must be absent from runtime_config")
         return self
 
 
@@ -77,16 +72,13 @@ class PortablePackage(StrictModel):
     object_type: Literal["adapter", "template"]
     name: str
     description: str = Field(default="", max_length=20000)
-    instructions: str = Field(default="", max_length=100000)
     category: str = Field(default="other", max_length=128)
-    tags: list[str] = Field(default_factory=list, max_length=32)
     variants: list[PortableVariant] = Field(min_length=1, max_length=3)
     timeout_seconds: int = Field(default=300, ge=1, le=86400)
     adapter_type: Literal["task", "webhook"]
     schedule: PortableSchedule | None = None
     webhook: PortableWebhook | None = None
     input: PortableInput = Field(default_factory=PortableInput)
-    example_files: list[PortableFile] = Field(default_factory=list, max_length=9)
     provenance: str = Field(default="", max_length=100000)
     license: str = Field(default="", max_length=100000)
 
@@ -118,10 +110,8 @@ class AdapterExportOptions(StrictModel):
 class PortableImportRequest(StrictModel):
     package: PortablePackage
     runtime_worker_id: int | None = Field(default=None, gt=0)
-    configuration_reviewed: Literal[True]
 
 
 class TemplateWriteRequest(StrictModel):
     package: PortablePackage
-    sharing_confirmed: Literal[True]
     expected_version: str | None = None

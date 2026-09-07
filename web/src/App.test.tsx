@@ -6520,11 +6520,9 @@ const templateDetailFixture: TemplateScenarioDetail = {
   theme_slug: "api-events",
   title: { "zh-CN": "REST 单次请求", en: "Single REST request" },
   summary: { "zh-CN": "调用一个受控 REST API。", en: "Call one controlled REST API." },
-  details: { "zh-CN": "用于单次有界请求。", en: "For a single bounded request." },
   vendor: "DLR",
   adapter_type: "task",
   protocols: ["HTTP", "JSON"],
-  tags: ["REST"],
   logo_key: "rest-request",
   template_version: "1.0.0",
   updated_at: "2026-09-05",
@@ -6544,8 +6542,6 @@ const templateVariantFixture: TemplateVariant = {
   template_version: "1.0.0",
   code: "def handle(context, input):\n    return {\"copied\": True}\n",
   requirements: "httpx==0.28.1",
-  input_skeleton: {},
-  output_example: { copied: true },
   runtime_config: {},
 };
 
