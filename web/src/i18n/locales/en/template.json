@@ -41,11 +41,9 @@
     "variantFailed": "This language variant could not be loaded",
     "notFound": "Template not found",
     "retry": "Retry",
-    "purpose": "How to use",
+    "purpose": "Description",
     "recipe": "Code",
-    "requirements": "Dependencies",
-    "inputSkeleton": "Input example",
-    "outputExample": "Result example"
+    "requirements": "Dependencies"
   },
   "copy": {
     "title": "Copy as Adapter",

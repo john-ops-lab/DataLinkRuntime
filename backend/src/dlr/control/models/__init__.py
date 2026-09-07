@@ -2,6 +2,11 @@
 
 from dlr.control.models.account import User, UserSession
 from dlr.control.models.adapter import Adapter, AdapterPermission, AdapterVersion
+from dlr.control.models.builtin_package import (
+    BuiltinPackage,
+    BuiltinPackageSettings,
+    BuiltinPackageUpload,
+)
 from dlr.control.models.execution import Execution, ExecutionInputArtifactLease, Worker
 from dlr.control.models.input_config import (
     AdapterInputConfig,
@@ -49,10 +54,15 @@ from dlr.control.models.reliable_execution import (
 )
 from dlr.control.models.schedule import AdapterSchedule
 from dlr.control.models.system import SystemSetting
+from dlr.control.models.user_template import UserTemplate
 from dlr.control.models.webhook import AdapterWebhook
 from dlr.control.models.worker_cleanup import WorkerCleanupRequest
 
 __all__ = [
+    "UserTemplate",
+    "BuiltinPackage",
+    "BuiltinPackageSettings",
+    "BuiltinPackageUpload",
     "Adapter",
     "AdapterPermission",
     "AdapterCredentialBinding",

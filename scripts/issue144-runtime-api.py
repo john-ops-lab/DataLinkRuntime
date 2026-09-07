@@ -181,13 +181,18 @@ def basic():
             "POST",
             f"/adapters/{adapter_id}/executions",
             {
-                "input": variant["input_skeleton"],
+                "input": {"records": [{"id": "1", "profile": {"name": "example"}}]},
             },
             202,
         )
         finished = wait(execution["id"], timeout=150)
         assert finished["status"] == "succeeded", (language, finished.get("error_code"))
-        assert finished["output"] == variant["output_example"], language
+        assert finished["output"] == {
+            "records": [{"name": "example", "id": "1"}],
+            "count": 1,
+            "partial": False,
+            "checkpoint": None,
+        }, language
         receipt(execution["id"])
     slow = create(prefix, "sse-cancel", primary["id"], seconds=30)
     execution_id = run(slow)

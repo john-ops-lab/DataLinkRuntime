@@ -159,6 +159,7 @@ def test_delete_adapter_without_executions_still_allowed(api_client: TestClient)
 
 
 SUMMARY_FIELDS = {
+    "dependency_check",
     "id",
     "adapter_id",
     "version_id",

@@ -145,7 +145,7 @@ Saving creates an immutable runtime snapshot, and Executions always run from sav
 
 ## Start from the Template Gallery
 
-Template Gallery offers 5 themes and 17 scenarios. The default All tab searches across categories; vendor, type, protocol, and language filters narrow the results. Vendor templates use vendor logos. Each scenario offers its supported languages without requiring all three languages.
+Template Gallery ships 5 themes and 17 scenarios, plus an Other category and persistent user templates. The default All tab searches across categories; vendor, type, protocol, and language filters narrow the results. Vendor templates use vendor logos. Each scenario offers its supported languages without requiring all three languages.
 
 ```text
 Template Gallery → choose a scenario and language → name and copy → edit the new Adapter → check or change configuration → save → run
@@ -154,6 +154,8 @@ Template Gallery → choose a scenario and language → name and copy → edit t
 Copying creates an independent Adapter and opens its code and dependencies as an editor draft. Saving creates the first version. The copy has no template association and is unaffected by later template updates. Choose a Worker, prepare dependencies, and bind credentials through the ordinary Adapter workflow before running.
 
 Most templates need no input: editable settings live together at the top of the code with explanatory comments. Passwords and Tokens are read from credentials; comments identify the required credential and binding names. Input examples appear only for files, Webhooks, or tasks requiring per-run values. Short result examples explain the output. Details show purpose, usage, language, code, and dependencies; parameter rules and execution-mode configuration belong in code comments.
+
+Adapter menus support ZIP export and saving as a template; the adapter list supports import. User-saved and imported templates join the same gallery with import/export and creator management. Imports preview content first and create independent, stopped objects. See [portable packages](docs/templates/portable-packages.en.md).
 
 ---
 
@@ -491,3 +493,5 @@ Bug reports, use cases, feature requests, and Pull Requests are welcome.
 DataLinkRuntime is open source under the [Apache License 2.0](LICENSE).
 
 Copyright (c) 2026 john-ops-lab
+
+Offline deployments can use the [DLR builtin dependency source](docs/en/issue141-builtin-dependencies.md) to store and distribute installation materials for all three languages.

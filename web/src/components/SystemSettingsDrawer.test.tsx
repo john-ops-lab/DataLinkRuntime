@@ -912,3 +912,36 @@ it("M5.8-006：知识库设置与错误状态可切换到 English", async () => 
     await applySystemLocale("zh-CN");
   }
 });
+
+it("来源配置按 10、20、50 条分页，选择后实际改变显示数量", async () => {
+  await applySystemLocale("zh-CN");
+  vi.spyOn(api, "getAiSetting").mockResolvedValue(null);
+  vi.spyOn(api, "getPackageSourceDefaults").mockResolvedValue(CANONICAL_DEFAULTS);
+  vi.spyOn(api, "listCredentials").mockResolvedValue([]);
+  vi.spyOn(api, "listPackageSources").mockResolvedValue(
+    Array.from({ length: 55 }, (_, index) => packageSource({
+      id: index + 1,
+      name: `Pagination source ${index + 1}`,
+      is_default: index === 0,
+    })),
+  );
+  render(<SystemSettingsDrawer open onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("menuitem", { name: "依赖源" }));
+  // The settings drawer uses a portal, so scope the visible table in document.
+  const visibleRows = () => document.querySelectorAll(".package-source-table .ant-table-row");
+  await waitFor(() => expect(visibleRows()).toHaveLength(10));
+  for (const size of [20, 50, 10]) {
+    const selector = document.querySelector(".package-source-table .ant-pagination-options-size-changer .ant-select-selector");
+    expect(selector).not.toBeNull();
+    fireEvent.mouseDown(selector!);
+    const dropdown = await waitFor(() => {
+      const visible = Array.from(document.querySelectorAll<HTMLElement>(".ant-select-dropdown"))
+        .find((element) => !element.classList.contains("ant-select-dropdown-hidden"));
+      expect(visible).toBeDefined();
+      return visible!;
+    });
+    expect(optionLabels(dropdown)).toEqual(["10 条/页", "20 条/页", "50 条/页"]);
+    clickOption(dropdown, `${size} 条/页`);
+    await waitFor(() => expect(visibleRows()).toHaveLength(size));
+  }
+});

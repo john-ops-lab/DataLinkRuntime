@@ -161,6 +161,50 @@ class ControlClient:
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise ControlUnavailableError(str(error)) from error
 
+    def download_builtin_package(
+        self,
+        worker_id: int,
+        execution_id: int,
+        file_id: int,
+        *,
+        claim_token: str,
+        destination: Any,
+    ) -> int:
+        """Stream one leased builtin material into ``destination``.
+
+        The caller owns the temporary destination and performs the payload
+        size/SHA-256 check.  This method never places package bytes in a
+        JSON response or a URL and only buffers a bounded response chunk.
+        """
+        path = (
+            f"/api/workers/{worker_id}/executions/{execution_id}/builtin-packages/{file_id}/content"
+        )
+        request = urllib.request.Request(self._base_url + path, method="GET")
+        request.add_header("Authorization", f"Bearer {self._token}")
+        request.add_header("X-DLR-Claim-Token", claim_token)
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
+                status = int(response.status)
+                if status >= 500:
+                    raise ControlUnavailableError(f"control answered {status}")
+                if status != 200:
+                    raw = response.read(4096)
+                    raise ClientError(status, raw.decode(errors="replace"))
+                total = 0
+                while True:
+                    chunk = response.read(self.DOWNLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        return total
+                    destination.write(chunk)
+                    total += len(chunk)
+        except urllib.error.HTTPError as error:
+            raw = error.read(4096)
+            if error.code >= 500:
+                raise ControlUnavailableError(f"control answered {error.code}") from error
+            raise ClientError(error.code, raw.decode(errors="replace")) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise ControlUnavailableError(str(error)) from error
+
     def report_cleanup_receipt(
         self, worker_id: int, execution_id: int, *, cleanup_token: str
     ) -> dict[str, Any]:

@@ -24,6 +24,7 @@ class ExecutionResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    dependency_check: bool = False
     id: int
     adapter_id: int
     version_id: int
@@ -141,6 +142,8 @@ class ProgressAck(BaseModel):
 
 class ExecutionSummary(BaseModel):
     """Lightweight history row; never carries input/output/stdout/stderr."""
+
+    dependency_check: bool = False
 
     id: int
     adapter_id: int

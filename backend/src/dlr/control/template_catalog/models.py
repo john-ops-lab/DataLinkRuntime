@@ -80,8 +80,6 @@ class TemplateVariantAsset(FrozenAssetModel):
     code_resource: NonEmptyText
     code_sha256: Sha256
     requirements: str
-    input_skeleton: dict[str, object]
-    output_example: dict[str, object]
     runtime_config: dict[str, object]
     provenance_ids: tuple[NonEmptyText, ...] = Field(min_length=1)
 
@@ -91,11 +89,9 @@ class TemplateScenarioAsset(FrozenAssetModel):
     theme_slug: Slug
     title: LocalizedText
     summary: LocalizedText
-    details: LocalizedText
     vendor: NonEmptyText
     adapter_type: TemplateAdapterType
     protocols: tuple[NonEmptyText, ...] = Field(min_length=1)
-    tags: tuple[NonEmptyText, ...] = Field(min_length=1)
     logo_key: NonEmptyText
     version: VersionText
     updated_at: date

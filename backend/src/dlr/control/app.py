@@ -20,6 +20,7 @@ from dlr.control.api import (
     adapters,
     ai,
     auth,
+    builtin_packages,
     credentials,
     events,
     executions,
@@ -29,6 +30,7 @@ from dlr.control.api import (
     locale,
     managed_input,
     package_sources,
+    portable,
     schedules,
     templates,
     users,
@@ -199,6 +201,19 @@ def create_app() -> FastAPI:
         the Template Gallery. Other API routes retain FastAPI's default
         validation response for compatibility.
         """
+        if request.url.path.startswith("/api/portable/") or (
+            request.url.path.startswith("/api/adapters/")
+            and request.url.path.endswith(("/portable-preview", "/templates"))
+        ):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "portable_package_invalid",
+                        "message": "Invalid or unsupported DLR package",
+                    }
+                },
+            )
         if request.url.path.startswith("/api/templates/"):
             return JSONResponse(
                 status_code=422,
@@ -263,6 +278,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(adapters.router)
     app.include_router(templates.router)
+    app.include_router(portable.router)
     app.include_router(input_configs.router)
     app.include_router(managed_input.router)
     app.include_router(managed_input.capability_router)
@@ -273,6 +289,8 @@ def create_app() -> FastAPI:
     app.include_router(credentials.router)
     app.include_router(credentials.adapter_router)
     app.include_router(package_sources.router)
+    app.include_router(builtin_packages.router)
+    app.include_router(builtin_packages.worker_router)
     app.include_router(knowledge_sources.router)
     app.include_router(schedules.router)
     app.include_router(webhooks.router)

@@ -146,6 +146,7 @@ def _create_pending_execution_locked(
     schedule_policy_snapshot: dict[str, object] | None = None,
     resource_class: str | None = None,
     version_id_override: int | None = None,
+    dependency_check: bool = False,
 ) -> Execution:
     """Create a fully initialized queued Execution under the Adapter lock.
 
@@ -163,7 +164,20 @@ def _create_pending_execution_locked(
     created_at = database_now(session)
     if dispatch_backend != "rabbitmq":
         raise ValueError("unsupported execution backend")
+    from dlr.control.services.builtin_package import snapshot as builtin_snapshot
+
+    dependency_snapshot = builtin_snapshot(session, adapter.language, force=dependency_check)
+    if dependency_snapshot is not None:
+        worker = session.get(Worker, target_worker_id)
+        if worker is None or worker.isolation_capabilities.get("builtin_packages_v1") is not True:
+            raise domain_error(
+                409,
+                "builtin_worker_upgrade_required",
+                "Upgrade the selected Worker for builtin package support",
+            )
     execution = Execution(
+        builtin_package_snapshot=dependency_snapshot,
+        dependency_check=dependency_check,
         adapter_id=adapter.id,
         version_id=version_id,
         trigger=trigger,
@@ -485,6 +499,7 @@ def list_adapter_executions(
             Execution.worker_id,
             Worker.name.label("worker_name"),
             Execution.trigger,
+            Execution.dependency_check,
             Execution.scheduled_for,
             Execution.status,
             Execution.created_at,
@@ -513,6 +528,7 @@ def list_adapter_executions(
             worker_id=row["worker_id"],
             worker_name=row["worker_name"],
             trigger=row["trigger"],
+            dependency_check=row["dependency_check"],
             scheduled_for=row["scheduled_for"],
             status=row["status"],
             created_at=row["created_at"],

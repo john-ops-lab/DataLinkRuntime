@@ -46,7 +46,6 @@ function scenario(index: number) {
     vendor: index % 2 === 0 ? "DLR" : "Alibaba Cloud",
     adapter_type: "task" as const,
     protocols: index % 2 === 0 ? ["HTTP", "JSON"] : ["OpenAPI", "JSON"],
-    tags: ["fixture", `tag-${index + 1}`],
     logo_key: logoKeys[index % logoKeys.length],
     template_version: "1.0.0",
     updated_at: "2026-09-05",
@@ -65,7 +64,6 @@ function detail(slug = "rest-single-request") {
     : scenarios[0];
   return {
     ...base,
-    details: { "zh-CN": "修改代码开头的请求地址，保存后运行。", en: "Set the URL at the start of the code, save, and run." },
   };
 }
 
@@ -79,8 +77,6 @@ function variant(slug: string, language: Language) {
     template_version: "1.0.0",
     code: `${language} template code for ${slug}\n`,
     requirements: language === "python" ? "httpx==0.28.1" : "",
-    input_skeleton: slug === "csv-to-json" ? { file: "example.csv" } : {},
-    output_example: { status: 200, data: [{ id: "example" }] },
     runtime_config: {},
   };
 }
@@ -359,7 +355,7 @@ test("a conflict keeps the name and a successful copy opens the new Adapter edit
   await expect.poll(() => copyButton.evaluate((element) => getComputedStyle(element).backgroundColor))
     .toBe("rgb(9, 88, 217)");
   await expect(page.getByRole("heading", { name: "输入示例" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "返回结果示例" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "返回结果示例" })).toHaveCount(0);
   for (const name of ["运行模式", "安全边界", "来源与许可证", "Runtime 建议配置", "各语言成熟度"]) {
     await expect(page.getByRole("heading", { name })).toHaveCount(0);
   }
@@ -410,7 +406,7 @@ test("Task input draft cancellation performs no POST and file templates stay cop
   await page.getByRole("link", { name: "模板广场" }).click();
   await page.getByRole("tab", { name: /文件与数据/ }).click();
   await page.getByRole("link", { name: "查看详情" }).click();
-  await expect(page.getByRole("heading", { name: "输入示例" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "输入示例" })).toHaveCount(0);
   await page.getByRole("button", { name: "复制为适配器" }).click();
   await page.getByRole("textbox", { name: "适配器名称" }).fill("不会创建");
   page.once("dialog", (dialog) => dialog.dismiss());

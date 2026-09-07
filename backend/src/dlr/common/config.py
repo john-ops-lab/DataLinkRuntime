@@ -22,6 +22,13 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://dlr:dlr@localhost:5432/dlr"
 
+    builtin_package_root: str = Field(
+        default="/var/lib/dlr/builtin-packages", validation_alias="DLR_BUILTIN_PACKAGE_ROOT"
+    )
+    builtin_package_min_free_bytes: int = Field(
+        default=268435456, ge=0, validation_alias="DLR_BUILTIN_PACKAGE_MIN_FREE_BYTES"
+    )
+
     # Static shared tokens (M2). Never persisted, never logged. When a token
     # is unset, the protected APIs answer 503 instead of running open.
     admin_token: str | None = Field(default=None, validation_alias="DLR_ADMIN_TOKEN")

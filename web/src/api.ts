@@ -1,7 +1,13 @@
 /** Minimal typed client for the Control API. */
 
 import type {
+  BuiltinPackage,
+  BuiltinPackageKind,
+  BuiltinCheck,
+  BuiltinPackageLibrary,
+  BuiltinPackageCapacity,
   Adapter,
+  PortablePackage,
   AdapterInputConfig,
   AdapterInputConfigDraft,
   AdapterPermission,
@@ -159,11 +165,12 @@ async function parseError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, code, message, params);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, responseType?: "blob"): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (authToken !== null) {
     headers.Authorization = `Bearer ${authToken}`;
   }
+  if (init?.body instanceof Blob) headers["Content-Type"] = "application/octet-stream";
   const method = (init?.method ?? "GET").toUpperCase();
   if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
     const csrf = document.cookie
@@ -177,7 +184,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   let response: Response;
   try {
-    response = await fetch(path, { ...init, credentials: "same-origin", headers });
+    response = await fetch(path, { ...init, credentials: "same-origin", headers: { ...headers, ...init?.headers } });
   } catch {
     throw new ApiError(0, "network_error", "Control is unreachable");
   }
@@ -190,10 +197,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (response.status === 204) {
     return undefined as T;
   }
+  if (responseType === "blob") return (await response.blob()) as T;
   return (await response.json()) as T;
 }
 
 export const api = {
+  previewPortableFile: (file: File): Promise<PortablePackage> => request("/api/portable/preview", {
+    method: "POST", body: file, headers: { "Content-Type": "application/zip" },
+  }),
+  previewAdapterPackage: (id: number, options: { include_json: boolean; include_files: boolean; as_template: boolean }): Promise<PortablePackage> =>
+    request(`/api/adapters/${id}/portable-preview`, { method: "POST", body: JSON.stringify(options) }),
+  getTemplatePackage: (slug: string): Promise<PortablePackage> => request(`/api/templates/scenarios/${encodeURIComponent(slug)}/portable`),
+  exportPortablePackage: (value: PortablePackage): Promise<Blob> => request("/api/portable/export", {
+    method: "POST", body: JSON.stringify(value),
+  }, "blob"),
+  importAdapterPackage: (value: PortablePackage, workerId: number | null): Promise<Adapter> => request("/api/portable/adapters", {
+    method: "POST", body: JSON.stringify({ package: value, runtime_worker_id: workerId }),
+  }),
+  saveTemplatePackage: (value: PortablePackage, options: { adapterId?: number; slug?: string; expectedVersion?: string }): Promise<TemplateScenarioDetail> => {
+    const path = options.slug ? `/api/templates/scenarios/${encodeURIComponent(options.slug)}`
+      : options.adapterId ? `/api/adapters/${options.adapterId}/templates` : "/api/portable/templates";
+    return request(path, { method: options.slug ? "PUT" : "POST", body: JSON.stringify({
+      package: value, expected_version: options.expectedVersion,
+    }) });
+  },
+  deleteUserTemplate: (slug: string, expectedVersion: string): Promise<void> => request(
+    `/api/templates/scenarios/${encodeURIComponent(slug)}?expected_version=${encodeURIComponent(expectedVersion)}`, { method: "DELETE" },
+  ),
   /** Public bootstrap read; the response contains no other system settings. */
   getSystemLocale: (): Promise<SystemLocaleResponse> => request("/api/locale"),
 
@@ -530,6 +560,30 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ bindings }),
     }),
+
+  listBuiltinPackages: (): Promise<BuiltinPackageLibrary> => request("/api/builtin-packages"),
+  setBuiltinPackageCapacity: (quota_bytes: number): Promise<BuiltinPackageCapacity> =>
+    request("/api/builtin-packages/capacity", { method: "PATCH", body: JSON.stringify({ quota_bytes }) }),
+  chooseBuiltinSource: (kind: BuiltinPackageKind): Promise<PackageSource> =>
+    request(`/api/builtin-packages/sources/${kind}`, { method: "PUT" }),
+  deleteBuiltinPackage: (id: number): Promise<void> => request(`/api/builtin-packages/${id}`, { method: "DELETE" }),
+  cancelBuiltinUpload: (id: string): Promise<void> => request(`/api/builtin-packages/uploads/${id}`, { method: "DELETE" }),
+  downloadBuiltinPackage: (id: number): Promise<Blob> => request(`/api/builtin-packages/${id}/content`, undefined, "blob"),
+  uploadBuiltinPackage: async (file: File, kind: BuiltinPackageKind, repository_path: string): Promise<{ file: BuiltinPackage; already_exists: boolean }> => {
+    const reserved = await request<{ id: string }>("/api/builtin-packages/uploads", {
+      method: "POST", body: JSON.stringify({ filename: file.name, size_bytes: file.size, kind, repository_path }),
+    });
+    try {
+      return await request(`/api/builtin-packages/uploads/${reserved.id}`, { method: "PUT", body: file });
+    } catch (error) {
+      // Control proves idleness with its file lock before releasing any reservation.
+      await request(`/api/builtin-packages/uploads/${reserved.id}`, { method: "DELETE" }).catch(() => undefined);
+      throw error;
+    }
+  },
+  createBuiltinCheck: (adapter_id: number, worker_id: number): Promise<Execution> =>
+    request("/api/builtin-packages/checks", { method: "POST", body: JSON.stringify({ adapter_id, worker_id }) }),
+  listBuiltinChecks: (): Promise<BuiltinCheck[]> => request("/api/builtin-packages/checks/recent"),
 
   // --- M3.3: language-specific dependency sources ------------------------------
 

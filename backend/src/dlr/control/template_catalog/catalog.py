@@ -30,7 +30,7 @@ MAX_VARIANT_BYTES = 1024 * 1024
 VARIANT_CACHE_SIZE = 32
 
 EXPECTED_THEME_SLUGS = frozenset(
-    {"cloud-cmdb", "api-events", "file-data", "databases", "storage-transfer"}
+    {"cloud-cmdb", "api-events", "file-data", "databases", "storage-transfer", "other"}
 )
 EXPECTED_SCENARIO_SLUGS = frozenset(
     {
@@ -210,7 +210,7 @@ class TemplateCatalog:
         themes = _unique_map(self.manifest.themes, "slug", resource="catalog.json")
         if frozenset(themes) != EXPECTED_THEME_SLUGS:
             raise _stable_error(
-                "catalog.json", "theme inventory must be exactly 5 published themes"
+                "catalog.json", "theme inventory must be exactly 6 published themes"
             )
         sort_orders = [theme.sort_order for theme in themes.values()]
         if len(sort_orders) != len(set(sort_orders)):

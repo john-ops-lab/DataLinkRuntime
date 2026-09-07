@@ -6,7 +6,16 @@ import math
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    StrictInt,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from dlr.control.schemas.worker import TaskInputFile
 
@@ -81,6 +90,16 @@ class V3TaskPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_serializer(mode="wrap")
+    def compatible_wire(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        # Keep ordinary tasks readable by the previous fixed-v3 Worker.
+        if self.builtin_package_snapshot is None:
+            data.pop("builtin_package_snapshot", None)
+        if not self.dependency_check:
+            data.pop("dependency_check", None)
+        return data
+
     dispatch_backend: Literal["rabbitmq"] = "rabbitmq"
     protocol_version: Literal[3] = 3
     execution_id: StrictInt = Field(gt=0)
@@ -102,6 +121,8 @@ class V3TaskPayload(BaseModel):
     latest_version_id: StrictInt | None = Field(default=None, gt=0)
     execution_timeout_seconds: StrictInt = Field(gt=0)
     secrets: dict[str, str] = Field(default_factory=dict)
+    builtin_package_snapshot: dict[str, Any] | None = None
+    dependency_check: bool = False
     index_url: str | None = None
     locale: Literal["zh-CN", "en"] = "zh-CN"
     resource_profile: ResourceProfile

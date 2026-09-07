@@ -25,6 +25,7 @@ import {
   Space,
   Spin,
   Tag,
+  Tabs,
   Tooltip,
   Typography,
 } from "antd";
@@ -82,6 +83,7 @@ import AiModelSettingsPanel from "./AiModelSettingsPanel";
 import type { SettingsCategory } from "../settings-route";
 import type { ControlHealthPayload, HealthStatus, SystemStatusLevel } from "../system-status";
 import SystemStatusPanel from "./SystemStatusPanel";
+import BuiltinPackagePanel from "./BuiltinPackagePanel";
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
@@ -868,8 +870,8 @@ function PackageSourcesPanel(props: {
       title: t("labels.repositoryUrl", { ns: "common" }),
       dataIndex: "index_url",
       render: (_, source) => (
-        <Tooltip title={source.index_url}>
-          <span className="package-source-cell" title={source.index_url}>{source.index_url}</span>
+        <Tooltip title={source.index_url.startsWith("dlr-builtin://") ? t("builtin.controlHosted") : source.index_url}>
+          <span className="package-source-cell">{source.index_url.startsWith("dlr-builtin://") ? t("builtin.controlHosted") : source.index_url}</span>
         </Tooltip>
       ),
     },
@@ -883,6 +885,7 @@ function PackageSourcesPanel(props: {
       title: t("labels.reachability", { ns: "common" }),
       width: 190,
       render: (_, source) => {
+        if (source.index_url.startsWith("dlr-builtin://")) return <Typography.Text type="secondary">{t("builtin.checkInLibrary")}</Typography.Text>;
         const result = testResults.get(source.id);
         const testingThisSource = testing === source.id;
         return (
@@ -1209,7 +1212,7 @@ function PackageSourcesPanel(props: {
           size="small"
           search={false}
           options={false}
-          pagination={{ pageSize: 8, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 10, pageSizeOptions: [10, 20, 50], showSizeChanger: true }}
           dataSource={visibleSources}
           className="package-source-table"
           tableLayout="fixed"
@@ -2165,6 +2168,7 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
   const [localActiveCategory, setLocalActiveCategory] = useState<SettingsCategory>(props.category ?? "credentials");
   const [dirty, setDirty] = useState(false);
   const [subformDirty, setSubformDirty] = useState(false);
+  const [dependencyTab, setDependencyTab] = useState("sources");
   const mutationCount = useRef(0);
   const activeCategory = props.category ?? localActiveCategory;
 
@@ -2321,6 +2325,10 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
               />
             )}
             {activeCategory === "package-sources" && (
+              <Tabs activeKey={dependencyTab} destroyOnHidden onChange={(key) => {
+                if (confirmLeave()) { setDirty(false); setSubformDirty(false); setDependencyTab(key); }
+              }} items={[
+                { key: "sources", label: t("builtin.sourcesTab"), children: (
               <PackageSourcesPanel
                 onError={keepErrorInline}
                 onSaved={() => setSubformDirty(false)}
@@ -2329,6 +2337,9 @@ const SystemSettingsDrawer = forwardRef<PageLeaveGuardHandle, SystemSettingsDraw
                 onMutationStart={beginMutation}
                 onMutationEnd={endMutation}
               />
+                ) },
+                { key: "library", label: t("builtin.libraryTab"), children: <BuiltinPackagePanel onMutationStart={beginMutation} onMutationEnd={endMutation} onDirtyChange={setSubformDirty} /> },
+              ]} />
             )}
             {activeCategory === "ai-model" && (
               <AiModelSettingsPanel

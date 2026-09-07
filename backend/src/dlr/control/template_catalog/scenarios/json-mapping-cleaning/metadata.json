@@ -6,24 +6,14 @@
     "en": "JSON Field Mapping"
   },
   "summary": {
-    "zh-CN": "重命名和转换 JSON 字段，按需要筛选、排序和去重。",
-    "en": "Rename and convert JSON fields, then filter, sort and deduplicate records."
-  },
-  "details": {
-    "zh-CN": "复制后在代码开头调整处理规则，运行时传入待处理数据。",
-    "en": "Adjust the processing rules at the top of the copied code and provide data when running."
+    "zh-CN": "重命名和转换 JSON 字段，按需要筛选、排序和去重。\n\n复制后在代码开头调整处理规则，运行时传入待处理数据。",
+    "en": "Rename and convert JSON fields, then filter, sort and deduplicate records.\n\nAdjust the processing rules at the top of the copied code and provide data when running."
   },
   "vendor": "DLR",
   "adapter_type": "task",
   "protocols": [
     "JSON",
     "RFC 6901"
-  ],
-  "tags": [
-    "JSON",
-    "mapping",
-    "cleaning",
-    "RFC6901"
   ],
   "logo_key": "data-json",
   "version": "1.0.1",
@@ -39,31 +29,10 @@
       "code_resource": "variants/json-mapping-cleaning/python.py",
       "code_sha256": "d4d4f2dfc91fb2fc9c43b3ba479a6b0264a7786f875de244a6b88ee7bc0a68b1",
       "requirements": "",
-      "input_skeleton": {
-        "records": [
-          {
-            "id": "1",
-            "profile": {
-              "name": "example"
-            }
-          }
-        ]
-      },
       "runtime_config": {},
       "provenance_ids": [
         "json-pointer-rfc6901"
-      ],
-      "output_example": {
-        "records": [
-          {
-            "name": "example",
-            "id": "1"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -71,31 +40,10 @@
       "code_resource": "variants/json-mapping-cleaning/javascript.mjs",
       "code_sha256": "58660e9d22cea66d3f76bf770542fc444ceec4c6d6f9b2fe5bed3770bf664a2a",
       "requirements": "",
-      "input_skeleton": {
-        "records": [
-          {
-            "id": "1",
-            "profile": {
-              "name": "example"
-            }
-          }
-        ]
-      },
       "runtime_config": {},
       "provenance_ids": [
         "json-pointer-rfc6901"
-      ],
-      "output_example": {
-        "records": [
-          {
-            "name": "example",
-            "id": "1"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -103,31 +51,10 @@
       "code_resource": "variants/json-mapping-cleaning/java.java",
       "code_sha256": "4dd459a416cbed197a57e7eaceb04bf3cba4794e20dd5e5b47fb3be07b68b277",
       "requirements": "",
-      "input_skeleton": {
-        "records": [
-          {
-            "id": "1",
-            "profile": {
-              "name": "example"
-            }
-          }
-        ]
-      },
       "runtime_config": {},
       "provenance_ids": [
         "json-pointer-rfc6901"
-      ],
-      "output_example": {
-        "records": [
-          {
-            "name": "example",
-            "id": "1"
-          }
-        ],
-        "count": 1,
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

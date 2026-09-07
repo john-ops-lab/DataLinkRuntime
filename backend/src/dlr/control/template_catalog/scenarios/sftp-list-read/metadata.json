@@ -6,24 +6,14 @@
     "en": "SFTP File Listing & Reading"
   },
   "summary": {
-    "zh-CN": "连接 SFTP 服务器，列出目录文件并读取选中的文件。",
-    "en": "Connect to an SFTP server, list a directory and read selected files."
-  },
-  "details": {
-    "zh-CN": "复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
-    "en": "Edit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
+    "zh-CN": "连接 SFTP 服务器，列出目录文件并读取选中的文件。\n\n复制后修改代码开头的配置，按注释绑定所需凭据，保存后运行。",
+    "en": "Connect to an SFTP server, list a directory and read selected files.\n\nEdit the configuration at the top of the copied code, bind the credentials named in the comments, then save and run."
   },
   "vendor": "SFTP",
   "adapter_type": "task",
   "protocols": [
     "SSH",
     "SFTP"
-  ],
-  "tags": [
-    "SFTP",
-    "SSH",
-    "file transfer",
-    "host key"
   ],
   "logo_key": "transfer-sftp",
   "version": "1.0.1",
@@ -39,27 +29,10 @@
       "code_resource": "variants/sftp-list-read/python.py",
       "code_sha256": "bb3db0c35133c7f0c660ed2033617226918f42a24851985788eb21ee623056db",
       "requirements": "paramiko==4.0.0",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "sftp-v3-openssh"
-      ],
-      "output_example": {
-        "files": [
-          {
-            "path": "items.json",
-            "size": 128,
-            "mtime": 1767225600
-          }
-        ],
-        "contents": [],
-        "summary": {
-          "files": 1,
-          "bytes_read": 0
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "javascript",
@@ -67,27 +40,10 @@
       "code_resource": "variants/sftp-list-read/javascript.mjs",
       "code_sha256": "6a8c70a41ff0543cff2268a2447fba392e73144c7d7278c75c34417c3d5d88ef",
       "requirements": "ssh2-sftp-client@12.0.1",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "sftp-v3-openssh"
-      ],
-      "output_example": {
-        "files": [
-          {
-            "path": "items.json",
-            "size": 128,
-            "mtime": 1767225600
-          }
-        ],
-        "contents": [],
-        "summary": {
-          "files": 1,
-          "bytes_read": 0
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     },
     {
       "language": "java",
@@ -95,27 +51,10 @@
       "code_resource": "variants/sftp-list-read/java.java",
       "code_sha256": "30fe10a3a9873a856a0d70f373e9e19838f8a04764ec3291584f694811decd1d",
       "requirements": "com.github.mwiede:jsch:0.2.24",
-      "input_skeleton": {},
       "runtime_config": {},
       "provenance_ids": [
         "sftp-v3-openssh"
-      ],
-      "output_example": {
-        "files": [
-          {
-            "path": "items.json",
-            "size": 128,
-            "mtime": 1767225600
-          }
-        ],
-        "contents": [],
-        "summary": {
-          "files": 1,
-          "bytes_read": 0
-        },
-        "partial": false,
-        "checkpoint": null
-      }
+      ]
     }
   ]
 }

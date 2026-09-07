@@ -19,6 +19,7 @@ import ExecutionHistoryPanel from "./components/ExecutionHistoryPanel";
 import LoginPage from "./components/LoginPage";
 import LiveLogWorkspace from "./components/LiveLogWorkspace";
 import SystemSettingsDrawer from "./components/SystemSettingsDrawer";
+import PortablePackageDialog, { type PortableDialogRequest } from "./components/PortablePackageDialog";
 import TemplateGalleryPage, { type TemplateCopyRequest } from "./components/TemplateGalleryPage";
 import TaskRunSettingsPanel from "./components/TaskRunSettingsPanel";
 import type { TaskRunSettingsHandle, TaskRuntimeState } from "./components/TaskRunSettingsPanel";
@@ -458,6 +459,7 @@ export function AdapterConsole({
   const [waitingForWebhook, setWaitingForWebhook] = useState(false);
   const [saveWorkerPromptOpen, setSaveWorkerPromptOpen] = useState(false);
   const [saveWorkerId, setSaveWorkerId] = useState<number | null>(null);
+  const [portableDialog, setPortableDialog] = useState<PortableDialogRequest | null>(null);
   const [cloneSource, setCloneSource] = useState<Adapter | null>(null);
   const [cloneName, setCloneName] = useState("");
   const closePagePortals = useCallback((): void => {
@@ -1727,6 +1729,10 @@ export function AdapterConsole({
               )}
             </div>
 
+            {selected?.configuration_notes?.review_environment && <Alert type="info" showIcon
+              message={t("configurationNotes", { ns: "portable",
+                input: t(`inputType.${selected.configuration_notes.input_required || "none"}`, { ns: "portable" }),
+              })} />}
             <div className="console-body">
             {activeSection === "adapters" && <AdapterCatalog
               adapters={adapters}
@@ -1738,6 +1744,11 @@ export function AdapterConsole({
               workers={workers}
               onOpenSettings={handleCatalogOpenSettings}
               onClone={(adapter) => void handleClone(adapter)}
+              onImport={() => setPortableDialog({ mode: "importAdapter" })}
+              onPortable={(adapter, mode) => setPortableDialog({
+                mode, adapterId: adapter.id,
+                hasUnsavedChanges: selected?.id === adapter.id && (dirty || taskRuntimeRef.current?.hasUnsavedChanges() === true || webhookRuntimeRef.current?.hasUnsavedChanges() === true),
+              })}
               onRefresh={async () => {
                 try {
                   await refreshAdapters();
@@ -2150,6 +2161,10 @@ export function AdapterConsole({
         applyAction={aiCandidateDiff?.applyAction ?? null}
       />
 
+      {portableDialog && <PortablePackageDialog {...portableDialog} workers={workers}
+        onClose={() => setPortableDialog(null)}
+        onAdapterCreated={() => { void refreshAdapters().catch((err: unknown) => setError(errorMessage(err))); }}
+      />}
       <Modal
         title={t("clone.title", { ns: "adapter" })}
         open={cloneSource !== null}

@@ -74,6 +74,8 @@ interface AdapterCatalogProps {
   // M5.5.9：列表项三点菜单——“设置”直接进入该 Adapter 设置；“复制”进入 Clone 流程。
   onOpenSettings: (adapter: Adapter) => void;
   onClone: (adapter: Adapter) => void;
+  onPortable?: (adapter: Adapter, mode: "exportAdapter" | "saveTemplate") => void;
+  onImport?: () => void;
   onRefresh: () => Promise<void>;
   accountPrincipal?: AccountPrincipal;
 }
@@ -213,6 +215,8 @@ export default function AdapterCatalog({
   workers,
   onOpenSettings,
   onClone,
+  onPortable,
+  onImport,
   onRefresh,
   accountPrincipal,
 }: AdapterCatalogProps) {
@@ -317,6 +321,11 @@ export default function AdapterCatalog({
           >
             {t("catalog.new")}
           </Button>
+          {onImport && (
+            <Button size="small" autoInsertSpace={false} disabled={busy} onClick={onImport}>
+              {t("import", { ns: "portable" })}
+            </Button>
+          )}
           <Tooltip title={t("catalog.refreshAria")}>
             <Button
               size="small"
@@ -454,20 +463,24 @@ export default function AdapterCatalog({
                     ))}
                   </span>
                 </button>
-                {/* M5.5.9：三点菜单只提供“设置/复制”；点击菜单按钮不触发行选择，
+                {/* M5.5.9：三点菜单按“复制/导出/保存为模板/设置”排列；点击菜单按钮不触发行选择，
                     再次点击或点击空白处由 Dropdown 关闭，键盘可达（原生 Button）。 */}
                 <Dropdown
                   trigger={["click"]}
                   placement="bottomRight"
                   menu={{
                     items: [
+                      ...(accessLevel === "read" ? [] : [{ key: "clone", label: t("catalog.clone") }]),
+                      ...(onPortable && (accessLevel === "admin" || accessLevel === "owner") ? [
+                        { key: "exportAdapter", label: t("exportAdapter", { ns: "portable" }) },
+                        { key: "saveTemplate", label: t("saveTemplate", { ns: "portable" }) },
+                      ] : []),
                       { key: "settings", label: t("catalog.settings") },
-                      ...(accessLevel === "read"
-                        ? []
-                        : [{ key: "clone", label: t("catalog.clone") }]),
                     ],
                     onClick: ({ key }) => {
-                      if (key === "settings") {
+                      if (key === "exportAdapter" || key === "saveTemplate") {
+                        onPortable?.(adapter, key);
+                      } else if (key === "settings") {
                         onOpenSettings(adapter);
                       } else if (key === "clone") {
                         onClone(adapter);

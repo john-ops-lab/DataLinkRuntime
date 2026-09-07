@@ -1,0 +1,53 @@
+.builtin-package-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.builtin-capacity {
+  padding: 16px;
+  border: 1px solid var(--ant-color-border-secondary, #e8e8e8);
+  border-radius: 8px;
+}
+.builtin-capacity-heading,
+.builtin-pending {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.builtin-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.builtin-toolbar > .ant-input-affix-wrapper {
+  flex: 1;
+  min-width: 180px;
+}
+.builtin-toolbar > .ant-select {
+  min-width: 145px;
+}
+.builtin-wrap {
+  overflow-wrap: anywhere;
+}
+.builtin-checks {
+  border-top: 1px solid var(--ant-color-border-secondary, #e8e8e8);
+  padding-top: 12px;
+}
+.builtin-check-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.builtin-check-form > .ant-select {
+  min-width: 160px;
+  flex: 1;
+}
+.builtin-upload-form {
+  width: 100%;
+}
+.builtin-upload-form .ant-select {
+  min-width: 180px;
+}

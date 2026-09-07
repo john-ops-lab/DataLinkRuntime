@@ -41,11 +41,9 @@
     "variantFailed": "该语言模板加载失败",
     "notFound": "没有找到这个模板",
     "retry": "重试",
-    "purpose": "使用说明",
+    "purpose": "说明",
     "recipe": "代码",
-    "requirements": "依赖",
-    "inputSkeleton": "输入示例",
-    "outputExample": "返回结果示例"
+    "requirements": "依赖"
   },
   "copy": {
     "title": "复制为适配器",

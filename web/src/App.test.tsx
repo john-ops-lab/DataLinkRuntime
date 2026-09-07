@@ -2545,8 +2545,11 @@ it("blocks running while unsaved edits exist and unblocks after Save (M5.5.9)", 
   await waitFor(() =>
     expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(false),
   );
-  const runButton = await screen.findByTestId("header-task-run-once") as HTMLButtonElement;
-  await waitFor(() => expect(runButton.disabled).toBe(false));
+  // Clearing the disabled reason removes the Tooltip wrapper and replaces the
+  // button. Query the current node on each retry, never a detached old button.
+  await waitFor(() =>
+    expect((screen.getByTestId("header-task-run-once") as HTMLButtonElement).disabled).toBe(false),
+  );
 
   // 未保存修改：运行被门禁拦截并提示先保存，不发执行请求。
   fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "unsaved edit" } });
@@ -3409,7 +3412,9 @@ it("maximizes and restores the editor without losing position, dirty edits, or l
 
   fireEvent.click(screen.getByTestId("editor-maximize"));
   await waitFor(() => expect(screen.getByTestId("editor-restore")).toBeTruthy());
-  await waitFor(() => expect(monacoHarness.getLayoutCalls()).toBeGreaterThan(0));
+  // Initial editor layout also increments layoutCalls; wait for this
+  // transition's animation-frame restoration before checking its snapshot.
+  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(1));
   expect(screen.getByTestId("editor-main").getAttribute("data-layout")).toBe("maximized");
   const appStyles = readFileSync(join(process.cwd(), "src/index.css"), "utf8");
   expect(appStyles).toMatch(
@@ -3435,9 +3440,10 @@ it("maximizes and restores the editor without losing position, dirty edits, or l
 
   fireEvent.click(screen.getByTestId("editor-maximize"));
   await screen.findByTestId("editor-restore");
+  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(3));
   fireEvent.keyDown(document, { key: "Escape" });
   await waitFor(() => expect(screen.getByTestId("editor-maximize")).toBeTruthy());
-  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(3));
+  await waitFor(() => expect(monacoHarness.getRestoredSelections()).toHaveLength(4));
   expectEditorPosition(expectedSelection, 7);
   expect(monacoHarness.getRestoredSelections().at(-1)).toEqual(expectedSelection);
   expect(valueOf("code-editor")).toBe("edited while maximized\n");
@@ -6514,11 +6520,9 @@ const templateDetailFixture: TemplateScenarioDetail = {
   theme_slug: "api-events",
   title: { "zh-CN": "REST 单次请求", en: "Single REST request" },
   summary: { "zh-CN": "调用一个受控 REST API。", en: "Call one controlled REST API." },
-  details: { "zh-CN": "用于单次有界请求。", en: "For a single bounded request." },
   vendor: "DLR",
   adapter_type: "task",
   protocols: ["HTTP", "JSON"],
-  tags: ["REST"],
   logo_key: "rest-request",
   template_version: "1.0.0",
   updated_at: "2026-09-05",
@@ -6538,8 +6542,6 @@ const templateVariantFixture: TemplateVariant = {
   template_version: "1.0.0",
   code: "def handle(context, input):\n    return {\"copied\": True}\n",
   requirements: "httpx==0.28.1",
-  input_skeleton: {},
-  output_example: { copied: true },
   runtime_config: {},
 };
 

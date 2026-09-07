@@ -31,6 +31,7 @@ const themes: TemplateTheme[] = [
   ["file-data", "文件与数据", "Files & Data", 3],
   ["databases", "数据库", "Databases", 2],
   ["storage-transfer", "存储与传输", "Storage & Transfer", 2],
+  ["other", "其他", "Other", 0],
 ].map(([slug, zh, en, count], index) => ({
   slug: String(slug),
   name: { "zh-CN": String(zh), en: String(en) },
@@ -48,7 +49,6 @@ function scenario(overrides: Partial<TemplateScenarioSummary> = {}): TemplateSce
     vendor: "DLR",
     adapter_type: "task",
     protocols: ["HTTP", "JSON"],
-    tags: ["REST", "API"],
     logo_key: "rest-request",
     template_version: "1.0.0",
     updated_at: "2026-09-05",
@@ -64,7 +64,6 @@ function scenario(overrides: Partial<TemplateScenarioSummary> = {}): TemplateSce
 function detail(overrides: Partial<TemplateScenarioDetail> = {}): TemplateScenarioDetail {
   return {
     ...scenario(),
-    details: { "zh-CN": "用于受控的单次请求。", en: "For a controlled single request." },
     ...overrides,
   };
 }
@@ -79,8 +78,6 @@ function variant(language: "python" | "javascript" | "java" = "python"): Templat
     template_version: "1.0.0",
     code: `${language} recipe source`,
     requirements: `${language}-dependency==1.0.0`,
-    input_skeleton: { fixture: `${language}-input` },
-    output_example: { fixture: `${language}-result` },
     runtime_config: { fixture: `${language}-runtime-config` },
   };
 }
@@ -122,7 +119,7 @@ it("defaults to All, lists available languages, and omits maturity", async () =>
     await Promise.resolve();
   });
   expect(screen.getByRole("heading", { name: "REST 单次请求" })).toBeTruthy();
-  expect(screen.getAllByRole("tab")).toHaveLength(6);
+  expect(screen.getAllByRole("tab")).toHaveLength(7);
   expect(screen.getByRole("tab", { name: "全部 · 17" }).getAttribute("aria-selected")).toBe("true");
   expect(api.listTemplateScenarios).toHaveBeenCalledWith(expect.objectContaining({ theme: undefined, page_size: 12 }), expect.any(AbortSignal));
   expect(screen.queryByText("成熟度")).toBeNull();
@@ -228,7 +225,7 @@ it("preloads complete vendor and protocol facets independently of visible pagina
   );
 
   await screen.findByRole("heading", { name: "REST 单次请求" });
-  await waitFor(() => expect(listSpy.mock.calls.filter(([query]) => query.page_size === 48)).toHaveLength(5));
+  await waitFor(() => expect(listSpy.mock.calls.filter(([query]) => query.page_size === 48)).toHaveLength(themes.length));
   expect(listSpy.mock.calls.filter(([query]) => query.page_size === 48).map(([query]) => query.theme).sort())
     .toEqual(themes.map((theme) => theme.slug).sort());
 
@@ -302,15 +299,11 @@ describe("Scenario detail and copy", () => {
     expect(await screen.findByDisplayValue("python recipe source")).toBeTruthy();
     expect((within(screen.getByRole("tabpanel")).getByTestId("template-monaco") as HTMLTextAreaElement).value)
       .toBe("python recipe source");
-    expect(screen.getByText(/"fixture": "python-input"/)).toBeTruthy();
-    expect(screen.getByText(/"fixture": "python-result"/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("tab", { name: "JavaScript" }));
     expect(await screen.findByDisplayValue("javascript recipe source")).toBeTruthy();
     expect((within(screen.getByRole("tabpanel")).getByTestId("template-monaco") as HTMLTextAreaElement).value)
       .toBe("javascript recipe source");
-    expect(screen.getByText(/"fixture": "javascript-input"/)).toBeTruthy();
-    expect(screen.getByText(/"fixture": "javascript-result"/)).toBeTruthy();
     expect(screen.queryByRole("link", { name: "python source" })).toBeNull();
 
     fireEvent.click(screen.getByRole("tab", { name: "Python" }));
@@ -319,18 +312,18 @@ describe("Scenario detail and copy", () => {
     expect(vi.mocked(api.getTemplateVariant).mock.calls.map((call) => call[2])).toEqual(["python", "javascript", "python"]);
   });
 
-  it("selects the first available language and hides empty input examples", async () => {
+  it("selects the first available language without example sections", async () => {
     vi.mocked(api.getTemplateScenario).mockResolvedValue(detail({
       variants: [{ language: "java", available: true }],
     }));
-    vi.mocked(api.getTemplateVariant).mockResolvedValue({ ...variant("java"), input_skeleton: {} });
+    vi.mocked(api.getTemplateVariant).mockResolvedValue(variant("java"));
     renderDetail();
     await screen.findByDisplayValue("java recipe source");
     expect(api.getTemplateVariant).toHaveBeenCalledWith("rest-single-request", "1.0.0", "java");
     expect(screen.queryByRole("tab", { name: "Python" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "JavaScript" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "输入示例" })).toBeNull();
-    expect(screen.getByRole("heading", { name: "返回结果示例" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "返回结果示例" })).toBeNull();
     for (const name of ["输入", "输出", "安全边界", "运行模式", "来源与许可证", "Runtime 建议配置", "各语言成熟度"]) {
       expect(screen.queryByRole("heading", { name })).toBeNull();
     }
@@ -341,7 +334,7 @@ describe("Scenario detail and copy", () => {
     await screen.findByDisplayValue("python recipe source");
 
     const facts = Array.from(container.querySelectorAll(".template-recipe-facts pre"));
-    expect(facts).toHaveLength(3);
+    expect(facts).toHaveLength(1);
     expect(facts.every((fact) => fact.getAttribute("tabindex") === "0")).toBe(true);
   });
 

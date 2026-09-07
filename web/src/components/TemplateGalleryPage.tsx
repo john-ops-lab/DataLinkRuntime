@@ -33,6 +33,7 @@ import type {
   TemplateTheme,
   TemplateVariant,
 } from "../types";
+import PortablePackageDialog, { type PortableDialogRequest } from "./PortablePackageDialog";
 import TemplateScenarioLogo from "./TemplateScenarioLogo";
 
 const PAGE_SIZE = 12;
@@ -64,10 +65,6 @@ function localized(value: LocalizedText): string {
   return value[currentSystemLocale()];
 }
 
-function jsonText(value: Record<string, unknown>): string {
-  return JSON.stringify(value, null, 2);
-}
-
 function TemplateCard({
   scenario,
   onOpen,
@@ -82,7 +79,7 @@ function TemplateCard({
       <div className="template-card-content">
         <div className="template-card-heading">
           <div>
-            <p className="template-card-vendor">{scenario.vendor}</p>
+            <p className="template-card-vendor">{scenario.vendor} · {t(`source.${scenario.source ?? "system"}`, { ns: "portable" })}</p>
             <h2>{localized(scenario.title)}</h2>
           </div>
           <Tag bordered={false}>{t(`type.${scenario.adapter_type}`)}</Tag>
@@ -130,6 +127,8 @@ function GalleryList({
   hidden,
   containerRef,
   onReloadThemes,
+  onImport,
+  reloadGeneration,
   onOpenScenario,
 }: {
   themes: TemplateTheme[];
@@ -138,6 +137,8 @@ function GalleryList({
   hidden: boolean;
   containerRef: RefObject<HTMLElement | null>;
   onReloadThemes: () => void;
+  onImport: () => void;
+  reloadGeneration: number;
   onOpenScenario: (scenarioSlug: string, trigger: HTMLAnchorElement) => void;
 }) {
   const { t } = useTranslation("template");
@@ -242,7 +243,7 @@ function GalleryList({
       controller.abort();
       if (generation === requestGeneration.current) requestGeneration.current += 1;
     };
-  }, [resolvedActiveTheme, currentPage, debouncedQuery, filters, listReloadGeneration]);
+  }, [resolvedActiveTheme, currentPage, debouncedQuery, filters, listReloadGeneration, reloadGeneration]);
 
   function resetActivePage(): void {
     if (resolvedActiveTheme) {
@@ -417,6 +418,7 @@ function GalleryList({
       </span>
       <header className="template-gallery-hero">
         <Typography.Title level={1}>{t("gallery.title")}</Typography.Title>
+        <Button autoInsertSpace={false} onClick={onImport}>{t("import", { ns: "portable" })}</Button>
         <Input
           size="large"
           allowClear
@@ -597,11 +599,17 @@ function CopyTemplateModal({
 
 function TemplateDetail({
   scenarioSlug,
+  focusOnMount,
   busy,
   onBack,
   onInstantiate,
+  onPortable,
+  onDelete,
 }: {
   scenarioSlug: string;
+  focusOnMount: boolean;
+  onPortable: (request: PortableDialogRequest) => void;
+  onDelete: (detail: TemplateScenarioDetail) => void;
   busy: boolean;
   onBack: () => void;
   onInstantiate: (request: TemplateCopyRequest) => Promise<boolean>;
@@ -622,9 +630,10 @@ function TemplateDetail({
   const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    if (!focusOnMount) return;
     const frame = window.requestAnimationFrame(() => mainRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
-  }, [scenarioSlug]);
+  }, [scenarioSlug, focusOnMount]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -728,7 +737,8 @@ function TemplateDetail({
       <div className="template-recipe-heading">
         <h2>{t("detail.recipe")}</h2>
       </div>
-      <div className="template-code-view" data-testid="template-code-view">
+      <div className="template-code-view" data-testid="template-code-view"
+        style={{ height: Math.min(560, Math.max(180, variant.code.split("\n").length * 19 + 28)) }}>
         <Editor
           height="100%"
           language={variant.language}
@@ -738,6 +748,7 @@ function TemplateDetail({
             minimap: { enabled: false },
             lineNumbersMinChars: 3,
             scrollBeyondLastLine: false,
+            scrollbar: { alwaysConsumeMouseWheel: false },
             ariaLabel: t("detail.recipe"),
           }}
         />
@@ -745,14 +756,6 @@ function TemplateDetail({
       <section className="template-recipe-facts">
         <h3>{t("detail.requirements")}</h3>
         <pre tabIndex={0}>{variant.requirements || "—"}</pre>
-        {Object.keys(variant.input_skeleton).length > 0 && <>
-          <h3>{t("detail.inputSkeleton")}</h3>
-          <pre tabIndex={0}>{jsonText(variant.input_skeleton)}</pre>
-        </>}
-        {variant.output_example && Object.keys(variant.output_example).length > 0 && <>
-          <h3>{t("detail.outputExample")}</h3>
-          <pre tabIndex={0}>{jsonText(variant.output_example)}</pre>
-        </>}
       </section>
     </>
   );
@@ -768,39 +771,39 @@ function TemplateDetail({
       <span className="template-loading-announcement" role="status" aria-live="polite">
         {variantLoading ? t("detail.variantLoading") : ""}
       </span>
+      <div className="template-detail-nav">
       <Button className="template-detail-back" type="link" icon={<ArrowLeftOutlined aria-hidden="true" />} onClick={onBack}>
         {t("detail.back")}
       </Button>
+      </div>
 
       <header className="template-detail-hero">
         <TemplateScenarioLogo logoKey={detail.logo_key} />
         <div className="template-detail-title">
-          <p>{detail.vendor}</p>
+          <p>{detail.vendor} · {t(`source.${detail.source ?? "system"}`, { ns: "portable" })}</p>
           <Typography.Title level={1}>{localized(detail.title)}</Typography.Title>
-          <Typography.Paragraph>{localized(detail.summary)}</Typography.Paragraph>
           <div className="template-detail-meta">
             <Tag>{t(`type.${detail.adapter_type}`)}</Tag>
             {detail.protocols.map((protocol) => <Tag key={protocol}>{protocol}</Tag>)}
           </div>
         </div>
-        <Button
-          type="primary"
-          size="large"
-          icon={<CopyOutlined aria-hidden="true" />}
-          disabled={busy || variantLoading || variantError || variant === null}
-          onClick={() => setCopyOpen(true)}
-        >
-          {t("detail.copy")}
-        </Button>
+        <div className="template-detail-actions">
+          <Button type="primary" icon={<CopyOutlined aria-hidden="true" />}
+            disabled={busy || variantLoading || variantError || variant === null}
+            onClick={() => setCopyOpen(true)}>{t("detail.copy")}</Button>
+          {detail.can_manage && <Button disabled={busy} onClick={() => onPortable({ mode: "editTemplate", slug: detail.slug, expectedVersion: detail.template_version })}>{t("editTemplate", { ns: "portable" })}</Button>}
+          <Button disabled={busy} onClick={() => onPortable({ mode: "exportTemplate", slug: detail.slug })}>{t("exportTemplate", { ns: "portable" })}</Button>
+          {detail.can_manage && <Button danger type="text" disabled={busy} onClick={() => onDelete(detail)}>{t("deleteTemplate", { ns: "portable" })}</Button>}
+        </div>
       </header>
 
       <div className="template-detail-layout">
-        <div className="template-detail-overview">
+        {localized(detail.summary).trim() && <div className="template-detail-overview">
           <section className="template-detail-panel">
             <h2>{t("detail.purpose")}</h2>
-            <p>{localized(detail.details)}</p>
+            <p>{localized(detail.summary)}</p>
           </section>
-        </div>
+        </div>}
 
         <section className="template-recipe-panel">
           <Tabs
@@ -842,6 +845,11 @@ export default function TemplateGalleryPage({
   onBackToGallery,
   onInstantiate,
 }: TemplateGalleryPageProps) {
+  const { t } = useTranslation("portable");
+  const [portableDialog, setPortableDialog] = useState<PortableDialogRequest | null>(null);
+  const [deleteDetail, setDeleteDetail] = useState<TemplateScenarioDetail | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(false);
   const [themes, setThemes] = useState<TemplateTheme[]>([]);
   const [themesLoading, setThemesLoading] = useState(true);
   const [themesError, setThemesError] = useState(false);
@@ -893,16 +901,38 @@ export default function TemplateGalleryPage({
         hidden={scenarioSlug !== null}
         containerRef={galleryRef}
         onReloadThemes={reloadThemes}
+        onImport={() => setPortableDialog({ mode: "importTemplate" })}
+        reloadGeneration={reloadGeneration}
         onOpenScenario={(slug, trigger) => {
           lastScenarioTriggerRef.current = trigger;
           scenarioOpenedFromGalleryRef.current = slug;
           onOpenScenario(slug);
         }}
       />
+      {portableDialog && <PortablePackageDialog {...portableDialog}
+        onClose={() => setPortableDialog(null)}
+        onTemplateSaved={() => reloadThemes()}
+      />}
+      <Modal open={deleteDetail !== null} title={t("deleteTemplate")} okText={t("deleteTemplate")} cancelText={t("cancel")}
+        confirmLoading={deleting} okButtonProps={{ danger: true }}
+        onCancel={deleting ? undefined : () => setDeleteDetail(null)}
+        onOk={() => {
+          if (!deleteDetail || deleting) return;
+          setDeleting(true);
+          void api.deleteUserTemplate(deleteDetail.slug, deleteDetail.template_version).then(() => {
+            setDeleteDetail(null); reloadThemes(); onBackToGallery(false);
+          }).catch(() => setDeleteError(true)).finally(() => setDeleting(false));
+        }}>
+        <p>{t("deleteWarning")}</p>
+        {deleteError && <Alert type="error" message={t("failed")} />}
+      </Modal>
       {scenarioSlug !== null && (
         <TemplateDetail
-          key={scenarioSlug}
+          key={`${scenarioSlug}-${reloadGeneration}`}
           scenarioSlug={scenarioSlug}
+          focusOnMount={portableDialog === null}
+          onPortable={setPortableDialog}
+          onDelete={(detail) => { setDeleteDetail(detail); setDeleteError(false); }}
           busy={busy}
           onBack={() => onBackToGallery(
             scenarioOpenedFromGalleryRef.current === scenarioSlug

@@ -44,6 +44,7 @@ export interface Adapter {
   access_level?: AdapterAccessLevel | null;
   /** Safe owner display metadata; null means system-owned. */
   owner_username?: string | null;
+  configuration_notes?: { input_required?: string; review_environment?: boolean };
   latest_version_id: number | null;
   runtime_worker_id?: number | null;
   runtime_locked?: boolean;
@@ -77,6 +78,8 @@ export interface TemplateVariantSummary {
 }
 
 export interface TemplateScenarioSummary {
+  source?: "system" | "saved" | "imported";
+  can_manage?: boolean;
   slug: string;
   theme_slug: string;
   title: LocalizedText;
@@ -84,7 +87,6 @@ export interface TemplateScenarioSummary {
   vendor: string;
   adapter_type: AdapterType;
   protocols: string[];
-  tags: string[];
   logo_key: string;
   template_version: string;
   updated_at: string;
@@ -98,9 +100,7 @@ export interface TemplateScenarioListResponse {
   total: number;
 }
 
-export interface TemplateScenarioDetail extends TemplateScenarioSummary {
-  details: LocalizedText;
-}
+export type TemplateScenarioDetail = TemplateScenarioSummary;
 
 export interface TemplateVariant {
   scenario_slug: string;
@@ -111,8 +111,6 @@ export interface TemplateVariant {
   template_version: string;
   code: string;
   requirements: string;
-  input_skeleton: Record<string, unknown>;
-  output_example: Record<string, unknown>;
   runtime_config: Record<string, unknown>;
 }
 
@@ -163,6 +161,7 @@ export interface VersionDetail extends VersionSummary {
 
 /** Full current state of one Execution (GET /api/executions/{id}). */
 export interface Execution {
+  dependency_check?: boolean;
   id: number;
   adapter_id: number;
   version_id: number;
@@ -260,6 +259,7 @@ export type ExecutionSnapshot = ExecutionInputSnapshot;
 
 /** Lightweight history row; never carries input/output/stdout/stderr. */
 export interface ExecutionSummary {
+  dependency_check?: boolean;
   id: number;
   adapter_id: number;
   version_id: number;
@@ -845,3 +845,58 @@ export interface AiConnectionTestResult {
   ok: boolean;
   message: string;
 }
+
+
+export interface PortableFile {
+  filename: string;
+  content_type: string;
+  data_base64: string;
+}
+export interface PortableVariant {
+  language: AdapterLanguage;
+  code: string;
+  requirements: string;
+  runtime_config: Record<string, unknown>;
+}
+export interface PortablePackage {
+  format_version: 1;
+  object_type: "adapter" | "template";
+  name: string;
+  description: string;
+  category: string;
+  variants: PortableVariant[];
+  timeout_seconds: number;
+  adapter_type: AdapterType;
+  schedule: { cron: string; timezone: string; misfire_policy: string; max_catchup_count: number; max_catchup_age_seconds: number } | null;
+  webhook: { response_mode: "accepted" | "completed"; response_timeout_seconds: number } | null;
+  input: { source_type: string; included: boolean; json_value: unknown; files: PortableFile[] };
+  provenance: string;
+  license: string;
+}
+
+export type BuiltinPackageKind = "pypi" | "npm" | "maven";
+export interface BuiltinPackage {
+  id: number;
+  kind: BuiltinPackageKind;
+  name: string;
+  version: string;
+  environment: string;
+  filename: string;
+  repository_path: string;
+  size_bytes: number;
+  sha256: string;
+  status: "uploaded" | "deleting";
+  created_at: string;
+}
+export interface BuiltinPackageCapacity {
+  used_bytes: number;
+  reserved_bytes: number;
+  quota_bytes: number;
+}
+export interface BuiltinPackageLibrary {
+  files: BuiltinPackage[];
+  capacity: BuiltinPackageCapacity;
+  uploads: { id: string; filename: string; size_bytes: number; created_at: string }[];
+}
+
+export type BuiltinCheck = Pick<Execution, "id" | "adapter_id" | "version_id" | "created_at" | "target_worker_id" | "status" | "error" | "error_code">;

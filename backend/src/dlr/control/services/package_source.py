@@ -217,6 +217,14 @@ def create_package_source(session: Session, data: PackageSourceCreate) -> Packag
             "Package source name already exists",
             {"name": data.name},
         )
+    if data.index_url.startswith("dlr-builtin:") and (
+        data.index_url != f"dlr-builtin://{data.kind}" or data.credential_id is not None
+    ):
+        raise domain_error(
+            422,
+            "builtin_source_invalid",
+            "Builtin sources do not accept custom URLs or credentials",
+        )
     if data.credential_id is not None:
         _validate_credential_kind(data.kind, _get_credential(session, data.credential_id))
     # Clear any previous default before inserting so the partial unique index
@@ -253,6 +261,15 @@ def update_package_source(
     session: Session, package_source_id: int, data: PackageSourceUpdate
 ) -> PackageSource:
     source = get_package_source(session, package_source_id)
+    if source.index_url.startswith("dlr-builtin:"):
+        if any(key in data.model_fields_set for key in ("index_url", "kind", "credential_id")):
+            raise domain_error(
+                422,
+                "builtin_source_invalid",
+                "Builtin source kind, URL and credentials are immutable",
+            )
+    elif data.index_url is not None and data.index_url.startswith("dlr-builtin:"):
+        raise domain_error(422, "builtin_source_invalid", "Select an existing builtin source")
     if data.name is not None and data.name != source.name:
         conflict = session.scalar(
             select(PackageSource).where(
@@ -370,6 +387,8 @@ def probe_index_url(index_url: str) -> tuple[bool, int | None, str | None]:
     401/403 without their credentials); only transport-level failures mark
     the source unreachable.
     """
+    if index_url.startswith("dlr-builtin://"):
+        return True, 200, None
     try:
         request = url_request.Request(index_url, method="GET")
         with url_request.urlopen(  # noqa: S310 - admin-managed http(s) URL
