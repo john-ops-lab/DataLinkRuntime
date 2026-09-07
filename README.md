@@ -493,3 +493,5 @@ Copyright (c) 2026 john-ops-lab
 内网部署可使用 [DLR 内置依赖源](docs/zh-CN/issue141-builtin-dependencies.md)，由控制节点保存并分发五种语言的离线安装材料。
 
 [TypeScript 与 Go：入口、依赖源、离线材料和升级说明](docs/zh-CN/issue138-typescript-go.md)
+
+本机 PR 固定入口及 CI 门控验收流程见 [本机预览交付](docs/zh-CN/local-preview.md)。
