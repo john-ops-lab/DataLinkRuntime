@@ -424,15 +424,9 @@ def _require_running_execution_workers_online(
 
 def _cancel_queued_execution_for_delete(session: Session, execution: Execution) -> None:
     """Cancel one locked non-running responsibility and release every charge."""
-    request_cancellation(execution)
-    from dlr.control.services.execution import release_execution_leases
+    from dlr.control.services.execution import cancel_execution_locked
 
-    release_execution_leases(session, execution.id)
-    if execution.dispatch_backend == "rabbitmq":
-        from dlr.control.services import admission, outbox
-
-        admission.release_admission_once(session, execution)
-        outbox.settle_cancelled_outbox(session, execution.id)
+    cancel_execution_locked(session, execution)
 
 
 def _settle_terminal_rabbitmq_responsibilities(session: Session, adapter_id: int) -> None:

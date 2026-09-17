@@ -11,12 +11,26 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.control.models import (
+    Execution,
     ExecutionIncidentDisposition,
     ExecutionInfrastructureIncident,
 )
-from dlr.control.schemas.reliable_runtime import IncidentDispositionBody
+from dlr.control.schemas.reliable_runtime import AttemptResultBody, IncidentDispositionBody
+from dlr.control.services import attempt as attempt_service
+from dlr.control.services import execution as execution_service
+from dlr.control.services.execution_cancellation import (
+    lock_execution_in_admission_order,
+    lock_execution_tail,
+)
 from dlr.control.services.incident_disposition import lookup_idempotency, request_hash
-from test_issue130_b2_runtime import _enable_runtime, _execution, _rabbit_adapter, _ready_worker
+from test_issue130_b2_runtime import (
+    _claim,
+    _dispatch,
+    _enable_runtime,
+    _execution,
+    _rabbit_adapter,
+    _ready_worker,
+)
 from test_unified_runtime_migration import _isolated_schema, _upgrade
 
 
@@ -38,6 +52,10 @@ def _receipt(
     *,
     key: uuid.UUID,
     digest: str,
+    action: str = "recover",
+    reason_code: str = "capacity_repaired",
+    outcome: str = "dispatch_already_pending",
+    code: str = "dispatch_already_pending",
 ) -> ExecutionIncidentDisposition:
     assert incident.execution_id is not None
     return ExecutionIncidentDisposition(
@@ -47,10 +65,10 @@ def _receipt(
         request_hash=digest,
         actor_kind="superadmin",
         user_id=None,
-        action="recover",
-        reason_code="capacity_repaired",
-        outcome="dispatch_already_pending",
-        code="dispatch_already_pending",
+        action=action,
+        reason_code=reason_code,
+        outcome=outcome,
+        code=code,
         from_generation=1,
         to_generation=1,
         execution_status="queued",
@@ -194,3 +212,136 @@ def test_database_enforces_one_key_per_incident(
         session.add(_receipt(incident, key=key, digest=request_hash(body)))
         with pytest.raises(IntegrityError):
             session.flush()
+
+
+def test_execution_lock_refreshes_a_cached_row_after_concurrent_commit(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-fresh-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-fresh-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+
+    with session_factory() as cached_session:
+        cached = cached_session.get(Execution, execution["id"])
+        assert cached is not None and cached.status == "queued"
+        with session_factory() as concurrent:
+            execution_service.cancel_execution(concurrent, execution["id"])
+
+        locked = lock_execution_in_admission_order(cached_session, execution["id"])
+        assert locked is cached
+        assert locked.status == "cancelled"
+        cached_session.rollback()
+
+
+def test_cancel_helper_and_receipt_rollback_as_one_transaction(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-rollback-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-rollback-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    key = uuid.uuid4()
+    body = IncidentDispositionBody(
+        action="terminate", expected_generation=1, reason_code="operator_cancel"
+    )
+
+    with session_factory.begin() as setup:
+        incident_id = _incident(setup, execution["id"]).id
+
+    mutating = session_factory()
+    try:
+        locked = lock_execution_in_admission_order(mutating, execution["id"])
+        incident = mutating.get(ExecutionInfrastructureIncident, incident_id)
+        assert locked is not None and incident is not None
+        tail = lock_execution_tail(mutating, locked)
+        receipt = _receipt(
+            incident,
+            key=key,
+            digest=request_hash(body),
+            action="terminate",
+            reason_code="operator_cancel",
+            outcome="cancellation_requested",
+            code="cancellation_requested",
+        )
+        mutating.add(receipt)
+        execution_service.cancel_execution_locked(mutating, locked, lock_tail=tail)
+        mutating.flush()
+
+        with session_factory() as observer:
+            observed = observer.get(Execution, execution["id"])
+            assert observed is not None and observed.status == "queued"
+            assert observer.scalar(select(ExecutionIncidentDisposition)) is None
+        mutating.rollback()
+    finally:
+        mutating.close()
+
+    with session_factory() as observer:
+        observed = observer.get(Execution, execution["id"])
+        assert observed is not None and observed.status == "queued"
+        assert observer.scalar(select(ExecutionIncidentDisposition)) is None
+
+
+def test_running_terminate_receipt_converges_in_place_on_real_terminal(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-converge-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-converge-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    claimed = _claim(session_factory, worker["id"], _dispatch(session_factory, execution["id"]))
+    assert claimed.payload is not None and claimed.attempt_id is not None
+    body = IncidentDispositionBody(
+        action="terminate", expected_generation=1, reason_code="operator_cancel"
+    )
+
+    with session_factory.begin() as session:
+        incident = _incident(session, execution["id"])
+        receipt = _receipt(
+            incident,
+            key=uuid.uuid4(),
+            digest=request_hash(body),
+            action="terminate",
+            reason_code="operator_cancel",
+            outcome="cancellation_requested",
+            code="cancellation_requested",
+        )
+        session.add(receipt)
+        session.flush()
+        receipt_id = receipt.id
+
+    with session_factory() as session:
+        requested = execution_service.cancel_execution(session, execution["id"])
+        assert requested.status == "running" and requested.cancel_requested is True
+
+    with session_factory() as session:
+        decision = attempt_service.finish_attempt(
+            session,
+            worker["id"],
+            claimed.attempt_id,
+            AttemptResultBody(
+                attempt_id=claimed.attempt_id,
+                fencing_token=claimed.payload.fencing_token,
+                claim_token=claimed.payload.claim_token,
+                status="succeeded",
+                output={"ok": True},
+                workspace_cleanup_status="completed",
+            ),
+        )
+        assert decision.reason == "terminal_recorded"
+
+    with session_factory() as session:
+        receipts = list(session.scalars(select(ExecutionIncidentDisposition)))
+        assert len(receipts) == 1 and receipts[0].id == receipt_id
+        assert receipts[0].outcome == "execution_terminal"
+        assert receipts[0].code == "execution_cancelled"
+        assert receipts[0].execution_status == "cancelled"
+        incident = session.scalar(select(ExecutionInfrastructureIncident))
+        assert incident is not None and incident.status == "resolved"
+        assert incident.resolved_at is not None

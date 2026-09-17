@@ -60,7 +60,11 @@ from dlr.control.services import admission, outbox
 from dlr.control.services import execution as execution_service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import deserialize_dispatch_message
-from dlr.control.services.execution_cancellation import CANCELLATION_ERROR_CODE
+from dlr.control.services.execution_cancellation import (
+    CANCELLATION_ERROR_CODE,
+    lock_execution_attempts,
+    lock_incidents_and_outbox,
+)
 from dlr.control.services.input_config import database_now
 from dlr.control.services.worker import build_task_payload
 from dlr.control.services.worker_protocol import generate_token, hash_token, token_matches
@@ -363,6 +367,7 @@ def _slot(session: Session, adapter_id: int) -> AdapterExecutionSlot:
         select(AdapterExecutionSlot)
         .where(AdapterExecutionSlot.adapter_id == adapter_id, AdapterExecutionSlot.slot_no == 0)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if slot is None:
         slot = AdapterExecutionSlot(adapter_id=adapter_id, slot_no=0)
@@ -420,7 +425,9 @@ def claim_dispatch(
             execution_id=message.execution_id,
             dispatch_generation=message.dispatch_generation,
         )
-    execution = session.get(Execution, message.execution_id, with_for_update=True)
+    execution = session.get(
+        Execution, message.execution_id, with_for_update=True, populate_existing=True
+    )
     if execution is None:
         return _reject_dispatch(
             session,
@@ -500,19 +507,33 @@ def claim_dispatch(
         delay = max(1, int((_utc(execution.next_attempt_at) - _utc(now)).total_seconds()))
         session.rollback()
         return _decision("ACK_NOOP", "retry_not_due", retry_after_seconds=min(delay, 86_400))
+
+    locked_attempts = lock_execution_attempts(session, execution.id)
+    slot = _slot(session, adapter.id)
     if execution.cancel_requested:
+        incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
         execution.status = "cancelled"
         execution.ended_at = now
         execution.error_code = CANCELLATION_ERROR_CODE
         execution.last_error_code = CANCELLATION_ERROR_CODE
         admission.release_admission_once(session, execution, now=now)
         execution_service.release_execution_leases(session, execution.id)
+        from dlr.control.services.incident_disposition import (
+            converge_terminal_dispositions_locked,
+        )
+
+        converge_terminal_dispositions_locked(session, execution, incidents, now=now)
         session.commit()
         return _decision("ACK_NOOP", "cancelled")
 
-    slot = _slot(session, adapter.id)
     if slot.active_attempt_id is not None:
-        active = session.get(ExecutionAttempt, slot.active_attempt_id)
+        active = next(
+            (attempt for attempt in locked_attempts if attempt.id == slot.active_attempt_id),
+            None,
+        )
+        if active is None:
+            # Do not lock or clear another Execution's active Attempt after Slot.
+            active = session.get(ExecutionAttempt, slot.active_attempt_id)
         if active is not None and active.status in ACTIVE_ATTEMPT_STATUSES:
             if _utc(active.lease_expires_at) > _utc(now):
                 session.rollback()
@@ -528,12 +549,18 @@ def claim_dispatch(
         raise
     attempt_no = int(execution.attempt_count) + 1
     if attempt_no > int(policy["max_attempts"]):
+        incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
         execution.status = "dead_letter"
         execution.last_error_code = "retry_exhausted"
         execution.ended_at = now
         _create_holds_locked(session, execution, now=now)
         execution_service.release_execution_leases(session, execution.id)
         admission.release_admission_once(session, execution, now=now)
+        from dlr.control.services.incident_disposition import (
+            converge_terminal_dispositions_locked,
+        )
+
+        converge_terminal_dispositions_locked(session, execution, incidents, now=now)
         session.commit()
         return _decision("ACK_NOOP", "retry_exhausted")
 
@@ -599,14 +626,15 @@ def _lock_attempt_context(
     execution = session.get(Execution, execution_id, with_for_update=True, populate_existing=True)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
-    adapter = session.get(Adapter, execution.adapter_id, with_for_update=True)
+    adapter = session.get(
+        Adapter, execution.adapter_id, with_for_update=True, populate_existing=True
+    )
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
-    # An unlocked identity read must never leave a stale running Attempt in
-    # the identity map after another report won the lock and committed.
-    attempt = session.get(
-        ExecutionAttempt, attempt_id, with_for_update=True, populate_existing=True
-    )
+    # Lock every Attempt in ascending order before Slot.  This preserves the
+    # shared cancellation/disposition order and refreshes any auth-read cache.
+    attempts = lock_execution_attempts(session, execution.id)
+    attempt = next((row for row in attempts if row.id == attempt_id), None)
     if attempt is None:
         raise domain_error(404, "attempt_not_found", "Attempt not found")
     slot = _slot(session, adapter.id)
@@ -811,6 +839,7 @@ def _apply_terminal_locked(
 ) -> ClaimDecision:
     if attempt.status in TERMINAL_ATTEMPT_STATUSES:
         return _decision("ACK_NOOP", "already_terminal", attempt_id=attempt.id)
+    incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
     attempt.status = status
     attempt.ended_at = now
     attempt.error_code = error_code[:64]
@@ -899,6 +928,12 @@ def _apply_terminal_locked(
         execution_service.release_execution_leases(session, execution.id)
         admission.release_admission_once(session, execution, now=now)
     _release_slot_locked(slot, attempt)
+    if final:
+        from dlr.control.services.incident_disposition import (
+            converge_terminal_dispositions_locked,
+        )
+
+        converge_terminal_dispositions_locked(session, execution, incidents, now=now)
     ATTEMPT_METRICS[f"terminal_{status}"] += 1
     return _decision("ACK_NOOP", "terminal_recorded", attempt_id=attempt.id)
 
