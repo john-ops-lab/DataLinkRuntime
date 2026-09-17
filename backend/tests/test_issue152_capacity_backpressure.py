@@ -15,6 +15,10 @@ from typing import Any
 
 import pika
 import pytest
+from pika import frame as pika_frame
+from pika import spec as pika_spec
+from pika.callback import CallbackManager
+from pika.channel import Channel
 
 from dlr.worker import workspace
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
@@ -80,6 +84,7 @@ class _Channel:
         self.qos_callback: Callable[[Any], None] | None = None
         self.close_callback: Callable[[Any, Exception], None] | None = None
         self.cancel_callback: Callable[[Any], None] | None = None
+        self.cancel_ok_dispatcher: Callable[[Any], None] | None = None
         self.consumers: dict[str, tuple[Callable[..., None], Callable[[Any], None]]] = {}
         self.consume_calls = 0
         self.cancel_ok: dict[str, Callable[[Any], None]] = {}
@@ -91,6 +96,17 @@ class _Channel:
 
     def add_on_cancel_callback(self, callback: Callable[[Any], None]) -> None:
         self.cancel_callback = callback
+
+    def add_callback(
+        self,
+        callback: Callable[[Any], None],
+        replies: list[Any],
+        *,
+        one_shot: bool,
+    ) -> None:
+        assert replies == [pika_spec.Basic.CancelOk]
+        assert one_shot is False
+        self.cancel_ok_dispatcher = callback
 
     def basic_qos(self, **kwargs: Any) -> None:
         self.qos = {key: value for key, value in kwargs.items() if key != "callback"}
@@ -127,6 +143,8 @@ class _Channel:
         )
 
     def cancelled(self, tag: str) -> None:
+        assert self.cancel_ok_dispatcher is not None
+        self.cancel_ok_dispatcher(_frame(tag))
         self.cancel_ok[tag](_frame(tag))
 
     def broker_cancel(self, tag: str) -> None:
@@ -352,6 +370,52 @@ def test_per_slot_consumers_bound_credit_and_replenish_after_receipt(tmp_path: P
         consumer._pool.shutdown(wait=True, cancel_futures=True)
 
 
+def test_pika_132_shared_cancel_dispatcher_routes_each_tag_once(tmp_path: Path) -> None:
+    client = _Client({"decision": "ACK_NOOP"})
+    factory = _Factory()
+    consumer = _consumer(tmp_path, client, factory, slots=2)
+    try:
+        _epoch, _connection, channel = _start_epoch(consumer, factory)
+        tags = list(channel.consumers)
+        channel.deliver(tags[0], 121, b"{}")
+        channel.deliver(tags[1], 122, b"{}")
+        assert channel.cancel_ok[tags[0]] is channel.cancel_ok[tags[1]]
+
+        pika_connection = SimpleNamespace(callbacks=CallbackManager())
+        pika_channel = Channel(pika_connection, 1, lambda _channel: None)
+        pika_channel._state = pika_channel.OPEN
+        pika_channel._consumers = {tag: lambda *_args: None for tag in tags}
+        pika_channel._send_method = lambda _method: None  # type: ignore[method-assign]
+        seen: list[str] = []
+
+        def dispatcher(method_frame: Any) -> None:
+            seen.append(str(method_frame.method.consumer_tag))
+
+        pika_channel.add_callback(
+            dispatcher,
+            [pika_spec.Basic.CancelOk],
+            one_shot=False,
+        )
+
+        def waiter(_method_frame: Any) -> None:
+            return
+
+        pika_channel.basic_cancel(tags[0], callback=waiter)
+        pika_channel.basic_cancel(tags[1], callback=waiter)
+        for tag in tags:
+            pika_channel.callbacks.process(
+                1,
+                pika_spec.Basic.CancelOk,
+                pika_channel,
+                pika_frame.Method(1, pika_spec.Basic.CancelOk(tag)),
+            )
+
+        assert seen == tags
+    finally:
+        consumer.request_stop()
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+
 def test_select_connection_receives_exact_real_pika_parameters(tmp_path: Path) -> None:
     parameters = pika.ConnectionParameters(
         host="127.0.0.1",
@@ -517,6 +581,101 @@ def test_control_or_auth_failure_aborts_epoch_without_ack_or_hot_nack(
         consumer._pool.shutdown(wait=True, cancel_futures=True)
 
 
+@pytest.mark.parametrize("failure", ["malformed_json", "runtime_error"])
+def test_unexpected_claim_failure_faults_before_unsettled_ticket_release(
+    tmp_path: Path, failure: str
+) -> None:
+    if failure == "malformed_json":
+        client: Any = ControlClient("http://control.invalid", "test-token")
+        client._request = lambda *_args, **_kwargs: (200, b"not-json")
+    else:
+
+        class _UnexpectedClient(_Client):
+            def claim_v3(
+                self,
+                _worker_id: int,
+                _dispatch: Mapping[str, Any],
+                *,
+                timeout_seconds: float,
+            ) -> dict[str, Any]:
+                raise RuntimeError("unexpected claim failure")
+
+        client = _UnexpectedClient({"decision": "ACK_NOOP"})
+
+    factory = _Factory()
+    consumer = _consumer(tmp_path, client, factory)
+    try:
+        epoch, connection, channel = _start_epoch(consumer, factory)
+        tag = next(iter(channel.consumers))
+        ticket = consumer._tickets[0]
+        channel.deliver(tag, 131, b"{}")
+        channel.cancelled(tag)
+        deadline = time.monotonic() + 10
+        while not ticket.completion_pending:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        connection.ioloop.callbacks.popleft()()
+
+        assert epoch.faulted
+        assert not ticket.released
+        assert not epoch.transport_terminated
+        assert channel.acks == []
+        assert channel.nacks == []
+        assert channel.consume_calls == 1
+
+        connection.ioloop.drain()
+        assert epoch.transport_terminated
+        assert ticket.released
+        assert channel.consume_calls == 1
+    finally:
+        consumer.request_stop()
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+
+def test_expired_claim_return_faults_even_before_io_deadline_callback(tmp_path: Path) -> None:
+    client = _Client({"decision": "ACK_NOOP"})
+    client.block_claim = True
+    factory = _Factory()
+    consumer = _consumer(tmp_path, client, factory)
+    consumer._config = ConsumerConfig(
+        **{
+            **consumer._config.__dict__,
+            "claim_handshake_timeout_seconds": 0.01,
+        }
+    )
+    try:
+        epoch, connection, channel = _start_epoch(consumer, factory)
+        tag = next(iter(channel.consumers))
+        ticket = consumer._tickets[0]
+        channel.deliver(tag, 141, b"{}")
+        channel.cancelled(tag)
+        assert client.claim_entered.wait(10)
+        time.sleep(0.02)
+        client.claim_release.set()
+        deadline = time.monotonic() + 10
+        while not ticket.completion_pending:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+
+        # The fake IO deadline has deliberately not fired. Future completion
+        # must still fault instead of cancelling the timer and replenishing.
+        assert ticket.deadline_handle is not None
+        connection.ioloop.callbacks.popleft()()
+        assert epoch.faulted
+        assert not ticket.released
+        assert not epoch.transport_terminated
+        assert channel.acks == []
+        assert channel.nacks == []
+        assert channel.consume_calls == 1
+        connection.ioloop.drain()
+        assert epoch.transport_terminated
+        assert ticket.released
+    finally:
+        client.claim_release.set()
+        consumer.request_stop()
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+
 def test_running_ticket_is_not_replenished_until_future_really_finishes(
     tmp_path: Path,
 ) -> None:
@@ -574,6 +733,39 @@ def test_deadline_aborts_transport_and_holds_ticket_until_slow_claim_exits(tmp_p
         client.claim_release.set()
         _drain_until(connection, lambda: ticket.released)
         assert channel.acks == []
+    finally:
+        client.claim_release.set()
+        consumer.request_stop()
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+
+def test_old_epoch_slow_failure_releases_without_faulting_new_epoch(tmp_path: Path) -> None:
+    client = _Client({"decision": "ACK_NOOP"})
+    client.block_claim = True
+    factory = _Factory()
+    consumer = _consumer(tmp_path, client, factory)
+    try:
+        old_epoch, old_connection, old_channel = _start_epoch(consumer, factory)
+        old_tag = next(iter(old_channel.consumers))
+        old_ticket = consumer._tickets[0]
+        old_channel.deliver(old_tag, 151, b"{}")
+        old_channel.cancelled(old_tag)
+        assert client.claim_entered.wait(10)
+        assert old_ticket.deadline_handle is not None
+        old_connection.ioloop.fire(old_ticket.deadline_handle)
+        old_connection.ioloop.drain()
+        assert old_epoch.transport_terminated
+        consumer._finalize_epoch(old_epoch)
+        assert not old_ticket.released
+
+        new_epoch, new_connection, _new_channel = _start_epoch(consumer, factory)
+        assert not new_epoch.faulted
+        client.claim_release.set()
+        _drain_until(new_connection, lambda: old_ticket.released)
+
+        assert not new_epoch.faulted
+        assert new_connection.abort_errors == []
+        assert old_channel.acks == []
     finally:
         client.claim_release.set()
         consumer.request_stop()

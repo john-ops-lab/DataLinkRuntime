@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -81,6 +81,7 @@ class SlotTicket:
     deadline_handle: Any | None = None
     work_submitted: bool = False
     completion_pending: bool = False
+    disposition_sent: bool = False
     released: bool = False
 
 
@@ -94,6 +95,8 @@ class _ConnectionEpoch:
     setup_deadline: Any | None = None
     abort_deadline: Any | None = None
     successful_claim: bool = False
+    cancel_dispatcher: Callable[[Any], None] | None = None
+    cancel_waiter: Callable[[Any], None] | None = None
     abort_initiated: bool = False
     transport_terminated: bool = False
     abort_failed: bool = False
@@ -252,6 +255,7 @@ class V3Consumer:
             epoch.faulted = True
             epoch.abort_initiated = True
             epoch.transport_terminated = True
+            self._release_completed_tickets_io(epoch)
             self._stop_ioloop(epoch)
 
     def _on_connection_closed(
@@ -261,6 +265,7 @@ class V3Consumer:
             epoch.faulted = True
             epoch.abort_initiated = True
             epoch.transport_terminated = True
+            self._release_completed_tickets_io(epoch)
             self._stop_ioloop(epoch)
 
     def _on_channel_open(self, epoch: _ConnectionEpoch, channel: Any) -> None:
@@ -268,6 +273,16 @@ class V3Consumer:
             return
         epoch.channel = channel
         try:
+            epoch.cancel_dispatcher = lambda frame: self._on_cancel_ok_frame(epoch, frame)
+            epoch.cancel_waiter = lambda _frame: None
+            # Pika 1.3.2 registers basic_cancel's caller callback without its
+            # consumer-tag filter. Keep one persistent public dispatcher for
+            # routing, while the no-op caller callback only selects nowait=False.
+            channel.add_callback(
+                epoch.cancel_dispatcher,
+                [pika.spec.Basic.CancelOk],
+                one_shot=False,
+            )
             channel.add_on_close_callback(
                 lambda value, error: self._on_channel_closed(epoch, value, error)
             )
@@ -388,10 +403,27 @@ class V3Consumer:
             )
             channel.basic_cancel(
                 ticket.consumer_tag,
-                callback=lambda frame: self._on_cancel_ok(epoch, ticket, frame),
+                callback=epoch.cancel_waiter,
             )
         except Exception:
             self._fault_epoch(epoch, "consumer_cancel_failed")
+
+    def _on_cancel_ok_frame(self, epoch: _ConnectionEpoch, frame: Any) -> None:
+        tag = getattr(getattr(frame, "method", None), "consumer_tag", None)
+        with self._state_lock:
+            ticket = next(
+                (
+                    value
+                    for value in self._tickets.values()
+                    if value.connection_epoch == epoch.number
+                    and value.consumer_tag == tag
+                    and not value.released
+                ),
+                None,
+            )
+        if ticket is None:
+            return
+        self._on_cancel_ok(epoch, ticket, frame)
 
     def _on_cancel_ok(self, epoch: _ConnectionEpoch, ticket: SlotTicket, frame: Any) -> None:
         tag = getattr(getattr(frame, "method", None), "consumer_tag", None)
@@ -413,7 +445,9 @@ class V3Consumer:
         assert body is not None and deadline_at is not None
         try:
             future = self._pool.submit(self._process_ticket, ticket, body, deadline_at)
-            future.add_done_callback(lambda _future: self._complete_ticket(ticket))
+            future.add_done_callback(
+                lambda value: self._complete_ticket(ticket, failed=self._future_failed(value))
+            )
         except RuntimeError:
             with self._state_lock:
                 ticket.phase = "cancelling"
@@ -877,6 +911,8 @@ class V3Consumer:
                 else:
                     epoch.channel.basic_nack(delivery_tag=ticket.delivery_tag, requeue=False)
                 self._remove_ticket_timer(epoch, ticket)
+                with self._state_lock:
+                    ticket.disposition_sent = True
                 outcome["sent"] = True
             except Exception:
                 self._fault_epoch(epoch, "delivery_disposition_failed")
@@ -919,17 +955,30 @@ class V3Consumer:
         except Exception:
             self._fail_closed_from_worker(epoch, "consumer_fault_schedule_failed")
 
-    def _complete_ticket(self, ticket: SlotTicket) -> None:
+    @staticmethod
+    def _future_failed(future: Future[None]) -> bool:
+        if future.cancelled():
+            return True
+        try:
+            return future.exception() is not None
+        except Exception:
+            return True
+
+    def _complete_ticket(self, ticket: SlotTicket, *, failed: bool) -> None:
         with self._state_lock:
             ticket.completion_pending = True
             epoch = self._active_epoch
             connection = epoch.connection if epoch is not None else None
         if epoch is None or connection is None:
             return
+
+        def complete() -> None:
+            if epoch.number == ticket.connection_epoch and (failed or not ticket.disposition_sent):
+                self._fault_epoch(epoch, "delivery_work_unsettled")
+            self._release_completed_tickets_io(epoch)
+
         try:
-            connection.ioloop.add_callback_threadsafe(
-                lambda: self._release_completed_tickets_io(epoch)
-            )
+            connection.ioloop.add_callback_threadsafe(complete)
         except Exception:
             self._fail_closed_from_worker(epoch, "ticket_completion_schedule_failed")
 
@@ -952,7 +1001,14 @@ class V3Consumer:
         completed: list[SlotTicket] = []
         with self._state_lock:
             for ticket in self._tickets.values():
-                if ticket.completion_pending and not ticket.released:
+                transport_released = (
+                    ticket.connection_epoch != epoch.number or epoch.transport_terminated
+                )
+                if (
+                    ticket.completion_pending
+                    and not ticket.released
+                    and (ticket.disposition_sent or transport_released)
+                ):
                     ticket.phase = "released"
                     ticket.released = True
                     completed.append(ticket)
@@ -1021,7 +1077,8 @@ class V3Consumer:
                 if ticket.connection_epoch != epoch.number:
                     continue
                 ticket.deadline_handle = None
-                if ticket.phase in {"receiving", "cancelling"}:
+                releasable_work = ticket.phase == "working" and ticket.completion_pending
+                if ticket.phase in {"receiving", "cancelling"} or releasable_work:
                     ticket.phase = "released"
                     ticket.released = True
                     self._tickets.pop(slot_id, None)
