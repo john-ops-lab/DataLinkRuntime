@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Literal
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,9 +18,27 @@ from dlr.control.models import (
     Execution,
     ExecutionIncidentDisposition,
     ExecutionInfrastructureIncident,
+    ExecutionOutbox,
 )
-from dlr.control.schemas.reliable_runtime import IncidentDispositionBody
+from dlr.control.schemas.reliable_runtime import (
+    IncidentDispositionBody,
+    IncidentDispositionReceipt,
+    IncidentDispositionResponse,
+)
+from dlr.control.security import Principal
+from dlr.control.services import adapter_access, outbox
 from dlr.control.services.adapter import domain_error
+from dlr.control.services.dispatch import (
+    deserialize_dispatch_message,
+    serialize_dispatch_message,
+    worker_routing_key,
+)
+from dlr.control.services.execution_cancellation import (
+    ExecutionLockTail,
+    lock_execution_in_admission_order,
+    lock_execution_tail,
+)
+from dlr.control.services.input_config import database_now
 
 
 @dataclass(frozen=True)
@@ -27,6 +48,21 @@ class DispositionIdempotency:
     key: uuid.UUID
     request_hash: str
     receipt: ExecutionIncidentDisposition | None
+
+
+@dataclass(frozen=True)
+class IncidentDispositionResult:
+    """Committed response plus the HTTP status selected by the stable outcome."""
+
+    response: IncidentDispositionResponse
+    status_code: int
+
+
+_SETTLEMENT_CODES = frozenset({"execution_cancelled", "execution_expired", "execution_deleted"})
+_REJECTION_STATUS = {
+    "outbox_backlog_full": 503,
+    "cancellation_requested": 202,
+}
 
 
 def request_hash(body: IncidentDispositionBody) -> str:
@@ -112,3 +148,556 @@ def converge_terminal_dispositions_locked(
         incident.status = "resolved"
         incident.resolved_at = now
     return len(receipts)
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _status_for_outcome(outcome: str) -> int:
+    if outcome in _REJECTION_STATUS:
+        return _REJECTION_STATUS[outcome]
+    if outcome.startswith("incident_"):
+        return 409
+    return 200
+
+
+def _result(
+    receipt: ExecutionIncidentDisposition,
+    incident: ExecutionInfrastructureIncident,
+    execution: Execution,
+    *,
+    retry_after_seconds: int | None = None,
+) -> IncidentDispositionResult:
+    return IncidentDispositionResult(
+        response=IncidentDispositionResponse(
+            receipt=IncidentDispositionReceipt.model_validate(receipt),
+            incident_status=incident.status,  # type: ignore[arg-type]
+            execution_status=execution.status,
+            retry_after_seconds=retry_after_seconds,
+        ),
+        status_code=_status_for_outcome(receipt.outcome),
+    )
+
+
+def _record(
+    session: Session,
+    *,
+    execution: Execution,
+    incident: ExecutionInfrastructureIncident,
+    idempotency: DispositionIdempotency,
+    body: IncidentDispositionBody,
+    principal: Principal,
+    outcome: str,
+    code: str | None = None,
+    from_generation: int | None = None,
+    to_generation: int | None = None,
+    from_outbox_id: uuid.UUID | None = None,
+    to_outbox_id: uuid.UUID | None = None,
+) -> ExecutionIncidentDisposition:
+    receipt = ExecutionIncidentDisposition(
+        incident_id=incident.id,
+        execution_id=execution.id,
+        idempotency_key=idempotency.key,
+        request_hash=idempotency.request_hash,
+        actor_kind=principal.kind,
+        user_id=principal.user_id,
+        action=body.action,
+        reason_code=body.reason_code,
+        outcome=outcome,
+        code=code or outcome,
+        from_generation=from_generation,
+        to_generation=to_generation,
+        from_outbox_id=from_outbox_id,
+        to_outbox_id=to_outbox_id,
+        execution_status=execution.status,
+    )
+    session.add(receipt)
+    session.flush()
+    return receipt
+
+
+def _commit_result(
+    session: Session,
+    receipt: ExecutionIncidentDisposition,
+    incident: ExecutionInfrastructureIncident,
+    execution: Execution,
+    *,
+    retry_after_seconds: int | None = None,
+) -> IncidentDispositionResult:
+    result = _result(
+        receipt,
+        incident,
+        execution,
+        retry_after_seconds=retry_after_seconds,
+    )
+    session.commit()
+    return result
+
+
+def _current_outbox(execution: Execution, tail: ExecutionLockTail) -> ExecutionOutbox | None:
+    return next(
+        (
+            row
+            for row in tail.outbox_rows
+            if row.dispatch_generation == execution.dispatch_generation
+        ),
+        None,
+    )
+
+
+def _valid_dispatch_identity(
+    execution: Execution,
+    incident: ExecutionInfrastructureIncident,
+    row: ExecutionOutbox,
+) -> bool:
+    try:
+        message = deserialize_dispatch_message(row.payload_json)
+        body = serialize_dispatch_message(message)
+    except Exception:  # noqa: BLE001 - persisted corruption is a stable rejection
+        return False
+    return bool(
+        message.execution_id == execution.id
+        and message.dispatch_generation == execution.dispatch_generation
+        and message.adapter_id == execution.adapter_id
+        and message.target_worker_id == execution.target_worker_id_snapshot
+        and message.resource_class == execution.resource_class
+        and message.message_id == row.message_id
+        and len(body) == row.payload_bytes
+        and row.routing_key == worker_routing_key(message.target_worker_id)
+        and incident.message_id == row.message_id
+    )
+
+
+def _reject(
+    session: Session,
+    *,
+    execution: Execution,
+    incident: ExecutionInfrastructureIncident,
+    idempotency: DispositionIdempotency,
+    body: IncidentDispositionBody,
+    principal: Principal,
+    code: str,
+    row: ExecutionOutbox | None = None,
+    retry_after_seconds: int | None = None,
+) -> IncidentDispositionResult:
+    receipt = _record(
+        session,
+        execution=execution,
+        incident=incident,
+        idempotency=idempotency,
+        body=body,
+        principal=principal,
+        outcome=code,
+        from_generation=execution.dispatch_generation,
+        to_generation=execution.dispatch_generation,
+        from_outbox_id=row.id if row is not None else None,
+        to_outbox_id=row.id if row is not None else None,
+    )
+    return _commit_result(
+        session,
+        receipt,
+        incident,
+        execution,
+        retry_after_seconds=retry_after_seconds,
+    )
+
+
+def _inflight_retry_after(row: ExecutionOutbox | None, now: datetime) -> int | None:
+    if row is None or row.lease_expires_at is None:
+        return None
+    seconds = math.ceil((_as_utc(row.lease_expires_at) - _as_utc(now)).total_seconds())
+    return max(1, min(seconds, 86_400))
+
+
+def _terminal_code(execution: Execution) -> str:
+    return (execution.error_code or execution.last_error_code or f"execution_{execution.status}")[
+        :64
+    ]
+
+
+def _replace_published_dispatch(
+    session: Session,
+    execution: Execution,
+    row: ExecutionOutbox,
+    *,
+    now: datetime,
+) -> ExecutionOutbox:
+    message = deserialize_dispatch_message(row.payload_json)
+    next_generation = execution.dispatch_generation + 1
+    next_message = message.model_copy(
+        update={"dispatch_generation": next_generation, "message_id": uuid.uuid4()}
+    )
+    body = serialize_dispatch_message(next_message)
+    outbox.require_outbox_capacity(session, additional_count=1, additional_bytes=len(body), now=now)
+    execution.dispatch_generation = next_generation
+    created = ExecutionOutbox(
+        execution_id=execution.id,
+        dispatch_generation=next_generation,
+        message_id=next_message.message_id,
+        routing_key=worker_routing_key(next_message.target_worker_id),
+        payload_json=next_message.model_dump(mode="json"),
+        payload_bytes=len(body),
+        available_at=now,
+    )
+    session.add(created)
+    session.flush()
+    return created
+
+
+def dispose_incident(
+    session: Session,
+    execution_id: int,
+    incident_id: int,
+    action: Literal["recover", "terminate"],
+    expected_generation: int,
+    idempotency_key: uuid.UUID,
+    reason_code: Literal[
+        "capacity_repaired", "routing_repaired", "operator_cancel", "verified_terminal"
+    ],
+    principal: Principal,
+) -> IncidentDispositionResult:
+    """Revalidate and atomically dispose one Incident on its original Execution."""
+
+    body = IncidentDispositionBody(
+        action=action,
+        expected_generation=expected_generation,
+        reason_code=reason_code,
+    )
+    execution = lock_execution_in_admission_order(session, execution_id)
+    if execution is None:
+        session.rollback()
+        raise domain_error(404, "execution_not_found", "Execution not found")
+    try:
+        adapter_access.require_adapter_access(session, execution.adapter_id, principal, "edit")
+    except HTTPException:
+        session.rollback()
+        raise
+    tail = lock_execution_tail(session, execution)
+    incident = next((row for row in tail.incidents if row.id == incident_id), None)
+    if incident is None:
+        session.rollback()
+        raise domain_error(404, "incident_not_found", "Infrastructure Incident not found")
+    try:
+        idempotency = lookup_idempotency(
+            session,
+            incident_id=incident.id,
+            idempotency_key=idempotency_key,
+            body=body,
+        )
+    except HTTPException:
+        session.rollback()
+        raise
+    current_row = _current_outbox(execution, tail)
+    if idempotency.receipt is not None:
+        retry_after = None
+        if idempotency.receipt.outcome == "incident_dispatch_inflight":
+            retry_after = _inflight_retry_after(current_row, database_now(session))
+        result = _result(
+            idempotency.receipt,
+            incident,
+            execution,
+            retry_after_seconds=retry_after,
+        )
+        session.rollback()
+        return result
+
+    if expected_generation != execution.dispatch_generation:
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_generation_conflict",
+            row=current_row,
+        )
+
+    if execution.status in {"succeeded", "dead_letter", "cancelled", "expired"}:
+        incident.status = "resolved"
+        incident.resolved_at = database_now(session)
+        receipt = _record(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            outcome="execution_terminal",
+            code=_terminal_code(execution),
+            from_generation=execution.dispatch_generation,
+            to_generation=execution.dispatch_generation,
+            from_outbox_id=current_row.id if current_row is not None else None,
+            to_outbox_id=current_row.id if current_row is not None else None,
+        )
+        return _commit_result(session, receipt, incident, execution)
+
+    incident_generation = incident.dispatch_generation
+    if incident_generation is None or incident_generation > execution.dispatch_generation:
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_dispatch_identity_invalid",
+            row=current_row,
+        )
+    if incident_generation < execution.dispatch_generation:
+        if action == "recover":
+            return _reject(
+                session,
+                execution=execution,
+                incident=incident,
+                idempotency=idempotency,
+                body=body,
+                principal=principal,
+                code="incident_stale_generation",
+                row=current_row,
+            )
+        incident.status = "ignored"
+        incident.resolved_at = database_now(session)
+        receipt = _record(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            outcome="stale_incident_ignored",
+            from_generation=incident_generation,
+            to_generation=execution.dispatch_generation,
+            from_outbox_id=current_row.id if current_row is not None else None,
+            to_outbox_id=current_row.id if current_row is not None else None,
+        )
+        return _commit_result(session, receipt, incident, execution)
+
+    if execution.dispatch_backend != "rabbitmq":
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_execution_unsupported",
+            row=current_row,
+        )
+    if current_row is None:
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_dispatch_identity_unverifiable",
+        )
+    if not _valid_dispatch_identity(execution, incident, current_row):
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_dispatch_identity_invalid",
+            row=current_row,
+        )
+
+    active_attempts = tuple(
+        attempt for attempt in tail.attempts if attempt.status in {"claimed", "running"}
+    )
+    if action == "terminate":
+        if execution.status == "queued" and active_attempts:
+            return _reject(
+                session,
+                execution=execution,
+                incident=incident,
+                idempotency=idempotency,
+                body=body,
+                principal=principal,
+                code="incident_execution_active",
+                row=current_row,
+            )
+        from dlr.control.services.execution import cancel_execution_locked
+
+        cancel_execution_locked(session, execution, lock_tail=tail)
+        if execution.status == "running":
+            receipt = _record(
+                session,
+                execution=execution,
+                incident=incident,
+                idempotency=idempotency,
+                body=body,
+                principal=principal,
+                outcome="cancellation_requested",
+                from_generation=execution.dispatch_generation,
+                to_generation=execution.dispatch_generation,
+                from_outbox_id=current_row.id,
+                to_outbox_id=current_row.id,
+            )
+        else:
+            incident.status = "resolved"
+            incident.resolved_at = database_now(session)
+            receipt = _record(
+                session,
+                execution=execution,
+                incident=incident,
+                idempotency=idempotency,
+                body=body,
+                principal=principal,
+                outcome="execution_terminal",
+                code=_terminal_code(execution),
+                from_generation=execution.dispatch_generation,
+                to_generation=execution.dispatch_generation,
+                from_outbox_id=current_row.id,
+                to_outbox_id=current_row.id,
+            )
+        return _commit_result(session, receipt, incident, execution)
+
+    if execution.cancel_requested:
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_cancellation_pending",
+            row=current_row,
+        )
+    if execution.status == "retry_wait":
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_execution_not_queued",
+            row=current_row,
+        )
+    if execution.status != "queued" or active_attempts:
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_execution_active",
+            row=current_row,
+        )
+    if current_row.last_error_code in _SETTLEMENT_CODES:
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_dispatch_settled",
+            row=current_row,
+        )
+    if current_row.status == "published" and (
+        current_row.published_at is None
+        or current_row.lease_owner is not None
+        or current_row.lease_expires_at is not None
+    ):
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_dispatch_identity_unverifiable",
+            row=current_row,
+        )
+
+    now = database_now(session)
+    if current_row.status == "pending":
+        if current_row.published_at is not None or (
+            (current_row.lease_owner is None) != (current_row.lease_expires_at is None)
+        ):
+            return _reject(
+                session,
+                execution=execution,
+                incident=incident,
+                idempotency=idempotency,
+                body=body,
+                principal=principal,
+                code="incident_dispatch_identity_unverifiable",
+                row=current_row,
+            )
+        if (
+            current_row.lease_owner is not None
+            and current_row.lease_expires_at is not None
+            and _as_utc(current_row.lease_expires_at) > _as_utc(now)
+        ):
+            retry_after = _inflight_retry_after(current_row, now)
+            return _reject(
+                session,
+                execution=execution,
+                incident=incident,
+                idempotency=idempotency,
+                body=body,
+                principal=principal,
+                code="incident_dispatch_inflight",
+                row=current_row,
+                retry_after_seconds=retry_after,
+            )
+        incident.status = "resolved"
+        incident.resolved_at = now
+        receipt = _record(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            outcome="dispatch_already_pending",
+            from_generation=execution.dispatch_generation,
+            to_generation=execution.dispatch_generation,
+            from_outbox_id=current_row.id,
+            to_outbox_id=current_row.id,
+        )
+        return _commit_result(session, receipt, incident, execution)
+
+    try:
+        replacement = _replace_published_dispatch(session, execution, current_row, now=now)
+    except HTTPException as error:
+        detail = error.detail
+        code = detail.get("code") if isinstance(detail, dict) else None
+        if code != "outbox_backlog_full":
+            session.rollback()
+            raise
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="outbox_backlog_full",
+            row=current_row,
+        )
+    incident.status = "resolved"
+    incident.resolved_at = now
+    receipt = _record(
+        session,
+        execution=execution,
+        incident=incident,
+        idempotency=idempotency,
+        body=body,
+        principal=principal,
+        outcome="recovery_dispatched",
+        from_generation=current_row.dispatch_generation,
+        to_generation=replacement.dispatch_generation,
+        from_outbox_id=current_row.id,
+        to_outbox_id=replacement.id,
+    )
+    return _commit_result(session, receipt, incident, execution)

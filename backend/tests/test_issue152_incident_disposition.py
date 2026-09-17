@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from typing import Literal, cast
 
 import pytest
 from fastapi import HTTPException
@@ -10,19 +14,29 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from dlr.common.config import settings
 from dlr.control.models import (
+    AdapterExecutionAdmission,
     Execution,
     ExecutionIncidentDisposition,
     ExecutionInfrastructureIncident,
+    ExecutionOutbox,
+    GlobalExecutionAdmission,
 )
 from dlr.control.schemas.reliable_runtime import AttemptResultBody, IncidentDispositionBody
+from dlr.control.security import SUPERADMIN_PRINCIPAL
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import execution as execution_service
 from dlr.control.services.execution_cancellation import (
     lock_execution_in_admission_order,
     lock_execution_tail,
 )
-from dlr.control.services.incident_disposition import lookup_idempotency, request_hash
+from dlr.control.services.incident_disposition import (
+    IncidentDispositionResult,
+    dispose_incident,
+    lookup_idempotency,
+    request_hash,
+)
 from test_issue130_b2_runtime import (
     _claim,
     _dispatch,
@@ -34,17 +48,34 @@ from test_issue130_b2_runtime import (
 from test_unified_runtime_migration import _isolated_schema, _upgrade
 
 
-def _incident(session: Session, execution_id: int) -> ExecutionInfrastructureIncident:
+def _incident(
+    session: Session,
+    execution_id: int,
+    *,
+    message_id: uuid.UUID | None = None,
+    generation: int = 1,
+) -> ExecutionInfrastructureIncident:
     row = ExecutionInfrastructureIncident(
         execution_id=execution_id,
-        dispatch_generation=1,
-        message_id=uuid.uuid4(),
+        dispatch_generation=generation,
+        message_id=message_id or uuid.uuid4(),
         kind="delivery_limit",
         attempts=3,
     )
     session.add(row)
     session.flush()
     return row
+
+
+def _bound_incident(session: Session, execution_id: int) -> ExecutionInfrastructureIncident:
+    row = session.scalar(
+        select(ExecutionOutbox).where(
+            ExecutionOutbox.execution_id == execution_id,
+            ExecutionOutbox.dispatch_generation == 1,
+        )
+    )
+    assert row is not None
+    return _incident(session, execution_id, message_id=row.message_id)
 
 
 def _receipt(
@@ -345,3 +376,385 @@ def test_running_terminate_receipt_converges_in_place_on_real_terminal(
         incident = session.scalar(select(ExecutionInfrastructureIncident))
         assert incident is not None and incident.status == "resolved"
         assert incident.resolved_at is not None
+
+
+def _dispose(
+    session: Session,
+    *,
+    execution_id: int,
+    incident_id: int,
+    action: Literal["recover", "terminate"],
+    key: uuid.UUID | None = None,
+) -> IncidentDispositionResult:
+    return dispose_incident(
+        session,
+        execution_id,
+        incident_id,
+        action,
+        1,
+        key or uuid.uuid4(),
+        cast(
+            Literal[
+                "capacity_repaired", "routing_repaired", "operator_cancel", "verified_terminal"
+            ],
+            "capacity_repaired" if action == "recover" else "operator_cancel",
+        ),
+        SUPERADMIN_PRINCIPAL,
+    )
+
+
+def test_pending_recovery_reuses_responsibility_and_idempotency_key(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-pending-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-pending-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        incident_id = _bound_incident(session, execution["id"]).id
+        adapter_count = session.get(AdapterExecutionAdmission, adapter["id"])
+        global_count = session.get(GlobalExecutionAdmission, "global")
+        assert adapter_count is not None and global_count is not None
+        before_counts = (adapter_count.outstanding_count, global_count.outstanding_count)
+
+    key = uuid.uuid4()
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+            key=key,
+        )
+        assert result.status_code == 200
+        assert result.response.receipt.outcome == "dispatch_already_pending"
+
+    with session_factory() as session:
+        replay = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+            key=key,
+        )
+        assert replay.response.receipt.id == result.response.receipt.id
+        assert replay.response.incident_status == "resolved"
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        adapter_count = session.get(AdapterExecutionAdmission, adapter["id"])
+        global_count = session.get(GlobalExecutionAdmission, "global")
+        assert row is not None and row.dispatch_generation == 1 and row.attempt_count == 0
+        assert adapter_count is not None and global_count is not None
+        assert (adapter_count.outstanding_count, global_count.outstanding_count) == before_counts
+        assert len(list(session.scalars(select(ExecutionIncidentDisposition)))) == 1
+
+
+def test_published_recovery_creates_one_new_generation_without_rewriting_old_row(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-published-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-published-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        old = session.scalar(select(ExecutionOutbox))
+        assert old is not None
+        old.status = "published"
+        old.published_at = datetime.now(UTC)
+        old_id = old.id
+        old_message_id = old.message_id
+        incident_id = _incident(session, execution["id"], message_id=old.message_id).id
+
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+        assert result.status_code == 200
+        assert result.response.receipt.outcome == "recovery_dispatched"
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        rows = list(
+            session.scalars(select(ExecutionOutbox).order_by(ExecutionOutbox.dispatch_generation))
+        )
+        assert row is not None and row.dispatch_generation == 2 and row.attempt_count == 0
+        assert len(rows) == 2
+        assert rows[0].id == old_id and rows[0].message_id == old_message_id
+        assert rows[0].status == "published" and rows[0].last_error_code is None
+        assert rows[1].status == "pending" and rows[1].message_id != old_message_id
+        assert rows[1].payload_json["dispatch_generation"] == 2
+
+
+@pytest.mark.parametrize(
+    ("setup", "expected"),
+    [
+        ("live_lease", "incident_dispatch_inflight"),
+        ("settled", "incident_dispatch_settled"),
+        ("identity", "incident_dispatch_identity_invalid"),
+    ],
+)
+def test_recovery_rejects_unowned_or_unverifiable_outbox(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    setup: str,
+    expected: str,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, f"issue152-{setup}-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, f"issue152-{setup}-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        outbox_row = session.scalar(select(ExecutionOutbox))
+        assert outbox_row is not None
+        incident_id = _incident(session, execution["id"], message_id=outbox_row.message_id).id
+        if setup == "live_lease":
+            outbox_row.lease_owner = "relay"
+            outbox_row.lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+        elif setup == "settled":
+            outbox_row.status = "published"
+            outbox_row.published_at = datetime.now(UTC)
+            outbox_row.last_error_code = "execution_cancelled"
+        else:
+            outbox_row.payload_json = {**outbox_row.payload_json, "resource_class": "tampered"}
+
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+        assert result.status_code == 409
+        assert result.response.receipt.outcome == expected
+        if setup == "live_lease":
+            assert result.response.retry_after_seconds is not None
+            assert 1 <= result.response.retry_after_seconds <= 61
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        incident = session.get(ExecutionInfrastructureIncident, incident_id)
+        assert row is not None and row.dispatch_generation == 1
+        assert incident is not None and incident.status == "open"
+
+
+def test_active_recover_rejects_but_terminate_only_requests_cancellation(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-active-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-active-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        outbox_row = session.scalar(select(ExecutionOutbox))
+        assert outbox_row is not None
+        outbox_row.status = "published"
+        outbox_row.published_at = datetime.now(UTC)
+        incident_id = _incident(session, execution["id"], message_id=outbox_row.message_id).id
+    claimed = _claim(session_factory, worker["id"], _dispatch(session_factory, execution["id"]))
+    assert claimed.attempt_id is not None
+
+    with session_factory() as session:
+        rejected = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+        assert rejected.status_code == 409
+        assert rejected.response.receipt.outcome == "incident_execution_active"
+
+    with session_factory() as session:
+        accepted = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="terminate",
+        )
+        assert accepted.status_code == 202
+        assert accepted.response.receipt.outcome == "cancellation_requested"
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        incident = session.get(ExecutionInfrastructureIncident, incident_id)
+        assert row is not None and row.status == "running" and row.cancel_requested is True
+        assert row.admission_released_at is None
+        assert incident is not None and incident.status == "open"
+
+
+def test_recovery_capacity_rejection_is_audited_without_generation_change(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-capacity-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-capacity-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        outbox_row = session.scalar(select(ExecutionOutbox))
+        assert outbox_row is not None
+        outbox_row.status = "published"
+        outbox_row.published_at = datetime.now(UTC)
+        incident_id = _incident(session, execution["id"], message_id=outbox_row.message_id).id
+    monkeypatch.setattr(settings, "outbox_max_pending_count", 0)
+
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+        assert result.status_code == 503
+        assert result.response.receipt.outcome == "outbox_backlog_full"
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        rows = list(session.scalars(select(ExecutionOutbox)))
+        assert row is not None and row.dispatch_generation == 1
+        assert len(rows) == 1 and rows[0].status == "published"
+        assert len(list(session.scalars(select(ExecutionIncidentDisposition)))) == 1
+
+
+def test_stale_incident_cannot_recover_and_terminate_only_ignores_it(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-stale-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-stale-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        old = session.scalar(select(ExecutionOutbox))
+        row = session.get(Execution, execution["id"])
+        assert old is not None and row is not None
+        old.status = "published"
+        old.published_at = datetime.now(UTC)
+        row.dispatch_generation = 2
+        stale_id = _incident(session, execution["id"], message_id=old.message_id).id
+
+    # expected_generation is current generation, while the Incident remains generation 1.
+    with session_factory() as session:
+        rejected = dispose_incident(
+            session,
+            execution["id"],
+            stale_id,
+            "recover",
+            2,
+            uuid.uuid4(),
+            "capacity_repaired",
+            SUPERADMIN_PRINCIPAL,
+        )
+        assert rejected.status_code == 409
+        assert rejected.response.receipt.outcome == "incident_stale_generation"
+
+    with session_factory() as session:
+        ignored = dispose_incident(
+            session,
+            execution["id"],
+            stale_id,
+            "terminate",
+            2,
+            uuid.uuid4(),
+            "operator_cancel",
+            SUPERADMIN_PRINCIPAL,
+        )
+        assert ignored.status_code == 200
+        assert ignored.response.receipt.outcome == "stale_incident_ignored"
+        assert ignored.response.incident_status == "ignored"
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None and row.status == "queued" and row.dispatch_generation == 2
+        assert row.cancel_requested is False
+
+
+@pytest.mark.parametrize("action", ["recover", "terminate"])
+def test_terminal_execution_is_only_verified_and_never_reopened(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    action: Literal["recover", "terminate"],
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, f"issue152-terminal-{action}-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, f"issue152-terminal-{action}-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        incident_id = _bound_incident(session, execution["id"]).id
+    with session_factory() as session:
+        cancelled = execution_service.cancel_execution(session, execution["id"])
+        assert cancelled.status == "cancelled"
+
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action=action,
+        )
+        assert result.status_code == 200
+        assert result.response.receipt.outcome == "execution_terminal"
+        assert result.response.receipt.code == "execution_cancelled"
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None and row.status == "cancelled" and row.dispatch_generation == 1
+
+
+def test_concurrent_distinct_keys_create_only_one_replacement_generation(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-concurrent-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-concurrent-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        old = session.scalar(select(ExecutionOutbox))
+        assert old is not None
+        old.status = "published"
+        old.published_at = datetime.now(UTC)
+        incident_id = _incident(session, execution["id"], message_id=old.message_id).id
+
+    barrier = threading.Barrier(2)
+
+    def recover() -> IncidentDispositionResult:
+        barrier.wait(timeout=10)
+        with session_factory() as session:
+            return _dispose(
+                session,
+                execution_id=execution["id"],
+                incident_id=incident_id,
+                action="recover",
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [
+            future.result(timeout=15) for future in (pool.submit(recover), pool.submit(recover))
+        ]
+
+    assert sorted(result.status_code for result in results) == [200, 409]
+    assert {result.response.receipt.outcome for result in results} == {
+        "recovery_dispatched",
+        "incident_generation_conflict",
+    }
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        outbox_rows = list(session.scalars(select(ExecutionOutbox)))
+        receipts = list(session.scalars(select(ExecutionIncidentDisposition)))
+        assert row is not None and row.dispatch_generation == 2
+        assert len(outbox_rows) == 2 and len(receipts) == 2

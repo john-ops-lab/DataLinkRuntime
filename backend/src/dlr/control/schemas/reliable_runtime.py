@@ -28,6 +28,25 @@ IncidentDispositionAction = Literal["recover", "terminate"]
 IncidentDispositionReason = Literal[
     "capacity_repaired", "routing_repaired", "operator_cancel", "verified_terminal"
 ]
+IncidentDispositionOutcome = Literal[
+    "dispatch_already_pending",
+    "recovery_dispatched",
+    "cancellation_requested",
+    "execution_terminal",
+    "stale_incident_ignored",
+    "incident_generation_conflict",
+    "incident_dispatch_identity_invalid",
+    "incident_execution_unsupported",
+    "incident_dispatch_identity_unverifiable",
+    "incident_stale_generation",
+    "incident_execution_active",
+    "incident_cancellation_pending",
+    "incident_execution_not_queued",
+    "incident_dispatch_settled",
+    "incident_dispatch_inflight",
+    "incident_materials_unavailable",
+    "outbox_backlog_full",
+]
 
 
 class IncidentDispositionBody(BaseModel):
@@ -53,7 +72,7 @@ class IncidentDispositionReceipt(BaseModel):
     user_id: int | None
     action: IncidentDispositionAction
     reason_code: IncidentDispositionReason
-    outcome: str = Field(min_length=1, max_length=64)
+    outcome: IncidentDispositionOutcome
     code: str = Field(min_length=1, max_length=64)
     from_generation: int | None = Field(default=None, ge=1)
     to_generation: int | None = Field(default=None, ge=1)
@@ -69,6 +88,7 @@ class IncidentDispositionResponse(BaseModel):
     receipt: IncidentDispositionReceipt
     incident_status: Literal["open", "resolved", "ignored"]
     execution_status: str = Field(min_length=1, max_length=32)
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
 
 
 class IncidentDispositionPage(BaseModel):
