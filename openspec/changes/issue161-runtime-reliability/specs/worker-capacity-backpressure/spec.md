@@ -27,7 +27,15 @@ Worker SHALL 保留 `deliver → durable Claim → durable private journal → A
 - **THEN** 未满足顺序的任务不进入 Sandbox；已 durable Claim 保留 journal/Lease 恢复责任，不把 ACK 排队当成 Broker 已确认
 
 ### Requirement: 真实故障和正常容量分别诊断
-Worker SHALL 区分容量等待、Control/auth 故障、Broker 故障和协议超时；诊断可关联 message/Execution/connection epoch，MUST 不记录敏感 payload、URI userinfo 或 Token。断线、重复消息、迟到回报继续遵循原 Claim、Lease、fencing 和 Slot 合同。
+Worker SHALL 区分容量等待、Control/auth 故障、Broker 主动 Basic.Cancel、其他 Broker 故障和协议超时；诊断可关联 message/Execution/connection epoch，MUST 不记录敏感 payload、URI userinfo 或 Token。断线、重复消息、迟到回报继续遵循原 Claim、Lease、fencing 和 Slot 合同。
+
+#### Scenario: 心跳健康时 Broker 主动取消空闲 consumer
+- **WHEN** 空闲 consumer 已成功注册、没有 delivery，Broker 主动发送 Basic.Cancel 而连接心跳仍健康
+- **THEN** Worker 将其作为真实 Broker 故障进行有界清理/重连，不能永久占住接收槽；队列恢复后按真实空槽继续接收
+
+#### Scenario: 主动取消与客户端取消回执和断线交错
+- **WHEN** Basic.Cancel、客户端 CancelOk、channel-close、任务完成或旧 epoch 事件以不同顺序到达
+- **THEN** 未获完整资格的 ticket 不启动业务，每个 ticket 至多提交一次工作和释放一次；已由工作线程承担的责任保留至真实退出，迟到事件不影响新 channel 或新槽
 
 #### Scenario: 老连接回调到达新连接
 - **WHEN** 断线后原任务完成并回调 ACK 或释放
