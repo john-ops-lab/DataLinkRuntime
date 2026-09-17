@@ -1,8 +1,8 @@
 ## 1. #135 A — Worker metadata 独立检查点
 
-- [ ] 1.1 核对精确集成 HEAD、工作区及本规划，补 Worker Check/Index 声明；以 migration 0031 的名称、字段顺序和表达式逐项比较，确认不新增 migration。
-- [ ] 1.2 使用真实 PostgreSQL 完整迁移库和 SQLAlchemy inspection 比较上述两个对象；新增针对 metadata 漂移的回归，验证无重复对象、无误删，原 Worker 数据不变。
-- [ ] 1.3 运行相关 model/migration 测试、Ruff/format/Mypy 适用检查及 `git diff --check`，记录命令、预期、实际与 SHA，独立提交 #135 A 后继续。
+- [x] 1.1 核对精确集成 HEAD、工作区及本规划，补 Worker Check/Index 声明；以 migration 0031 的名称、字段顺序和表达式逐项比较，确认不新增 migration。
+- [x] 1.2 使用真实 PostgreSQL 完整迁移库和 SQLAlchemy inspection 比较上述两个对象；新增针对 metadata 漂移的回归，验证无重复对象、无误删，原 Worker 数据不变。
+- [x] 1.3 运行相关 model/migration 测试、Ruff/format/Mypy 适用检查及 `git diff --check`，记录命令、预期、实际与 SHA，独立提交 #135 A 后继续。
 
 ## 2. #135 B — canonical cancellation 独立检查点
 
