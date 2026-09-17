@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from dlr.common.jcs import canonicalize
 from dlr.control.models import (
+    Adapter,
     Execution,
     ExecutionIncidentDisposition,
     ExecutionInfrastructureIncident,
@@ -38,6 +39,12 @@ from dlr.control.services.execution_cancellation import (
     lock_execution_in_admission_order,
     lock_execution_tail,
 )
+from dlr.control.services.incident_materials import (
+    RecoveryMaterialProof,
+    close_material_guards,
+    preflight_recovery_materials,
+    validate_recovery_materials,
+)
 from dlr.control.services.input_config import database_now
 
 
@@ -56,6 +63,15 @@ class IncidentDispositionResult:
 
     response: IncidentDispositionResponse
     status_code: int
+
+
+@dataclass(frozen=True)
+class DispatchReplacementPlan:
+    generation: int
+    message_id: uuid.UUID
+    routing_key: str
+    payload_json: dict[str, object]
+    payload_bytes: int
 
 
 _SETTLEMENT_CODES = frozenset({"execution_cancelled", "execution_expired", "execution_deleted"})
@@ -231,8 +247,14 @@ def _commit_result(
         execution,
         retry_after_seconds=retry_after_seconds,
     )
-    session.commit()
-    return result
+    try:
+        session.commit()
+        return result
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        close_material_guards(session)
 
 
 def _current_outbox(execution: Execution, tail: ExecutionLockTail) -> ExecutionOutbox | None:
@@ -247,6 +269,7 @@ def _current_outbox(execution: Execution, tail: ExecutionLockTail) -> ExecutionO
 
 
 def _valid_dispatch_identity(
+    adapter: Adapter,
     execution: Execution,
     incident: ExecutionInfrastructureIncident,
     row: ExecutionOutbox,
@@ -260,7 +283,9 @@ def _valid_dispatch_identity(
         message.execution_id == execution.id
         and message.dispatch_generation == execution.dispatch_generation
         and message.adapter_id == execution.adapter_id
+        and message.language == adapter.language
         and message.target_worker_id == execution.target_worker_id_snapshot
+        and execution.target_worker_id == execution.target_worker_id_snapshot
         and message.resource_class == execution.resource_class
         and message.message_id == row.message_id
         and len(body) == row.payload_bytes
@@ -316,13 +341,13 @@ def _terminal_code(execution: Execution) -> str:
     ]
 
 
-def _replace_published_dispatch(
+def _plan_published_dispatch(
     session: Session,
     execution: Execution,
     row: ExecutionOutbox,
     *,
     now: datetime,
-) -> ExecutionOutbox:
+) -> DispatchReplacementPlan:
     message = deserialize_dispatch_message(row.payload_json)
     next_generation = execution.dispatch_generation + 1
     next_message = message.model_copy(
@@ -330,14 +355,30 @@ def _replace_published_dispatch(
     )
     body = serialize_dispatch_message(next_message)
     outbox.require_outbox_capacity(session, additional_count=1, additional_bytes=len(body), now=now)
-    execution.dispatch_generation = next_generation
-    created = ExecutionOutbox(
-        execution_id=execution.id,
-        dispatch_generation=next_generation,
+    return DispatchReplacementPlan(
+        generation=next_generation,
         message_id=next_message.message_id,
         routing_key=worker_routing_key(next_message.target_worker_id),
         payload_json=next_message.model_dump(mode="json"),
         payload_bytes=len(body),
+    )
+
+
+def _install_published_dispatch(
+    session: Session,
+    execution: Execution,
+    plan: DispatchReplacementPlan,
+    *,
+    now: datetime,
+) -> ExecutionOutbox:
+    execution.dispatch_generation = plan.generation
+    created = ExecutionOutbox(
+        execution_id=execution.id,
+        dispatch_generation=plan.generation,
+        message_id=plan.message_id,
+        routing_key=plan.routing_key,
+        payload_json=plan.payload_json,
+        payload_bytes=plan.payload_bytes,
         available_at=now,
     )
     session.add(created)
@@ -359,17 +400,29 @@ def dispose_incident(
 ) -> IncidentDispositionResult:
     """Revalidate and atomically dispose one Incident on its original Execution."""
 
+    close_material_guards(session)
     body = IncidentDispositionBody(
         action=action,
         expected_generation=expected_generation,
         reason_code=reason_code,
     )
+    proof = RecoveryMaterialProof(fingerprint=None, valid=False)
+    try:
+        preflight_execution = adapter_access.require_execution_access(
+            session, execution_id, principal, "edit"
+        )
+        if action == "recover":
+            proof = preflight_recovery_materials(session, preflight_execution)
+    finally:
+        session.rollback()
     execution = lock_execution_in_admission_order(session, execution_id)
     if execution is None:
         session.rollback()
         raise domain_error(404, "execution_not_found", "Execution not found")
     try:
-        adapter_access.require_adapter_access(session, execution.adapter_id, principal, "edit")
+        access = adapter_access.require_adapter_access(
+            session, execution.adapter_id, principal, "edit"
+        )
     except HTTPException:
         session.rollback()
         raise
@@ -495,7 +548,7 @@ def dispose_incident(
             principal=principal,
             code="incident_dispatch_identity_unverifiable",
         )
-    if not _valid_dispatch_identity(execution, incident, current_row):
+    if not _valid_dispatch_identity(access.adapter, execution, incident, current_row):
         return _reject(
             session,
             execution=execution,
@@ -511,7 +564,7 @@ def dispose_incident(
         attempt for attempt in tail.attempts if attempt.status in {"claimed", "running"}
     )
     if action == "terminate":
-        if execution.status == "queued" and active_attempts:
+        if execution.status != "running" and active_attempts:
             return _reject(
                 session,
                 execution=execution,
@@ -620,8 +673,10 @@ def dispose_incident(
 
     now = database_now(session)
     if current_row.status == "pending":
-        if current_row.published_at is not None or (
-            (current_row.lease_owner is None) != (current_row.lease_expires_at is None)
+        if (
+            current_row.published_at is not None
+            or ((current_row.lease_owner is None) != (current_row.lease_expires_at is None))
+            or (current_row.lease_owner is not None and not current_row.lease_owner.strip())
         ):
             return _reject(
                 session,
@@ -650,6 +705,17 @@ def dispose_incident(
                 row=current_row,
                 retry_after_seconds=retry_after,
             )
+        if not validate_recovery_materials(session, execution, proof):
+            return _reject(
+                session,
+                execution=execution,
+                incident=incident,
+                idempotency=idempotency,
+                body=body,
+                principal=principal,
+                code="incident_materials_unavailable",
+                row=current_row,
+            )
         incident.status = "resolved"
         incident.resolved_at = now
         receipt = _record(
@@ -668,7 +734,7 @@ def dispose_incident(
         return _commit_result(session, receipt, incident, execution)
 
     try:
-        replacement = _replace_published_dispatch(session, execution, current_row, now=now)
+        plan = _plan_published_dispatch(session, execution, current_row, now=now)
     except HTTPException as error:
         detail = error.detail
         code = detail.get("code") if isinstance(detail, dict) else None
@@ -685,6 +751,18 @@ def dispose_incident(
             code="outbox_backlog_full",
             row=current_row,
         )
+    if not validate_recovery_materials(session, execution, proof):
+        return _reject(
+            session,
+            execution=execution,
+            incident=incident,
+            idempotency=idempotency,
+            body=body,
+            principal=principal,
+            code="incident_materials_unavailable",
+            row=current_row,
+        )
+    replacement = _install_published_dispatch(session, execution, plan, now=now)
     incident.status = "resolved"
     incident.resolved_at = now
     receipt = _record(

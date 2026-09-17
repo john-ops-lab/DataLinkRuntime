@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal, cast
 
 import pytest
@@ -17,16 +19,23 @@ from sqlalchemy.orm import Session, sessionmaker
 from dlr.common.config import settings
 from dlr.control.models import (
     AdapterExecutionAdmission,
+    BuiltinPackage,
+    Credential,
     Execution,
+    ExecutionCredentialBindingSnapshot,
     ExecutionIncidentDisposition,
     ExecutionInfrastructureIncident,
     ExecutionOutbox,
     GlobalExecutionAdmission,
+    ManagedInputArtifact,
+    Worker,
 )
 from dlr.control.schemas.reliable_runtime import AttemptResultBody, IncidentDispositionBody
 from dlr.control.security import SUPERADMIN_PRINCIPAL
 from dlr.control.services import attempt as attempt_service
+from dlr.control.services import builtin_package
 from dlr.control.services import execution as execution_service
+from dlr.control.services.artifact_store import LocalFileArtifactStore
 from dlr.control.services.execution_cancellation import (
     lock_execution_in_admission_order,
     lock_execution_tail,
@@ -37,6 +46,8 @@ from dlr.control.services.incident_disposition import (
     lookup_idempotency,
     request_hash,
 )
+from dlr.control.services.secrets import encrypt_fields
+from test_issue127_b2_binding import create_artifact
 from test_issue130_b2_runtime import (
     _claim,
     _dispatch,
@@ -403,6 +414,290 @@ def _dispose(
     )
 
 
+def _managed_execution(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+) -> tuple[dict[str, object], dict[str, object], int, Path]:
+    _enable_runtime(monkeypatch)
+    monkeypatch.setattr(settings, "managed_files_enabled", True)
+    store_root = tmp_path / name
+    monkeypatch.setattr(settings, "artifact_store_root", str(store_root))
+    content = f"material-{name}".encode()
+    store = LocalFileArtifactStore(store_root)
+    storage_key = store.new_storage_key()
+    with store.put_part(storage_key) as stream:
+        stream.write(content)
+    store.commit(storage_key)
+    worker = _ready_worker(api_client, f"{name}-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, f"{name}-adapter")  # type: ignore[arg-type]
+    artifact_id = create_artifact(
+        session_factory,
+        int(adapter["id"]),
+        f"{name}.txt",
+        status="READY",
+    )
+    with session_factory.begin() as session:
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        assert artifact is not None
+        artifact.storage_key = storage_key
+        artifact.size_bytes = len(content)
+        artifact.sha256 = hashlib.sha256(content).hexdigest()
+    configured = api_client.put(  # type: ignore[union-attr]
+        f"/api/adapters/{adapter['id']}/input-config",
+        json={
+            "expected_revision": 1,
+            "source_type": "managed_files",
+            "artifact_ids": [artifact_id],
+            "retention": {"mode": "system_default", "seconds": None},
+        },
+    )
+    assert configured.status_code == 200, configured.text
+    execution = _execution(api_client, int(adapter["id"]))  # type: ignore[arg-type]
+    return worker, execution, artifact_id, store.object_path(storage_key)
+
+
+def test_managed_recovery_accepts_clean_pending_delete_and_replays_after_blob_loss(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _worker, execution, artifact_id, blob = _managed_execution(
+        api_client,
+        session_factory,
+        monkeypatch,
+        tmp_path,
+        "issue152-managed-pending",
+    )
+    with session_factory.begin() as session:
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        assert artifact is not None
+        artifact.status = "PENDING_DELETE"
+        incident_id = _bound_incident(session, int(execution["id"])).id
+
+    key = uuid.uuid4()
+    with session_factory() as session:
+        accepted = _dispose(
+            session,
+            execution_id=int(execution["id"]),
+            incident_id=incident_id,
+            action="recover",
+            key=key,
+        )
+    assert accepted.response.receipt.outcome == "dispatch_already_pending"
+
+    blob.unlink()
+    with session_factory() as session:
+        replay = _dispose(
+            session,
+            execution_id=int(execution["id"]),
+            incident_id=incident_id,
+            action="recover",
+            key=key,
+        )
+    assert replay.response.receipt.id == accepted.response.receipt.id
+    assert replay.response.receipt.outcome == "dispatch_already_pending"
+
+
+@pytest.mark.parametrize(
+    ("status", "delete_attempts"),
+    [("DELETING", 0), ("DELETE_FAILED", 0), ("PENDING_DELETE", 1)],
+)
+def test_managed_recovery_rejects_prior_deletion_authority(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    status: str,
+    delete_attempts: int,
+) -> None:
+    _worker, execution, artifact_id, _blob = _managed_execution(
+        api_client,
+        session_factory,
+        monkeypatch,
+        tmp_path,
+        f"issue152-managed-{status.lower()}-{delete_attempts}",
+    )
+    with session_factory.begin() as session:
+        artifact = session.get(ManagedInputArtifact, artifact_id)
+        assert artifact is not None
+        artifact.status = status
+        artifact.delete_attempts = delete_attempts
+        incident_id = _bound_incident(session, int(execution["id"])).id
+
+    with session_factory() as session:
+        rejected = _dispose(
+            session,
+            execution_id=int(execution["id"]),
+            incident_id=incident_id,
+            action="recover",
+        )
+    assert rejected.status_code == 409
+    assert rejected.response.receipt.outcome == "incident_materials_unavailable"
+    with session_factory() as session:
+        row = session.get(Execution, int(execution["id"]))
+        incident = session.get(ExecutionInfrastructureIncident, incident_id)
+        assert row is not None and row.dispatch_generation == 1
+        assert incident is not None and incident.status == "open"
+
+
+def test_managed_blob_removed_between_preflight_and_final_validation_is_rejected(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _worker, execution, _artifact_id, blob = _managed_execution(
+        api_client,
+        session_factory,
+        monkeypatch,
+        tmp_path,
+        "issue152-managed-race",
+    )
+    with session_factory.begin() as session:
+        incident_id = _bound_incident(session, int(execution["id"])).id
+
+    from dlr.control.services import incident_disposition as service
+
+    validate = service.validate_recovery_materials
+
+    def remove_then_validate(*args: object, **kwargs: object) -> bool:
+        blob.unlink()
+        return validate(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(service, "validate_recovery_materials", remove_then_validate)
+    with session_factory() as session:
+        rejected = _dispose(
+            session,
+            execution_id=int(execution["id"]),
+            incident_id=incident_id,
+            action="recover",
+        )
+    assert rejected.response.receipt.outcome == "incident_materials_unavailable"
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_recovery_validates_frozen_credential_rows_without_current_binding_or_secret_output(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    corrupt: bool,
+) -> None:
+    _enable_runtime(monkeypatch)
+    monkeypatch.setattr(settings, "master_key", "issue152-material-test-master-key")
+    worker = _ready_worker(api_client, f"issue152-credential-{corrupt}-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(  # type: ignore[arg-type]
+        api_client, worker, f"issue152-credential-{corrupt}-adapter"
+    )
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    secret = "issue152-secret-must-not-leak"
+    with session_factory.begin() as session:
+        credential = Credential(
+            name=f"issue152-credential-{corrupt}",
+            type="token",
+            ciphertext=encrypt_fields({"token": secret}),
+        )
+        session.add(credential)
+        session.flush()
+        if corrupt:
+            credential.ciphertext = "corrupt-ciphertext"
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        snapshot = {
+            "binding_id": 991,
+            "credential_id": credential.id,
+            "env_key": "ISSUE152_TOKEN",
+            "field": "token",
+        }
+        row.credential_bindings_snapshot = [snapshot]
+        session.add(
+            ExecutionCredentialBindingSnapshot(
+                execution_id=row.id,
+                **snapshot,
+            )
+        )
+        incident_id = _bound_incident(session, row.id).id
+
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+    assert result.response.receipt.outcome == (
+        "incident_materials_unavailable" if corrupt else "dispatch_already_pending"
+    )
+    assert secret not in result.response.model_dump_json()
+
+
+def test_recovery_holds_and_validates_original_builtin_package(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _enable_runtime(monkeypatch)
+    monkeypatch.setattr(settings, "builtin_package_root", str(tmp_path / "builtin"))
+    worker = _ready_worker(api_client, "issue152-builtin-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-builtin-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    storage_key = str(uuid.uuid4())
+    content = b"frozen-builtin-material"
+    digest = hashlib.sha256(content).hexdigest()
+    metadata = {"name": "offline", "version": "1.0.0", "environment": "any"}
+    builtin_package.storage_path(storage_key).write_bytes(content)
+    with session_factory.begin() as session:
+        package = BuiltinPackage(
+            kind="pypi",
+            name="offline",
+            version="1.0.0",
+            environment="any",
+            filename="offline-1.0.0-py3-none-any.whl",
+            repository_path="offline/offline-1.0.0-py3-none-any.whl",
+            size_bytes=len(content),
+            sha256=digest,
+            storage_key=storage_key,
+            package_metadata=metadata,
+            status="uploaded",
+        )
+        session.add(package)
+        session.flush()
+        row = session.get(Execution, execution["id"])
+        worker_row = session.get(Worker, worker["id"])
+        assert row is not None and worker_row is not None
+        row.builtin_package_snapshot = {
+            "kind": "pypi",
+            "files": [
+                {
+                    "id": package.id,
+                    "filename": package.filename,
+                    "repository_path": package.repository_path,
+                    "size_bytes": package.size_bytes,
+                    "sha256": package.sha256,
+                    "metadata": metadata,
+                }
+            ],
+        }
+        worker_row.isolation_capabilities = {
+            **worker_row.isolation_capabilities,
+            "builtin_packages_v1": True,
+        }
+        incident_id = _bound_incident(session, row.id).id
+
+    with session_factory() as session:
+        accepted = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="recover",
+        )
+    assert accepted.response.receipt.outcome == "dispatch_already_pending"
+
+
 def test_pending_recovery_reuses_responsibility_and_idempotency_key(
     api_client: object,
     session_factory: sessionmaker[Session],
@@ -499,6 +794,9 @@ def test_published_recovery_creates_one_new_generation_without_rewriting_old_row
         ("live_lease", "incident_dispatch_inflight"),
         ("settled", "incident_dispatch_settled"),
         ("identity", "incident_dispatch_identity_invalid"),
+        ("language", "incident_dispatch_identity_invalid"),
+        ("target_current", "incident_dispatch_identity_invalid"),
+        ("empty_owner", "incident_dispatch_identity_unverifiable"),
     ],
 )
 def test_recovery_rejects_unowned_or_unverifiable_outbox(
@@ -519,12 +817,21 @@ def test_recovery_rejects_unowned_or_unverifiable_outbox(
         if setup == "live_lease":
             outbox_row.lease_owner = "relay"
             outbox_row.lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+        elif setup == "empty_owner":
+            outbox_row.lease_owner = ""
+            outbox_row.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
         elif setup == "settled":
             outbox_row.status = "published"
             outbox_row.published_at = datetime.now(UTC)
             outbox_row.last_error_code = "execution_cancelled"
-        else:
+        elif setup == "identity":
             outbox_row.payload_json = {**outbox_row.payload_json, "resource_class": "tampered"}
+        elif setup == "language":
+            outbox_row.payload_json = {**outbox_row.payload_json, "language": "java"}
+        else:
+            execution_row = session.get(Execution, execution["id"])
+            assert execution_row is not None
+            execution_row.target_worker_id = None
 
     with session_factory() as session:
         result = _dispose(
@@ -590,6 +897,43 @@ def test_active_recover_rejects_but_terminate_only_requests_cancellation(
         assert row is not None and row.status == "running" and row.cancel_requested is True
         assert row.admission_released_at is None
         assert incident is not None and incident.status == "open"
+
+
+def test_retry_wait_with_active_attempt_terminate_is_audited_rejection(
+    api_client: object,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-retry-active-worker")  # type: ignore[arg-type]
+    adapter = _rabbit_adapter(api_client, worker, "issue152-retry-active-adapter")  # type: ignore[arg-type]
+    execution = _execution(api_client, adapter["id"])  # type: ignore[arg-type]
+    with session_factory.begin() as session:
+        outbox_row = session.scalar(select(ExecutionOutbox))
+        assert outbox_row is not None
+        outbox_row.status = "published"
+        outbox_row.published_at = datetime.now(UTC)
+        incident_id = _incident(session, execution["id"], message_id=outbox_row.message_id).id
+    claimed = _claim(session_factory, worker["id"], _dispatch(session_factory, execution["id"]))
+    assert claimed.attempt_id is not None
+    with session_factory.begin() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        row.status = "retry_wait"
+
+    with session_factory() as session:
+        result = _dispose(
+            session,
+            execution_id=execution["id"],
+            incident_id=incident_id,
+            action="terminate",
+        )
+    assert result.response.receipt.outcome == "incident_execution_active"
+    with session_factory() as session:
+        receipts = list(session.scalars(select(ExecutionIncidentDisposition)))
+        assert len(receipts) == 1
+        row = session.get(Execution, execution["id"])
+        assert row is not None and row.status == "retry_wait"
 
 
 def test_recovery_capacity_rejection_is_audited_without_generation_change(
