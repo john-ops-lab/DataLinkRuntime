@@ -12,6 +12,7 @@ from dlr.control.models import Execution
 ACTIVE_EXECUTION_STATUSES = ("running",)
 RABBITMQ_CANCELLABLE_STATUSES = ("queued", "retry_wait")
 RABBITMQ_NONTERMINAL_STATUSES = ("queued", "running", "retry_wait")
+CANCELLATION_ERROR_CODE = "execution_cancelled"
 
 
 def lock_nonterminal_executions(session: Session, adapter_id: int) -> list[Execution]:
@@ -79,6 +80,7 @@ def request_cancellation(execution: Execution) -> None:
     if execution.status in RABBITMQ_CANCELLABLE_STATUSES:
         execution.status = "cancelled"
         execution.ended_at = func.now()
-        execution.last_error_code = "cancelled"
+        execution.error_code = CANCELLATION_ERROR_CODE
+        execution.last_error_code = CANCELLATION_ERROR_CODE
     elif execution.status == "running":
         execution.cancel_requested = True

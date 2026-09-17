@@ -6,9 +6,9 @@
 
 ## 2. #135 B — canonical cancellation 独立检查点
 
-- [ ] 2.1 统一 queued/retry_wait、claim 前 cancel flag、active 协作取消的 error_code/last_error_code 为 execution_cancelled；以 API/detail fixture 和既有取消合同测试证明 status/decision reason 不变、历史终态不批量改写。
-- [ ] 2.2 用真实 PostgreSQL 覆盖未 Claim、retry_wait、running、重复请求以及 cancel/Claim/terminal 竞争的两种先后顺序；断言 canonical code、原 Slot/Admission/Lease/cleanup/fence 不变量与一次释放。
-- [ ] 2.3 运行相关取消/claim/result 回归和适用静态检查，记录独立验证证据并提交 #135 B；不得将第二组指定queued取消UI包含到本检查点。
+- [x] 2.1 统一 queued/retry_wait、claim 前 cancel flag、active 协作取消的 error_code/last_error_code 为 execution_cancelled；以 API/detail fixture 和既有取消合同测试证明 status/decision reason 不变、历史终态不批量改写。
+- [x] 2.2 用真实 PostgreSQL 覆盖未 Claim、retry_wait、running、重复请求以及 cancel/Claim/terminal 竞争的两种先后顺序；断言 canonical code、原 Slot/Admission/Lease/cleanup/fence 不变量与一次释放。
+- [x] 2.3 运行相关取消/claim/result 回归和适用静态检查，记录独立验证证据并提交 #135 B；不得将第二组指定queued取消UI包含到本检查点。
 
 ## 3. #134 — 持久公平扫描独立检查点
 

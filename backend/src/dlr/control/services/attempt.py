@@ -57,6 +57,7 @@ from dlr.control.services import admission, outbox
 from dlr.control.services import execution as execution_service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import deserialize_dispatch_message
+from dlr.control.services.execution_cancellation import CANCELLATION_ERROR_CODE
 from dlr.control.services.input_config import database_now
 from dlr.control.services.worker import build_task_payload
 from dlr.control.services.worker_protocol import generate_token, hash_token, token_matches
@@ -471,6 +472,8 @@ def claim_dispatch(
     if execution.cancel_requested:
         execution.status = "cancelled"
         execution.ended_at = now
+        execution.error_code = CANCELLATION_ERROR_CODE
+        execution.last_error_code = CANCELLATION_ERROR_CODE
         admission.release_admission_once(session, execution, now=now)
         execution_service.release_execution_leases(session, execution.id)
         session.commit()
@@ -612,7 +615,7 @@ def start_attempt(
             attempt,
             _slot_row,
             status="cancelled",
-            error_code="execution_cancelled",
+            error_code=CANCELLATION_ERROR_CODE,
             error_class="cancelled",
             error="Execution was cancelled before Adapter start",
             now=now,
@@ -827,8 +830,9 @@ def _apply_terminal_locked(
         execution.output_preview = output_preview
     if execution.cancel_requested or status == "cancelled":
         execution.status = "cancelled"
-        execution.error_code = "execution_cancelled"
-        execution.last_error_code = "execution_cancelled"
+        attempt.error_code = CANCELLATION_ERROR_CODE
+        execution.error_code = CANCELLATION_ERROR_CODE
+        execution.last_error_code = CANCELLATION_ERROR_CODE
         final = True
     elif status == "succeeded":
         execution.status = "succeeded"
