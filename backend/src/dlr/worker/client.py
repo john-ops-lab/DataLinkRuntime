@@ -241,13 +241,19 @@ class ControlClient:
             raise ClientError(502, "cleanup response is not a cleanup task")
         return body
 
-    def claim_v3(self, worker_id: int, dispatch: Mapping[str, Any]) -> dict[str, Any]:
+    def claim_v3(
+        self,
+        worker_id: int,
+        dispatch: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         """Submit only the small dispatch body; Control owns all DB reads."""
         raw = self._expect(
             "POST",
             f"/api/workers/{worker_id}/v3/claim",
             dict(dispatch),
-            timeout=self._timeout_seconds,
+            timeout=timeout_seconds if timeout_seconds is not None else self._timeout_seconds,
         )
         body = json.loads(raw)
         if not isinstance(body, dict):
@@ -260,6 +266,8 @@ class ControlClient:
         attempt_id: int,
         action: str,
         payload: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         raw = self._expect(
             "POST",
@@ -267,7 +275,7 @@ class ControlClient:
             dict(payload),
             timeout=self.PROGRESS_TIMEOUT_SECONDS
             if action == "progress"
-            else self._timeout_seconds,
+            else (timeout_seconds if timeout_seconds is not None else self._timeout_seconds),
         )
         body = json.loads(raw)
         if not isinstance(body, dict):
@@ -295,6 +303,17 @@ class ControlClient:
         return self._attempt_request(worker_id, attempt_id, "result", payload)
 
     def prepare_failed_attempt(
-        self, worker_id: int, attempt_id: int, payload: Mapping[str, Any]
+        self,
+        worker_id: int,
+        attempt_id: int,
+        payload: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        return self._attempt_request(worker_id, attempt_id, "prepare-failed", payload)
+        return self._attempt_request(
+            worker_id,
+            attempt_id,
+            "prepare-failed",
+            payload,
+            timeout_seconds=timeout_seconds,
+        )

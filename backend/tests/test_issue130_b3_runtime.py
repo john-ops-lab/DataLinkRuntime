@@ -1379,7 +1379,12 @@ class _PrepareFailureClient:
         self.body: dict[str, Any] | None = None
 
     def prepare_failed_attempt(
-        self, _worker_id: int, _attempt_id: int, body: dict[str, Any]
+        self,
+        _worker_id: int,
+        _attempt_id: int,
+        body: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
     ) -> None:
         self.body = body
 
@@ -1415,12 +1420,8 @@ def test_consumer_rejects_profile_before_attempt_journal(tmp_path: Path) -> None
             resource_envelope=unit_resource_envelope(),
         ),
     )
-    channel = _AckChannel()
     try:
-        accepted = consumer._prepare_execute(
-            _ImmediateConnection(),  # type: ignore[arg-type]
-            channel,
-            17,
+        result = consumer._prepare_execute(
             {
                 "payload": _v3_payload("python", "def handle(context, input): return {}")
                 | {"resource_profile": _profile(memory_bytes=128 * MiB)}
@@ -1428,8 +1429,8 @@ def test_consumer_rejects_profile_before_attempt_journal(tmp_path: Path) -> None
         )
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
-    assert accepted is False
-    assert channel.acks == [17]
+    assert result.prepared is None
+    assert result.disposition == "ack"
     assert client.body is not None
     assert client.body["error_code"] == "resource_profile_exceeds_worker_capability"
     assert not (tmp_path / "journal").exists()
@@ -1463,18 +1464,12 @@ def test_consumer_reports_intrinsic_profile_error_before_ceiling_or_model_valida
             workspace_cleanup_attempt_timeout_seconds=21,
         ),
     )
-    channel = _AckChannel()
     try:
-        accepted = consumer._prepare_execute(
-            _ImmediateConnection(),  # type: ignore[arg-type]
-            channel,
-            19,
-            {"payload": raw_payload},
-        )
+        result = consumer._prepare_execute({"payload": raw_payload})
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
-    assert accepted is False
-    assert channel.acks == [19]
+    assert result.prepared is None
+    assert result.disposition == "ack"
     assert client.body is not None
     assert client.body["error_code"] == "resource_profile_invalid"
     assert not (tmp_path / "journal").exists()
@@ -1499,18 +1494,12 @@ def test_consumer_rejects_stale_profile_snapshot_before_attempt_journal(tmp_path
     )
     raw_payload = _v3_payload("python", "def handle(context, input): return {}")
     raw_payload["execution_timeout_seconds"] = 21
-    channel = _AckChannel()
     try:
-        accepted = consumer._prepare_execute(
-            _ImmediateConnection(),  # type: ignore[arg-type]
-            channel,
-            18,
-            {"payload": raw_payload},
-        )
+        result = consumer._prepare_execute({"payload": raw_payload})
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
-    assert accepted is False
-    assert channel.acks == [18]
+    assert result.prepared is None
+    assert result.disposition == "ack"
     assert client.body is not None
     assert client.body["error_code"] == "resource_profile_invalid"
     assert not (tmp_path / "journal").exists()

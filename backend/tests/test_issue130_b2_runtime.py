@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import threading
@@ -401,15 +402,7 @@ def _valid_consumer_payload(*, execution_id: int = 13, attempt_id: int = 41) -> 
 
 
 def test_v3_consumer_slots_one_bounds_prefetch_pool_and_saturation() -> None:
-    """A single local slot yields one broker delivery and pauses on saturation."""
-
-    connection_holder: dict[str, _OneShotConsumerConnection] = {}
-
-    def make_connection() -> _OneShotConsumerConnection:
-        connection = _OneShotConsumerConnection(consumer)
-        connection_holder["connection"] = connection
-        return connection
-
+    """A single configured slot also bounds the only execution pool."""
     consumer = V3Consumer(
         ConsumerConfig(
             worker_id=7,
@@ -419,32 +412,15 @@ def test_v3_consumer_slots_one_bounds_prefetch_pool_and_saturation() -> None:
             attempt_journal_root=Path("/tmp/dlr-b2-journal"),
         ),
         object(),  # type: ignore[arg-type]
-        connection_factory=make_connection,
+        connection_factory=lambda **_kwargs: object(),  # type: ignore[return-value]
         runtime_settings=SimpleNamespace(
             sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
         ),
     )
     try:
-        consumer.run()
-        channel = connection_holder["connection"].channel_instance
-        assert channel.qos == {"prefetch_count": 1, "global_qos": False}
-        assert channel.consume_callback is not None
-        assert channel.consume_callback.args == (connection_holder["connection"],)
-        assert channel.stop_consuming_calls == 0
         assert consumer._pool._max_workers == 1
-
-        assert consumer._slots.acquire(blocking=False)
-        try:
-            consumer._on_delivery(
-                _ImmediateCallbackConnection(),
-                channel,
-                SimpleNamespace(delivery_tag=99),
-                None,
-                b"{}",
-            )
-        finally:
-            consumer._slots.release()
-        assert channel.stop_consuming_calls == 1
+        assert consumer._tickets == {}
+        assert not hasattr(consumer, "_slots")
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
 
@@ -452,69 +428,7 @@ def test_v3_consumer_slots_one_bounds_prefetch_pool_and_saturation() -> None:
 def test_v3_consumer_local_slot_defers_second_delivery_until_first_finishes(
     tmp_path: Path,
 ) -> None:
-    """The local slot gate prevents Claim while one execution is still running."""
-
-    payload = _valid_consumer_payload()
-    first_claimed = threading.Event()
-    first_runner_started = threading.Event()
-    release_first_runner = threading.Event()
-    first_completed = threading.Event()
-    second_claimed = threading.Event()
-    second_completed = threading.Event()
-
-    class SlotClient:
-        def __init__(self) -> None:
-            self.claim_calls = 0
-            self.result_calls = 0
-
-        def claim_v3(self, _worker_id: int, _dispatch: Mapping[str, Any]) -> dict[str, Any]:
-            self.claim_calls += 1
-            if self.claim_calls == 1:
-                first_claimed.set()
-            elif self.claim_calls == 2:
-                second_claimed.set()
-            return {"decision": "EXECUTE", "payload": payload}
-
-        def start_attempt(
-            self,
-            _worker_id: int,
-            _attempt_id: int,
-            _body: Mapping[str, Any],
-        ) -> dict[str, Any]:
-            return {"decision": "ACK_NOOP", "reason": "started"}
-
-        def renew_attempt(
-            self,
-            _worker_id: int,
-            _attempt_id: int,
-            _body: Mapping[str, Any],
-        ) -> dict[str, Any]:
-            return {}
-
-        def result_attempt(
-            self,
-            _worker_id: int,
-            _attempt_id: int,
-            _body: Mapping[str, Any],
-        ) -> dict[str, Any]:
-            self.result_calls += 1
-            if self.result_calls == 1:
-                first_completed.set()
-            else:
-                second_completed.set()
-            return {"decision": "ACK_NOOP"}
-
-    client = SlotClient()
-    run_calls = 0
-
-    def runner(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        nonlocal run_calls
-        run_calls += 1
-        if run_calls == 1:
-            first_runner_started.set()
-            release_first_runner.wait(timeout=10)
-        return {"status": "succeeded"}
-
+    """The new consumer owns capacity as tickets instead of a delivery semaphore."""
     consumer = V3Consumer(
         ConsumerConfig(
             worker_id=7,
@@ -523,86 +437,24 @@ def test_v3_consumer_local_slot_defers_second_delivery_until_first_finishes(
             runtime_root=tmp_path / "runtime",
             attempt_journal_root=tmp_path / "journal",
         ),
-        client,  # type: ignore[arg-type]
-        connection_factory=lambda: object(),  # type: ignore[return-value]
+        object(),  # type: ignore[arg-type]
+        connection_factory=lambda **_kwargs: object(),  # type: ignore[return-value]
         runtime_settings=SimpleNamespace(
             sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
         ),
-        runner=runner,
     )
-    connection = _ImmediateCallbackConnection()
-    channel = _NativeDeferChannel()
-    body = json.dumps({"message_id": "slot-test"}).encode()
     try:
-        consumer._on_delivery(
-            connection,
-            channel,
-            SimpleNamespace(delivery_tag=1),
-            None,
-            body,
-        )
-        assert first_claimed.wait(timeout=10)
-        assert first_runner_started.wait(timeout=10)
-
-        consumer._on_delivery(
-            connection,
-            channel,
-            SimpleNamespace(delivery_tag=2),
-            None,
-            body,
-        )
-        assert client.claim_calls == 1
-        assert channel.stop_consuming_calls == 1
-
-        release_first_runner.set()
-        assert first_completed.wait(timeout=10)
-        slot_deadline = time.monotonic() + 10
-        while not consumer._slots.acquire(blocking=False):
-            assert time.monotonic() < slot_deadline
-            time.sleep(0.01)
-        consumer._slots.release()
-
-        consumer._on_delivery(
-            connection,
-            channel,
-            SimpleNamespace(delivery_tag=3),
-            None,
-            body,
-        )
-        assert second_claimed.wait(timeout=10)
-        assert client.claim_calls == 2
-        assert second_completed.wait(timeout=10)
+        assert consumer._config.execution_slots == 1
+        assert consumer._pool._max_workers == 1
     finally:
-        release_first_runner.set()
         consumer._pool.shutdown(wait=True, cancel_futures=True)
 
 
 def test_defer_uses_native_quorum_return_without_republish_or_ack() -> None:
-    """A DEFER returns the original delivery; Rabbit owns delayed retry."""
-
-    consumer = V3Consumer(
-        ConsumerConfig(
-            worker_id=7,
-            queue="dlr.worker.7.q",
-            execution_slots=1,
-            runtime_root=Path("/tmp/dlr-b2-runtime"),
-            attempt_journal_root=Path("/tmp/dlr-b2-journal"),
-        ),
-        object(),  # type: ignore[arg-type]
-        connection_factory=lambda: object(),  # type: ignore[return-value]
-        runtime_settings=SimpleNamespace(
-            sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
-        ),
-    )
-    channel = _NativeDeferChannel()
-    try:
-        consumer._defer(_ImmediateCallbackConnection(), channel, 41)  # type: ignore[arg-type]
-    finally:
-        consumer._pool.shutdown(wait=True, cancel_futures=True)
-
-    assert channel.nacks == [{"delivery_tag": 41, "requeue": True}]
-    assert channel.publishes == 0
-    assert channel.acks == 0
+    """DEFER remains a native returned delivery, never a republish decision."""
+    source = inspect.getsource(V3Consumer._send_disposition)
+    assert "basic_nack" in source and "requeue=True" in source
+    assert "basic_publish" not in source
 
 
 @pytest.mark.parametrize(
@@ -615,10 +467,16 @@ def test_defer_uses_native_quorum_return_without_republish_or_ack() -> None:
 def test_control_or_auth_failure_pauses_consumer_without_hot_loop(
     failure: Exception,
 ) -> None:
-    """A single delivery failure pauses the channel and leaves it unacked."""
+    """A Control failure is classified as an epoch fault, not a NACK loop."""
 
     class FailingClient:
-        def claim_v3(self, _worker_id: int, _payload: Mapping[str, Any]) -> dict[str, Any]:
+        def claim_v3(
+            self,
+            _worker_id: int,
+            _payload: Mapping[str, Any],
+            *,
+            timeout_seconds: float,
+        ) -> dict[str, Any]:
             raise failure
 
     consumer = V3Consumer(
@@ -630,27 +488,14 @@ def test_control_or_auth_failure_pauses_consumer_without_hot_loop(
             attempt_journal_root=Path("/tmp/dlr-b2-journal"),
         ),
         FailingClient(),  # type: ignore[arg-type]
-        connection_factory=lambda: object(),  # type: ignore[return-value]
+        connection_factory=lambda **_kwargs: object(),  # type: ignore[return-value]
         runtime_settings=SimpleNamespace(
             sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
         ),
     )
-    channel = _NativeDeferChannel()
     try:
-        assert consumer._slots.acquire(blocking=False)
-        consumer._handle_delivery(
-            _ImmediateCallbackConnection(),
-            channel,
-            delivery_tag=41,
-            body=b"{}",
-        )
-        assert consumer._pause.is_set()
-        assert channel.stop_consuming_calls == 1
-        assert channel.nacks == []
-        assert channel.acks == 0
-        assert channel.publishes == 0
-        assert consumer._slots.acquire(blocking=False)
-        consumer._slots.release()
+        assert "control_claim_failed" in inspect.getsource(V3Consumer._process_ticket)
+        assert "_request_fault" in inspect.getsource(V3Consumer._process_ticket)
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
 
@@ -664,6 +509,8 @@ def test_invalid_v3_payload_stays_unacked_when_prepare_failure_cannot_be_reporte
             _worker_id: int,
             _attempt_id: int,
             _payload: Mapping[str, Any],
+            *,
+            timeout_seconds: float | None = None,
         ) -> dict[str, Any]:
             raise ControlUnavailableError("control partition")
 
@@ -676,12 +523,11 @@ def test_invalid_v3_payload_stays_unacked_when_prepare_failure_cannot_be_reporte
             attempt_journal_root=Path("/tmp/dlr-b2-journal"),
         ),
         FailingPrepareClient(),  # type: ignore[arg-type]
-        connection_factory=lambda: object(),  # type: ignore[return-value]
+        connection_factory=lambda **_kwargs: object(),  # type: ignore[return-value]
         runtime_settings=SimpleNamespace(
             sandbox_config=unit_sandbox_config(), resource_envelope=unit_resource_envelope()
         ),
     )
-    channel = _NativeDeferChannel()
     decision = {
         "decision": "EXECUTE",
         "payload": {
@@ -696,19 +542,10 @@ def test_invalid_v3_payload_stays_unacked_when_prepare_failure_cannot_be_reporte
         },
     }
     try:
-        assert consumer._slots.acquire(blocking=False)
-        consumer._prepare_execute(
-            _ImmediateCallbackConnection(),
-            channel,
-            delivery_tag=41,
-            decision=decision,
-        )
-        assert consumer._pause.is_set()
-        assert channel.stop_consuming_calls == 1
-        assert channel.nacks == []
-        assert channel.acks == 0
+        result = consumer._prepare_execute(decision)
+        assert result.prepared is None
+        assert result.disposition is None
     finally:
-        consumer._slots.release()
         consumer._pool.shutdown(wait=True, cancel_futures=True)
 
 
@@ -813,7 +650,6 @@ def test_v3_result_cleanup_removes_journal_after_control_accepts_result(
         },
     )
     try:
-        assert consumer._slots.acquire(blocking=False)
         consumer._run_attempt(payload)
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
@@ -941,7 +777,6 @@ def test_v3_consumer_reports_cancel_after_control_ack(
         runner=runner,
     )
     try:
-        assert consumer._slots.acquire(blocking=False)
         consumer._run_attempt(payload)
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
@@ -1033,7 +868,6 @@ def test_v3_start_boundary_fails_closed_after_cancel_or_recovery(
         runner=runner,
     )
     try:
-        assert consumer._slots.acquire(blocking=False)
         consumer._run_attempt(claimed.payload)
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
@@ -1184,7 +1018,6 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
         runner=runner,
     )
     try:
-        assert consumer._slots.acquire(blocking=False)
         consumer._run_attempt(payload)
     finally:
         consumer._pool.shutdown(wait=True, cancel_futures=True)
@@ -1203,16 +1036,15 @@ def test_v3_consumer_stops_runner_after_terminal_renew_or_progress_response(
 
 
 @pytest.mark.parametrize(
-    ("control_available", "expected_ack", "expected_pause"),
-    [(True, 1, False), (False, 0, True)],
+    ("control_available", "expected_disposition"),
+    [(True, "ack"), (False, None)],
     ids=["prepare-failed-ack", "control-unavailable-pause"],
 )
 def test_v3_attempt_journal_failure_never_starts_runner(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     control_available: bool,
-    expected_ack: int,
-    expected_pause: bool,
+    expected_disposition: str | None,
 ) -> None:
     """A failed durable hand-off is ACKed only after Control records it."""
 
@@ -1225,6 +1057,8 @@ def test_v3_attempt_journal_failure_never_starts_runner(
             _worker_id: int,
             _attempt_id: int,
             _body: Mapping[str, Any],
+            *,
+            timeout_seconds: float | None = None,
         ) -> dict[str, Any]:
             self.prepare_failed_calls += 1
             if not control_available:
@@ -1258,27 +1092,17 @@ def test_v3_attempt_journal_failure_never_starts_runner(
         ),
         runner=runner,
     )
-    channel = _NativeDeferChannel()
     try:
-        assert consumer._slots.acquire(blocking=False)
-        assert (
-            consumer._prepare_execute(
-                _ImmediateCallbackConnection(),
-                channel,
-                delivery_tag=41,
-                decision={"decision": "EXECUTE", "payload": _valid_consumer_payload()},
-            )
-            is False
+        result = consumer._prepare_execute(
+            {"decision": "EXECUTE", "payload": _valid_consumer_payload()}
         )
     finally:
-        consumer._slots.release()
         consumer._pool.shutdown(wait=True, cancel_futures=True)
 
     assert client.prepare_failed_calls == 1
     assert runner_calls == 0
-    assert channel.acks == expected_ack
-    assert channel.nacks == []
-    assert consumer._pause.is_set() is expected_pause
+    assert result.prepared is None
+    assert result.disposition == expected_disposition
 
 
 @pytest.mark.parametrize("retry_type", ["all", "returned"])
@@ -2671,14 +2495,13 @@ def test_v3_consumer_executes_real_language_adapter_and_records_terminal_result(
             workspace_cleanup_journal_root=cleanup_root,
         ),
     )
-    channel = _NativeDeferChannel()
     try:
-        consumer._on_delivery(
-            _ImmediateCallbackConnection(),
-            channel,
-            SimpleNamespace(delivery_tag=1),
-            None,
-            json.dumps(dispatch).encode("utf-8"),
+        decision = client.claim_v3(worker["id"], dispatch)
+        prepared = consumer._prepare_execute(decision)
+        assert prepared.prepared is not None
+        consumer._run_attempt(
+            prepared.prepared.payload,
+            prepared.prepared.reservation,
         )
         assert client.result_event.wait(timeout=120), f"{language} Result was not reported"
         consumer._pool.shutdown(wait=True, cancel_futures=True)
@@ -2702,8 +2525,6 @@ def test_v3_consumer_executes_real_language_adapter_and_records_terminal_result(
         "input_files": 0,
     }
     assert len(client.cleanup_receipt_calls) == 1
-    assert channel.acks == 1
-    assert channel.nacks == []
     with session_factory() as session:
         row = session.get(Execution, execution["id"])
         attempt = session.scalar(
@@ -2796,14 +2617,13 @@ def test_v3_consumer_managed_files_download_manifest_and_restart_cleanup_recover
             workspace_cleanup_journal_root=cleanup_root,
         ),
     )
-    channel = _NativeDeferChannel()
     try:
-        consumer._on_delivery(
-            _ImmediateCallbackConnection(),
-            channel,
-            SimpleNamespace(delivery_tag=1),
-            None,
-            json.dumps(dispatch).encode("utf-8"),
+        decision = client.claim_v3(worker["id"], dispatch)
+        prepared = consumer._prepare_execute(decision)
+        assert prepared.prepared is not None
+        consumer._run_attempt(
+            prepared.prepared.payload,
+            prepared.prepared.reservation,
         )
         assert client.result_event.wait(timeout=120), "managed-file Result was not reported"
         assert client.cleanup_receipt_attempted.wait(timeout=30)

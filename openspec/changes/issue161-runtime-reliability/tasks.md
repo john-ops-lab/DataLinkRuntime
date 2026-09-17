@@ -21,8 +21,8 @@
 
 ## 4. #152 A — 正常容量背压独立检查点
 
-- [ ] 4.1 在固定Pika版本上实现 SelectConnection transport、每槽一次性consumer与最小ticket状态；用确定性调度测试证明 receiving+cancelling+working<=S、prefetch=1、每ticket只释放一次、pool无嵌套无界排队。
-- [ ] 4.2 实现 CancelOk后Claim、journal durable后ACK-send receipt、receipt后start；实现epoch校验、真正IO deadline和有界abort/重连。用事件驱动测试覆盖注册/CancelOk丢失、heartbeat仍通的Broker主动Basic.Cancel、其与CancelOk/channel-close/任务完成交错、慢Claim/journal、旧epoch回调、shutdown与槽释放竞态；断言epoch/tag隔离、每ticket至多一次工作提交/释放，不把socket timeout当RPC deadline。
+- [x] 4.1 在固定Pika版本上实现 SelectConnection transport、每槽一次性consumer与最小ticket状态；用确定性调度测试证明 receiving+cancelling+working<=S、prefetch=1、每ticket只释放一次、pool无嵌套无界排队。
+- [x] 4.2 实现 CancelOk后Claim、journal durable后ACK-send receipt、receipt后start；实现epoch校验、真正IO deadline和有界abort/重连。用事件驱动测试覆盖注册/CancelOk丢失、heartbeat仍通的Broker主动Basic.Cancel、其与CancelOk/channel-close/任务完成交错、慢Claim/journal、旧epoch回调、shutdown与槽释放竞态；断言epoch/tag隔离、每ticket至多一次工作提交/释放，不把socket timeout当RPC deadline。
 - [ ] 4.3 真实RabbitMQ 4.3.5+Worker+Linux Sandbox运行S=1/2且消息远多于S、首批持续超过默认300000ms consumer timeout；采集连接/consumer/ready/unacked/失败delivery计数/DLQ与槽数，证明正常容量无重投、无关连接循环或心跳/取消阻塞。
 - [ ] 4.4 分别执行计划自然重试、真实HTTP Webhook容量等待、手动排队；每项核对原Execution ID、Attempt、输出、generation、Admission，释放容量后原记录继续，不能用新任务替代。
 - [ ] 4.5 真实故障回归包括Control/Broker断线与重启、idle consumer在heartbeat健康时被Broker主动取消且队列恢复后重新接收、ACK丢失、journal失败、取消注册边界、重复消息、迟到结果、原DEFER delayed retry；断言单active Attempt/fencing、资源有界、容量与故障日志分类且无凭据。
