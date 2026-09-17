@@ -1,5 +1,6 @@
 """Issue #135 runtime metadata and cancellation contracts."""
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -17,7 +18,7 @@ from dlr.control.models import (
     GlobalExecutionAdmission,
     Worker,
 )
-from dlr.control.schemas.reliable_runtime import AttemptResultBody
+from dlr.control.schemas.reliable_runtime import AttemptPrepareFailedBody, AttemptResultBody
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import execution as execution_service
 from test_issue130_b2_runtime import (
@@ -275,10 +276,68 @@ def test_running_cancel_result_orders_preserve_terminal_and_release_once(
             assert row.status == "cancelled"
             assert row.error_code == "execution_cancelled"
             assert row.last_error_code == "execution_cancelled"
-            assert attempt.error_code == "execution_cancelled"
+            assert attempt.error_code == "execution_succeeded"
         else:
             assert row.status == "succeeded"
             assert row.error_code is None and row.last_error_code is None
             assert attempt.error_code == "execution_succeeded"
 
     assert release_counts == {"admission": 1, "lease": 1, "slot": 1}
+
+
+@pytest.mark.parametrize("terminal_path", ["lease_recovery", "prepare_failed"])
+def test_cancel_flag_preserves_non_cancel_attempt_error_code(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_path: str,
+) -> None:
+    """Cancellation normalizes the Execution without erasing the Attempt's own outcome."""
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, f"issue135-{terminal_path}-worker")
+    adapter = _rabbit_adapter(api_client, worker, f"issue135-{terminal_path}-adapter")
+    execution = _execution(api_client, adapter["id"])
+    claimed = _claim(session_factory, worker["id"], _dispatch(session_factory, execution["id"]))
+    assert claimed.payload is not None and claimed.attempt_id is not None
+    with session_factory() as session:
+        requested = execution_service.cancel_execution(session, execution["id"])
+        assert requested.status == "running" and requested.cancel_requested is True
+
+    if terminal_path == "lease_recovery":
+        with session_factory.begin() as session:
+            attempt = session.get(ExecutionAttempt, claimed.attempt_id)
+            assert attempt is not None
+            attempt.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        with session_factory() as session:
+            assert attempt_service.recover_expired_attempts(session, limit=10) == 1
+        expected_status = "worker_lost"
+        expected_code = "worker_lost"
+    else:
+        with session_factory() as session:
+            decision = attempt_service.prepare_failed(
+                session,
+                worker["id"],
+                claimed.attempt_id,
+                AttemptPrepareFailedBody.model_validate(
+                    {
+                        "attempt_id": claimed.attempt_id,
+                        "fencing_token": claimed.payload.fencing_token,
+                        "claim_token": claimed.payload.claim_token,
+                        "error_code": "dependency_preparation_failed",
+                        "error_class": "platform_transient",
+                    }
+                ),
+            )
+        assert decision.reason == "terminal_recorded"
+        expected_status = "failed"
+        expected_code = "dependency_preparation_failed"
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        attempt = session.get(ExecutionAttempt, claimed.attempt_id)
+        assert row is not None and attempt is not None
+        assert row.status == "cancelled"
+        assert row.error_code == "execution_cancelled"
+        assert row.last_error_code == "execution_cancelled"
+        assert attempt.status == expected_status
+        assert attempt.error_code == expected_code

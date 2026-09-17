@@ -828,9 +828,10 @@ def _apply_terminal_locked(
         preview_bytes = output_preview.encode()[: settings.execution_output_preview_max_bytes]
         output_preview = preview_bytes.decode("utf-8", errors="ignore")
         execution.output_preview = output_preview
+    if status == "cancelled":
+        attempt.error_code = CANCELLATION_ERROR_CODE
     if execution.cancel_requested or status == "cancelled":
         execution.status = "cancelled"
-        attempt.error_code = CANCELLATION_ERROR_CODE
         execution.error_code = CANCELLATION_ERROR_CODE
         execution.last_error_code = CANCELLATION_ERROR_CODE
         final = True
