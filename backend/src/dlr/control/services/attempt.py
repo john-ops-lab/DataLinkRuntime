@@ -22,7 +22,7 @@ from typing import Any, cast
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from dlr.common.bigfields import truncate_utf8
@@ -76,6 +76,7 @@ ATTEMPT_METRICS: Counter[str] = Counter()
 _asyncio_to_thread = asyncio.to_thread
 _asyncio_sleep = asyncio.sleep
 RECONCILIATION_CURSOR_NAME = "expired_attempts"
+RECONCILIATION_LOCK_TIMEOUT_MS = 1_000
 RECONCILIATION_ROW_ERROR_CODES = frozenset({"resource_profile_invalid", "retry_policy_invalid"})
 RECONCILIATION_MISSING_CODES = frozenset(
     {"adapter_not_found", "attempt_not_found", "execution_not_found"}
@@ -1014,49 +1015,62 @@ def _recovery_candidate_ids(
     )
 
 
+def _set_reconciliation_lock_timeout(session: Session) -> None:
+    """Bound only this reconciliation transaction's PostgreSQL lock waits."""
+    session.execute(
+        text("SELECT set_config('lock_timeout', :timeout, true)"),
+        {"timeout": f"{RECONCILIATION_LOCK_TIMEOUT_MS}ms"},
+    )
+
+
 def reserve_recovery_candidates(
     session: Session, *, limit: int = 100
 ) -> RecoveryCandidateReservation:
     """Commit one bounded active-Attempt cursor segment before processing it."""
     batch_size = max(1, min(int(limit), 1_000))
-    cursor = session.scalar(
-        select(RuntimeReconciliationCursor)
-        .where(RuntimeReconciliationCursor.name == RECONCILIATION_CURSOR_NAME)
-        .with_for_update()
-    )
-    if cursor is None:
-        session.rollback()
-        raise RuntimeError("expired Attempt reconciliation cursor is missing")
+    try:
+        _set_reconciliation_lock_timeout(session)
+        cursor = session.scalar(
+            select(RuntimeReconciliationCursor)
+            .where(RuntimeReconciliationCursor.name == RECONCILIATION_CURSOR_NAME)
+            .with_for_update()
+        )
+        if cursor is None:
+            raise RuntimeError("expired Attempt reconciliation cursor is missing")
 
-    wrapped = False
-    if int(cursor.upper_id) == 0:
-        cursor.after_id = 0
-        cursor.upper_id = _active_recovery_upper_id(session)
-    attempt_ids = _recovery_candidate_ids(
-        session,
-        after_id=int(cursor.after_id),
-        upper_id=int(cursor.upper_id),
-        limit=batch_size,
-    )
-    if not attempt_ids:
-        wrapped = True
-        cursor.after_id = 0
-        cursor.upper_id = _active_recovery_upper_id(session)
+        wrapped = False
+        if int(cursor.upper_id) == 0:
+            cursor.after_id = 0
+            cursor.upper_id = _active_recovery_upper_id(session)
         attempt_ids = _recovery_candidate_ids(
             session,
-            after_id=0,
+            after_id=int(cursor.after_id),
             upper_id=int(cursor.upper_id),
             limit=batch_size,
         )
-    if attempt_ids:
-        cursor.after_id = attempt_ids[-1]
-    session.commit()
-    return RecoveryCandidateReservation(
-        attempt_ids=attempt_ids,
-        after_id=int(cursor.after_id),
-        upper_id=int(cursor.upper_id),
-        wrapped=wrapped,
-    )
+        if not attempt_ids:
+            wrapped = True
+            cursor.after_id = 0
+            cursor.upper_id = _active_recovery_upper_id(session)
+            attempt_ids = _recovery_candidate_ids(
+                session,
+                after_id=0,
+                upper_id=int(cursor.upper_id),
+                limit=batch_size,
+            )
+        if attempt_ids:
+            cursor.after_id = attempt_ids[-1]
+        reservation = RecoveryCandidateReservation(
+            attempt_ids=attempt_ids,
+            after_id=int(cursor.after_id),
+            upper_id=int(cursor.upper_id),
+            wrapped=wrapped,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return reservation
 
 
 def _validate_recovery_snapshots(execution: Execution, *, attempt_id: int) -> None:
@@ -1080,6 +1094,7 @@ def _recover_reserved_attempt(
     *,
     now: datetime | None,
 ) -> bool:
+    _set_reconciliation_lock_timeout(session)
     identity = session.execute(
         select(ExecutionAttempt.worker_id, ExecutionAttempt.execution_id).where(
             ExecutionAttempt.id == attempt_id
@@ -1132,17 +1147,17 @@ def recover_expired_attempts(
             metric = f"reconciliation_row_error_{error.code}"
             ATTEMPT_METRICS[metric] += 1
             logger.warning(
-                "attempt reconciliation row skipped",
-                extra={
-                    "attempt_id": error.attempt_id,
-                    "execution_id": error.execution_id,
-                    "error_code": error.code,
-                    "cursor_upper_id": reservation.upper_id,
-                    "cursor_wrapped": reservation.wrapped,
-                    "candidate_index": candidate_index,
-                    "candidate_count": len(reservation.attempt_ids),
-                    "error_count": ATTEMPT_METRICS[metric],
-                },
+                "attempt reconciliation row skipped: attempt_id=%s execution_id=%s "
+                "error_code=%s cursor_upper_id=%s wrapped=%s "
+                "index=%s count=%s error_count=%s",
+                error.attempt_id,
+                error.execution_id,
+                error.code,
+                reservation.upper_id,
+                reservation.wrapped,
+                candidate_index,
+                len(reservation.attempt_ids),
+                ATTEMPT_METRICS[metric],
             )
         except Exception:
             session.rollback()

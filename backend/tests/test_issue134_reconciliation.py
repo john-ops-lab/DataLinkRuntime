@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -12,11 +13,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, inspect, select, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from dlr.common.config import settings
+from dlr.common.platform_logging import _RedactingFormatter
 from dlr.control.models import (
+    Adapter,
     AdapterExecutionAdmission,
     AdapterExecutionSlot,
     Execution,
@@ -122,6 +125,26 @@ def test_cursor_is_bounded_persistent_and_wraps_after_deleted_tail(
     assert empty.attempt_ids == ()
     assert (empty.after_id, empty.upper_id) == (0, 0)
 
+    # The immutable reservation is captured before commit. A caller using
+    # SQLAlchemy's default expire_on_commit=True must not refresh the shared
+    # cursor after another reconciler can acquire and advance it.
+    cursor_queries: list[str] = []
+
+    def observe_cursor(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        if "FROM runtime_reconciliation_cursors" in statement:
+            cursor_queries.append(statement)
+
+    engine = session_factory.kw["bind"]
+    event.listen(engine, "before_cursor_execute", observe_cursor)
+    try:
+        expiring_factory = sessionmaker(bind=engine, expire_on_commit=True)
+        with expiring_factory() as expiring_session:
+            expiring = attempt_service.reserve_recovery_candidates(expiring_session, limit=1)
+    finally:
+        event.remove(engine, "before_cursor_execute", observe_cursor)
+    assert (expiring.after_id, expiring.upper_id) == (0, 0)
+    assert len(cursor_queries) == 1
+
     worker = _ready_worker(api_client, "issue134-cursor-worker")
     attempt_ids = [
         _active_attempt(
@@ -155,7 +178,6 @@ def test_cursor_is_bounded_persistent_and_wraps_after_deleted_tail(
         if "execution_attempts.id >" in statement:
             statements.append(statement)
 
-    engine = session_factory.kw["bind"]
     event.listen(engine, "before_cursor_execute", observe)
     try:
         with session_factory() as restarted_session:
@@ -224,16 +246,35 @@ def test_poison_rows_do_not_starve_later_expired_attempts(
     assert recovered == 1
     assert calls <= bound
     assert "must-not-be-logged" not in caplog.text
-    assert caplog.messages.count("attempt reconciliation row skipped") >= bad_count
+    assert (
+        sum(
+            message.startswith("attempt reconciliation row skipped:") for message in caplog.messages
+        )
+        >= bad_count
+    )
     skipped = [
         record
         for record in caplog.records
-        if record.message == "attempt reconciliation row skipped"
+        if record.getMessage().startswith("attempt reconciliation row skipped:")
     ]
-    assert all(record.error_code == "retry_policy_invalid" for record in skipped)
-    assert all(1 <= record.candidate_index <= record.candidate_count for record in skipped)
-    assert all(isinstance(record.cursor_wrapped, bool) for record in skipped)
-    assert all(record.error_count >= 1 for record in skipped)
+    rendered = _RedactingFormatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    ).format(skipped[0])
+    first_execution_id = bad_rows[0][1]["id"]
+    first_attempt_id = bad_rows[0][2]
+    for field in (
+        f"attempt_id={first_attempt_id}",
+        f"execution_id={first_execution_id}",
+        "error_code=retry_policy_invalid",
+        f"cursor_upper_id={good_attempt_id}",
+        "wrapped=False",
+        "index=1",
+        f"count={batch_size}",
+        "error_count=",
+    ):
+        assert field in rendered
+    assert "must-not-be-logged" not in rendered
 
     with session_factory() as session:
         good_attempt = session.get(ExecutionAttempt, good_attempt_id)
@@ -362,6 +403,74 @@ def test_two_reconcilers_converge_one_terminal_and_one_release(
         assert slot is not None and slot.active_attempt_id is None
         assert adapter_admission is not None and adapter_admission.outstanding_count == 1
         assert global_admission is not None and global_admission.outstanding_count == 1
+
+
+@pytest.mark.parametrize("lock_target", ["cursor", "adapter", "attempt"])
+def test_reconciliation_lock_wait_is_local_bounded_and_recoverable(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    lock_target: str,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, f"issue134-lock-{lock_target}-worker")
+    adapter, execution, attempt_id = _active_attempt(
+        api_client, session_factory, worker, f"lock-{lock_target}"
+    )
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_row_lock() -> None:
+        with session_factory() as holder:
+            if lock_target == "cursor":
+                statement = select(RuntimeReconciliationCursor).where(
+                    RuntimeReconciliationCursor.name == "expired_attempts"
+                )
+            elif lock_target == "adapter":
+                statement = select(Adapter).where(Adapter.id == adapter["id"])
+            else:
+                statement = select(ExecutionAttempt).where(ExecutionAttempt.id == attempt_id)
+            assert holder.scalar(statement.with_for_update()) is not None
+            locked.set()
+            assert release.wait(timeout=10)
+            holder.rollback()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold_row_lock)
+        assert locked.wait(timeout=5)
+        try:
+            with session_factory() as blocked:
+                baseline_timeout = blocked.scalar(text("SHOW lock_timeout"))
+                started = time.monotonic()
+                with pytest.raises(OperationalError) as captured:
+                    attempt_service.recover_expired_attempts(blocked, limit=1)
+                elapsed = time.monotonic() - started
+                assert getattr(captured.value.orig, "sqlstate", None) == "55P03"
+                assert 0.5 <= elapsed < 5
+                assert blocked.scalar(text("SHOW lock_timeout")) == baseline_timeout
+
+            with session_factory() as session:
+                attempt = session.get(ExecutionAttempt, attempt_id)
+                row = session.get(Execution, execution["id"])
+                slot = session.scalar(
+                    select(AdapterExecutionSlot).where(
+                        AdapterExecutionSlot.adapter_id == adapter["id"]
+                    )
+                )
+                assert attempt is not None and attempt.status in {"claimed", "running"}
+                assert row is not None and row.status == "running"
+                assert slot is not None and slot.active_attempt_id == attempt_id
+        finally:
+            release.set()
+        holder.result(timeout=5)
+
+    with session_factory() as session:
+        assert attempt_service.recover_expired_attempts(session, limit=1) == 1
+    with session_factory() as session:
+        attempt = session.get(ExecutionAttempt, attempt_id)
+        row = session.get(Execution, execution["id"])
+        assert attempt is not None and attempt.status == "worker_lost"
+        assert row is not None and row.status == "retry_wait"
 
 
 @pytest.mark.parametrize("competing_action", ["renew", "result"])
