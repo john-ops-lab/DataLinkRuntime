@@ -17,12 +17,13 @@ import pika
 import pytest
 from pika import frame as pika_frame
 from pika import spec as pika_spec
+from pika.adapters.select_connection import IOLoop as PikaIOLoop
 from pika.callback import CallbackManager
 from pika.channel import Channel
 
 from dlr.worker import workspace
 from dlr.worker.client import ClientError, ControlClient, ControlUnavailableError
-from dlr.worker.consumer import ConsumerConfig, V3Consumer
+from dlr.worker.consumer import ConsumerConfig, SlotTicket, V3Consumer, _ConnectionEpoch
 from worker_runtime_support import unit_resource_envelope, unit_sandbox_config
 
 
@@ -191,6 +192,45 @@ class _Factory:
         connection = _Connection(kwargs)
         self.connections.append(connection)
         return connection
+
+
+class _PikaTransport:
+    def __init__(self) -> None:
+        self.abort_count = 0
+
+    def abort(self) -> None:
+        self.abort_count += 1
+
+
+def _actual_pika_connection(
+    consumer: V3Consumer,
+    epoch: _ConnectionEpoch,
+) -> tuple[pika.SelectConnection, Channel, _PikaTransport]:
+    connection = pika.SelectConnection(
+        parameters=pika.ConnectionParameters(),
+        on_open_callback=lambda _connection: None,
+        on_open_error_callback=lambda value, error: consumer._on_connection_open_error(
+            epoch, value, error
+        ),
+        on_close_callback=lambda value, error: consumer._on_connection_closed(epoch, value, error),
+        custom_ioloop=PikaIOLoop(),
+        internal_connection_workflow=False,
+    )
+    connection._set_connection_state(connection.CONNECTION_OPEN)
+    connection._opened = True
+    channel = connection._create_channel(1, lambda _channel: None)
+    channel._set_state(channel.OPEN)
+    connection._channels[1] = channel
+    channel.add_on_close_callback(
+        lambda value, error: consumer._on_channel_closed(epoch, value, error)
+    )
+    transport = _PikaTransport()
+    connection._transport = transport
+    epoch.connection = connection
+    epoch.channel = channel
+    consumer._epoch_counter = max(consumer._epoch_counter, epoch.number)
+    consumer._active_epoch = epoch
+    return connection, channel, transport
 
 
 class _RecordingStop:
@@ -769,6 +809,7 @@ def test_old_epoch_slow_failure_releases_without_faulting_new_epoch(tmp_path: Pa
         assert not new_epoch.faulted
         assert new_connection.abort_errors == []
         assert old_channel.acks == []
+        assert old_ticket.deadline_handle is None
     finally:
         client.claim_release.set()
         consumer.request_stop()
@@ -1052,6 +1093,93 @@ def test_abort_fallback_must_succeed_or_consumer_fails_closed(tmp_path: Path) ->
         assert not ticket.released
         assert consumer._active_epoch is next_epoch
     finally:
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+
+@pytest.mark.parametrize("close_kind", ["eof", "connection_close"])
+def test_actual_pika_connection_teardown_does_not_reabort_closed_transport(
+    tmp_path: Path, close_kind: str
+) -> None:
+    client = _Client({"decision": "ACK_NOOP"})
+    factory = _Factory()
+    consumer = _consumer(tmp_path, client, factory)
+    connection: pika.SelectConnection | None = None
+    try:
+        epoch = _ConnectionEpoch(number=1)
+        connection, channel, transport = _actual_pika_connection(consumer, epoch)
+        ticket = SlotTicket(
+            slot_id=0,
+            connection_epoch=epoch.number,
+            consumer_tag="actual-pika-ticket",
+            phase="working",
+        )
+        consumer._tickets[0] = ticket
+
+        if close_kind == "eof":
+            connection._got_eof = True
+        else:
+            connection._on_connection_close_from_broker(
+                SimpleNamespace(
+                    method=SimpleNamespace(reply_code=320, reply_text="connection forced")
+                )
+            )
+            assert transport.abort_count == 1
+
+        connection._proto_connection_lost(None)
+
+        assert connection.is_closed
+        assert epoch.faulted
+        assert epoch.abort_initiated
+        assert epoch.transport_terminated
+        assert not epoch.abort_failed
+        assert not consumer._stop.is_set()
+        assert transport.abort_count == (0 if close_kind == "eof" else 1)
+        assert not ticket.released
+
+        consumer._finalize_epoch(epoch)
+        assert consumer._active_epoch is None
+        assert not ticket.released
+
+        ticket.completion_pending = True
+        new_epoch, new_connection, _new_channel = _start_epoch(consumer, factory)
+        assert ticket.released
+        consumer._on_channel_closed(epoch, channel, RuntimeError("late old channel close"))
+        assert not new_epoch.faulted
+        assert new_connection.abort_errors == []
+    finally:
+        if connection is not None:
+            connection.ioloop.close()
+        consumer.request_stop()
+        consumer._pool.shutdown(wait=True, cancel_futures=True)
+
+
+def test_actual_pika_channel_only_close_still_aborts_open_connection(tmp_path: Path) -> None:
+    client = _Client({"decision": "ACK_NOOP"})
+    factory = _Factory()
+    consumer = _consumer(tmp_path, client, factory)
+    connection: pika.SelectConnection | None = None
+    try:
+        epoch = _ConnectionEpoch(number=1)
+        connection, channel, transport = _actual_pika_connection(consumer, epoch)
+
+        channel._on_close_meta(pika.exceptions.ChannelClosedByBroker(406, "channel fault"))
+
+        assert connection.is_open
+        assert epoch.faulted
+        assert epoch.abort_initiated
+        assert not epoch.transport_terminated
+        assert not epoch.abort_failed
+        assert not consumer._stop.is_set()
+        assert transport.abort_count == 1
+
+        connection._proto_connection_lost(None)
+        assert epoch.transport_terminated
+        assert not epoch.abort_failed
+        assert not consumer._stop.is_set()
+    finally:
+        if connection is not None:
+            connection.ioloop.close()
+        consumer.request_stop()
         consumer._pool.shutdown(wait=True, cancel_futures=True)
 
 

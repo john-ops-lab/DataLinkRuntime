@@ -296,6 +296,17 @@ class V3Consumer:
             self._fault_epoch(epoch, "consumer_qos_failed")
 
     def _on_channel_closed(self, epoch: _ConnectionEpoch, _channel: Any, _error: Exception) -> None:
+        if not self._epoch_is_current(epoch):
+            return
+        connection = epoch.connection
+        if connection is not None and bool(getattr(connection, "is_closed", False)):
+            # Pika 1.3.2 marks the Connection CLOSED before it meta-closes its
+            # Channels, then invokes the Connection close callback.  The
+            # transport has already exited at this point, so trying to abort it
+            # again would call through a cleared ``_transport`` and incorrectly
+            # turn an ordinary reconnect into a fail-closed Worker stop.
+            epoch.faulted = True
+            return
         self._fault_epoch(epoch, "broker_channel_closed")
 
     def _on_qos_ok(self, epoch: _ConnectionEpoch) -> None:
