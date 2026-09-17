@@ -33,6 +33,51 @@ python3 "$DLR_PREVIEW_HOME/preview.py" copy-token
 
 数据库备份保存在 配置的 VM 根目录下 `backups/<timestamp>-<old>-to-<new>/`。资产清单仅含列名与行哈希，备份文件本身包含业务数据，目录权限受限。数据库备份不包含材料卷；部署从不删除任何卷。
 
+### 显式 carry-forward 保全升级
+
+默认部署仍要求执行与清理责任全部空闲。只有因已知基础设施 Incident 留下、且新版本提供向前兼容处置能力的责任，才可使用一次性的私有 carry-forward manifest。它不是 `ignore busy` 开关，也不会取消旧 Execution、改写 cleanup、释放 Admission 或删除卷。
+
+先让普通 watcher 完成候选构建并因 busy 门禁等待，然后暂停 watcher。把明确的 Execution/Incident 选择写入权限为 `0600`、父目录为 `0700` 的私有 JSON：
+
+```json
+{
+  "queued": [
+    {"execution_id": 123, "incident_ids": [456]}
+  ],
+  "cleanup_execution_ids": [789]
+}
+```
+
+ID 必须是明确正整数；不接受通配符、重复项、空选择或客户端自称的 cleanup 分类。示例 ID 只是结构占位，不对应任何环境。
+
+```sh
+python3 "$DLR_PREVIEW_HOME/preview.py" pause
+python3 "$DLR_PREVIEW_HOME/preview.py" plan-carry-forward \
+  --to-sha <FULL_CANDIDATE_SHA> \
+  --ids-file <PRIVATE_IDS_JSON> \
+  --output <PRIVATE_MANIFEST_JSON>
+
+python3 "$DLR_PREVIEW_HOME/preview.py" select <PR_NUMBER> \
+  --carry-forward <PRIVATE_MANIFEST_JSON>
+python3 "$DLR_PREVIEW_HOME/preview.py" resume
+```
+
+`plan-carry-forward` 只接受当前所选 PR 的 eligible HEAD，要求候选镜像已由普通 watcher stage，并使用 `prepare-sandbox-host.sh --status` 只读核对 keeper。计划绑定仓库、PR、旧/新 SHA、旧/新 schema、迁移图、控制器文件、镜像、全部命名卷及明确选择；原 manifest 不能自动重绑到新的 HEAD 或控制器。`select` 将其复制进控制器自己的私有目录，配置和 `status` 只保留 manifest ID、摘要及候选绑定，不显示 Execution 列表、路径、卷名或 journal 内容。普通 `select` 会清除旧引用。
+
+验证器在 REPEATABLE READ READ ONLY 事务中按固定 allowlist 读取 Execution、Attempt、Slot、Incident、Outbox、Adapter/Global Admission、Input Lease/Hold、Credential Snapshot、idempotency、schedule outcome 和 Worker cleanup request。它保存旧列、主键、逐行哈希和计数，不把原数据库值写到公开回执。只有清单内 queued＋open Incident、未释放 Admission、当前代 Outbox、无 active Attempt/Slot，且没有其他 queued/running/retry_wait 或 Worker cleanup 责任时才通过。
+
+cleanup 只从事实派生，不写数据库：
+
+- `not_applicable`：零 Attempt、`attempt_count=0`、无 worker/start、无 workspace/journal/Sandbox 证据；原 `pending` 保持不变。
+- `completed`：已有终态 Attempt、数据库已为 `completed`，且无残留 workspace/journal。
+- `deferred_preserved`：已有终态 Attempt、数据库为 `deferred`，私有 cleanup journal 的 Execution、Attempt、路径和 Token 摘要与数据库一致；后续仍须由真实 Worker receipt 收敛。
+
+journal 缺失、未知文件或 symlink、未选择的 workspace、未知 cgroup、活动 Slot/Attempt、额外 open Incident、材料树漂移都阻断升级。验证只读挂载 Worker runtime/journal 和 Control 的 builtin/artifact 卷；依赖缓存不作为 Execution 责任，但命名卷身份仍固定并保留。
+
+切换时先复核 manifest，再停 Control 并重读数据库；通过后才停 Worker/Web，确认应用容器已停止、keeper 身份未变且委派树只剩 `agent`。停写后、备份后、迁移后新服务启动前，旧数据库列投影、责任分类、journal/runtime/材料树和 kernel 证据必须一致。迁移允许增加本版本的新列/表，但比较仍使用 manifest 记录的全部旧列。原 `assets.py`、备份可列出、镜像、CI/历史、Sandbox、真实 RabbitMQ→Worker 执行和 workspace cleanup 门禁继续执行。
+
+在迁移开始前发生 Claim 或证据变化时，控制器恢复旧应用并保留 attention，要求重新计划；进入 `migrating` 后不自动 downgrade、restore 或启动旧 schema 应用。失败现场、原卷和备份保留供诊断。成功 receipt 只记录 manifest ID/摘要/计数，不公开私有选择；它证明旧责任被原样带到新版本，不证明原 Incident 已恢复、终结或 cleanup 已完成。后续验收必须关联原 Execution ID、generation、Attempt、输出与资源释放，新建任务成功不能替代。
+
 ## 安装或更新控制器
 
 当前安装器用于接管私有配置指定的既有环境，要求 macOS、Python 3.11+、`gh` 登录、Colima、已有 LaunchAgent、`source.git` 源码缓存、`config.json`、`state.json`、`preview.env`，以及 VM 内已准备好的 sandbox 脚本。它不负责首次创建 VM 或生成凭据，也不改变默认 Docker context。
@@ -86,8 +131,10 @@ python3 "$DLR_PREVIEW_HOME/preview.py" acknowledge
 
 ```sh
 python3 -m unittest discover -s tools/local-preview/tests -v
+python3 -m py_compile tools/local-preview/*.py tools/local-preview/tests/*.py
 bash -n tools/local-preview/deploy.sh
-openspec validate local-preview-delivery --strict
+openspec validate issue161-runtime-reliability --type change --strict --no-interactive
+git diff --check
 ```
 
 控制器测试独立于业务后端，由 CI 的 `local-preview` job 执行；数据库迁移和真实执行仍由业务 CI 与实际预览验证提供证据。
