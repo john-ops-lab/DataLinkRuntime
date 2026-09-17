@@ -70,13 +70,13 @@ cleanup 只从事实派生，不写数据库：
 
 - `not_applicable`：零 Attempt、`attempt_count=0`、无 worker/start、无 workspace/journal/Sandbox 证据；原 `pending` 保持不变。
 - `completed`：已有终态 Attempt、数据库已为 `completed`，且无残留 workspace/journal。
-- `deferred_preserved`：已有终态 Attempt、数据库为 `deferred`，私有 cleanup journal 的 Execution、Attempt、路径和 Token 摘要与数据库一致；后续仍须由真实 Worker receipt 收敛。
+- `deferred_preserved`：任一历史终态 Attempt 的 cleanup 摘要仍为 `deferred`，其私有 cleanup journal 的 Execution、Attempt、路径和 Token 摘要与数据库一致；即使后继 Attempt 已使 Execution cleanup 显示 completed，这份旧责任仍须由真实 Worker receipt 收敛。
 
 journal 缺失、未知文件或 symlink、未选择的 workspace、未知 cgroup、活动 Slot/Attempt、额外 open Incident、材料树漂移都阻断升级。验证只读挂载 Worker runtime/journal 和 Control 的 builtin/artifact 卷；依赖缓存不作为 Execution 责任，但命名卷身份仍固定并保留。
 
 切换时先复核 manifest，再停 Control 并重读数据库；通过后才停 Worker/Web，确认应用容器已停止、keeper 身份未变且委派树只剩 `agent`。停写后、备份后、迁移后新服务启动前，旧数据库列投影、责任分类、journal/runtime/材料树和 kernel 证据必须一致。迁移允许增加本版本的新列/表，但比较仍使用 manifest 记录的全部旧列。原 `assets.py`、备份可列出、镜像、CI/历史、Sandbox、真实 RabbitMQ→Worker 执行和 workspace cleanup 门禁继续执行。
 
-在迁移开始前发生 Claim 或证据变化时，控制器恢复旧应用并保留 attention，要求重新计划；进入 `migrating` 后不自动 downgrade、restore 或启动旧 schema 应用。失败现场、原卷和备份保留供诊断。成功 receipt 只记录 manifest ID/摘要/计数，不公开私有选择；它证明旧责任被原样带到新版本，不证明原 Incident 已恢复、终结或 cleanup 已完成。后续验收必须关联原 Execution ID、generation、Attempt、输出与资源释放，新建任务成功不能替代。
+carry-forward 切换停下 Control 后若出现 Claim、证据变化或任何未知读取失败，控制器保持应用停止和 attention，要求人工核对并重新计划；它不会用一次旧健康结果自动恢复写入。进入 `migrating` 后同样不自动 downgrade、restore 或启动旧 schema 应用。失败现场、原卷和备份保留供诊断。成功 receipt 只记录 manifest ID/摘要/计数，不公开私有选择；它证明旧责任被原样带到新版本，不证明原 Incident 已恢复、终结或 cleanup 已完成。后续验收必须关联原 Execution ID、generation、Attempt、输出与资源释放，新建任务成功不能替代。
 
 ## 安装或更新控制器
 

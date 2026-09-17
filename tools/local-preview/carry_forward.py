@@ -13,6 +13,7 @@ import base64
 import datetime as dt
 import decimal
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -56,6 +57,10 @@ RESPONSIBILITY_TABLES = (
 )
 MAX_CAPTURE_ENTRIES = 100_000
 MAX_CAPTURE_BYTES = 16 * 1024 * 1024 * 1024
+MAX_JSON_BYTES = 1024 * 1024
+EMPTY_TABLES_BY_REVISION = {
+    "0040_issue152_dispositions": ("execution_incident_dispositions",),
+}
 
 
 class CarryForwardError(RuntimeError):
@@ -215,6 +220,24 @@ def selected_execution_ids(selection: dict[str, Any]) -> set[int]:
     }
 
 
+def datetime_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(dt.timezone.utc)
+        return value.isoformat()
+    if isinstance(value, str):
+        try:
+            parsed = dt.datetime.fromisoformat(value)
+        except ValueError as error:
+            raise CarryForwardError("attempt_lease_invalid") from error
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(dt.timezone.utc)
+        return parsed.isoformat()
+    raise CarryForwardError("attempt_lease_invalid")
+
+
 def row_digest(row: dict[str, Any]) -> str:
     return digest(row)
 
@@ -277,6 +300,19 @@ def derive_responsibilities(
     for row in rows["executions"]:
         if row.get("status") in {"queued", "running", "retry_wait"} and row.get("id") not in selected:
             raise CarryForwardError("unselected_execution_busy")
+        if (
+            row.get("workspace_cleanup_status") in {"pending", "deferred"}
+            and row.get("id") not in selected
+        ):
+            raise CarryForwardError("unselected_cleanup_responsibility")
+    for row in rows["execution_attempts"]:
+        summary = row.get("cleanup_summary")
+        if (
+            isinstance(summary, dict)
+            and summary.get("workspace_cleanup_status") == "deferred"
+            and row.get("execution_id") not in selected
+        ):
+            raise CarryForwardError("unselected_cleanup_responsibility")
 
     result: list[dict[str, Any]] = []
     for queued in selection["queued"]:
@@ -363,6 +399,16 @@ def _responsibility(
         raise CarryForwardError("execution_attempt_count_invalid")
     if any(row.get("status") not in TERMINAL_ATTEMPTS for row in attempts):
         raise CarryForwardError("attempt_state_unknown")
+    attempt_cleanup: dict[int, str] = {}
+    for row in attempts:
+        summary = row.get("cleanup_summary")
+        status = summary.get("workspace_cleanup_status") if isinstance(summary, dict) else None
+        if status not in {"completed", "deferred"}:
+            raise CarryForwardError("attempt_cleanup_state_unknown")
+        attempt_cleanup[row["id"]] = status
+    deferred_attempt_ids = sorted(
+        attempt_id for attempt_id, status in attempt_cleanup.items() if status == "deferred"
+    )
     cleanup_status = execution.get("workspace_cleanup_status")
     if (
         attempt_count == 0
@@ -372,9 +418,9 @@ def _responsibility(
         and cleanup_status == "pending"
     ):
         cleanup = "not_applicable"
-    elif attempts and cleanup_status == "completed":
+    elif attempts and cleanup_status == "completed" and not deferred_attempt_ids:
         cleanup = "completed"
-    elif attempts and cleanup_status == "deferred":
+    elif attempts and cleanup_status in {"completed", "deferred"} and deferred_attempt_ids:
         cleanup = "deferred_preserved"
     else:
         raise CarryForwardError("cleanup_state_unknown")
@@ -384,18 +430,21 @@ def _responsibility(
         "generation": execution.get("dispatch_generation"),
         "attempt_count": attempt_count,
         "attempt_ids": attempt_ids,
+        "deferred_attempt_ids": deferred_attempt_ids,
         "attempts": [
             {
                 "attempt_id": row["id"],
                 "attempt_no": row.get("attempt_no"),
                 "fencing_token": row.get("fencing_token"),
                 "status": row.get("status"),
+                "claim_token_hash": row.get("claim_token_hash"),
+                "cleanup_token_hash": row.get("cleanup_token_hash"),
+                "lease_expires_at": datetime_text(row.get("lease_expires_at")),
+                "cleanup_status": attempt_cleanup[row["id"]],
             }
             for row in sorted(attempts, key=lambda row: row["id"])
         ],
         "incident_ids": incident_ids,
-        "claim_token_hash": execution.get("claim_token_hash"),
-        "cleanup_receipt_token_hash": execution.get("cleanup_receipt_token_hash"),
         "cleanup": cleanup,
     }
 
@@ -458,6 +507,7 @@ def _safe_tree(
         raise CarryForwardError("storage_root_unavailable") from error
     if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
         raise CarryForwardError("storage_root_invalid")
+    root_device = root_info.st_dev
     result: list[dict[str, Any]] = []
     total_bytes = 0
     pending = [root]
@@ -472,35 +522,82 @@ def _safe_tree(
                 info = child.lstat()
             except OSError as error:
                 raise CarryForwardError("storage_read_failed") from error
-            if stat.S_ISLNK(info.st_mode):
-                raise CarryForwardError("storage_symlink_rejected")
+            if info.st_dev != root_device:
+                raise CarryForwardError("storage_device_changed")
             if parent == root and allowed_top is not None and child.name not in allowed_top:
                 if child.name in (ignored_top or set()):
                     continue
                 raise CarryForwardError("storage_entry_unknown")
             relative = child.relative_to(root).as_posix()
-            mode = stat.S_IMODE(info.st_mode)
+            metadata = {
+                "mode": stat.S_IMODE(info.st_mode),
+                "uid": info.st_uid,
+                "gid": info.st_gid,
+                "device": info.st_dev,
+                "inode": info.st_ino,
+                "mtime_ns": info.st_mtime_ns,
+            }
             if stat.S_ISDIR(info.st_mode):
-                result.append({"path": relative, "type": "directory", "mode": mode})
+                result.append({"path": relative, "type": "directory", **metadata})
                 pending.append(child)
             elif stat.S_ISREG(info.st_mode):
                 total_bytes += info.st_size
                 if total_bytes > MAX_CAPTURE_BYTES:
                     raise CarryForwardError("storage_capture_limit")
                 hasher = hashlib.sha256()
+                descriptor = -1
                 try:
-                    with child.open("rb") as source:
+                    descriptor = os.open(child, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    opened = os.fstat(descriptor)
+                    stable = (
+                        opened.st_dev,
+                        opened.st_ino,
+                        opened.st_mode,
+                        opened.st_uid,
+                        opened.st_gid,
+                        opened.st_size,
+                        opened.st_mtime_ns,
+                    )
+                    expected = (
+                        info.st_dev,
+                        info.st_ino,
+                        info.st_mode,
+                        info.st_uid,
+                        info.st_gid,
+                        info.st_size,
+                        info.st_mtime_ns,
+                    )
+                    if stable != expected or not stat.S_ISREG(opened.st_mode):
+                        raise CarryForwardError("storage_changed_during_read")
+                    with os.fdopen(descriptor, "rb") as source:
+                        descriptor = -1
                         for block in iter(lambda: source.read(1024 * 1024), b""):
                             hasher.update(block)
+                except OSError as error:
+                    raise CarryForwardError("storage_read_failed") from error
+                finally:
+                    if descriptor >= 0:
+                        os.close(descriptor)
+                result.append(
+                    {
+                        "path": relative,
+                        "type": "file",
+                        **metadata,
+                        "size": info.st_size,
+                        "sha256": hasher.hexdigest(),
+                    }
+                )
+            elif stat.S_ISLNK(info.st_mode):
+                try:
+                    target = os.readlink(child)
                 except OSError as error:
                     raise CarryForwardError("storage_read_failed") from error
                 result.append(
                     {
                         "path": relative,
-                        "type": "file",
-                        "mode": mode,
-                        "size": info.st_size,
-                        "sha256": hasher.hexdigest(),
+                        "type": "symlink",
+                        **metadata,
+                        "target_sha256": hashlib.sha256(target.encode()).hexdigest(),
                     }
                 )
             else:
@@ -510,16 +607,53 @@ def _safe_tree(
     return sorted(result, key=lambda item: item["path"])
 
 
-def _load_closed_json(path: Path, fields: set[str], code: str) -> dict[str, Any]:
+def _root_identity(root: Path) -> dict[str, int]:
+    try:
+        info = root.lstat()
+    except OSError as error:
+        raise CarryForwardError("storage_root_unavailable") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise CarryForwardError("storage_root_invalid")
+    return {
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "mtime_ns": info.st_mtime_ns,
+    }
+
+
+def _load_closed_json(
+    path: Path, fields: set[str], code: str, *, expected_uid: int | None = None
+) -> dict[str, Any]:
+    descriptor = -1
     try:
         info = path.lstat()
-        value = json.loads(path.read_text())
+        if info.st_size > MAX_JSON_BYTES:
+            raise CarryForwardError(code)
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != (
+            info.st_dev,
+            info.st_ino,
+            info.st_size,
+            info.st_mtime_ns,
+        ):
+            raise CarryForwardError(code)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+            descriptor = -1
+            value = json.load(source)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise CarryForwardError(code) from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if (
         stat.S_ISLNK(info.st_mode)
         or not stat.S_ISREG(info.st_mode)
         or stat.S_IMODE(info.st_mode) != 0o600
+        or (expected_uid is not None and info.st_uid != expected_uid)
         or not isinstance(value, dict)
         or set(value) != fields
     ):
@@ -527,7 +661,80 @@ def _load_closed_json(path: Path, fields: set[str], code: str) -> dict[str, Any]
     return value
 
 
-def _journal_facts(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
+def _workspace_identity(
+    runtime_root: Path, execution_id: int, attempt_id: int, expected_uid: int | None
+) -> bool:
+    attempt_root = runtime_root / "workspaces" / f"attempt-{attempt_id}"
+    workspace = attempt_root / f"dlr-exec-{execution_id}"
+    try:
+        workspace.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise CarryForwardError("workspace_identity_invalid") from error
+    for path in (runtime_root, runtime_root / "workspaces", attempt_root, workspace):
+        info = path.lstat()
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or (expected_uid is not None and info.st_uid != expected_uid)
+        ):
+            raise CarryForwardError("workspace_identity_invalid")
+    if stat.S_IMODE(workspace.lstat().st_mode) != 0o700:
+        raise CarryForwardError("workspace_identity_invalid")
+    marker = _load_closed_json(
+        workspace / ".dlr-execution-workspace",
+        {"execution_id", "format"},
+        "workspace_identity_invalid",
+        expected_uid=expected_uid,
+    )
+    manifest = _load_closed_json(
+        workspace / "input_manifest.json",
+        {"execution_id", "files"},
+        "workspace_identity_invalid",
+        expected_uid=expected_uid,
+    )
+    if (
+        marker != {"execution_id": execution_id, "format": 1}
+        or manifest.get("execution_id") != execution_id
+        or not isinstance(manifest.get("files"), list)
+        or len(manifest["files"]) > 8
+    ):
+        raise CarryForwardError("workspace_identity_invalid")
+    descriptor_fields = {
+        "artifact_id",
+        "ordinal",
+        "mount_name",
+        "original_filename",
+        "content_type",
+        "size_bytes",
+        "sha256",
+    }
+    for ordinal, descriptor in enumerate(manifest["files"]):
+        if (
+            not isinstance(descriptor, dict)
+            or set(descriptor) != descriptor_fields
+            or not isinstance(descriptor.get("artifact_id"), int)
+            or isinstance(descriptor.get("artifact_id"), bool)
+            or descriptor["artifact_id"] <= 0
+            or descriptor.get("ordinal") != ordinal
+            or not isinstance(descriptor.get("mount_name"), str)
+            or not re.fullmatch(r"input-[0-9]{2}(?:\.[A-Za-z0-9]+)?", descriptor["mount_name"])
+            or not isinstance(descriptor.get("original_filename"), str)
+            or not isinstance(descriptor.get("content_type"), str)
+            or not isinstance(descriptor.get("size_bytes"), int)
+            or isinstance(descriptor.get("size_bytes"), bool)
+            or descriptor["size_bytes"] < 0
+            or not isinstance(descriptor.get("sha256"), str)
+            or not DIGEST.fullmatch(descriptor["sha256"])
+        ):
+            raise CarryForwardError("workspace_identity_invalid")
+    return True
+
+
+def _journal_facts(
+    runtime_root: Path, journal_root: Path, expected_uid: int | None = None
+) -> dict[str, Any]:
     cleanup_fields = {
         "cleanup_token",
         "execution_id",
@@ -554,7 +761,9 @@ def _journal_facts(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
         )
         if not match:
             continue
-        value = _load_closed_json(path, cleanup_fields, "cleanup_journal_invalid")
+        value = _load_closed_json(
+            path, cleanup_fields, "cleanup_journal_invalid", expected_uid=expected_uid
+        )
         execution_id, attempt_id = map(int, match.groups())
         if (
             value["execution_id"] != execution_id
@@ -563,10 +772,8 @@ def _journal_facts(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
             or not isinstance(value["cleanup_token"], str)
             or not value["cleanup_token"]
             or not isinstance(value["workspace_path"], str)
-            or not Path(value["workspace_path"]).is_absolute()
-            or not value["workspace_path"].endswith(
-                f"/workspaces/attempt-{attempt_id}/dlr-exec-{execution_id}"
-            )
+            or value["workspace_path"]
+            != f"/var/lib/dlr/runtime/workspaces/attempt-{attempt_id}/dlr-exec-{execution_id}"
         ):
             raise CarryForwardError("cleanup_journal_invalid")
         cleanup.append(
@@ -579,6 +786,9 @@ def _journal_facts(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
                 "workspace_suffix": (
                     f"workspaces/attempt-{attempt_id}/dlr-exec-{execution_id}"
                 ),
+                "workspace_present": _workspace_identity(
+                    runtime_root, execution_id, attempt_id, expected_uid
+                ),
             }
         )
     attempt: list[dict[str, Any]] = []
@@ -588,7 +798,9 @@ def _journal_facts(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
             match = re.fullmatch(r"attempt-([1-9][0-9]*)\.attempt\.json", path.name)
             if not match:
                 continue
-            value = _load_closed_json(path, attempt_fields, "attempt_journal_invalid")
+            value = _load_closed_json(
+                path, attempt_fields, "attempt_journal_invalid", expected_uid=expected_uid
+            )
             attempt_id = int(match.group(1))
             positive = ("execution_id", "attempt_id", "attempt_no", "fencing_token")
             if (
@@ -605,7 +817,11 @@ def _journal_facts(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
                 or not isinstance(value["cleanup_token"], str)
                 or not value["cleanup_token"]
                 or not isinstance(value["workspace_path"], str)
-                or not Path(value["workspace_path"]).is_absolute()
+                or value["workspace_path"]
+                != (
+                    f"/var/lib/dlr/runtime/workspaces/attempt-{attempt_id}/"
+                    f"dlr-exec-{value['execution_id']}"
+                )
             ):
                 raise CarryForwardError("attempt_journal_invalid")
             attempt.append(
@@ -620,6 +836,7 @@ def _journal_facts(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
                     "cleanup_token_hash": hashlib.sha256(
                         value["cleanup_token"].encode()
                     ).hexdigest(),
+                    "lease_expires_at": datetime_text(value["lease_expires_at"]),
                 }
             )
     return {"cleanup": cleanup, "attempt": attempt}
@@ -629,6 +846,7 @@ def capture_files(
     runtime_root: Path,
     journal_root: Path,
     material_roots: dict[str, Path] | None = None,
+    expected_uid: int | None = None,
 ) -> dict[str, Any]:
     runtime = _safe_tree(
         runtime_root,
@@ -637,14 +855,26 @@ def capture_files(
     )
     journal = _safe_tree(journal_root)
     materials = {
-        name: {"entries": (entries := _safe_tree(path)), "digest": digest(entries)}
+        name: {
+            "root": _root_identity(path),
+            "entries": (entries := _safe_tree(path)),
+            "digest": digest(entries),
+        }
         for name, path in sorted((material_roots or {}).items())
     }
     return {
-        "runtime": {"entries": runtime, "digest": digest(runtime)},
-        "journal": {"entries": journal, "digest": digest(journal)},
+        "runtime": {
+            "root": _root_identity(runtime_root),
+            "entries": runtime,
+            "digest": digest(runtime),
+        },
+        "journal": {
+            "root": _root_identity(journal_root),
+            "entries": journal,
+            "digest": digest(journal),
+        },
         "materials": materials,
-        "journal_facts": _journal_facts(runtime_root, journal_root),
+        "journal_facts": _journal_facts(runtime_root, journal_root, expected_uid),
     }
 
 
@@ -653,6 +883,11 @@ def validate_file_responsibilities(
 ) -> None:
     runtime_paths = {entry["path"] for entry in evidence["runtime"]["entries"]}
     journal_paths = {entry["path"] for entry in evidence["journal"]["entries"]}
+    if any(
+        entry.get("type") == "symlink"
+        for entry in evidence["runtime"]["entries"] + evidence["journal"]["entries"]
+    ):
+        raise CarryForwardError("responsibility_symlink_rejected")
     cleanup_facts = evidence.get("journal_facts", {}).get("cleanup", [])
     attempt_facts = evidence.get("journal_facts", {}).get("attempt", [])
     selected_ids = {item["execution_id"] for item in responsibilities["executions"]}
@@ -662,6 +897,20 @@ def validate_file_responsibilities(
         match = re.search(r"(^|/)dlr-exec-([1-9][0-9]*)($|/)", path)
         if match and int(match.group(2)) not in selected_ids:
             raise CarryForwardError("unselected_storage_responsibility")
+        if path.startswith("attempt-journal/") and path != "attempt-journal/.dlr-instance.lock":
+            if not re.fullmatch(
+                r"attempt-journal/attempt-[1-9][0-9]*\.attempt\.json", path
+            ):
+                raise CarryForwardError("attempt_journal_unknown")
+    for path in journal_paths:
+        if path in {".dlr-instance.lock", "sandbox-recovery"}:
+            continue
+        if path.startswith("sandbox-recovery/"):
+            raise CarryForwardError("sandbox_recovery_unknown")
+        if not re.fullmatch(
+            r"execution-[1-9][0-9]*-attempt-[1-9][0-9]*\.cleanup\.json", path
+        ):
+            raise CarryForwardError("cleanup_journal_unknown")
     for item in responsibilities["executions"]:
         execution_id = item["execution_id"]
         attempt_ids = item["attempt_ids"]
@@ -696,21 +945,49 @@ def validate_file_responsibilities(
         if item["cleanup"] == "deferred_preserved":
             expected = {
                 f"execution-{execution_id}-attempt-{attempt_id}.cleanup.json"
-                for attempt_id in attempt_ids
+                for attempt_id in item["deferred_attempt_ids"]
             }
-            if not related_cleanup or not related_cleanup.issubset(expected):
+            if related_cleanup != expected:
                 raise CarryForwardError("deferred_journal_missing")
             facts = [fact for fact in cleanup_facts if fact["execution_id"] == execution_id]
+            attempts = {attempt["attempt_id"]: attempt for attempt in item["attempts"]}
             if (
                 not facts
-                or any(fact["attempt_id"] not in attempt_ids for fact in facts)
-                or not isinstance(item.get("cleanup_receipt_token_hash"), str)
                 or any(
-                    fact["cleanup_token_hash"] != item["cleanup_receipt_token_hash"]
+                    fact["attempt_id"] not in item["deferred_attempt_ids"]
+                    for fact in facts
+                )
+                or any(
+                    not isinstance(attempts[fact["attempt_id"]].get("cleanup_token_hash"), str)
+                    or not hmac.compare_digest(
+                        fact["cleanup_token_hash"],
+                        attempts[fact["attempt_id"]]["cleanup_token_hash"],
+                    )
                     for fact in facts
                 )
             ):
                 raise CarryForwardError("deferred_journal_identity_invalid")
+        attempts = {attempt["attempt_id"]: attempt for attempt in item.get("attempts", [])}
+        for fact in (
+            fact for fact in attempt_facts if fact["execution_id"] == execution_id
+        ):
+            attempt = attempts.get(fact["attempt_id"])
+            if not attempt or any(
+                (
+                    not isinstance(attempt.get(key), str)
+                    or not hmac.compare_digest(fact[key], attempt[key])
+                )
+                if key in {"claim_token_hash", "cleanup_token_hash"}
+                else fact[key] != attempt.get(key)
+                for key in (
+                    "attempt_no",
+                    "fencing_token",
+                    "claim_token_hash",
+                    "cleanup_token_hash",
+                    "lease_expires_at",
+                )
+            ):
+                raise CarryForwardError("attempt_journal_identity_invalid")
 
 
 def _read_text(path: Path) -> str:
@@ -720,7 +997,9 @@ def _read_text(path: Path) -> str:
         raise CarryForwardError("kernel_read_failed") from error
 
 
-def capture_kernel(unit: str, *, require_idle: bool) -> dict[str, Any]:
+def capture_kernel(
+    unit: str, *, require_idle: bool, expected_description: str | None = None
+) -> dict[str, Any]:
     if not re.fullmatch(r"dlr-[A-Za-z0-9][A-Za-z0-9_.-]*\.service", unit):
         raise CarryForwardError("kernel_unit_invalid")
     try:
@@ -732,13 +1011,19 @@ def capture_kernel(unit: str, *, require_idle: bool) -> dict[str, Any]:
                 text=True,
                 timeout=10,
             ).stdout.strip()
-            for name in ("ActiveState", "Delegate", "ControlGroup", "MainPID")
+            for name in ("ActiveState", "Delegate", "ControlGroup", "MainPID", "Description")
         ]
     except (OSError, subprocess.SubprocessError) as error:
         raise CarryForwardError("kernel_status_unavailable") from error
-    active, delegate, control_group, main_pid_text = values
+    active, delegate, control_group, main_pid_text, description = values
     expected = f"/system.slice/{unit}"
-    if active != "active" or delegate != "yes" or control_group != expected:
+    if (
+        active != "active"
+        or delegate != "yes"
+        or control_group != expected
+        or (expected_description is not None and description != expected_description)
+        or not description.startswith(f"DataLinkRuntime Sandbox {unit} ")
+    ):
         raise CarryForwardError("kernel_keeper_invalid")
     try:
         main_pid = int(main_pid_text)
@@ -746,46 +1031,124 @@ def capture_kernel(unit: str, *, require_idle: bool) -> dict[str, Any]:
         raise CarryForwardError("kernel_keeper_invalid") from error
     if main_pid <= 0 or _read_text(Path(f"/proc/{main_pid}/comm")) != "sleep":
         raise CarryForwardError("kernel_keeper_invalid")
+    if _read_text(Path(f"/proc/{main_pid}/cgroup")) != f"0::{expected}/agent":
+        raise CarryForwardError("kernel_keeper_invalid")
     stat_fields = _read_text(Path(f"/proc/{main_pid}/stat")).split()
     if len(stat_fields) < 22:
         raise CarryForwardError("kernel_keeper_invalid")
     parent = Path("/sys/fs/cgroup") / control_group.removeprefix("/")
+    try:
+        parent_info = parent.lstat()
+    except OSError as error:
+        raise CarryForwardError("kernel_read_failed") from error
     agent_pids = _read_text(parent / "agent/cgroup.procs").splitlines()
     if agent_pids != [str(main_pid)] or _read_text(parent / "cgroup.procs"):
         raise CarryForwardError("kernel_keeper_invalid")
-    populated: dict[str, int] = {}
+    tree: dict[str, dict[str, Any]] = {}
     try:
-        children = sorted(path for path in parent.iterdir() if path.is_dir())
+        pending = sorted(
+            (path for path in parent.iterdir() if path.is_dir()), reverse=True
+        )
     except OSError as error:
         raise CarryForwardError("kernel_read_failed") from error
-    for child in children:
+    while pending:
+        child = pending.pop()
+        try:
+            descendants = sorted(
+                (path for path in child.iterdir() if path.is_dir()), reverse=True
+            )
+        except OSError as error:
+            raise CarryForwardError("kernel_read_failed") from error
+        pending.extend(descendants)
         events = dict(
             line.split(None, 1)
             for line in _read_text(child / "cgroup.events").splitlines()
             if line.strip()
         )
         try:
-            populated[child.name] = int(events["populated"])
+            populated = int(events["populated"])
+            pids = [int(value) for value in _read_text(child / "cgroup.procs").splitlines()]
         except (KeyError, ValueError) as error:
             raise CarryForwardError("kernel_events_invalid") from error
-    if require_idle and (set(populated) != {"agent"} or populated.get("agent") != 1):
+        if populated not in {0, 1} or any(pid <= 0 for pid in pids):
+            raise CarryForwardError("kernel_events_invalid")
+        relative = child.relative_to(parent).as_posix()
+        tree[relative] = {
+            "populated": populated,
+            "process_count": len(pids),
+            "process_digest": digest(sorted(pids)),
+        }
+    keeper = tree.get("agent")
+    if (
+        keeper is None
+        or keeper["populated"] != 1
+        or keeper["process_count"] != 1
+        or keeper["process_digest"] != digest([main_pid])
+    ):
+        raise CarryForwardError("kernel_keeper_invalid")
+    if require_idle and set(tree) != {"agent"}:
         raise CarryForwardError("kernel_not_idle")
+    try:
+        repeated = [
+            subprocess.run(
+                ["systemctl", "show", unit, f"--property={name}", "--value"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+            for name in ("ActiveState", "Delegate", "ControlGroup", "MainPID", "Description")
+        ]
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CarryForwardError("kernel_status_unavailable") from error
+    if repeated != values or _read_text(Path(f"/proc/{main_pid}/stat")).split()[21] != stat_fields[21]:
+        raise CarryForwardError("kernel_keeper_changed")
     return {
         "boot_id": _read_text(Path("/proc/sys/kernel/random/boot_id")),
         "unit": unit,
         "control_group": control_group,
         "keeper_pid": main_pid,
         "keeper_starttime": stat_fields[21],
-        "children": populated,
+        "description": description,
+        "parent_device": parent_info.st_dev,
+        "parent_inode": parent_info.st_ino,
+        "children": tree,
     }
 
 
 def compare_kernel(before: dict[str, Any], after: dict[str, Any]) -> None:
-    for key in ("boot_id", "unit", "control_group", "keeper_pid", "keeper_starttime"):
+    for key in (
+        "boot_id",
+        "unit",
+        "control_group",
+        "keeper_pid",
+        "keeper_starttime",
+        "description",
+        "parent_device",
+        "parent_inode",
+    ):
         if before.get(key) != after.get(key):
             raise CarryForwardError("kernel_keeper_changed")
-    if set(after.get("children", {})) != {"agent"} or after["children"].get("agent") != 1:
+    children = after.get("children", {})
+    agent = children.get("agent") if isinstance(children, dict) else None
+    if (
+        set(children) != {"agent"}
+        or not isinstance(agent, dict)
+        or agent.get("populated") != 1
+        or agent.get("process_count") != 1
+        or agent.get("process_digest") != digest([after["keeper_pid"]])
+    ):
         raise CarryForwardError("kernel_not_idle")
+
+
+def validate_candidate_tables(
+    revision: str, existing: set[str], counts: dict[str, int]
+) -> None:
+    for name in EMPTY_TABLES_BY_REVISION.get(revision, ()):
+        if name not in existing:
+            raise CarryForwardError("candidate_table_missing")
+        if counts.get(name) != 0:
+            raise CarryForwardError("candidate_table_not_empty")
 
 
 def inspect_database(
@@ -804,10 +1167,26 @@ def inspect_database(
         connection.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         inspector = inspect(connection)
         existing = set(inspector.get_table_names())
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        candidate_counts = {
+            name: connection.execute(text(f'SELECT count(*) FROM "{name}"')).scalar_one()
+            for name in EMPTY_TABLES_BY_REVISION.get(revision, ())
+            if name in existing
+        }
+        validate_candidate_tables(revision, existing, candidate_counts)
         for name in RESPONSIBILITY_TABLES:
             if name not in existing:
                 raise CarryForwardError("schema_table_missing")
             actual_columns = [column["name"] for column in inspector.get_columns(name)]
+            actual_primary_key = list(
+                (inspector.get_pk_constraint(name) or {}).get("constrained_columns") or []
+            )
+            if not actual_primary_key:
+                raise CarryForwardError("schema_primary_key_missing")
+            if baseline_projection is not None and actual_primary_key != list(
+                baseline_projection[name]["primary_key"]
+            ):
+                raise CarryForwardError("projection_primary_key_changed")
             columns = (
                 list(baseline_projection[name]["columns"])
                 if baseline_projection is not None
@@ -815,11 +1194,7 @@ def inspect_database(
             )
             if not set(columns).issubset(actual_columns):
                 raise CarryForwardError("projection_columns_missing")
-            primary_key = list((inspector.get_pk_constraint(name) or {}).get("constrained_columns") or [])
-            if baseline_projection is not None:
-                primary_key = list(baseline_projection[name]["primary_key"])
-            if not primary_key:
-                raise CarryForwardError("schema_primary_key_missing")
+            primary_key = actual_primary_key
             quoted_columns = ",".join(f'"{column}"' for column in columns)
             order = ",".join(f'"{column}"' for column in primary_key)
             values = connection.execute(
@@ -932,7 +1307,9 @@ def _command_capture(args: argparse.Namespace) -> dict[str, Any]:
         if not re.fullmatch(r"[a-z][a-z0-9_-]*", name) or name in materials:
             raise CarryForwardError("material_root_invalid")
         materials[name] = Path(path)
-    evidence = capture_files(args.runtime_root, args.journal_root, materials)
+    evidence = capture_files(
+        args.runtime_root, args.journal_root, materials, args.expected_uid
+    )
     if args.db:
         db = read_private(args.db)
         validate_file_responsibilities(evidence, db["responsibilities"])
@@ -956,7 +1333,11 @@ def _command_capture(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _command_kernel(args: argparse.Namespace) -> dict[str, Any]:
-    evidence = capture_kernel(args.unit, require_idle=args.require_idle)
+    evidence = capture_kernel(
+        args.unit,
+        require_idle=args.require_idle,
+        expected_description=args.expected_description,
+    )
     if args.baseline:
         baseline = read_private(args.baseline)
         if "manifest_digest" in baseline:
@@ -1019,10 +1400,12 @@ def parser() -> argparse.ArgumentParser:
     capture.add_argument("--journal-root", type=Path, required=True)
     capture.add_argument("--db", type=Path)
     capture.add_argument("--material-root", action="append", default=[])
+    capture.add_argument("--expected-uid", type=int)
     capture.add_argument("--baseline", type=Path)
     capture.add_argument("--output", type=Path, required=True)
     kernel = commands.add_parser("check-kernel")
     kernel.add_argument("--unit", required=True)
+    kernel.add_argument("--expected-description")
     kernel.add_argument("--require-idle", action="store_true")
     kernel.add_argument("--baseline", type=Path)
     kernel.add_argument("--output", type=Path, required=True)

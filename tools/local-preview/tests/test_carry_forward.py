@@ -23,6 +23,12 @@ def table(columns, primary_key, rows=()):
 
 
 def tables(executions, attempts=(), incidents=(), slots=(), cleanup_requests=()):
+    attempts = [dict(row) for row in attempts]
+    for row in attempts:
+        if row.get("status") in carry.TERMINAL_ATTEMPTS:
+            row.setdefault(
+                "cleanup_summary", {"workspace_cleanup_status": "completed"}
+            )
     values = {
         name: table(["id"], ["id"], []) for name in carry.RESPONSIBILITY_TABLES
     }
@@ -174,6 +180,7 @@ class ResponsibilityTests(unittest.TestCase):
             "attempt_no": 1,
             "fencing_token": 3,
             "status": "worker_lost",
+            "cleanup_summary": {"workspace_cleanup_status": "deferred"},
         }
         result = carry.derive_responsibilities(
             tables([execution], attempts=[attempt]),
@@ -225,6 +232,77 @@ class ResponsibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(carry.CarryForwardError, "unselected_execution_busy"):
             carry.derive_responsibilities(changed, self.selection)
 
+    def test_unselected_terminal_deferred_is_not_ignored(self):
+        selected = queued_execution()
+        deferred = dict(
+            queued_execution(9),
+            status="cancelled",
+            attempt_count=1,
+            worker_id=2,
+            started_at="now",
+            workspace_cleanup_status="deferred",
+        )
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "unselected_cleanup_responsibility"
+        ):
+            carry.derive_responsibilities(
+                tables(
+                    [selected, deferred],
+                    attempts=[
+                        {
+                            "id": 13,
+                            "execution_id": 9,
+                            "attempt_no": 1,
+                            "fencing_token": 2,
+                            "status": "worker_lost",
+                        }
+                    ],
+                    incidents=[
+                        {
+                            "id": 11,
+                            "execution_id": 7,
+                            "dispatch_generation": 1,
+                            "status": "open",
+                        }
+                    ],
+                ),
+                self.selection,
+            )
+
+    def test_completed_execution_retains_historical_deferred_attempt(self):
+        execution = dict(
+            queued_execution(9),
+            status="succeeded",
+            attempt_count=2,
+            worker_id=2,
+            started_at="now",
+            workspace_cleanup_status="completed",
+        )
+        attempts = [
+            {
+                "id": 13,
+                "execution_id": 9,
+                "attempt_no": 1,
+                "fencing_token": 3,
+                "status": "worker_lost",
+                "cleanup_summary": {"workspace_cleanup_status": "deferred"},
+            },
+            {
+                "id": 14,
+                "execution_id": 9,
+                "attempt_no": 2,
+                "fencing_token": 4,
+                "status": "succeeded",
+                "cleanup_summary": {"workspace_cleanup_status": "completed"},
+            },
+        ]
+        result = carry.derive_responsibilities(
+            tables([execution], attempts=attempts),
+            {"queued": [], "cleanup_execution_ids": [9]},
+        )["executions"][0]
+        self.assertEqual(result["cleanup"], "deferred_preserved")
+        self.assertEqual(result["deferred_attempt_ids"], [13])
+
 
 class FileEvidenceTests(unittest.TestCase):
     def setUp(self):
@@ -251,6 +329,15 @@ class FileEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(carry.CarryForwardError, "never_claimed_storage_present"):
             carry.validate_file_responsibilities(evidence, responsibilities)
 
+    def test_file_metadata_changes_preservation_fingerprint(self):
+        path = self.runtime / ".dlr-instance.lock"
+        path.write_bytes(b"")
+        before = carry.capture_files(self.runtime, self.journal)
+        changed = path.stat().st_mtime_ns + 10_000_000_000
+        os.utime(path, ns=(changed, changed))
+        after = carry.capture_files(self.runtime, self.journal)
+        self.assertNotEqual(before, after)
+
     def test_deferred_journal_identity_and_token_are_verified(self):
         token = "cleanup-token"
         self._write(
@@ -269,13 +356,19 @@ class FileEvidenceTests(unittest.TestCase):
                 {
                     "execution_id": 9,
                     "attempt_ids": [13],
+                    "deferred_attempt_ids": [13],
+                    "attempts": [
+                        {
+                            "attempt_id": 13,
+                            "cleanup_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                        }
+                    ],
                     "cleanup": "deferred_preserved",
-                    "cleanup_receipt_token_hash": hashlib.sha256(token.encode()).hexdigest(),
                 }
             ]
         }
         carry.validate_file_responsibilities(evidence, responsibilities)
-        responsibilities["executions"][0]["cleanup_receipt_token_hash"] = "0" * 64
+        responsibilities["executions"][0]["attempts"][0]["cleanup_token_hash"] = "0" * 64
         with self.assertRaisesRegex(
             carry.CarryForwardError, "deferred_journal_identity_invalid"
         ):
@@ -291,8 +384,11 @@ class FileEvidenceTests(unittest.TestCase):
                         {
                             "execution_id": 9,
                             "attempt_ids": [13],
+                            "deferred_attempt_ids": [13],
+                            "attempts": [
+                                {"attempt_id": 13, "cleanup_token_hash": "0" * 64}
+                            ],
                             "cleanup": "deferred_preserved",
-                            "cleanup_receipt_token_hash": "0" * 64,
                         }
                     ]
                 },
@@ -300,7 +396,7 @@ class FileEvidenceTests(unittest.TestCase):
 
     def test_symlinks_and_non_closed_journals_are_rejected(self):
         (self.runtime / "bad").symlink_to(self.journal)
-        with self.assertRaisesRegex(carry.CarryForwardError, "storage_symlink_rejected"):
+        with self.assertRaisesRegex(carry.CarryForwardError, "storage_entry_unknown"):
             carry.capture_files(self.runtime, self.journal)
         (self.runtime / "bad").unlink()
         self._write(
@@ -310,8 +406,82 @@ class FileEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(carry.CarryForwardError, "cleanup_journal_invalid"):
             carry.capture_files(self.runtime, self.journal)
 
+    def test_unknown_cleanup_file_is_rejected_by_responsibility_check(self):
+        self._write(self.journal / "unknown.cleanup.json", {"unknown": True})
+        evidence = carry.capture_files(self.runtime, self.journal)
+        with self.assertRaisesRegex(carry.CarryForwardError, "cleanup_journal_unknown"):
+            carry.validate_file_responsibilities(
+                evidence,
+                {"executions": [{"execution_id": 7, "attempt_ids": [], "cleanup": "not_applicable"}]},
+            )
+
+    def test_attempt_journal_must_match_attempt_fence_and_tokens(self):
+        claim, cleanup = "claim-token", "cleanup-token"
+        self._write(
+            self.runtime / "attempt-journal/attempt-13.attempt.json",
+            {
+                "attempt_id": 13,
+                "attempt_no": 2,
+                "claim_token": claim,
+                "cleanup_token": cleanup,
+                "execution_id": 9,
+                "fencing_token": 4,
+                "lease_expires_at": "2026-09-17T01:00:00+00:00",
+                "protocol_version": 3,
+                "workspace_path": "/var/lib/dlr/runtime/workspaces/attempt-13/dlr-exec-9",
+            },
+        )
+        responsibilities = {
+            "executions": [
+                {
+                    "execution_id": 9,
+                    "attempt_ids": [13],
+                    "attempts": [
+                        {
+                            "attempt_id": 13,
+                            "attempt_no": 2,
+                            "fencing_token": 4,
+                            "claim_token_hash": hashlib.sha256(claim.encode()).hexdigest(),
+                            "cleanup_token_hash": hashlib.sha256(cleanup.encode()).hexdigest(),
+                            "lease_expires_at": "2026-09-17T01:00:00+00:00",
+                        }
+                    ],
+                    "cleanup": "completed",
+                }
+            ]
+        }
+        evidence = carry.capture_files(self.runtime, self.journal)
+        with self.assertRaisesRegex(carry.CarryForwardError, "completed_storage_present"):
+            carry.validate_file_responsibilities(evidence, responsibilities)
+        responsibilities["executions"][0]["cleanup"] = "deferred_preserved"
+        responsibilities["executions"][0]["deferred_attempt_ids"] = [13]
+        self._write(
+            self.journal / "execution-9-attempt-13.cleanup.json",
+            {
+                "cleanup_token": cleanup,
+                "execution_id": 9,
+                "protocol_version": 3,
+                "workspace_path": "/var/lib/dlr/runtime/workspaces/attempt-13/dlr-exec-9",
+                "attempt_id": 13,
+            },
+        )
+        evidence = carry.capture_files(self.runtime, self.journal)
+        carry.validate_file_responsibilities(evidence, responsibilities)
+        responsibilities["executions"][0]["attempts"][0]["fencing_token"] = 5
+        with self.assertRaisesRegex(carry.CarryForwardError, "attempt_journal_identity_invalid"):
+            carry.validate_file_responsibilities(evidence, responsibilities)
+
 
 class ManifestAndProjectionTests(unittest.TestCase):
+    def test_candidate_disposition_table_must_exist_and_be_empty(self):
+        revision = "0040_issue152_dispositions"
+        table_name = "execution_incident_dispositions"
+        carry.validate_candidate_tables(revision, {table_name}, {table_name: 0})
+        with self.assertRaisesRegex(carry.CarryForwardError, "candidate_table_missing"):
+            carry.validate_candidate_tables(revision, set(), {})
+        with self.assertRaisesRegex(carry.CarryForwardError, "candidate_table_not_empty"):
+            carry.validate_candidate_tables(revision, {table_name}, {table_name: 1})
+
     def test_projection_is_ordered_and_exact(self):
         first = tables([queued_execution()])
         left = carry.project_rows(first)
@@ -371,11 +541,28 @@ class ManifestAndProjectionTests(unittest.TestCase):
             "control_group": "/system.slice/dlr-test.service",
             "keeper_pid": 7,
             "keeper_starttime": "10",
-            "children": {"agent": 1, "old-worker": 1},
+            "children": {
+                "agent": {
+                    "populated": 1,
+                    "process_count": 1,
+                    "process_digest": carry.digest([7]),
+                },
+                "old-worker": {
+                    "populated": 1,
+                    "process_count": 1,
+                    "process_digest": carry.digest([8]),
+                },
+            },
         }
-        after = dict(baseline, children={"agent": 1})
+        after = dict(baseline, children={"agent": baseline["children"]["agent"]})
         carry.compare_kernel(baseline, after)
-        for children in ({"agent": 1, "unknown": 0}, {"agent": 1, "attempt-7-9": 1}):
+        for name in ("unknown", "agent/hidden", "attempt-7-9"):
+            children = dict(after["children"])
+            children[name] = {
+                "populated": 0,
+                "process_count": 0,
+                "process_digest": carry.digest([]),
+            }
             with self.assertRaisesRegex(carry.CarryForwardError, "kernel_not_idle"):
                 carry.compare_kernel(baseline, dict(after, children=children))
 
