@@ -16,9 +16,11 @@ import random
 import uuid
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -36,6 +38,7 @@ from dlr.control.models import (
     ExecutionInputArtifactLease,
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
+    RuntimeReconciliationCursor,
     Worker,
 )
 from dlr.control.schemas.execution import ExecutionResultReport
@@ -72,6 +75,33 @@ RETRYABLE_ERROR_CLASSES = frozenset({"platform_transient", "worker_lost"})
 ATTEMPT_METRICS: Counter[str] = Counter()
 _asyncio_to_thread = asyncio.to_thread
 _asyncio_sleep = asyncio.sleep
+RECONCILIATION_CURSOR_NAME = "expired_attempts"
+RECONCILIATION_ROW_ERROR_CODES = frozenset({"resource_profile_invalid", "retry_policy_invalid"})
+RECONCILIATION_MISSING_CODES = frozenset(
+    {"adapter_not_found", "attempt_not_found", "execution_not_found"}
+)
+
+
+@dataclass(frozen=True)
+class RecoveryCandidateReservation:
+    """One committed cursor segment, safe to process without holding its row lock."""
+
+    attempt_ids: tuple[int, ...]
+    after_id: int
+    upper_id: int
+    wrapped: bool
+
+
+class ReconciliationRowError(Exception):
+    """A closed, non-sensitive validation failure isolated to one Attempt row."""
+
+    def __init__(self, code: str, *, attempt_id: int, execution_id: int) -> None:
+        if code not in RECONCILIATION_ROW_ERROR_CODES:
+            raise ValueError("unsupported reconciliation row error code")
+        super().__init__(code)
+        self.code = code
+        self.attempt_id = attempt_id
+        self.execution_id = execution_id
 
 
 def metrics_snapshot() -> dict[str, int]:
@@ -945,50 +975,175 @@ def prepare_failed(
     return result
 
 
-def recover_expired_attempts(
-    session: Session, *, limit: int = 100, now: datetime | None = None
-) -> int:
-    """Fence and converge expired claimed/running Attempts in small batches."""
-    effective_now = _utc(now or database_now(session))
-    ids = list(
-        session.scalars(
+def _http_error_code(error: HTTPException) -> str | None:
+    detail = error.detail
+    if not isinstance(detail, dict):
+        return None
+    code = detail.get("code")
+    return code if isinstance(code, str) else None
+
+
+def _active_recovery_upper_id(session: Session) -> int:
+    return int(
+        session.scalar(
+            select(func.coalesce(func.max(ExecutionAttempt.id), 0)).where(
+                ExecutionAttempt.status.in_(ACTIVE_ATTEMPT_STATUSES)
+            )
+        )
+        or 0
+    )
+
+
+def _recovery_candidate_ids(
+    session: Session, *, after_id: int, upper_id: int, limit: int
+) -> tuple[int, ...]:
+    if upper_id <= after_id:
+        return ()
+    return tuple(
+        int(value)
+        for value in session.scalars(
             select(ExecutionAttempt.id)
             .where(
                 ExecutionAttempt.status.in_(ACTIVE_ATTEMPT_STATUSES),
-                ExecutionAttempt.lease_expires_at <= effective_now,
+                ExecutionAttempt.id > after_id,
+                ExecutionAttempt.id <= upper_id,
             )
-            .order_by(ExecutionAttempt.lease_expires_at, ExecutionAttempt.id)
-            .limit(max(1, min(int(limit), 1_000)))
+            .order_by(ExecutionAttempt.id)
+            .limit(limit)
         )
     )
-    recovered = 0
-    for attempt_id in ids:
-        peek = session.get(ExecutionAttempt, attempt_id)
-        if peek is None:
-            continue
+
+
+def reserve_recovery_candidates(
+    session: Session, *, limit: int = 100
+) -> RecoveryCandidateReservation:
+    """Commit one bounded active-Attempt cursor segment before processing it."""
+    batch_size = max(1, min(int(limit), 1_000))
+    cursor = session.scalar(
+        select(RuntimeReconciliationCursor)
+        .where(RuntimeReconciliationCursor.name == RECONCILIATION_CURSOR_NAME)
+        .with_for_update()
+    )
+    if cursor is None:
+        session.rollback()
+        raise RuntimeError("expired Attempt reconciliation cursor is missing")
+
+    wrapped = False
+    if int(cursor.upper_id) == 0:
+        cursor.after_id = 0
+        cursor.upper_id = _active_recovery_upper_id(session)
+    attempt_ids = _recovery_candidate_ids(
+        session,
+        after_id=int(cursor.after_id),
+        upper_id=int(cursor.upper_id),
+        limit=batch_size,
+    )
+    if not attempt_ids:
+        wrapped = True
+        cursor.after_id = 0
+        cursor.upper_id = _active_recovery_upper_id(session)
+        attempt_ids = _recovery_candidate_ids(
+            session,
+            after_id=0,
+            upper_id=int(cursor.upper_id),
+            limit=batch_size,
+        )
+    if attempt_ids:
+        cursor.after_id = attempt_ids[-1]
+    session.commit()
+    return RecoveryCandidateReservation(
+        attempt_ids=attempt_ids,
+        after_id=int(cursor.after_id),
+        upper_id=int(cursor.upper_id),
+        wrapped=wrapped,
+    )
+
+
+def _validate_recovery_snapshots(execution: Execution, *, attempt_id: int) -> None:
+    for validator in (_retry_policy, _load_profile):
         try:
-            execution, _adapter, attempt, slot = _lock_attempt_context(
-                session, peek.worker_id, attempt_id
+            validator(execution)
+        except HTTPException as error:
+            code = _http_error_code(error)
+            if code in RECONCILIATION_ROW_ERROR_CODES:
+                raise ReconciliationRowError(
+                    code,
+                    attempt_id=attempt_id,
+                    execution_id=execution.id,
+                ) from None
+            raise
+
+
+def _recover_reserved_attempt(
+    session: Session,
+    attempt_id: int,
+    *,
+    now: datetime | None,
+) -> bool:
+    identity = session.execute(
+        select(ExecutionAttempt.worker_id, ExecutionAttempt.execution_id).where(
+            ExecutionAttempt.id == attempt_id
+        )
+    ).one_or_none()
+    if identity is None:
+        session.rollback()
+        return False
+    worker_id, _execution_id = identity
+    try:
+        execution, _adapter, attempt, slot = _lock_attempt_context(
+            session, int(worker_id), attempt_id
+        )
+    except HTTPException as error:
+        session.rollback()
+        if _http_error_code(error) in RECONCILIATION_MISSING_CODES:
+            return False
+        raise
+    locked_now = _utc(now or database_now(session))
+    if attempt.status not in ACTIVE_ATTEMPT_STATUSES or _utc(attempt.lease_expires_at) > locked_now:
+        session.rollback()
+        return False
+    _validate_recovery_snapshots(execution, attempt_id=attempt.id)
+    _apply_terminal_locked(
+        session,
+        execution,
+        attempt,
+        slot,
+        status="worker_lost",
+        error_code="worker_lost",
+        error_class="worker_lost",
+        error="Worker Lease expired before a terminal result was accepted",
+        now=locked_now,
+    )
+    session.commit()
+    return True
+
+
+def recover_expired_attempts(
+    session: Session, *, limit: int = 100, now: datetime | None = None
+) -> int:
+    """Fence expired Attempts from one committed, restart-safe cursor segment."""
+    reservation = reserve_recovery_candidates(session, limit=limit)
+    recovered = 0
+    for candidate_index, attempt_id in enumerate(reservation.attempt_ids, start=1):
+        try:
+            recovered += int(_recover_reserved_attempt(session, attempt_id, now=now))
+        except ReconciliationRowError as error:
+            session.rollback()
+            metric = f"reconciliation_row_error_{error.code}"
+            ATTEMPT_METRICS[metric] += 1
+            logger.warning(
+                "attempt reconciliation row skipped",
+                extra={
+                    "attempt_id": error.attempt_id,
+                    "execution_id": error.execution_id,
+                    "error_code": error.code,
+                    "cursor_upper_id": reservation.upper_id,
+                    "cursor_wrapped": reservation.wrapped,
+                    "candidate_index": candidate_index,
+                    "candidate_count": len(reservation.attempt_ids),
+                    "error_count": ATTEMPT_METRICS[metric],
+                },
             )
-            locked_now = database_now(session)
-            if attempt.status not in ACTIVE_ATTEMPT_STATUSES or _utc(
-                attempt.lease_expires_at
-            ) > _utc(locked_now):
-                session.rollback()
-                continue
-            _apply_terminal_locked(
-                session,
-                execution,
-                attempt,
-                slot,
-                status="worker_lost",
-                error_code="worker_lost",
-                error_class="worker_lost",
-                error="Worker Lease expired before a terminal result was accepted",
-                now=locked_now,
-            )
-            session.commit()
-            recovered += 1
         except Exception:
             session.rollback()
             raise

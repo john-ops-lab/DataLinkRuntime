@@ -50,6 +50,7 @@ from dlr.control.models.reliable_execution import (
     ExecutionOutbox,
     GlobalExecutionAdmission,
     RabbitMQRuntimeCapability,
+    RuntimeReconciliationCursor,
     ScheduleDispatchOutcome,
 )
 from dlr.control.models.schedule import AdapterSchedule
@@ -108,6 +109,7 @@ __all__ = [
     "ExecutionOutbox",
     "GlobalExecutionAdmission",
     "RabbitMQRuntimeCapability",
+    "RuntimeReconciliationCursor",
     "ScheduleDispatchOutcome",
     "User",
     "UserSession",

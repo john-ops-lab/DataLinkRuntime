@@ -332,6 +332,11 @@ class ExecutionAttempt(Base):
             postgresql_where=text("status IN ('claimed', 'running')"),
         ),
         Index("ix_execution_attempts_lease", "status", "lease_expires_at"),
+        Index(
+            "ix_execution_attempts_active_id",
+            "id",
+            postgresql_where=text("status IN ('claimed', 'running')"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -381,6 +386,29 @@ class ExecutionAttempt(Base):
     cleanup_summary: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RuntimeReconciliationCursor(Base):
+    """Restart-safe bounded scan progress, separate from Attempt business leases."""
+
+    __tablename__ = "runtime_reconciliation_cursors"
+    __table_args__ = (
+        CheckConstraint(
+            "after_id >= 0 AND upper_id >= 0 AND after_id <= upper_id",
+            name="ck_runtime_reconciliation_cursors_bounds",
+        ),
+    )
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    after_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    upper_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()

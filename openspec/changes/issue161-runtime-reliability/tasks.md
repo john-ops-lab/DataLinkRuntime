@@ -12,12 +12,12 @@
 
 ## 3. #134 — 持久公平扫描独立检查点
 
-- [ ] 3.1 增加有界扫描 cursor/active ID索引的增量迁移和 ORM，按设计实现固定 upper_id 轮界与短事务候选保留；验证 fresh/基线上升级、空集合、删除尾项、最多两次有界查询及重启不重置。
-- [ ] 3.2 将恢复拆为逐行干净事务和封闭行级校验错误分类，保留原 terminal 服务；以 retry_policy_invalid 等确定性坏快照验证 rollback 后业务lease/状态/Slot/Admission不变，未知异常仍上抛。
-- [ ] 3.3 真实 PostgreSQL 测试 limit=1 最前坏行、坏行=B、坏行>B、持续新到项；断言正常后继在设计tick上界内获得处理，不删坏行、不伪造终态、不无限填批。
-- [ ] 3.4 测试保留候选后进程重启、两个reconciler并发、renew/result/recovery竞争；以持久游标重读、单terminal/单retry/单释放断言核对公平性和锁顺序。
-- [ ] 3.5 构造同tick due retry和expired hold，确认坏行不阻断它们；注入真实DB断连及未知程序异常，确认错误可见且没有虚假收敛；检查日志仅含固定码与非敏感ID。
-- [ ] 3.6 运行针对性 Backend 测试、迁移/静态检查，记录 #134 独立SHA和证据，提交后才进入 #152 A。
+- [x] 3.1 增加有界扫描 cursor/active ID索引的增量迁移和 ORM，按设计实现固定 upper_id 轮界与短事务候选保留；验证 fresh/基线上升级、空集合、删除尾项、最多两次有界查询及重启不重置。
+- [x] 3.2 将恢复拆为逐行干净事务和封闭行级校验错误分类，保留原 terminal 服务；以 retry_policy_invalid 等确定性坏快照验证 rollback 后业务lease/状态/Slot/Admission不变，未知异常仍上抛。
+- [x] 3.3 真实 PostgreSQL 测试 limit=1 最前坏行、坏行=B、坏行>B、持续新到项；断言正常后继在设计tick上界内获得处理，不删坏行、不伪造终态、不无限填批。
+- [x] 3.4 测试保留候选后进程重启、两个reconciler并发、renew/result/recovery竞争；以持久游标重读、单terminal/单retry/单释放断言核对公平性和锁顺序。
+- [x] 3.5 构造同tick due retry和expired hold，确认坏行不阻断它们；注入真实DB断连及未知程序异常，确认错误可见且没有虚假收敛；检查日志仅含固定码与非敏感ID。
+- [x] 3.6 运行针对性 Backend 测试、迁移/静态检查，记录 #134 独立SHA和证据，提交后才进入 #152 A。
 
 ## 4. #152 A — 正常容量背压独立检查点
 

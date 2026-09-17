@@ -93,6 +93,7 @@ def _truncate(engine: Engine) -> None:
                 "workers, executions, execution_input_artifact_leases, "
                 "execution_credential_binding_snapshots, "
                 "execution_outbox, execution_attempts, adapter_execution_slots, "
+                "runtime_reconciliation_cursors, "
                 "schedule_dispatch_outcomes, execution_infrastructure_incidents, "
                 "execution_artifact_holds, "
                 "rabbitmq_runtime_capabilities, "
@@ -105,6 +106,12 @@ def _truncate(engine: Engine) -> None:
             )
         )
         conn.execute(text("INSERT INTO system_settings (id, locale) VALUES (1, 'zh-CN')"))
+        conn.execute(
+            text(
+                "INSERT INTO runtime_reconciliation_cursors (name, after_id, upper_id) "
+                "VALUES ('expired_attempts', 0, 0)"
+            )
+        )
         conn.execute(
             text(
                 "INSERT INTO managed_input_settings ("
