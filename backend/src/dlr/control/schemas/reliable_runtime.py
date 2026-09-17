@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -23,6 +24,58 @@ Decision = Literal["EXECUTE", "ACK_NOOP", "DEFER", "REJECT_DLQ", "PAUSE_CONSUMER
 AttemptStatus = Literal[
     "succeeded", "failed", "timed_out", "cancelled", "worker_lost", "resource_exceeded"
 ]
+IncidentDispositionAction = Literal["recover", "terminate"]
+IncidentDispositionReason = Literal[
+    "capacity_repaired", "routing_repaired", "operator_cancel", "verified_terminal"
+]
+
+
+class IncidentDispositionBody(BaseModel):
+    """Closed operator intent; actor identity is always taken from Principal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: IncidentDispositionAction
+    expected_generation: StrictInt = Field(ge=1)
+    reason_code: IncidentDispositionReason
+
+
+class IncidentDispositionReceipt(BaseModel):
+    """Non-sensitive durable audit receipt returned by POST and list APIs."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    incident_id: int
+    execution_id: int
+    idempotency_key: uuid.UUID
+    actor_kind: Literal["superadmin", "account"]
+    user_id: int | None
+    action: IncidentDispositionAction
+    reason_code: IncidentDispositionReason
+    outcome: str = Field(min_length=1, max_length=64)
+    code: str = Field(min_length=1, max_length=64)
+    from_generation: int | None = Field(default=None, ge=1)
+    to_generation: int | None = Field(default=None, ge=1)
+    from_outbox_id: uuid.UUID | None = None
+    to_outbox_id: uuid.UUID | None = None
+    execution_status: str = Field(min_length=1, max_length=32)
+    created_at: datetime
+
+
+class IncidentDispositionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    receipt: IncidentDispositionReceipt
+    incident_status: Literal["open", "resolved", "ignored"]
+    execution_status: str = Field(min_length=1, max_length=32)
+
+
+class IncidentDispositionPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[IncidentDispositionReceipt]
+    next_before_id: uuid.UUID | None = None
 
 
 class AttemptClaimBody(BaseModel):

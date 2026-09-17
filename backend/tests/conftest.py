@@ -95,6 +95,7 @@ def _truncate(engine: Engine) -> None:
                 "execution_outbox, execution_attempts, adapter_execution_slots, "
                 "runtime_reconciliation_cursors, "
                 "schedule_dispatch_outcomes, execution_infrastructure_incidents, "
+                "execution_incident_dispositions, "
                 "execution_artifact_holds, "
                 "rabbitmq_runtime_capabilities, "
                 "global_execution_admission, "

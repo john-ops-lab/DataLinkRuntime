@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    CHAR,
     BigInteger,
     CheckConstraint,
     DateTime,
@@ -537,6 +538,89 @@ class ExecutionInfrastructureIncident(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ExecutionIncidentDisposition(Base):
+    """One immutable operator request and its durable disposition result."""
+
+    __tablename__ = "execution_incident_dispositions"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id",
+            "idempotency_key",
+            name="uq_execution_incident_dispositions_incident_key",
+        ),
+        CheckConstraint(
+            "request_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_execution_incident_dispositions_request_hash",
+        ),
+        CheckConstraint(
+            "actor_kind IN ('superadmin', 'account')",
+            name="ck_execution_incident_dispositions_actor_kind",
+        ),
+        CheckConstraint(
+            "(actor_kind = 'account' AND user_id IS NOT NULL) OR "
+            "(actor_kind = 'superadmin' AND user_id IS NULL)",
+            name="ck_execution_incident_dispositions_actor_identity",
+        ),
+        CheckConstraint(
+            "action IN ('recover', 'terminate')",
+            name="ck_execution_incident_dispositions_action",
+        ),
+        CheckConstraint(
+            "reason_code IN ('capacity_repaired', 'routing_repaired', "
+            "'operator_cancel', 'verified_terminal')",
+            name="ck_execution_incident_dispositions_reason_code",
+        ),
+        CheckConstraint(
+            "from_generation IS NULL OR from_generation >= 1",
+            name="ck_execution_incident_dispositions_from_generation",
+        ),
+        CheckConstraint(
+            "to_generation IS NULL OR to_generation >= 1",
+            name="ck_execution_incident_dispositions_to_generation",
+        ),
+        Index(
+            "ix_execution_incident_dispositions_incident_page",
+            "incident_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    incident_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("execution_infrastructure_incidents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    execution_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("executions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    request_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(64), nullable=False)
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    to_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    from_outbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("execution_outbox.id", ondelete="SET NULL"), nullable=True
+    )
+    to_outbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("execution_outbox.id", ondelete="SET NULL"), nullable=True
+    )
+    execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class ExecutionArtifactHold(Base):
