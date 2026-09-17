@@ -31,7 +31,14 @@ SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 TERMINAL_EXECUTIONS = {"succeeded", "dead_letter", "cancelled", "expired"}
 ACTIVE_ATTEMPTS = {"claimed", "running"}
-TERMINAL_ATTEMPTS = {"succeeded", "failed", "cancelled", "worker_lost", "expired"}
+TERMINAL_ATTEMPTS = {
+    "succeeded",
+    "failed",
+    "timed_out",
+    "cancelled",
+    "worker_lost",
+    "resource_exceeded",
+}
 RESPONSIBILITY_TABLES = (
     "executions",
     "execution_attempts",
@@ -47,14 +54,8 @@ RESPONSIBILITY_TABLES = (
     "schedule_dispatch_outcomes",
     "worker_cleanup_requests",
 )
-SAFE_ROOT_ENTRIES = {
-    ".dlr-instance.lock",
-    "attempt-journal",
-    "cleanup-journal",
-    "dependency-cache",
-    "environments",
-    "workspaces",
-}
+MAX_CAPTURE_ENTRIES = 100_000
+MAX_CAPTURE_BYTES = 16 * 1024 * 1024 * 1024
 
 
 class CarryForwardError(RuntimeError):
@@ -118,7 +119,11 @@ def _secure_file(path: Path, *, output: bool = False) -> None:
         parent_info = parent.stat()
     except OSError as error:
         raise CarryForwardError("private_parent_invalid") from error
-    if not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_mode & 0o077:
+    if (
+        not stat.S_ISDIR(parent_info.st_mode)
+        or parent_info.st_uid != os.geteuid()
+        or parent_info.st_mode & 0o077
+    ):
         raise CarryForwardError("private_parent_invalid")
     if output and not path.exists():
         return
@@ -129,6 +134,7 @@ def _secure_file(path: Path, *, output: bool = False) -> None:
     if (
         stat.S_ISLNK(info.st_mode)
         or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
         or info.st_mode & 0o077
         or info.st_nlink != 1
     ):
@@ -280,6 +286,42 @@ def derive_responsibilities(
             raise CarryForwardError("queued_execution_invalid")
         if execution.get("dispatch_backend") != "rabbitmq":
             raise CarryForwardError("queued_backend_invalid")
+        if execution.get("admission_released_at") is not None:
+            raise CarryForwardError("queued_admission_released")
+        adapter_id = execution.get("adapter_id")
+        adapter_admission = next(
+            (
+                row
+                for row in rows["adapter_execution_admission"]
+                if row.get("adapter_id") == adapter_id
+            ),
+            None,
+        )
+        global_admission = next(
+            (
+                row
+                for row in rows["global_execution_admission"]
+                if row.get("singleton_key") == "global"
+            ),
+            None,
+        )
+        if (
+            not adapter_admission
+            or not isinstance(adapter_admission.get("outstanding_count"), int)
+            or adapter_admission["outstanding_count"] <= 0
+            or not global_admission
+            or not isinstance(global_admission.get("outstanding_count"), int)
+            or global_admission["outstanding_count"] <= 0
+        ):
+            raise CarryForwardError("queued_admission_invalid")
+        outbox = [
+            row
+            for row in rows["execution_outbox"]
+            if row.get("execution_id") == execution_id
+            and row.get("dispatch_generation") == execution.get("dispatch_generation")
+        ]
+        if len(outbox) != 1:
+            raise CarryForwardError("queued_outbox_missing")
         execution_incidents = []
         for incident_id in queued["incident_ids"]:
             incident = incidents.get(incident_id)
@@ -287,9 +329,17 @@ def derive_responsibilities(
                 not incident
                 or incident.get("execution_id") != execution_id
                 or incident.get("status") != "open"
+                or incident.get("dispatch_generation") != execution.get("dispatch_generation")
             ):
                 raise CarryForwardError("queued_incident_invalid")
             execution_incidents.append(incident_id)
+        all_open_incidents = {
+            row.get("id")
+            for row in rows["execution_infrastructure_incidents"]
+            if row.get("execution_id") == execution_id and row.get("status") == "open"
+        }
+        if all_open_incidents != set(execution_incidents):
+            raise CarryForwardError("queued_incident_unselected")
         result.append(
             _responsibility(execution, _by_execution(attempts, execution_id), execution_incidents)
         )
@@ -308,6 +358,8 @@ def _responsibility(
     attempt_ids = sorted(_positive(row.get("id"), "attempt_identity_invalid") for row in attempts)
     attempt_count = execution.get("attempt_count")
     if not isinstance(attempt_count, int) or isinstance(attempt_count, bool) or attempt_count < 0:
+        raise CarryForwardError("execution_attempt_count_invalid")
+    if attempt_count != len(attempts):
         raise CarryForwardError("execution_attempt_count_invalid")
     if any(row.get("status") not in TERMINAL_ATTEMPTS for row in attempts):
         raise CarryForwardError("attempt_state_unknown")
@@ -361,7 +413,45 @@ def compare_projection(before: dict[str, Any], after: dict[str, Any]) -> None:
             raise CarryForwardError("projection_rows_changed")
 
 
-def _safe_tree(root: Path) -> list[dict[str, Any]]:
+def validate_projection_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != set(RESPONSIBILITY_TABLES):
+        raise CarryForwardError("projection_table_changed")
+    for table in RESPONSIBILITY_TABLES:
+        item = value[table]
+        if not isinstance(item, dict) or set(item) != {
+            "columns",
+            "primary_key",
+            "rows",
+            "count",
+        }:
+            raise CarryForwardError("schema_projection_invalid")
+        columns, primary_key, rows = item["columns"], item["primary_key"], item["rows"]
+        if (
+            not isinstance(columns, list)
+            or not columns
+            or not all(
+                isinstance(column, str)
+                and re.fullmatch(r"[a-z][a-z0-9_]*", column)
+                for column in columns
+            )
+            or len(set(columns)) != len(columns)
+            or not isinstance(primary_key, list)
+            or not primary_key
+            or not set(primary_key).issubset(columns)
+            or not isinstance(rows, list)
+            or not all(isinstance(row, str) and DIGEST.fullmatch(row) for row in rows)
+            or item["count"] != len(rows)
+        ):
+            raise CarryForwardError("schema_projection_invalid")
+    return value
+
+
+def _safe_tree(
+    root: Path,
+    *,
+    allowed_top: set[str] | None = None,
+    ignored_top: set[str] | None = None,
+) -> list[dict[str, Any]]:
     try:
         root_info = root.lstat()
     except OSError as error:
@@ -369,6 +459,7 @@ def _safe_tree(root: Path) -> list[dict[str, Any]]:
     if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
         raise CarryForwardError("storage_root_invalid")
     result: list[dict[str, Any]] = []
+    total_bytes = 0
     pending = [root]
     while pending:
         parent = pending.pop()
@@ -381,14 +472,21 @@ def _safe_tree(root: Path) -> list[dict[str, Any]]:
                 info = child.lstat()
             except OSError as error:
                 raise CarryForwardError("storage_read_failed") from error
-            relative = child.relative_to(root).as_posix()
-            mode = stat.S_IMODE(info.st_mode)
             if stat.S_ISLNK(info.st_mode):
                 raise CarryForwardError("storage_symlink_rejected")
+            if parent == root and allowed_top is not None and child.name not in allowed_top:
+                if child.name in (ignored_top or set()):
+                    continue
+                raise CarryForwardError("storage_entry_unknown")
+            relative = child.relative_to(root).as_posix()
+            mode = stat.S_IMODE(info.st_mode)
             if stat.S_ISDIR(info.st_mode):
                 result.append({"path": relative, "type": "directory", "mode": mode})
                 pending.append(child)
             elif stat.S_ISREG(info.st_mode):
+                total_bytes += info.st_size
+                if total_bytes > MAX_CAPTURE_BYTES:
+                    raise CarryForwardError("storage_capture_limit")
                 hasher = hashlib.sha256()
                 try:
                     with child.open("rb") as source:
@@ -407,6 +505,8 @@ def _safe_tree(root: Path) -> list[dict[str, Any]]:
                 )
             else:
                 raise CarryForwardError("storage_entry_unknown")
+            if len(result) > MAX_CAPTURE_ENTRIES:
+                raise CarryForwardError("storage_capture_limit")
     return sorted(result, key=lambda item: item["path"])
 
 
@@ -525,12 +625,25 @@ def _journal_facts(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
     return {"cleanup": cleanup, "attempt": attempt}
 
 
-def capture_files(runtime_root: Path, journal_root: Path) -> dict[str, Any]:
-    runtime = _safe_tree(runtime_root)
+def capture_files(
+    runtime_root: Path,
+    journal_root: Path,
+    material_roots: dict[str, Path] | None = None,
+) -> dict[str, Any]:
+    runtime = _safe_tree(
+        runtime_root,
+        allowed_top={".dlr-instance.lock", "attempt-journal", "workspaces"},
+        ignored_top={"dependency-cache", "environments"},
+    )
     journal = _safe_tree(journal_root)
+    materials = {
+        name: {"entries": (entries := _safe_tree(path)), "digest": digest(entries)}
+        for name, path in sorted((material_roots or {}).items())
+    }
     return {
         "runtime": {"entries": runtime, "digest": digest(runtime)},
         "journal": {"entries": journal, "digest": digest(journal)},
+        "materials": materials,
         "journal_facts": _journal_facts(runtime_root, journal_root),
     }
 
@@ -542,6 +655,13 @@ def validate_file_responsibilities(
     journal_paths = {entry["path"] for entry in evidence["journal"]["entries"]}
     cleanup_facts = evidence.get("journal_facts", {}).get("cleanup", [])
     attempt_facts = evidence.get("journal_facts", {}).get("attempt", [])
+    selected_ids = {item["execution_id"] for item in responsibilities["executions"]}
+    if any(fact["execution_id"] not in selected_ids for fact in cleanup_facts + attempt_facts):
+        raise CarryForwardError("unselected_storage_responsibility")
+    for path in runtime_paths:
+        match = re.search(r"(^|/)dlr-exec-([1-9][0-9]*)($|/)", path)
+        if match and int(match.group(2)) not in selected_ids:
+            raise CarryForwardError("unselected_storage_responsibility")
     for item in responsibilities["executions"]:
         execution_id = item["execution_id"]
         attempt_ids = item["attempt_ids"]
@@ -569,6 +689,10 @@ def validate_file_responsibilities(
             or any(fact["execution_id"] == execution_id for fact in attempt_facts)
         ):
             raise CarryForwardError("never_claimed_storage_present")
+        if item["cleanup"] == "completed" and (
+            related_runtime or related_cleanup or related_attempt
+        ):
+            raise CarryForwardError("completed_storage_present")
         if item["cleanup"] == "deferred_preserved":
             expected = {
                 f"execution-{execution_id}-attempt-{attempt_id}.cleanup.json"
@@ -599,21 +723,19 @@ def _read_text(path: Path) -> str:
 def capture_kernel(unit: str, *, require_idle: bool) -> dict[str, Any]:
     if not re.fullmatch(r"dlr-[A-Za-z0-9][A-Za-z0-9_.-]*\.service", unit):
         raise CarryForwardError("kernel_unit_invalid")
-    command = [
-        "systemctl",
-        "show",
-        unit,
-        "--property=ActiveState,Delegate,ControlGroup,MainPID",
-        "--value",
-    ]
     try:
-        values = subprocess.run(
-            command, check=True, capture_output=True, text=True, timeout=10
-        ).stdout.splitlines()
+        values = [
+            subprocess.run(
+                ["systemctl", "show", unit, f"--property={name}", "--value"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+            for name in ("ActiveState", "Delegate", "ControlGroup", "MainPID")
+        ]
     except (OSError, subprocess.SubprocessError) as error:
         raise CarryForwardError("kernel_status_unavailable") from error
-    if len(values) != 4:
-        raise CarryForwardError("kernel_status_invalid")
     active, delegate, control_group, main_pid_text = values
     expected = f"/system.slice/{unit}"
     if active != "active" or delegate != "yes" or control_group != expected:
@@ -666,7 +788,9 @@ def compare_kernel(before: dict[str, Any], after: dict[str, Any]) -> None:
         raise CarryForwardError("kernel_not_idle")
 
 
-def inspect_database(selection: dict[str, Any]) -> dict[str, Any]:
+def inspect_database(
+    selection: dict[str, Any], baseline_projection: dict[str, Any] | None = None
+) -> dict[str, Any]:
     try:
         from sqlalchemy import create_engine, inspect, text
     except ImportError as error:
@@ -683,8 +807,17 @@ def inspect_database(selection: dict[str, Any]) -> dict[str, Any]:
         for name in RESPONSIBILITY_TABLES:
             if name not in existing:
                 raise CarryForwardError("schema_table_missing")
-            columns = [column["name"] for column in inspector.get_columns(name)]
+            actual_columns = [column["name"] for column in inspector.get_columns(name)]
+            columns = (
+                list(baseline_projection[name]["columns"])
+                if baseline_projection is not None
+                else actual_columns
+            )
+            if not set(columns).issubset(actual_columns):
+                raise CarryForwardError("projection_columns_missing")
             primary_key = list((inspector.get_pk_constraint(name) or {}).get("constrained_columns") or [])
+            if baseline_projection is not None:
+                primary_key = list(baseline_projection[name]["primary_key"])
             if not primary_key:
                 raise CarryForwardError("schema_primary_key_missing")
             quoted_columns = ",".join(f'"{column}"' for column in columns)
@@ -749,18 +882,41 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         if not isinstance(value[key], str) or not DIGEST.fullmatch(value[key]):
             raise CarryForwardError("manifest_digest_invalid")
     _positive(value["pr"], "manifest_pr_invalid")
+    if not isinstance(value["repo"], str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["repo"]
+    ):
+        raise CarryForwardError("manifest_repo_invalid")
+    try:
+        dt.datetime.fromisoformat(value["created_at"])
+    except (TypeError, ValueError) as error:
+        raise CarryForwardError("manifest_time_invalid") from error
+    for key in ("from_schema", "to_schema"):
+        if not isinstance(value[key], str) or not re.fullmatch(r"[a-zA-Z0-9_.-]+", value[key]):
+            raise CarryForwardError("manifest_schema_invalid")
     normalize_selection(value["selection"])
+    validate_projection_evidence(value["old_runtime_projection"])
     if digest(manifest_payload(value)) != value["manifest_digest"]:
         raise CarryForwardError("manifest_digest_mismatch")
     return value
 
 
 def _command_check_db(args: argparse.Namespace) -> dict[str, Any]:
-    selection = normalize_selection(read_private(args.ids))
-    result = inspect_database(selection)
+    baseline = read_private(args.baseline) if args.baseline else None
+    if baseline and "manifest_digest" in baseline:
+        baseline = validate_manifest(baseline)
+    selection = normalize_selection(
+        read_private(args.ids)
+        if args.ids
+        else baseline.get("selection")
+        if baseline
+        else None
+    )
+    baseline_projection = None
+    if baseline:
+        baseline_projection = baseline.get("old_runtime_projection", baseline.get("projection"))
+    result = inspect_database(selection, baseline_projection)
     if args.baseline:
-        baseline = read_private(args.baseline)
-        compare_projection(baseline["projection"], result["projection"])
+        compare_projection(baseline_projection, result["projection"])
         if baseline["responsibilities"] != result["responsibilities"]:
             raise CarryForwardError("responsibility_changed")
     write_private(args.output, result)
@@ -768,26 +924,44 @@ def _command_check_db(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _command_capture(args: argparse.Namespace) -> dict[str, Any]:
-    evidence = capture_files(args.runtime_root, args.journal_root)
+    materials: dict[str, Path] = {}
+    for item in args.material_root:
+        if "=" not in item:
+            raise CarryForwardError("material_root_invalid")
+        name, path = item.split("=", 1)
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", name) or name in materials:
+            raise CarryForwardError("material_root_invalid")
+        materials[name] = Path(path)
+    evidence = capture_files(args.runtime_root, args.journal_root, materials)
     if args.db:
         db = read_private(args.db)
         validate_file_responsibilities(evidence, db["responsibilities"])
     if args.baseline:
         baseline = read_private(args.baseline)
-        if baseline != evidence:
+        if "manifest_digest" in baseline:
+            baseline = validate_manifest(baseline)
+        baseline_evidence = baseline.get("file_evidence", baseline)
+        responsibilities = baseline.get("responsibilities")
+        if responsibilities:
+            validate_file_responsibilities(evidence, responsibilities)
+        if baseline_evidence != evidence:
             raise CarryForwardError("file_evidence_changed")
     write_private(args.output, evidence)
     return {
         "code": "files_ok",
         "runtime_entries": len(evidence["runtime"]["entries"]),
         "journal_entries": len(evidence["journal"]["entries"]),
+        "material_roots": len(evidence["materials"]),
     }
 
 
 def _command_kernel(args: argparse.Namespace) -> dict[str, Any]:
     evidence = capture_kernel(args.unit, require_idle=args.require_idle)
     if args.baseline:
-        compare_kernel(read_private(args.baseline), evidence)
+        baseline = read_private(args.baseline)
+        if "manifest_digest" in baseline:
+            baseline = validate_manifest(baseline)
+        compare_kernel(baseline.get("kernel_evidence", baseline), evidence)
     write_private(args.output, evidence)
     return {"code": "kernel_ok", "children": len(evidence["children"])}
 
@@ -837,13 +1011,14 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
     db = commands.add_parser("check-db")
-    db.add_argument("--ids", type=Path, required=True)
+    db.add_argument("--ids", type=Path)
     db.add_argument("--output", type=Path, required=True)
     db.add_argument("--baseline", type=Path)
     capture = commands.add_parser("capture")
     capture.add_argument("--runtime-root", type=Path, required=True)
     capture.add_argument("--journal-root", type=Path, required=True)
     capture.add_argument("--db", type=Path)
+    capture.add_argument("--material-root", action="append", default=[])
     capture.add_argument("--baseline", type=Path)
     capture.add_argument("--output", type=Path, required=True)
     kernel = commands.add_parser("check-kernel")
@@ -876,6 +1051,9 @@ def main() -> None:
         print(json.dumps(result, sort_keys=True))
     except CarryForwardError as error:
         print(json.dumps({"code": error.code}, sort_keys=True), file=sys.stderr)
+        raise SystemExit(2) from None
+    except Exception:
+        print(json.dumps({"code": "verifier_internal_error"}, sort_keys=True), file=sys.stderr)
         raise SystemExit(2) from None
 
 

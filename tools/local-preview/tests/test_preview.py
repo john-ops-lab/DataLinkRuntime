@@ -1,12 +1,15 @@
 import sys
 import tempfile
 import unittest
+import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import preview
+import carry_forward
 from migrations import compatible, graph
 
 A, B = "a" * 40, "b" * 40
@@ -84,6 +87,23 @@ class ControllerTests(unittest.TestCase):
             [c.args[1] for c in self.mocks["phase"].call_args_list], ["stage", "deploy"]
         )
         self.assertIsNone(preview.read("attention.json"))
+
+    def test_explicit_manifest_is_transferred_and_bound_to_deploy_only(self):
+        manifest_path = Path(self.temp.name) / "manifest.json"
+        manifest_path.write_text("{}")
+        manifest = {"manifest_id": "1" * 32, "manifest_digest": "2" * 64}
+        with (
+            patch.object(preview, "selected_manifest", return_value=(manifest, manifest_path)),
+            patch.object(preview, "vm_private_write") as transfer,
+        ):
+            self.assertEqual(preview.tick(), "Ready")
+        self.assertEqual(
+            self.mocks["phase"].call_args_list[-1].args,
+            (self.target, "deploy", "1" * 32),
+        )
+        transfer.assert_called_once()
+        self.assertFalse((Path(self.temp.name) / "carry-forward/manifests/" / manifest_path.name).exists())
+        self.assertTrue((Path(self.temp.name) / "carry-forward/consumed/manifest.json").exists())
 
     def test_ci_rerun_same_sha_does_not_build(self):
         self.target["sha"] = A
@@ -256,6 +276,118 @@ class RemotePhaseTests(unittest.TestCase):
                     self.assertRaises(RuntimeError),
                 ):
                     preview.phase({"sha": B}, "deploy")
+
+    def test_manifest_is_a_separate_argument_before_nonce(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(preview, "ROOT", Path(directory)),
+            patch.object(
+                preview.uuid, "uuid4", return_value=SimpleNamespace(hex="nonce")
+            ),
+            patch.object(
+                preview,
+                "vm_command",
+                side_effect=[
+                    SimpleNamespace(returncode=0),
+                    SimpleNamespace(stdout="nonce 0"),
+                ],
+            ) as command,
+        ):
+            self.assertTrue(preview.phase({"sha": B}, "deploy", "1" * 32))
+        remote = command.call_args_list[0].args
+        self.assertEqual(remote[-4:], ("", "1" * 32, "nonce", "/example/preview/phase-exit"))
+
+
+class CarryForwardSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.root.chmod(0o700)
+        patcher = patch.object(preview, "ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        preview.write("state.json", {"sha": A, "schema": "0031"})
+
+    def manifest(self, directory):
+        path = Path(directory) / "manifest.json"
+        Path(directory).chmod(0o700)
+        value = carry_forward.seal_manifest(
+            {
+                "format_version": 1,
+                "manifest_id": "1" * 32,
+                "created_at": "2026-09-17T00:00:00+00:00",
+                "repo": "owner/repo",
+                "pr": 2,
+                "from_sha": A,
+                "to_sha": B,
+                "from_schema": "0031",
+                "to_schema": "0040",
+                "controller_files_digest": "c" * 64,
+                "migration_graph_digest": "d" * 64,
+                "old_image_ids": {},
+                "candidate_image_ids": {},
+                "selection": {
+                    "queued": [{"execution_id": 7, "incident_ids": [11]}],
+                    "cleanup_execution_ids": [],
+                },
+                "responsibilities": {},
+                "old_runtime_projection": {
+                    name: {
+                        "columns": ["id"],
+                        "primary_key": ["id"],
+                        "rows": [],
+                        "count": 0,
+                    }
+                    for name in carry_forward.RESPONSIBILITY_TABLES
+                },
+                "storage_identity": [],
+                "file_evidence": {},
+                "kernel_evidence": {},
+            }
+        )
+        carry_forward.write_private(path, value)
+        return path, value
+
+    def test_install_manifest_copies_once_and_keeps_only_safe_reference(self):
+        with tempfile.TemporaryDirectory() as source:
+            path, manifest = self.manifest(source)
+            with (
+                patch.object(preview, "controller_files_digest", return_value="c" * 64),
+                patch.object(preview, "migration_graph_digest", return_value="d" * 64),
+                patch.object(preview, "api", return_value={"head": {"sha": B}}),
+            ):
+                reference = preview.install_manifest({"repo": "owner/repo"}, 2, path)
+        copied = self.root / "carry-forward/manifests" / ("1" * 32 + ".json")
+        self.assertTrue(copied.is_file())
+        self.assertNotIn("selection", reference)
+        self.assertEqual(reference["manifest_digest"], manifest["manifest_digest"])
+
+    def test_plain_select_clears_stale_manifest_reference(self):
+        preview.write(
+            "config.json",
+            {
+                "repo": "owner/repo",
+                "pr": 1,
+                "enabled": False,
+                "carry_forward": {"manifest_id": "stale"},
+            },
+        )
+        pull = {
+            "state": "open",
+            "draft": False,
+            "head": {"repo": {"full_name": "owner/repo"}, "sha": B},
+        }
+        with (
+            patch.dict(os.environ, {"DLR_PREVIEW_HOME": str(self.root)}),
+            patch.object(sys, "argv", ["preview.py", "select", "2"]),
+            patch.object(preview, "api", return_value=pull),
+            patch("builtins.print"),
+        ):
+            preview.main()
+        config = preview.read("config.json")
+        self.assertNotIn("carry_forward", config)
+        self.assertEqual(config["pr"], 2)
 
 
 class EligibilityTests(unittest.TestCase):

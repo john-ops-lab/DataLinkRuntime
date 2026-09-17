@@ -3,10 +3,13 @@
 set -euo pipefail
 umask 077
 sha=${1:?commit required}
-action=${2:?stage, deploy, recover or adopt required}
+action=${2:?stage, plan, deploy, recover or adopt required}
 schema=${3:-}
+carry_id=${4:-}
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
-[[ "$action" =~ ^(stage|deploy|recover|adopt)$ ]] || exit 2
+[[ "$action" =~ ^(stage|plan|deploy|recover|adopt)$ ]] || exit 2
+if [ -n "$carry_id" ]; then [[ "$carry_id" =~ ^[0-9a-f]{32}$ ]] || exit 2; fi
+[ "$action" = plan ] || [ -z "$carry_id" ] || [ "$action" = deploy ] || exit 2
 root=$(cd "$(dirname "$0")" && pwd)
 deployment_settings=$(python3 - "$root/deployment.json" <<'PYSETTINGS'
 import json, shlex, sys
@@ -39,14 +42,66 @@ PY
 compose() { docker compose --project-name "$project" --env-file "$root/preview.env" -f docker-compose.yml -f compose.preview.json "$@"; }
 sql() { docker exec "$project-postgres-1" psql -U dlr -d dlr -Atc "$1"; }
 record() {
-  python3 - "$root/transaction.json" "$1" "$sha" "${backup:-}" <<'PY'
+  python3 - "$root/transaction.json" "$1" "$sha" "${backup:-}" "${carry_manifest:-}" <<'PY'
 import json, os, sys, time
-path, phase, sha, backup = sys.argv[1:]
+path, phase, sha, backup, manifest_path = sys.argv[1:]
+value = {'phase': phase, 'sha': sha, 'backup': backup, 'at': time.time()}
+if manifest_path:
+    with open(manifest_path) as source: manifest = json.load(source)
+    value['carry_forward'] = {
+        'manifest_id': manifest['manifest_id'],
+        'manifest_digest': manifest['manifest_digest'],
+        'from_sha': manifest['from_sha'],
+        'to_sha': manifest['to_sha'],
+    }
 with open(path + '.tmp', 'w') as out:
-    json.dump({'phase': phase, 'sha': sha, 'backup': backup, 'at': time.time()}, out)
+    json.dump(value, out)
     out.flush(); os.fsync(out.fileno())
 os.replace(path + '.tmp', path)
 PY
+}
+named_volume() {
+  local service=$1 target=$2 value
+  value=$(docker inspect "$project-$service-1" --format '{{range .Mounts}}{{if eq .Destination "'"$target"'"}}{{.Type}} {{.Name}}{{println}}{{end}}{{end}}')
+  [[ "$value" =~ ^volume\ ([a-zA-Z0-9_.-]+)$ ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+other_named_volume() {
+  local service=$1 excluded=$2 value
+  value=$(docker inspect "$project-$service-1" --format '{{range .Mounts}}{{if and (eq .Type "volume") (ne .Destination "'"$excluded"'")}}{{.Type}} {{.Name}}{{println}}{{end}}{{end}}')
+  [[ "$value" =~ ^volume\ ([a-zA-Z0-9_.-]+)$ ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+carry_control() {
+  local evidence=$1; shift
+  local -a mounts=(
+    -v "$root/carry_forward.py:/opt/dlr/carry_forward.py:ro"
+    -v "$evidence:/evidence:rw"
+  )
+  if [ -n "${carry_manifest:-}" ]; then
+    mounts+=(-v "$carry_manifest:/evidence/manifest.json:ro")
+  fi
+  compose run --rm --no-deps -T "${mounts[@]}" \
+    control python /opt/dlr/carry_forward.py "$@"
+}
+carry_files() {
+  local evidence=$1; shift
+  local -a mounts=(
+    -v "$root/carry_forward.py:/opt/dlr/carry_forward.py:ro"
+    -v "$evidence:/evidence:rw"
+    -v "$runtime_volume:/preserved/runtime:ro,nocopy"
+    -v "$journal_volume:/preserved/journal:ro,nocopy"
+    -v "$builtin_volume:/preserved/builtin:ro,nocopy"
+    -v "$artifact_volume:/preserved/artifacts:ro,nocopy"
+  )
+  if [ -n "${carry_manifest:-}" ]; then
+    mounts+=(-v "$carry_manifest:/evidence/manifest.json:ro")
+  fi
+  compose run --rm --no-deps -T "${mounts[@]}" \
+    control python /opt/dlr/carry_forward.py capture \
+      --runtime-root /preserved/runtime --journal-root /preserved/journal \
+      --material-root builtin=/preserved/builtin \
+      --material-root artifacts=/preserved/artifacts "$@"
 }
 images() {
   python3 - "$release/images.json" "${1:-verify}" "$sha" "$project" <<'PY'
@@ -81,7 +136,29 @@ if [ "$action" = stage ]; then
   exit 0
 fi
 images verify
-bash "$root/prepare-sandbox-host.sh" --unit "$sandbox_unit" --cpu-quota "$sandbox_cpu_quota" --memory-max "$sandbox_memory_max"
+if [ "$action" = plan ]; then
+  bash "$root/prepare-sandbox-host.sh" --unit "$sandbox_unit" \
+    --cpu-quota "$sandbox_cpu_quota" --memory-max "$sandbox_memory_max" --status
+  [ -n "$carry_id" ] || exit 2
+  carry_work="$root/carry-forward/work/$carry_id"
+  test -f "$carry_work/ids.json" && test -f "$carry_work/context.json"
+  runtime_volume=$(named_volume worker /var/lib/dlr/runtime)
+  journal_volume=$(named_volume worker /var/lib/dlr/journal)
+  builtin_volume=$(named_volume control /var/lib/dlr/builtin-packages)
+  artifact_volume=$(other_named_volume control /var/lib/dlr/builtin-packages)
+  carry_control "$carry_work" check-db \
+    --ids /evidence/ids.json --output /evidence/db.json
+  carry_files "$carry_work" --db /evidence/db.json --output /evidence/files.json
+  python3 "$root/carry_forward.py" check-kernel --unit "$sandbox_unit" \
+    --output "$carry_work/kernel.json"
+  python3 "$root/carry_forward.py" plan \
+    --ids "$carry_work/ids.json" --context "$carry_work/context.json" \
+    --db "$carry_work/db.json" --files "$carry_work/files.json" \
+    --kernel "$carry_work/kernel.json" --output "$carry_work/manifest.json"
+  exit 0
+fi
+bash "$root/prepare-sandbox-host.sh" --unit "$sandbox_unit" \
+  --cpu-quota "$sandbox_cpu_quota" --memory-max "$sandbox_memory_max"
 if [ "$action" = recover ]; then
   python3 - "$root/transaction.json" "$sha" <<'PY'
 import json, sys
@@ -92,23 +169,100 @@ PY
   test "$(sql 'SELECT version_num FROM alembic_version')" = "$(cat "$release/schema")"
   compose up -d --no-build --wait --wait-timeout 180 control worker web
 else
+  carry_manifest=
+  if [ -n "$carry_id" ]; then
+    carry_manifest="$root/carry-forward/manifests/$carry_id.json"
+    test -f "$carry_manifest"
+    runtime_volume=$(named_volume worker /var/lib/dlr/runtime)
+    journal_volume=$(named_volume worker /var/lib/dlr/journal)
+    builtin_volume=$(named_volume control /var/lib/dlr/builtin-packages)
+    artifact_volume=$(other_named_volume control /var/lib/dlr/builtin-packages)
+    python3 - "$root/carry_forward.py" "$carry_manifest" "$root/current-sha" \
+      "$release/images.json" "$root/releases/$(cat "$root/current-sha")/images.json" \
+      "$schema" "$project" <<'PY'
+import importlib.util, json, pathlib, subprocess, sys
+script, manifest_path, current_path, candidate_images_path, old_images_path, schema, project = sys.argv[1:]
+spec = importlib.util.spec_from_file_location('carry_forward', script)
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+manifest = module.validate_manifest(json.loads(pathlib.Path(manifest_path).read_text()))
+assert pathlib.Path(current_path).read_text().strip() == manifest['from_sha']
+assert manifest['to_sha'] == pathlib.Path(candidate_images_path).parent.name
+assert manifest['to_schema'] == schema
+assert manifest['candidate_image_ids'] == json.loads(pathlib.Path(candidate_images_path).read_text())
+assert manifest['old_image_ids'] == json.loads(pathlib.Path(old_images_path).read_text())
+actual = []
+for service in ('postgres', 'rabbitmq', 'control', 'worker'):
+    mounts = json.loads(subprocess.check_output(
+        ['docker','inspect',f'{project}-{service}-1','--format','{{json .Mounts}}'], text=True
+    ))
+    actual.extend(
+        {'service':service,'type':'volume','name':item.get('Name'),'destination':item.get('Destination')}
+        for item in mounts if item.get('Type') == 'volume'
+    )
+actual.sort(key=lambda item:(item['service'], item['destination']))
+assert manifest['storage_identity'] == actual
+PY
+    carry_check="$root/carry-forward/check/$carry_id"
+    install -d -m 700 "$carry_check/preflight"
+    carry_control "$carry_check/preflight" check-db \
+      --baseline /evidence/manifest.json --output /evidence/db.json
+    carry_files "$carry_check/preflight" \
+      --baseline /evidence/manifest.json --output /evidence/files.json
+  fi
   # Delay while queued/running/retrying work or unfinished cleanup exists.
   busy_query="SELECT (SELECT count(*) FROM executions WHERE status IN ('queued','running','retry_wait') OR workspace_cleanup_status='pending') + (SELECT count(*) FROM execution_attempts WHERE status IN ('claimed','running'))"
-  test "$(sql "$busy_query")" = 0 || exit 75
+  if [ -z "$carry_manifest" ]; then test "$(sql "$busy_query")" = 0 || exit 75; fi
   old=$(cat "$root/current-sha")
   old_compose() { docker compose --project-name "$project" --env-file "$root/preview.env" -f "$root/releases/$old/docker-compose.yml" -f "$root/releases/$old/compose.preview.json" "$@"; }
+  restore_old_apps() {
+    old_compose up -d --no-build --wait --wait-timeout 180 control worker web
+    python3 - "$root/transaction.json" "$old" <<'PY'
+import json, os, sys
+path, sha = sys.argv[1:]
+with open(path + '.tmp', 'w') as out:
+    json.dump({'phase':'ready','sha':sha},out); out.flush(); os.fsync(out.fileno())
+os.replace(path + '.tmp', path)
+PY
+  }
   record quiescing
   # This stops API, schedules, retries and dispatch creation before the second check.
   old_compose stop control
-  if [ "$(sql "$busy_query")" != 0 ]; then
-    old_compose up -d --no-build --wait --wait-timeout 180 control
-    python3 - "$root/transaction.json" "$old" <<'PY'
-import json, sys
-with open(sys.argv[1], 'w') as out: json.dump({'phase':'ready','sha':sys.argv[2]},out)
-PY
+  if [ -n "$carry_manifest" ]; then
+    install -d -m 700 "$carry_check/control-stopped"
+    if ! carry_control "$carry_check/control-stopped" check-db \
+      --baseline /evidence/manifest.json --output /evidence/db.json; then
+      restore_old_apps
+      exit 1
+    fi
+  elif [ "$(sql "$busy_query")" != 0 ]; then
+    restore_old_apps
     exit 75
   fi
   old_compose stop worker web account-web
+  if [ -n "$carry_manifest" ]; then
+    for service in control worker web account-web; do
+      service_id=$(old_compose ps -a -q "$service")
+      if [ -n "$service_id" ]; then
+        test "$(docker inspect "$service_id" --format '{{.State.Running}}')" = false
+      fi
+    done
+    unknown_running=$(docker ps \
+      --filter "label=com.docker.compose.project=$project" \
+      --format '{{.Label "com.docker.compose.service"}}' \
+      | grep -Ev '^(postgres|rabbitmq)$' || true)
+    test -z "$unknown_running"
+    install -d -m 700 "$carry_check/stopped"
+    if ! carry_control "$carry_check/stopped" check-db \
+      --baseline /evidence/manifest.json --output /evidence/db.json \
+      || ! carry_files "$carry_check/stopped" \
+        --baseline /evidence/manifest.json --output /evidence/files.json \
+      || ! python3 "$root/carry_forward.py" check-kernel \
+        --unit "$sandbox_unit" --require-idle --baseline "$carry_manifest" \
+        --output "$carry_check/stopped/kernel.json"; then
+      restore_old_apps
+      exit 1
+    fi
+  fi
   backup="$root/backups/$(date -u +%Y%m%dT%H%M%SZ)-$old-to-$sha"
   mkdir -p "$backup"
   record backing_up
@@ -116,11 +270,31 @@ PY
   docker exec -i "$project-postgres-1" pg_restore --list < "$backup/database.dump" > "$backup/database.list"
   test -s "$backup/database.list"
   compose run --rm --no-deps -T -v "$root:/preview:ro" control python /preview/assets.py > "$backup/assets.json"
+  if [ -n "$carry_manifest" ]; then
+    install -d -m 700 "$carry_check/after-backup"
+    carry_control "$carry_check/after-backup" check-db \
+      --baseline /evidence/manifest.json --output /evidence/db.json
+    carry_files "$carry_check/after-backup" \
+      --baseline /evidence/manifest.json --output /evidence/files.json
+    python3 "$root/carry_forward.py" check-kernel \
+      --unit "$sandbox_unit" --require-idle --baseline "$carry_manifest" \
+      --output "$carry_check/after-backup/kernel.json"
+  fi
   compose up -d --no-build --wait --wait-timeout 180 postgres rabbitmq
   record migrating
   compose run --rm --no-deps -T control alembic upgrade head
   test "$(sql 'SELECT version_num FROM alembic_version')" = "$schema"
   compose run --rm --no-deps -T -v "$root:/preview:ro" control python /preview/assets.py "/preview/backups/$(basename "$backup")/assets.json" > "$backup/assets-after.json"
+  if [ -n "$carry_manifest" ]; then
+    install -d -m 700 "$carry_check/after-migration"
+    carry_control "$carry_check/after-migration" check-db \
+      --baseline /evidence/manifest.json --output /evidence/db.json
+    carry_files "$carry_check/after-migration" \
+      --baseline /evidence/manifest.json --output /evidence/files.json
+    python3 "$root/carry_forward.py" check-kernel \
+      --unit "$sandbox_unit" --require-idle --baseline "$carry_manifest" \
+      --output "$carry_check/after-migration/kernel.json"
+  fi
   compose up -d --no-build --wait --wait-timeout 180 control worker web
 fi
 curl --fail --silent "http://127.0.0.1:$web_port/api/health"
@@ -135,12 +309,21 @@ if [ "$action" = deploy ]; then
   record verifying
   compose exec -T control python - < "$root/verify.py" > "$release/probe.json"
   printf '%s\n' "$schema" > "$release/schema"
-  python3 - "$release" "$backup" <<'PY'
+  python3 - "$release" "$backup" "${carry_manifest:-}" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
+carry = None
+if sys.argv[3]:
+    with open(sys.argv[3]) as source: manifest = json.load(source)
+    carry = {
+        'manifest_id': manifest['manifest_id'],
+        'manifest_digest': manifest['manifest_digest'],
+        'selection_count': len(manifest['responsibilities']['executions']),
+    }
 with (root / 'receipt.json').open('w') as out:
     json.dump({'schema': (root/'schema').read_text().strip(), 'images': json.loads((root/'images.json').read_text()),
-               'probe': json.loads((root/'probe.json').read_text()), 'backup':sys.argv[2]}, out)
+               'probe': json.loads((root/'probe.json').read_text()), 'backup':sys.argv[2],
+               'carry_forward': carry}, out)
 PY
   printf '%s\n' "$sha" > "$root/current-sha.tmp"
   mv "$root/current-sha.tmp" "$root/current-sha"

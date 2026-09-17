@@ -75,13 +75,14 @@ def main():
             "deploy.sh",
             "verify.py",
             "assets.py",
+            "carry_forward.py",
         ):
             shutil.copy2(source / name, root / name)
         shutil.copy2(
             source.parents[1] / "docs/zh-CN/local-preview.md", root / "README.md"
         )
         # Use stdin to transfer trusted code; never expose the environment file.
-        for name in ("deploy.sh", "verify.py", "assets.py"):
+        for name in ("deploy.sh", "verify.py", "assets.py", "carry_forward.py"):
             subprocess.run(
                 [
                     preview.COLIMA,
@@ -147,6 +148,7 @@ def main():
                     "deploy.sh",
                     "verify.py",
                     "assets.py",
+                    "carry_forward.py",
                     "README.md",
                 )
             },

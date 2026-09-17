@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+import carry_forward
 from migrations import compatible
 
 ROOT = Path(os.environ.get("DLR_PREVIEW_HOME", "."))
@@ -75,6 +77,110 @@ def write(name, data):
         output.flush()
         os.fsync(output.fileno())
     os.replace(output.name, path)
+
+
+def controller_files_digest():
+    names = (
+        "preview.py",
+        "migrations.py",
+        "deploy.sh",
+        "verify.py",
+        "assets.py",
+        "carry_forward.py",
+    )
+    values = {}
+    for name in names:
+        path = ROOT / name
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError("Trusted controller installation is incomplete")
+        values[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return carry_forward.digest(values)
+
+
+def migration_graph_digest(sha):
+    return carry_forward.digest(migration_files(sha))
+
+
+def private_directory(relative):
+    path = ROOT / relative
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    return path
+
+
+def vm_private_write(relative, data):
+    if not re.fullmatch(r"[a-zA-Z0-9_./-]+", relative) or ".." in Path(relative).parts:
+        raise ValueError("Invalid private VM path")
+    destination = vm_path(relative)
+    parent = str(Path(destination).parent)
+    temporary = destination + ".tmp-" + uuid.uuid4().hex
+    vm_command("install", "-d", "-m", "700", parent)
+    result = subprocess.run(
+        [
+            COLIMA,
+            "ssh",
+            "-p",
+            settings()["profile"],
+            "--",
+            "sudo",
+            "tee",
+            temporary,
+        ],
+        input=data,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        env=ENV,
+        timeout=45,
+    )
+    if result.returncode:
+        raise RuntimeError("Could not transfer private carry-forward evidence")
+    vm_command("chmod", "600", temporary)
+    vm_command("mv", temporary, destination)
+
+
+def selected_manifest(config, previous, target):
+    reference = config.get("carry_forward")
+    if reference is None:
+        return None, None
+    if not isinstance(reference, dict) or set(reference) != {
+        "manifest_id",
+        "manifest_digest",
+        "from_sha",
+        "to_sha",
+        "from_schema",
+        "to_schema",
+        "pr",
+    }:
+        raise RuntimeError("Invalid private carry-forward reference")
+    manifest_id = reference["manifest_id"]
+    if not isinstance(manifest_id, str) or not carry_forward.MANIFEST_ID.fullmatch(manifest_id):
+        raise RuntimeError("Invalid private carry-forward reference")
+    path = ROOT / "carry-forward" / "manifests" / f"{manifest_id}.json"
+    manifest = carry_forward.validate_manifest(carry_forward.read_private(path))
+    expected_schema = previous.get("schema") or vm_command(
+        "cat", vm_path(f"releases/{previous['sha']}/schema")
+    ).stdout.strip()
+    expected = {
+        "manifest_id": manifest["manifest_id"],
+        "manifest_digest": manifest["manifest_digest"],
+        "from_sha": previous.get("sha"),
+        "to_sha": target.get("sha"),
+        "from_schema": expected_schema,
+        "to_schema": target.get("schema"),
+        "pr": target.get("pr"),
+    }
+    if reference != expected:
+        raise RuntimeError("Carry-forward plan is not bound to this candidate")
+    if manifest["repo"] != config["repo"] or any(
+        manifest[key] != expected[key]
+        for key in ("manifest_id", "manifest_digest", "from_sha", "to_sha", "from_schema", "to_schema", "pr")
+    ):
+        raise RuntimeError("Carry-forward manifest binding changed")
+    if manifest["controller_files_digest"] != controller_files_digest():
+        raise RuntimeError("Carry-forward controller changed; create a new plan")
+    if manifest["migration_graph_digest"] != migration_graph_digest(target["sha"]):
+        raise RuntimeError("Carry-forward migration graph changed")
+    return manifest, path
 
 
 @contextlib.contextmanager
@@ -241,11 +347,11 @@ def ensure_vm():
         )
 
 
-def phase(target, action):
+def phase(target, action, manifest_id=""):
     # Colima maps remote nonzero exits to 1. A per-call nonce preserves the busy
     # result without confusing an old result with an SSH/transport failure.
     nonce = uuid.uuid4().hex
-    wrapper = 'bash "$1" "$2" "$3" "$4"; code=$?; printf "%s %s\\n" "$5" "$code" > "$6"; exit "$code"'
+    wrapper = 'bash "$1" "$2" "$3" "$4" "$5"; code=$?; printf "%s %s\\n" "$6" "$code" > "$7"; exit "$code"'
     with (ROOT / "deploy.log").open("a") as output:
         result = vm_command(
             "bash",
@@ -256,6 +362,7 @@ def phase(target, action):
             target["sha"],
             action,
             target.get("schema", ""),
+            manifest_id,
             nonce,
             vm_path("phase-exit"),
             output=output,
@@ -270,6 +377,138 @@ def phase(target, action):
     if result.returncode or exit_record != [nonce, "0"]:
         raise RuntimeError(f"{action} failed ({result.returncode}); see deploy.log")
     return True
+
+
+def plan_carry_forward(to_sha, ids_file, output):
+    if not re.fullmatch(r"[0-9a-f]{40}", to_sha):
+        raise ValueError("--to-sha must be a full lowercase commit SHA")
+    ids = carry_forward.normalize_selection(carry_forward.read_private(ids_file))
+    config = read("config.json")
+    previous = read("state.json", {})
+    if read("attention.json"):
+        raise RuntimeError("Resolve the existing deployment attention first")
+    target, reason = eligible(config)
+    if target is None or target["sha"] != to_sha:
+        raise RuntimeError("Candidate is not the selected eligible HEAD: " + reason)
+    candidate = read("candidate.json", {})
+    if candidate.get("sha") != to_sha:
+        raise RuntimeError("candidate_not_staged")
+    ensure_vm()
+    check_compatibility(previous, target)
+    images_result = vm_command(
+        "cat", vm_path(f"releases/{to_sha}/images.json"), check=False
+    )
+    if images_result.returncode:
+        raise RuntimeError("candidate_not_staged")
+    candidate_images = json.loads(images_result.stdout)
+    old_images = json.loads(
+        vm_command(
+            "cat", vm_path(f"releases/{previous['sha']}/images.json")
+        ).stdout
+    )
+    storage = []
+    for service in ("postgres", "rabbitmq", "control", "worker"):
+        mounts = json.loads(
+            vm_command(
+                "docker",
+                "inspect",
+                container(service),
+                "--format",
+                "{{json .Mounts}}",
+            ).stdout
+        )
+        storage.extend(
+            {
+                "service": service,
+                "type": "volume",
+                "name": mount.get("Name"),
+                "destination": mount.get("Destination"),
+            }
+            for mount in mounts
+            if mount.get("Type") == "volume"
+        )
+    worker_storage = [item for item in storage if item["service"] == "worker"]
+    if (
+        len({(item["service"], item["destination"]) for item in storage}) != len(storage)
+        or {item["destination"] for item in worker_storage}
+        != {"/var/lib/dlr/runtime", "/var/lib/dlr/journal"}
+        or any(not item["name"] or not item["destination"] for item in storage)
+    ):
+        raise RuntimeError("Worker storage identity is not closed")
+    manifest_id = uuid.uuid4().hex
+    work_relative = f"carry-forward/work/{manifest_id}"
+    context = {
+        "manifest_id": manifest_id,
+        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        "repo": config["repo"],
+        "pr": target["pr"],
+        "from_sha": previous["sha"],
+        "to_sha": target["sha"],
+        "from_schema": previous.get("schema")
+        or vm_command(
+            "cat", vm_path(f"releases/{previous['sha']}/schema")
+        ).stdout.strip(),
+        "to_schema": target["schema"],
+        "controller_files_digest": controller_files_digest(),
+        "migration_graph_digest": migration_graph_digest(target["sha"]),
+        "old_image_ids": old_images,
+        "candidate_image_ids": candidate_images,
+        "storage_identity": sorted(
+            storage, key=lambda item: (item["service"], item["destination"])
+        ),
+    }
+    vm_private_write(f"{work_relative}/ids.json", carry_forward.canonical_bytes(ids) + b"\n")
+    vm_private_write(
+        f"{work_relative}/context.json", carry_forward.canonical_bytes(context) + b"\n"
+    )
+    phase(target, "plan", manifest_id)
+    manifest = carry_forward.validate_manifest(
+        json.loads(
+            vm_command(
+                "cat", vm_path(f"{work_relative}/manifest.json")
+            ).stdout
+        )
+    )
+    carry_forward.write_private(output, manifest)
+    return {
+        "code": "manifest_ready",
+        "manifest_id": manifest["manifest_id"],
+        "manifest_digest": manifest["manifest_digest"],
+        "from_sha": manifest["from_sha"],
+        "to_sha": manifest["to_sha"],
+        "selection_count": len(carry_forward.selected_execution_ids(manifest["selection"])),
+    }
+
+
+def install_manifest(config, pr, source):
+    manifest = carry_forward.validate_manifest(carry_forward.read_private(source))
+    if manifest["repo"] != config["repo"] or manifest["pr"] != pr:
+        raise ValueError("Carry-forward manifest belongs to another selection")
+    state = read("state.json", {})
+    if manifest["from_sha"] != state.get("sha"):
+        raise ValueError("Carry-forward manifest does not start at the deployed SHA")
+    if manifest["controller_files_digest"] != controller_files_digest():
+        raise ValueError("Carry-forward manifest was created by another controller")
+    if manifest["migration_graph_digest"] != migration_graph_digest(manifest["to_sha"]):
+        raise ValueError("Carry-forward manifest migration graph changed")
+    pull = api(f"repos/{config['repo']}/pulls/{pr}")
+    if pull["head"]["sha"] != manifest["to_sha"]:
+        raise ValueError("Carry-forward manifest is not bound to the current PR HEAD")
+    directory = private_directory("carry-forward/manifests")
+    destination = directory / f"{manifest['manifest_id']}.json"
+    carry_forward.write_private(destination, manifest)
+    return {
+        key: manifest[key]
+        for key in (
+            "manifest_id",
+            "manifest_digest",
+            "from_sha",
+            "to_sha",
+            "from_schema",
+            "to_schema",
+            "pr",
+        )
+    }
 
 
 def git(*args):
@@ -488,6 +727,7 @@ def tick():
             return status("Candidate superseded or CI no longer successful: " + reason)
         target.update(latest)
         check_compatibility(previous, target)
+        manifest, manifest_path = selected_manifest(latest_config, previous, target)
         tx = transaction()
         if tx.get("phase") != "ready" or tx.get("sha") != previous["sha"]:
             write("attention.json", tx)
@@ -496,9 +736,26 @@ def tick():
         # Persist before invoking the VM: process death cannot cause an automatic retry.
         write(
             "attention.json",
-            {"phase": "switching", "candidate": target, "deployed": previous},
+            {
+                "phase": "switching",
+                "candidate": target,
+                "deployed": previous,
+                "carry_forward": (
+                    {
+                        "manifest_id": manifest["manifest_id"],
+                        "manifest_digest": manifest["manifest_digest"],
+                    }
+                    if manifest
+                    else None
+                ),
+            },
         )
-        if not phase(target, "deploy"):
+        if manifest:
+            vm_private_write(
+                f"carry-forward/manifests/{manifest['manifest_id']}.json",
+                manifest_path.read_bytes(),
+            )
+        if not phase(target, "deploy", manifest["manifest_id"] if manifest else ""):
             (ROOT / "attention.json").unlink()
             return status(
                 "Waiting for executions to become idle",
@@ -508,6 +765,11 @@ def tick():
         target.update(receipt(target))
         target["deployed_at"] = datetime.datetime.now().astimezone().isoformat()
         write("state.json", target)
+        if manifest:
+            consumed = private_directory("carry-forward/consumed") / manifest_path.name
+            os.replace(manifest_path, consumed)
+            latest_config.pop("carry_forward", None)
+            write("config.json", latest_config)
         (ROOT / "attention.json").unlink()
         return status("Ready", deployed=target)
 
@@ -527,10 +789,28 @@ def main():
             "resume",
             "copy-token",
             "acknowledge",
+            "plan-carry-forward",
         ],
     )
     parser.add_argument("pr", nargs="?", type=int)
+    parser.add_argument("--to-sha")
+    parser.add_argument("--ids-file", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--carry-forward", type=Path)
     args = parser.parse_args()
+    if args.command == "plan-carry-forward":
+        if args.pr is not None or not args.to_sha or not args.ids_file or not args.output:
+            parser.error(
+                "plan-carry-forward requires --to-sha, --ids-file and --output"
+            )
+        with (ROOT / "controller.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                parser.error("Pause the watcher before creating a carry-forward plan")
+            result = plan_carry_forward(args.to_sha, args.ids_file, args.output)
+        print(json.dumps(result, indent=2))
+        return
     if args.command == "status":
         print(
             json.dumps(
@@ -563,6 +843,12 @@ def main():
                     )
                 config["pr"] = args.pr
                 config["enabled"] = True
+                if args.carry_forward:
+                    config["carry_forward"] = install_manifest(
+                        config, args.pr, args.carry_forward
+                    )
+                else:
+                    config.pop("carry_forward", None)
             elif args.command == "acknowledge":
                 tx = transaction()
                 previous = read("state.json", {})

@@ -51,12 +51,46 @@ def tables(executions, attempts=(), incidents=(), slots=(), cleanup_requests=())
             ),
         }
     )
+    queued = [row for row in executions if row.get("status") == "queued"]
+    if queued:
+        admissions = [
+            {
+                "adapter_id": row["adapter_id"],
+                "outstanding_count": 1,
+                "outstanding_bytes": 0,
+            }
+            for row in queued
+        ]
+        values["adapter_execution_admission"] = table(
+            list(admissions[0]), ["adapter_id"], admissions
+        )
+        values["global_execution_admission"] = table(
+            ["singleton_key", "outstanding_count", "outstanding_bytes"],
+            ["singleton_key"],
+            [
+                {
+                    "singleton_key": "global",
+                    "outstanding_count": len(queued),
+                    "outstanding_bytes": 0,
+                }
+            ],
+        )
+        outbox = [
+            {
+                "id": row["id"],
+                "execution_id": row["id"],
+                "dispatch_generation": row["dispatch_generation"],
+            }
+            for row in queued
+        ]
+        values["execution_outbox"] = table(list(outbox[0]), ["id"], outbox)
     return values
 
 
 def queued_execution(execution_id=7):
     return {
         "id": execution_id,
+        "adapter_id": execution_id,
         "status": "queued",
         "dispatch_backend": "rabbitmq",
         "dispatch_generation": 1,
@@ -64,6 +98,7 @@ def queued_execution(execution_id=7):
         "worker_id": None,
         "started_at": None,
         "workspace_cleanup_status": "pending",
+        "admission_released_at": None,
         "claim_token_hash": None,
         "cleanup_receipt_token_hash": None,
     }
@@ -108,7 +143,15 @@ class ResponsibilityTests(unittest.TestCase):
     def test_never_claimed_pending_is_derived_without_mutation(self):
         execution = queued_execution()
         data = tables(
-            [execution], incidents=[{"id": 11, "execution_id": 7, "status": "open"}]
+            [execution],
+            incidents=[
+                {
+                    "id": 11,
+                    "execution_id": 7,
+                    "dispatch_generation": 1,
+                    "status": "open",
+                }
+            ],
         )
         result = carry.derive_responsibilities(data, self.selection)
         self.assertEqual(result["executions"][0]["cleanup"], "not_applicable")
@@ -138,10 +181,25 @@ class ResponsibilityTests(unittest.TestCase):
         )
         self.assertEqual(result["executions"][0]["cleanup"], "deferred_preserved")
 
+    def test_terminal_pending_without_attempt_is_not_applicable(self):
+        execution = dict(queued_execution(9), status="cancelled")
+        result = carry.derive_responsibilities(
+            tables([execution]), {"queued": [], "cleanup_execution_ids": [9]}
+        )
+        self.assertEqual(result["executions"][0]["cleanup"], "not_applicable")
+        self.assertEqual(execution["workspace_cleanup_status"], "pending")
+
     def test_active_slot_attempt_cleanup_and_unselected_busy_fail_closed(self):
         base = tables(
             [queued_execution()],
-            incidents=[{"id": 11, "execution_id": 7, "status": "open"}],
+            incidents=[
+                {
+                    "id": 11,
+                    "execution_id": 7,
+                    "dispatch_generation": 1,
+                    "status": "open",
+                }
+            ],
         )
         cases = [
             ("execution_attempts", [{"id": 1, "execution_id": 7, "status": "running"}]),
@@ -155,7 +213,14 @@ class ResponsibilityTests(unittest.TestCase):
                 carry.derive_responsibilities(changed, self.selection)
         changed = tables(
             [queued_execution(), queued_execution(8)],
-            incidents=[{"id": 11, "execution_id": 7, "status": "open"}],
+            incidents=[
+                {
+                    "id": 11,
+                    "execution_id": 7,
+                    "dispatch_generation": 1,
+                    "status": "open",
+                }
+            ],
         )
         with self.assertRaisesRegex(carry.CarryForwardError, "unselected_execution_busy"):
             carry.derive_responsibilities(changed, self.selection)
@@ -216,6 +281,23 @@ class FileEvidenceTests(unittest.TestCase):
         ):
             carry.validate_file_responsibilities(evidence, responsibilities)
 
+    def test_deferred_without_journal_is_rejected(self):
+        evidence = carry.capture_files(self.runtime, self.journal)
+        with self.assertRaisesRegex(carry.CarryForwardError, "deferred_journal_missing"):
+            carry.validate_file_responsibilities(
+                evidence,
+                {
+                    "executions": [
+                        {
+                            "execution_id": 9,
+                            "attempt_ids": [13],
+                            "cleanup": "deferred_preserved",
+                            "cleanup_receipt_token_hash": "0" * 64,
+                        }
+                    ]
+                },
+            )
+
     def test_symlinks_and_non_closed_journals_are_rejected(self):
         (self.runtime / "bad").symlink_to(self.journal)
         with self.assertRaisesRegex(carry.CarryForwardError, "storage_symlink_rejected"):
@@ -259,7 +341,7 @@ class ManifestAndProjectionTests(unittest.TestCase):
                 "cleanup_execution_ids": [],
             },
             "responsibilities": {},
-            "old_runtime_projection": {},
+            "old_runtime_projection": carry.project_rows(tables([queued_execution()])),
             "storage_identity": {},
             "file_evidence": {},
             "kernel_evidence": {},
@@ -281,6 +363,21 @@ class ManifestAndProjectionTests(unittest.TestCase):
             parent.chmod(0o755)
             with self.assertRaisesRegex(carry.CarryForwardError, "private_parent_invalid"):
                 carry.read_private(target)
+
+    def test_kernel_compare_rejects_unknown_or_repopulated_children(self):
+        baseline = {
+            "boot_id": "boot",
+            "unit": "dlr-test.service",
+            "control_group": "/system.slice/dlr-test.service",
+            "keeper_pid": 7,
+            "keeper_starttime": "10",
+            "children": {"agent": 1, "old-worker": 1},
+        }
+        after = dict(baseline, children={"agent": 1})
+        carry.compare_kernel(baseline, after)
+        for children in ({"agent": 1, "unknown": 0}, {"agent": 1, "attempt-7-9": 1}):
+            with self.assertRaisesRegex(carry.CarryForwardError, "kernel_not_idle"):
+                carry.compare_kernel(baseline, dict(after, children=children))
 
 
 if __name__ == "__main__":
