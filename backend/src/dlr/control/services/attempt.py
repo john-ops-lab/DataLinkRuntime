@@ -511,6 +511,18 @@ def claim_dispatch(
     locked_attempts = lock_execution_attempts(session, execution.id)
     slot = _slot(session, adapter.id)
     if execution.cancel_requested:
+        active_attempt = next(
+            (attempt for attempt in locked_attempts if attempt.status in ACTIVE_ATTEMPT_STATUSES),
+            None,
+        )
+        if active_attempt is not None:
+            session.rollback()
+            return _decision(
+                "ACK_NOOP",
+                "cancel_requested",
+                attempt_id=active_attempt.id,
+                cancel_requested=True,
+            )
         incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
         execution.status = "cancelled"
         execution.ended_at = now
