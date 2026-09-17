@@ -118,6 +118,21 @@ def test_disposition_hash_is_closed_and_actor_independent() -> None:
     assert len(request_hash(first)) == 64
 
 
+def test_disposition_generation_stays_inside_jcs_safe_integer_domain() -> None:
+    maximum = IncidentDispositionBody(
+        action="recover",
+        expected_generation=2**53 - 1,
+        reason_code="capacity_repaired",
+    )
+    assert len(request_hash(maximum)) == 64
+    with pytest.raises(ValueError):
+        IncidentDispositionBody(
+            action="recover",
+            expected_generation=2**53,
+            reason_code="capacity_repaired",
+        )
+
+
 def test_same_incident_key_replays_receipt_and_conflicts_on_changed_body(
     api_client: object,
     session_factory: sessionmaker[Session],

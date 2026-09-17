@@ -36,7 +36,7 @@ class IncidentDispositionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: IncidentDispositionAction
-    expected_generation: StrictInt = Field(ge=1)
+    expected_generation: StrictInt = Field(ge=1, le=2**53 - 1)
     reason_code: IncidentDispositionReason
 
 
