@@ -375,31 +375,26 @@ def test_pika_132_shared_cancel_dispatcher_routes_each_tag_once(tmp_path: Path) 
     factory = _Factory()
     consumer = _consumer(tmp_path, client, factory, slots=2)
     try:
-        _epoch, _connection, channel = _start_epoch(consumer, factory)
+        epoch, connection, channel = _start_epoch(consumer, factory)
         tags = list(channel.consumers)
+        tickets = list(consumer._tickets.values())
         channel.deliver(tags[0], 121, b"{}")
         channel.deliver(tags[1], 122, b"{}")
         assert channel.cancel_ok[tags[0]] is channel.cancel_ok[tags[1]]
+        assert channel.cancel_ok_dispatcher is not None
 
         pika_connection = SimpleNamespace(callbacks=CallbackManager())
         pika_channel = Channel(pika_connection, 1, lambda _channel: None)
         pika_channel._state = pika_channel.OPEN
         pika_channel._consumers = {tag: lambda *_args: None for tag in tags}
         pika_channel._send_method = lambda _method: None  # type: ignore[method-assign]
-        seen: list[str] = []
-
-        def dispatcher(method_frame: Any) -> None:
-            seen.append(str(method_frame.method.consumer_tag))
 
         pika_channel.add_callback(
-            dispatcher,
+            channel.cancel_ok_dispatcher,
             [pika_spec.Basic.CancelOk],
             one_shot=False,
         )
-
-        def waiter(_method_frame: Any) -> None:
-            return
-
+        waiter = channel.cancel_ok[tags[0]]
         pika_channel.basic_cancel(tags[0], callback=waiter)
         pika_channel.basic_cancel(tags[1], callback=waiter)
         for tag in tags:
@@ -410,7 +405,15 @@ def test_pika_132_shared_cancel_dispatcher_routes_each_tag_once(tmp_path: Path) 
                 pika_frame.Method(1, pika_spec.Basic.CancelOk(tag)),
             )
 
-        assert seen == tags
+        deadline = time.monotonic() + 10
+        while len(client.claims) != 2:
+            assert time.monotonic() < deadline
+            connection.ioloop.drain()
+            time.sleep(0.001)
+        _drain_until(connection, lambda: len(channel.acks) == 2)
+        assert sorted(channel.acks) == [121, 122]
+        assert all(ticket.work_submitted for ticket in tickets)
+        assert not epoch.faulted
     finally:
         consumer.request_stop()
         consumer._pool.shutdown(wait=True, cancel_futures=True)
