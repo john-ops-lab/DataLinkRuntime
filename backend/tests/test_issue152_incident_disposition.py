@@ -12,6 +12,7 @@ from typing import Literal, cast
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from dlr.common.config import settings
 from dlr.control.models import (
     AdapterExecutionAdmission,
+    AdapterPermission,
     BuiltinPackage,
     Credential,
     Execution,
@@ -28,10 +30,11 @@ from dlr.control.models import (
     ExecutionOutbox,
     GlobalExecutionAdmission,
     ManagedInputArtifact,
+    User,
     Worker,
 )
 from dlr.control.schemas.reliable_runtime import AttemptResultBody, IncidentDispositionBody
-from dlr.control.security import SUPERADMIN_PRINCIPAL
+from dlr.control.security import SUPERADMIN_PRINCIPAL, Principal, require_principal
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import builtin_package
 from dlr.control.services import execution as execution_service
@@ -457,6 +460,168 @@ def _managed_execution(
     assert configured.status_code == 200, configured.text
     execution = _execution(api_client, int(adapter["id"]))  # type: ignore[arg-type]
     return worker, execution, artifact_id, store.object_path(storage_key)
+
+
+def test_disposition_api_validates_uuid_records_principal_and_updates_reliable_detail(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-api-worker")
+    adapter = _rabbit_adapter(api_client, worker, "issue152-api-adapter")
+    execution = _execution(api_client, adapter["id"])
+    with session_factory.begin() as session:
+        incident_id = _bound_incident(session, execution["id"]).id
+    path = f"/api/executions/{execution['id']}/incidents/{incident_id}/dispositions"
+    body = {
+        "action": "recover",
+        "expected_generation": 1,
+        "reason_code": "capacity_repaired",
+    }
+
+    assert api_client.post(path, json=body).status_code == 422
+    assert (
+        api_client.post(path, headers={"Idempotency-Key": "not-a-uuid"}, json=body).status_code
+        == 422
+    )
+    forged = api_client.post(
+        path,
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+        json={**body, "actor_kind": "account"},
+    )
+    assert forged.status_code == 422
+
+    key = uuid.uuid4()
+    accepted = api_client.post(
+        path,
+        headers={"Idempotency-Key": str(key)},
+        json=body,
+    )
+    assert accepted.status_code == 200, accepted.text
+    receipt = accepted.json()["receipt"]
+    assert receipt["actor_kind"] == "superadmin" and receipt["user_id"] is None
+    replay = api_client.post(
+        path,
+        headers={"Idempotency-Key": str(key)},
+        json=body,
+    )
+    assert replay.status_code == 200
+    assert replay.json()["receipt"]["id"] == receipt["id"]
+
+    detail = api_client.get(f"/api/executions/{execution['id']}/reliable-detail")
+    assert detail.status_code == 200, detail.text
+    incident = detail.json()["incidents"][0]
+    assert incident["id"] == incident_id
+    assert incident["observation_count"] == incident["attempts"] == 3
+    assert incident["disposition_count"] == 1
+    assert incident["recovery_dispatch_count"] == 0
+    assert incident["recent_disposition"]["id"] == receipt["id"]
+    assert incident["recover_available"] is False
+    assert incident["recover_reason"] == "incident_closed"
+    assert incident["dispositions_url"] == path
+
+    listed = api_client.get(path)
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()["items"]] == [receipt["id"]]
+    with session_factory() as session:
+        assert len(list(session.scalars(select(ExecutionIncidentDisposition)))) == 1
+
+
+def test_disposition_page_uses_stable_uuid_cursor_at_equal_timestamp(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-page-worker")
+    adapter = _rabbit_adapter(api_client, worker, "issue152-page-adapter")
+    execution = _execution(api_client, adapter["id"])
+    body = IncidentDispositionBody(
+        action="recover", expected_generation=1, reason_code="capacity_repaired"
+    )
+    created_at = datetime(2031, 2, 3, 4, 5, 6, tzinfo=UTC)
+    with session_factory.begin() as session:
+        incident = _bound_incident(session, execution["id"])
+        incident_id = incident.id
+        for key in (uuid.uuid4(), uuid.uuid4(), uuid.uuid4()):
+            receipt = _receipt(incident, key=key, digest=request_hash(body))
+            receipt.created_at = created_at
+            session.add(receipt)
+    path = f"/api/executions/{execution['id']}/incidents/{incident_id}/dispositions"
+
+    first = api_client.get(path, params={"limit": 2})
+    assert first.status_code == 200, first.text
+    first_body = first.json()
+    assert len(first_body["items"]) == 2
+    assert first_body["next_before_id"] == first_body["items"][-1]["id"]
+    second = api_client.get(
+        path,
+        params={"limit": 2, "before_id": first_body["next_before_id"]},
+    )
+    assert second.status_code == 200, second.text
+    assert len(second.json()["items"]) == 1
+    assert second.json()["next_before_id"] is None
+    with session_factory() as session:
+        expected_ids = {
+            str(row.id) for row in session.scalars(select(ExecutionIncidentDisposition)).all()
+        }
+    assert {item["id"] for item in first_body["items"] + second.json()["items"]} == expected_ids
+    assert api_client.get(path, params={"limit": 0}).status_code == 422
+    assert api_client.get(path, params={"limit": 101}).status_code == 422
+    assert api_client.get(path, params={"before_id": str(uuid.uuid4())}).status_code == 422
+
+
+def test_read_only_incident_detail_disables_actions_and_post_writes_no_audit(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-readonly-worker")
+    adapter = _rabbit_adapter(api_client, worker, "issue152-readonly-adapter")
+    execution = _execution(api_client, adapter["id"])
+    with session_factory.begin() as session:
+        incident_id = _bound_incident(session, execution["id"]).id
+        reader = User(
+            username="issue152-reader",
+            password_hash="unused-test-hash",
+            role="user",
+            enabled=True,
+            must_change_password=False,
+        )
+        session.add(reader)
+        session.flush()
+        session.add(
+            AdapterPermission(adapter_id=adapter["id"], user_id=reader.id, permission="read")
+        )
+        reader_principal = Principal(
+            kind="account", role="user", user_id=reader.id, username=reader.username
+        )
+    api_client.app.dependency_overrides[require_principal] = lambda: reader_principal
+    try:
+        detail = api_client.get(f"/api/executions/{execution['id']}/reliable-detail")
+        assert detail.status_code == 200, detail.text
+        incident = detail.json()["incidents"][0]
+        assert incident["recover_available"] is False
+        assert incident["terminate_available"] is False
+        assert incident["recover_reason"] == "adapter_read_only"
+        path = f"/api/executions/{execution['id']}/incidents/{incident_id}/dispositions"
+        rejected = api_client.post(
+            path,
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+            json={
+                "action": "recover",
+                "expected_generation": 1,
+                "reason_code": "capacity_repaired",
+            },
+        )
+        assert rejected.status_code == 403
+        assert rejected.json()["detail"]["code"] == "adapter_read_only"
+    finally:
+        api_client.app.dependency_overrides.pop(require_principal, None)
+    with session_factory() as session:
+        assert session.scalar(select(ExecutionIncidentDisposition)) is None
 
 
 def test_managed_recovery_accepts_clean_pending_delete_and_replays_after_blob_loss(

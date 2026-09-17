@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from dlr.common.jcs import canonicalize
@@ -23,6 +23,7 @@ from dlr.control.models import (
 )
 from dlr.control.schemas.reliable_runtime import (
     IncidentDispositionBody,
+    IncidentDispositionPage,
     IncidentDispositionReceipt,
     IncidentDispositionResponse,
 )
@@ -74,11 +75,118 @@ class DispatchReplacementPlan:
     payload_bytes: int
 
 
+@dataclass(frozen=True)
+class IncidentActionCapabilities:
+    recover_available: bool
+    recover_reason: str | None
+    terminate_available: bool
+    terminate_reason: str | None
+
+
 _SETTLEMENT_CODES = frozenset({"execution_cancelled", "execution_expired", "execution_deleted"})
 _REJECTION_STATUS = {
     "outbox_backlog_full": 503,
     "cancellation_requested": 202,
 }
+
+
+def list_dispositions(
+    session: Session,
+    *,
+    execution_id: int,
+    incident_id: int,
+    before_id: uuid.UUID | None,
+    limit: int,
+) -> IncidentDispositionPage:
+    """Return one stable newest-first page without changing audit counters."""
+
+    incident = session.get(ExecutionInfrastructureIncident, incident_id)
+    if incident is None or incident.execution_id != execution_id:
+        raise domain_error(404, "incident_not_found", "Infrastructure Incident not found")
+    query = select(ExecutionIncidentDisposition).where(
+        ExecutionIncidentDisposition.incident_id == incident_id
+    )
+    if before_id is not None:
+        cursor = session.get(ExecutionIncidentDisposition, before_id)
+        if cursor is None or cursor.incident_id != incident_id:
+            raise domain_error(422, "disposition_cursor_invalid", "Disposition cursor is invalid")
+        query = query.where(
+            or_(
+                ExecutionIncidentDisposition.created_at < cursor.created_at,
+                (
+                    (ExecutionIncidentDisposition.created_at == cursor.created_at)
+                    & (ExecutionIncidentDisposition.id < cursor.id)
+                ),
+            )
+        )
+    bounded = max(1, min(limit, 100))
+    rows = list(
+        session.scalars(
+            query.order_by(
+                ExecutionIncidentDisposition.created_at.desc(),
+                ExecutionIncidentDisposition.id.desc(),
+            ).limit(bounded + 1)
+        )
+    )
+    has_more = len(rows) > bounded
+    page = rows[:bounded]
+    return IncidentDispositionPage(
+        items=[IncidentDispositionReceipt.model_validate(row) for row in page],
+        next_before_id=page[-1].id if has_more else None,
+    )
+
+
+def inspect_incident_disposition(
+    execution: Execution,
+    incident: ExecutionInfrastructureIncident,
+    *,
+    active_attempts: bool,
+    current_outbox: ExecutionOutbox | None,
+    can_edit: bool,
+) -> IncidentActionCapabilities:
+    """Compute advisory UI capabilities; POST always revalidates under locks."""
+
+    if not can_edit:
+        return IncidentActionCapabilities(False, "adapter_read_only", False, "adapter_read_only")
+    if incident.status != "open":
+        return IncidentActionCapabilities(False, "incident_closed", False, "incident_closed")
+    if execution.status in {"succeeded", "dead_letter", "cancelled", "expired"}:
+        return IncidentActionCapabilities(False, "execution_terminal", False, "execution_terminal")
+    if incident.dispatch_generation != execution.dispatch_generation:
+        if (
+            incident.dispatch_generation is not None
+            and incident.dispatch_generation < execution.dispatch_generation
+        ):
+            return IncidentActionCapabilities(False, "incident_stale_generation", True, None)
+        return IncidentActionCapabilities(
+            False,
+            "incident_dispatch_identity_invalid",
+            False,
+            "incident_dispatch_identity_invalid",
+        )
+    if current_outbox is None or incident.message_id != current_outbox.message_id:
+        return IncidentActionCapabilities(
+            False,
+            "incident_dispatch_identity_unverifiable",
+            False,
+            "incident_dispatch_identity_unverifiable",
+        )
+    if active_attempts:
+        return IncidentActionCapabilities(
+            False,
+            "incident_execution_active",
+            execution.status == "running",
+            None if execution.status == "running" else "incident_execution_active",
+        )
+    if execution.cancel_requested:
+        return IncidentActionCapabilities(False, "incident_cancellation_pending", True, None)
+    if execution.status == "retry_wait":
+        return IncidentActionCapabilities(False, "incident_execution_not_queued", True, None)
+    if execution.status != "queued":
+        return IncidentActionCapabilities(
+            False, "incident_execution_active", False, "incident_execution_active"
+        )
+    return IncidentActionCapabilities(True, None, True, None)
 
 
 def request_hash(body: IncidentDispositionBody) -> str:

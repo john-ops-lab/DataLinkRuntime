@@ -98,6 +98,32 @@ class IncidentDispositionPage(BaseModel):
     next_before_id: uuid.UUID | None = None
 
 
+class InfrastructureIncidentSummary(BaseModel):
+    """Bounded Incident facts plus current advisory disposition capabilities."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    execution_id: int
+    dispatch_generation: int | None = Field(default=None, ge=1)
+    message_id: uuid.UUID | None = None
+    kind: str = Field(min_length=1, max_length=64)
+    status: Literal["open", "resolved", "ignored"]
+    attempts: int = Field(ge=0)
+    observation_count: int = Field(ge=0)
+    disposition_count: int = Field(ge=0)
+    recovery_dispatch_count: int = Field(ge=0)
+    last_error: str | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+    recent_disposition: IncidentDispositionReceipt | None = None
+    dispositions_url: str
+    recover_available: bool
+    recover_reason: str | None = None
+    terminate_available: bool
+    terminate_reason: str | None = None
+
+
 class AttemptClaimBody(BaseModel):
     """Minimal dispatch facts echoed by the Worker to Control."""
 
@@ -323,7 +349,7 @@ class ReliableExecutionDetail(BaseModel):
     dispatch_backend: Literal["rabbitmq"]
     status: str
     attempts: list[AttemptSummary]
-    incidents: list[dict[str, Any]]
+    incidents: list[InfrastructureIncidentSummary]
     replay_available: bool
     replay_reason: str | None = None
 

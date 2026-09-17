@@ -34,8 +34,10 @@ from dlr.control.models import (
     Execution,
     ExecutionArtifactHold,
     ExecutionAttempt,
+    ExecutionIncidentDisposition,
     ExecutionInfrastructureIncident,
     ExecutionInputArtifactLease,
+    ExecutionOutbox,
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
     RuntimeReconciliationCursor,
@@ -51,6 +53,8 @@ from dlr.control.schemas.reliable_runtime import (
     AttemptStartBody,
     AttemptSummary,
     ClaimDecision,
+    IncidentDispositionReceipt,
+    InfrastructureIncidentSummary,
     ReliableExecutionDetail,
     ReplayResponse,
     ResourceProfile,
@@ -1269,7 +1273,9 @@ def retry_dispatcher_once(
     return dispatched
 
 
-def execution_detail(session: Session, execution_id: int) -> ReliableExecutionDetail:
+def execution_detail(
+    session: Session, execution_id: int, *, can_edit: bool = True
+) -> ReliableExecutionDetail:
     execution = session.get(Execution, execution_id)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
@@ -1287,6 +1293,28 @@ def execution_detail(session: Session, execution_id: int) -> ReliableExecutionDe
             .order_by(ExecutionInfrastructureIncident.id)
         )
     )
+    dispositions = list(
+        session.scalars(
+            select(ExecutionIncidentDisposition)
+            .where(ExecutionIncidentDisposition.execution_id == execution.id)
+            .order_by(
+                ExecutionIncidentDisposition.created_at.desc(),
+                ExecutionIncidentDisposition.id.desc(),
+            )
+        )
+    )
+    dispositions_by_incident: dict[int, list[ExecutionIncidentDisposition]] = {}
+    for disposition in dispositions:
+        dispositions_by_incident.setdefault(disposition.incident_id, []).append(disposition)
+    current_outbox = session.scalar(
+        select(ExecutionOutbox).where(
+            ExecutionOutbox.execution_id == execution.id,
+            ExecutionOutbox.dispatch_generation == execution.dispatch_generation,
+        )
+    )
+    active_attempts = any(item.status in ACTIVE_ATTEMPT_STATUSES for item in attempts)
+    from dlr.control.services.incident_disposition import inspect_incident_disposition
+
     replay_available, replay_reason = _replay_availability(session, execution)
     return ReliableExecutionDetail(
         execution_id=execution.id,
@@ -1313,15 +1341,41 @@ def execution_detail(session: Session, execution_id: int) -> ReliableExecutionDe
             for item in attempts
         ],
         incidents=[
-            {
-                "id": incident.id,
-                "kind": incident.kind,
-                "status": incident.status,
-                "attempts": incident.attempts,
-                "last_error": incident.last_error,
-                "created_at": incident.created_at,
-                "resolved_at": incident.resolved_at,
-            }
+            InfrastructureIncidentSummary(
+                id=incident.id,
+                execution_id=execution.id,
+                dispatch_generation=incident.dispatch_generation,
+                message_id=incident.message_id,
+                kind=incident.kind,
+                status=cast(Any, incident.status),
+                attempts=incident.attempts,
+                observation_count=incident.attempts,
+                disposition_count=len(dispositions_by_incident.get(incident.id, [])),
+                recovery_dispatch_count=sum(
+                    item.outcome == "recovery_dispatched"
+                    for item in dispositions_by_incident.get(incident.id, [])
+                ),
+                last_error=incident.last_error,
+                created_at=incident.created_at,
+                resolved_at=incident.resolved_at,
+                recent_disposition=(
+                    IncidentDispositionReceipt.model_validate(
+                        dispositions_by_incident[incident.id][0]
+                    )
+                    if dispositions_by_incident.get(incident.id)
+                    else None
+                ),
+                dispositions_url=(
+                    f"/api/executions/{execution.id}/incidents/{incident.id}/dispositions"
+                ),
+                **inspect_incident_disposition(
+                    execution,
+                    incident,
+                    active_attempts=active_attempts,
+                    current_outbox=current_outbox,
+                    can_edit=can_edit,
+                ).__dict__,
+            )
             for incident in incidents
         ],
         replay_available=replay_available,
