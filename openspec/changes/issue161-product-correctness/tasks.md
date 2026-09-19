@@ -1,14 +1,14 @@
 ## 1. 范围冻结与交付准备
 
-- [ ] 1.1 核对第二组起点、唯一集成分支、原始 Issue/归档关系和工作区，建立八个 A/B 子项的私有证据索引；以 git 状态、公开 SHA 和全部 NOT_RUN/历史记录分离证明未覆盖已有工作。
-- [ ] 1.2 独立审查 proposal/specs/design，重点核对输出存在性、草稿保留和无迁移边界；`openspec validate issue161-product-correctness --strict` 通过并记录审查结论后进入对应实施。
+- [x] 1.1 核对第二组起点、唯一集成分支、原始 Issue/归档关系和工作区，建立八个 A/B 子项的私有证据索引；以 git 状态、公开 SHA 和全部 NOT_RUN/历史记录分离证明未覆盖已有工作。
+- [x] 1.2 独立审查 proposal/specs/design，重点核对输出存在性、草稿保留和无迁移边界；`openspec validate issue161-product-correctness --strict` 通过并记录审查结论后进入对应实施。
 - [ ] 1.3 为真实 PG/浏览器/代理/冷源/五语言准备隔离合成夹具和独立预期，确认测试数据库、缓存和对象不属于保留业务数据；以资源清单和工具可用性记录证明可执行，缺失项明确 BLOCKED。
 
 ## 2. #153 A：JSON 类型持久化
 
-- [ ] 2.1 在真实 PostgreSQL 经 API 重现顶层 `0↔false`、`1↔true`、嵌套对象和数组的旧类型问题；每次 commit 后新 Session 验证类型/值/jsonb_typeof，并分别记录当前配置与 Schedule 镜像的 RED。
-- [ ] 2.2 在统一输入写入口显式标记 JSON 当前值及镜像变更，保留 JSON.NULL/null()、revision、锁序和事务；以 2.1 全部转 GREEN 及对应静态检查证明修复。
-- [ ] 2.3 回归 JSON null/SQL NULL、普通数字/字符串、真不变保存、legacy Schedule 写入和失败事务；新 Session 验证 revision 与镜像，旧 Execution 输入/输出前后相同，新 Execution 使用新值。
+- [x] 2.1 在真实 PostgreSQL 经 API 重现顶层 `0↔false`、`1↔true`、嵌套对象和数组的旧类型问题；每次 commit 后新 Session 验证类型/值/jsonb_typeof，并分别记录当前配置与 Schedule 镜像的 RED。
+- [x] 2.2 在统一输入写入口显式标记 JSON 当前值及镜像变更，保留 JSON.NULL/null()、revision、锁序和事务；以 2.1 全部转 GREEN 及对应静态检查证明修复。
+- [x] 2.3 回归 JSON null/SQL NULL、普通数字/字符串、真不变保存、legacy Schedule 写入和失败事务；新 Session 验证 revision 与镜像，旧 Execution 输入/输出前后相同，新 Execution 使用新值。
 - [ ] 2.4 真实 Chrome 完成页面保存→重载→API读取→执行→历史链路，类型和值一致并有独立预期；保留交互/请求/Console 和对应修复 SHA，不能用 PG 自动回归替代。
 
 ## 3. #153 B：输出存在性
