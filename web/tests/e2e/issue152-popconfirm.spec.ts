@@ -349,3 +349,161 @@ test("terminate Popconfirm confirm stays inside the Drawer keyboard cycle", asyn
   });
   expect(unknownRequests).toEqual([]);
 });
+
+const outputEndMarker = "OUTPUT_END_VISIBLE_8d261";
+const longOutput = {
+  rows: Array.from({ length: 80 }, (_, index) => ({
+    item: index,
+    value: `output-scroll-line-${String(index).padStart(3, "0")}`,
+  })),
+  final_marker: outputEndMarker,
+};
+
+const completedExecution = {
+  ...execution,
+  status: "succeeded",
+  output: longOutput,
+  started_at: "2026-09-19T00:00:01Z",
+  ended_at: "2026-09-19T00:00:02Z",
+  duration_ms: 1000,
+};
+
+function completedAttempts() {
+  return [1, 2].map((attemptNo) => ({
+    id: 800 + attemptNo,
+    execution_id: 71,
+    adapter_id: 1,
+    attempt_no: attemptNo,
+    worker_id: 1,
+    fencing_token: attemptNo,
+    lease_expires_at: "2026-09-19T00:00:20Z",
+    status: attemptNo === 2 ? "succeeded" : "worker_lost",
+    claimed_at: "2026-09-19T00:00:01Z",
+    started_at: "2026-09-19T00:00:01Z",
+    ended_at: "2026-09-19T00:00:02Z",
+    error_code: attemptNo === 2 ? null : "worker_lost",
+    resource_usage_json: null,
+    output_summary: null,
+    cleanup_summary: { workspace_cleanup_status: "completed" },
+  }));
+}
+
+async function installCompletedExecutionRoutes(page: Page) {
+  const tracker = await installRoutes(page);
+  await page.route("**/api/executions/71", (route) => fulfillJson(route, completedExecution));
+  await page.route("**/api/adapters/1/executions*", (route) => fulfillJson(route, {
+    items: [{ ...executionSummary, status: "succeeded" }],
+    next_before_id: null,
+  }));
+  await page.route("**/api/executions/71/reliable-detail", (route) => fulfillJson(route, {
+    execution_id: 71,
+    dispatch_backend: "rabbitmq",
+    status: "succeeded",
+    attempts: completedAttempts(),
+    incidents: [
+      {
+        ...incident,
+        id: 900,
+        status: "resolved",
+        disposition_count: 1,
+        recovery_dispatch_count: 1,
+        recover_available: false,
+        recover_reason: "incident_closed",
+        terminate_available: false,
+        terminate_reason: "incident_closed",
+        recent_disposition: {
+          id: "fixture-receipt-900",
+          outcome: "recovery_dispatched",
+          code: "recovery_dispatched",
+          from_generation: 1,
+          to_generation: 2,
+        },
+      },
+      {
+        ...incident,
+        id: 901,
+        status: "resolved",
+        disposition_count: 1,
+        recover_available: false,
+        recover_reason: "incident_closed",
+        terminate_available: false,
+        terminate_reason: "incident_closed",
+        recent_disposition: {
+          id: "fixture-receipt-901",
+          outcome: "execution_cancelled",
+          code: "execution_cancelled",
+          from_generation: 2,
+          to_generation: null,
+        },
+      },
+    ],
+    replay_available: false,
+    replay_reason: "execution_terminal",
+  }));
+  return tracker;
+}
+
+async function markerIsFullyVisible(page: Page) {
+  return page.getByTestId("output-content").evaluate((element, marker) => {
+    const content = element.textContent ?? "";
+    const offset = content.indexOf(marker);
+    const text = element.firstChild;
+    if (offset < 0 || text === null) return false;
+
+    const range = document.createRange();
+    range.setStart(text, offset);
+    range.setEnd(text, offset + marker.length);
+    const markerRect = range.getBoundingClientRect();
+    if (markerRect.top < 0 || markerRect.bottom > window.innerHeight) return false;
+
+    let ancestor = element.parentElement;
+    while (ancestor !== null) {
+      const overflowY = getComputedStyle(ancestor).overflowY;
+      if (["auto", "scroll", "hidden", "clip"].includes(overflowY)) {
+        const ancestorRect = ancestor.getBoundingClientRect();
+        if (markerRect.top < ancestorRect.top || markerRect.bottom > ancestorRect.bottom) return false;
+      }
+      ancestor = ancestor.parentElement;
+    }
+    return true;
+  }, outputEndMarker);
+}
+
+for (const viewport of [{ width: 1306, height: 768 }, { width: 390, height: 844 }]) {
+  test(`native wheel reaches long output end at ${viewport.width}x${viewport.height}`, async ({ page }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const { unknownRequests, dispositionRequests } = await installCompletedExecutionRoutes(page);
+    await openIncidentHistory(page);
+    await expect.poll(() => page.locator(".ant-drawer").evaluateAll((drawers) => (
+      drawers.flatMap((drawer) => drawer.getAnimations({ subtree: true }))
+        .filter((animation) => animation.playState === "running").length
+    ))).toBe(0);
+
+    const drawerBody = page.locator(".execution-history-drawer .ant-drawer-body");
+    const outputTab = page.getByRole("dialog").getByRole("tab", { name: "输出", exact: true });
+    const bodyBox = await drawerBody.boundingBox();
+    expect(bodyBox).not.toBeNull();
+    await page.mouse.move(bodyBox!.x + bodyBox!.width / 2, bodyBox!.y + bodyBox!.height / 2);
+    for (let index = 0; index < 4; index += 1) await page.mouse.wheel(0, 1200);
+    await expect.poll(() => drawerBody.evaluate((body) => body.scrollTop)).toBeGreaterThan(0);
+    await expect(outputTab).toBeInViewport();
+    await outputTab.click();
+
+    const output = page.getByTestId("output-content");
+    await expect(output).toContainText(outputEndMarker);
+    expect(await markerIsFullyVisible(page)).toBe(false);
+    const outputBox = await output.boundingBox();
+    expect(outputBox).not.toBeNull();
+    const wheelY = Math.min(
+      bodyBox!.y + bodyBox!.height - 24,
+      Math.max(bodyBox!.y + 24, outputBox!.y + 24),
+    );
+    await page.mouse.move(bodyBox!.x + bodyBox!.width / 2, wheelY);
+    for (let index = 0; index < 8; index += 1) await page.mouse.wheel(0, 2400);
+    await expect.poll(() => markerIsFullyVisible(page)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("output-end-visible.png") });
+
+    expect(dispositionRequests).toHaveLength(0);
+    expect(unknownRequests).toEqual([]);
+  });
+}
