@@ -34,16 +34,16 @@
 - [x] 5.2 实现无commit cancellation helper和事务性dispose服务，冻结统一锁顺序、终态hook与资源责任；真实并发测试证明审计/mutation原子、取消与Claim/Result/Recovery无锁反序、无重复Slot/Admission/Lease释放。
 - [x] 5.3 实现资格与Outbox决策表：当前queued、active、cancel_requested、retry_wait、终态、旧/未来代、身份不符、missing/corrupt、pending/leased/published/settled及容量不足；每行有独立预期code/副作用断言，验证只必要时增加代次且不新建Execution。
 - [x] 5.4 实现原冻结材料验证，覆盖JSON/null/none、managed-files原Lease与hash/size/ordinal、版本/Worker/resource/retry/builtin/credential引用；真实文件删除/GC与提交竞态测试证明不替换历史快照，未知引用拒绝且日志/响应无Secret。
-- [ ] 5.5 实现POST处置和审计分页、增量reliable-detail能力字段；API测试覆盖401/403/404、跨Adapter、伪造actor、读后被Claim/取消/终结/材料失效，后端提交重检安全拒绝或幂等反馈。
-- [ ] 5.6 在写UI前读取项目Ant Design skill并查询5.29.3对应API；在ExecutionHistoryPanel加入恢复/终结、资格原因、观测/处置计数与结果，中英文及当前权限传递；Web测试覆盖重复点击同key、409刷新原记录、active协作取消说明和键盘操作。
+- [x] 5.5 实现POST处置和审计分页、增量reliable-detail能力字段；API测试覆盖401/403/404、跨Adapter、伪造actor、读后被Claim/取消/终结/材料失效，后端提交重检安全拒绝或幂等反馈。
+- [x] 5.6 在写UI前读取项目Ant Design skill并查询5.29.3对应API；在ExecutionHistoryPanel加入恢复/终结、资格原因、观测/处置计数与结果，中英文及当前权限传递；Web测试覆盖重复点击同key、409刷新原记录、active协作取消说明和键盘操作。
 - [ ] 5.7 按结构化x-death修正reason分类；测试delivery_limit/rejected/expired/maxlen、历史链、不同queue、畸形/缺失headers，真实Broker验证非delivery-limit自动流程仍按原合同运行，不新增自动delivery-limit恢复。
 - [ ] 5.8 真实Chrome经固定入口完成旧Incident恢复与合法终结，含read-only拒绝、终态反馈和详情刷新；逐条核对原ID/输出/Attempt/代次/审计/资源，保留实际截图与API/DB关联证据而非仅UI组件测试。
-- [ ] 5.9 运行Backend/Web相关完整回归和静态检查，保留#152 B各子提交SHA，独立Review修正资格、锁/幂等、材料与权限问题；与A证据分开记录。
+- [x] 5.9 运行Backend/Web相关完整回归和静态检查，保留#152 B各子提交SHA，独立Review修正资格、锁/幂等、材料与权限问题；与A证据分开记录。
 
 ## 6. #152 B — 旧Incident保全升级配套
 
-- [ ] 6.1 在默认空闲门禁之外实现显式候选绑定carry-forward清单、运行责任manifest及私有参数入口；控制器单元测试证明无通配忽略busy、仅允许指定同机制向前兼容责任，公开diff无私有地址/ID/凭据/备份。
-- [ ] 6.2 实现停Control/Worker后的双重复核和never-claimed cleanup派生分类；合成测试覆盖queued/terminal pending无Attempt、真实deferred且journal完整、journal丢失、未知进程、预检后Claim，不修改pending为completed、不取消原queued。
+- [x] 6.1 在默认空闲门禁之外实现显式候选绑定carry-forward清单、运行责任manifest及私有参数入口；控制器单元测试证明无通配忽略busy、仅允许指定同机制向前兼容责任，公开diff无私有地址/ID/凭据/备份。
+- [x] 6.2 实现停Control/Worker后的双重复核和never-claimed cleanup派生分类；合成测试覆盖queued/terminal pending无Attempt、真实deferred且journal完整、journal丢失、未知进程、预检后Claim，不修改pending为completed、不取消原queued。
 - [ ] 6.3 将Execution/Attempt/Slot/Incident/Outbox/Admission/Input Lease/Hold及runtime/journal指纹加入独立保全验证；真实带数据升级证明备份/迁移前后原字段一致、所有卷和Broker责任保留，deferred由真实Worker回执收敛。
 - [ ] 6.4 对控制器及双语部署说明做独立Review，运行 `python3 -m unittest discover -s tools/local-preview/tests -v`、`bash -n tools/local-preview/deploy.sh`及原门禁回归；通过后才由集成owner安装已审查控制器，不绕过attention/CI/历史/镜像/Sandbox检查。
 
