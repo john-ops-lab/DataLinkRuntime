@@ -396,6 +396,7 @@
     "truncated": "Output exceeded the platform retention limit; the complete content was not saved",
     "truncatedDescription": "Actual size: {{size}} bytes; the content below is a preview, not complete JSON",
     "unknownSize": "Unknown",
+    "unknown": "Output information is incomplete and cannot be confirmed.",
     "empty": "No Output",
     "contentLabel": "Execution output"
   },

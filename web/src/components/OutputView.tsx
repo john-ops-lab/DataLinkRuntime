@@ -14,6 +14,7 @@ import {
 } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
+import { classifyExecutionOutput } from "../execution-output";
 import type { Execution } from "../types";
 import { tailLogLines } from "../unified-log";
 
@@ -21,7 +22,8 @@ import { tailLogLines } from "../unified-log";
 export function OutputView(props: { execution: Execution; testId?: string }) {
   const { execution } = props;
   const { t } = useTranslation(["runtime", "common"]);
-  if (execution.output_truncated) {
+  const outputKind = classifyExecutionOutput(execution);
+  if (outputKind === "truncated") {
     return (
       <div className="output-view" data-testid={props.testId ?? "output-truncated"}>
         <Alert
@@ -38,7 +40,14 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
       </div>
     );
   }
-  if (execution.output === null || execution.output === undefined) {
+  if (outputKind === "unknown") {
+    return (
+      <div className="output-view" data-testid={props.testId ?? "output-unknown"}>
+        <Alert type="info" showIcon message={t("output.unknown")} />
+      </div>
+    );
+  }
+  if (outputKind === "empty") {
     return (
       <div className="output-view output-empty" data-testid={props.testId ?? "output-empty"}>
         {t("output.empty")}
@@ -47,7 +56,7 @@ export function OutputView(props: { execution: Execution; testId?: string }) {
   }
   return (
     <pre className="output-view" data-testid={props.testId ?? "output-content"} aria-label={t("output.contentLabel")}>
-      {JSON.stringify(execution.output, null, 2)}
+      {outputKind === "json-null" ? "null" : JSON.stringify(execution.output, null, 2)}
     </pre>
   );
 }

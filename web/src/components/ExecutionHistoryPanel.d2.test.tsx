@@ -193,6 +193,46 @@ afterEach(async () => {
 });
 
 describe("Issue #127 D2 execution history", () => {
+  it.each([
+    [
+      "legal JSON null",
+      execution({ output: null, output_size: 4, attempt_count: 1 }),
+      summary(),
+      "output-content",
+      "null",
+    ],
+    [
+      "never-started empty output",
+      execution({
+        status: "cancelled",
+        output: null,
+        output_size: null,
+        attempt_count: 0,
+        started_at: null,
+      }),
+      summary({ status: "cancelled", started_at: null }),
+      "output-empty",
+      "无 Output",
+    ],
+    [
+      "incomplete historical output",
+      execution({ output: null, output_size: null, attempt_count: 1 }),
+      summary(),
+      "output-unknown",
+      "输出信息不足，无法确认",
+    ],
+  ] as const)("uses the shared output classification for %s", async (_, detail, row, testId, text) => {
+    renderHistory(detail, row);
+    fireEvent.click(await screen.findByTestId("history-row"));
+    const drawer = document.querySelector(".ant-drawer-content");
+    if (!(drawer instanceof HTMLElement)) {
+      throw new Error("Execution detail drawer not found");
+    }
+
+    fireEvent.click(await within(drawer).findByRole("tab", { name: "输出" }));
+    expect((await within(drawer).findByTestId(testId)).textContent).toContain(text);
+  });
+
   it("renders RabbitMQ Attempt facts, infrastructure Incidents, and Replay", async () => {
     const rabbitExecution = execution({
       dispatch_backend: "rabbitmq",
