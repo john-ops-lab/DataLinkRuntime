@@ -1184,7 +1184,6 @@ def capture_files(
             or stat.S_IMODE(before.st_mode) != 0o700
             or before.st_dev != workspace_device
             or (expected_uid is not None and before.st_uid != expected_uid)
-            or attempt_id in associated_attempts
         ):
             raise CarryForwardError("workspace_identity_invalid")
         status = (attempt_statuses or {}).get(attempt_id)
@@ -1194,7 +1193,9 @@ def capture_files(
             {
                 "attempt_id": attempt_id,
                 "classification": (
-                    "terminal_attempt_empty_shell"
+                    "deferred_responsibility_empty_shell"
+                    if attempt_id in associated_attempts
+                    else "terminal_attempt_empty_shell"
                     if status is not None
                     else "owned_empty_shell_without_db_row"
                 ),
@@ -1254,7 +1255,11 @@ def validate_file_responsibilities(
         or type(item["attempt_id"]) is not int
         or item["attempt_id"] <= 0
         or item["classification"]
-        not in {"terminal_attempt_empty_shell", "owned_empty_shell_without_db_row"}
+        not in {
+            "deferred_responsibility_empty_shell",
+            "terminal_attempt_empty_shell",
+            "owned_empty_shell_without_db_row",
+        }
         for item in empty_shells
     ):
         raise CarryForwardError("workspace_identity_invalid")
@@ -1270,6 +1275,30 @@ def validate_file_responsibilities(
     }
     if captured_empty_ids != set(empty_shell_ids):
         raise CarryForwardError("workspace_identity_invalid")
+    associated_shell_ids = {
+        item["attempt_id"]
+        for item in cleanup_facts + attempt_facts + recovery_facts
+        if type(item.get("attempt_id")) is int
+    }
+    shell_classifications = {
+        item["attempt_id"]: item["classification"] for item in empty_shells
+    }
+    for attempt_id, classification in shell_classifications.items():
+        deferred_execution = deferred_attempts.get(attempt_id)
+        if classification == "deferred_responsibility_empty_shell":
+            if (
+                attempt_id not in associated_shell_ids
+                or deferred_execution is None
+                or selected_attempts.get(attempt_id) != deferred_execution
+                or any(
+                    item.get("execution_id") != deferred_execution
+                    for item in cleanup_facts + attempt_facts + recovery_facts
+                    if item.get("attempt_id") == attempt_id
+                )
+            ):
+                raise CarryForwardError("workspace_identity_invalid")
+        elif attempt_id in associated_shell_ids:
+            raise CarryForwardError("workspace_identity_invalid")
     retired_preflight_names = {
         marker["cgroup_name"]
         for marker in recovery_facts

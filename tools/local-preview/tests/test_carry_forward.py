@@ -440,6 +440,8 @@ class FileEvidenceTests(unittest.TestCase):
 
     def test_deferred_journal_identity_and_token_are_verified(self):
         token = "cleanup-token"
+        attempt_root = self.runtime / "workspaces/attempt-13"
+        attempt_root.mkdir(mode=0o700)
         self._write(
             self.journal / "execution-9-attempt-13.cleanup.json",
             {
@@ -448,6 +450,24 @@ class FileEvidenceTests(unittest.TestCase):
                 "protocol_version": 3,
                 "workspace_path": "/var/lib/dlr/runtime/workspaces/attempt-13/dlr-exec-9",
                 "attempt_id": 13,
+            },
+        )
+        self._write(
+            self.journal / "sandbox-recovery/sandbox-attempt-9-13.json",
+            {
+                "cgroup_name": "attempt-9-13",
+                "execution_id": 9,
+                "mount_name": ".dlr-sandbox-mount",
+                "mount_path": str(attempt_root / ".dlr-sandbox-mount"),
+                "namespace_identity": {
+                    "boot_id": "11111111-1111-1111-1111-111111111111",
+                    "parent_device": 10,
+                    "parent_inode": 20,
+                    "root_device": 10,
+                    "root_inode": 30,
+                },
+                "cgroup_device": 10,
+                "cgroup_inode": 30,
             },
         )
         evidence = carry.capture_files(
@@ -479,6 +499,28 @@ class FileEvidenceTests(unittest.TestCase):
             ]
         }
         carry.validate_file_responsibilities(evidence, responsibilities)
+        self.assertEqual(
+            evidence["empty_attempt_shells"],
+            [
+                {
+                    "attempt_id": 13,
+                    "classification": "deferred_responsibility_empty_shell",
+                }
+            ],
+        )
+        carry.validate_retired_markers(
+            evidence["journal_facts"]["sandbox_recovery"],
+            boot_id="11111111-1111-1111-1111-111111111111",
+            parent_device=10,
+            parent_inode=20,
+            children={"agent": {"device": 10, "inode": 21}},
+        )
+        unowned = json.loads(json.dumps(responsibilities))
+        unowned["executions"][0]["deferred_attempt_ids"] = []
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "workspace_identity_invalid"
+        ):
+            carry.validate_file_responsibilities(evidence, unowned)
         evidence["journal_facts"]["cleanup"][0]["cleanup_token_matches"] = False
         with self.assertRaisesRegex(
             carry.CarryForwardError, "deferred_journal_identity_invalid"
