@@ -25,9 +25,9 @@
 
 ## 5. #155 B：运行锁与草稿同步
 
-- [ ] 5.1 统一 App 已选 Adapter 的权威 runtime refresh，覆盖 unlocked/idle、可见性/焦点、计划操作及409，复用3秒策略并处理单在途/epoch/卸载；自动测试验证没有重复轮询或旧Adapter覆盖。
-- [ ] 5.2 分开后台状态刷新与保存成功基线更新，保留代码、依赖、runtime_config、Worker/timeout/run mode override、Schedule与输入草稿；dirty字段逐项前后比较及读取失败测试通过。
-- [ ] 5.3 受保护控件统一使用权威运行锁和可访问的禁用原因，保留停用/停止操作与后端409；查询固定Ant Design快照，完成组件/权限/locale/静态检查。
+- [x] 5.1 统一 App 已选 Adapter 的权威 runtime refresh，覆盖 unlocked/idle、可见性/焦点、计划操作及409，复用3秒策略并处理单在途/epoch/卸载；自动测试验证没有重复轮询或旧Adapter覆盖。
+- [x] 5.2 分开后台状态刷新与保存成功基线更新，保留代码、依赖、runtime_config、Worker/timeout/run mode override、Schedule与输入草稿；dirty字段逐项前后比较及读取失败测试通过。
+- [x] 5.3 受保护控件统一使用权威运行锁和可访问的禁用原因，保留停用/停止操作与后端409；查询固定Ant Design快照，完成组件/权限/locale/静态检查。
 - [ ] 5.4 使用两个真实 Chrome 页面验证同页/跨页计划启停、active解锁、dirty保留及保存竞争409；记录交互、请求、Console和实际禁用恢复，不以静态测试替代。
 
 ## 6. #150 A：双代理上传边界

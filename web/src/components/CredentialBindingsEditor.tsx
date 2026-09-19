@@ -1,10 +1,10 @@
 /** 凭据绑定编辑器：代码中的凭据名 → 凭据字段（M3.2，全量替换保存语义）。 */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, Empty, Input, Select, Space, Spin, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import { credentialFieldLabel, credentialFields } from "../credential-fields";
 import { subscribeCredentialCatalog } from "../credential-catalog";
 import type { AccountRole, AdapterAccessLevel, Credential, CredentialBinding } from "../types";
@@ -22,6 +22,7 @@ interface CredentialBindingsEditorProps {
   adapterId: number;
   disabled: boolean;
   onError: (message: string | null) => void;
+  onRuntimeConflict?: () => void;
   /** 保存成功后通知父组件（如刷新 Diff 基线）。 */
   onSaved?: () => void;
   /** 打开「系统设置 → 凭据管理」的入口（M5.5.7：不在编辑页重复实现新建表单）。 */
@@ -59,6 +60,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const editEpoch = useRef(0);
 
   const loadCredentialOptions = useCallback((): Promise<Credential[]> => {
     if (!canManageBindings) {
@@ -108,11 +110,13 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
   );
 
   function updateRow(index: number, patch: Partial<BindingRow>) {
+    editEpoch.current += 1;
     setNotice(null);
     setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   }
 
   function updateRows(updater: (current: BindingRow[]) => BindingRow[]) {
+    editEpoch.current += 1;
     setNotice(null);
     setRows(updater);
   }
@@ -142,6 +146,7 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
       return;
     }
     props.onError(null);
+    const submittedEditEpoch = editEpoch.current;
     setSaving(true);
     try {
       const saved = await api.setAdapterBindings(
@@ -153,13 +158,18 @@ export default function CredentialBindingsEditor(props: CredentialBindingsEditor
         })),
       );
       const refreshed = toRows(saved);
-      setRows(refreshed);
       setBaseline(refreshed);
+      if (editEpoch.current === submittedEditEpoch) {
+        setRows(refreshed);
+      }
        setNotice(t("bindings.saved"));
       props.onSaved?.();
     } catch (error) {
       setNotice(null);
       props.onError(errorMessage(error));
+      if (error instanceof ApiError && error.code === "adapter_runtime_locked") {
+        props.onRuntimeConflict?.();
+      }
     } finally {
       setSaving(false);
     }

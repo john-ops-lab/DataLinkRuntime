@@ -31,6 +31,7 @@ import WebhookWorkbenchHeader from "./components/WebhookWorkbenchHeader";
 import UserManagementDrawer from "./components/UserManagementDrawer";
 import ApplicationShell from "./components/ApplicationShell";
 import { useExecutionWatcher } from "./hooks/useExecutionWatcher";
+import { useRuntimeAuthority } from "./hooks/useRuntimeAuthority";
 import {
   applyUiLocale,
   cacheSystemLocale,
@@ -41,6 +42,7 @@ import {
 } from "./i18n";
 import { currentEntryMode } from "./entry-mode";
 import DlrDesignSystemProvider from "./design-system";
+import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import {
   appRouteFromPath,
   backBrowserLocation,
@@ -69,7 +71,6 @@ import {
   dependencyUiFor,
   starterCodeFor,
 } from "./languages";
-import { RUNTIME_REFRESH_POLICY } from "./runtime-refresh-policy";
 import { isTerminal } from "./status";
 import { WORKER_REFRESH_POLICY } from "./worker-refresh-policy";
 import type {
@@ -518,13 +519,28 @@ export function AdapterConsole({
   useLayoutEffect(() => {
     selectedAdapterIdRef.current = selectedAdapterId;
   }, [selectedAdapterId]);
+  const acceptRuntimeAdapter = useCallback((refreshed: Adapter) => {
+    setSelected((current) => (current?.id === refreshed.id ? refreshed : current));
+    setAdapters((current) =>
+      current.map((item) => (item.id === refreshed.id ? refreshed : item)),
+    );
+  }, []);
+  const runtimeAuthority = useRuntimeAuthority({
+    adapterId: selectedAdapterId,
+    adapterType: selected?.adapter_type ?? null,
+    onAdapterAccepted: acceptRuntimeAdapter,
+    onExplicitError: setError,
+    errorMessage,
+  });
+  const requestRuntimeRefresh = runtimeAuthority.requestRuntimeRefresh;
   const selectedRuntimeMutationInFlight = selected?.adapter_type === "task"
     ? taskRuntimeState.mutationInFlight
     : selected?.adapter_type === "webhook"
       ? webhookRuntimeState.mutationInFlight
       : false;
   const activeExecutionId = selected?.running_execution_id ?? null;
-  const selectedTriggerLocked = selected?.runtime_locked === true;
+  const selectedRuntimeLocked = selected?.runtime_locked === true
+    || runtimeAuthority.synchronizingAfterMutation;
   const canManageUsers = accountPrincipal === undefined || accountPrincipal.role === "admin";
   const selectedAccessLevel: AdapterAccessLevel = selected === null
     ? "admin"
@@ -635,70 +651,6 @@ export function AdapterConsole({
       }
     };
   }, []);
-
-  // Reconcile selected runtime state while an Execution is active. An enabled
-  // Task Schedule also polls while idle so a newly created background run is
-  // discovered and exposes Stop immediately; cleanup prevents an old Adapter
-  // response from overwriting a newly selected one.
-  useEffect(() => {
-    if (
-      busy ||
-      selectedAdapterId === null ||
-      (activeExecutionId === null && !selectedTriggerLocked)
-    ) {
-      return;
-    }
-    const adapterId = selectedAdapterId;
-    let cancelled = false;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-    async function refreshActiveRuntime() {
-      try {
-        const refreshed = await api.getAdapter(adapterId);
-        if (cancelled) {
-          return;
-        }
-        setSelected((current) => (current?.id === adapterId ? refreshed : current));
-        setAdapters((current) =>
-          current.map((item) => (item.id === adapterId ? refreshed : item)),
-        );
-        if (
-          refreshed.running_execution_id != null ||
-          refreshed.runtime_locked === true
-        ) {
-          timeoutId = setTimeout(
-            () => void refreshActiveRuntime(),
-            RUNTIME_REFRESH_POLICY.pollIntervalMs,
-          );
-        }
-      } catch {
-        // A transient read failure must not unlock lifecycle actions. Keep the
-        // last authoritative active pointer and retry quietly.
-        if (!cancelled) {
-          timeoutId = setTimeout(
-            () => void refreshActiveRuntime(),
-            RUNTIME_REFRESH_POLICY.pollIntervalMs,
-          );
-        }
-      }
-    }
-
-    timeoutId = setTimeout(
-      () => void refreshActiveRuntime(),
-      RUNTIME_REFRESH_POLICY.pollIntervalMs,
-    );
-    return () => {
-      cancelled = true;
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
-      }
-    };
-  }, [
-    activeExecutionId,
-    busy,
-    selectedAdapterId,
-    selectedTriggerLocked,
-  ]);
 
   // A Manual click is handed to the watcher immediately. Schedule and
   // Webhook runs can begin in the background, so reconcile the Adapter's
@@ -813,11 +765,8 @@ export function AdapterConsole({
       return;
     }
     refreshedTerminalExecutionId.current = execution.id;
-    void api.getAdapter(execution.adapter_id).then((refreshed) => {
-      setSelected((current) => (current?.id === refreshed.id ? refreshed : current));
-      setAdapters((current) => current.map((item) => item.id === refreshed.id ? refreshed : item));
-    }).catch((refreshError) => setError(errorMessage(refreshError)));
-  }, [liveWatcher.execution, selectedAdapterId]);
+    void requestRuntimeRefresh("terminal");
+  }, [liveWatcher.execution, requestRuntimeRefresh, selectedAdapterId]);
 
   // Catalog, Worker badge and Adapter settings share one Worker collection;
   // no component performs its own request and no Adapter row causes N+1.
@@ -880,13 +829,6 @@ export function AdapterConsole({
       setAdapters(list);
     }
     return list;
-  }, []);
-
-  const handleTaskAdapterChange = useCallback((refreshed: Adapter) => {
-    setSelected((current) => (current?.id === refreshed.id ? refreshed : current));
-    setAdapters((current) =>
-      current.map((item) => (item.id === refreshed.id ? refreshed : item)),
-    );
   }, []);
 
   const handleExecutionStarted = useCallback((adapterId: number, execution: Execution) => {
@@ -1264,7 +1206,7 @@ export function AdapterConsole({
   }
 
   async function persistVersion(runtimeWorkerId?: number) {
-    if (!selected || !selectedCanEdit || busy || !contentReady || selected.runtime_locked === true) {
+    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked) {
       return;
     }
     const runtimeConfig = parseRuntimeConfig(snapshot.runtimeConfigText);
@@ -1276,20 +1218,25 @@ export function AdapterConsole({
       setError(t("validation.codeRequired"));
       return;
     }
+    const submittedSnapshot = snapshot;
+    const mutation = runtimeAuthority.beginRuntimeMutation();
+    if (mutation === null) return;
+    let versionSaved = false;
+    const refreshFailures: string[] = [];
     setBusy(true);
     try {
       setError(null);
       let saveTarget = selected;
       if (runtimeWorkerId !== undefined && selected.runtime_worker_id == null) {
         saveTarget = await api.updateAdapter(selected.id, { runtime_worker_id: runtimeWorkerId });
-        setSelected(saveTarget);
-        setAdapters((current) => current.map((item) => item.id === saveTarget.id ? saveTarget : item));
+        if (!mutation.acceptAdapter(saveTarget)) return;
       }
       const saved = await api.saveVersion(saveTarget.id, {
-        code: snapshot.code,
-        requirements: snapshot.requirements,
+        code: submittedSnapshot.code,
+        requirements: submittedSnapshot.requirements,
         runtime_config: runtimeConfig,
       });
+      versionSaved = true;
       initialAdapterDrafts.current.delete(saveTarget.id);
       // The immutable version exists as soon as POST succeeds: acknowledge it locally
       // right away so a follow-up refresh failure cannot be mistaken for a failed save
@@ -1297,29 +1244,26 @@ export function AdapterConsole({
       // latest_version_id is derived from the response; Adapter.updated_at stays
       // the server-owned value until a real Adapter refresh succeeds.
       const optimistic: Adapter = { ...saveTarget, latest_version_id: saved.id };
-      setSelected(optimistic);
-      setAdapters((current) => current.map((item) => (item.id === optimistic.id ? optimistic : item)));
+      if (!mutation.acceptAdapter(optimistic)) return;
       setVersions((current) => [saved, ...current]);
       // The new immutable version is the latest one: keep the cached catalog
       // summary in sync without waiting for the best-effort list refresh.
       setVersionSeqById((current) => new Map(current).set(saved.id, saved.seq));
       setSelectedVersionId(saved.id);
-      applySnapshot(versionSnapshot(saved));
-      const refreshFailures: string[] = [];
+      const savedSnapshot = versionSnapshot(saved);
+      setBaseline(savedSnapshot);
+      setSnapshot((current) =>
+        current.code === submittedSnapshot.code
+        && current.requirements === submittedSnapshot.requirements
+        && current.runtimeConfigText === submittedSnapshot.runtimeConfigText
+          ? savedSnapshot
+          : current,
+      );
       try {
         const versionList = await api.listVersions(saveTarget.id);
         setVersions(versionList);
       } catch (refreshErr) {
         refreshFailures.push(t("messages.versionListRefreshFailed", { error: errorMessage(refreshErr) }));
-      }
-      try {
-        // Best-effort refresh of the real Adapter (server-owned updated_at);
-        // failure is non-fatal because the save itself is already acknowledged.
-        const real = await api.getAdapter(saveTarget.id);
-        setSelected(real);
-        setAdapters((current) => current.map((item) => (item.id === real.id ? real : item)));
-      } catch (refreshErr) {
-        refreshFailures.push(t("messages.adapterRefreshFailed", { error: errorMessage(refreshErr) }));
       }
       if (refreshFailures.length === 0) {
         messageApi.success(t("messages.adapterSaved"));
@@ -1330,13 +1274,25 @@ export function AdapterConsole({
       }
     } catch (err) {
       setError(errorMessage(err));
+      if (err instanceof ApiError && err.code === "adapter_runtime_locked") {
+        void runtimeAuthority.requestRuntimeRefresh("conflict");
+      }
     } finally {
+      mutation.finish(versionSaved ? (refreshError) => {
+        const details = [
+          ...refreshFailures,
+          t("messages.adapterRefreshFailed", { error: errorMessage(refreshError) }),
+        ];
+        setError(t("messages.adapterSavedRefreshSummary", {
+          details: details.join(i18n.t("punctuation.listSeparator")),
+        }));
+      } : undefined);
       setBusy(false);
     }
   }
 
   function handleSaveVersion() {
-    if (!selected || !selectedCanEdit || busy || !contentReady || selected.runtime_locked === true) {
+    if (!selected || !selectedCanEdit || busy || !contentReady || selectedRuntimeLocked) {
       return;
     }
     if (parseRuntimeConfig(snapshot.runtimeConfigText) === null) {
@@ -1471,7 +1427,7 @@ export function AdapterConsole({
       !selected ||
       !selectedCanUseAi ||
       selected.archived_at ||
-      selected.runtime_locked === true ||
+      selectedRuntimeLocked ||
       !contentReady ||
       busy
     ) {
@@ -1481,7 +1437,7 @@ export function AdapterConsole({
     // Credential Binding and runtime configuration remain the administrator's
     // manual Working Copy and are never replaced by a Candidate.
     setSnapshot((current) => ({ ...current, code: candidate.code }));
-  }, [busy, contentReady, selected, selectedCanUseAi]);
+  }, [busy, contentReady, selected, selectedCanUseAi, selectedRuntimeLocked]);
 
   // M5.5.13：把 Monaco 当前选区作为精确快照追加进 AI 上下文，并自动展开
   // AI 面板。文本与行号在点击瞬间从编辑器读取，之后光标移动不会偷偷改变
@@ -1813,6 +1769,7 @@ export function AdapterConsole({
                   dirty={dirty}
                   busy={busy}
                   contentReady={contentReady}
+                  runtimeSynchronizing={runtimeAuthority.synchronizingAfterMutation}
                   readOnly={!selectedCanEdit}
                   onSave={() => void handleSaveVersion()}
                   onOpenSettings={() => setSettingsOpen(true)}
@@ -1930,7 +1887,7 @@ export function AdapterConsole({
                             options={{
                               minimap: { enabled: false },
                               ariaLabel: t("editor.ariaLabel", { ns: "common" }),
-                              readOnly: busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selected.runtime_locked === true,
+                              readOnly: busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selectedRuntimeLocked,
                             }}
                           />
                         </div>
@@ -1952,7 +1909,7 @@ export function AdapterConsole({
                                     data-testid="requirements-input"
                                     rows={4}
                                     value={snapshot.requirements}
-                                    disabled={busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selected.runtime_locked === true}
+                                    disabled={busy || !selectedCanEdit || !contentReady || !!selected.archived_at || selectedRuntimeLocked}
                                     placeholder={dependencyUiFor(selected.language).placeholder}
                                     onChange={(event) =>
                                       setSnapshot((current) => ({
@@ -1974,11 +1931,12 @@ export function AdapterConsole({
                                 <div data-testid="bindings-panel-content">
                                   <CredentialBindingsEditor
                                     adapterId={selected.id}
-                                    disabled={busy || !contentReady || !!selected.archived_at || selected.runtime_locked === true || !selectedCanManage}
+                                    disabled={busy || !contentReady || !!selected.archived_at || selectedRuntimeLocked || !selectedCanManage}
                                     accessLevel={selectedAccessLevel}
                                     platformRole={accountPrincipal?.role}
                                     useScopedCredentialOptions={accountPrincipal !== undefined}
                                     onError={setError}
+                                    onRuntimeConflict={() => void runtimeAuthority.requestRuntimeRefresh("conflict")}
                                     onOpenSettings={openSystemSettings}
                                   />
                                 </div>
@@ -2004,7 +1962,12 @@ export function AdapterConsole({
                             workersError={workersError}
                             execution={liveExecution}
                             dirty={dirty}
-                            onAdapterChange={handleTaskAdapterChange}
+                            runtimeSchedule={runtimeAuthority.triggerSnapshot?.adapterType === "task"
+                              ? runtimeAuthority.triggerSnapshot
+                              : null}
+                            runtimeSynchronizing={runtimeAuthority.synchronizingAfterMutation}
+                            requestRuntimeRefresh={runtimeAuthority.requestRuntimeRefresh}
+                            beginRuntimeMutation={runtimeAuthority.beginRuntimeMutation}
                             onExecutionStarted={(execution) => handleExecutionStarted(selected.id, execution)}
                             onRuntimeStateChange={handleTaskRuntimeStateChange}
                             onError={setError}
@@ -2024,7 +1987,12 @@ export function AdapterConsole({
                             workers={workers}
                             workersLoading={workersLoading}
                             workersError={workersError}
-                            onAdapterChange={handleTaskAdapterChange}
+                            runtimeWebhook={runtimeAuthority.triggerSnapshot?.adapterType === "webhook"
+                              ? runtimeAuthority.triggerSnapshot
+                              : null}
+                            runtimeSynchronizing={runtimeAuthority.synchronizingAfterMutation}
+                            requestRuntimeRefresh={runtimeAuthority.requestRuntimeRefresh}
+                            beginRuntimeMutation={runtimeAuthority.beginRuntimeMutation}
                             onReceivingChange={(enabled) => handleWebhookReceivingChange(selected.id, enabled)}
                             onRuntimeStateChange={handleWebhookRuntimeStateChange}
                             onError={setError}

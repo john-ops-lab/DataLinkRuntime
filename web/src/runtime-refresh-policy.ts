@@ -1,2 +1,2 @@
-/** Poll pace for reconciling an Adapter while its runtime is locked. */
+/** Poll pace for reconciling the selected Adapter while the page is visible. */
 export const RUNTIME_REFRESH_POLICY = { pollIntervalMs: 3000 };

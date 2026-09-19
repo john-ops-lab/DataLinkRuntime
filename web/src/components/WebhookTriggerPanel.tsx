@@ -14,7 +14,7 @@
  *   重新开启 Webhook。
  */
 
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Alert, Button, Input, InputNumber, Modal, Radio, Select, Space, Spin, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -22,6 +22,7 @@ import { i18n } from "../i18n";
 
 import { ApiError, api } from "../api";
 import { subscribeCredentialCatalog } from "../credential-catalog";
+import type { RefreshReason, RuntimeMutation, RuntimeTriggerSnapshot } from "../hooks/useRuntimeAuthority";
 import type { Adapter, AdapterWebhook, Credential, Worker, WebhookResponseMode } from "../types";
 import { userErrorMessage } from "../user-message";
 
@@ -110,7 +111,10 @@ interface Props {
   workers: Worker[];
   workersLoading: boolean;
   workersError: string | null;
-  onAdapterChange: (adapter: Adapter) => void;
+  runtimeWebhook: Extract<RuntimeTriggerSnapshot, { adapterType: "webhook" }> | null;
+  runtimeSynchronizing: boolean;
+  requestRuntimeRefresh: (reason?: RefreshReason) => Promise<void>;
+  beginRuntimeMutation: () => RuntimeMutation | null;
   onReceivingChange: (enabled: boolean) => void;
   onRuntimeStateChange: (state: WebhookRuntimeState) => void;
   onError: (message: string | null) => void;
@@ -140,7 +144,6 @@ export interface WebhookTriggerHandle {
 const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function WebhookTriggerPanel(props, ref) {
   const { t } = useTranslation(["runtime", "common"]);
   const adapterId = props.adapter.id;
-  const onAdapterChange = props.onAdapterChange;
   const onError = props.onError;
   const onRuntimeStateChange = props.onRuntimeStateChange;
   const [loading, setLoading] = useState(true);
@@ -150,12 +153,20 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   const [responseMode, setResponseMode] = useState<WebhookResponseMode>("accepted");
   const [responseTimeout, setResponseTimeout] = useState<number | null>(30);
   const [saved, setSaved] = useState<AdapterWebhook | null>(null);
+  const [webhookBaseline, setWebhookBaseline] = useState<AdapterWebhook | null>(null);
+  const webhookBaselineRef = useRef<AdapterWebhook | null>(null);
   const [publicId, setPublicId] = useState("");
   const [credentialId, setCredentialId] = useState<number | null>(null);
   const [workerId, setWorkerId] = useState<number | null>(props.adapter.runtime_worker_id ?? null);
   // M5.5.11: 表单内超时值（秒）；null = 跟随 Adapter 保存值。
   const [timeoutOverride, setTimeoutOverride] = useState<number | null>(null);
   const [timeoutCustomMode, setTimeoutCustomMode] = useState(false);
+  const [adapterBaseline, setAdapterBaseline] = useState(() => ({
+    workerId: props.adapter.runtime_worker_id ?? null,
+    timeoutSeconds: props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
+  }));
+  const webhookEditEpoch = useRef(0);
+  const adapterEditEpoch = useRef(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
@@ -174,28 +185,17 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     void (async () => {
       onError(null);
       try {
-        const [credentialList, webhook, adapter] = await Promise.all([
+        const credentialList = await (
           props.canManageCredentials === true
             ? props.useScopedCredentialOptions === true
               ? api.listAdapterCredentialOptions(adapterId)
               : api.listCredentials()
-            : Promise.resolve([]),
-          api.getWebhook(adapterId),
-          api.getAdapter(adapterId),
-        ]);
+            : Promise.resolve([])
+        );
         if (cancelled) {
           return;
         }
         setCredentials(credentialList);
-        setSaved(webhook);
-        setResponseMode(webhook.response_mode);
-        setResponseTimeout(webhook.response_timeout_seconds);
-        setPublicId(webhook.public_id);
-        setCredentialId(webhook.credential_id);
-        setWorkerId(adapter.runtime_worker_id ?? null);
-        setTimeoutOverride(null);
-        setTimeoutCustomMode(false);
-        onAdapterChange(adapter);
       } catch (error) {
         if (!cancelled) {
            onError(errorMessage(error, "", runtimeTranslate));
@@ -212,10 +212,63 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     // publicId changes are local edits and must not reload the form.
   }, [
     adapterId,
-    onAdapterChange,
     onError,
     props.canManageCredentials,
     props.useScopedCredentialOptions,
+  ]);
+
+  useEffect(() => {
+    const snapshot = props.runtimeWebhook;
+    if (snapshot === null || snapshot.adapterId !== adapterId || !snapshot.loaded) return;
+    const webhook = snapshot.value;
+    if (webhook === undefined) return;
+    const baseline = webhookBaselineRef.current;
+    const currentDirty = baseline !== null && (
+      baseline.response_mode !== responseMode
+      || baseline.response_timeout_seconds !== responseTimeout
+      || baseline.public_id !== publicId
+      || baseline.credential_id !== credentialId
+    );
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- accepted authority snapshots update saved status without replacing dirty fields
+    setSaved(webhook);
+    if (baseline === null || !currentDirty) {
+      webhookBaselineRef.current = webhook;
+      setWebhookBaseline(webhook);
+      setResponseMode(webhook.response_mode);
+      setResponseTimeout(webhook.response_timeout_seconds);
+      setPublicId(webhook.public_id);
+      setCredentialId(webhook.credential_id);
+    }
+  }, [
+    adapterId,
+    credentialId,
+    props.runtimeWebhook,
+    publicId,
+    responseMode,
+    responseTimeout,
+  ]);
+
+  useEffect(() => {
+    const workerDirty = workerId !== adapterBaseline.workerId;
+    const effectiveTimeout = timeoutOverride ?? adapterBaseline.timeoutSeconds;
+    const timeoutDirty = effectiveTimeout !== adapterBaseline.timeoutSeconds || timeoutCustomMode;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clean fields follow the accepted Adapter baseline while dirty fields retain their edit baseline
+    setAdapterBaseline((current) => ({
+      workerId: workerDirty ? current.workerId : (props.adapter.runtime_worker_id ?? null),
+      timeoutSeconds: timeoutDirty
+        ? current.timeoutSeconds
+        : (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS),
+    }));
+    if (!workerDirty) setWorkerId(props.adapter.runtime_worker_id ?? null);
+    if (!timeoutDirty && timeoutOverride !== null) setTimeoutOverride(null);
+  }, [
+    adapterBaseline.timeoutSeconds,
+    adapterBaseline.workerId,
+    props.adapter.runtime_worker_id,
+    props.adapter.timeout_seconds,
+    timeoutCustomMode,
+    timeoutOverride,
+    workerId,
   ]);
 
   // 凭据增删改后仅刷新 token 凭据选项（UX-003）；不会重载 Webhook 配置，
@@ -240,7 +293,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   // Treat enabled as locked immediately, even before the follow-up Adapter
   // refresh returns. The backend remains authoritative for active calls after
   // Stop, which are represented by adapter.runtime_locked.
-  const runtimeLocked = enabled || props.adapter.runtime_locked === true;
+  const runtimeLocked = props.adapter.runtime_locked === true || props.runtimeSynchronizing;
   const pathValid = PATH_PATTERN.test(publicId);
   // M5.3 generated token_urlsafe paths that may contain uppercase letters or
   // underscores. Preserve an unchanged legacy URL so an upgraded Webhook can
@@ -250,18 +303,18 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   const pathAcceptable = pathValid || unchangedLegacyPath;
   // M5.5.11: 表单显示值 = 表单覆盖 ?? Adapter 权威值 ?? 默认 300 秒。
   const effectiveTimeoutSeconds =
-    timeoutOverride ?? props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS;
+    timeoutOverride ?? adapterBaseline.timeoutSeconds;
   const effectiveCustom =
     timeoutCustomMode || presetMinutesFor(effectiveTimeoutSeconds) === undefined;
   const timeoutDirty =
-    (props.adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) !== effectiveTimeoutSeconds;
+    adapterBaseline.timeoutSeconds !== effectiveTimeoutSeconds || timeoutCustomMode;
   const dirty =
-    saved !== null &&
-    (saved.response_mode !== responseMode ||
-      saved.response_timeout_seconds !== responseTimeout ||
-      saved.public_id !== publicId ||
-      saved.credential_id !== credentialId ||
-      (props.adapter.runtime_worker_id ?? null) !== workerId ||
+    webhookBaseline !== null &&
+    (webhookBaseline.response_mode !== responseMode ||
+      webhookBaseline.response_timeout_seconds !== responseTimeout ||
+      webhookBaseline.public_id !== publicId ||
+      webhookBaseline.credential_id !== credentialId ||
+      adapterBaseline.workerId !== workerId ||
       timeoutDirty);
   const responseTimeoutValid = responseTimeout !== null && Number.isInteger(responseTimeout) && responseTimeout >= 1 && responseTimeout <= 300;
   const canConfigure = !props.readOnly && !archived && !runtimeLocked && !saving && !changingState;
@@ -356,6 +409,16 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
     if (!canConfigure || !pathAcceptable || !responseTimeoutValid) return;
     const timeoutSeconds = resolveTimeoutSeconds();
     if (timeoutSeconds === null) return;
+    const submittedWebhookEpoch = webhookEditEpoch.current;
+    const submittedAdapterEpoch = adapterEditEpoch.current;
+    const submittedWebhook = {
+      publicId,
+      credentialId,
+      responseMode,
+      responseTimeout: responseTimeout!,
+    };
+    const mutation = props.beginRuntimeMutation();
+    if (mutation === null) return;
     setSaving(true);
     setNotice(null);
     props.onError(null);
@@ -366,20 +429,40 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
           ? { timeout_seconds: timeoutSeconds }
           : { runtime_worker_id: workerId, timeout_seconds: timeoutSeconds },
       );
+      if (!mutation.acceptAdapter(adapter)) return;
+      setAdapterBaseline({
+        workerId: adapter.runtime_worker_id ?? null,
+        timeoutSeconds: adapter.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
+      });
+      if (adapterEditEpoch.current === submittedAdapterEpoch) {
+        setWorkerId(adapter.runtime_worker_id ?? null);
+        setTimeoutOverride(null);
+        setTimeoutCustomMode(false);
+      }
       const webhook = await api.putWebhook(adapterId, {
         enabled: false,
-        public_id: publicId,
-        credential_id: credentialId,
-        response_mode: responseMode,
-        response_timeout_seconds: responseTimeout!,
+        public_id: submittedWebhook.publicId,
+        credential_id: submittedWebhook.credentialId,
+        response_mode: submittedWebhook.responseMode,
+        response_timeout_seconds: submittedWebhook.responseTimeout,
       });
       setSaved(webhook);
-      props.onAdapterChange(adapter);
-      setTimeoutOverride(null);
-      setTimeoutCustomMode(false);
+      webhookBaselineRef.current = webhook;
+      setWebhookBaseline(webhook);
+      if (webhookEditEpoch.current === submittedWebhookEpoch) {
+        setPublicId(webhook.public_id);
+        setCredentialId(webhook.credential_id);
+        setResponseMode(webhook.response_mode);
+        setResponseTimeout(webhook.response_timeout_seconds);
+      }
+      if (!mutation.acceptWebhook(webhook)) return;
     } catch (error) {
        props.onError(errorMessage(error, publicId, (key, options) => t(key, options)));
+      if (error instanceof ApiError && error.code === "adapter_runtime_locked") {
+        void props.requestRuntimeRefresh("conflict");
+      }
     } finally {
+      mutation.finish();
       setSaving(false);
     }
   }
@@ -387,6 +470,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   /** 立即停止接收新请求（等待调用结束 / 直接结束两条路径都先执行这一步）。 */
   async function performStop(): Promise<boolean> {
     if (saved === null || changingState) return false;
+    const mutation = props.beginRuntimeMutation();
+    if (mutation === null) return false;
     setChangingState(true);
     setNotice(null);
     props.onError(null);
@@ -399,24 +484,22 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         response_timeout_seconds: saved.response_timeout_seconds,
       });
       setSaved(webhook);
-      // A successful state transition must lock the UI conservatively while
-      // the derived Adapter runtime state is refreshed. If that refresh fails,
-      // polling can reconcile without exposing an unsafe edit window.
-      props.onAdapterChange({ ...props.adapter, runtime_locked: true });
+      if (!mutation.acceptWebhook(webhook)) return false;
       props.onReceivingChange(false);
-      const adapter = await api.getAdapter(adapterId);
-      props.onAdapterChange(adapter);
       return true;
     } catch (error) {
        props.onError(errorMessage(error, saved.public_id, (key, options) => t(key, options)));
       return false;
     } finally {
+      mutation.finish();
       setChangingState(false);
     }
   }
 
   async function startReceiving() {
     if (saved === null || changingState) return;
+    const mutation = props.beginRuntimeMutation();
+    if (mutation === null) return;
     setChangingState(true);
     setNotice(null);
     props.onError(null);
@@ -429,13 +512,12 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
         response_timeout_seconds: saved.response_timeout_seconds,
       });
       setSaved(webhook);
-      props.onAdapterChange({ ...props.adapter, runtime_locked: true });
+      if (!mutation.acceptWebhook(webhook)) return;
       props.onReceivingChange(true);
-      const adapter = await api.getAdapter(adapterId);
-      props.onAdapterChange(adapter);
     } catch (error) {
        props.onError(errorMessage(error, saved.public_id, (key, options) => t(key, options)));
     } finally {
+      mutation.finish();
       setChangingState(false);
     }
   }
@@ -444,12 +526,12 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
   async function cancelActiveCall() {
     const executionId = props.adapter.running_execution_id;
     if (executionId == null) return;
+    const mutation = props.beginRuntimeMutation();
+    if (mutation === null) return;
     setChangingState(true);
     props.onError(null);
     try {
       const execution = await api.cancelExecution(executionId);
-      const adapter = await api.getAdapter(adapterId);
-      props.onAdapterChange(adapter);
       // A pending Execution turns cancelled immediately; a running one gets
       // the cancel flag the Worker picks up on its next progress round trip.
       if (execution.status === "cancelled") {
@@ -461,6 +543,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
          t("webhook.settings.cancelFailed", { error: userErrorMessage(error) }),
       );
     } finally {
+      mutation.finish();
       setChangingState(false);
     }
   }
@@ -506,7 +589,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                 data-testid="webhook-public-id"
                  aria-label={t("webhook.settings.pathAria")}
                 value={publicId}
-                onChange={(event) => { setPublicId(event.target.value); setNotice(null); }}
+                onChange={(event) => { webhookEditEpoch.current += 1; setPublicId(event.target.value); setNotice(null); }}
               />
               {!pathValid && !unchangedLegacyPath && (
                  <Alert type="error" showIcon data-testid="webhook-path-invalid" message={t("webhook.settings.pathInvalid")} />
@@ -552,7 +635,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                 value={credentialId ?? undefined}
                  placeholder={t("webhook.settings.credentialPlaceholder")}
                 options={tokenCredentials.map((credential) => ({ label: credential.name, value: credential.id }))}
-                onChange={(value) => { setCredentialId(value); setNotice(null); }}
+                onChange={(value) => { webhookEditEpoch.current += 1; setCredentialId(value); setNotice(null); }}
               />
               {tokenCredentials.length === 0 && (
                  <Alert type="warning" showIcon message={t("webhook.settings.noCredential")} />
@@ -584,7 +667,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                 }),
                 value: worker.id,
               }))}
-              onChange={(value) => { setWorkerId(value); setNotice(null); }}
+              onChange={(value) => { adapterEditEpoch.current += 1; setWorkerId(value); setNotice(null); }}
             />
           ) : (
             <LockedValue testId="webhook-worker-locked">{workerName}</LockedValue>
@@ -600,6 +683,7 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
               value={responseMode}
               onChange={(event) => {
                 const mode = event.target.value as WebhookResponseMode;
+                webhookEditEpoch.current += 1;
                 setResponseMode(mode);
                 if (mode === "accepted" && !responseTimeoutValid) {
                   setResponseTimeout(saved.response_timeout_seconds);
@@ -630,7 +714,10 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                 max={300}
                 precision={0}
                 value={responseTimeout}
-                onChange={setResponseTimeout}
+                onChange={(value) => {
+                  webhookEditEpoch.current += 1;
+                  setResponseTimeout(value);
+                }}
                 status={responseTimeoutValid ? undefined : "error"}
               />
             ) : (
@@ -649,7 +736,8 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                 data-testid="webhook-timeout-preset"
                 value={effectiveCustom ? "custom" : presetMinutesFor(effectiveTimeoutSeconds)}
                 onChange={(event) => {
-                  const value = event.target.value as number | "custom";
+                const value = event.target.value as number | "custom";
+                adapterEditEpoch.current += 1;
                   if (value === "custom") {
                     setTimeoutCustomMode(true);
                   } else {
@@ -673,7 +761,10 @@ const WebhookTriggerPanel = forwardRef<WebhookTriggerHandle, Props>(function Web
                     max={MAX_TIMEOUT_SECONDS}
                     precision={0}
                     value={effectiveTimeoutSeconds}
-                    onChange={(value) => setTimeoutOverride(value ?? null)}
+                    onChange={(value) => {
+                      adapterEditEpoch.current += 1;
+                      setTimeoutOverride(value ?? null);
+                    }}
                   />
                   <Typography.Text className="webhook-timeout-unit">
                     {t("webhook.settings.seconds")}

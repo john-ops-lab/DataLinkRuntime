@@ -224,6 +224,8 @@ interface Route {
 }
 
 function stubFetch(routes: Route[]) {
+  const adapterMutationResults = new Map<number, Adapter>();
+  const listedAdapters = new Map<number, Adapter>();
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = (init?.method ?? "GET").toUpperCase();
@@ -239,6 +241,29 @@ function stubFetch(routes: Route[]) {
     // Existing fixtures without call history represent an empty Webhook.
     if (!route && method === "GET" && /^\/api\/adapters\/\d+\/executions\?limit=1&trigger=webhook$/.test(url)) {
       return { ok: true, status: 200, json: async () => ({ items: [], next_before_id: null }) };
+    }
+    // The runtime authority reads the Task Schedule whenever a Task is
+    // selected, including manual-mode Tasks. Most Console fixtures do not
+    // configure one, so model the API's exact absent-resource response.
+    if (!route && method === "GET" && /^\/api\/adapters\/\d+\/schedule$/.test(url)) {
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({
+          detail: { code: "schedule_not_configured", message: "Schedule is not configured" },
+        }),
+      };
+    }
+    if (!route && method === "GET" && /^\/api\/adapters\/\d+$/.test(url)) {
+      const adapterId = Number(url.match(/\d+/)?.[0] ?? 0);
+      const mutationResult = adapterMutationResults.get(adapterId);
+      if (mutationResult !== undefined) {
+        return { ok: true, status: 200, json: async () => mutationResult };
+      }
+      const adapter = listedAdapters.get(adapterId);
+      if (adapter !== undefined) {
+        return { ok: true, status: 200, json: async () => adapter };
+      }
     }
     // A1 creates an Adapter-level Input Object for every Task Adapter. Keep
     // older Console fixtures focused on their own behavior by supplying the
@@ -278,6 +303,18 @@ function stubFetch(routes: Route[]) {
       throw new Error(`Unexpected request: ${method} ${url}`);
     }
     const { status = 200, body, stream, streamChunks } = await route.respond(requestBody, url);
+    if (status >= 200 && status < 300 && method === "GET" && url === "/api/adapters" && Array.isArray(body)) {
+      for (const candidate of body as Adapter[]) listedAdapters.set(candidate.id, candidate);
+    }
+    if (
+      status >= 200
+      && status < 300
+      && method === "PATCH"
+      && /^\/api\/adapters\/\d+$/.test(url)
+      && body !== undefined
+    ) {
+      adapterMutationResults.set(Number(url.match(/\d+/)?.[0] ?? 0), body as Adapter);
+    }
     if (stream !== undefined || streamChunks !== undefined) {
       // Minimal ReadableStream-like body for the SSE reader; chunks arrive
       // with a small gap so intermediate renders are observable.
@@ -4843,27 +4880,41 @@ function makeWebhook(overrides: Record<string, unknown> = {}) {
 }
 
 function webhookConsoleRoutes(
-  adapter: Adapter,
-  webhook = makeWebhook(),
-  workers = [{
+  adapterSource: Adapter | (() => Adapter),
+  webhook: ReturnType<typeof makeWebhook> | (() => ReturnType<typeof makeWebhook>) = makeWebhook(),
+  workers?: Worker[],
+): Route[] {
+  const initialAdapter = typeof adapterSource === "function" ? adapterSource() : adapterSource;
+  const configuredWorkers = workers ?? [{
     id: 3,
     name: "hook-worker",
     status: "online",
     last_heartbeat: "",
-    capabilities: [adapter.language],
-  }],
-): Route[] {
+    capabilities: [initialAdapter.language],
+  }];
   return [
     healthRoute({ status: "ok", database: true }),
-    { method: "GET", match: "/api/adapters", respond: () => ({ body: [adapter] }) },
+    {
+      method: "GET",
+      match: "/api/adapters",
+      respond: () => ({ body: [typeof adapterSource === "function" ? adapterSource() : adapterSource] }),
+    },
     {
       method: "GET",
       match: "/api/workers",
-      respond: () => ({ body: workers }),
+      respond: () => ({ body: configuredWorkers }),
     },
     { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [] }) },
-    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: adapter }) },
-    { method: "GET", match: "/api/adapters/1/webhook", respond: () => ({ body: webhook }) },
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => ({ body: typeof adapterSource === "function" ? adapterSource() : adapterSource }),
+    },
+    {
+      method: "GET",
+      match: "/api/adapters/1/webhook",
+      respond: () => ({ body: typeof webhook === "function" ? webhook() : webhook }),
+    },
     { method: "GET", match: "/api/credentials", respond: () => ({ body: [{ id: 7, name: "hook-token", type: "token", created_at: "", updated_at: "" }] }) },
   ];
 }
@@ -5149,7 +5200,7 @@ it("edits only the URL path, saves Worker and Token, then starts receiving", asy
   });
   let webhook = makeWebhook();
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(() => adapter, () => webhook),
     {
       method: "PATCH",
       match: "/api/adapters/1",
@@ -5242,7 +5293,7 @@ it("rejects an invalid path locally and renders the stable path-in-use message",
   });
   let webhook = makeWebhook();
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(adapter, () => webhook),
     {
       method: "PATCH",
       match: "/api/adapters/1",
@@ -5301,7 +5352,7 @@ it("preserves an unchanged legacy Webhook path but validates it once edited", as
     hook_path: `/api/hooks/${legacyPath}`,
   });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(adapter, () => webhook),
     {
       method: "PUT",
       match: "/api/adapters/1/webhook",
@@ -5350,7 +5401,7 @@ it("stops receiving without unlocking an active call or exposing the Token", asy
   });
   let webhook = makeWebhook({ enabled: true });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(adapter, () => webhook),
     {
       method: "PUT",
       match: "/api/adapters/1/webhook",
@@ -5424,7 +5475,7 @@ it("stops receiving directly without a dialog when there is no active call", asy
   });
   let webhook = makeWebhook({ enabled: true });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(adapter, () => webhook),
     {
       method: "PUT",
       match: "/api/adapters/1/webhook",
@@ -5465,7 +5516,7 @@ it("ends the active call immediately when the user chooses 直接结束当前调
   });
   let webhook = makeWebhook({ enabled: true });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(adapter, () => webhook),
     {
       method: "PUT",
       match: "/api/adapters/1/webhook",
@@ -5552,7 +5603,7 @@ it("keeps receiving and the active call when the user cancels the dialog", async
   });
   let webhook = makeWebhook({ enabled: true });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(adapter, () => webhook),
     {
       method: "PUT",
       match: "/api/adapters/1/webhook",
@@ -5590,7 +5641,7 @@ it("keeps the true stopped state with an actionable error when cancel fails", as
   });
   let webhook = makeWebhook({ enabled: true });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(adapter, () => webhook),
     {
       method: "PUT",
       match: "/api/adapters/1/webhook",
@@ -5647,7 +5698,7 @@ it("blocks receiving while runtime settings have unsaved changes", async () => {
     runtime_worker_id: 3,
   });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter),
+    ...webhookConsoleRoutes(() => adapter),
     {
       method: "PATCH",
       match: "/api/adapters/1",
@@ -5691,7 +5742,7 @@ it("saves the Adapter-level single-run timeout from Webhook run settings (M5.5.1
     runtime_worker_id: 3,
   });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter),
+    ...webhookConsoleRoutes(() => adapter),
     {
       method: "PATCH",
       match: "/api/adapters/1",
@@ -7263,7 +7314,7 @@ it("saves completed Webhook response mode, validates wait limit and locks it on 
   let adapter = makeAdapter({ adapter_type: "webhook", latest_version_id: 10, runtime_worker_id: 3 });
   let webhook = makeWebhook();
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, webhook),
+    ...webhookConsoleRoutes(() => adapter, () => webhook),
     { method: "PATCH", match: "/api/adapters/1", respond: (body) => {
       adapter = { ...adapter, ...JSON.parse(body ?? "{}") };
       return { body: adapter };
@@ -7303,4 +7354,346 @@ it("saves completed Webhook response mode, validates wait limit and locks it on 
   for (const payload of payloads) {
     expect(payload).toMatchObject({ response_mode: "completed", response_timeout_seconds: 12 });
   }
+});
+
+it("keeps a dirty Schedule draft across a paired focus refresh and stops with the latest saved fields", async () => {
+  let currentAdapter = makeAdapter({
+    run_mode: "schedule",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    runtime_locked: false,
+  });
+  let currentSchedule = {
+    adapter_id: 1,
+    enabled: false,
+    cron: "0 9 * * *",
+    timezone: "UTC",
+    input: null,
+    next_run_at: null,
+    updated_at: "2026-09-20T00:00:00Z",
+  };
+  const stopPayloads: unknown[] = [];
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [currentAdapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: currentAdapter }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [makeReadyWorker()] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    { method: "GET", match: "/api/adapters/1/schedule", respond: () => ({ body: currentSchedule }) },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: (body) => {
+        const payload = JSON.parse(body ?? "{}");
+        stopPayloads.push(payload);
+        currentSchedule = { ...currentSchedule, ...payload };
+        currentAdapter = { ...currentAdapter, runtime_locked: false };
+        return { body: currentSchedule };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  const cron = await screen.findByTestId("task-schedule-cron");
+  fireEvent.change(cron, { target: { value: "15 10 * * *" } });
+
+  currentSchedule = {
+    ...currentSchedule,
+    enabled: true,
+    cron: "30 8 * * *",
+    timezone: "Asia/Shanghai",
+  };
+  currentAdapter = { ...currentAdapter, runtime_locked: true };
+  window.dispatchEvent(new Event("focus"));
+
+  await waitFor(() => {
+    expect((screen.getByTestId("task-schedule-cron") as HTMLInputElement).disabled).toBe(true);
+  });
+  expect(valueOf("task-schedule-cron")).toBe("15 10 * * *");
+  expect(screen.getByTestId("header-task-schedule-toggle").textContent).toContain("停用定时");
+
+  fireEvent.click(screen.getByTestId("header-task-schedule-toggle"));
+  await waitFor(() => expect(stopPayloads).toHaveLength(1));
+  expect(stopPayloads[0]).toMatchObject({
+    enabled: false,
+    cron: "30 8 * * *",
+    timezone: "Asia/Shanghai",
+  });
+  expect(valueOf("task-schedule-cron")).toBe("15 10 * * *");
+});
+
+it("accepts the Task Adapter save segment while preserving a later-failing Schedule draft", async () => {
+  let currentAdapter = makeAdapter({
+    run_mode: "schedule",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+  });
+  const currentSchedule = {
+    adapter_id: 1,
+    enabled: false,
+    cron: "0 9 * * *",
+    timezone: "UTC",
+    input: null,
+    next_run_at: null,
+    updated_at: "2026-09-20T00:00:00Z",
+  };
+  stubFetch([
+    healthRoute({ status: "ok", database: true }),
+    { method: "GET", match: "/api/adapters", respond: () => ({ body: [currentAdapter] }) },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: currentAdapter }) },
+    { method: "GET", match: "/api/workers", respond: () => ({ body: [makeReadyWorker()] }) },
+    { method: "GET", match: "/api/adapters/1/versions", respond: () => ({ body: [makeVersion()] }) },
+    { method: "GET", match: "/api/adapters/1/versions/10", respond: () => ({ body: makeVersion() }) },
+    { method: "GET", match: "/api/adapters/1/schedule", respond: () => ({ body: currentSchedule }) },
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        currentAdapter = { ...currentAdapter, ...JSON.parse(body ?? "{}") };
+        return { body: currentAdapter };
+      },
+    },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: () => ({ status: 500, body: { detail: "schedule write failed" } }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  fireEvent.change(await screen.findByTestId("task-schedule-cron"), {
+    target: { value: "15 10 * * *" },
+  });
+  fireEvent.click(screen.getByRole("radio", { name: "10 分钟" }));
+  fireEvent.click(screen.getByTestId("save-task-runtime"));
+  await waitFor(() => expect(currentAdapter.timeout_seconds).toBe(600));
+  await screen.findByTestId("error-banner");
+
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(valueOf("task-schedule-cron")).toBe("15 10 * * *"));
+  expect(
+    screen.getByTestId("task-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
+  ).toContain("10 分钟");
+  expect((screen.getByTestId("save-task-runtime") as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("accepts the Webhook Adapter segment while preserving its failed configuration draft", async () => {
+  let currentAdapter = makeAdapter({
+    adapter_type: "webhook",
+    latest_version_id: 10,
+    runtime_worker_id: 3,
+  });
+  const currentWebhook = makeWebhook();
+  stubFetch([
+    ...webhookConsoleRoutes(() => currentAdapter, currentWebhook),
+    {
+      method: "PATCH",
+      match: "/api/adapters/1",
+      respond: (body) => {
+        currentAdapter = { ...currentAdapter, ...JSON.parse(body ?? "{}") };
+        return { body: currentAdapter };
+      },
+    },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/webhook",
+      respond: () => ({ status: 500, body: { detail: "webhook write failed" } }),
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("webhook-run-settings");
+  fireEvent.change(screen.getByTestId("webhook-public-id"), {
+    target: { value: "receive-preserved-draft" },
+  });
+  fireEvent.click(screen.getByRole("radio", { name: "10 分钟" }));
+  fireEvent.click(screen.getByTestId("webhook-save"));
+  await waitFor(() => expect(currentAdapter.timeout_seconds).toBe(600));
+  await screen.findByTestId("error-banner");
+
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(valueOf("webhook-public-id")).toBe("receive-preserved-draft"));
+  expect(
+    screen.getByTestId("webhook-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
+  ).toContain("10 分钟");
+  expect((screen.getByTestId("webhook-save") as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("shares the post-enable synchronization lock with the Task header", async () => {
+  let currentAdapter = makeAdapter({
+    run_mode: "schedule",
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    runtime_locked: false,
+  });
+  let currentSchedule = {
+    adapter_id: 1,
+    enabled: false,
+    cron: "0 9 * * *",
+    timezone: "UTC",
+    input: null,
+    next_run_at: null,
+    updated_at: "2026-09-20T00:00:00Z",
+  };
+  let holdAdapter = false;
+  let resolveAdapter!: (value: RouteResponse) => void;
+  const pendingAdapter = new Promise<RouteResponse>((resolve) => { resolveAdapter = resolve; });
+  stubFetch([
+    ...consoleWithVersionRoutes(currentAdapter, makeVersion()),
+    readyWorkerRoute,
+    {
+      method: "GET",
+      match: "/api/adapters/1",
+      respond: () => holdAdapter ? pendingAdapter : { body: currentAdapter },
+    },
+    { method: "GET", match: "/api/adapters/1/schedule", respond: () => ({ body: currentSchedule }) },
+    {
+      method: "PUT",
+      match: "/api/adapters/1/schedule",
+      respond: (body) => {
+        currentSchedule = { ...currentSchedule, ...JSON.parse(body ?? "{}") };
+        currentAdapter = { ...currentAdapter, runtime_locked: true };
+        holdAdapter = true;
+        return { body: currentSchedule };
+      },
+    },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  await waitFor(() => expect(
+    (screen.getByTestId("header-task-schedule-toggle") as HTMLButtonElement).disabled,
+  ).toBe(false));
+  fireEvent.click(screen.getByTestId("header-task-schedule-toggle"));
+  await waitFor(() => expect(
+    screen.getByTestId("header-task-schedule-toggle").textContent,
+  ).toContain("停用定时"));
+  expect((screen.getByTestId("save-version") as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    screen.getByTestId("save-version").closest(".action-with-reason")?.getAttribute("aria-label"),
+  ).toContain("正在处理");
+
+  await act(async () => {
+    resolveAdapter({ body: currentAdapter });
+    await pendingAdapter;
+  });
+});
+
+it("lets reverted-clean Task runtime fields follow the next authority baseline", async () => {
+  let currentAdapter = makeAdapter({
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    timeout_seconds: 300,
+    run_mode: "manual",
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(currentAdapter, makeVersion()),
+    {
+      method: "GET",
+      match: "/api/workers",
+      respond: () => ({ body: [
+        makeReadyWorker({ id: 1, name: "worker-one" }),
+        makeReadyWorker({ id: 2, name: "worker-two" }),
+      ] }),
+    },
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: currentAdapter }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("task-timeout-preset");
+
+  fireEvent.click(screen.getByRole("radio", { name: "10 分钟" }));
+  fireEvent.click(screen.getByRole("radio", { name: "5 分钟" }));
+  fireEvent.click(screen.getByRole("radio", { name: "定时运行" }));
+  fireEvent.click(screen.getByRole("radio", { name: "手动运行" }));
+
+  const workerSelect = screen.getByTestId("task-runtime-worker");
+  for (const workerName of ["worker-two（在线）", "worker-one（在线）"]) {
+    fireEvent.mouseDown(workerSelect.querySelector(".ant-select-selector") ?? workerSelect);
+    const optionContent = (await screen.findAllByText(workerName))
+      .find((element) => element.classList.contains("ant-select-item-option-content"));
+    expect(optionContent).toBeDefined();
+    fireEvent.click(optionContent?.closest(".ant-select-item-option") ?? optionContent as HTMLElement);
+  }
+
+  const leaving = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(leaving);
+  expect(leaving.defaultPrevented).toBe(false);
+  const readsBefore = fetchMock.mock.calls.filter(
+    ([url, init]) => url === "/api/adapters/1" && (init?.method ?? "GET") === "GET",
+  ).length;
+  currentAdapter = {
+    ...currentAdapter,
+    timeout_seconds: 600,
+    runtime_worker_id: 2,
+    run_mode: "schedule",
+  };
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(fetchMock.mock.calls.filter(
+    ([url, init]) => url === "/api/adapters/1" && (init?.method ?? "GET") === "GET",
+  ).length).toBeGreaterThan(readsBefore));
+
+  await waitFor(() => expect(
+    screen.getByTestId("task-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
+  ).toContain("10 分钟"));
+  expect(screen.getByTestId("task-runtime-worker").textContent).toContain("worker-two");
+  expect(await screen.findByTestId("task-schedule-cron")).toBeTruthy();
+});
+
+it("keeps a genuinely dirty Task timeout when external authority saves the same or another value", async () => {
+  let currentAdapter = makeAdapter({
+    latest_version_id: 10,
+    runtime_worker_id: 1,
+    timeout_seconds: 300,
+  });
+  const fetchMock = stubFetch([
+    ...consoleWithVersionRoutes(currentAdapter, makeVersion()),
+    readyWorkerRoute,
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: currentAdapter }) },
+  ]);
+
+  render(<App />);
+  await selectFirstAdapter();
+  fireEvent.click(screen.getByRole("tab", { name: "运行设置" }));
+  await screen.findByTestId("task-timeout-preset");
+  fireEvent.click(screen.getByRole("radio", { name: "10 分钟" }));
+
+  let readsBefore = fetchMock.mock.calls.filter(
+    ([url, init]) => url === "/api/adapters/1" && (init?.method ?? "GET") === "GET",
+  ).length;
+  currentAdapter = { ...currentAdapter, timeout_seconds: 600 };
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(fetchMock.mock.calls.filter(
+    ([url, init]) => url === "/api/adapters/1" && (init?.method ?? "GET") === "GET",
+  ).length).toBeGreaterThan(readsBefore));
+  expect(
+    screen.getByTestId("task-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
+  ).toContain("10 分钟");
+  let leaving = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(leaving);
+  expect(leaving.defaultPrevented).toBe(true);
+
+  readsBefore = fetchMock.mock.calls.filter(
+    ([url, init]) => url === "/api/adapters/1" && (init?.method ?? "GET") === "GET",
+  ).length;
+  currentAdapter = { ...currentAdapter, timeout_seconds: 900 };
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(fetchMock.mock.calls.filter(
+    ([url, init]) => url === "/api/adapters/1" && (init?.method ?? "GET") === "GET",
+  ).length).toBeGreaterThan(readsBefore));
+  expect(
+    screen.getByTestId("task-timeout-preset").querySelector(".ant-radio-wrapper-checked")?.textContent,
+  ).toContain("10 分钟");
+  leaving = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(leaving);
+  expect(leaving.defaultPrevented).toBe(true);
 });

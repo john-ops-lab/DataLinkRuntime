@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import { applySystemLocale, DEFAULT_SYSTEM_LOCALE, resources } from "../i18n";
 import type { AccountRole, AdapterAccessLevel, Credential, CredentialBinding } from "../types";
 import CredentialBindingsEditor from "./CredentialBindingsEditor";
@@ -29,6 +29,8 @@ function renderEditor(options: {
   platformRole: AccountRole;
   accessLevel: AdapterAccessLevel;
   disabled?: boolean;
+  onError?: ReturnType<typeof vi.fn>;
+  onRuntimeConflict?: ReturnType<typeof vi.fn>;
 }) {
   vi.spyOn(api, "listAdapterBindings").mockResolvedValue([binding]);
   vi.spyOn(api, "listAdapterCredentialOptions").mockResolvedValue([credential]);
@@ -41,7 +43,8 @@ function renderEditor(options: {
       accessLevel={options.accessLevel}
       platformRole={options.platformRole}
       useScopedCredentialOptions
-      onError={vi.fn()}
+      onError={options.onError ?? vi.fn()}
+      onRuntimeConflict={options.onRuntimeConflict}
       onOpenSettings={vi.fn()}
     />,
   );
@@ -123,4 +126,27 @@ it("keeps the role-hint resource key exact, parity-complete and out of component
   );
   expect(componentSource).not.toContain("如需新增凭据，请联系管理员前往");
   expect(componentSource).not.toContain("To add a credential, ask an administrator");
+});
+
+it("keeps binding rows dirty and requests the shared runtime refresh after a 409", async () => {
+  const onError = vi.fn();
+  const onRuntimeConflict = vi.fn();
+  vi.spyOn(api, "setAdapterBindings").mockRejectedValue(
+    new ApiError(409, "adapter_runtime_locked", "runtime locked"),
+  );
+  renderEditor({
+    platformRole: "admin",
+    accessLevel: "owner",
+    onError,
+    onRuntimeConflict,
+  });
+
+  const envKey = await screen.findByTestId("binding-env-key");
+  fireEvent.change(envKey, { target: { value: "NEW_API_TOKEN" } });
+  fireEvent.click(screen.getByTestId("save-bindings"));
+
+  await waitFor(() => expect(onRuntimeConflict).toHaveBeenCalledTimes(1));
+  expect((screen.getByTestId("binding-env-key") as HTMLInputElement).value).toBe("NEW_API_TOKEN");
+  expect((screen.getByTestId("save-bindings") as HTMLButtonElement).disabled).toBe(false);
+  expect(onError).toHaveBeenLastCalledWith(expect.stringContaining("adapter_runtime_locked"));
 });
