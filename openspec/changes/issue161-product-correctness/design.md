@@ -104,7 +104,7 @@ Settings default、Compose `${DLR_MANAGED_FILES_ENABLED:-true}`、`.env.example`
 
 内置源保持已有创建限制、类型/地址/凭据不可变约束，普通源不能通过 PATCH 转成内置源。旧非法普通源不在启动/list 上强制校验，可修成合法地址或删除；其他修改若最终组合仍非法则返回字段错误。既有测试用 malformed URL 建连通性失败源须改为合法但确定不可达的合成地址，旧非法记录兼容用隔离测试 fixture 种入。
 
-前端 `SystemSettingsDrawer` 的地址 Form.Item 显示后端稳定字段错误，保存失败保持输入、支持修复；frontend 轻量语法提示不能替代服务端权威。所有四类各用可控源、新 Version 冷目录和可观测包请求执行代表性第三方调用；source 命中、安装成功与业务输出分别断言，不清现有 cache、不引入外部 PyPI 故障修复。
+前端 `SystemSettingsDrawer` 的地址 Form.Item 显示后端稳定字段错误，保存失败保持输入、支持修复；frontend 轻量语法提示不能替代服务端权威。四类源均完成创建/PATCH、合法保存重读、旧记录修复及 UI 安全错误矩阵。遵从 #157 的原始边界，对已具备条件的合法源使用可控源、新 Version 冷目录和可观测包请求，分别断言实际源访问、依赖准备及第三方业务输出；已知暂缓的外部 PyPI 准备故障单列原始失败与业务未到达，不要求在本组修复，也不计为 PASS 或 N/A。不清现有 cache，不以旧 ready 环境证明新源；新增校验造成的选源或保存回归仍须修复。
 
 ### D8. Java 文档示例直接对运行时代码编译
 
@@ -122,7 +122,7 @@ Settings default、Compose `${DLR_MANAGED_FILES_ENABLED:-true}`、`.env.example`
 | 155-B | 同页与双页面启停计划、active、dirty、409/失败/迟到 | 两个真实 Chrome 页面及交互/请求/Console，代码与多个表单草稿逐字段前后比较 |
 | 150-A | 双代理 L/L+1/>1MiB、上限关系、改 L 无 reload、清理/其他路由/认证 | 真实代理与业务 SHA oracle；静态关系和 Nginx配置加载不能代替 L 成功 |
 | 150-B | 未设置/显式开关，格式×五语言覆盖、模板、持久/配额/Lease/GC | 独立合成夹具，真实执行与重启、自然生命周期；保留旧 BLOCKED，不以 ready 当成功 |
-| 157 | 四类 create/PATCH 全组合、离线保存、旧记录修复、安全错误 | PG/API + UI字段反馈；四类新版本冷环境实际源访问及业务输出 |
+| 157 | 四类 create/PATCH 全组合、离线保存、旧记录修复、安全错误 | PG/API + UI字段反馈；已具备条件的合法源使用新版本冷环境验证实际源访问及业务输出，已知排除的外部 PyPI 准备失败与业务未到达单列，不计 PASS |
 | 159 | 检索内容实际公共字段与日志方法、示例可编译执行 | 提取文档代码与真实 Java SOURCE 编译运行，配置/输出/日志/secret不泄漏 |
 | 最终组 | 新 head 无遗漏、第一组可靠性不退化 | Backend Ruff/format/Mypy/full pytest、Web ESLint/TS/Vitest/build、OpenSpec strict、适用CI/独立Review、最终head关键运行 |
 
