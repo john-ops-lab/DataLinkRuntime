@@ -16,11 +16,13 @@ import random
 import uuid
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from dlr.common.bigfields import truncate_utf8
@@ -32,10 +34,13 @@ from dlr.control.models import (
     Execution,
     ExecutionArtifactHold,
     ExecutionAttempt,
+    ExecutionIncidentDisposition,
     ExecutionInfrastructureIncident,
     ExecutionInputArtifactLease,
+    ExecutionOutbox,
     ManagedInputArtifact,
     ManagedInputArtifactStatus,
+    RuntimeReconciliationCursor,
     Worker,
 )
 from dlr.control.schemas.execution import ExecutionResultReport
@@ -48,6 +53,8 @@ from dlr.control.schemas.reliable_runtime import (
     AttemptStartBody,
     AttemptSummary,
     ClaimDecision,
+    IncidentDispositionReceipt,
+    InfrastructureIncidentSummary,
     ReliableExecutionDetail,
     ReplayResponse,
     ResourceProfile,
@@ -57,6 +64,11 @@ from dlr.control.services import admission, outbox
 from dlr.control.services import execution as execution_service
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.dispatch import deserialize_dispatch_message
+from dlr.control.services.execution_cancellation import (
+    CANCELLATION_ERROR_CODE,
+    lock_execution_attempts,
+    lock_incidents_and_outbox,
+)
 from dlr.control.services.input_config import database_now
 from dlr.control.services.worker import build_task_payload
 from dlr.control.services.worker_protocol import generate_token, hash_token, token_matches
@@ -71,6 +83,34 @@ RETRYABLE_ERROR_CLASSES = frozenset({"platform_transient", "worker_lost"})
 ATTEMPT_METRICS: Counter[str] = Counter()
 _asyncio_to_thread = asyncio.to_thread
 _asyncio_sleep = asyncio.sleep
+RECONCILIATION_CURSOR_NAME = "expired_attempts"
+RECONCILIATION_LOCK_TIMEOUT_MS = 1_000
+RECONCILIATION_ROW_ERROR_CODES = frozenset({"resource_profile_invalid", "retry_policy_invalid"})
+RECONCILIATION_MISSING_CODES = frozenset(
+    {"adapter_not_found", "attempt_not_found", "execution_not_found"}
+)
+
+
+@dataclass(frozen=True)
+class RecoveryCandidateReservation:
+    """One committed cursor segment, safe to process without holding its row lock."""
+
+    attempt_ids: tuple[int, ...]
+    after_id: int
+    upper_id: int
+    wrapped: bool
+
+
+class ReconciliationRowError(Exception):
+    """A closed, non-sensitive validation failure isolated to one Attempt row."""
+
+    def __init__(self, code: str, *, attempt_id: int, execution_id: int) -> None:
+        if code not in RECONCILIATION_ROW_ERROR_CODES:
+            raise ValueError("unsupported reconciliation row error code")
+        super().__init__(code)
+        self.code = code
+        self.attempt_id = attempt_id
+        self.execution_id = execution_id
 
 
 def metrics_snapshot() -> dict[str, int]:
@@ -331,6 +371,7 @@ def _slot(session: Session, adapter_id: int) -> AdapterExecutionSlot:
         select(AdapterExecutionSlot)
         .where(AdapterExecutionSlot.adapter_id == adapter_id, AdapterExecutionSlot.slot_no == 0)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if slot is None:
         slot = AdapterExecutionSlot(adapter_id=adapter_id, slot_no=0)
@@ -388,7 +429,9 @@ def claim_dispatch(
             execution_id=message.execution_id,
             dispatch_generation=message.dispatch_generation,
         )
-    execution = session.get(Execution, message.execution_id, with_for_update=True)
+    execution = session.get(
+        Execution, message.execution_id, with_for_update=True, populate_existing=True
+    )
     if execution is None:
         return _reject_dispatch(
             session,
@@ -468,17 +511,45 @@ def claim_dispatch(
         delay = max(1, int((_utc(execution.next_attempt_at) - _utc(now)).total_seconds()))
         session.rollback()
         return _decision("ACK_NOOP", "retry_not_due", retry_after_seconds=min(delay, 86_400))
+
+    locked_attempts = lock_execution_attempts(session, execution.id)
+    slot = _slot(session, adapter.id)
     if execution.cancel_requested:
+        active_attempt = next(
+            (attempt for attempt in locked_attempts if attempt.status in ACTIVE_ATTEMPT_STATUSES),
+            None,
+        )
+        if active_attempt is not None:
+            session.rollback()
+            return _decision(
+                "ACK_NOOP",
+                "cancel_requested",
+                attempt_id=active_attempt.id,
+                cancel_requested=True,
+            )
+        incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
         execution.status = "cancelled"
         execution.ended_at = now
+        execution.error_code = CANCELLATION_ERROR_CODE
+        execution.last_error_code = CANCELLATION_ERROR_CODE
         admission.release_admission_once(session, execution, now=now)
         execution_service.release_execution_leases(session, execution.id)
+        from dlr.control.services.incident_disposition import (
+            converge_terminal_dispositions_locked,
+        )
+
+        converge_terminal_dispositions_locked(session, execution, incidents, now=now)
         session.commit()
         return _decision("ACK_NOOP", "cancelled")
 
-    slot = _slot(session, adapter.id)
     if slot.active_attempt_id is not None:
-        active = session.get(ExecutionAttempt, slot.active_attempt_id)
+        active = next(
+            (attempt for attempt in locked_attempts if attempt.id == slot.active_attempt_id),
+            None,
+        )
+        if active is None:
+            # Do not lock or clear another Execution's active Attempt after Slot.
+            active = session.get(ExecutionAttempt, slot.active_attempt_id)
         if active is not None and active.status in ACTIVE_ATTEMPT_STATUSES:
             if _utc(active.lease_expires_at) > _utc(now):
                 session.rollback()
@@ -494,12 +565,18 @@ def claim_dispatch(
         raise
     attempt_no = int(execution.attempt_count) + 1
     if attempt_no > int(policy["max_attempts"]):
+        incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
         execution.status = "dead_letter"
         execution.last_error_code = "retry_exhausted"
         execution.ended_at = now
         _create_holds_locked(session, execution, now=now)
         execution_service.release_execution_leases(session, execution.id)
         admission.release_admission_once(session, execution, now=now)
+        from dlr.control.services.incident_disposition import (
+            converge_terminal_dispositions_locked,
+        )
+
+        converge_terminal_dispositions_locked(session, execution, incidents, now=now)
         session.commit()
         return _decision("ACK_NOOP", "retry_exhausted")
 
@@ -565,14 +642,15 @@ def _lock_attempt_context(
     execution = session.get(Execution, execution_id, with_for_update=True, populate_existing=True)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
-    adapter = session.get(Adapter, execution.adapter_id, with_for_update=True)
+    adapter = session.get(
+        Adapter, execution.adapter_id, with_for_update=True, populate_existing=True
+    )
     if adapter is None:
         raise domain_error(404, "adapter_not_found", "Adapter not found")
-    # An unlocked identity read must never leave a stale running Attempt in
-    # the identity map after another report won the lock and committed.
-    attempt = session.get(
-        ExecutionAttempt, attempt_id, with_for_update=True, populate_existing=True
-    )
+    # Lock every Attempt in ascending order before Slot.  This preserves the
+    # shared cancellation/disposition order and refreshes any auth-read cache.
+    attempts = lock_execution_attempts(session, execution.id)
+    attempt = next((row for row in attempts if row.id == attempt_id), None)
     if attempt is None:
         raise domain_error(404, "attempt_not_found", "Attempt not found")
     slot = _slot(session, adapter.id)
@@ -612,7 +690,7 @@ def start_attempt(
             attempt,
             _slot_row,
             status="cancelled",
-            error_code="execution_cancelled",
+            error_code=CANCELLATION_ERROR_CODE,
             error_class="cancelled",
             error="Execution was cancelled before Adapter start",
             now=now,
@@ -777,6 +855,7 @@ def _apply_terminal_locked(
 ) -> ClaimDecision:
     if attempt.status in TERMINAL_ATTEMPT_STATUSES:
         return _decision("ACK_NOOP", "already_terminal", attempt_id=attempt.id)
+    incidents, _outbox_rows = lock_incidents_and_outbox(session, execution.id)
     attempt.status = status
     attempt.ended_at = now
     attempt.error_code = error_code[:64]
@@ -825,10 +904,12 @@ def _apply_terminal_locked(
         preview_bytes = output_preview.encode()[: settings.execution_output_preview_max_bytes]
         output_preview = preview_bytes.decode("utf-8", errors="ignore")
         execution.output_preview = output_preview
+    if status == "cancelled":
+        attempt.error_code = CANCELLATION_ERROR_CODE
     if execution.cancel_requested or status == "cancelled":
         execution.status = "cancelled"
-        execution.error_code = "execution_cancelled"
-        execution.last_error_code = "execution_cancelled"
+        execution.error_code = CANCELLATION_ERROR_CODE
+        execution.last_error_code = CANCELLATION_ERROR_CODE
         final = True
     elif status == "succeeded":
         execution.status = "succeeded"
@@ -863,6 +944,12 @@ def _apply_terminal_locked(
         execution_service.release_execution_leases(session, execution.id)
         admission.release_admission_once(session, execution, now=now)
     _release_slot_locked(slot, attempt)
+    if final:
+        from dlr.control.services.incident_disposition import (
+            converge_terminal_dispositions_locked,
+        )
+
+        converge_terminal_dispositions_locked(session, execution, incidents, now=now)
     ATTEMPT_METRICS[f"terminal_{status}"] += 1
     return _decision("ACK_NOOP", "terminal_recorded", attempt_id=attempt.id)
 
@@ -940,50 +1027,189 @@ def prepare_failed(
     return result
 
 
-def recover_expired_attempts(
-    session: Session, *, limit: int = 100, now: datetime | None = None
-) -> int:
-    """Fence and converge expired claimed/running Attempts in small batches."""
-    effective_now = _utc(now or database_now(session))
-    ids = list(
-        session.scalars(
+def _http_error_code(error: HTTPException) -> str | None:
+    detail = error.detail
+    if not isinstance(detail, dict):
+        return None
+    code = detail.get("code")
+    return code if isinstance(code, str) else None
+
+
+def _active_recovery_upper_id(session: Session) -> int:
+    return int(
+        session.scalar(
+            select(func.coalesce(func.max(ExecutionAttempt.id), 0)).where(
+                ExecutionAttempt.status.in_(ACTIVE_ATTEMPT_STATUSES)
+            )
+        )
+        or 0
+    )
+
+
+def _recovery_candidate_ids(
+    session: Session, *, after_id: int, upper_id: int, limit: int
+) -> tuple[int, ...]:
+    if upper_id <= after_id:
+        return ()
+    return tuple(
+        int(value)
+        for value in session.scalars(
             select(ExecutionAttempt.id)
             .where(
                 ExecutionAttempt.status.in_(ACTIVE_ATTEMPT_STATUSES),
-                ExecutionAttempt.lease_expires_at <= effective_now,
+                ExecutionAttempt.id > after_id,
+                ExecutionAttempt.id <= upper_id,
             )
-            .order_by(ExecutionAttempt.lease_expires_at, ExecutionAttempt.id)
-            .limit(max(1, min(int(limit), 1_000)))
+            .order_by(ExecutionAttempt.id)
+            .limit(limit)
         )
     )
-    recovered = 0
-    for attempt_id in ids:
-        peek = session.get(ExecutionAttempt, attempt_id)
-        if peek is None:
-            continue
-        try:
-            execution, _adapter, attempt, slot = _lock_attempt_context(
-                session, peek.worker_id, attempt_id
-            )
-            locked_now = database_now(session)
-            if attempt.status not in ACTIVE_ATTEMPT_STATUSES or _utc(
-                attempt.lease_expires_at
-            ) > _utc(locked_now):
-                session.rollback()
-                continue
-            _apply_terminal_locked(
+
+
+def _set_reconciliation_lock_timeout(session: Session) -> None:
+    """Bound only this reconciliation transaction's PostgreSQL lock waits."""
+    session.execute(
+        text("SELECT set_config('lock_timeout', :timeout, true)"),
+        {"timeout": f"{RECONCILIATION_LOCK_TIMEOUT_MS}ms"},
+    )
+
+
+def reserve_recovery_candidates(
+    session: Session, *, limit: int = 100
+) -> RecoveryCandidateReservation:
+    """Commit one bounded active-Attempt cursor segment before processing it."""
+    batch_size = max(1, min(int(limit), 1_000))
+    try:
+        _set_reconciliation_lock_timeout(session)
+        cursor = session.scalar(
+            select(RuntimeReconciliationCursor)
+            .where(RuntimeReconciliationCursor.name == RECONCILIATION_CURSOR_NAME)
+            .with_for_update()
+        )
+        if cursor is None:
+            raise RuntimeError("expired Attempt reconciliation cursor is missing")
+
+        wrapped = False
+        if int(cursor.upper_id) == 0:
+            cursor.after_id = 0
+            cursor.upper_id = _active_recovery_upper_id(session)
+        attempt_ids = _recovery_candidate_ids(
+            session,
+            after_id=int(cursor.after_id),
+            upper_id=int(cursor.upper_id),
+            limit=batch_size,
+        )
+        if not attempt_ids:
+            wrapped = True
+            cursor.after_id = 0
+            cursor.upper_id = _active_recovery_upper_id(session)
+            attempt_ids = _recovery_candidate_ids(
                 session,
-                execution,
-                attempt,
-                slot,
-                status="worker_lost",
-                error_code="worker_lost",
-                error_class="worker_lost",
-                error="Worker Lease expired before a terminal result was accepted",
-                now=locked_now,
+                after_id=0,
+                upper_id=int(cursor.upper_id),
+                limit=batch_size,
             )
-            session.commit()
-            recovered += 1
+        if attempt_ids:
+            cursor.after_id = attempt_ids[-1]
+        reservation = RecoveryCandidateReservation(
+            attempt_ids=attempt_ids,
+            after_id=int(cursor.after_id),
+            upper_id=int(cursor.upper_id),
+            wrapped=wrapped,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return reservation
+
+
+def _validate_recovery_snapshots(execution: Execution, *, attempt_id: int) -> None:
+    for validator in (_retry_policy, _load_profile):
+        try:
+            validator(execution)
+        except HTTPException as error:
+            code = _http_error_code(error)
+            if code in RECONCILIATION_ROW_ERROR_CODES:
+                raise ReconciliationRowError(
+                    code,
+                    attempt_id=attempt_id,
+                    execution_id=execution.id,
+                ) from None
+            raise
+
+
+def _recover_reserved_attempt(
+    session: Session,
+    attempt_id: int,
+    *,
+    now: datetime | None,
+) -> bool:
+    _set_reconciliation_lock_timeout(session)
+    identity = session.execute(
+        select(ExecutionAttempt.worker_id, ExecutionAttempt.execution_id).where(
+            ExecutionAttempt.id == attempt_id
+        )
+    ).one_or_none()
+    if identity is None:
+        session.rollback()
+        return False
+    worker_id, _execution_id = identity
+    try:
+        execution, _adapter, attempt, slot = _lock_attempt_context(
+            session, int(worker_id), attempt_id
+        )
+    except HTTPException as error:
+        session.rollback()
+        if _http_error_code(error) in RECONCILIATION_MISSING_CODES:
+            return False
+        raise
+    locked_now = _utc(now or database_now(session))
+    if attempt.status not in ACTIVE_ATTEMPT_STATUSES or _utc(attempt.lease_expires_at) > locked_now:
+        session.rollback()
+        return False
+    _validate_recovery_snapshots(execution, attempt_id=attempt.id)
+    _apply_terminal_locked(
+        session,
+        execution,
+        attempt,
+        slot,
+        status="worker_lost",
+        error_code="worker_lost",
+        error_class="worker_lost",
+        error="Worker Lease expired before a terminal result was accepted",
+        now=locked_now,
+    )
+    session.commit()
+    return True
+
+
+def recover_expired_attempts(
+    session: Session, *, limit: int = 100, now: datetime | None = None
+) -> int:
+    """Fence expired Attempts from one committed, restart-safe cursor segment."""
+    reservation = reserve_recovery_candidates(session, limit=limit)
+    recovered = 0
+    for candidate_index, attempt_id in enumerate(reservation.attempt_ids, start=1):
+        try:
+            recovered += int(_recover_reserved_attempt(session, attempt_id, now=now))
+        except ReconciliationRowError as error:
+            session.rollback()
+            metric = f"reconciliation_row_error_{error.code}"
+            ATTEMPT_METRICS[metric] += 1
+            logger.warning(
+                "attempt reconciliation row skipped: attempt_id=%s execution_id=%s "
+                "error_code=%s cursor_upper_id=%s wrapped=%s "
+                "index=%s count=%s error_count=%s",
+                error.attempt_id,
+                error.execution_id,
+                error.code,
+                reservation.upper_id,
+                reservation.wrapped,
+                candidate_index,
+                len(reservation.attempt_ids),
+                ATTEMPT_METRICS[metric],
+            )
         except Exception:
             session.rollback()
             raise
@@ -1047,7 +1273,9 @@ def retry_dispatcher_once(
     return dispatched
 
 
-def execution_detail(session: Session, execution_id: int) -> ReliableExecutionDetail:
+def execution_detail(
+    session: Session, execution_id: int, *, can_edit: bool = True
+) -> ReliableExecutionDetail:
     execution = session.get(Execution, execution_id)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
@@ -1065,6 +1293,28 @@ def execution_detail(session: Session, execution_id: int) -> ReliableExecutionDe
             .order_by(ExecutionInfrastructureIncident.id)
         )
     )
+    dispositions = list(
+        session.scalars(
+            select(ExecutionIncidentDisposition)
+            .where(ExecutionIncidentDisposition.execution_id == execution.id)
+            .order_by(
+                ExecutionIncidentDisposition.created_at.desc(),
+                ExecutionIncidentDisposition.id.desc(),
+            )
+        )
+    )
+    dispositions_by_incident: dict[int, list[ExecutionIncidentDisposition]] = {}
+    for disposition in dispositions:
+        dispositions_by_incident.setdefault(disposition.incident_id, []).append(disposition)
+    current_outbox = session.scalar(
+        select(ExecutionOutbox).where(
+            ExecutionOutbox.execution_id == execution.id,
+            ExecutionOutbox.dispatch_generation == execution.dispatch_generation,
+        )
+    )
+    active_attempts = any(item.status in ACTIVE_ATTEMPT_STATUSES for item in attempts)
+    from dlr.control.services.incident_disposition import inspect_incident_disposition
+
     replay_available, replay_reason = _replay_availability(session, execution)
     return ReliableExecutionDetail(
         execution_id=execution.id,
@@ -1091,15 +1341,41 @@ def execution_detail(session: Session, execution_id: int) -> ReliableExecutionDe
             for item in attempts
         ],
         incidents=[
-            {
-                "id": incident.id,
-                "kind": incident.kind,
-                "status": incident.status,
-                "attempts": incident.attempts,
-                "last_error": incident.last_error,
-                "created_at": incident.created_at,
-                "resolved_at": incident.resolved_at,
-            }
+            InfrastructureIncidentSummary(
+                id=incident.id,
+                execution_id=execution.id,
+                dispatch_generation=incident.dispatch_generation,
+                message_id=incident.message_id,
+                kind=incident.kind,
+                status=cast(Any, incident.status),
+                attempts=incident.attempts,
+                observation_count=incident.attempts,
+                disposition_count=len(dispositions_by_incident.get(incident.id, [])),
+                recovery_dispatch_count=sum(
+                    item.outcome == "recovery_dispatched"
+                    for item in dispositions_by_incident.get(incident.id, [])
+                ),
+                last_error=incident.last_error,
+                created_at=incident.created_at,
+                resolved_at=incident.resolved_at,
+                recent_disposition=(
+                    IncidentDispositionReceipt.model_validate(
+                        dispositions_by_incident[incident.id][0]
+                    )
+                    if dispositions_by_incident.get(incident.id)
+                    else None
+                ),
+                dispositions_url=(
+                    f"/api/executions/{execution.id}/incidents/{incident.id}/dispositions"
+                ),
+                **inspect_incident_disposition(
+                    execution,
+                    incident,
+                    active_attempts=active_attempts,
+                    current_outbox=current_outbox,
+                    can_edit=can_edit,
+                ).__dict__,
+            )
             for incident in incidents
         ],
         replay_available=replay_available,

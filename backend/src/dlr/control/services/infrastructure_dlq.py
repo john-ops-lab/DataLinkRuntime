@@ -30,12 +30,14 @@ from dlr.control.models import (
 )
 from dlr.control.services import outbox, rabbitmq
 from dlr.control.services.dispatch import INFRASTRUCTURE_DLQ, deserialize_dispatch_message
+from dlr.control.services.execution_cancellation import lock_execution_in_admission_order
 from dlr.control.services.input_config import database_now
 
 logger = logging.getLogger("dlr.control.infrastructure_dlq")
 DLQ_POLL_INTERVAL_SECONDS = 5.0
 _asyncio_to_thread = asyncio.to_thread
 _asyncio_sleep = asyncio.sleep
+_DEATH_REASONS = frozenset({"delivery_limit", "rejected", "expired", "maxlen"})
 
 
 @dataclass(frozen=True)
@@ -70,13 +72,28 @@ def _message_id(value: object) -> uuid.UUID | None:
         return None
 
 
-def _has_delivery_limit(headers: object) -> bool:
-    if not isinstance(headers, Mapping):
-        return False
+def _death_reason(headers: object, *, queue_name: str | None) -> str:
+    """Return the newest structured x-death reason for the dispatch queue."""
+
+    if not isinstance(headers, Mapping) or queue_name is None:
+        return "unknown"
     death = headers.get("x-death")
-    if isinstance(death, list) and death:
-        return True
-    return any(str(key).lower() in {"x-delivery-limit", "delivery-limit"} for key in headers)
+    if not isinstance(death, list):
+        return "unknown"
+    for event in death:
+        if not isinstance(event, Mapping) or event.get("queue") != queue_name:
+            continue
+        count = event.get("count")
+        reason = event.get("reason")
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count <= 0
+            or not isinstance(reason, str)
+        ):
+            return "unknown"
+        return reason if reason in _DEATH_REASONS else "unknown"
+    return "unknown"
 
 
 def _incident(
@@ -161,22 +178,26 @@ def reconcile_message(
     raw_execution_id = _positive_int(raw.get("execution_id"))
     raw_generation = _positive_int(raw.get("dispatch_generation"))
     raw_message_id = _message_id(raw.get("message_id"))
-    delivery_limit = _has_delivery_limit(headers or {})
+    raw_worker_id = _positive_int(raw.get("target_worker_id"))
     try:
         message = deserialize_dispatch_message(raw)
     except Exception:
         message = None
-    kind = "delivery_limit" if delivery_limit else "dispatch_payload_invalid"
+    target_worker_id = message.target_worker_id if message is not None else raw_worker_id
+    queue_name = (
+        rabbitmq.topology_names(target_worker_id).queue if target_worker_id is not None else None
+    )
+    kind = _death_reason(headers or {}, queue_name=queue_name)
+    delivery_limit = kind == "delivery_limit"
     if message is not None:
         raw_execution_id = message.execution_id
         raw_generation = message.dispatch_generation
         raw_message_id = message.message_id
-        kind = "delivery_limit" if delivery_limit else "dispatch_infrastructure_error"
 
     execution: Execution | None = None
     adapter: Adapter | None = None
     if raw_execution_id is not None:
-        execution = session.get(Execution, raw_execution_id, with_for_update=True)
+        execution = lock_execution_in_admission_order(session, raw_execution_id)
         if execution is not None:
             adapter = session.get(Adapter, execution.adapter_id)
     incident = _incident(

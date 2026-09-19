@@ -443,6 +443,7 @@ def settle_pending_outbox(
     *,
     disposition: str,
     now: datetime | None = None,
+    locked_rows: tuple[ExecutionOutbox, ...] | None = None,
 ) -> int:
     """Settle pending generations with a bounded terminal disposition.
 
@@ -453,16 +454,25 @@ def settle_pending_outbox(
     """
     if not disposition or len(disposition) > 64:
         raise ValueError("outbox terminal disposition is invalid")
-    rows = list(
-        session.scalars(
-            select(ExecutionOutbox)
-            .where(
-                ExecutionOutbox.execution_id == execution_id,
-                ExecutionOutbox.status == "pending",
-            )
-            .with_for_update()
-        ).all()
-    )
+    if locked_rows is None:
+        rows = list(
+            session.scalars(
+                select(ExecutionOutbox)
+                .where(
+                    ExecutionOutbox.execution_id == execution_id,
+                    ExecutionOutbox.status == "pending",
+                )
+                .order_by(ExecutionOutbox.dispatch_generation.asc(), ExecutionOutbox.id.asc())
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).all()
+        )
+    else:
+        rows = [
+            row
+            for row in locked_rows
+            if row.execution_id == execution_id and row.status == "pending"
+        ]
     effective_now = _as_utc(now if now is not None else _now(session))
     for row in rows:
         row.status = "published"
@@ -474,7 +484,11 @@ def settle_pending_outbox(
 
 
 def settle_cancelled_outbox(
-    session: Session, execution_id: int, *, now: datetime | None = None
+    session: Session,
+    execution_id: int,
+    *,
+    now: datetime | None = None,
+    locked_rows: tuple[ExecutionOutbox, ...] | None = None,
 ) -> int:
     """Settle pending generations after a queued Execution is cancelled."""
     return settle_pending_outbox(
@@ -482,6 +496,7 @@ def settle_cancelled_outbox(
         execution_id,
         disposition="execution_cancelled",
         now=now,
+        locked_rows=locked_rows,
     )
 
 

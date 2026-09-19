@@ -1,8 +1,9 @@
 """Execution management endpoints of the Control Node (admin-facing)."""
 
+import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Query, Response
 from sqlalchemy.orm import Session
 
 from dlr.control import db
@@ -13,6 +14,9 @@ from dlr.control.schemas.execution import (
 )
 from dlr.control.schemas.reliable_runtime import (
     HoldPurgeBody,
+    IncidentDispositionBody,
+    IncidentDispositionPage,
+    IncidentDispositionResponse,
     ReliableExecutionDetail,
     ReplayResponse,
 )
@@ -22,7 +26,7 @@ from dlr.control.security import (
     require_business_principal,
     require_principal,
 )
-from dlr.control.services import adapter_access
+from dlr.control.services import adapter_access, incident_disposition
 from dlr.control.services import attempt as attempt_service
 from dlr.control.services import execution as execution_service
 
@@ -31,6 +35,7 @@ router = APIRouter(dependencies=[Depends(require_business_principal)])
 DbSession = Annotated[Session, Depends(db.get_session)]
 CurrentPrincipal = Annotated[Principal, Depends(require_principal)]
 IdempotencyHeader = Annotated[str | None, Header(alias="Idempotency-Key")]
+DispositionIdempotencyHeader = Annotated[uuid.UUID, Header(alias="Idempotency-Key")]
 
 
 @router.post(
@@ -79,8 +84,64 @@ def get_execution(
 def get_reliable_detail(
     execution_id: int, principal: CurrentPrincipal, session: DbSession
 ) -> ReliableExecutionDetail:
+    execution = adapter_access.require_execution_access(session, execution_id, principal, "read")
+    access = adapter_access.require_adapter_access(session, execution.adapter_id, principal, "read")
+    return attempt_service.execution_detail(
+        session,
+        execution_id,
+        can_edit=access.level in {"admin", "owner", "edit"},
+    )
+
+
+@router.post(
+    "/api/executions/{execution_id}/incidents/{incident_id}/dispositions",
+    response_model=IncidentDispositionResponse,
+)
+def dispose_infrastructure_incident(
+    execution_id: int,
+    incident_id: int,
+    payload: IncidentDispositionBody,
+    response: Response,
+    principal: CurrentPrincipal,
+    session: DbSession,
+    idempotency_key: DispositionIdempotencyHeader,
+) -> IncidentDispositionResponse:
+    result = incident_disposition.dispose_incident(
+        session,
+        execution_id,
+        incident_id,
+        payload.action,
+        payload.expected_generation,
+        idempotency_key,
+        payload.reason_code,
+        principal,
+    )
+    response.status_code = result.status_code
+    if result.response.retry_after_seconds is not None:
+        response.headers["Retry-After"] = str(result.response.retry_after_seconds)
+    return result.response
+
+
+@router.get(
+    "/api/executions/{execution_id}/incidents/{incident_id}/dispositions",
+    response_model=IncidentDispositionPage,
+)
+def list_infrastructure_incident_dispositions(
+    execution_id: int,
+    incident_id: int,
+    principal: CurrentPrincipal,
+    session: DbSession,
+    before_id: uuid.UUID | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> IncidentDispositionPage:
     adapter_access.require_execution_access(session, execution_id, principal, "read")
-    return attempt_service.execution_detail(session, execution_id)
+    return incident_disposition.list_dispositions(
+        session,
+        execution_id=execution_id,
+        incident_id=incident_id,
+        before_id=before_id,
+        limit=limit,
+    )
 
 
 @router.post("/api/executions/{execution_id}/replay", response_model=ReplayResponse)

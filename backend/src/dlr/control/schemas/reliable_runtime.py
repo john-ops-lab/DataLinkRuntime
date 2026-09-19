@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -23,6 +24,104 @@ Decision = Literal["EXECUTE", "ACK_NOOP", "DEFER", "REJECT_DLQ", "PAUSE_CONSUMER
 AttemptStatus = Literal[
     "succeeded", "failed", "timed_out", "cancelled", "worker_lost", "resource_exceeded"
 ]
+IncidentDispositionAction = Literal["recover", "terminate"]
+IncidentDispositionReason = Literal[
+    "capacity_repaired", "routing_repaired", "operator_cancel", "verified_terminal"
+]
+IncidentDispositionOutcome = Literal[
+    "dispatch_already_pending",
+    "recovery_dispatched",
+    "cancellation_requested",
+    "execution_terminal",
+    "stale_incident_ignored",
+    "incident_generation_conflict",
+    "incident_dispatch_identity_invalid",
+    "incident_execution_unsupported",
+    "incident_dispatch_identity_unverifiable",
+    "incident_stale_generation",
+    "incident_execution_active",
+    "incident_cancellation_pending",
+    "incident_execution_not_queued",
+    "incident_dispatch_settled",
+    "incident_dispatch_inflight",
+    "incident_materials_unavailable",
+    "outbox_backlog_full",
+]
+
+
+class IncidentDispositionBody(BaseModel):
+    """Closed operator intent; actor identity is always taken from Principal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: IncidentDispositionAction
+    expected_generation: StrictInt = Field(ge=1, le=2**53 - 1)
+    reason_code: IncidentDispositionReason
+
+
+class IncidentDispositionReceipt(BaseModel):
+    """Non-sensitive durable audit receipt returned by POST and list APIs."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    incident_id: int
+    execution_id: int
+    idempotency_key: uuid.UUID
+    actor_kind: Literal["superadmin", "account"]
+    user_id: int | None
+    action: IncidentDispositionAction
+    reason_code: IncidentDispositionReason
+    outcome: IncidentDispositionOutcome
+    code: str = Field(min_length=1, max_length=64)
+    from_generation: int | None = Field(default=None, ge=1)
+    to_generation: int | None = Field(default=None, ge=1)
+    from_outbox_id: uuid.UUID | None = None
+    to_outbox_id: uuid.UUID | None = None
+    execution_status: str = Field(min_length=1, max_length=32)
+    created_at: datetime
+
+
+class IncidentDispositionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    receipt: IncidentDispositionReceipt
+    incident_status: Literal["open", "resolved", "ignored"]
+    execution_status: str = Field(min_length=1, max_length=32)
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
+
+
+class IncidentDispositionPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[IncidentDispositionReceipt]
+    next_before_id: uuid.UUID | None = None
+
+
+class InfrastructureIncidentSummary(BaseModel):
+    """Bounded Incident facts plus current advisory disposition capabilities."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    execution_id: int
+    dispatch_generation: int | None = Field(default=None, ge=1)
+    message_id: uuid.UUID | None = None
+    kind: str = Field(min_length=1, max_length=64)
+    status: Literal["open", "resolved", "ignored"]
+    attempts: int = Field(ge=0)
+    observation_count: int = Field(ge=0)
+    disposition_count: int = Field(ge=0)
+    recovery_dispatch_count: int = Field(ge=0)
+    last_error: str | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+    recent_disposition: IncidentDispositionReceipt | None = None
+    dispositions_url: str
+    recover_available: bool
+    recover_reason: str | None = None
+    terminate_available: bool
+    terminate_reason: str | None = None
 
 
 class AttemptClaimBody(BaseModel):
@@ -250,7 +349,7 @@ class ReliableExecutionDetail(BaseModel):
     dispatch_backend: Literal["rabbitmq"]
     status: str
     attempts: list[AttemptSummary]
-    incidents: list[dict[str, Any]]
+    incidents: list[InfrastructureIncidentSummary]
     replay_available: bool
     replay_reason: str | None = None
 

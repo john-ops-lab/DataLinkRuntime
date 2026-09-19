@@ -23,6 +23,8 @@ python3 "$DLR_PREVIEW_HOME/preview.py" resume
 python3 "$DLR_PREVIEW_HOME/preview.py" copy-token
 ```
 
+`pause` 会让已开始的操作完成并阻止下一次更新。驻留 watcher 无需退出；如有 active operation，等它结束后再规划。`plan-carry-forward` 从开始核验到 manifest 持久化期间会排除 watcher 操作，并让并发 `resume` 等到规划结束。
+
 ## 升级规则
 
 候选必须包含已部署 Git 提交；当前数据库 revision 必须位于唯一、完整、未改变既有 revision/down_revision 的 Alembic 迁移链中。历史已应用迁移的函数修复允许存在，实际升级只执行当前数据库版本之后的迁移。历史分叉或无法向前迁移时记录原因，保留现场，不自动降级或另建环境。若人工重写仅涉及非运行文件，可在私有 `state.json` 登记 `history_anchor_sha`；控制器仍核对全部部署源码路径完全相同，并要求候选继承该锚点。实际运行 SHA 与镜像记录保留原值，只有完成新部署才更新。
@@ -33,9 +35,67 @@ python3 "$DLR_PREVIEW_HOME/preview.py" copy-token
 
 数据库备份保存在 配置的 VM 根目录下 `backups/<timestamp>-<old>-to-<new>/`。资产清单仅含列名与行哈希，备份文件本身包含业务数据，目录权限受限。数据库备份不包含材料卷；部署从不删除任何卷。
 
+### 显式 carry-forward 保全升级
+
+默认部署仍要求执行与清理责任全部空闲。只有因已知基础设施 Incident 留下、且新版本提供向前兼容处置能力的责任，才可使用一次性的私有 carry-forward manifest。它不是 `ignore busy` 开关，也不会取消旧 Execution、改写 cleanup、释放 Admission 或删除卷。
+
+先让普通 watcher 完成候选构建并因 busy 门禁等待，然后暂停 watcher。把明确的 Execution/Incident 选择写入权限为 `0600`、父目录为 `0700` 的私有 JSON：
+
+```json
+{
+  "queued": [
+    {"execution_id": 123, "incident_ids": [456]}
+  ],
+  "cleanup_execution_ids": [789]
+}
+```
+
+ID 必须是明确正整数；不接受通配符、重复项、空选择或客户端自称的 cleanup 分类。示例 ID 只是结构占位，不对应任何环境。
+
+```sh
+python3 "$DLR_PREVIEW_HOME/preview.py" pause
+python3 "$DLR_PREVIEW_HOME/preview.py" plan-carry-forward \
+  --to-sha <FULL_CANDIDATE_SHA> \
+  --ids-file <PRIVATE_IDS_JSON> \
+  --output <PRIVATE_MANIFEST_JSON>
+
+# 仅用于已单独审查的处置后 Web 后继：
+python3 "$DLR_PREVIEW_HOME/preview.py" plan-carry-forward \
+  --mode audited-web-same-schema-v1 \
+  --to-sha <FULL_CANDIDATE_SHA> \
+  --ids-file <PRIVATE_AUDITED_IDS_JSON> \
+  --output <PRIVATE_MANIFEST_V3_JSON>
+
+python3 "$DLR_PREVIEW_HOME/preview.py" select <PR_NUMBER> \
+  --carry-forward <PRIVATE_MANIFEST_JSON>
+python3 "$DLR_PREVIEW_HOME/preview.py" resume
+```
+
+`plan-carry-forward` 只接受当前所选 PR 的 eligible HEAD，要求候选镜像已由普通 watcher stage，并使用 `prepare-sandbox-host.sh --status` 只读核对 keeper。计划绑定仓库、PR、旧/新 SHA、旧/新 schema、迁移图、控制器文件、镜像、全部命名卷及明确选择；原 manifest 不能自动重绑到新的 HEAD 或控制器。`select` 将其复制进控制器自己的私有目录，配置和 `status` 只保留 manifest ID、摘要及候选绑定，不显示 Execution 列表、路径、卷名或 journal 内容。普通 `select` 会清除旧引用。
+
+对于 manifest v2，本控制器唯一支持的同 schema 保全升级是 `0040_issue152_dispositions` 到同一 revision，且不得新增或删除任何 schema 对象。新候选 SHA 必须重新生成 manifest，只有现有已支持的责任分类可以进入计划。`execution_incident_dispositions` 审计表必须存在，并在计划及后续每次核验时保持为空；已有任一 disposition 会在停止服务前直接拒绝 v2 规划。既有 `runtime_reconciliation_cursors` 表保留在原 inventory 中，后继不重新执行 0039 seed；当前游标不要求等于初始 `0/0`，应用运行期间正常 reconciler 仍可推进游标。未知的同 revision 或向前 transition 在 manifest 校验时拒绝。这条显式 v2 后继路径不是通用的同 schema 部署机制。
+
+固定预览在处置完成后还有一条例外，但只供已单独审查的 Web 更新使用。必须显式传入 `--mode audited-web-same-schema-v1`；省略该参数仍执行上面的 audit-empty manifest v2 合同。此模式生成 manifest v3，只接受 `0040_issue152_dispositions` → `0040_issue152_dispositions`，并在规划、选择和切换前最后检查时重新计算完整 Git 对象差异。唯一允许变化的产品源码是 `web/src/index.css`；对应测试、控制器、双语文档和 Issue 161 planning 文件使用闭合配套列表。新增、删除、重命名、symlink、submodule、mode 变化、依赖或迁移变化及未知路径均拒绝。
+
+此模式的私有 IDs 文件须增加非空 `terminal_executions`。每项绑定一个原 Execution、Incident、disposition UUID、终态与代次、输出摘要、两个错误码和 Attempt 数量。预期必须来自已单独封存并复核的验收快照，不能直接把 fresh 行回填成自我批准计划。queued 与 terminal 身份不得重叠；terminal 可以同时进入 `cleanup_execution_ids`，仍为 pending/deferred cleanup 的 terminal 必须显式进入。规划在同一个只读事务内读取完整 17 列审计表及真实 `id` 主键，并与原十三张责任表一起验证。全审计表必须精确等于显式 disposition 集；验证器还核对 actor、请求摘要、Incident/Outbox 关系、终态、无 replay、资源释放和 Adapter/global Admission 总量，并在后续各阶段保持完整十四表投影。已 published 的取消 Outbox 原行保持不变，`last_error_code` 可以继续为 null；规范取消码属于 Execution 与 disposition 审计事实。
+
+验证器在 REPEATABLE READ READ ONLY 事务中按固定 allowlist 读取 Execution、Attempt、Slot、Incident、Outbox、Adapter/Global Admission、Input Lease/Hold、Credential Snapshot、idempotency、schedule outcome 和 Worker cleanup request。它保存旧列、主键、逐行哈希和计数，不把原数据库值写到公开回执。只有清单内 queued＋open Incident、未释放 Admission、当前代 Outbox、无 active Attempt/Slot，且没有其他 queued/running/retry_wait 或 Worker cleanup 责任时才通过。
+
+cleanup 只从事实派生，不写数据库：
+
+- `not_applicable`：零 Attempt、`attempt_count=0`、无 worker/start、无 workspace/journal/Sandbox 证据；原 `pending` 保持不变。
+- `completed`：已有终态 Attempt、数据库已为 `completed`，且无残留 workspace/journal。
+- `deferred_preserved`：任一历史终态 Attempt 的 cleanup 摘要仍为 `deferred`，其私有 cleanup journal 的 Execution、Attempt、路径和 Token 摘要与数据库一致；即使后继 Attempt 已使 Execution cleanup 显示 completed，这份旧责任仍须由真实 Worker receipt 收敛。
+
+journal 缺失、未知文件或 symlink、未选择的 workspace、未知 cgroup、活动 Slot/Attempt、额外 open Incident、材料树漂移都阻断升级。验证只读挂载 Worker runtime/journal 和 Control 的 builtin/artifact 卷；依赖缓存不作为 Execution 责任，但命名卷身份仍固定并保留。
+
+切换时先复核 manifest，再停 Control 并重读数据库；通过后才停 Worker/Web，确认应用容器已停止、keeper 身份未变且委派树只剩 `agent`。停写后、备份后、迁移后新服务启动前，旧数据库列投影、责任分类、journal/runtime/材料树和 kernel 证据必须一致。迁移允许增加本版本的新列/表，但比较仍使用 manifest 记录的全部旧列。原 `assets.py`、备份可列出、镜像、CI/历史、Sandbox、真实 RabbitMQ→Worker 执行和 workspace cleanup 门禁继续执行。
+
+carry-forward 切换停下 Control 后若出现 Claim、证据变化或任何未知读取失败，控制器保持应用停止和 attention，要求人工核对并重新计划；它不会用一次旧健康结果自动恢复写入。进入 `migrating` 后同样不自动 downgrade、restore 或启动旧 schema 应用。失败现场、原卷和备份保留供诊断。成功 receipt 只记录 manifest ID/摘要/计数，不公开私有选择；它证明旧责任被原样带到新版本，不证明原 Incident 已恢复、终结或 cleanup 已完成。后续验收必须关联原 Execution ID、generation、Attempt、输出与资源释放，新建任务成功不能替代。
+
 ## 安装或更新控制器
 
-当前安装器用于接管私有配置指定的既有环境，要求 macOS、Python 3.11+、`gh` 登录、Colima、已有 LaunchAgent、`source.git` 源码缓存、`config.json`、`state.json`、`preview.env`，以及 VM 内已准备好的 sandbox 脚本。它不负责首次创建 VM 或生成凭据，也不改变默认 Docker context。
+当前安装器用于接管私有配置指定的既有环境，要求 macOS、Python 3.11+、`gh` 登录、Colima、已有 LaunchAgent、`source.git` 源码缓存、`config.json`、`state.json`、`preview.env`，以及 VM 内已准备好的 sandbox 脚本。它不负责首次创建 VM 或生成凭据，也不改变默认 Docker context。若 carry-forward plan 正在占用配置，安装器会先等待它结束再暂停更新；暂停后若 controller operation 仍忙，安装器保持 paused 并退出。取得操作与配置边界后，它才卸载 watcher；随后必须取得 watcher singleton，才会备份、替换文件或传输 VM 脚本。
 
 从审查过的仓库工作区运行：
 
@@ -86,8 +146,10 @@ python3 "$DLR_PREVIEW_HOME/preview.py" acknowledge
 
 ```sh
 python3 -m unittest discover -s tools/local-preview/tests -v
+python3 -m py_compile tools/local-preview/*.py tools/local-preview/tests/*.py
 bash -n tools/local-preview/deploy.sh
-openspec validate local-preview-delivery --strict
+openspec validate issue161-runtime-reliability --type change --strict --no-interactive
+git diff --check
 ```
 
 控制器测试独立于业务后端，由 CI 的 `local-preview` job 执行；数据库迁移和真实执行仍由业务 CI 与实际预览验证提供证据。

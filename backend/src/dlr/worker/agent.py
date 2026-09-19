@@ -21,6 +21,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
+from dlr.common.config import settings
 from dlr.common.platform_logging import configure_platform_logging
 from dlr.worker import cgroup_namespace, executor, sandbox
 from dlr.worker import venv as venv_manager
@@ -350,10 +351,11 @@ class Agent:
                 execution_slots=self._config.execution_slots,
                 runtime_root=self._config.runtime_root,
                 attempt_journal_root=self._config.attempt_journal_root,
+                claim_handshake_timeout_seconds=settings.rabbitmq_claim_handshake_timeout_seconds,
             ),
             self._client,
-            connection_factory=rabbitmq.connect,
             runtime_settings=self._config.runtime_settings(),
+            connection_parameters=rabbitmq.connection_parameters(),
         )
         self._consumer.run()
 

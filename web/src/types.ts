@@ -305,12 +305,57 @@ export interface AttemptSummary {
 
 export interface ReliableExecutionIncident {
   id: number;
+  execution_id: number;
+  dispatch_generation: number | null;
+  message_id: string | null;
   kind: string;
-  status: string;
+  status: "open" | "resolved" | "ignored";
   attempts: number;
+  observation_count: number;
+  disposition_count: number;
+  recovery_dispatch_count: number;
   last_error: string | null;
   created_at: string;
   resolved_at: string | null;
+  recent_disposition: IncidentDispositionReceipt | null;
+  dispositions_url: string;
+  recover_available: boolean;
+  recover_reason: string | null;
+  terminate_available: boolean;
+  terminate_reason: string | null;
+}
+
+export type IncidentDispositionAction = "recover" | "terminate";
+export type IncidentDispositionReason =
+  | "capacity_repaired"
+  | "routing_repaired"
+  | "operator_cancel"
+  | "verified_terminal";
+
+export interface IncidentDispositionReceipt {
+  id: string;
+  incident_id: number;
+  execution_id: number;
+  idempotency_key: string;
+  actor_kind: "superadmin" | "account";
+  user_id: number | null;
+  action: IncidentDispositionAction;
+  reason_code: IncidentDispositionReason;
+  outcome: string;
+  code: string;
+  from_generation: number | null;
+  to_generation: number | null;
+  from_outbox_id: string | null;
+  to_outbox_id: string | null;
+  execution_status: string;
+  created_at: string;
+}
+
+export interface IncidentDispositionResponse {
+  receipt: IncidentDispositionReceipt;
+  incident_status: "open" | "resolved" | "ignored";
+  execution_status: string;
+  retry_after_seconds: number | null;
 }
 
 export interface ReliableExecutionDetail {

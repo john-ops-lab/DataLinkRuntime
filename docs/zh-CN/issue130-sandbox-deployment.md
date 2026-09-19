@@ -168,3 +168,6 @@ sudo systemctl stop dlr-worker-sandbox.service
 
 历史迁移设计仅保留于 [Issue #130 历史记录](issue130-reliable-runtime-migrations.md)，
 其中的 legacy/canary/Cutover API 和环境变量不适用于当前部署。
+
+已有执行因投递故障停滞时，按[基础设施事件处置](incident-dispositions.md)恢复或终结
+原记录，并核对实际结果与清理；本机预览的旧责任保全升级见[控制器说明](local-preview.md)。

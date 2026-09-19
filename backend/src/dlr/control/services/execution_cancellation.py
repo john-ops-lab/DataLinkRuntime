@@ -4,14 +4,33 @@ Callers own the surrounding transaction. Admission-order locking serializes
 cancellation with Claim and Attempt transitions.
 """
 
+from dataclasses import dataclass
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from dlr.control.models import Execution
+from dlr.control.models import (
+    AdapterExecutionSlot,
+    Execution,
+    ExecutionAttempt,
+    ExecutionInfrastructureIncident,
+    ExecutionOutbox,
+)
 
 ACTIVE_EXECUTION_STATUSES = ("running",)
 RABBITMQ_CANCELLABLE_STATUSES = ("queued", "retry_wait")
 RABBITMQ_NONTERMINAL_STATUSES = ("queued", "running", "retry_wait")
+CANCELLATION_ERROR_CODE = "execution_cancelled"
+
+
+@dataclass(frozen=True)
+class ExecutionLockTail:
+    """Rows after the Execution prefix, held in the canonical order."""
+
+    attempts: tuple[ExecutionAttempt, ...]
+    slot: AdapterExecutionSlot
+    incidents: tuple[ExecutionInfrastructureIncident, ...]
+    outbox_rows: tuple[ExecutionOutbox, ...]
 
 
 def lock_nonterminal_executions(session: Session, adapter_id: int) -> list[Execution]:
@@ -29,13 +48,80 @@ def lock_nonterminal_executions(session: Session, adapter_id: int) -> list[Execu
             )
             .order_by(Execution.id.asc())
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).all()
     )
 
 
 def lock_execution(session: Session, execution_id: int) -> Execution | None:
     """Lock one Execution so its cancellation decision uses fresh state."""
-    return session.scalar(select(Execution).where(Execution.id == execution_id).with_for_update())
+    return session.scalar(
+        select(Execution)
+        .where(Execution.id == execution_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def lock_execution_attempts(session: Session, execution_id: int) -> tuple[ExecutionAttempt, ...]:
+    """Lock all of one Execution's Attempts before the Adapter slot."""
+
+    return tuple(
+        session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.execution_id == execution_id)
+            .order_by(ExecutionAttempt.id.asc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+
+
+def lock_incidents_and_outbox(
+    session: Session, execution_id: int
+) -> tuple[tuple[ExecutionInfrastructureIncident, ...], tuple[ExecutionOutbox, ...]]:
+    """Lock the durable incident/outbox suffix after Attempt and Slot locks."""
+
+    incidents = tuple(
+        session.scalars(
+            select(ExecutionInfrastructureIncident)
+            .where(ExecutionInfrastructureIncident.execution_id == execution_id)
+            .order_by(ExecutionInfrastructureIncident.id.asc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    outbox_rows = tuple(
+        session.scalars(
+            select(ExecutionOutbox)
+            .where(ExecutionOutbox.execution_id == execution_id)
+            .order_by(ExecutionOutbox.dispatch_generation.asc(), ExecutionOutbox.id.asc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    return incidents, outbox_rows
+
+
+def lock_execution_tail(session: Session, execution: Execution) -> ExecutionLockTail:
+    """Lock Attempt→Slot→Incident→Outbox after the caller holds Execution."""
+
+    attempts = lock_execution_attempts(session, execution.id)
+    slot = session.scalar(
+        select(AdapterExecutionSlot)
+        .where(
+            AdapterExecutionSlot.adapter_id == execution.adapter_id,
+            AdapterExecutionSlot.slot_no == 0,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if slot is None:
+        slot = AdapterExecutionSlot(adapter_id=execution.adapter_id, slot_no=0)
+        session.add(slot)
+        session.flush()
+    incidents, outbox_rows = lock_incidents_and_outbox(session, execution.id)
+    return ExecutionLockTail(attempts, slot, incidents, outbox_rows)
 
 
 def lock_execution_in_admission_order(session: Session, execution_id: int) -> Execution | None:
@@ -79,6 +165,7 @@ def request_cancellation(execution: Execution) -> None:
     if execution.status in RABBITMQ_CANCELLABLE_STATUSES:
         execution.status = "cancelled"
         execution.ended_at = func.now()
-        execution.last_error_code = "cancelled"
+        execution.error_code = CANCELLATION_ERROR_CODE
+        execution.last_error_code = CANCELLATION_ERROR_CODE
     elif execution.status == "running":
         execution.cancel_requested = True

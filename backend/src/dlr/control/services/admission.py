@@ -48,7 +48,7 @@ def lock_admission_scope(
     a deleted Adapter lets a caller re-read the authoritative Execution after
     the Adapter lock without manufacturing a partial release.
     """
-    if session.get(Adapter, adapter_id, with_for_update=True) is None:
+    if session.get(Adapter, adapter_id, with_for_update=True, populate_existing=True) is None:
         return None
     return _ensure_adapter_counter(session, adapter_id), _ensure_global_counter(session)
 

@@ -33,7 +33,9 @@ from dlr.control.schemas.execution import (
 )
 from dlr.control.services.adapter import domain_error
 from dlr.control.services.execution_cancellation import (
+    ExecutionLockTail,
     lock_execution_in_admission_order,
+    lock_execution_tail,
     request_cancellation,
 )
 from dlr.control.services.locale import get_system_locale
@@ -445,6 +447,43 @@ def append_stream(existing: str, already_truncated: bool, chunk: str) -> tuple[s
     return capped.decode("utf-8", errors="replace"), already_truncated or truncated
 
 
+def cancel_execution_locked(
+    session: Session,
+    execution: Execution,
+    *,
+    lock_tail: ExecutionLockTail | None = None,
+) -> Execution:
+    """Apply cancellation and resource settlement without committing."""
+
+    tail = lock_tail or lock_execution_tail(session, execution)
+    active_attempts = [
+        attempt for attempt in tail.attempts if attempt.status in {"claimed", "running"}
+    ]
+    if execution.status in {"queued", "retry_wait"} and active_attempts:
+        raise domain_error(
+            409,
+            "incident_execution_active",
+            "Queued Execution has an active Attempt and requires reconciliation",
+        )
+    request_cancellation(execution)
+    if execution.status == "cancelled":
+        release_execution_leases(session, execution.id)
+        if execution.dispatch_backend == "rabbitmq":
+            from dlr.control.services import admission, outbox
+
+            admission.release_admission_once(session, execution)
+            outbox.settle_cancelled_outbox(session, execution.id, locked_rows=tail.outbox_rows)
+        from dlr.control.services.incident_disposition import (
+            converge_terminal_dispositions_locked,
+        )
+        from dlr.control.services.input_config import database_now
+
+        converge_terminal_dispositions_locked(
+            session, execution, tail.incidents, now=database_now(session)
+        )
+    return execution
+
+
 def cancel_execution(session: Session, execution_id: int) -> Execution:
     """Request cancellation of one Execution (M3.2).
 
@@ -457,14 +496,7 @@ def cancel_execution(session: Session, execution_id: int) -> Execution:
     execution = lock_execution_in_admission_order(session, execution_id)
     if execution is None:
         raise domain_error(404, "execution_not_found", "Execution not found")
-    request_cancellation(execution)
-    if execution.status == "cancelled":
-        release_execution_leases(session, execution.id)
-        if execution.dispatch_backend == "rabbitmq":
-            from dlr.control.services import admission, outbox
-
-            admission.release_admission_once(session, execution)
-            outbox.settle_cancelled_outbox(session, execution.id)
+    cancel_execution_locked(session, execution)
     # Terminal states are never rewritten.
     session.commit()
     session.refresh(execution)

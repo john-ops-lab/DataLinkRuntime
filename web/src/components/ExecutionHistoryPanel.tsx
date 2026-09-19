@@ -1,21 +1,46 @@
 /** 执行记录 Tab：游标分页历史列表 + 详情抽屉（M3 §5/§9，SSE 自动打开）。 */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Descriptions, Drawer, Empty, Space, Spin, Table, Tabs, Tag, Timeline } from "antd";
+import { Alert, Button, Descriptions, Drawer, Empty, Popconfirm, Space, Spin, Table, Tabs, Tag, Timeline } from "antd";
 import { DownOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import { useTranslation } from "react-i18next";
 
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import { useExecutionWatcher } from "../hooks/useExecutionWatcher";
 import { isTerminal, statusColor, statusLabel } from "../status";
-import type { ExecutionSummary, ReliableExecutionDetail, ReplayResponse } from "../types";
+import type {
+  ExecutionSummary,
+  IncidentDispositionAction,
+  IncidentDispositionReason,
+  IncidentDispositionResponse,
+  ReliableExecutionDetail,
+  ReliableExecutionIncident,
+  ReplayResponse,
+} from "../types";
 import { unifiedLogContent } from "../unified-log";
 import { userErrorMessage } from "../user-message";
 import ExecutionInputSummary from "./ExecutionInputSummary";
 import { LogView, OutputView } from "./OutputView";
 
 const PAGE_SIZE = 50;
+
+function drawerPopupContainer(triggerNode: HTMLElement): HTMLElement {
+  return triggerNode.closest<HTMLElement>("[role='dialog']")
+    ?? triggerNode.parentElement
+    ?? triggerNode.ownerDocument.body;
+}
+
+interface IncidentDispositionIntent {
+  operation: string;
+  requestId: number;
+  executionId: number;
+  incidentId: number;
+  action: IncidentDispositionAction;
+  expectedGeneration: number;
+  reasonCode: IncidentDispositionReason;
+  idempotencyKey: string;
+}
 
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
@@ -88,6 +113,22 @@ function attemptStatusColor(status: string): string {
   return "red";
 }
 
+function incidentReasonLabel(
+  reason: string | null,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  return reason === null
+    ? translate("history.incidentEligible")
+    : translate(`history.incidentReasons.${reason}`, { defaultValue: reason });
+}
+
+function incidentOutcomeLabel(
+  outcome: string,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  return translate(`history.incidentOutcomes.${outcome}`, { defaultValue: outcome });
+}
+
 function RetryCountdown(props: {
   nextAttemptAt: string;
   translate: (key: string, options?: Record<string, unknown>) => string;
@@ -136,6 +177,12 @@ export default function ExecutionHistoryPanel(props: {
   const [reliableDetailError, setReliableDetailError] = useState<string | null>(null);
   const [replayLoading, setReplayLoading] = useState(false);
   const [replayResult, setReplayResult] = useState<ReplayResponse | null>(null);
+  const [dispositionLoading, setDispositionLoading] = useState<string | null>(null);
+  const [confirmingDisposition, setConfirmingDisposition] = useState<string | null>(null);
+  const [dispositionError, setDispositionError] = useState<string | null>(null);
+  const [dispositionResults, setDispositionResults] = useState<Record<number, IncidentDispositionResponse>>({});
+  const dispositionIntentsRef = useRef(new Map<string, IncidentDispositionIntent>());
+  const requestedExecutionIdRef = useRef<number | null>(null);
   // Only the newest detail request may commit UI state: rapid clicks (A slow,
   // B fast) must never let a stale A response overwrite the B detail.
   const detailRequestRef = useRef(0);
@@ -198,6 +245,7 @@ export default function ExecutionHistoryPanel(props: {
     const requestId = ++detailRequestRef.current;
     watcher.stop(); // invalidate any previous drawer's stream/polls
     setLoadError(null);
+    requestedExecutionIdRef.current = executionId;
     setRequestedExecutionId(executionId);
     setSelectedSummary(summary);
     setDrawerOpen(true);
@@ -205,6 +253,11 @@ export default function ExecutionHistoryPanel(props: {
     setReliableDetail(null);
     setReliableDetailError(null);
     setReplayResult(null);
+    setDispositionLoading(null);
+    setDispositionError(null);
+    setDispositionResults({});
+    setConfirmingDisposition(null);
+    dispositionIntentsRef.current.clear();
     try {
       const loaded = await api.getExecution(executionId);
       if (requestId !== detailRequestRef.current) {
@@ -234,11 +287,117 @@ export default function ExecutionHistoryPanel(props: {
       }
       setLoadError(errorMessage(error));
       setDrawerOpen(false);
+      requestedExecutionIdRef.current = null;
       setRequestedExecutionId(null);
       setSelectedSummary(null);
     } finally {
       if (requestId === detailRequestRef.current) {
         setDetailLoading(false);
+      }
+    }
+  }
+
+  function isCurrentDetailEpoch(executionId: number, requestId: number): boolean {
+    return requestId === detailRequestRef.current
+      && executionId === requestedExecutionIdRef.current;
+  }
+
+  async function refreshReliableDetail(executionId: number, requestId: number): Promise<boolean> {
+    if (!isCurrentDetailEpoch(executionId, requestId)) {
+      return false;
+    }
+    const refreshed = await api.getReliableExecutionDetail(executionId);
+    if (!isCurrentDetailEpoch(executionId, requestId)) {
+      return false;
+    }
+    setReliableDetail(refreshed);
+    return true;
+  }
+
+  async function disposeIncident(
+    incident: ReliableExecutionIncident,
+    action: IncidentDispositionAction,
+    currentExecutionGeneration: number | undefined,
+  ): Promise<void> {
+    const executionId = requestedExecutionIdRef.current;
+    const requestId = detailRequestRef.current;
+    if (executionId === null || currentExecutionGeneration === undefined) {
+      if (isCurrentDetailEpoch(executionId ?? -1, requestId)) {
+        setDispositionError(t("history.reliableDetailUnavailable"));
+      }
+      return;
+    }
+    const operation = `${executionId}:${incident.id}:${action}`;
+    const isTerminalVerification =
+      action === "terminate" && incident.recover_reason === "execution_terminal";
+    const reasonCode: IncidentDispositionReason = action === "recover"
+      ? incident.kind === "rejected"
+        ? "routing_repaired"
+        : "capacity_repaired"
+      : isTerminalVerification
+        ? "verified_terminal"
+        : "operator_cancel";
+    const intent = dispositionIntentsRef.current.get(operation) ?? {
+      operation,
+      requestId,
+      executionId,
+      incidentId: incident.id,
+      action,
+      expectedGeneration: currentExecutionGeneration,
+      reasonCode,
+      idempotencyKey: crypto.randomUUID(),
+    };
+    dispositionIntentsRef.current.set(operation, intent);
+    if (!isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+      return;
+    }
+    let retireIntent = false;
+    setDispositionLoading(operation);
+    setDispositionError(null);
+    try {
+      const result = await api.disposeInfrastructureIncident(
+        intent.executionId,
+        intent.incidentId,
+        {
+          action: intent.action,
+          expected_generation: intent.expectedGeneration,
+          reason_code: intent.reasonCode,
+        },
+        intent.idempotencyKey,
+      );
+      if (!isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+        return;
+      }
+      setDispositionResults((current) => ({ ...current, [intent.incidentId]: result }));
+      if (await refreshReliableDetail(intent.executionId, intent.requestId)) {
+        retireIntent = true;
+      }
+    } catch (error) {
+      if (!isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+        return;
+      }
+      setDispositionError(errorMessage(error));
+      if (error instanceof ApiError && error.status === 409) {
+        try {
+          if (await refreshReliableDetail(intent.executionId, intent.requestId)) {
+            retireIntent = true;
+          }
+        } catch (refreshError) {
+          if (isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+            setReliableDetailError(errorMessage(refreshError));
+          }
+        }
+      }
+    } finally {
+      if (
+        isCurrentDetailEpoch(intent.executionId, intent.requestId)
+        && dispositionIntentsRef.current.get(intent.operation) === intent
+      ) {
+        setDispositionLoading((current) => current === intent.operation ? null : current);
+        setConfirmingDisposition((current) => current === intent.operation ? null : current);
+        if (retireIntent) {
+          dispositionIntentsRef.current.delete(intent.operation);
+        }
       }
     }
   }
@@ -388,11 +547,15 @@ export default function ExecutionHistoryPanel(props: {
           detailRequestRef.current += 1; // invalidate any in-flight detail load
           watcher.stop();
           setDrawerOpen(false);
+          requestedExecutionIdRef.current = null;
           setRequestedExecutionId(null);
           setSelectedSummary(null);
           setReliableDetail(null);
           setReliableDetailError(null);
           setReplayResult(null);
+          setDispositionLoading(null);
+          setConfirmingDisposition(null);
+          dispositionIntentsRef.current.clear();
         }}
       >
         {detailLoading && <Spin />}
@@ -536,18 +699,159 @@ export default function ExecutionHistoryPanel(props: {
                       {reliableDetail.incidents.length === 0 ? (
                         <div className="execution-version-debug">{t("history.noIncidents")}</div>
                       ) : (
-                        reliableDetail.incidents.map((incident) => (
-                          <Alert
-                            key={incident.id}
-                            type={incident.status === "open" ? "warning" : "info"}
-                            showIcon
-                            message={t("history.incidentTitle", { kind: incident.kind })}
-                            description={t("history.incidentAttempts", {
-                              attempts: incident.attempts,
-                              error: incident.last_error ?? "—",
-                            })}
-                          />
-                        ))
+                        reliableDetail.incidents.map((incident) => {
+                          const result = dispositionResults[incident.id];
+                          const receipt = result?.receipt ?? incident.recent_disposition;
+                          const terminalVerification = incident.recover_reason === "execution_terminal";
+                          const staleIncidentVerification = incident.recover_reason === "incident_stale_generation";
+                          const cooperativeCancellation =
+                            incident.recover_reason === "incident_execution_active"
+                            || incident.recover_reason === "incident_cancellation_pending";
+                          const recoverOperation = `${reliableDetail.execution_id}:${incident.id}:recover`;
+                          const terminateOperation = `${reliableDetail.execution_id}:${incident.id}:terminate`;
+                          const selectionExecutionId = reliableDetail.execution_id;
+                          const selectionRequestId = detailRequestRef.current;
+                          const updateConfirmation = (open: boolean, operation: string) => {
+                            if (!isCurrentDetailEpoch(selectionExecutionId, selectionRequestId)) {
+                              return;
+                            }
+                            setConfirmingDisposition((current) => {
+                              if (open) {
+                                return operation;
+                              }
+                              return current === operation ? null : current;
+                            });
+                          };
+                          const terminateLabel = terminalVerification
+                            ? t("history.verifyCloseIncident")
+                            : staleIncidentVerification
+                              ? t("history.closeStaleIncident")
+                              : cooperativeCancellation
+                                ? t("history.requestCancellation")
+                                : t("history.terminateExecution");
+                          return (
+                            <Alert
+                              key={incident.id}
+                              type={incident.status === "open" ? "warning" : "info"}
+                              showIcon
+                              data-testid={`execution-incident-${incident.id}`}
+                              message={t("history.incidentTitle", {
+                                kind: incident.kind,
+                                status: incident.status,
+                              })}
+                              description={(
+                                <Space direction="vertical" size={2}>
+                                  <div>{t("history.incidentAttempts", {
+                                    attempts: incident.attempts,
+                                    error: incident.last_error ?? "—",
+                                  })}</div>
+                                  <div>{t("history.incidentCounts", {
+                                    observations: incident.observation_count,
+                                    dispositions: incident.disposition_count,
+                                    recoveries: incident.recovery_dispatch_count,
+                                  })}</div>
+                                  <div>{t("history.incidentRecoverEligibility", {
+                                    reason: incidentReasonLabel(incident.recover_reason, (key, options) => t(key, options)),
+                                  })}</div>
+                                  <div>{t("history.incidentTerminateEligibility", {
+                                    reason: incidentReasonLabel(incident.terminate_reason, (key, options) => t(key, options)),
+                                  })}</div>
+                                  {cooperativeCancellation && incident.terminate_available && (
+                                    <div data-testid="incident-cooperative-cancellation">
+                                      {t("history.incidentCooperativeCancellation")}
+                                    </div>
+                                  )}
+                                  {receipt !== null && receipt !== undefined && (
+                                    <div data-testid={`incident-result-${incident.id}`}>
+                                      {t("history.incidentResult", {
+                                        outcome: incidentOutcomeLabel(receipt.outcome, (key, options) => t(key, options)),
+                                        code: receipt.code,
+                                        generation: receipt.to_generation ?? receipt.from_generation ?? "—",
+                                      })}
+                                    </div>
+                                  )}
+                                </Space>
+                              )}
+                              action={(
+                                <Space direction="vertical" size="small">
+                                  <Popconfirm
+                                    open={confirmingDisposition === recoverOperation}
+                                    getPopupContainer={drawerPopupContainer}
+                                    title={t("history.recoverConfirmTitle")}
+                                    description={t("history.recoverConfirmDescription")}
+                                    okText={t("history.confirmAction")}
+                                    cancelText={t("history.cancelAction")}
+                                    onOpenChange={(open) => updateConfirmation(open, recoverOperation)}
+                                    onConfirm={() => disposeIncident(
+                                      incident,
+                                      "recover",
+                                      visibleDetail.dispatch_generation,
+                                    )}
+                                    okButtonProps={{ loading: dispositionLoading === recoverOperation }}
+                                    disabled={!incident.recover_available}
+                                  >
+                                    <Button
+                                      size="small"
+                                      type="primary"
+                                      disabled={!incident.recover_available}
+                                      loading={dispositionLoading === recoverOperation}
+                                      title={incidentReasonLabel(incident.recover_reason, (key, options) => t(key, options))}
+                                    >
+                                      {t("history.recoverExecution")}
+                                    </Button>
+                                  </Popconfirm>
+                                  <Popconfirm
+                                    open={confirmingDisposition === terminateOperation}
+                                    getPopupContainer={drawerPopupContainer}
+                                    title={terminalVerification
+                                      ? t("history.verifyCloseConfirmTitle")
+                                      : staleIncidentVerification
+                                        ? t("history.closeStaleConfirmTitle")
+                                        : t("history.terminateConfirmTitle")}
+                                    description={terminalVerification
+                                      ? t("history.verifyCloseConfirmDescription")
+                                      : staleIncidentVerification
+                                        ? t("history.closeStaleConfirmDescription")
+                                        : cooperativeCancellation
+                                          ? t("history.cancelConfirmDescription")
+                                          : t("history.terminateConfirmDescription")}
+                                    okText={t("history.confirmAction")}
+                                    cancelText={t("history.cancelAction")}
+                                    onOpenChange={(open) => updateConfirmation(open, terminateOperation)}
+                                    onConfirm={() => disposeIncident(
+                                      incident,
+                                      "terminate",
+                                      visibleDetail.dispatch_generation,
+                                    )}
+                                    okButtonProps={{ loading: dispositionLoading === terminateOperation }}
+                                    disabled={!incident.terminate_available}
+                                  >
+                                    <Button
+                                      size="small"
+                                      danger={!terminalVerification}
+                                      disabled={!incident.terminate_available}
+                                      loading={dispositionLoading === terminateOperation}
+                                      title={incidentReasonLabel(incident.terminate_reason, (key, options) => t(key, options))}
+                                    >
+                                      {terminateLabel}
+                                    </Button>
+                                  </Popconfirm>
+                                </Space>
+                              )}
+                            />
+                          );
+                        })
+                      )}
+                      {dispositionError !== null && (
+                        <Alert
+                          type="error"
+                          showIcon
+                          closable
+                          data-testid="incident-disposition-error"
+                          message={t("history.incidentActionFailed")}
+                          description={dispositionError}
+                          onClose={() => setDispositionError(null)}
+                        />
                       )}
                     </div>
                   </>

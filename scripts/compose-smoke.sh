@@ -183,28 +183,22 @@ docker compose run --rm --no-deps control alembic upgrade head
 docker compose up -d
 
 echo "==> waiting for all services"
-elapsed=0
-while true; do
-  healthy_count=0
-  for service in "${SERVICES[@]}"; do
-    container_id=$(docker compose ps -q "$service")
-    health=""
-    if [ -n "$container_id" ]; then
-      health=$(docker inspect --format '{{.State.Health.Status}}' "$container_id" 2>/dev/null || true)
-    fi
-    [ "$health" = "healthy" ] && healthy_count=$((healthy_count + 1))
-  done
-  [ "$healthy_count" -eq "${#SERVICES[@]}" ] && break
-  if [ "$elapsed" -ge "$TIMEOUT_SECONDS" ]; then
-    docker compose ps
-    for service in "${SERVICES[@]}"; do
-      docker compose logs --tail 50 "$service"
-    done
-    exit 1
-  fi
-  sleep 5
-  elapsed=$((elapsed + 5))
+readiness_args=()
+for service in "${SERVICES[@]}"; do
+  readiness_args+=(--service "$service")
 done
+if ! python3 scripts/compose-smoke-readiness.py \
+  --project "$COMPOSE_PROJECT_NAME" \
+  "${readiness_args[@]}" \
+  --url "http://localhost:${DLR_WEB_HOST_PORT}/api/health" \
+  --url "http://localhost:${DLR_ACCOUNT_WEB_HOST_PORT}/api/health" \
+  --timeout "$TIMEOUT_SECONDS"; then
+  docker compose ps
+  for service in "${SERVICES[@]}"; do
+    docker compose logs --tail 50 "$service"
+  done
+  exit 1
+fi
 
 echo "==> checking web, health and authentication boundaries"
 curl -fsS "http://localhost:${DLR_WEB_HOST_PORT}/" | grep -q "DataLinkRuntime"

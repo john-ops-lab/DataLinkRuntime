@@ -56,7 +56,16 @@ class Worker(Base):
     __table_args__ = (
         CheckConstraint("status IN ('online', 'offline')", name="ck_workers_status"),
         CheckConstraint("protocol_version = 3", name="ck_workers_protocol_version"),
+        CheckConstraint(
+            "isolation_preflight_status IN ('unknown', 'passed', 'failed')",
+            name="ck_workers_isolation_preflight_status",
+        ),
         Index("ix_workers_protocol_version", "protocol_version"),
+        Index(
+            "ix_workers_rabbitmq_execution_v3",
+            "protocol_version",
+            "rabbitmq_execution_v3",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
