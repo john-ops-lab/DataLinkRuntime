@@ -23,6 +23,8 @@ python3 "$DLR_PREVIEW_HOME/preview.py" resume
 python3 "$DLR_PREVIEW_HOME/preview.py" copy-token
 ```
 
+`pause` 会让已开始的操作完成并阻止下一次更新。驻留 watcher 无需退出；如有 active operation，等它结束后再规划。`plan-carry-forward` 从开始核验到 manifest 持久化期间会排除 watcher 操作，并让并发 `resume` 等到规划结束。
+
 ## 升级规则
 
 候选必须包含已部署 Git 提交；当前数据库 revision 必须位于唯一、完整、未改变既有 revision/down_revision 的 Alembic 迁移链中。历史已应用迁移的函数修复允许存在，实际升级只执行当前数据库版本之后的迁移。历史分叉或无法向前迁移时记录原因，保留现场，不自动降级或另建环境。若人工重写仅涉及非运行文件，可在私有 `state.json` 登记 `history_anchor_sha`；控制器仍核对全部部署源码路径完全相同，并要求候选继承该锚点。实际运行 SHA 与镜像记录保留原值，只有完成新部署才更新。
@@ -80,7 +82,7 @@ carry-forward 切换停下 Control 后若出现 Claim、证据变化或任何未
 
 ## 安装或更新控制器
 
-当前安装器用于接管私有配置指定的既有环境，要求 macOS、Python 3.11+、`gh` 登录、Colima、已有 LaunchAgent、`source.git` 源码缓存、`config.json`、`state.json`、`preview.env`，以及 VM 内已准备好的 sandbox 脚本。它不负责首次创建 VM 或生成凭据，也不改变默认 Docker context。
+当前安装器用于接管私有配置指定的既有环境，要求 macOS、Python 3.11+、`gh` 登录、Colima、已有 LaunchAgent、`source.git` 源码缓存、`config.json`、`state.json`、`preview.env`，以及 VM 内已准备好的 sandbox 脚本。它不负责首次创建 VM 或生成凭据，也不改变默认 Docker context。若 controller operation 或 carry-forward plan 仍在进行，安装器只会保持暂停并退出，不会卸载 watcher、替换文件或传输 VM 脚本。
 
 从审查过的仓库工作区运行：
 

@@ -203,6 +203,15 @@ def config_lock():
         yield
 
 
+@contextlib.contextmanager
+def operation_lock(*, blocking=True):
+    """Serialize one complete controller operation without owning the watcher."""
+    with (ROOT / "operation.lock").open("a") as lock:
+        flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        fcntl.flock(lock, flags)
+        yield
+
+
 def log(message):
     print(
         datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -774,7 +783,7 @@ def status(message, **fields):
     return message
 
 
-def tick():
+def _tick():
     config = read("config.json")
     if not config["enabled"]:
         return status("Paused; current preview remains available")
@@ -870,6 +879,12 @@ def tick():
         return status("Ready", deployed=target)
 
 
+def tick():
+    """Run one complete controller operation under the cross-command lock."""
+    with operation_lock():
+        return _tick()
+
+
 def main():
     if not os.environ.get("DLR_PREVIEW_HOME"):
         sys.exit("Set DLR_PREVIEW_HOME to your private installation directory")
@@ -904,12 +919,24 @@ def main():
             parser.error(
                 "plan-carry-forward requires --to-sha, --ids-file and --output"
             )
-        with (ROOT / "controller.lock").open("a") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                parser.error("Pause the watcher before creating a carry-forward plan")
-            result = plan_carry_forward(args.to_sha, args.ids_file, args.output)
+        try:
+            with operation_lock(blocking=False):
+                with config_lock():
+                    config = read("config.json")
+                    if (
+                        not isinstance(config, dict)
+                        or config.get("enabled") is not False
+                    ):
+                        parser.error(
+                            "Pause the watcher before creating a carry-forward plan"
+                        )
+                    result = plan_carry_forward(
+                        args.to_sha, args.ids_file, args.output
+                    )
+        except BlockingIOError:
+            parser.error(
+                "Wait for the current controller operation to finish before creating a carry-forward plan"
+            )
         print(json.dumps(result, indent=2))
         return
     if args.command == "status":

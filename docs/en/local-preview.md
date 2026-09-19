@@ -21,7 +21,7 @@ python3 "$DLR_PREVIEW_HOME/preview.py" resume
 python3 "$DLR_PREVIEW_HOME/preview.py" copy-token
 ```
 
-`pause` lets an in-flight operation finish and then prevents another update. `copy-token` sends the existing administrator token directly to the clipboard without printing it.
+`pause` lets an in-flight operation finish and then prevents another update. The resident watcher can remain running: wait for the active operation to finish before planning, and `plan-carry-forward` then excludes watcher operations until its manifest is durable. A concurrent `resume` waits for planning to finish. `copy-token` sends the existing administrator token directly to the clipboard without printing it.
 
 ## Upgrade rules
 
@@ -86,7 +86,7 @@ The installer upgrades an existing private deployment. It requires macOS, Python
 python3 tools/local-preview/install.py --start
 ```
 
-The installer first makes a restricted backup of the old controller and its private state, pauses updates, unloads the LaunchAgent, and takes the controller lock. It then installs the reviewed scripts, including `carry_forward.py`, transfers trusted VM scripts over stdin, records file SHA-256 values, restores configuration, and optionally restarts the watcher. It refuses an unfinished deployment.
+The installer pauses updates and refuses to unload the watcher or replace files while a controller operation or carry-forward plan is active. After it owns the operation and configuration locks, it makes a restricted backup, unloads the LaunchAgent, takes the watcher singleton, installs the reviewed scripts including `carry_forward.py`, transfers trusted VM scripts over stdin, records file SHA-256 values, restores configuration, and optionally restarts the watcher. It refuses an unfinished deployment.
 
 Private `config.json` supplies repository/PR polling, Colima profile, Compose project, VM root, local port, LaunchAgent label, and Sandbox unit/resource envelope. There are no personal defaults. `preview.env`, build proxy settings, credentials, manifests, backups, and raw receipts remain private.
 
