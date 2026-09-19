@@ -53,5 +53,5 @@
 - [ ] 7.2 最终head执行 Backend Ruff/format/Mypy/full pytest、Web lint/typecheck/test/build、完整fresh及带旧数据Alembic检查、Compose smoke、适用Sandbox/Broker/权限/数据保护Gate；跑 `openspec validate issue161-runtime-reliability --type change --strict --no-interactive`和`git diff --check`，所有失败先修复。
 - [ ] 7.3 对精确最终head完成指定Astra ultra独立代码Review；Review问题修复后重新核对受影响测试和head，清除本次无用临时文件，不冒充官方CI/Review。
 - [ ] 7.4 由REMOTE_RELEASE集成owner创建第一组唯一PR，文字使用关联Issue而无自动关闭关键字；执行私有预览控制器select/status，等待精确HEAD CI通过再部署，必要时使用已审查carry-forward清单；记录原Execution真实恢复验收和实际部署镜像SHA。
-- [ ] 7.5 仅在整组技术/发布门禁通过后按用户已有授权合并，核对合并SHA、最终部署SHA及必要运行回归，从最新main进入第二组；PR存在不代表合并，镜像启动不代表真实执行成功。
+- [ ] 7.5 仅在整组技术/发布门禁通过后按用户已有授权合并，核对合并SHA、最终部署SHA及必要运行回归；依用户收窄后的范围，第一组完成即停止，不进入后续组。PR存在不代表合并，镜像启动不代表真实执行成功。
 - [ ] 7.6 单独列出用户最终体验验收与Issue关闭状态；#135/#134/#152在所需用户手工验收前保持开放，#136保持既有合并归档，未跑项不得勾选完成，不把非阻塞体验验收误写为门禁通过证据。

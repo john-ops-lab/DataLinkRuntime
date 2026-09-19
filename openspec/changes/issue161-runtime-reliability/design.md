@@ -178,4 +178,4 @@ cleanup 分类独立于是否有 Incident：
 2. 全新库执行完整 Alembic upgrade；从本次基线 schema 带旧 queued/Incident/cleanup样本升级；迁移只新增对象，不清理旧数据、不重建Worker已有约束。ORM schema diff 限定核查新增对象和 #135，不顺手重构整库。
 3. 最终 PR head 运行 Backend/Web全量检查、Compose smoke、真实 Broker/DB/Chrome/Gate 与独立 Review。控制器修改单独审查后安装；精确CI HEAD才允许固定预览升级。核对部署镜像SHA、合并SHA及目标环境探针，保留证据。
 4. migration/切换失败保留原卷、备份和attention；只有确认旧 schema/旧镜像仍兼容的切换前失败才恢复旧应用。迁移后不自动 downgrade、不清空数据库另建环境；由具体修复继续向前或按明确授权恢复备份。
-5. 尚未运行的测试和用户手工验收保持未完成；技术与发布门禁通过可依授权进入下一组，#135/#134/#152 在用户最终验收前保持开放，PR文字不得自动关闭这些 Issue。
+5. 尚未运行的测试和用户手工验收保持未完成；依用户收窄后的范围，第一组技术与发布门禁通过后停止，不进入后续组。#135/#134/#152 在用户最终验收前保持开放，PR文字不得自动关闭这些 Issue。
