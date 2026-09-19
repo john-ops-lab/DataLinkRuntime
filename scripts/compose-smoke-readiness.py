@@ -7,8 +7,6 @@ import argparse
 import json
 import subprocess
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +38,12 @@ def _positive_int(value: object, name: str) -> int:
     return value
 
 
+def _required_null(value: dict[str, Any], key: str, name: str) -> bool:
+    if key not in value:
+        raise ValueError(f"{name} is required")
+    return value[key] is None
+
+
 def health_payload_ready(payload: object) -> bool:
     """Validate the stable health wire shape and evaluate the startup contract."""
     root = _object(payload, "health")
@@ -54,6 +58,15 @@ def health_payload_ready(payload: object) -> bool:
     repair_worker_count = _positive_int(
         repair.get("worker_count"), "rabbitmq.repair.worker_count"
     )
+    rabbitmq_error_clear = _required_null(
+        rabbitmq, "last_error_code", "rabbitmq.last_error_code"
+    )
+    ingress_error_clear = _required_null(
+        ingress, "last_error_code", "rabbitmq.ingress.last_error_code"
+    )
+    repair_error_clear = _required_null(
+        repair, "last_error_code", "rabbitmq.repair.last_error_code"
+    )
     return (
         service == "dlr-control"
         and status == "ok"
@@ -62,39 +75,63 @@ def health_payload_ready(payload: object) -> bool:
         and _strict_bool(rabbitmq.get("enabled"), "rabbitmq.enabled")
         and rabbitmq.get("status") == "ready"
         and _strict_bool(rabbitmq.get("ready"), "rabbitmq.ready")
-        and rabbitmq.get("last_error_code") is None
+        and rabbitmq_error_clear
         and _strict_bool(ingress.get("enabled"), "rabbitmq.ingress.enabled")
         and ingress.get("status") == "ready"
         and _strict_bool(ingress.get("ready"), "rabbitmq.ingress.ready")
-        and ingress.get("last_error_code") is None
+        and ingress_error_clear
         and _strict_bool(repair.get("configured"), "rabbitmq.repair.configured")
         and repair.get("status") == "ready"
         and _strict_bool(repair.get("ready"), "rabbitmq.repair.ready")
-        and repair.get("last_error_code") is None
+        and repair_error_clear
         and worker_count == repair_worker_count
     )
 
 
 def fetch_health(url: str, timeout: float) -> HealthObservation:
-    status: int | None = None
+    effective_timeout = max(0.001, timeout)
+    command = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        f"{effective_timeout:.6f}",
+        "--connect-timeout",
+        f"{min(2.0, effective_timeout):.6f}",
+        "--max-filesize",
+        "65536",
+        "--output",
+        "-",
+        "--write-out",
+        "\n%{http_code}",
+        url,
+    ]
     try:
-        with urllib.request.urlopen(url, timeout=max(0.001, timeout)) as response:
-            status = response.status
-            body = response.read()
-    except urllib.error.HTTPError as error:
-        status = error.code
-        body = error.read()
-    except (OSError, TimeoutError, urllib.error.URLError) as error:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            timeout=effective_timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
         return HealthObservation(url, None, False, type(error).__name__)
+    body, separator, status_text = completed.stdout.rpartition(b"\n")
+    status = int(status_text) if separator and status_text.isdigit() else None
+    if completed.returncode != 0 or status != 200:
+        return HealthObservation(
+            url, status, False, f"curl_exit_{completed.returncode}"
+        )
     try:
         payload = json.loads(body)
-        ready = status == 200 and health_payload_ready(payload)
+        ready = health_payload_ready(payload)
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
         return HealthObservation(url, status, False, type(error).__name__)
     return HealthObservation(url, status, ready, "ready" if ready else "not_ready")
 
 
-def compose_services_healthy(project: str, services: Sequence[str], timeout: float) -> bool:
+def compose_services_healthy(
+    project: str, services: Sequence[str], timeout: float
+) -> bool:
     deadline = time.monotonic() + timeout
     for service in services:
         remaining = deadline - time.monotonic()
@@ -118,7 +155,13 @@ def compose_services_healthy(project: str, services: Sequence[str], timeout: flo
             return False
         try:
             health = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_id],
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    "{{.State.Health.Status}}",
+                    container_id,
+                ],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -153,16 +196,27 @@ def wait_for_startup(
                 if remaining <= 0:
                     break
                 current.append(observe(url, min(request_timeout, remaining)))
+                if monotonic() >= deadline:
+                    break
             last = current
-            if len(current) == len(urls) and all(item.ready for item in current):
+            if (
+                len(current) == len(urls)
+                and all(item.ready for item in current)
+                and monotonic() < deadline
+            ):
                 return current
         remaining = deadline - monotonic()
         if remaining > 0:
             sleep(min(interval, remaining))
-    detail = ", ".join(
-        f"{item.url}:http={item.status}:reason={item.reason}" for item in last
-    ) or "no live health observations"
-    raise TimeoutError(f"Compose startup did not become ready within {timeout:g}s ({detail})")
+    detail = (
+        ", ".join(
+            f"{item.url}:http={item.status}:reason={item.reason}" for item in last
+        )
+        or "no live health observations"
+    )
+    raise TimeoutError(
+        f"Compose startup did not become ready within {timeout:g}s ({detail})"
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -177,7 +231,9 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     if args.timeout <= 0 or len(args.url) != 2:
-        raise SystemExit("startup timeout must be positive and exactly two health URLs are required")
+        raise SystemExit(
+            "startup timeout must be positive and exactly two health URLs are required"
+        )
     try:
         wait_for_startup(
             timeout=args.timeout,
