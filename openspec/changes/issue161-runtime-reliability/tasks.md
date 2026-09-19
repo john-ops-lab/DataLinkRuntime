@@ -1,4 +1,4 @@
-此清单记录候选冻结时已经完成的工作。固定入口真实验收、精确 HEAD CI、部署与合并结果随后记录在 PR 交付证据中，并在用户最终验收/归档时回填清单。
+此清单记录候选冻结时已经完成的工作，以及后继真实验收暴露的本组必要修订。固定入口真实验收、精确 HEAD CI、部署与合并结果随后记录在 PR 交付证据中，并在用户最终验收/归档时回填清单。
 
 ## 1. #135 A — Worker metadata 独立检查点
 
@@ -42,12 +42,22 @@
 - [ ] 5.8 真实Chrome经固定入口完成旧Incident恢复与合法终结，含read-only拒绝、终态反馈和详情刷新；逐条核对原ID/输出/Attempt/代次/审计/资源，保留实际截图与API/DB关联证据而非仅UI组件测试。
 - [x] 5.9 运行Backend/Web相关完整回归和静态检查，保留#152 B各子提交SHA，独立Review修正资格、锁/幂等、材料与权限问题；与A证据分开记录。
 
+- [ ] 5.10 完成详情输出可读性的最小 CSS 修复及独立 Review；原生 wheel/尾部几何验证普通/长/截断 JSON、空输出、日志、多 Attempt/Incident、桌面/窄屏，已滚动 Drawer 内键盘 Popconfirm/权限/epoch/幂等不回归；保存精确旧源红例与新源绿例，固定 Chrome 验收仍由 5.8 单独记录。
+
 ## 6. #152 B — 旧Incident保全升级配套
 
 - [x] 6.1 在默认空闲门禁之外实现显式候选绑定carry-forward清单、运行责任manifest及私有参数入口；控制器单元测试证明无通配忽略busy、仅允许指定同机制向前兼容责任，公开diff无私有地址/ID/凭据/备份。
 - [x] 6.2 实现停Control/Worker后的双重复核和never-claimed cleanup派生分类；合成测试覆盖queued/terminal pending无Attempt、真实deferred且journal完整、journal丢失、未知进程、预检后Claim，不修改pending为completed、不取消原queued。
 - [x] 6.3 将Execution/Attempt/Slot/Incident/Outbox/Admission/Input Lease/Hold及runtime/journal指纹加入独立保全验证；真实带数据升级证明备份/迁移前后原字段一致、所有卷和Broker责任保留，deferred由真实Worker回执收敛。
 - [x] 6.4 对控制器及双语部署说明做独立Review，运行 `python3 -m unittest discover -s tools/local-preview/tests -v`、`bash -n tools/local-preview/deploy.sh`及原门禁回归；通过后才由集成owner安装已审查控制器，不绕过attention/CI/历史/镜像/Sandbox检查。
+
+
+- [ ] 6.5 按 design 第 9 节实现显式 `audited-web-same-schema-v1` / manifest v3 和闭合 terminal 选择；验证原 v2 shape/audit-empty 行为不变，unknown mode/version/schema/键、空或重复选择以及 terminal 未显式选择 cleanup 的反例在 plan 写出及停服前被拒绝。
+- [ ] 6.6 仅对 design 9.1 精确路径实现完整 Git commit/tree/raw diff 重算和 source_diff 绑定；以临时真实 Git 仓库验证允许 CSS＋配套修改、未知/backend/migration/依赖/CI 路径、A/D/R/type/mode/symlink/submodule、改对象和 plan 后候选漂移均拒绝，plan/select/switch 停服前都实际重算且控制器/旧新 migration graph 摘要仍全绑定。
+- [ ] 6.7 在原十三张责任表外为 v3 捕获完整十七列 audit 的真实 PK/有序整行 hash/count，核对全部 audit 集与 terminal/Incident/Outbox/请求/actor 关系及明确终态预期；真实 PostgreSQL 正例与逐列/同数换行/隐藏列/类型等值/额外或缺失 audit/inflight/错误结果负例全部通过，不用 observer 窄投影或 count 代替。
+- [ ] 6.8 保持 queued/cleanup 资格和所有锁序、文件/kernel/namespace/FD/卷门禁；验证 terminal/cleanup 合法交集、取消后的零 Attempt pending 必选且只派生不适用、剩余同 Adapter queued charge 不归零、未知 journal/新 Claim/新 audit/计划至停写间变化拒绝；原全部 controller 回归继续通过。
+- [ ] 6.9 更新双语 local-preview 操作合同并对精确实现做独立 Astra ultra Review；运行 controller 全量 unittest、Python 编译、shell 语法、OpenSpec strict 与 diff 检查；隔离真实 PostgreSQL 仅验证合成 baseline/重复采集、pg_dump/pg_restore list、同 head no-op Alembic、十四表/实际 PK/inventory 及 race 拒绝，记录 LOCAL_FAST 证据，不伪造 Control/kernel 或另建完整验收环境；固定环境的实际 stop/kernel/卷/镜像/probe 证据只在 6.10 提供。
+- [ ] 6.10 由集成 owner 在最终 HEAD CI/独立 Review 通过后官方安装并使用 fresh v3 完成固定环境同 schema 更新；核对完整审计及全部原终态/queued/cleanup 原责任、实际镜像与 Ready，probe 仅允许可关联自身增量，再以真实 Chrome 只读检查原结果，保留旧 v2/原失败证据；任何漂移保留 attention，不清审计、不再次处置或绕过门禁。
 
 ## 7. 第一组最终head门禁与交付
 

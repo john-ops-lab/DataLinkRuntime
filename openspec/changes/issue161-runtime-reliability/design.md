@@ -151,7 +151,7 @@ GET 复用 Execution read 权限；POST 复用 business principal + `require_exe
 
 现控制器无绕过 stuck queued 的合法入口，需要作为 #152B 配套修改并独立 review。默认自动 `deploy` 空闲条件不变；新增私有、显式候选绑定的 `carry_forward` 清单/模式，仅面向本机制可向前兼容迁移。清单绑定旧 SHA、新 SHA、schema、候选 Execution/Incident IDs 与快照指纹，不能用通配符或永久设置“忽略 busy”。公开仓库仅放生成/验证器、合成 fixture 和合同。
 
-同 schema 后继只显式允许 `0040_issue152_dispositions → 0040_issue152_dispositions`，其 schema 新增集合为空，不得泛化为任意相同 revision。每个后继候选必须从当前事实生成新的 SHA/controller 绑定 manifest；未知同 revision 或未知向前路径在规划写出 manifest 前拒绝。该路径仅接受下述现有责任分类，并要求 `execution_incident_dispositions` 表存在且为空；已有 disposition 在停止任何服务前拒绝规划。既有 `runtime_reconciliation_cursors` 表保留在原 inventory 中，后继不重新执行 0039 seed；当前游标不要求等于初始 `0/0`，应用运行期间正常 reconciler 仍可推进游标。
+原 manifest v2 的同 schema 后继只显式允许 `0040_issue152_dispositions → 0040_issue152_dispositions`，其 schema 新增集合为空，不得泛化为任意相同 revision。每个后继候选必须从当前事实生成新的 SHA/controller 绑定 manifest；未知同 revision 或未知向前路径在规划写出 manifest 前拒绝。v2 路径仅接受下述现有责任分类，并要求 `execution_incident_dispositions` 表存在且为空；已有 disposition 在停止任何服务前拒绝规划。既有 `runtime_reconciliation_cursors` 表保留在原 inventory 中，后继不重新执行 0039 seed；当前游标不要求等于初始 `0/0`，应用运行期间正常 reconciler 仍可推进游标。
 
 资格不是只放宽 SQL：queued 必须有关联 open infrastructure Incident、Admission 未释放、无该 Execution 的 active Attempt；禁止其他非清单 queued/retry_wait/running、任意 active Attempt/Slot。先做只读预检，停旧 Control（等待请求退出），复查无 active，再停 Worker/Web；全部停止后再次验证数据库、Slot、kernel cgroup/process、runtime/workspace 和私有 journal。出现 claim/新责任/未知残留立即 attention 或安全恢复旧服务后等待，不继续迁移。
 
@@ -163,7 +163,75 @@ cleanup 分类独立于是否有 Incident：
 
 `assets.py` 现有资产指纹不含运行责任。新增独立 manifest：Execution 旧列投影（含 ID/status/generation/input与各冻结快照摘要/cleanup）、Attempt、Slot、Incident、Outbox、Admission、Input Lease/Hold，以及受控 journal/runtime 文件指纹；不把私有内容放进公共回执。停写后、备份后、迁移后且新服务启动前逐项比对；仅允许新增本变更表/默认数据。保留 Broker durable queue/消息、所有 DB/材料/runtime/journal 卷、Token/Master Key。
 
-仍要求候选继承部署历史、精确 HEAD CI成功、迁移链一致、备份可列出、镜像固定、attention 持久、真实执行探针与 Sandbox 检查；控制器改动不能抢在审查前安装。升级后原记录从 UI/API 人工恢复/终结，逐条核原 ID、generation、Attempt/输出、Admission/Lease和cleanup；不得通过新建任务替代旧记录。对照样本采用合成等价状态，私有现场 ID/地址/文件不写公开设计。
+仍要求候选继承部署历史、精确 HEAD CI成功、迁移链一致、备份可列出、镜像固定、attention 持久、真实执行探针与 Sandbox 检查；控制器改动不能抢在审查前安装。首次带未处置 Incident 升级后，原记录从 UI/API 人工恢复/终结，逐条核原 ID、generation、Attempt/输出、Admission/Lease和cleanup；不得通过新建任务替代旧记录。对照样本采用合成等价状态，私有现场 ID/地址/文件不写公开设计。
+
+### 9. 已完成处置后的受限 Web 同 schema 保全
+
+原记录处置完成后，审计表非空，不能复用第 8 节 v2 的 audit-empty 路径。为交付本组详情输出滚动修复，单独增加 `audited-web-same-schema-v1`，不改变普通空闲部署或 v2 的任何资格。入口是既有 `plan-carry-forward` 的显式 `--mode audited-web-same-schema-v1`；省略 mode 仍生成/验证 v2。未知 mode、v3 缺 mode、把 v3 键混入 v2、错误 schema、额外或缺失键一律拒绝，不按数据库存在审计自动选择模式。
+
+#### 9.1 闭合 Git 差异与对象绑定
+
+v3 仅允许旧/新 revision 都是 `0040_issue152_dispositions`，旧/新完整 migration graph 的路径和文件内容相同，无新迁移。旧部署 SHA 必须是候选祖先，仍要求当前所选 PR 的 eligible 精确 HEAD、已 stage 镜像和原 CI/历史检查。本模式从旧部署 commit 到候选 commit 的**全部** Git 差异只允许下表所列文件；路径按仓库相对路径逐项匹配，不使用目录前缀、glob 或由 manifest 指定的允许列表。
+
+| 分类 | 唯一允许路径 |
+| --- | --- |
+| 产品源 | `web/src/index.css` |
+| UI 回归 | `web/tests/e2e/issue152-popconfirm.spec.ts` |
+| 控制器 | `tools/local-preview/carry_forward.py`、`tools/local-preview/preview.py`、`tools/local-preview/deploy.sh` |
+| 控制器回归 | `tools/local-preview/tests/test_carry_forward.py`、`tools/local-preview/tests/test_preview.py`、`tools/local-preview/tests/test_preview_locks.py` |
+| 操作合同 | `docs/zh-CN/local-preview.md`、`docs/en/local-preview.md` |
+| 本组规划 | `openspec/changes/issue161-runtime-reliability/proposal.md`、`openspec/changes/issue161-runtime-reliability/design.md`、`openspec/changes/issue161-runtime-reliability/tasks.md`、`openspec/changes/issue161-runtime-reliability/specs/incident-preserving-upgrade/spec.md` |
+
+产品源差异集合必须恰为 `web/src/index.css`，内容只交付已独立审查的详情输出滚动修复；路径合格不代表任意 CSS 内容已获批准。Backend、Worker、migration、依赖 manifest/lock、Docker/Compose、CI、其他产品源、安装器和未知路径都不允许变化。所有允许项也只能为原普通 `100644` 文件的 `M` 修改；新增/删除/重命名/复制/类型或 mode 变化、symlink、submodule 均拒绝。测试复用上述既有文件，不新增例外路径。
+
+控制器在可信源码缓存对两个完整 commit SHA 解析实际 commit/tree/blob 对象，用 `git diff-tree --raw -r -z --no-renames` 等价的完整树差异生成条目，不能只检查 `web/` 或相信清单的“无 backend 修改”布尔。条目按 path 唯一排序，精确字段为 `status, old_mode, new_mode, old_oid, new_oid, path`；其中 status 只能 `M`、mode 只能 `100644`、OID 必须是实际 blob。`source_diff` 精确为 `{tree_digest, entries}`，`tree_digest` 是既有 canonical digest 对 `{from_tree, to_tree, entries}` 的摘要；tree 值分别为实际 `from_sha^{tree}` / `to_sha^{tree}`，不是清单自行宣称的路径集合。
+
+plan 写出 manifest 前、select 安装 manifest 时、switch 在既有 operation/config 锁内且停止任何服务前，都从真实 Git 对象重算整个差异、tree digest 与旧/新 migration graph，重检所有候选绑定。控制器文件摘要继续独立绑定；候选/控制器变化必须 fresh plan，不重绑已有 manifest。VM release 不需要增加 `.git`；host 重算与现有 VM 的 current SHA、schema、manifest、镜像/容器、控制器、卷身份复核共同形成切换边界。所有候选镜像仍正式构建与核验，不声称源文件不变就等于 backend/Worker 镜像二进制不变。
+
+#### 9.2 v3 清单与选择形状
+
+v3 顶层精确保留 v2 的 `manifest_id, created_at, repo, pr, from_sha, to_sha, from_schema, to_schema, controller_files_digest, migration_graph_digest, old_image_ids, candidate_image_ids, selection, responsibilities, old_runtime_projection, schema_inventory, storage_identity, old_containers, file_evidence, kernel_evidence, manifest_digest`，使用整数 `format_version=3`，仅新增 `mode` 和 `source_diff`。mode 必须精确为上面的固定字符串，所有原私有文件 owner/mode/大小、原子写、摘要、锁和闭合形状校验保留。v2 顶层和原选择形状不加可选键。
+
+v3 的 selection 精确为 `{queued, cleanup_execution_ids, terminal_executions}`；前两项保持原字段和规则。`terminal_executions` 是非空列表，每项精确包含：
+
+| 字段 | 类型和意义 |
+| --- | --- |
+| `execution_id`、`incident_id` | 正整数，拒绝 bool/float |
+| `disposition_id` | 规范小写带连字符 UUID 字符串 |
+| `expected_status` | `succeeded`、`dead_letter`、`cancelled` 之一 |
+| `expected_generation` | 正整数，拒绝 bool/float |
+| `expected_output_digest` | 64 位小写十六进制，按既有 controller `digest(Execution.output)` 定义；null 输出也必须计算摘要，摘要字段本身不可为 null |
+| `expected_error_code`、`expected_last_error_code` | null 或匹配 `^[a-z][a-z0-9_]{0,127}$` 的非空稳定码，与实际值和类型精确一致 |
+| `expected_attempt_count` | 非负整数，拒绝 bool/float；等于实际 Attempt 数 |
+
+独立业务 oracle 先验证原终态，再由私有选择冻结这些明确预期；校验器不能读到当前值就反向填入“预期”从而无条件通过。现场的原 ID、条数、输出/源码摘要、错误码组合、地址和卷名不写成公共常量，公开测试以不同数量/ID 的合成集合验证同一合同。terminal 的 Execution、Incident 和 disposition ID 各自不得重复，一项只关联一条明确处置。集合关系为 queued 与 terminal/cleanup 分别不相交，terminal 与 cleanup 可以相交。terminal 选择本身不是 cleanup 豁免：凡实际 pending/deferred 清理责任仍须进入独立 fresh cleanup 选择，漏选即拒绝。
+
+`responsibilities.executions` 继续使用原 queued＋cleanup 分类及文件核验；终态合同独立以 selection 对真实关系进行核对，不把 completed terminal 混为新的待清理责任。完整 `old_runtime_projection` 在 v3 仅由原十三张责任表加 `execution_incident_dispositions` 共十四张组成，原 v2 保持十三张。原 schema 全表 inventory 保留；本次同 schema 检查实际列列表和实际 PK 与 baseline 完全一致，不用“baseline 列仍是当前列子集”放过新列。既有 cursor 表保留、不重新 seed 或强制为 `0/0`，运行中正常扫描推进不是保全失败；本扩展不声称把运行中的 cursor 行冻结到 plan 时刻。
+
+#### 9.3 完整审计与终态关系
+
+在同一 `REPEATABLE READ READ ONLY` 事务读取全部审计，真实列列表必须恰为现有 0040 的十七列：`id, incident_id, execution_id, idempotency_key, request_hash, actor_kind, user_id, action, reason_code, outcome, code, from_generation, to_generation, from_outbox_id, to_outbox_id, execution_status, created_at`，实际 PK 必须为 `id`。记录列顺序、PK、按 PK 规范排序的**每行全部列** hash 与总数；缺列、额外列、换 PK、同数换行、幂等键/请求摘要/时间/Outbox 引用或任意其他列变化都拒绝。不能用 API/observer 的窄投影或 count 代替全表证据。原始值仅在只读校验内存中使用，私有清单仍保存摘要，不把幂等键和请求细节写公开输出。
+
+审计表的 ID 集合必须精确等于 terminal 选择的 disposition ID 集合；非空但未选、额外拒绝 receipt、同一 Incident 的额外审计或任一未关联行均阻塞。每行 id/idempotency_key 是有效 UUID、request_hash 是 64 位 lowercase hex、created_at 非空有效；actor 只能是 superadmin/user_id null 或 account/正整数 user_id，并满足既有外键身份。请求摘要按原处置的闭合 intent `{action, expected_generation: from_generation, reason_code}` 的 canonical/JCS 结果验证，不能另造请求或改审计。与关联 Incident/Execution/Outbox 的语义只允许：
+
+| 已完成动作 | 精确关系 |
+| --- | --- |
+| recover | reason 为 `capacity_repaired` 或 `routing_repaired`；outcome/code 均 `recovery_dispatched`；receipt 的 `execution_status=queued` 保持当时事实；from ≥ 1，to=from+1=当前 Execution generation；两个非空且不同的 Outbox 引用真实存在、同 Execution、分别对应 from/to generation，均 published；当前 Execution 为 succeeded 或 dead_letter |
+| terminate | reason 为 `operator_cancel` 或 `verified_terminal`；outcome=`execution_terminal`、code=`execution_cancelled`、receipt status=`cancelled`；from=to=当前 generation；from/to 指向同一已 published 原 Outbox；当前 Execution 必须 canonical cancelled、零 Attempt、null 输出 |
+
+所有关联 Incident 必须属于原 Execution，status=resolved、resolved_at 非空、generation=from_generation、message 与 from Outbox 相符。已 published 的原 Outbox 不要求被覆写为 cancellation marker，其十余列完整原投影继续严格保全。`cancellation_requested`、`dispatch_already_pending`、拒绝/冲突 receipt、未知结果、空或矛盾引用以及仍在 queued/running/retry_wait 的所选 terminal 都不进入本模式。
+
+当前终态逐项匹配独立选择中的 status/generation/output/error/Attempt 预期、原 ID 和全行指纹；succeeded 的两个 error 为 null，至少一次 Attempt且最新成功；dead_letter 的两个 error 为同一个明确的非空预期码，至少一次 Attempt且最新失败码一致；cancelled 的两个 error 均 `execution_cancelled`，无 Claim/start/worker 事实。全部历史 Attempt 保留，编号/实际条数与原终态一致，无 active Attempt/Slot、无保留 Input Lease/Hold、无 replay copy，Admission 已按原状态机释放且 ended_at 有效。queued 的 open Incident/Outbox/冻结材料、Admission 未释放资格仍逐项满足原规则。Adapter/global 的 count/bytes 按全库仍未释放的原责任求和验证，不因一个 Adapter 存在已完成 terminal 而把其其他 queued charge 归零。
+
+fresh cleanup 仍按第 8 节实际证据分类，包含已取消但零 Attempt 的 pending 占位；它只能在真实 Attempt/worker/start/workspace/journal/kernel 全为空时派生 `not_applicable`，原 pending 保持，不补 completed。历史 deferred 仍需完整可信 journal、私有凭据绑定和原卷，未知文件/进程/namespace/FD 或漏选保持阻塞。
+
+#### 9.4 全过程验证与交付边界
+
+新模式在 plan 阶段完成源差异、关系、终态、cleanup 和全表资格检查，任一失败不写 manifest、不停止服务。切换仍先停 Control 并等待请求退出，重读全部关系/十四表与文件责任；通过后才停 Worker/Web/account-web。停写后、pg_dump 与独立 pg_restore list 后、同 head schema 核验后且候选服务启动前，逐次比较完整旧投影、审计、表 inventory/列/PK、资产、材料/journal/runtime、kernel/namespace/FD 和卷/容器所有权；发生新审计、Claim、字段变化或未知读错都保持应用停止和 attention，不自动 restore/downgrade/restart 或 reset cursor。
+
+正式安装继续遵循原 installer、watcher singleton、operation/config 锁序与已审 controller digest；不手换 Web 或给 bypass 环境变量。原精确镜像、Sandbox、真实 Broker→Worker 及 cleanup probe 仍执行。新服务启动后的 probe 只允许自身可明确关联的新增 Execution/Attempt/Outbox 等增量；原所选终态、queued、审计全表和其他保留责任仍需单独核对，不能用 probe 成功覆盖它们的漂移。Ready 后重新封存原终态/queued/审计证据，再由真实 Chrome **只读**检查这些原记录的完整输出/日志，不再次处置。已有独立 offline oracle 的 PASS 保持 offline/PENDING_UI 边界。
+
+验证保留原全部 controller 测试，新增真实 PostgreSQL 十七列完整审计正例，以及同数换行、逐列/隐藏列变化、类型等值漂移、新/漏审计、错误关系、inflight、terminal 结果漂移、漏选零 Attempt pending cleanup、共享 Adapter 的剩余 charge、计划到停写间变化的负例。用独立临时 Git 仓库测试闭合 source diff 的正反例。隔离真实 PostgreSQL 只提供合成 baseline/重复采集、pg_dump/pg_restore list、同 head no-op Alembic、十四表/实际 PK/inventory 保全及并发漂移拒绝证据；不模拟 Control 停服、伪造 kernel/卷身份或另建完整验收环境来计入正式门禁。实际 stop 顺序、kernel/namespace/FD、原卷/镜像和真实 Broker/cleanup probe 由后续固定环境正式更新单独提供，不把纯字典桩或隔离 PG 当作该证据。UI 回归须以原生 wheel 抵达长输出尾部的可见几何为准，覆盖普通/长/截断 JSON、空输出、日志与多 Attempt/Incident、桌面/窄屏、已滚动 Drawer 内 Popconfirm 的键盘/取消/确认和权限，不改变既有 epoch/幂等策略。本扩展止于第一组，不形成后续组通用带审计迁移能力。
 
 ## Risks / Trade-offs
 
@@ -172,6 +240,7 @@ cleanup 分类独立于是否有 Incident：
 - 人工恢复实际运行仍可能有业务副作用 → 保留同一 Execution、原重试策略和外部业务幂等键，不承诺全局 exactly-once。
 - GC/物理材料核验与 DB 锁配合错误 → 复用原 Lease/文件锁协议，真实删除竞态测试，无法确认即拒绝。
 - `published` 不总是 Broker确认，cleanup `pending` 不总是有真实目录 → 处置/部署按完整证据分类，不能按单字段捷径判断。
+- 带审计模式容易被误当通用升级或把历史 receipt 状态改成当前终态 → 独立 v3/闭合 Git 路径/全十七列关系校验，v2 audit-empty 保持；只读预期与当前终态分别验证。
 - 升级包含旧责任和凭据 journal → 私有备份、候选绑定manifest、升级控制器独立 review；任何未知事实保留 attention，不自动回滚数据库。
 
 ## Migration Plan
@@ -180,4 +249,5 @@ cleanup 分类独立于是否有 Incident：
 2. 全新库执行完整 Alembic upgrade；从本次基线 schema 带旧 queued/Incident/cleanup样本升级；迁移只新增对象，不清理旧数据、不重建Worker已有约束。ORM schema diff 限定核查新增对象和 #135，不顺手重构整库。
 3. 最终 PR head 运行 Backend/Web全量检查、Compose smoke、真实 Broker/DB/Chrome/Gate 与独立 Review。控制器修改单独审查后安装；精确CI HEAD才允许固定预览升级。核对部署镜像SHA、合并SHA及目标环境探针，保留证据。
 4. migration/切换失败保留原卷、备份和attention；只有确认旧 schema/旧镜像仍兼容的切换前失败才恢复旧应用。迁移后不自动 downgrade、不清空数据库另建环境；由具体修复继续向前或按明确授权恢复备份。
-5. 尚未运行的测试和用户手工验收保持未完成；依用户收窄后的范围，第一组技术与发布门禁通过后停止，不进入后续组。#135/#134/#152 在用户最终验收前保持开放，PR文字不得自动关闭这些 Issue。
+5. 原处置已完成后的本组 Web 滚动修复按第 9 节生成 fresh v3：先更新并严格验证规划，独立实现/Review 控制器和双语合同，最终 HEAD CI 通过后官方安装、重新 plan/select/status，同 schema 保全并只读复查原终态。原 v2 清单、历史失败证据和业务记录不得覆盖，已有审计不回迁到空表。
+6. 尚未运行的测试和用户手工验收保持未完成；依用户收窄后的范围，第一组技术与发布门禁通过后停止，不进入后续组。#135/#134/#152 在用户最终验收前保持开放，PR文字不得自动关闭这些 Issue。
