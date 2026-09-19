@@ -36,6 +36,9 @@ import type {
   CredentialType,
   Execution,
   ExecutionHistoryPage,
+  IncidentDispositionAction,
+  IncidentDispositionReason,
+  IncidentDispositionResponse,
   KnowledgeBase,
   KnowledgeSource,
   KnowledgeSourceTestResult,
@@ -500,6 +503,22 @@ export const api = {
 
   getReliableExecutionDetail: (executionId: number): Promise<ReliableExecutionDetail> =>
     request(`/api/executions/${executionId}/reliable-detail`),
+
+  disposeInfrastructureIncident: (
+    executionId: number,
+    incidentId: number,
+    payload: {
+      action: IncidentDispositionAction;
+      expected_generation: number;
+      reason_code: IncidentDispositionReason;
+    },
+    idempotencyKey: string,
+  ): Promise<IncidentDispositionResponse> =>
+    request(`/api/executions/${executionId}/incidents/${incidentId}/dispositions`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(payload),
+    }),
 
   replayExecution: (executionId: number): Promise<ReplayResponse> =>
     request(`/api/executions/${executionId}/replay`, { method: "POST" }),

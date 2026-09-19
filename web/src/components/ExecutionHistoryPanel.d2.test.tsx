@@ -1,9 +1,15 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import { applyUiLocale } from "../i18n";
-import type { Execution, ExecutionSummary, ReliableExecutionDetail } from "../types";
+import type {
+  Execution,
+  ExecutionSummary,
+  IncidentDispositionResponse,
+  ReliableExecutionDetail,
+  ReliableExecutionIncident,
+} from "../types";
 import ExecutionHistoryPanel from "./ExecutionHistoryPanel";
 
 function summary(overrides: Partial<ExecutionSummary> = {}): ExecutionSummary {
@@ -56,6 +62,74 @@ function execution(overrides: Partial<Execution> = {}): Execution {
     started_at: "2026-08-28T00:00:01Z",
     ended_at: "2026-08-28T00:00:02Z",
     duration_ms: 1000,
+    ...overrides,
+  };
+}
+
+function incident(overrides: Partial<ReliableExecutionIncident> = {}): ReliableExecutionIncident {
+  return {
+    id: 901,
+    execution_id: 71,
+    dispatch_generation: 2,
+    message_id: "dispatch-71-2",
+    kind: "dispatch_infrastructure_error",
+    status: "open",
+    attempts: 2,
+    observation_count: 3,
+    disposition_count: 0,
+    recovery_dispatch_count: 0,
+    last_error: "dispatch_infrastructure_error",
+    created_at: "2026-08-28T00:00:04Z",
+    resolved_at: null,
+    recent_disposition: null,
+    dispositions_url: "/api/executions/71/incidents/901/dispositions",
+    recover_available: true,
+    recover_reason: null,
+    terminate_available: true,
+    terminate_reason: null,
+    ...overrides,
+  };
+}
+
+function reliableDetail(
+  incidents: ReliableExecutionIncident[],
+  overrides: Partial<ReliableExecutionDetail> = {},
+): ReliableExecutionDetail {
+  return {
+    execution_id: 71,
+    dispatch_backend: "rabbitmq",
+    status: "queued",
+    attempts: [],
+    incidents,
+    replay_available: false,
+    replay_reason: null,
+    ...overrides,
+  };
+}
+
+function dispositionResponse(overrides: Partial<IncidentDispositionResponse> = {}): IncidentDispositionResponse {
+  return {
+    receipt: {
+      id: "receipt-901",
+      incident_id: 901,
+      execution_id: 71,
+      idempotency_key: "00000000-0000-4000-8000-000000000901",
+      actor_kind: "account",
+      user_id: 8,
+      action: "recover",
+      reason_code: "capacity_repaired",
+      outcome: "recovery_dispatched",
+      code: "recovery_dispatched",
+      from_generation: 2,
+      to_generation: 3,
+      from_outbox_id: "outbox-2",
+      to_outbox_id: "outbox-3",
+      execution_status: "queued",
+      created_at: "2026-08-28T00:01:00Z",
+    },
+    incident_status: "resolved",
+    execution_status: "queued",
+    retry_after_seconds: null,
     ...overrides,
   };
 }
@@ -116,15 +190,7 @@ describe("Issue #127 D2 execution history", () => {
         output_summary: null,
         cleanup_summary: null,
       }],
-      incidents: [{
-        id: 901,
-        kind: "dispatch_infrastructure_error",
-        status: "open",
-        attempts: 2,
-        last_error: "dispatch_infrastructure_error",
-        created_at: "2026-08-28T00:00:04Z",
-        resolved_at: null,
-      }],
+      incidents: [incident()],
       replay_available: true,
       replay_reason: null,
     };
@@ -259,5 +325,132 @@ describe("Issue #127 D2 execution history", () => {
     fireEvent.click(await screen.findByTestId("history-row"));
     await waitFor(() => expect(screen.getByText("Managed files snapshot (read-only)")).toBeTruthy());
     expect(screen.getByText("No file facts were retained in this snapshot.")).toBeTruthy();
+  });
+
+  it("shows terminal verification, counts, eligibility reasons, and a result receipt", async () => {
+    const terminalIncident = incident({
+      recover_available: false,
+      recover_reason: "execution_terminal",
+      terminate_available: true,
+    });
+    vi.spyOn(api, "getReliableExecutionDetail").mockResolvedValue(reliableDetail(
+      [terminalIncident],
+      { status: "cancelled" },
+    ));
+    const dispose = vi.spyOn(api, "disposeInfrastructureIncident").mockResolvedValue(
+      dispositionResponse({
+        receipt: {
+          ...dispositionResponse().receipt,
+          action: "terminate",
+          reason_code: "verified_terminal",
+          outcome: "execution_terminal",
+          code: "execution_terminal",
+          from_generation: 2,
+          to_generation: null,
+        },
+      }),
+    );
+    renderHistory(execution({ status: "cancelled" }));
+    fireEvent.click(await screen.findByTestId("history-row"));
+
+    const incidentAlert = await screen.findByTestId("execution-incident-901");
+    expect(incidentAlert.textContent).toContain("观测 3 次");
+    expect(incidentAlert.textContent).toContain("人工处置 0 次");
+    expect(incidentAlert.textContent).toContain("执行已是终态");
+    const verifyButton = within(incidentAlert).getByRole("button", { name: "核实并关闭事件" });
+    verifyButton.focus();
+    expect(document.activeElement).toBe(verifyButton);
+    fireEvent.click(verifyButton);
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+    expect(dispose.mock.calls[0]?.[2]).toEqual({
+      action: "terminate",
+      expected_generation: 2,
+      reason_code: "verified_terminal",
+    });
+    expect((await screen.findByTestId("incident-result-901")).textContent).toContain("已核实终态并关闭事件");
+  });
+
+  it("reuses the same idempotency key when an explicit action is retried before refresh", async () => {
+    vi.spyOn(api, "getReliableExecutionDetail").mockResolvedValue(reliableDetail([incident()]));
+    const dispose = vi.spyOn(api, "disposeInfrastructureIncident")
+      .mockRejectedValueOnce(new ApiError(503, "outbox_backlog_full", "Outbox capacity is full"))
+      .mockResolvedValueOnce(dispositionResponse());
+    renderHistory(execution({ status: "queued" }));
+    fireEvent.click(await screen.findByTestId("history-row"));
+    const recoverButton = await screen.findByRole("button", { name: "恢复此执行" });
+
+    fireEvent.click(recoverButton);
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+    expect(await screen.findByTestId("incident-disposition-error")).toBeTruthy();
+    fireEvent.click(recoverButton);
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(2));
+    expect(dispose.mock.calls[0]?.[3]).toBe(dispose.mock.calls[1]?.[3]);
+    expect(dispose.mock.calls[0]?.[3]).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  it("refreshes the selected execution after a 409 without navigating away", async () => {
+    const initial = reliableDetail([incident()]);
+    const refreshed = reliableDetail([incident({
+      status: "resolved",
+      recover_available: false,
+      recover_reason: "incident_closed",
+      terminate_available: false,
+      terminate_reason: "incident_closed",
+    })]);
+    const detailApi = vi.spyOn(api, "getReliableExecutionDetail")
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(refreshed);
+    vi.spyOn(api, "disposeInfrastructureIncident").mockRejectedValue(
+      new ApiError(409, "incident_generation_conflict", "Incident generation changed"),
+    );
+    renderHistory(execution({ status: "queued" }));
+    fireEvent.click(await screen.findByTestId("history-row"));
+    fireEvent.click(await screen.findByRole("button", { name: "恢复此执行" }));
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+
+    await waitFor(() => expect(detailApi).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("execution-run-id").textContent).toContain("71");
+    expect(screen.getByRole("button", { name: "恢复此执行" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("execution-incident-901").textContent).toContain("Incident 已关闭");
+  });
+
+  it("explains active termination as cooperative cancellation in both locales", async () => {
+    const activeIncident = incident({
+      recover_available: false,
+      recover_reason: "incident_execution_active",
+      terminate_available: true,
+    });
+    vi.spyOn(api, "getReliableExecutionDetail").mockResolvedValue(reliableDetail(
+      [activeIncident],
+      { status: "running" },
+    ));
+    renderHistory(execution({ status: "running" }));
+    fireEvent.click(await screen.findByTestId("history-row"));
+    expect((await screen.findByRole("button", { name: "请求取消" })).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByTestId("incident-cooperative-cancellation").textContent).toContain("协作式取消");
+
+    await applyUiLocale("en");
+    expect((await screen.findByRole("button", { name: "Request cancellation" })).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByTestId("incident-cooperative-cancellation").textContent).toContain("cooperative cancellation");
+  });
+
+  it("keeps both actions disabled when the server reports read-only access", async () => {
+    vi.spyOn(api, "getReliableExecutionDetail").mockResolvedValue(reliableDetail([incident({
+      recover_available: false,
+      recover_reason: "adapter_read_only",
+      terminate_available: false,
+      terminate_reason: "adapter_read_only",
+    })]));
+    renderHistory(execution({ status: "queued" }));
+    fireEvent.click(await screen.findByTestId("history-row"));
+
+    const incidentAlert = await screen.findByTestId("execution-incident-901");
+    expect(within(incidentAlert).getByRole("button", { name: "恢复此执行" }).hasAttribute("disabled")).toBe(true);
+    expect(within(incidentAlert).getByRole("button", { name: "终结此执行" }).hasAttribute("disabled")).toBe(true);
+    expect(incidentAlert.textContent).toContain("当前账号只有只读权限");
   });
 });
