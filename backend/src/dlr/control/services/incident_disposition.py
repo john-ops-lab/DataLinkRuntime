@@ -151,7 +151,7 @@ def inspect_incident_disposition(
     if incident.status != "open":
         return IncidentActionCapabilities(False, "incident_closed", False, "incident_closed")
     if execution.status in {"succeeded", "dead_letter", "cancelled", "expired"}:
-        return IncidentActionCapabilities(False, "execution_terminal", False, "execution_terminal")
+        return IncidentActionCapabilities(False, "execution_terminal", True, None)
     if incident.dispatch_generation != execution.dispatch_generation:
         if (
             incident.dispatch_generation is not None

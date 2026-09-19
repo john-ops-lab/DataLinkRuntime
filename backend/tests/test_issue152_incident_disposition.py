@@ -835,7 +835,7 @@ def test_recover_rechecks_managed_material_after_http_detail_read(
     ("state", "recover_available", "recover_reason", "terminate_available", "terminate_reason"),
     [
         ("closed", False, "incident_closed", False, "incident_closed"),
-        ("terminal", False, "execution_terminal", False, "execution_terminal"),
+        ("terminal", False, "execution_terminal", True, None),
         ("stale", False, "incident_stale_generation", True, None),
         (
             "future",
@@ -887,6 +887,60 @@ def test_reliable_detail_exposes_stable_incident_capability_semantics(
     assert incident_body["recover_reason"] == recover_reason
     assert incident_body["terminate_available"] is terminate_available
     assert incident_body["terminate_reason"] == terminate_reason
+
+
+def test_terminal_open_incident_can_be_verified_closed_without_mutating_execution(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-terminal-verify-worker")
+    adapter = _rabbit_adapter(api_client, worker, "issue152-terminal-verify-adapter")
+    execution = _execution(api_client, adapter["id"])
+    with session_factory.begin() as session:
+        incident_id = _bound_incident(session, execution["id"]).id
+    with session_factory() as session:
+        cancelled = execution_service.cancel_execution(session, execution["id"])
+        assert cancelled.status == "cancelled"
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        assert row is not None
+        before = {column.name: getattr(row, column.name) for column in Execution.__table__.columns}
+
+    detail = api_client.get(f"/api/executions/{execution['id']}/reliable-detail")
+    assert detail.status_code == 200, detail.text
+    incident_body = detail.json()["incidents"][0]
+    assert incident_body["status"] == "open"
+    assert incident_body["recover_available"] is False
+    assert incident_body["recover_reason"] == "execution_terminal"
+    assert incident_body["terminate_available"] is True
+    assert incident_body["terminate_reason"] is None
+
+    closed = api_client.post(
+        f"/api/executions/{execution['id']}/incidents/{incident_id}/dispositions",
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+        json={
+            "action": "terminate",
+            "expected_generation": 1,
+            "reason_code": "verified_terminal",
+        },
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["receipt"]["outcome"] == "execution_terminal"
+    assert closed.json()["incident_status"] == "resolved"
+
+    with session_factory() as session:
+        row = session.get(Execution, execution["id"])
+        incident = session.get(ExecutionInfrastructureIncident, incident_id)
+        assert row is not None
+        after = {column.name: getattr(row, column.name) for column in Execution.__table__.columns}
+        assert after == before
+        assert incident is not None and incident.status == "resolved"
+        receipt = session.scalar(select(ExecutionIncidentDisposition))
+        assert receipt is not None
+        assert receipt.action == "terminate"
+        assert receipt.reason_code == "verified_terminal"
 
 
 def test_managed_recovery_accepts_clean_pending_delete_and_replays_after_blob_loss(
