@@ -642,6 +642,11 @@ def derive_terminal_evidence(
             _by_execution(attempts, execution_id),
             key=lambda row: row.get("attempt_no", 0),
         )
+        cleanup = _responsibility(execution, execution_attempts, [])["cleanup"]
+        if cleanup in {"not_applicable", "deferred_preserved"} and (
+            execution_id not in cleanup_ids
+        ):
+            raise CarryForwardError("terminal_cleanup_unselected")
         if (
             len(execution_attempts) != expected["expected_attempt_count"]
             or [row.get("attempt_no") for row in execution_attempts]
@@ -747,11 +752,6 @@ def derive_terminal_evidence(
             raise CarryForwardError("audit_disposition_invalid")
         if execution.get("admission_released_at") is None:
             raise CarryForwardError("terminal_admission_not_released")
-        if (
-            execution.get("workspace_cleanup_status") in {"pending", "deferred"}
-            and execution_id not in cleanup_ids
-        ):
-            raise CarryForwardError("terminal_cleanup_unselected")
         if any(
             row.get("execution_id") == execution_id
             for name in ("execution_input_artifact_leases", "execution_artifact_holds")

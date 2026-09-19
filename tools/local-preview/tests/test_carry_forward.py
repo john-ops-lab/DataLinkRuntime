@@ -445,6 +445,28 @@ class AuditedResponsibilityTests(unittest.TestCase):
         result = carry.derive_terminal_evidence(data, selection)
         self.assertEqual(result["executions"][0]["execution_id"], 9)
 
+    def test_terminal_cleanup_is_classified_even_when_not_selected_for_cleanup(self):
+        cases = (
+            ("execution unknown", "unknown", {"workspace_cleanup_status": "completed"}),
+            ("execution null", None, {"workspace_cleanup_status": "completed"}),
+            ("attempt null", "completed", None),
+            ("attempt pending", "completed", {"workspace_cleanup_status": "pending"}),
+        )
+        for label, execution_cleanup, attempt_cleanup in cases:
+            with self.subTest(label=label):
+                data, selection = audited_case()
+                data["executions"]["rows"][0][
+                    "workspace_cleanup_status"
+                ] = execution_cleanup
+                data["execution_attempts"]["rows"][0][
+                    "cleanup_summary"
+                ] = attempt_cleanup
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError,
+                    "cleanup_state_unknown|attempt_cleanup_state_unknown",
+                ):
+                    carry.derive_terminal_evidence(data, selection)
+
     def test_hidden_audit_change_and_new_or_replaced_row_are_rejected(self):
         data, selection = audited_case()
         data[carry.AUDIT_TABLE]["rows"][0]["request_hash"] = "0" * 64
