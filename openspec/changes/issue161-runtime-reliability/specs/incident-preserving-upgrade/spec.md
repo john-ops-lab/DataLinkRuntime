@@ -66,7 +66,7 @@
 - **THEN** 规划和切换均拒绝，不把任意同 revision 或带审计向前迁移视为受支持
 
 ### Requirement: 候选全树差异必须在闭合 Web 修复范围
-v3 SHALL 核验旧部署 commit 至候选 commit 的全部 Git tree 差异，产品源差异 MUST 恰为 `web/src/index.css` 的已审查滚动修复；其他变化只允许 design 第 9.1 节逐文件列出的既有回归、控制器和规划/操作合同。路径规则 MUST 为固定精确集合，拒绝未知路径、目录通配、新增/删除/重命名/类型或 mode 变化、symlink 与 submodule。不得改 Backend、Worker、migration、依赖锁、Docker/Compose、CI 或其他产品源。
+v3 SHALL 核验旧部署 commit 至候选 commit 的全部 Git tree 差异，产品源差异 MUST 恰为 `web/src/index.css` 的已审查滚动修复；其他变化只允许 design 第 9.1 节逐文件列出的既有回归、控制器和规划/操作合同。路径规则 MUST 为固定精确集合，各路径 old/new mode MUST 同时等于 design 第 9.1 节固定的原 mode；既有 executable 脚本保持原 mode 的修改合法，不能泛放所有 executable 路径。系统 MUST 拒绝未知路径、目录通配、新增/删除/重命名/类型或 mode 变化、symlink 与 submodule。不得改 Backend、Worker、migration、依赖锁、Docker/Compose、CI 或其他产品源。
 
 plan、select、switch 停止任何服务前 SHALL 从可信源缓存的真实 commit/tree/blob 重算完整差异和摘要，MUST 绑定旧/新 SHA、迁移图、controller、镜像和原存储事实；manifest 中的声明或布尔不得代替实际对象验证。所有候选镜像仍正式构建和核验。
 

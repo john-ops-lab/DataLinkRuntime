@@ -53,7 +53,7 @@
 
 
 - [ ] 6.5 按 design 第 9 节实现显式 `audited-web-same-schema-v1` / manifest v3 和闭合 terminal 选择；验证原 v2 shape/audit-empty 行为不变，unknown mode/version/schema/键、空或重复选择以及 terminal 未显式选择 cleanup 的反例在 plan 写出及停服前被拒绝。
-- [ ] 6.6 仅对 design 9.1 精确路径实现完整 Git commit/tree/raw diff 重算和 source_diff 绑定；以临时真实 Git 仓库验证允许 CSS＋配套修改、未知/backend/migration/依赖/CI 路径、A/D/R/type/mode/symlink/submodule、改对象和 plan 后候选漂移均拒绝，plan/select/switch 停服前都实际重算且控制器/旧新 migration graph 摘要仍全绑定。
+- [ ] 6.6 仅对 design 9.1 精确路径实现完整 Git commit/tree/raw diff 重算和 source_diff 绑定；以临时真实 Git 仓库验证允许 CSS＋配套修改与两个原 `100755` 脚本保持 mode 的正例，未知/backend/migration/依赖/CI 路径、A/D/R/type/mode/symlink/submodule、原脚本 chmod、其他路径新增 executable 权限、改对象和 plan 后候选漂移均拒绝，plan/select/switch 停服前都实际重算且控制器/旧新 migration graph 摘要仍全绑定。
 - [ ] 6.7 在原十三张责任表外为 v3 捕获完整十七列 audit 的真实 PK/有序整行 hash/count，核对全部 audit 集与 terminal/Incident/Outbox/请求/actor 关系及明确终态预期；真实 PostgreSQL 正例与逐列/同数换行/隐藏列/类型等值/额外或缺失 audit/inflight/错误结果负例全部通过，不用 observer 窄投影或 count 代替。
 - [ ] 6.8 保持 queued/cleanup 资格和所有锁序、文件/kernel/namespace/FD/卷门禁；验证 terminal/cleanup 合法交集、取消后的零 Attempt pending 必选且只派生不适用、剩余同 Adapter queued charge 不归零、未知 journal/新 Claim/新 audit/计划至停写间变化拒绝；原全部 controller 回归继续通过。
 - [ ] 6.9 更新双语 local-preview 操作合同并对精确实现做独立 Astra ultra Review；运行 controller 全量 unittest、Python 编译、shell 语法、OpenSpec strict 与 diff 检查；隔离真实 PostgreSQL 仅验证合成 baseline/重复采集、pg_dump/pg_restore list、同 head no-op Alembic、十四表/实际 PK/inventory 及 race 拒绝，记录 LOCAL_FAST 证据，不伪造 Control/kernel 或另建完整验收环境；固定环境的实际 stop/kernel/卷/镜像/probe 证据只在 6.10 提供。

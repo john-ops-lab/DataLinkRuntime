@@ -182,9 +182,9 @@ v3 仅允许旧/新 revision 都是 `0040_issue152_dispositions`，旧/新完整
 | 操作合同 | `docs/zh-CN/local-preview.md`、`docs/en/local-preview.md` |
 | 本组规划 | `openspec/changes/issue161-runtime-reliability/proposal.md`、`openspec/changes/issue161-runtime-reliability/design.md`、`openspec/changes/issue161-runtime-reliability/tasks.md`、`openspec/changes/issue161-runtime-reliability/specs/incident-preserving-upgrade/spec.md` |
 
-产品源差异集合必须恰为 `web/src/index.css`，内容只交付已独立审查的详情输出滚动修复；路径合格不代表任意 CSS 内容已获批准。Backend、Worker、migration、依赖 manifest/lock、Docker/Compose、CI、其他产品源、安装器和未知路径都不允许变化。所有允许项也只能为原普通 `100644` 文件的 `M` 修改；新增/删除/重命名/复制/类型或 mode 变化、symlink、submodule 均拒绝。测试复用上述既有文件，不新增例外路径。
+产品源差异集合必须恰为 `web/src/index.css`，内容只交付已独立审查的详情输出滚动修复；路径合格不代表任意 CSS 内容已获批准。Backend、Worker、migration、依赖 manifest/lock、Docker/Compose、CI、其他产品源、安装器和未知路径都不允许变化。所有允许项也只能为既有普通 blob 的 `M` 修改，且逐路径满足 `old_mode == new_mode == 该路径固定原 mode`：仅 `tools/local-preview/preview.py` 与 `tools/local-preview/deploy.sh` 的固定 mode 为 `100755`，上表其他十二个精确路径均为 `100644`。此映射来自已部署源树的实际 Git mode，不是任意允许 `100755`；新增/删除/重命名/复制/类型或 mode 变化、symlink、submodule 均拒绝。测试复用上述既有文件，不新增例外路径。
 
-控制器在可信源码缓存对两个完整 commit SHA 解析实际 commit/tree/blob 对象，用 `git diff-tree --raw -r -z --no-renames` 等价的完整树差异生成条目，不能只检查 `web/` 或相信清单的“无 backend 修改”布尔。条目按 path 唯一排序，精确字段为 `status, old_mode, new_mode, old_oid, new_oid, path`；其中 status 只能 `M`、mode 只能 `100644`、OID 必须是实际 blob。`source_diff` 精确为 `{tree_digest, entries}`，`tree_digest` 是既有 canonical digest 对 `{from_tree, to_tree, entries}` 的摘要；tree 值分别为实际 `from_sha^{tree}` / `to_sha^{tree}`，不是清单自行宣称的路径集合。
+控制器在可信源码缓存对两个完整 commit SHA 解析实际 commit/tree/blob 对象，用 `git diff-tree --raw -r -z --no-renames` 等价的完整树差异生成条目，不能只检查 `web/` 或相信清单的“无 backend 修改”布尔。条目按 path 唯一排序，精确字段为 `status, old_mode, new_mode, old_oid, new_oid, path`；其中 status 只能 `M`，old/new mode 必须同时等于上述逐路径固定值，OID 必须是实际 blob。`source_diff` 精确为 `{tree_digest, entries}`，`tree_digest` 是既有 canonical digest 对 `{from_tree, to_tree, entries}` 的摘要；tree 值分别为实际 `from_sha^{tree}` / `to_sha^{tree}`，不是清单自行宣称的路径集合。
 
 plan 写出 manifest 前、select 安装 manifest 时、switch 在既有 operation/config 锁内且停止任何服务前，都从真实 Git 对象重算整个差异、tree digest 与旧/新 migration graph，重检所有候选绑定。控制器文件摘要继续独立绑定；候选/控制器变化必须 fresh plan，不重绑已有 manifest。VM release 不需要增加 `.git`；host 重算与现有 VM 的 current SHA、schema、manifest、镜像/容器、控制器、卷身份复核共同形成切换边界。所有候选镜像仍正式构建与核验，不声称源文件不变就等于 backend/Worker 镜像二进制不变。
 
@@ -231,7 +231,7 @@ fresh cleanup 仍按第 8 节实际证据分类，包含已取消但零 Attempt 
 
 正式安装继续遵循原 installer、watcher singleton、operation/config 锁序与已审 controller digest；不手换 Web 或给 bypass 环境变量。原精确镜像、Sandbox、真实 Broker→Worker 及 cleanup probe 仍执行。新服务启动后的 probe 只允许自身可明确关联的新增 Execution/Attempt/Outbox 等增量；原所选终态、queued、审计全表和其他保留责任仍需单独核对，不能用 probe 成功覆盖它们的漂移。Ready 后重新封存原终态/queued/审计证据，再由真实 Chrome **只读**检查这些原记录的完整输出/日志，不再次处置。已有独立 offline oracle 的 PASS 保持 offline/PENDING_UI 边界。
 
-验证保留原全部 controller 测试，新增真实 PostgreSQL 十七列完整审计正例，以及同数换行、逐列/隐藏列变化、类型等值漂移、新/漏审计、错误关系、inflight、terminal 结果漂移、漏选零 Attempt pending cleanup、共享 Adapter 的剩余 charge、计划到停写间变化的负例。用独立临时 Git 仓库测试闭合 source diff 的正反例。隔离真实 PostgreSQL 只提供合成 baseline/重复采集、pg_dump/pg_restore list、同 head no-op Alembic、十四表/实际 PK/inventory 保全及并发漂移拒绝证据；不模拟 Control 停服、伪造 kernel/卷身份或另建完整验收环境来计入正式门禁。实际 stop 顺序、kernel/namespace/FD、原卷/镜像和真实 Broker/cleanup probe 由后续固定环境正式更新单独提供，不把纯字典桩或隔离 PG 当作该证据。UI 回归须以原生 wheel 抵达长输出尾部的可见几何为准，覆盖普通/长/截断 JSON、空输出、日志与多 Attempt/Incident、桌面/窄屏、已滚动 Drawer 内 Popconfirm 的键盘/取消/确认和权限，不改变既有 epoch/幂等策略。本扩展止于第一组，不形成后续组通用带审计迁移能力。
+验证保留原全部 controller 测试，新增真实 PostgreSQL 十七列完整审计正例，以及同数换行、逐列/隐藏列变化、类型等值漂移、新/漏审计、错误关系、inflight、terminal 结果漂移、漏选零 Attempt pending cleanup、共享 Adapter 的剩余 charge、计划到停写间变化的负例。用独立临时 Git 仓库测试闭合 source diff 的正反例，包含两个既有 `100755` 脚本保持 mode 的合法修改，以及其 chmod、其他允许路径改为 executable 和未知 executable 路径的拒绝。隔离真实 PostgreSQL 只提供合成 baseline/重复采集、pg_dump/pg_restore list、同 head no-op Alembic、十四表/实际 PK/inventory 保全及并发漂移拒绝证据；不模拟 Control 停服、伪造 kernel/卷身份或另建完整验收环境来计入正式门禁。实际 stop 顺序、kernel/namespace/FD、原卷/镜像和真实 Broker/cleanup probe 由后续固定环境正式更新单独提供，不把纯字典桩或隔离 PG 当作该证据。UI 回归须以原生 wheel 抵达长输出尾部的可见几何为准，覆盖普通/长/截断 JSON、空输出、日志与多 Attempt/Incident、桌面/窄屏、已滚动 Drawer 内 Popconfirm 的键盘/取消/确认和权限，不改变既有 epoch/幂等策略。本扩展止于第一组，不形成后续组通用带审计迁移能力。
 
 ## Risks / Trade-offs
 
