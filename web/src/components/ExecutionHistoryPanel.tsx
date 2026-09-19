@@ -25,6 +25,17 @@ import { LogView, OutputView } from "./OutputView";
 
 const PAGE_SIZE = 50;
 
+interface IncidentDispositionIntent {
+  operation: string;
+  requestId: number;
+  executionId: number;
+  incidentId: number;
+  action: IncidentDispositionAction;
+  expectedGeneration: number;
+  reasonCode: IncidentDispositionReason;
+  idempotencyKey: string;
+}
+
 function errorMessage(error: unknown): string {
   return userErrorMessage(error);
 }
@@ -164,7 +175,8 @@ export default function ExecutionHistoryPanel(props: {
   const [confirmingDisposition, setConfirmingDisposition] = useState<string | null>(null);
   const [dispositionError, setDispositionError] = useState<string | null>(null);
   const [dispositionResults, setDispositionResults] = useState<Record<number, IncidentDispositionResponse>>({});
-  const dispositionKeysRef = useRef(new Map<string, string>());
+  const dispositionIntentsRef = useRef(new Map<string, IncidentDispositionIntent>());
+  const requestedExecutionIdRef = useRef<number | null>(null);
   // Only the newest detail request may commit UI state: rapid clicks (A slow,
   // B fast) must never let a stale A response overwrite the B detail.
   const detailRequestRef = useRef(0);
@@ -227,6 +239,7 @@ export default function ExecutionHistoryPanel(props: {
     const requestId = ++detailRequestRef.current;
     watcher.stop(); // invalidate any previous drawer's stream/polls
     setLoadError(null);
+    requestedExecutionIdRef.current = executionId;
     setRequestedExecutionId(executionId);
     setSelectedSummary(summary);
     setDrawerOpen(true);
@@ -234,10 +247,11 @@ export default function ExecutionHistoryPanel(props: {
     setReliableDetail(null);
     setReliableDetailError(null);
     setReplayResult(null);
+    setDispositionLoading(null);
     setDispositionError(null);
     setDispositionResults({});
     setConfirmingDisposition(null);
-    dispositionKeysRef.current.clear();
+    dispositionIntentsRef.current.clear();
     try {
       const loaded = await api.getExecution(executionId);
       if (requestId !== detailRequestRef.current) {
@@ -267,6 +281,7 @@ export default function ExecutionHistoryPanel(props: {
       }
       setLoadError(errorMessage(error));
       setDrawerOpen(false);
+      requestedExecutionIdRef.current = null;
       setRequestedExecutionId(null);
       setSelectedSummary(null);
     } finally {
@@ -276,24 +291,37 @@ export default function ExecutionHistoryPanel(props: {
     }
   }
 
-  async function refreshReliableDetail(executionId: number): Promise<void> {
-    const requestId = detailRequestRef.current;
-    const refreshed = await api.getReliableExecutionDetail(executionId);
-    if (requestId === detailRequestRef.current && requestedExecutionId === executionId) {
-      setReliableDetail(refreshed);
+  function isCurrentDetailEpoch(executionId: number, requestId: number): boolean {
+    return requestId === detailRequestRef.current
+      && executionId === requestedExecutionIdRef.current;
+  }
+
+  async function refreshReliableDetail(executionId: number, requestId: number): Promise<boolean> {
+    if (!isCurrentDetailEpoch(executionId, requestId)) {
+      return false;
     }
+    const refreshed = await api.getReliableExecutionDetail(executionId);
+    if (!isCurrentDetailEpoch(executionId, requestId)) {
+      return false;
+    }
+    setReliableDetail(refreshed);
+    return true;
   }
 
   async function disposeIncident(
     incident: ReliableExecutionIncident,
     action: IncidentDispositionAction,
+    currentExecutionGeneration: number | undefined,
   ): Promise<void> {
-    if (requestedExecutionId === null || incident.dispatch_generation === null) {
+    const executionId = requestedExecutionIdRef.current;
+    const requestId = detailRequestRef.current;
+    if (executionId === null || currentExecutionGeneration === undefined) {
+      if (isCurrentDetailEpoch(executionId ?? -1, requestId)) {
+        setDispositionError(t("history.reliableDetailUnavailable"));
+      }
       return;
     }
-    const operation = `${requestedExecutionId}:${incident.id}:${action}`;
-    const idempotencyKey = dispositionKeysRef.current.get(operation) ?? crypto.randomUUID();
-    dispositionKeysRef.current.set(operation, idempotencyKey);
+    const operation = `${executionId}:${incident.id}:${action}`;
     const isTerminalVerification =
       action === "terminate" && incident.recover_reason === "execution_terminal";
     const reasonCode: IncidentDispositionReason = action === "recover"
@@ -303,34 +331,61 @@ export default function ExecutionHistoryPanel(props: {
       : isTerminalVerification
         ? "verified_terminal"
         : "operator_cancel";
+    const intent = dispositionIntentsRef.current.get(operation) ?? {
+      operation,
+      requestId,
+      executionId,
+      incidentId: incident.id,
+      action,
+      expectedGeneration: currentExecutionGeneration,
+      reasonCode,
+      idempotencyKey: crypto.randomUUID(),
+    };
+    dispositionIntentsRef.current.set(operation, intent);
+    if (!isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+      return;
+    }
     setDispositionLoading(operation);
     setDispositionError(null);
     try {
       const result = await api.disposeInfrastructureIncident(
-        requestedExecutionId,
-        incident.id,
+        intent.executionId,
+        intent.incidentId,
         {
-          action,
-          expected_generation: incident.dispatch_generation,
-          reason_code: reasonCode,
+          action: intent.action,
+          expected_generation: intent.expectedGeneration,
+          reason_code: intent.reasonCode,
         },
-        idempotencyKey,
+        intent.idempotencyKey,
       );
-      setDispositionResults((current) => ({ ...current, [incident.id]: result }));
-      await refreshReliableDetail(requestedExecutionId);
-      dispositionKeysRef.current.delete(operation);
+      if (!isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+        return;
+      }
+      setDispositionResults((current) => ({ ...current, [intent.incidentId]: result }));
+      if (await refreshReliableDetail(intent.executionId, intent.requestId)) {
+        dispositionIntentsRef.current.delete(intent.operation);
+      }
     } catch (error) {
+      if (!isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+        return;
+      }
       setDispositionError(errorMessage(error));
       if (error instanceof ApiError && error.status === 409) {
         try {
-          await refreshReliableDetail(requestedExecutionId);
-          dispositionKeysRef.current.delete(operation);
+          if (await refreshReliableDetail(intent.executionId, intent.requestId)) {
+            dispositionIntentsRef.current.delete(intent.operation);
+          }
         } catch (refreshError) {
-          setReliableDetailError(errorMessage(refreshError));
+          if (isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+            setReliableDetailError(errorMessage(refreshError));
+          }
         }
       }
     } finally {
-      setDispositionLoading(null);
+      if (isCurrentDetailEpoch(intent.executionId, intent.requestId)) {
+        setDispositionLoading(null);
+        setConfirmingDisposition(null);
+      }
     }
   }
 
@@ -479,11 +534,15 @@ export default function ExecutionHistoryPanel(props: {
           detailRequestRef.current += 1; // invalidate any in-flight detail load
           watcher.stop();
           setDrawerOpen(false);
+          requestedExecutionIdRef.current = null;
           setRequestedExecutionId(null);
           setSelectedSummary(null);
           setReliableDetail(null);
           setReliableDetailError(null);
           setReplayResult(null);
+          setDispositionLoading(null);
+          setConfirmingDisposition(null);
+          dispositionIntentsRef.current.clear();
         }}
       >
         {detailLoading && <Spin />}
@@ -631,6 +690,7 @@ export default function ExecutionHistoryPanel(props: {
                           const result = dispositionResults[incident.id];
                           const receipt = result?.receipt ?? incident.recent_disposition;
                           const terminalVerification = incident.recover_reason === "execution_terminal";
+                          const staleIncidentVerification = incident.recover_reason === "incident_stale_generation";
                           const cooperativeCancellation =
                             incident.recover_reason === "incident_execution_active"
                             || incident.recover_reason === "incident_cancellation_pending";
@@ -638,9 +698,11 @@ export default function ExecutionHistoryPanel(props: {
                           const terminateOperation = `${reliableDetail.execution_id}:${incident.id}:terminate`;
                           const terminateLabel = terminalVerification
                             ? t("history.verifyCloseIncident")
-                            : cooperativeCancellation
-                              ? t("history.requestCancellation")
-                              : t("history.terminateExecution");
+                            : staleIncidentVerification
+                              ? t("history.closeStaleIncident")
+                              : cooperativeCancellation
+                                ? t("history.requestCancellation")
+                                : t("history.terminateExecution");
                           return (
                             <Alert
                               key={incident.id}
@@ -693,8 +755,11 @@ export default function ExecutionHistoryPanel(props: {
                                     okText={t("history.confirmAction")}
                                     cancelText={t("history.cancelAction")}
                                     onOpenChange={(open) => setConfirmingDisposition(open ? recoverOperation : null)}
-                                    onConfirm={() => disposeIncident(incident, "recover")
-                                      .finally(() => setConfirmingDisposition(null))}
+                                    onConfirm={() => disposeIncident(
+                                      incident,
+                                      "recover",
+                                      visibleDetail.dispatch_generation,
+                                    )}
                                     okButtonProps={{ loading: dispositionLoading === recoverOperation }}
                                     disabled={!incident.recover_available}
                                   >
@@ -713,17 +778,24 @@ export default function ExecutionHistoryPanel(props: {
                                     open={confirmingDisposition === terminateOperation}
                                     title={terminalVerification
                                       ? t("history.verifyCloseConfirmTitle")
-                                      : t("history.terminateConfirmTitle")}
+                                      : staleIncidentVerification
+                                        ? t("history.closeStaleConfirmTitle")
+                                        : t("history.terminateConfirmTitle")}
                                     description={terminalVerification
                                       ? t("history.verifyCloseConfirmDescription")
-                                      : cooperativeCancellation
-                                        ? t("history.cancelConfirmDescription")
-                                        : t("history.terminateConfirmDescription")}
+                                      : staleIncidentVerification
+                                        ? t("history.closeStaleConfirmDescription")
+                                        : cooperativeCancellation
+                                          ? t("history.cancelConfirmDescription")
+                                          : t("history.terminateConfirmDescription")}
                                     okText={t("history.confirmAction")}
                                     cancelText={t("history.cancelAction")}
                                     onOpenChange={(open) => setConfirmingDisposition(open ? terminateOperation : null)}
-                                    onConfirm={() => disposeIncident(incident, "terminate")
-                                      .finally(() => setConfirmingDisposition(null))}
+                                    onConfirm={() => disposeIncident(
+                                      incident,
+                                      "terminate",
+                                      visibleDetail.dispatch_generation,
+                                    )}
                                     okButtonProps={{ loading: dispositionLoading === terminateOperation }}
                                     disabled={!incident.terminate_available}
                                   >
