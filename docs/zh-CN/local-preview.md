@@ -59,6 +59,13 @@ python3 "$DLR_PREVIEW_HOME/preview.py" plan-carry-forward \
   --ids-file <PRIVATE_IDS_JSON> \
   --output <PRIVATE_MANIFEST_JSON>
 
+# 仅用于已单独审查的处置后 Web 后继：
+python3 "$DLR_PREVIEW_HOME/preview.py" plan-carry-forward \
+  --mode audited-web-same-schema-v1 \
+  --to-sha <FULL_CANDIDATE_SHA> \
+  --ids-file <PRIVATE_AUDITED_IDS_JSON> \
+  --output <PRIVATE_MANIFEST_V3_JSON>
+
 python3 "$DLR_PREVIEW_HOME/preview.py" select <PR_NUMBER> \
   --carry-forward <PRIVATE_MANIFEST_JSON>
 python3 "$DLR_PREVIEW_HOME/preview.py" resume
@@ -66,7 +73,11 @@ python3 "$DLR_PREVIEW_HOME/preview.py" resume
 
 `plan-carry-forward` 只接受当前所选 PR 的 eligible HEAD，要求候选镜像已由普通 watcher stage，并使用 `prepare-sandbox-host.sh --status` 只读核对 keeper。计划绑定仓库、PR、旧/新 SHA、旧/新 schema、迁移图、控制器文件、镜像、全部命名卷及明确选择；原 manifest 不能自动重绑到新的 HEAD 或控制器。`select` 将其复制进控制器自己的私有目录，配置和 `status` 只保留 manifest ID、摘要及候选绑定，不显示 Execution 列表、路径、卷名或 journal 内容。普通 `select` 会清除旧引用。
 
-本控制器唯一支持的同 schema 保全升级是 `0040_issue152_dispositions` 到同一 revision，且不得新增或删除任何 schema 对象。新候选 SHA 必须重新生成 manifest，只有现有已支持的责任分类可以进入计划。`execution_incident_dispositions` 审计表必须存在，并在计划及后续每次核验时保持为空；已有任一 disposition 会在停止服务前直接拒绝规划。既有 `runtime_reconciliation_cursors` 表保留在原 inventory 中，后继不重新执行 0039 seed；当前游标不要求等于初始 `0/0`，应用运行期间正常 reconciler 仍可推进游标。未知的同 revision 或向前 transition 在 manifest 校验时拒绝。这条显式后继路径不是通用的同 schema 部署机制。
+对于 manifest v2，本控制器唯一支持的同 schema 保全升级是 `0040_issue152_dispositions` 到同一 revision，且不得新增或删除任何 schema 对象。新候选 SHA 必须重新生成 manifest，只有现有已支持的责任分类可以进入计划。`execution_incident_dispositions` 审计表必须存在，并在计划及后续每次核验时保持为空；已有任一 disposition 会在停止服务前直接拒绝 v2 规划。既有 `runtime_reconciliation_cursors` 表保留在原 inventory 中，后继不重新执行 0039 seed；当前游标不要求等于初始 `0/0`，应用运行期间正常 reconciler 仍可推进游标。未知的同 revision 或向前 transition 在 manifest 校验时拒绝。这条显式 v2 后继路径不是通用的同 schema 部署机制。
+
+固定预览在处置完成后还有一条例外，但只供已单独审查的 Web 更新使用。必须显式传入 `--mode audited-web-same-schema-v1`；省略该参数仍执行上面的 audit-empty manifest v2 合同。此模式生成 manifest v3，只接受 `0040_issue152_dispositions` → `0040_issue152_dispositions`，并在规划、选择和切换前最后检查时重新计算完整 Git 对象差异。唯一允许变化的产品源码是 `web/src/index.css`；对应测试、控制器、双语文档和 Issue 161 planning 文件使用闭合配套列表。新增、删除、重命名、symlink、submodule、mode 变化、依赖或迁移变化及未知路径均拒绝。
+
+此模式的私有 IDs 文件须增加非空 `terminal_executions`。每项绑定一个原 Execution、Incident、disposition UUID、终态与代次、输出摘要、两个错误码和 Attempt 数量。预期必须来自已单独封存并复核的验收快照，不能直接把 fresh 行回填成自我批准计划。queued 与 terminal 身份不得重叠；terminal 可以同时进入 `cleanup_execution_ids`，仍为 pending/deferred cleanup 的 terminal 必须显式进入。规划在同一个只读事务内读取完整 17 列审计表及真实 `id` 主键，并与原十三张责任表一起验证。全审计表必须精确等于显式 disposition 集；验证器还核对 actor、请求摘要、Incident/Outbox 关系、终态、无 replay、资源释放和 Adapter/global Admission 总量，并在后续各阶段保持完整十四表投影。已 published 的取消 Outbox 原行保持不变，`last_error_code` 可以继续为 null；规范取消码属于 Execution 与 disposition 审计事实。
 
 验证器在 REPEATABLE READ READ ONLY 事务中按固定 allowlist 读取 Execution、Attempt、Slot、Incident、Outbox、Adapter/Global Admission、Input Lease/Hold、Credential Snapshot、idempotency、schedule outcome 和 Worker cleanup request。它保存旧列、主键、逐行哈希和计数，不把原数据库值写到公开回执。只有清单内 queued＋open Incident、未释放 Admission、当前代 Outbox、无 active Attempt/Slot，且没有其他 queued/running/retry_wait 或 Worker cleanup 责任时才通过。
 

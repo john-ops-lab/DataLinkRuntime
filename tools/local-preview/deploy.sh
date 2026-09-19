@@ -267,7 +267,15 @@ if [ "$action" = plan ]; then
     test "$(docker volume inspect "$volume" --format '{{.Name}}')" = "$volume"
     test "$(docker volume inspect "$volume" --format '{{index .Labels "com.docker.compose.project"}}')" = "$project"
   done
-  carry_state "$carry_work" --ids /evidence/ids.json \
+  carry_mode=$(python3 - "$carry_work/context.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as source: value = json.load(source)
+print(value.get('mode', ''))
+PY
+)
+  mode_args=()
+  if [ -n "$carry_mode" ]; then mode_args=(--mode "$carry_mode"); fi
+  carry_state "$carry_work" --ids /evidence/ids.json "${mode_args[@]}" \
     --db-output /evidence/db.json --files-output /evidence/files.json
   python3 "$root/carry_forward.py" check-kernel --unit "$sandbox_unit" \
     --expected-description "$sandbox_description" \

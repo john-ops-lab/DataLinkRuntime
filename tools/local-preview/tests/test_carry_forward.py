@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import os
@@ -5,6 +6,7 @@ import stat
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -108,6 +110,134 @@ def queued_execution(execution_id=7):
         "claim_token_hash": None,
         "cleanup_receipt_token_hash": None,
     }
+
+
+def audited_case():
+    from_outbox = uuid.UUID("00000000-0000-0000-0000-000000000101")
+    to_outbox = uuid.UUID("00000000-0000-0000-0000-000000000102")
+    disposition = "00000000-0000-0000-0000-000000000201"
+    execution = {
+        "id": 9,
+        "adapter_id": 9,
+        "status": "succeeded",
+        "dispatch_backend": "rabbitmq",
+        "dispatch_generation": 2,
+        "attempt_count": 1,
+        "worker_id": 3,
+        "started_at": "2026-09-19T00:00:00+00:00",
+        "ended_at": "2026-09-19T00:00:01+00:00",
+        "workspace_cleanup_status": "completed",
+        "admission_released_at": "2026-09-19T00:00:02+00:00",
+        "logical_input_bytes": 4,
+        "output": {"ok": True},
+        "error_code": None,
+        "last_error_code": None,
+        "replay_of_execution_id": None,
+    }
+    intent = {
+        "action": "recover",
+        "expected_generation": 1,
+        "reason_code": "capacity_repaired",
+    }
+    audit = {
+        "id": uuid.UUID(disposition),
+        "incident_id": 19,
+        "execution_id": 9,
+        "idempotency_key": uuid.UUID("00000000-0000-0000-0000-000000000301"),
+        "request_hash": hashlib.sha256(carry.canonical_bytes(intent)).hexdigest(),
+        "actor_kind": "superadmin",
+        "user_id": None,
+        "action": "recover",
+        "reason_code": "capacity_repaired",
+        "outcome": "recovery_dispatched",
+        "code": "recovery_dispatched",
+        "from_generation": 1,
+        "to_generation": 2,
+        "from_outbox_id": from_outbox,
+        "to_outbox_id": to_outbox,
+        "execution_status": "queued",
+        "created_at": "2026-09-19T00:00:00+00:00",
+    }
+    data = tables(
+        [execution],
+        attempts=[
+            {
+                "id": 29,
+                "execution_id": 9,
+                "attempt_no": 1,
+                "fencing_token": 8,
+                "status": "succeeded",
+                "ended_at": "2026-09-19T00:00:01+00:00",
+                "error_code": None,
+            }
+        ],
+        incidents=[
+            {
+                "id": 19,
+                "execution_id": 9,
+                "dispatch_generation": 1,
+                "message_id": uuid.UUID("00000000-0000-0000-0000-000000000401"),
+                "status": "resolved",
+                "resolved_at": "2026-09-19T00:00:00+00:00",
+            }
+        ],
+    )
+    data["execution_outbox"] = table(
+        [
+            "id",
+            "execution_id",
+            "dispatch_generation",
+            "message_id",
+            "status",
+            "last_error_code",
+        ],
+        ["id"],
+        [
+            {
+                "id": from_outbox,
+                "execution_id": 9,
+                "dispatch_generation": 1,
+                "message_id": uuid.UUID("00000000-0000-0000-0000-000000000401"),
+                "status": "published",
+                "last_error_code": None,
+            },
+            {
+                "id": to_outbox,
+                "execution_id": 9,
+                "dispatch_generation": 2,
+                "message_id": uuid.UUID("00000000-0000-0000-0000-000000000402"),
+                "status": "published",
+                "last_error_code": None,
+            },
+        ],
+    )
+    data[carry.AUDIT_TABLE] = table(list(carry.AUDIT_COLUMNS), ["id"], [audit])
+    data["adapter_execution_admission"] = table(
+        ["adapter_id", "outstanding_count", "outstanding_bytes"], ["adapter_id"], []
+    )
+    data["global_execution_admission"] = table(
+        ["singleton_key", "outstanding_count", "outstanding_bytes"],
+        ["singleton_key"],
+        [{"singleton_key": "global", "outstanding_count": 0, "outstanding_bytes": 0}],
+    )
+    selection = {
+        "queued": [],
+        "cleanup_execution_ids": [],
+        "terminal_executions": [
+            {
+                "execution_id": 9,
+                "incident_id": 19,
+                "disposition_id": disposition,
+                "expected_status": "succeeded",
+                "expected_generation": 2,
+                "expected_output_digest": carry.digest({"ok": True}),
+                "expected_error_code": None,
+                "expected_last_error_code": None,
+                "expected_attempt_count": 1,
+            }
+        ],
+    }
+    return data, selection
 
 
 class SelectionTests(unittest.TestCase):
@@ -307,6 +437,237 @@ class ResponsibilityTests(unittest.TestCase):
         )["executions"][0]
         self.assertEqual(result["cleanup"], "deferred_preserved")
         self.assertEqual(result["deferred_attempt_ids"], [13])
+
+
+class AuditedResponsibilityTests(unittest.TestCase):
+    def test_full_audit_terminal_relationship_is_accepted(self):
+        data, selection = audited_case()
+        result = carry.derive_terminal_evidence(data, selection)
+        self.assertEqual(result["executions"][0]["execution_id"], 9)
+
+    def test_hidden_audit_change_and_new_or_replaced_row_are_rejected(self):
+        data, selection = audited_case()
+        data[carry.AUDIT_TABLE]["rows"][0]["request_hash"] = "0" * 64
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "audit_request_hash_invalid"
+        ):
+            carry.derive_terminal_evidence(data, selection)
+
+        data, selection = audited_case()
+        replacement = dict(data[carry.AUDIT_TABLE]["rows"][0])
+        replacement["id"] = uuid.UUID("00000000-0000-0000-0000-000000000999")
+        data[carry.AUDIT_TABLE]["rows"] = [replacement]
+        with self.assertRaisesRegex(carry.CarryForwardError, "audit_set_mismatch"):
+            carry.derive_terminal_evidence(data, selection)
+
+        data, selection = audited_case()
+        data[carry.AUDIT_TABLE]["rows"].append(dict(data[carry.AUDIT_TABLE]["rows"][0]))
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "terminal_identity_duplicate"
+        ):
+            carry.derive_terminal_evidence(data, selection)
+
+    def test_terminal_omission_and_admission_leak_are_rejected(self):
+        data, selection = audited_case()
+        selection["terminal_executions"] = []
+        with self.assertRaisesRegex(carry.CarryForwardError, "selection_invalid"):
+            carry.derive_terminal_evidence(data, selection)
+
+    def test_legacy_terminal_is_not_a_charge_and_cannot_be_selected(self):
+        data, selection = audited_case()
+        legacy = dict(data["executions"]["rows"][0])
+        legacy.update(
+            id=50,
+            adapter_id=50,
+            dispatch_backend="legacy",
+            admission_released_at=None,
+            replay_of_execution_id=None,
+        )
+        data["executions"]["rows"].append(legacy)
+        carry.derive_terminal_evidence(data, selection)
+        selected_legacy = copy.deepcopy(selection)
+        selected_legacy["terminal_executions"][0]["execution_id"] = 50
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "terminal_execution_mismatch"
+        ):
+            carry.derive_terminal_evidence(data, selected_legacy)
+
+        data, selection = audited_case()
+        data["global_execution_admission"]["rows"][0]["outstanding_count"] = 1
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "global_admission_mismatch"
+        ):
+            carry.derive_terminal_evidence(data, selection)
+
+    def test_terminal_cleanup_overlap_is_allowed_but_queued_overlap_is_not(self):
+        data, selection = audited_case()
+        selection["cleanup_execution_ids"] = [9]
+        carry.normalize_selection(selection, mode=carry.AUDITED_MODE)
+        self.assertEqual(
+            carry.derive_terminal_evidence(data, selection)["executions"][0][
+                "execution_id"
+            ],
+            9,
+        )
+        selection["queued"] = [{"execution_id": 9, "incident_ids": [20]}]
+        with self.assertRaisesRegex(carry.CarryForwardError, "selection_duplicate"):
+            carry.normalize_selection(selection, mode=carry.AUDITED_MODE)
+
+    def test_cancelled_zero_attempt_keeps_published_outbox_null_error(self):
+        data, selection = audited_case()
+        execution = data["executions"]["rows"][0]
+        execution.update(
+            status="cancelled",
+            dispatch_generation=1,
+            attempt_count=0,
+            worker_id=None,
+            started_at=None,
+            workspace_cleanup_status="pending",
+            output=None,
+            error_code="execution_cancelled",
+            last_error_code="execution_cancelled",
+        )
+        data["execution_attempts"]["rows"] = []
+        data["execution_outbox"]["rows"] = data["execution_outbox"]["rows"][:1]
+        audit = data[carry.AUDIT_TABLE]["rows"][0]
+        audit.update(
+            action="terminate",
+            reason_code="operator_cancel",
+            outcome="execution_terminal",
+            code="execution_cancelled",
+            to_generation=1,
+            to_outbox_id=audit["from_outbox_id"],
+            execution_status="cancelled",
+        )
+        audit["request_hash"] = hashlib.sha256(
+            carry.canonical_bytes(
+                {
+                    "action": "terminate",
+                    "expected_generation": 1,
+                    "reason_code": "operator_cancel",
+                }
+            )
+        ).hexdigest()
+        expected = selection["terminal_executions"][0]
+        expected.update(
+            expected_status="cancelled",
+            expected_generation=1,
+            expected_output_digest=carry.digest(None),
+            expected_error_code="execution_cancelled",
+            expected_last_error_code="execution_cancelled",
+            expected_attempt_count=0,
+        )
+        selection["cleanup_execution_ids"] = [9]
+        self.assertIsNone(data["execution_outbox"]["rows"][0]["last_error_code"])
+        carry.derive_terminal_evidence(data, selection)
+        responsibilities = carry.derive_responsibilities(
+            data, selection, mode=carry.AUDITED_MODE
+        )
+        self.assertEqual(responsibilities["executions"][0]["cleanup"], "not_applicable")
+
+    def test_audit_projection_requires_all_actual_columns_and_primary_key(self):
+        data, _ = audited_case()
+        projection = carry.project_rows(data, required=carry.AUDITED_TABLES)
+        carry.validate_projection_evidence(projection, required=carry.AUDITED_TABLES)
+        changed = json.loads(json.dumps(projection))
+        changed[carry.AUDIT_TABLE]["columns"].remove("request_hash")
+        with self.assertRaisesRegex(carry.CarryForwardError, "audit_schema_invalid"):
+            carry.validate_projection_evidence(changed, required=carry.AUDITED_TABLES)
+        changed = json.loads(json.dumps(projection))
+        changed[carry.AUDIT_TABLE]["primary_key"] = ["incident_id"]
+        with self.assertRaisesRegex(carry.CarryForwardError, "audit_schema_invalid"):
+            carry.validate_projection_evidence(changed, required=carry.AUDITED_TABLES)
+
+    def test_v3_requires_exact_columns_for_all_fourteen_tables(self):
+        baseline = {"executions": {"columns": ["id", "status"]}}
+        self.assertEqual(
+            carry.projection_columns(
+                "executions",
+                ["id", "status"],
+                baseline,
+                mode=carry.AUDITED_MODE,
+            ),
+            ["id", "status"],
+        )
+        for changed in (["id", "status", "new_column"], ["status", "id"], ["id"]):
+            with self.subTest(columns=changed):
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "projection_columns_changed"
+                ):
+                    carry.projection_columns(
+                        "executions", changed, baseline, mode=carry.AUDITED_MODE
+                    )
+        self.assertEqual(
+            carry.projection_columns(
+                "executions", ["id", "status", "forward_addition"], baseline, mode=None
+            ),
+            ["id", "status"],
+        )
+
+    def test_same_count_audit_row_change_fails_projection_comparison(self):
+        data, _ = audited_case()
+        before = carry.project_rows(data, required=carry.AUDITED_TABLES)
+        data[carry.AUDIT_TABLE]["rows"][0]["idempotency_key"] = uuid.UUID(
+            "00000000-0000-0000-0000-000000000777"
+        )
+        after = carry.project_rows(data, required=carry.AUDITED_TABLES)
+        with self.assertRaisesRegex(carry.CarryForwardError, "projection_rows_changed"):
+            carry.compare_projection(before, after)
+
+    def test_manifest_v3_is_explicit_and_v2_shape_stays_closed(self):
+        data, selection = audited_case()
+        terminal = carry.derive_terminal_evidence(data, selection)["executions"]
+        payload = {
+            "format_version": carry.AUDITED_FORMAT_VERSION,
+            "mode": carry.AUDITED_MODE,
+            "source_diff": {
+                "tree_digest": "9" * 64,
+                "entries": [
+                    {
+                        "status": "M",
+                        "old_mode": "100644",
+                        "new_mode": "100644",
+                        "old_oid": "a" * 40,
+                        "new_oid": "b" * 40,
+                        "path": "web/src/index.css",
+                    }
+                ],
+            },
+            "manifest_id": "1" * 32,
+            "created_at": "2026-09-19T00:00:00+00:00",
+            "repo": "owner/repo",
+            "pr": 2,
+            "from_sha": SHA_A,
+            "to_sha": SHA_B,
+            "from_schema": "0040_issue152_dispositions",
+            "to_schema": "0040_issue152_dispositions",
+            "controller_files_digest": "c" * 64,
+            "migration_graph_digest": "d" * 64,
+            "old_image_ids": {},
+            "candidate_image_ids": {},
+            "selection": selection,
+            "responsibilities": {"executions": [], "terminal_executions": terminal},
+            "old_runtime_projection": carry.project_rows(
+                data, required=carry.AUDITED_TABLES
+            ),
+            "schema_inventory": {"tables": sorted(carry.AUDITED_TABLES)},
+            "storage_identity": [],
+            "old_containers": [],
+            "file_evidence": {},
+            "kernel_evidence": {},
+        }
+        carry.validate_manifest(carry.seal_manifest(payload))
+        with self.assertRaisesRegex(
+            carry.CarryForwardError, "manifest_version_invalid"
+        ):
+            carry.seal_manifest(dict(payload, format_version=3.0))
+        for invalid_version in (True, "3"):
+            with self.assertRaises(carry.CarryForwardError):
+                carry.seal_manifest(dict(payload, format_version=invalid_version))
+        mixed = dict(payload, format_version=carry.FORMAT_VERSION)
+        mixed["manifest_digest"] = "0" * 64
+        with self.assertRaisesRegex(carry.CarryForwardError, "manifest_shape_invalid"):
+            carry.validate_manifest(mixed)
 
 
 class FileEvidenceTests(unittest.TestCase):

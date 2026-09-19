@@ -28,6 +28,8 @@ from typing import Any
 
 
 FORMAT_VERSION = 2
+AUDITED_FORMAT_VERSION = 3
+AUDITED_MODE = "audited-web-same-schema-v1"
 MANIFEST_ID = re.compile(r"[0-9a-f]{32}")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -56,6 +58,43 @@ RESPONSIBILITY_TABLES = (
     "schedule_dispatch_outcomes",
     "worker_cleanup_requests",
 )
+AUDIT_TABLE = "execution_incident_dispositions"
+AUDIT_COLUMNS = (
+    "id",
+    "incident_id",
+    "execution_id",
+    "idempotency_key",
+    "request_hash",
+    "actor_kind",
+    "user_id",
+    "action",
+    "reason_code",
+    "outcome",
+    "code",
+    "from_generation",
+    "to_generation",
+    "from_outbox_id",
+    "to_outbox_id",
+    "execution_status",
+    "created_at",
+)
+AUDITED_TABLES = (*RESPONSIBILITY_TABLES, AUDIT_TABLE)
+AUDITED_SOURCE_MODES = {
+    "web/src/index.css": "100644",
+    "web/tests/e2e/issue152-popconfirm.spec.ts": "100644",
+    "tools/local-preview/carry_forward.py": "100644",
+    "tools/local-preview/preview.py": "100755",
+    "tools/local-preview/deploy.sh": "100755",
+    "tools/local-preview/tests/test_carry_forward.py": "100644",
+    "tools/local-preview/tests/test_preview.py": "100644",
+    "tools/local-preview/tests/test_preview_locks.py": "100644",
+    "docs/en/local-preview.md": "100644",
+    "docs/zh-CN/local-preview.md": "100644",
+    "openspec/changes/issue161-runtime-reliability/proposal.md": "100644",
+    "openspec/changes/issue161-runtime-reliability/design.md": "100644",
+    "openspec/changes/issue161-runtime-reliability/tasks.md": "100644",
+    "openspec/changes/issue161-runtime-reliability/specs/incident-preserving-upgrade/spec.md": "100644",
+}
 MAX_CAPTURE_ENTRIES = 100_000
 MAX_CAPTURE_BYTES = 16 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 1024 * 1024
@@ -189,8 +228,32 @@ def write_private(path: Path, value: Any) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def normalize_selection(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {"queued", "cleanup_execution_ids"}:
+def _stable_code(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[a-z][a-z0-9_]{0,127}", value) is not None
+    )
+
+
+def _uuid_text(value: Any, code: str = "selection_invalid") -> str:
+    if not isinstance(value, str):
+        raise CarryForwardError(code)
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as error:
+        raise CarryForwardError(code) from error
+    if str(parsed) != value:
+        raise CarryForwardError(code)
+    return value
+
+
+def normalize_selection(value: Any, *, mode: str | None = None) -> dict[str, Any]:
+    required = {"queued", "cleanup_execution_ids"}
+    if mode == AUDITED_MODE:
+        required.add("terminal_executions")
+    elif mode is not None:
+        raise CarryForwardError("selection_invalid")
+    if not isinstance(value, dict) or set(value) != required:
         raise CarryForwardError("selection_invalid")
     queued = value["queued"]
     cleanup = value["cleanup_execution_ids"]
@@ -221,12 +284,97 @@ def normalize_selection(value: Any) -> dict[str, Any]:
         cleanup_ids
     ):
         raise CarryForwardError("selection_duplicate")
-    if not normalized_queued and not cleanup_ids:
+    terminals: list[dict[str, Any]] = []
+    terminal_execution_ids: set[int] = set()
+    terminal_incident_ids: set[int] = set()
+    terminal_disposition_ids: set[str] = set()
+    if mode == AUDITED_MODE:
+        raw_terminals = value["terminal_executions"]
+        terminal_keys = {
+            "execution_id",
+            "incident_id",
+            "disposition_id",
+            "expected_status",
+            "expected_generation",
+            "expected_output_digest",
+            "expected_error_code",
+            "expected_last_error_code",
+            "expected_attempt_count",
+        }
+        if not isinstance(raw_terminals, list) or not raw_terminals:
+            raise CarryForwardError("selection_invalid")
+        for item in raw_terminals:
+            if not isinstance(item, dict) or set(item) != terminal_keys:
+                raise CarryForwardError("selection_invalid")
+            execution_id = _positive(item["execution_id"])
+            incident_id = _positive(item["incident_id"])
+            disposition_id = _uuid_text(item["disposition_id"])
+            status = item["expected_status"]
+            generation = _positive(item["expected_generation"])
+            attempt_count = item["expected_attempt_count"]
+            output_digest = item["expected_output_digest"]
+            error_code = item["expected_error_code"]
+            last_error_code = item["expected_last_error_code"]
+            if (
+                status not in {"succeeded", "dead_letter", "cancelled"}
+                or not isinstance(output_digest, str)
+                or not DIGEST.fullmatch(output_digest)
+                or not isinstance(attempt_count, int)
+                or isinstance(attempt_count, bool)
+                or attempt_count < 0
+                or (error_code is not None and not _stable_code(error_code))
+                or (last_error_code is not None and not _stable_code(last_error_code))
+            ):
+                raise CarryForwardError("selection_invalid")
+            if status == "succeeded" and (
+                error_code is not None or last_error_code is not None
+            ):
+                raise CarryForwardError("selection_invalid")
+            if status == "dead_letter" and (
+                error_code is None or error_code != last_error_code
+            ):
+                raise CarryForwardError("selection_invalid")
+            if status in {"succeeded", "dead_letter"} and attempt_count < 1:
+                raise CarryForwardError("selection_invalid")
+            if status == "cancelled" and (
+                attempt_count != 0
+                or error_code != "execution_cancelled"
+                or last_error_code != "execution_cancelled"
+                or output_digest != digest(None)
+            ):
+                raise CarryForwardError("selection_invalid")
+            if (
+                execution_id in terminal_execution_ids
+                or execution_id in seen_executions
+                or incident_id in terminal_incident_ids
+                or incident_id in seen_incidents
+                or disposition_id in terminal_disposition_ids
+            ):
+                raise CarryForwardError("selection_duplicate")
+            terminal_execution_ids.add(execution_id)
+            terminal_incident_ids.add(incident_id)
+            terminal_disposition_ids.add(disposition_id)
+            terminals.append(
+                {
+                    **item,
+                    "execution_id": execution_id,
+                    "incident_id": incident_id,
+                    "disposition_id": disposition_id,
+                    "expected_generation": generation,
+                    "expected_attempt_count": attempt_count,
+                }
+            )
+    if not normalized_queued and not cleanup_ids and not terminals:
         raise CarryForwardError("selection_empty")
-    return {
+    result = {
         "queued": sorted(normalized_queued, key=lambda item: item["execution_id"]),
         "cleanup_execution_ids": sorted(cleanup_ids),
     }
+    if mode == AUDITED_MODE:
+        result["terminal_executions"] = sorted(
+            terminals, key=lambda item: item["execution_id"]
+        )
+    return result
 
 
 def selected_execution_ids(selection: dict[str, Any]) -> set[int]:
@@ -234,6 +382,17 @@ def selected_execution_ids(selection: dict[str, Any]) -> set[int]:
         *(item["execution_id"] for item in selection["queued"]),
         *selection["cleanup_execution_ids"],
     }
+
+
+def manifest_mode(value: dict[str, Any] | None) -> str | None:
+    if value is None:
+        return None
+    mode = value.get("mode")
+    if mode is None:
+        return None
+    if mode != AUDITED_MODE:
+        raise CarryForwardError("manifest_mode_invalid")
+    return mode
 
 
 def datetime_text(value: Any) -> str | None:
@@ -306,9 +465,12 @@ def _by_execution(
 
 
 def derive_responsibilities(
-    tables: dict[str, dict[str, Any]], selection: dict[str, Any]
+    tables: dict[str, dict[str, Any]],
+    selection: dict[str, Any],
+    *,
+    mode: str | None = None,
 ) -> dict[str, Any]:
-    selection = normalize_selection(selection)
+    selection = normalize_selection(selection, mode=mode)
     selected = selected_execution_ids(selection)
     rows = {name: value["rows"] for name, value in tables.items()}
     executions = {row.get("id"): row for row in rows["executions"]}
@@ -427,6 +589,244 @@ def derive_responsibilities(
     return {"executions": sorted(result, key=lambda item: item["execution_id"])}
 
 
+def _row_by_id(rows: list[dict[str, Any]], value: Any) -> dict[str, Any] | None:
+    matches = [row for row in rows if str(row.get("id")) == str(value)]
+    if len(matches) > 1:
+        raise CarryForwardError("terminal_identity_duplicate")
+    return matches[0] if matches else None
+
+
+def derive_terminal_evidence(
+    tables: dict[str, dict[str, Any]], selection: dict[str, Any]
+) -> dict[str, Any]:
+    selection = normalize_selection(selection, mode=AUDITED_MODE)
+    rows = {name: value["rows"] for name, value in tables.items()}
+    audits = rows[AUDIT_TABLE]
+    selected_audits = {
+        item["disposition_id"] for item in selection["terminal_executions"]
+    }
+    if {str(row.get("id")) for row in audits} != selected_audits:
+        raise CarryForwardError("audit_set_mismatch")
+    executions = {row.get("id"): row for row in rows["executions"]}
+    incidents = {
+        row.get("id"): row for row in rows["execution_infrastructure_incidents"]
+    }
+    attempts = rows["execution_attempts"]
+    outbox = rows["execution_outbox"]
+    cleanup_ids = set(selection["cleanup_execution_ids"])
+    evidence: list[dict[str, Any]] = []
+    for expected in selection["terminal_executions"]:
+        execution_id = expected["execution_id"]
+        incident_id = expected["incident_id"]
+        execution = executions.get(execution_id)
+        incident = incidents.get(incident_id)
+        audit = _row_by_id(audits, expected["disposition_id"])
+        if execution is None or incident is None or audit is None:
+            raise CarryForwardError("terminal_identity_missing")
+        if (
+            execution.get("status") != expected["expected_status"]
+            or execution.get("dispatch_backend") != "rabbitmq"
+            or execution.get("dispatch_generation") != expected["expected_generation"]
+            or execution.get("attempt_count") != expected["expected_attempt_count"]
+            or digest(execution.get("output")) != expected["expected_output_digest"]
+            or type(execution.get("error_code"))
+            is not type(expected["expected_error_code"])
+            or execution.get("error_code") != expected["expected_error_code"]
+            or type(execution.get("last_error_code"))
+            is not type(expected["expected_last_error_code"])
+            or execution.get("last_error_code") != expected["expected_last_error_code"]
+            or execution.get("ended_at") is None
+        ):
+            raise CarryForwardError("terminal_execution_mismatch")
+        execution_attempts = sorted(
+            _by_execution(attempts, execution_id),
+            key=lambda row: row.get("attempt_no", 0),
+        )
+        if (
+            len(execution_attempts) != expected["expected_attempt_count"]
+            or [row.get("attempt_no") for row in execution_attempts]
+            != list(range(1, len(execution_attempts) + 1))
+            or any(
+                row.get("status") not in TERMINAL_ATTEMPTS
+                or row.get("ended_at") is None
+                for row in execution_attempts
+            )
+        ):
+            raise CarryForwardError("terminal_attempt_mismatch")
+        if (
+            expected["expected_status"] == "succeeded"
+            and execution_attempts[-1].get("status") != "succeeded"
+        ):
+            raise CarryForwardError("terminal_attempt_mismatch")
+        if expected["expected_status"] == "dead_letter" and (
+            execution_attempts[-1].get("status") != "failed"
+            or execution_attempts[-1].get("error_code")
+            != expected["expected_error_code"]
+        ):
+            raise CarryForwardError("terminal_attempt_mismatch")
+        if expected["expected_status"] == "cancelled" and execution_attempts:
+            raise CarryForwardError("terminal_attempt_mismatch")
+        if (
+            incident.get("execution_id") != execution_id
+            or incident.get("status") != "resolved"
+            or incident.get("resolved_at") is None
+            or audit.get("incident_id") != incident_id
+            or audit.get("execution_id") != execution_id
+            or incident.get("dispatch_generation") != audit.get("from_generation")
+        ):
+            raise CarryForwardError("terminal_incident_mismatch")
+        actor_kind, user_id = audit.get("actor_kind"), audit.get("user_id")
+        if not (
+            (actor_kind == "superadmin" and user_id is None)
+            or (
+                actor_kind == "account"
+                and isinstance(user_id, int)
+                and not isinstance(user_id, bool)
+                and user_id > 0
+            )
+        ):
+            raise CarryForwardError("audit_actor_invalid")
+        try:
+            _uuid_text(str(audit.get("id")), "audit_identity_invalid")
+            _uuid_text(str(audit.get("idempotency_key")), "audit_identity_invalid")
+            dt.datetime.fromisoformat(str(audit.get("created_at")))
+        except (TypeError, ValueError) as error:
+            raise CarryForwardError("audit_identity_invalid") from error
+        action = audit.get("action")
+        reason_code = audit.get("reason_code")
+        request = {
+            "action": action,
+            "expected_generation": audit.get("from_generation"),
+            "reason_code": reason_code,
+        }
+        if (
+            audit.get("request_hash")
+            != hashlib.sha256(canonical_bytes(request)).hexdigest()
+        ):
+            raise CarryForwardError("audit_request_hash_invalid")
+        from_row = _row_by_id(outbox, audit.get("from_outbox_id"))
+        to_row = _row_by_id(outbox, audit.get("to_outbox_id"))
+        if (
+            audit.get("from_outbox_id") is None
+            or audit.get("to_outbox_id") is None
+            or from_row is None
+            or to_row is None
+            or from_row.get("execution_id") != execution_id
+            or to_row.get("execution_id") != execution_id
+            or from_row.get("dispatch_generation") != audit.get("from_generation")
+            or to_row.get("dispatch_generation") != audit.get("to_generation")
+            or from_row.get("status") != "published"
+            or to_row.get("status") != "published"
+            or incident.get("message_id") != from_row.get("message_id")
+        ):
+            raise CarryForwardError("audit_outbox_invalid")
+        if expected["expected_status"] in {"succeeded", "dead_letter"}:
+            valid_disposition = (
+                action == "recover"
+                and reason_code in {"capacity_repaired", "routing_repaired"}
+                and audit.get("outcome") == "recovery_dispatched"
+                and audit.get("code") == "recovery_dispatched"
+                and audit.get("execution_status") == "queued"
+                and audit.get("to_generation") == audit.get("from_generation") + 1
+                and audit.get("to_generation") == execution.get("dispatch_generation")
+                and str(audit.get("from_outbox_id")) != str(audit.get("to_outbox_id"))
+            )
+        else:
+            valid_disposition = (
+                action == "terminate"
+                and reason_code in {"operator_cancel", "verified_terminal"}
+                and audit.get("outcome") == "execution_terminal"
+                and audit.get("code") == "execution_cancelled"
+                and audit.get("execution_status") == "cancelled"
+                and audit.get("from_generation")
+                == audit.get("to_generation")
+                == execution.get("dispatch_generation")
+                and str(audit.get("from_outbox_id")) == str(audit.get("to_outbox_id"))
+            )
+        if not valid_disposition:
+            raise CarryForwardError("audit_disposition_invalid")
+        if execution.get("admission_released_at") is None:
+            raise CarryForwardError("terminal_admission_not_released")
+        if (
+            execution.get("workspace_cleanup_status") in {"pending", "deferred"}
+            and execution_id not in cleanup_ids
+        ):
+            raise CarryForwardError("terminal_cleanup_unselected")
+        if any(
+            row.get("execution_id") == execution_id
+            for name in ("execution_input_artifact_leases", "execution_artifact_holds")
+            for row in rows[name]
+        ):
+            raise CarryForwardError("terminal_resource_present")
+        if execution.get("replay_of_execution_id") is not None or any(
+            row.get("replay_of_execution_id") == execution_id
+            for row in rows["executions"]
+        ):
+            raise CarryForwardError("terminal_replay_present")
+        evidence.append(
+            {
+                "execution_id": execution_id,
+                "incident_id": incident_id,
+                "disposition_id": expected["disposition_id"],
+                "status": execution["status"],
+                "generation": execution["dispatch_generation"],
+                "attempt_count": execution["attempt_count"],
+            }
+        )
+    _validate_admission_totals(rows)
+    return {"executions": evidence}
+
+
+def _validate_admission_totals(rows: dict[str, list[dict[str, Any]]]) -> None:
+    expected_by_adapter: dict[int, tuple[int, int]] = {}
+    unreleased = [
+        row
+        for row in rows["executions"]
+        if row.get("dispatch_backend") == "rabbitmq"
+        and row.get("admission_released_at") is None
+    ]
+    for execution in unreleased:
+        adapter_id = _positive(
+            execution.get("adapter_id"), "admission_identity_invalid"
+        )
+        logical_bytes = execution.get("logical_input_bytes")
+        if (
+            not isinstance(logical_bytes, int)
+            or isinstance(logical_bytes, bool)
+            or logical_bytes < 0
+        ):
+            raise CarryForwardError("admission_value_invalid")
+        count, size = expected_by_adapter.get(adapter_id, (0, 0))
+        expected_by_adapter[adapter_id] = (count + 1, size + logical_bytes)
+    admissions = rows["adapter_execution_admission"]
+    actual_by_adapter = {row.get("adapter_id"): row for row in admissions}
+    if len(actual_by_adapter) != len(admissions) or not set(
+        expected_by_adapter
+    ).issubset(actual_by_adapter):
+        raise CarryForwardError("adapter_admission_mismatch")
+    for adapter_id, row in actual_by_adapter.items():
+        if (
+            row.get("outstanding_count"),
+            row.get("outstanding_bytes"),
+        ) != expected_by_adapter.get(adapter_id, (0, 0)):
+            raise CarryForwardError("adapter_admission_mismatch")
+    global_rows = rows["global_execution_admission"]
+    expected_global = (
+        len(unreleased),
+        sum(row.get("logical_input_bytes") for row in unreleased),
+    )
+    if (
+        len(global_rows) != 1
+        or global_rows[0].get("singleton_key") != "global"
+        or (
+            global_rows[0].get("outstanding_count"),
+            global_rows[0].get("outstanding_bytes"),
+        )
+        != expected_global
+    ):
+        raise CarryForwardError("global_admission_mismatch")
+
+
 def _responsibility(
     execution: dict[str, Any], attempts: list[dict[str, Any]], incident_ids: list[int]
 ) -> dict[str, Any]:
@@ -518,10 +918,12 @@ def compare_projection(before: dict[str, Any], after: dict[str, Any]) -> None:
             raise CarryForwardError("projection_rows_changed")
 
 
-def validate_projection_evidence(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != set(RESPONSIBILITY_TABLES):
+def validate_projection_evidence(
+    value: Any, *, required: tuple[str, ...] = RESPONSIBILITY_TABLES
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != set(required):
         raise CarryForwardError("projection_table_changed")
-    for table in RESPONSIBILITY_TABLES:
+    for table in required:
         item = value[table]
         if not isinstance(item, dict) or set(item) != {
             "columns",
@@ -547,6 +949,10 @@ def validate_projection_evidence(value: Any) -> dict[str, Any]:
             or item["count"] != len(rows)
         ):
             raise CarryForwardError("schema_projection_invalid")
+        if table == AUDIT_TABLE and (
+            columns != list(AUDIT_COLUMNS) or primary_key != ["id"]
+        ):
+            raise CarryForwardError("audit_schema_invalid")
     return value
 
 
@@ -2193,6 +2599,25 @@ def validate_schema_inventory(
         raise CarryForwardError("candidate_seed_invalid")
 
 
+def projection_columns(
+    name: str,
+    actual_columns: list[str],
+    baseline_projection: dict[str, Any] | None,
+    *,
+    mode: str | None,
+) -> list[str]:
+    if baseline_projection is None:
+        return actual_columns
+    baseline_columns = list(baseline_projection[name]["columns"])
+    if mode == AUDITED_MODE:
+        if actual_columns != baseline_columns:
+            raise CarryForwardError("projection_columns_changed")
+        return actual_columns
+    if not set(baseline_columns).issubset(actual_columns):
+        raise CarryForwardError("projection_columns_missing")
+    return baseline_columns
+
+
 def validate_storage_identity(storage: Any) -> list[dict[str, Any]]:
     if not isinstance(storage, list):
         raise CarryForwardError("storage_identity_invalid")
@@ -2239,7 +2664,12 @@ def inspect_database(
     from_revision: str | None = None,
     to_revision: str | None = None,
     schema_phase: str | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
+    if mode not in {None, AUDITED_MODE}:
+        raise CarryForwardError("manifest_mode_invalid")
+    selection = normalize_selection(selection, mode=mode)
+    required_tables = AUDITED_TABLES if mode == AUDITED_MODE else RESPONSIBILITY_TABLES
     try:
         from sqlalchemy import create_engine, inspect, text
     except ImportError as error:
@@ -2265,7 +2695,10 @@ def inspect_database(
             for name in EMPTY_TABLES_BY_REVISION.get(revision, ())
             if name in existing
         }
-        validate_candidate_tables(revision, existing, candidate_counts)
+        if mode is None:
+            validate_candidate_tables(revision, existing, candidate_counts)
+        elif revision != "0040_issue152_dispositions":
+            raise CarryForwardError("candidate_schema_path_unknown")
         if baseline_schema_inventory is not None:
             if not isinstance(baseline_schema_inventory, dict) or set(
                 baseline_schema_inventory
@@ -2309,7 +2742,7 @@ def inspect_database(
                     candidate_counts,
                     cursor_rows,
                 )
-        for name in RESPONSIBILITY_TABLES:
+        for name in required_tables:
             if name not in existing:
                 raise CarryForwardError("schema_table_missing")
             actual_columns = [column["name"] for column in inspector.get_columns(name)]
@@ -2319,17 +2752,20 @@ def inspect_database(
             )
             if not actual_primary_key:
                 raise CarryForwardError("schema_primary_key_missing")
+            if name == AUDIT_TABLE and (
+                actual_columns != list(AUDIT_COLUMNS) or actual_primary_key != ["id"]
+            ):
+                raise CarryForwardError("audit_schema_invalid")
             if baseline_projection is not None and actual_primary_key != list(
                 baseline_projection[name]["primary_key"]
             ):
                 raise CarryForwardError("projection_primary_key_changed")
-            columns = (
-                list(baseline_projection[name]["columns"])
-                if baseline_projection is not None
-                else actual_columns
+            columns = projection_columns(
+                name,
+                actual_columns,
+                baseline_projection,
+                mode=mode,
             )
-            if not set(columns).issubset(actual_columns):
-                raise CarryForwardError("projection_columns_missing")
             primary_key = actual_primary_key
             quoted_columns = ",".join(f'"{column}"' for column in columns)
             order = ",".join(f'"{column}"' for column in primary_key)
@@ -2341,8 +2777,16 @@ def inspect_database(
                 "primary_key": primary_key,
                 "rows": [dict(row) for row in values],
             }
-    projection = project_rows(tables)
-    responsibilities = derive_responsibilities(tables, selection)
+    projection = project_rows(tables, required=required_tables)
+    responsibilities = derive_responsibilities(tables, selection, mode=mode)
+    terminal_evidence = (
+        derive_terminal_evidence(tables, selection) if mode == AUDITED_MODE else None
+    )
+    if terminal_evidence is not None:
+        responsibilities = {
+            **responsibilities,
+            "terminal_executions": terminal_evidence["executions"],
+        }
     credential_hashes = {
         row["id"]: {
             "claim_token_hash": row.get("claim_token_hash"),
@@ -2353,13 +2797,14 @@ def inspect_database(
     attempt_statuses = {
         row["id"]: row["status"] for row in tables["execution_attempts"]["rows"]
     }
-    return {
+    result = {
         "projection": projection,
         "responsibilities": responsibilities,
         "schema_inventory": {"tables": sorted(existing)},
         "_credential_hashes": credential_hashes,
         "_attempt_statuses": attempt_statuses,
     }
+    return result
 
 
 def manifest_payload(value: dict[str, Any]) -> dict[str, Any]:
@@ -2371,6 +2816,42 @@ def seal_manifest(value: dict[str, Any]) -> dict[str, Any]:
     sealed["manifest_digest"] = digest(manifest_payload(sealed))
     validate_manifest(sealed)
     return sealed
+
+
+def validate_source_diff(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"tree_digest", "entries"}:
+        raise CarryForwardError("source_diff_invalid")
+    if not isinstance(value["tree_digest"], str) or not DIGEST.fullmatch(
+        value["tree_digest"]
+    ):
+        raise CarryForwardError("source_diff_invalid")
+    entries = value["entries"]
+    keys = {"status", "old_mode", "new_mode", "old_oid", "new_oid", "path"}
+    if (
+        not isinstance(entries, list)
+        or not entries
+        or any(not isinstance(item, dict) or set(item) != keys for item in entries)
+        or entries != sorted(entries, key=lambda item: item["path"])
+        or len({item["path"] for item in entries}) != len(entries)
+    ):
+        raise CarryForwardError("source_diff_invalid")
+    for item in entries:
+        expected_mode = AUDITED_SOURCE_MODES.get(item.get("path"))
+        if (
+            item["status"] != "M"
+            or expected_mode is None
+            or item["old_mode"] != expected_mode
+            or item["new_mode"] != expected_mode
+            or not isinstance(item["old_oid"], str)
+            or not SHA.fullmatch(item["old_oid"])
+            or not isinstance(item["new_oid"], str)
+            or not SHA.fullmatch(item["new_oid"])
+            or item["old_oid"] == item["new_oid"]
+            or not isinstance(item["path"], str)
+            or not item["path"]
+        ):
+            raise CarryForwardError("source_diff_invalid")
+    return value
 
 
 def validate_manifest(value: Any) -> dict[str, Any]:
@@ -2398,10 +2879,27 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         "kernel_evidence",
         "manifest_digest",
     }
-    if not isinstance(value, dict) or set(value) != required:
+    if not isinstance(value, dict):
         raise CarryForwardError("manifest_shape_invalid")
-    if value["format_version"] != FORMAT_VERSION:
+    version = value.get("format_version")
+    mode = value.get("mode") if version == AUDITED_FORMAT_VERSION else None
+    if version == AUDITED_FORMAT_VERSION:
+        required = {*required, "mode", "source_diff"}
+    if set(value) != required:
+        raise CarryForwardError("manifest_shape_invalid")
+    if version not in {FORMAT_VERSION, AUDITED_FORMAT_VERSION}:
         raise CarryForwardError("manifest_version_invalid")
+    if version == AUDITED_FORMAT_VERSION:
+        if type(version) is not int:
+            raise CarryForwardError("manifest_version_invalid")
+        if mode != AUDITED_MODE:
+            raise CarryForwardError("manifest_mode_invalid")
+        if (
+            value["from_schema"] != "0040_issue152_dispositions"
+            or value["to_schema"] != "0040_issue152_dispositions"
+        ):
+            raise CarryForwardError("candidate_schema_path_unknown")
+        validate_source_diff(value["source_diff"])
     if not isinstance(value["manifest_id"], str) or not MANIFEST_ID.fullmatch(
         value["manifest_id"]
     ):
@@ -2427,9 +2925,23 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         ):
             raise CarryForwardError("manifest_schema_invalid")
     validate_schema_transition(value["from_schema"], value["to_schema"])
-    normalize_selection(value["selection"])
+    normalize_selection(value["selection"], mode=mode)
     validate_storage_identity(value["storage_identity"])
-    validate_projection_evidence(value["old_runtime_projection"])
+    validate_projection_evidence(
+        value["old_runtime_projection"],
+        required=AUDITED_TABLES if mode == AUDITED_MODE else RESPONSIBILITY_TABLES,
+    )
+    if mode == AUDITED_MODE:
+        responsibilities = value["responsibilities"]
+        if (
+            not isinstance(responsibilities, dict)
+            or set(responsibilities) != {"executions", "terminal_executions"}
+            or not isinstance(responsibilities["executions"], list)
+            or not isinstance(responsibilities["terminal_executions"], list)
+            or len(responsibilities["terminal_executions"])
+            != len(value["selection"]["terminal_executions"])
+        ):
+            raise CarryForwardError("responsibility_invalid")
     inventory = value["schema_inventory"]
     if (
         not isinstance(inventory, dict)
@@ -2451,12 +2963,14 @@ def _command_check_db(args: argparse.Namespace) -> dict[str, Any]:
     baseline = read_private(args.baseline) if args.baseline else None
     if baseline and "manifest_digest" in baseline:
         baseline = validate_manifest(baseline)
+    mode = manifest_mode(baseline) if baseline else getattr(args, "mode", None)
     selection = normalize_selection(
         read_private(args.ids)
         if args.ids
         else baseline.get("selection")
         if baseline
-        else None
+        else None,
+        mode=mode,
     )
     baseline_projection = None
     if baseline:
@@ -2472,6 +2986,7 @@ def _command_check_db(args: argparse.Namespace) -> dict[str, Any]:
         from_revision=baseline.get("from_schema") if baseline else None,
         to_revision=baseline.get("to_schema") if baseline else None,
         schema_phase=args.schema_phase,
+        mode=mode,
     )
     result.pop("_credential_hashes", None)
     result.pop("_attempt_statuses", None)
@@ -2533,12 +3048,14 @@ def _command_capture_state(args: argparse.Namespace) -> dict[str, Any]:
     baseline = read_private(args.baseline) if args.baseline else None
     if baseline and "manifest_digest" in baseline:
         baseline = validate_manifest(baseline)
+    mode = manifest_mode(baseline) if baseline else getattr(args, "mode", None)
     selection = normalize_selection(
         read_private(args.ids)
         if args.ids
         else baseline.get("selection")
         if baseline
-        else None
+        else None,
+        mode=mode,
     )
     baseline_projection = None
     if baseline:
@@ -2554,6 +3071,7 @@ def _command_capture_state(args: argparse.Namespace) -> dict[str, Any]:
         from_revision=baseline.get("from_schema") if baseline else None,
         to_revision=baseline.get("to_schema") if baseline else None,
         schema_phase=args.schema_phase,
+        mode=mode,
     )
     credential_hashes = db.pop("_credential_hashes")
     attempt_statuses = db.pop("_attempt_statuses")
@@ -2619,7 +3137,10 @@ def _command_kernel(args: argparse.Namespace) -> dict[str, Any]:
 
 def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
     context = read_private(args.context)
-    selection = normalize_selection(read_private(args.ids))
+    mode = context.get("mode")
+    if mode not in {None, AUDITED_MODE}:
+        raise CarryForwardError("manifest_mode_invalid")
+    selection = normalize_selection(read_private(args.ids), mode=mode)
     db = read_private(args.db)
     files = read_private(args.files)
     kernel = read_private(args.kernel)
@@ -2655,7 +3176,9 @@ def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
     }:
         raise CarryForwardError("kernel_identity_unknown")
     value = {
-        "format_version": FORMAT_VERSION,
+        "format_version": AUDITED_FORMAT_VERSION
+        if mode == AUDITED_MODE
+        else FORMAT_VERSION,
         "manifest_id": context["manifest_id"],
         "created_at": context["created_at"],
         "repo": context["repo"],
@@ -2677,6 +3200,9 @@ def _command_plan(args: argparse.Namespace) -> dict[str, Any]:
         "file_evidence": files,
         "kernel_evidence": kernel,
     }
+    if mode == AUDITED_MODE:
+        value["mode"] = mode
+        value["source_diff"] = validate_source_diff(context.get("source_diff"))
     manifest = seal_manifest(value)
     write_private(args.output, manifest)
     return {"code": "manifest_ready", "manifest_id": manifest["manifest_id"]}
@@ -2698,6 +3224,7 @@ def parser() -> argparse.ArgumentParser:
     db.add_argument("--output", type=Path, required=True)
     db.add_argument("--baseline", type=Path)
     db.add_argument("--schema-phase", choices=("before", "after"))
+    db.add_argument("--mode", choices=(AUDITED_MODE,))
     capture = commands.add_parser("capture")
     capture.add_argument("--runtime-root", type=Path, required=True)
     capture.add_argument("--journal-root", type=Path, required=True)
@@ -2710,6 +3237,7 @@ def parser() -> argparse.ArgumentParser:
     state.add_argument("--ids", type=Path)
     state.add_argument("--baseline", type=Path)
     state.add_argument("--schema-phase", choices=("before", "after"))
+    state.add_argument("--mode", choices=(AUDITED_MODE,))
     state.add_argument("--runtime-root", type=Path, required=True)
     state.add_argument("--journal-root", type=Path, required=True)
     state.add_argument("--material-root", action="append", default=[])

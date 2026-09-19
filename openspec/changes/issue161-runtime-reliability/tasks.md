@@ -42,7 +42,7 @@
 - [ ] 5.8 真实Chrome经固定入口完成旧Incident恢复与合法终结，含read-only拒绝、终态反馈和详情刷新；逐条核对原ID/输出/Attempt/代次/审计/资源，保留实际截图与API/DB关联证据而非仅UI组件测试。
 - [x] 5.9 运行Backend/Web相关完整回归和静态检查，保留#152 B各子提交SHA，独立Review修正资格、锁/幂等、材料与权限问题；与A证据分开记录。
 
-- [ ] 5.10 完成详情输出可读性的最小 CSS 修复及独立 Review；原生 wheel/尾部几何验证普通/长/截断 JSON、空输出、日志、多 Attempt/Incident、桌面/窄屏，已滚动 Drawer 内键盘 Popconfirm/权限/epoch/幂等不回归；保存精确旧源红例与新源绿例，固定 Chrome 验收仍由 5.8 单独记录。
+- [x] 5.10 完成详情输出可读性的最小 CSS 修复及独立 Review；原生 wheel/尾部几何验证普通/长/截断 JSON、空输出、日志、多 Attempt/Incident、桌面/窄屏，已滚动 Drawer 内键盘 Popconfirm/权限/epoch/幂等不回归；保存精确旧源红例与新源绿例，固定 Chrome 验收仍由 5.8 单独记录。
 
 ## 6. #152 B — 旧Incident保全升级配套
 

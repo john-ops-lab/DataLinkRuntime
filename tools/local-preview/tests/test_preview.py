@@ -53,6 +53,126 @@ class MigrationTests(unittest.TestCase):
                 graph({"1.py": source})
 
 
+class AuditedSourceDiffTests(unittest.TestCase):
+    def git_result(self, *args):
+        if args[:2] == ("cat-file", "-e"):
+            return ""
+        if args[:2] == ("cat-file", "-t"):
+            return "blob\n"
+        if args[0] == "rev-parse":
+            return ("1" if args[1].startswith(A) else "2") * 40 + "\n"
+        raise AssertionError(args)
+
+    def test_raw_git_diff_is_closed_and_tree_bound(self):
+        old_oid, new_oid = "3" * 40, "4" * 40
+        raw = (
+            f":100644 100644 {old_oid} {new_oid} M".encode()
+            + b"\0web/src/index.css\0"
+            + f":100755 100755 {'5' * 40} {'6' * 40} M".encode()
+            + b"\0tools/local-preview/preview.py\0"
+            + f":100755 100755 {'7' * 40} {'8' * 40} M".encode()
+            + b"\0tools/local-preview/deploy.sh\0"
+        )
+        with (
+            patch.object(preview, "git", side_effect=self.git_result),
+            patch.object(preview, "git_bytes", return_value=raw),
+        ):
+            result = preview.audited_source_diff(A, B)
+        by_path = {item["path"]: item for item in result["entries"]}
+        self.assertIn("web/src/index.css", by_path)
+        self.assertEqual(
+            by_path["tools/local-preview/preview.py"]["old_mode"], "100755"
+        )
+        self.assertEqual(by_path["tools/local-preview/deploy.sh"]["new_mode"], "100755")
+        self.assertEqual(
+            result["tree_digest"],
+            carry_forward.digest(
+                {
+                    "from_tree": "1" * 40,
+                    "to_tree": "2" * 40,
+                    "entries": result["entries"],
+                }
+            ),
+        )
+
+    def test_unknown_deleted_renamed_or_nonregular_source_is_rejected(self):
+        cases = (
+            ("M", "100644", "100644", "backend/src/unknown.py"),
+            ("D", "100644", "000000", "web/src/index.css"),
+            ("R", "100644", "100644", "web/src/index.css"),
+            ("M", "120000", "120000", "web/src/index.css"),
+            ("M", "160000", "160000", "web/src/index.css"),
+            ("M", "100755", "100755", "web/src/index.css"),
+            ("M", "100644", "100644", "tools/local-preview/preview.py"),
+        )
+        for status, old_mode, new_mode, path in cases:
+            raw = (
+                f":{old_mode} {new_mode} {'3' * 40} {'4' * 40} {status}".encode()
+                + b"\0"
+                + path.encode()
+                + b"\0"
+            )
+            with self.subTest(status=status, mode=old_mode, path=path):
+                with (
+                    patch.object(preview, "git", side_effect=self.git_result),
+                    patch.object(preview, "git_bytes", return_value=raw),
+                ):
+                    with self.assertRaises(ValueError):
+                        preview.audited_source_diff(A, B)
+
+        raw = (
+            f":100644 100644 {'3' * 40} {'4' * 40} M".encode()
+            + b"\0docs/en/local-preview.md\0"
+        )
+        with (
+            patch.object(preview, "git", side_effect=self.git_result),
+            patch.object(preview, "git_bytes", return_value=raw),
+        ):
+            with self.assertRaisesRegex(ValueError, "missing the approved Web fix"):
+                preview.audited_source_diff(A, B)
+
+    def test_switch_recomputes_source_diff_before_phase(self):
+        manifest_id = "1" * 32
+        manifest_digest = "2" * 64
+        reference = {
+            "manifest_id": manifest_id,
+            "manifest_digest": manifest_digest,
+            "from_sha": A,
+            "to_sha": B,
+            "from_schema": "0040_issue152_dispositions",
+            "to_schema": "0040_issue152_dispositions",
+            "pr": 2,
+        }
+        manifest = {
+            **reference,
+            "repo": "owner/repo",
+            "mode": carry_forward.AUDITED_MODE,
+            "controller_files_digest": "3" * 64,
+            "migration_graph_digest": "4" * 64,
+            "source_diff": {"tree_digest": "5" * 64, "entries": []},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                patch.object(preview, "ROOT", root),
+                patch.object(carry_forward, "read_private", return_value=manifest),
+                patch.object(carry_forward, "validate_manifest", return_value=manifest),
+                patch.object(preview, "controller_files_digest", return_value="3" * 64),
+                patch.object(preview, "migration_graph_digest", return_value="4" * 64),
+                patch.object(
+                    preview,
+                    "audited_source_diff",
+                    return_value={"tree_digest": "6" * 64, "entries": []},
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "source difference changed"):
+                    preview.selected_manifest(
+                        {"repo": "owner/repo", "carry_forward": reference},
+                        {"sha": A, "schema": "0040_issue152_dispositions"},
+                        {"sha": B, "schema": "0040_issue152_dispositions", "pr": 2},
+                    )
+
+
 class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -317,9 +437,7 @@ class CarryForwardSelectionTests(unittest.TestCase):
         patcher = patch.object(preview, "ROOT", self.root)
         patcher.start()
         self.addCleanup(patcher.stop)
-        preview.write(
-            "state.json", {"sha": A, "schema": "0038_issue138_languages"}
-        )
+        preview.write("state.json", {"sha": A, "schema": "0038_issue138_languages"})
 
     def manifest(self, directory):
         path = Path(directory) / "manifest.json"

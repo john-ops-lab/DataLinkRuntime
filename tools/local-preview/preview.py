@@ -193,6 +193,10 @@ def selected_manifest(config, previous, target):
         raise RuntimeError("Carry-forward controller changed; create a new plan")
     if manifest["migration_graph_digest"] != migration_graph_digest(target["sha"]):
         raise RuntimeError("Carry-forward migration graph changed")
+    if manifest.get("mode") == carry_forward.AUDITED_MODE and manifest[
+        "source_diff"
+    ] != audited_source_diff(manifest["from_sha"], manifest["to_sha"]):
+        raise RuntimeError("Carry-forward source difference changed")
     return manifest, path
 
 
@@ -401,10 +405,14 @@ def phase(target, action, manifest_id=""):
     return True
 
 
-def plan_carry_forward(to_sha, ids_file, output):
+def plan_carry_forward(to_sha, ids_file, output, mode=None):
     if not re.fullmatch(r"[0-9a-f]{40}", to_sha):
         raise ValueError("--to-sha must be a full lowercase commit SHA")
-    ids = carry_forward.normalize_selection(carry_forward.read_private(ids_file))
+    if mode not in {None, carry_forward.AUDITED_MODE}:
+        raise ValueError("Unsupported carry-forward mode")
+    ids = carry_forward.normalize_selection(
+        carry_forward.read_private(ids_file), mode=mode
+    )
     config = read("config.json")
     previous = read("state.json", {})
     if read("attention.json"):
@@ -417,6 +425,11 @@ def plan_carry_forward(to_sha, ids_file, output):
         raise RuntimeError("candidate_not_staged")
     ensure_vm()
     check_compatibility(previous, target)
+    source_diff = (
+        audited_source_diff(previous["sha"], target["sha"])
+        if mode == carry_forward.AUDITED_MODE
+        else None
+    )
     images_result = vm_command(
         "cat", vm_path(f"releases/{to_sha}/images.json"), check=False
     )
@@ -562,6 +575,9 @@ def plan_carry_forward(to_sha, ids_file, output):
         ),
         "old_containers": sorted(old_containers, key=lambda item: item["service"]),
     }
+    if mode == carry_forward.AUDITED_MODE:
+        context["mode"] = mode
+        context["source_diff"] = source_diff
     vm_private_write(
         f"{work_relative}/ids.json", carry_forward.canonical_bytes(ids) + b"\n"
     )
@@ -596,6 +612,10 @@ def install_manifest(config, pr, source):
         raise ValueError("Carry-forward manifest was created by another controller")
     if manifest["migration_graph_digest"] != migration_graph_digest(manifest["to_sha"]):
         raise ValueError("Carry-forward manifest migration graph changed")
+    if manifest.get("mode") == carry_forward.AUDITED_MODE and manifest[
+        "source_diff"
+    ] != audited_source_diff(manifest["from_sha"], manifest["to_sha"]):
+        raise ValueError("Carry-forward manifest source difference changed")
     pull = api(f"repos/{config['repo']}/pulls/{pr}")
     if pull["head"]["sha"] != manifest["to_sha"]:
         raise ValueError("Carry-forward manifest is not bound to the current PR HEAD")
@@ -628,6 +648,92 @@ def git(*args):
         env=ENV,
         timeout=120,
     ).decode()
+
+
+def git_bytes(*args):
+    return subprocess.check_output(
+        [
+            "/usr/bin/git",
+            "--git-dir=" + str(ROOT / "source.git"),
+            "-c",
+            "core.hooksPath=/dev/null",
+            *args,
+        ],
+        env=ENV,
+        timeout=120,
+    )
+
+
+def audited_source_diff(from_sha, to_sha):
+    for sha in (from_sha, to_sha):
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("Invalid audited source commit")
+        git("cat-file", "-e", sha + "^{commit}")
+    raw = git_bytes(
+        "diff-tree",
+        "--raw",
+        "-r",
+        "-z",
+        "--no-abbrev",
+        "--no-renames",
+        "--no-commit-id",
+        from_sha,
+        to_sha,
+    )
+    parts = raw.split(b"\0")
+    if parts[-1] != b"":
+        raise ValueError("Invalid Git raw difference")
+    parts.pop()
+    if len(parts) % 2:
+        raise ValueError("Invalid Git raw difference")
+    entries = []
+    for index in range(0, len(parts), 2):
+        try:
+            header = parts[index].decode("ascii")
+            path = parts[index + 1].decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("Invalid Git raw difference") from error
+        match = re.fullmatch(
+            r":([0-7]{6}) ([0-7]{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z])",
+            header,
+        )
+        if not match:
+            raise ValueError("Invalid Git raw difference")
+        old_mode, new_mode, old_oid, new_oid, status = match.groups()
+        expected_mode = carry_forward.AUDITED_SOURCE_MODES.get(path)
+        if (
+            status != "M"
+            or expected_mode is None
+            or old_mode != expected_mode
+            or new_mode != expected_mode
+            or old_oid == new_oid
+            or git("cat-file", "-t", old_oid).strip() != "blob"
+            or git("cat-file", "-t", new_oid).strip() != "blob"
+        ):
+            raise ValueError("Audited source difference is outside the approved scope")
+        entries.append(
+            {
+                "status": status,
+                "old_mode": old_mode,
+                "new_mode": new_mode,
+                "old_oid": old_oid,
+                "new_oid": new_oid,
+                "path": path,
+            }
+        )
+    entries.sort(key=lambda item: item["path"])
+    if not entries or "web/src/index.css" not in {item["path"] for item in entries}:
+        raise ValueError("Audited source difference is missing the approved Web fix")
+    trees = {
+        "from_tree": git("rev-parse", from_sha + "^{tree}").strip(),
+        "to_tree": git("rev-parse", to_sha + "^{tree}").strip(),
+        "entries": entries,
+    }
+    if not all(
+        re.fullmatch(r"[0-9a-f]{40}", trees[key]) for key in ("from_tree", "to_tree")
+    ):
+        raise ValueError("Invalid audited source tree")
+    return {"tree_digest": carry_forward.digest(trees), "entries": entries}
 
 
 def migration_files(sha):
@@ -908,6 +1014,7 @@ def main():
     parser.add_argument("--ids-file", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--carry-forward", type=Path)
+    parser.add_argument("--mode", choices=(carry_forward.AUDITED_MODE,))
     args = parser.parse_args()
     if args.command == "plan-carry-forward":
         if (
@@ -931,7 +1038,7 @@ def main():
                             "Pause the watcher before creating a carry-forward plan"
                         )
                     result = plan_carry_forward(
-                        args.to_sha, args.ids_file, args.output
+                        args.to_sha, args.ids_file, args.output, args.mode
                     )
         except BlockingIOError:
             parser.error(
