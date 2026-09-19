@@ -226,7 +226,18 @@ def _load_adapter(path: Path) -> ModuleType:
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load adapter module from {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    had_previous = spec.name in sys.modules
+    previous_module = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if had_previous:
+            # Failed imports may leave an explicit None sentinel in sys.modules.
+            sys.modules[spec.name] = previous_module  # type: ignore[assignment]
+        else:
+            sys.modules.pop(spec.name, None)
+        raise
     return module
 
 

@@ -89,6 +89,8 @@ Settings default、Compose `${DLR_MANAGED_FILES_ENABLED:-true}`、`.env.example`
 
 业务矩阵至少有五语言各一条 managed file 读取执行并核对文件名/大小/哈希/内容；格式维度覆盖 XLSX、CSV、LOG、JSON，实际Excel等相关模板及现有日志Adapter示例分别独立验证；随产品发布的日志模板在精确候选catalog中不存在时，保留目录身份和完整场景清单，记为NOT_APPLICABLE_CURRENT_CATALOG，不计PASS。若现场有实际用户日志模板，按其真实来源和版本追加验收，不能由catalog缺项豁免。格式与语言采取覆盖矩阵，不声称只有一条文本读取就证明所有组合。受支持但需要依赖的模板必须准备好合法来源再运行。ArtifactStore 重启持久、配额拒绝、活跃 Lease 保护、到期/删除后回收与历史摘要保持分别留证；GC 自然等待可利用既有允许策略，不能伪造时间或直接清理保留数据。
 
+实际 Worker 验收发现既有 Python harness 直接执行 `module_from_spec` 的结果，没有先登记 `sys.modules`，导致使用延迟注解和 `dataclass` 的现有 Excel 模板在加载时失败。修复限于标准模块导入语义：在 `exec_module` 前登记本次模块，成功后保留登记供类型解析使用；加载抛出异常时清理本次登记或恢复先前同名模块，并继续抛出原异常。参考 [Python importlib 直接导入源文件的官方示例](https://docs.python.org/3.13/library/importlib.html#importing-a-source-file-directly)。通过真实 harness 子进程验证注解/dataclass 的输出与错误恢复，再以未改动的正式 Excel 模板和独立 XLSX 预期执行新候选 Worker；原失败单独保留。这是上述模板验收的必要兼容修复，不改变 wire protocol、隔离、依赖安装、调度/取消/Lease 责任或 Runtime API；最终部署范围必须重新绑定新增文件和精确候选。
+
 ### D7. 依赖源校验先合并，再变更，保存不访问网络
 
 在现有源 service 或同包小型帮助函数中建立唯一 `(kind, index_url)` 语法校验，创建与 PATCH 同用。PATCH 先读取记录、算 next_kind/next_url/next_credential，验证整个组合和现有 builtin/credential 规则，再改 ORM 属性或默认源标记，避免失败留下部分更新。省略字段保留；显式 null 延续既有 schema 合同，不借此改变 PATCH 语义。

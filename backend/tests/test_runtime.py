@@ -12,10 +12,12 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from dlr.common.config import settings
+from dlr.runtime import harness
 from dlr.worker import cache, executor
 from dlr.worker import venv as venv_manager
 from dlr.worker.client import ControlClient, ControlUnavailableError
@@ -136,6 +138,102 @@ def test_executor_passes_input_and_runtime_config(tmp_path: object) -> None:
     assert result["output"] == {"echo": {"n": 1}, "stage": "s1"}
     assert result.get("output_truncated", False) is False
     assert result["output_size"] == len(b'{"echo":{"n":1},"stage":"s1"}')
+
+
+def test_executor_loads_dataclass_with_future_annotations(tmp_path: object) -> None:
+    code = """\
+from __future__ import annotations
+
+from dataclasses import InitVar, dataclass, fields
+from typing import ClassVar, get_type_hints
+
+
+@dataclass
+class WorkbookSummary:
+    label: str
+    rows: int
+    multiplier: InitVar[int]
+    kind: ClassVar[str] = "excel"
+
+    def __post_init__(self, multiplier: int) -> None:
+        self.rows *= multiplier
+
+
+def handle(context, input):
+    summary = WorkbookSummary(input["label"], input["rows"], input["multiplier"])
+    return {
+        "label": summary.label,
+        "rows": summary.rows,
+        "kind": summary.kind,
+        "fields": [field.name for field in fields(summary)],
+        "label_type_resolved": get_type_hints(WorkbookSummary)["label"] is str,
+    }
+"""
+    result = run_with_test_sandbox(
+        make_payload(
+            code=code,
+            input_value={"label": "Q3", "rows": 4, "multiplier": 3},
+        ),
+        runtime_settings(tmp_path),
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["output"] == {
+        "label": "Q3",
+        "rows": 12,
+        "kind": "excel",
+        "fields": ["label", "rows"],
+        "label_type_resolved": True,
+    }
+
+
+def test_adapter_load_failure_does_not_pollute_module_registry(tmp_path: Path) -> None:
+    adapter_path = tmp_path / "adapter.py"
+    adapter_path.write_text("raise RuntimeError('import failed')\n", encoding="utf-8")
+    previous_module = sys.modules.pop("dlr_adapter", None)
+    try:
+        with pytest.raises(RuntimeError, match="import failed"):
+            harness._load_adapter(adapter_path)
+        assert "dlr_adapter" not in sys.modules
+    finally:
+        if previous_module is not None:
+            sys.modules["dlr_adapter"] = previous_module
+
+
+@pytest.mark.parametrize("exception_name", ["RuntimeError", "SystemExit", "KeyboardInterrupt"])
+def test_adapter_load_failure_restores_existing_module(tmp_path: Path, exception_name: str) -> None:
+    adapter_path = tmp_path / "adapter.py"
+    adapter_path.write_text(f"raise {exception_name}('import failed')\n", encoding="utf-8")
+    previous_module = sys.modules.get("dlr_adapter")
+    existing_module = ModuleType("dlr_adapter")
+    sys.modules["dlr_adapter"] = existing_module
+    try:
+        with pytest.raises(BaseException, match="import failed"):
+            harness._load_adapter(adapter_path)
+        assert sys.modules["dlr_adapter"] is existing_module
+    finally:
+        if previous_module is None:
+            sys.modules.pop("dlr_adapter", None)
+        else:
+            sys.modules["dlr_adapter"] = previous_module
+
+
+def test_adapter_load_failure_restores_existing_none_entry(tmp_path: Path) -> None:
+    adapter_path = tmp_path / "adapter.py"
+    adapter_path.write_text("raise RuntimeError('import failed')\n", encoding="utf-8")
+    had_previous = "dlr_adapter" in sys.modules
+    previous_module = sys.modules.get("dlr_adapter")
+    sys.modules["dlr_adapter"] = None  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="import failed"):
+            harness._load_adapter(adapter_path)
+        assert "dlr_adapter" in sys.modules
+        assert sys.modules["dlr_adapter"] is None
+    finally:
+        if had_previous:
+            sys.modules["dlr_adapter"] = previous_module  # type: ignore[assignment]
+        else:
+            sys.modules.pop("dlr_adapter", None)
 
 
 def test_executor_secrets_are_redacted_in_output(
