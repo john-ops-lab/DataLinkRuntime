@@ -4990,25 +4990,37 @@ it("discovers a completed short Webhook between active-pointer polls and retains
 });
 
 it("does not let a delayed saved Webhook log overwrite a newer active call", async () => {
-  RUNTIME_REFRESH_POLICY.pollIntervalMs = 20;
-  const adapter = makeAdapter({ adapter_type: "webhook", runtime_locked: true, running_execution_id: null });
+  const listedAdapter = makeAdapter({ adapter_type: "webhook", runtime_locked: false, running_execution_id: null });
+  let authoritativeAdapter = { ...listedAdapter, runtime_locked: true };
   const old = makeExecution({ id: 71, trigger: "webhook", status: "succeeded", stdout: "old saved call\n" });
   const newer = makeExecution({ id: 72, trigger: "webhook", status: "succeeded", stdout: "newer active call\n" });
   let resolveDetail!: (value: RouteResponse) => void;
   const delayed = new Promise<RouteResponse>((resolve) => { resolveDetail = resolve; });
   const fetchMock = stubFetch([
-    ...webhookConsoleRoutes(adapter, makeWebhook({ enabled: true })),
+    { method: "GET", match: "/api/adapters/1", respond: () => ({ body: authoritativeAdapter }) },
+    ...webhookConsoleRoutes(listedAdapter, makeWebhook({ enabled: true })),
     { method: "GET", match: "/api/adapters/1/executions?limit=1&trigger=webhook", respond: () => ({ body: { items: [old], next_before_id: null } }) },
     { method: "GET", match: "/api/executions/71", respond: () => delayed },
     { method: "GET", match: "/api/executions/72", respond: () => ({ body: newer }) },
   ]);
   render(<App />);
   await selectFirstAdapter();
+  await waitFor(() => expect((screen.getByTestId("code-editor") as HTMLTextAreaElement).disabled).toBe(true));
   fireEvent.click(screen.getByRole("tab", { name: "实时日志" }));
   await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/executions/71")).toBe(true));
-  adapter.running_execution_id = 72;
+  const authorityReadsBefore = fetchMock.mock.calls.filter(
+    ([url, init]) => url === "/api/adapters/1" && (init?.method ?? "GET") === "GET",
+  ).length;
+  authoritativeAdapter = { ...authoritativeAdapter, running_execution_id: 72 };
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(fetchMock.mock.calls.filter(
+    ([url, init]) => url === "/api/adapters/1" && (init?.method ?? "GET") === "GET",
+  ).length).toBeGreaterThan(authorityReadsBefore));
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/executions/72")).toBe(true));
   await waitFor(() => expect(screen.getByTestId("live-log").textContent).toContain("newer active call"));
+  const newerDetailReads = fetchMock.mock.calls.filter(([url]) => url === "/api/executions/72").length;
   await act(async () => { resolveDetail({ body: old }); await delayed; });
+  expect(fetchMock.mock.calls.filter(([url]) => url === "/api/executions/72")).toHaveLength(newerDetailReads);
   expect(screen.getByTestId("live-log").textContent).toContain("newer active call");
   expect(screen.getByTestId("live-log").textContent).not.toContain("old saved call");
 });
