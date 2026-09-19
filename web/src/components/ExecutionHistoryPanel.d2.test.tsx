@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "../api";
@@ -133,6 +133,36 @@ function dispositionResponse(overrides: Partial<IncidentDispositionResponse> = {
     retry_after_seconds: null,
     ...overrides,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function mockTwoExecutionEpochs() {
+  vi.spyOn(api, "listExecutions").mockResolvedValue({
+    items: [summary(), summary({ id: 72 })],
+    next_before_id: null,
+  });
+  vi.spyOn(api, "getExecution").mockImplementation(async (id) => execution({
+    id,
+    dispatch_generation: id === 71 ? 2 : 4,
+  }));
+  return vi.spyOn(api, "getReliableExecutionDetail").mockImplementation(async (id) => reliableDetail(
+    [incident({
+      id: id === 71 ? 901 : 902,
+      execution_id: id,
+      recover_available: false,
+      recover_reason: "execution_terminal",
+    })],
+    { execution_id: id, status: "succeeded" },
+  ));
 }
 
 function renderHistory(detail: Execution, row = summary()) {
@@ -552,5 +582,69 @@ describe("Issue #127 D2 execution history", () => {
     expect(screen.getByTestId("execution-incident-902")).toBeTruthy();
     expect(screen.queryByTestId("incident-result-901")).toBeNull();
     expect(screen.queryByTestId("incident-disposition-error")).toBeNull();
+  });
+
+  it.each(["success", "409", "network"])(
+    "keeps Execution B's unsubmitted confirmation open after late Execution A %s",
+    async (outcome) => {
+      const first = deferred<IncidentDispositionResponse>();
+      const details = mockTwoExecutionEpochs();
+      const dispose = vi.spyOn(api, "disposeInfrastructureIncident").mockReturnValue(first.promise);
+      const view = render(<ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={71} />);
+      fireEvent.click(await screen.findByRole("button", { name: "核实并关闭事件" }));
+      fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+      await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+
+      view.rerender(<ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={72} />);
+      await screen.findByTestId("execution-incident-902");
+      fireEvent.click(screen.getByRole("button", { name: "核实并关闭事件" }));
+      expect(await screen.findByRole("button", { name: /确\s*认/ })).toBeTruthy();
+      await act(async () => {
+        if (outcome === "success") {
+          first.resolve(dispositionResponse());
+        } else if (outcome === "409") {
+          first.reject(new ApiError(409, "incident_generation_conflict", "old conflict"));
+        } else {
+          first.reject(new Error("old network failure"));
+        }
+        await first.promise.catch(() => undefined);
+      });
+
+      expect(details).toHaveBeenCalledTimes(2);
+      expect(screen.queryByTestId("incident-disposition-error")).toBeNull();
+      expect(screen.getByTestId("execution-incident-902")).toBeTruthy();
+      expect(screen.getByRole("button", { name: /确\s*认/ })).toBeTruthy();
+    },
+  );
+
+  it("keeps Execution B's pending confirmation and loading after late Execution A completion", async () => {
+    const first = deferred<IncidentDispositionResponse>();
+    const second = deferred<IncidentDispositionResponse>();
+    const details = mockTwoExecutionEpochs();
+    const dispose = vi.spyOn(api, "disposeInfrastructureIncident")
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const view = render(<ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={71} />);
+    fireEvent.click(await screen.findByRole("button", { name: "核实并关闭事件" }));
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+
+    view.rerender(<ExecutionHistoryPanel adapterId={41} autoOpenExecutionId={72} />);
+    await screen.findByTestId("execution-incident-902");
+    fireEvent.click(screen.getByRole("button", { name: "核实并关闭事件" }));
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*认/ }));
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      first.resolve(dispositionResponse());
+      await first.promise;
+    });
+
+    expect(details).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: /核实并关闭事件/ }).className).toContain("ant-btn-loading");
+    expect(screen.getByRole("button", { name: /确\s*认/ })).toBeTruthy();
+    await act(async () => {
+      second.resolve(dispositionResponse());
+      await second.promise;
+    });
   });
 });

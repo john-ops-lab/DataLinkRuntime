@@ -696,6 +696,19 @@ export default function ExecutionHistoryPanel(props: {
                             || incident.recover_reason === "incident_cancellation_pending";
                           const recoverOperation = `${reliableDetail.execution_id}:${incident.id}:recover`;
                           const terminateOperation = `${reliableDetail.execution_id}:${incident.id}:terminate`;
+                          const selectionExecutionId = reliableDetail.execution_id;
+                          const selectionRequestId = detailRequestRef.current;
+                          const updateConfirmation = (open: boolean, operation: string) => {
+                            if (!isCurrentDetailEpoch(selectionExecutionId, selectionRequestId)) {
+                              return;
+                            }
+                            setConfirmingDisposition((current) => {
+                              if (open) {
+                                return operation;
+                              }
+                              return current === operation ? null : current;
+                            });
+                          };
                           const terminateLabel = terminalVerification
                             ? t("history.verifyCloseIncident")
                             : staleIncidentVerification
@@ -754,7 +767,7 @@ export default function ExecutionHistoryPanel(props: {
                                     description={t("history.recoverConfirmDescription")}
                                     okText={t("history.confirmAction")}
                                     cancelText={t("history.cancelAction")}
-                                    onOpenChange={(open) => setConfirmingDisposition(open ? recoverOperation : null)}
+                                    onOpenChange={(open) => updateConfirmation(open, recoverOperation)}
                                     onConfirm={() => disposeIncident(
                                       incident,
                                       "recover",
@@ -790,7 +803,7 @@ export default function ExecutionHistoryPanel(props: {
                                           : t("history.terminateConfirmDescription")}
                                     okText={t("history.confirmAction")}
                                     cancelText={t("history.cancelAction")}
-                                    onOpenChange={(open) => setConfirmingDisposition(open ? terminateOperation : null)}
+                                    onOpenChange={(open) => updateConfirmation(open, terminateOperation)}
                                     onConfirm={() => disposeIncident(
                                       incident,
                                       "terminate",
