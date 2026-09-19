@@ -49,7 +49,7 @@ import {
 import type { ProColumns } from "@ant-design/pro-components";
 import { useTranslation } from "react-i18next";
 
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import {
   CREDENTIAL_TYPE_FIELDS,
   credentialFieldLabel,
@@ -669,11 +669,12 @@ function PackageSourcesPanel(props: {
       return false;
     }
     const name = form.name.trim();
-    const indexUrl = form.index_url.trim();
+    const indexUrl = form.index_url;
     if (name === "" || indexUrl === "") {
       fail(t("packageSources.nameAndUrlRequired"));
       return false;
     }
+    sourceForm.setFields([{ name: "index_url", errors: [] }]);
     onMutationStart?.();
     setNotice(null);
     setSubmitting(true);
@@ -696,7 +697,17 @@ function PackageSourcesPanel(props: {
       }
       return true;
     } catch (error) {
-      fail(errorMessage(error));
+      if (
+        error instanceof ApiError &&
+        error.params.field === "index_url" &&
+        ["package_source_url_invalid", "package_source_request_invalid"].includes(error.code)
+      ) {
+        sourceForm.setFields([
+          { name: "index_url", errors: [t("packageSources.urlInvalid")] },
+        ]);
+      } else {
+        fail(errorMessage(error));
+      }
       return false;
     } finally {
       setSubmitting(false);
@@ -1131,6 +1142,9 @@ function PackageSourcesPanel(props: {
         }}
         onValuesChange={(changed, values) => {
           props.onDirty?.();
+          if (changed.index_url !== undefined) {
+            sourceForm.setFields([{ name: "index_url", errors: [] }]);
+          }
           const kindChanged = changed.kind !== undefined && values.kind !== form.kind;
           if (kindChanged) {
             sourceForm.setFieldValue("credential_id", null);
@@ -1171,7 +1185,10 @@ function PackageSourcesPanel(props: {
               options={kinds.map((kind) => ({ label: kindLabel(kind), value: kind }))}
             />
           </Form.Item>
-          <Form.Item name="index_url" noStyle>
+          <Form.Item
+            name="index_url"
+            style={{ flex: "1 1 220px", minWidth: 220, marginBottom: 0 }}
+          >
             <Input
               data-testid="package-source-url"
               aria-label={t("packageSources.repositoryUrl")}
