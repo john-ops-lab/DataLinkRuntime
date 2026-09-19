@@ -33,6 +33,20 @@ Control renews an active upload writer periodically in the background; no
 browser-callable renew API is exposed. Low-watermark and quota conflicts return
 `409`; clients retain the draft and never display storage paths.
 
+### Upload proxy and net-file policy
+
+The database `max_file_bytes` policy limits net file bytes. Control remains
+responsible for enforcing that policy, quotas, the low-watermark guard, and
+failure cleanup. The token and account entries set a fixed total-request limit
+of `2147745792` bytes only on the exact upload route: the largest supported net
+file, `2147483648` bytes (2 GiB), plus the multipart reader's `262144`-byte
+(256 KiB) overhead budget. Changing the database policy within the supported
+application range does not require an Nginx reload. A future change to the
+application maximum or multipart budget must update both proxy configurations,
+this runbook, and the contract test together. This limit does not widen any
+other API route. A proxy `413` identifies the fixed total envelope; Control's
+structured response remains authoritative for the policy boundary and `L+1`.
+
 ## Single Control and LocalFileArtifactStore
 
 Only the Control process owns and writes `LocalFileArtifactStore`. In Compose,

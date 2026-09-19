@@ -29,6 +29,16 @@ Adapter 输入使用下列边界：
 上传 writer 由 Control 在后台周期续租，不提供浏览器可调用的 renew API。低水位与
 配额冲突返回 `409`，客户端保留草稿且不得显示存储路径。
 
+### 上传代理与净文件策略
+
+数据库策略 `max_file_bytes` 限制文件净大小，Control 继续负责校验该策略、配额、
+低水位和失败清理。Token 与账号入口只对精确上传路径设置固定总请求上限
+`2147745792` 字节：应用支持的最大净文件 `2147483648` 字节（2 GiB）加 multipart
+解析器预留的 `262144` 字节（256 KiB）。在应用支持范围内调整数据库策略无需重载
+Nginx；若将来修改应用最大值或 multipart 预留，必须同步两套代理配置、本文和合同测试。
+该上限不放宽其他 API 路由。代理返回 `413` 只表示请求超过固定总信封，策略边界及
+`L+1` 的拒绝仍以 Control 的结构化响应为准。
+
 ## 单 Control 与 LocalFileArtifactStore
 
 `LocalFileArtifactStore` 只由 Control 进程持有并写入。Compose 中唯一的
