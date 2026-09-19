@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import json
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from dlr.control.models import Execution, ExecutionInfrastructureIncident, ExecutionOutbox
-from dlr.control.services import infrastructure_dlq, rabbitmq
+from dlr.control.models import (
+    Execution,
+    ExecutionIncidentDisposition,
+    ExecutionInfrastructureIncident,
+    ExecutionOutbox,
+)
+from dlr.control.security import SUPERADMIN_PRINCIPAL
+from dlr.control.services import incident_disposition, infrastructure_dlq, rabbitmq
 from test_issue130_b2_runtime import (
     _dispatch,
     _enable_runtime,
@@ -19,6 +28,7 @@ from test_issue130_b2_runtime import (
     _rabbit_adapter,
     _ready_worker,
 )
+from test_issue152_incident_disposition import _bound_incident
 
 
 def _published_execution(
@@ -172,3 +182,73 @@ def test_missing_malformed_or_other_queue_x_death_is_unknown_not_delivery_limit(
         result = infrastructure_dlq.reconcile_message(session, body, headers=headers)
     assert result.kind == "unknown"
     assert result.action == "requeue"
+
+
+def test_dlq_requeue_and_manual_disposition_share_lock_order_without_deadlock(
+    api_client: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_runtime(monkeypatch)
+    worker = _ready_worker(api_client, "issue152-death-disposition-race-worker")
+    adapter = _rabbit_adapter(api_client, worker, "issue152-death-disposition-race-adapter")
+    execution = _execution(api_client, adapter["id"])
+    body = json.dumps(_dispatch(session_factory, execution["id"])).encode()
+    queue = rabbitmq.topology_names(worker["id"]).queue
+    with session_factory.begin() as session:
+        incident_id = _bound_incident(session, execution["id"]).id
+
+    barrier = threading.Barrier(2)
+
+    def dispose() -> str:
+        with session_factory() as session:
+            session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            barrier.wait(timeout=5)
+            result = incident_disposition.dispose_incident(
+                session,
+                execution["id"],
+                incident_id,
+                "recover",
+                1,
+                uuid.uuid4(),
+                "capacity_repaired",
+                SUPERADMIN_PRINCIPAL,
+            )
+            return result.response.receipt.outcome
+
+    def reconcile() -> tuple[str, str]:
+        with session_factory() as session:
+            session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            barrier.wait(timeout=5)
+            result = infrastructure_dlq.reconcile_message(
+                session,
+                body,
+                headers={"x-death": [{"queue": queue, "reason": "rejected", "count": 1}]},
+            )
+            return result.action, result.kind
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        dispose_future = pool.submit(dispose)
+        reconcile_future = pool.submit(reconcile)
+        assert dispose_future.result(timeout=10) == "dispatch_already_pending"
+        assert reconcile_future.result(timeout=10) == ("requeue", "rejected")
+
+    with session_factory() as session:
+        execution_row = session.get(Execution, execution["id"])
+        original_incident = session.get(ExecutionInfrastructureIncident, incident_id)
+        incidents = list(
+            session.scalars(
+                select(ExecutionInfrastructureIncident).where(
+                    ExecutionInfrastructureIncident.execution_id == execution["id"]
+                )
+            )
+        )
+        receipts = list(session.scalars(select(ExecutionIncidentDisposition)))
+        assert execution_row is not None and execution_row.dispatch_generation == 1
+        assert original_incident is not None and original_incident.status == "resolved"
+        assert {(row.kind, row.attempts) for row in incidents} == {
+            ("delivery_limit", 3),
+            ("rejected", 1),
+        }
+        assert len(receipts) == 1
+        assert receipts[0].outcome == "dispatch_already_pending"

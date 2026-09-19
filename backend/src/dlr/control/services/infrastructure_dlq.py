@@ -30,6 +30,7 @@ from dlr.control.models import (
 )
 from dlr.control.services import outbox, rabbitmq
 from dlr.control.services.dispatch import INFRASTRUCTURE_DLQ, deserialize_dispatch_message
+from dlr.control.services.execution_cancellation import lock_execution_in_admission_order
 from dlr.control.services.input_config import database_now
 
 logger = logging.getLogger("dlr.control.infrastructure_dlq")
@@ -196,7 +197,7 @@ def reconcile_message(
     execution: Execution | None = None
     adapter: Adapter | None = None
     if raw_execution_id is not None:
-        execution = session.get(Execution, raw_execution_id, with_for_update=True)
+        execution = lock_execution_in_admission_order(session, raw_execution_id)
         if execution is not None:
             adapter = session.get(Adapter, execution.adapter_id)
     incident = _incident(
