@@ -86,7 +86,7 @@ The installer upgrades an existing private deployment. It requires macOS, Python
 python3 tools/local-preview/install.py --start
 ```
 
-The installer pauses updates and refuses to unload the watcher or replace files while a controller operation or carry-forward plan is active. After it owns the operation and configuration locks, it makes a restricted backup, unloads the LaunchAgent, takes the watcher singleton, installs the reviewed scripts including `carry_forward.py`, transfers trusted VM scripts over stdin, records file SHA-256 values, restores configuration, and optionally restarts the watcher. It refuses an unfinished deployment.
+The installer waits for an active carry-forward plan to release configuration before pausing updates. If a controller operation is still active after that pause, it leaves the controller paused and exits without unloading the watcher or replacing files. Otherwise it unloads the LaunchAgent under the operation and configuration guards, takes the watcher singleton, and only then makes a restricted backup and installs the reviewed scripts, including `carry_forward.py`. It transfers trusted VM scripts over stdin, records file SHA-256 values, restores configuration, and optionally restarts the watcher. It refuses an unfinished deployment.
 
 Private `config.json` supplies repository/PR polling, Colima profile, Compose project, VM root, local port, LaunchAgent label, and Sandbox unit/resource envelope. There are no personal defaults. `preview.env`, build proxy settings, credentials, manifests, backups, and raw receipts remain private.
 
