@@ -317,7 +317,9 @@ class CarryForwardSelectionTests(unittest.TestCase):
         patcher = patch.object(preview, "ROOT", self.root)
         patcher.start()
         self.addCleanup(patcher.stop)
-        preview.write("state.json", {"sha": A, "schema": "0031"})
+        preview.write(
+            "state.json", {"sha": A, "schema": "0038_issue138_languages"}
+        )
 
     def manifest(self, directory):
         path = Path(directory) / "manifest.json"
@@ -331,8 +333,8 @@ class CarryForwardSelectionTests(unittest.TestCase):
                 "pr": 2,
                 "from_sha": A,
                 "to_sha": B,
-                "from_schema": "0031",
-                "to_schema": "0040",
+                "from_schema": "0038_issue138_languages",
+                "to_schema": "0040_issue152_dispositions",
                 "controller_files_digest": "c" * 64,
                 "migration_graph_digest": "d" * 64,
                 "old_image_ids": {},

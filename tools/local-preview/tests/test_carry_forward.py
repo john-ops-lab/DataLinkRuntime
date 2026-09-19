@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -854,7 +855,7 @@ class ManifestAndProjectionTests(unittest.TestCase):
         ):
             carry.validate_candidate_tables(revision, {table_name}, {table_name: 1})
 
-    def test_schema_inventory_allows_only_0038_to_0040_delta_and_seed(self):
+    def test_schema_inventory_supports_forward_and_bounded_0040_successor(self):
         baseline = {"executions", "execution_attempts"}
         expected = baseline | {
             "runtime_reconciliation_cursors",
@@ -879,6 +880,35 @@ class ManifestAndProjectionTests(unittest.TestCase):
                 {"execution_incident_dispositions": 0},
                 [("expired_attempts", 0, 0)],
             )
+
+        revision = "0040_issue152_dispositions"
+        same_schema = baseline | {
+            "runtime_reconciliation_cursors",
+            "execution_incident_dispositions",
+        }
+        carry.validate_schema_inventory(
+            revision,
+            revision,
+            same_schema,
+            same_schema,
+            {"execution_incident_dispositions": 0},
+            [],
+        )
+        for changed in (
+            same_schema | {"unapproved_table"},
+            same_schema - {"runtime_reconciliation_cursors"},
+        ):
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "candidate_schema_inventory_changed"
+            ):
+                carry.validate_schema_inventory(
+                    revision,
+                    revision,
+                    same_schema,
+                    changed,
+                    {"execution_incident_dispositions": 0},
+                    [],
+                )
         with self.assertRaisesRegex(carry.CarryForwardError, "candidate_seed_invalid"):
             carry.validate_schema_inventory(
                 "0038_issue138_languages",
@@ -888,6 +918,67 @@ class ManifestAndProjectionTests(unittest.TestCase):
                 {"execution_incident_dispositions": 0},
                 [],
             )
+
+    def test_transition_allowlist_keeps_all_forward_paths_and_rejects_unknowns(self):
+        for transition in (
+            ("0038_issue138_languages", "0039_issue134_reconcile"),
+            ("0039_issue134_reconcile", "0040_issue152_dispositions"),
+            ("0038_issue138_languages", "0040_issue152_dispositions"),
+        ):
+            self.assertTrue(carry.validate_schema_transition(*transition))
+        self.assertEqual(
+            carry.validate_schema_transition(
+                "0040_issue152_dispositions", "0040_issue152_dispositions"
+            ),
+            set(),
+        )
+        for transition in (
+            ("0041_unknown", "0041_unknown"),
+            ("0040_issue152_dispositions", "0041_unknown"),
+        ):
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "candidate_schema_path_unknown"
+            ):
+                carry.validate_schema_transition(*transition)
+
+    def test_plan_capture_rejects_nonempty_audit_before_writing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            ids = root / "ids.json"
+            carry.write_private(
+                ids,
+                {
+                    "queued": [{"execution_id": 7, "incident_ids": [11]}],
+                    "cleanup_execution_ids": [],
+                },
+            )
+            args = SimpleNamespace(
+                baseline=None,
+                ids=ids,
+                schema_phase=None,
+                runtime_root=root / "runtime",
+                journal_root=root / "journal",
+                material_root=[],
+                expected_uid=None,
+                db_output=root / "db.json",
+                files_output=root / "files.json",
+            )
+            with (
+                mock.patch.object(
+                    carry,
+                    "inspect_database",
+                    side_effect=carry.CarryForwardError("candidate_table_not_empty"),
+                ),
+                mock.patch.object(carry, "capture_files") as capture_files,
+            ):
+                with self.assertRaisesRegex(
+                    carry.CarryForwardError, "candidate_table_not_empty"
+                ):
+                    carry._command_capture_state(args)
+            capture_files.assert_not_called()
+            self.assertFalse(args.db_output.exists())
+            self.assertFalse(args.files_output.exists())
 
     def test_projection_is_ordered_and_exact(self):
         first = tables([queued_execution()])
@@ -907,8 +998,8 @@ class ManifestAndProjectionTests(unittest.TestCase):
             "pr": 2,
             "from_sha": SHA_A,
             "to_sha": SHA_B,
-            "from_schema": "0031",
-            "to_schema": "0032",
+            "from_schema": "0038_issue138_languages",
+            "to_schema": "0040_issue152_dispositions",
             "controller_files_digest": "c" * 64,
             "migration_graph_digest": "d" * 64,
             "old_image_ids": {},
@@ -932,6 +1023,16 @@ class ManifestAndProjectionTests(unittest.TestCase):
             carry.CarryForwardError, "manifest_digest_mismatch"
         ):
             carry.validate_manifest(manifest)
+
+        for from_schema, to_schema in (
+            ("0041_unknown", "0041_unknown"),
+            ("0040_issue152_dispositions", "0041_unknown"),
+        ):
+            unknown = dict(payload, from_schema=from_schema, to_schema=to_schema)
+            with self.assertRaisesRegex(
+                carry.CarryForwardError, "candidate_schema_path_unknown"
+            ):
+                carry.seal_manifest(unknown)
 
     def test_private_file_requires_restricted_parent_and_regular_single_link(self):
         with tempfile.TemporaryDirectory() as directory:

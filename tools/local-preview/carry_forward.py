@@ -73,6 +73,7 @@ SCHEMA_ADDITIONS = {
         "runtime_reconciliation_cursors",
         "execution_incident_dispositions",
     },
+    ("0040_issue152_dispositions", "0040_issue152_dispositions"): set(),
 }
 
 
@@ -2163,6 +2164,13 @@ def validate_candidate_tables(
             raise CarryForwardError("candidate_table_not_empty")
 
 
+def validate_schema_transition(from_revision: str, to_revision: str) -> set[str]:
+    allowed = SCHEMA_ADDITIONS.get((from_revision, to_revision))
+    if allowed is None:
+        raise CarryForwardError("candidate_schema_path_unknown")
+    return allowed
+
+
 def validate_schema_inventory(
     from_revision: str,
     to_revision: str,
@@ -2171,9 +2179,7 @@ def validate_schema_inventory(
     counts: dict[str, int],
     cursor_rows: list[tuple[Any, ...]],
 ) -> None:
-    allowed = SCHEMA_ADDITIONS.get((from_revision, to_revision))
-    if allowed is None:
-        raise CarryForwardError("candidate_schema_path_unknown")
+    allowed = validate_schema_transition(from_revision, to_revision)
     if existing != baseline_tables | allowed:
         raise CarryForwardError("candidate_schema_inventory_changed")
     if (
@@ -2420,6 +2426,7 @@ def validate_manifest(value: Any) -> dict[str, Any]:
             r"[a-zA-Z0-9_.-]+", value[key]
         ):
             raise CarryForwardError("manifest_schema_invalid")
+    validate_schema_transition(value["from_schema"], value["to_schema"])
     normalize_selection(value["selection"])
     validate_storage_identity(value["storage_identity"])
     validate_projection_evidence(value["old_runtime_projection"])
